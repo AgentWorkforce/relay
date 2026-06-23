@@ -121,12 +121,12 @@ Use Relaycast when workers need to message each other directly, not only the lea
 
 ## Environment variables
 
-| Variable           | Required | Default                         | Description                                                          |
-| ------------------ | -------- | ------------------------------- | -------------------------------------------------------------------- |
-| `RELAY_API_KEY`    | No       | `""` in the template config     | Relaycast workspace key                                              |
+| Variable           | Required | Default                       | Description                                                          |
+| ------------------ | -------- | ----------------------------- | -------------------------------------------------------------------- |
+| `RELAY_API_KEY`    | No       | `""` in the template config   | Relaycast workspace key                                              |
 | `RELAY_BASE_URL`   | No       | `https://cast.agentrelay.com` | Relaycast API base URL                                               |
-| `RELAY_AGENT_TYPE` | No       | `agent`                         | Default Relaycast agent type                                         |
-| `RELAY_AGENT_NAME` | No       | unset                           | Optional stable relay identity when your workflow wants a fixed name |
+| `RELAY_AGENT_TYPE` | No       | `agent`                       | Default Relaycast agent type                                         |
+| `RELAY_AGENT_NAME` | No       | unset                         | Optional stable relay identity when your workflow wants a fixed name |
 
 ## Plugin structure
 
