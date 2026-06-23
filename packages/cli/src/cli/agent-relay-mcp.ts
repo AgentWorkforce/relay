@@ -40,7 +40,6 @@ import type {
 } from './mcp/types.js';
 export type { AgentRelayMcpServerOptions } from './mcp/types.js';
 
-const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
 let mcpTelemetryExitHookInstalled = false;
 
@@ -106,8 +105,23 @@ function resolveEnv(key: string): string | undefined {
   return v;
 }
 
+/**
+ * Normalize a base URL by stripping trailing slashes, falling back to the
+ * gateway default when none is provided.
+ *
+ * @deprecated No longer used internally — the base URL default is now owned by
+ * `@relaycast/sdk` (`RelayCast`/`WsClient`/`AgentRelay` all default
+ * `options.baseUrl` to `https://gateway.relaycast.dev`). Retained only to keep
+ * the public `agent-relay/mcp` export surface stable for downstream importers.
+ */
 export function normalizeBaseUrl(baseUrl?: string): string {
-  return (baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+  // Strip trailing slashes with a linear loop rather than a regex. A pattern
+  // like `/\/+$/` triggers CodeQL's polynomial-backtracking (ReDoS) warning on
+  // uncontrolled input with many repeated '/'; `endsWith`/`slice` is O(n) and
+  // has no backtracking.
+  let url = baseUrl ?? 'https://gateway.relaycast.dev';
+  while (url.endsWith('/')) url = url.slice(0, -1);
+  return url;
 }
 
 function isEntrypoint(): boolean {
