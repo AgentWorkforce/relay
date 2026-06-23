@@ -40,7 +40,6 @@ import type {
 } from './mcp/types.js';
 export type { AgentRelayMcpServerOptions } from './mcp/types.js';
 
-const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
 let mcpTelemetryExitHookInstalled = false;
 
@@ -104,10 +103,6 @@ function resolveEnv(key: string): string | undefined {
   const v = process.env[key];
   if (!v || /^\$\{.+\}$/.test(v)) return undefined;
   return v;
-}
-
-export function normalizeBaseUrl(baseUrl?: string): string {
-  return (baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
 }
 
 function isEntrypoint(): boolean {
