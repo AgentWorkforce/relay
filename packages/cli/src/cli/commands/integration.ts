@@ -69,6 +69,45 @@ export function registerIntegrationCommands(
     });
   });
 
+  // ── inbound webhooks (external services POST in → message into a channel) ──
+  addSdkOptions(
+    webhook
+      .command('create-inbound')
+      .description('Create an inbound webhook external services POST to, delivering messages into a channel')
+      .argument('<channel>', 'Target channel the webhook posts into')
+      .option('--name <name>', 'Human-readable webhook name (e.g. "GitHub Alerts")')
+  ).action(async (channel: string, o: Record<string, unknown>) => {
+    await runSdk(deps, async () => {
+      printJson(
+        deps,
+        await deps.createAgentRelay(opts(o)).webhooks.createInbound({
+          channel,
+          name: o.name as string | undefined,
+        })
+      );
+    });
+  });
+
+  addSdkOptions(webhook.command('list-inbound').description('List inbound webhooks')).action(
+    async (o: Record<string, unknown>) => {
+      await runSdk(deps, async () => {
+        printJson(deps, await deps.createAgentRelay(opts(o)).webhooks.list());
+      });
+    }
+  );
+
+  addSdkOptions(
+    webhook
+      .command('delete-inbound')
+      .description('Delete an inbound webhook')
+      .argument('<webhookId>', 'Inbound webhook id')
+  ).action(async (webhookId: string, o: Record<string, unknown>) => {
+    await runSdk(deps, async () => {
+      await deps.createAgentRelay(opts(o)).webhooks.delete(webhookId);
+      deps.log(`Deleted inbound webhook ${webhookId}.`);
+    });
+  });
+
   const subscription = group.command('subscription').description('Event subscriptions');
 
   addSdkOptions(
