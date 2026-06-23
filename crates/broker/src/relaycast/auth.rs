@@ -699,12 +699,7 @@ impl AuthClient {
                 .register_or_get_agent(request)
                 .await
                 .map_err(relay_error_to_anyhow)?;
-            return Ok((
-                result.id,
-                result.name,
-                result.token,
-                None, // workspace_id not returned in CreateAgentResponse
-            ));
+            return Ok((result.id, result.name, result.token, result.workspace_id));
         }
 
         loop {
@@ -717,12 +712,7 @@ impl AuthClient {
 
             match relay.register_agent(request).await {
                 Ok(result) => {
-                    return Ok((
-                        result.id,
-                        result.name,
-                        result.token,
-                        None, // workspace_id not returned in CreateAgentResponse
-                    ));
+                    return Ok((result.id, result.name, result.token, result.workspace_id));
                 }
                 Err(RelayError::Api { code, status, .. })
                     if is_conflict_code(&code) || status == 409 =>
@@ -1068,13 +1058,16 @@ mod tests {
         unsafe {
             std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
         }
+        // The register response now carries workspace_id, so a join-by-key
+        // session records the real workspace instead of the "ws_unknown"
+        // fallback — no extra lookup required.
         let register = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_env");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a2","workspace_id":"ws_env","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
         let client = AuthClient::new(server.base_url());
@@ -1082,6 +1075,7 @@ mod tests {
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.token, "at_live_2");
         assert_eq!(session.credentials.api_key, "rk_live_env");
+        assert_eq!(session.credentials.workspace_id, "ws_env");
         register.assert_hits(1);
 
         unsafe {
