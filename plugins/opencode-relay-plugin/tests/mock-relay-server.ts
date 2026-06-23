@@ -1,12 +1,6 @@
 import { vi } from 'vitest';
 
-import type {
-  Message,
-  PluginContext,
-  RelayCastFactory,
-  RelayState,
-  ToolDefinition,
-} from '../src/index.js';
+import type { Message, PluginContext, RelayCastFactory, RelayState, ToolDefinition } from '../src/index.js';
 
 /**
  * Records every call the plugin makes through the SDK, keyed by a stable

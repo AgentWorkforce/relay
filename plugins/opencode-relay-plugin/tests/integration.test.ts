@@ -11,11 +11,7 @@ import {
   createRelaySendTool,
   createRelaySpawnTool,
 } from '../src/index.js';
-import {
-  MockRelayServer,
-  connectRelayState,
-  createMockRelayCastFactory,
-} from './mock-relay-server.js';
+import { MockRelayServer, connectRelayState, createMockRelayCastFactory } from './mock-relay-server.js';
 
 class FakeChildProcess extends EventEmitter implements Pick<ChildProcess, 'kill' | 'pid'> {
   pid: number;
