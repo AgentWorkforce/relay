@@ -115,7 +115,13 @@ function resolveEnv(key: string): string | undefined {
  * the public `agent-relay/mcp` export surface stable for downstream importers.
  */
 export function normalizeBaseUrl(baseUrl?: string): string {
-  return (baseUrl ?? 'https://gateway.relaycast.dev').replace(/\/+$/, '');
+  // Strip trailing slashes with a linear loop rather than a regex. A pattern
+  // like `/\/+$/` triggers CodeQL's polynomial-backtracking (ReDoS) warning on
+  // uncontrolled input with many repeated '/'; `endsWith`/`slice` is O(n) and
+  // has no backtracking.
+  let url = baseUrl ?? 'https://gateway.relaycast.dev';
+  while (url.endsWith('/')) url = url.slice(0, -1);
+  return url;
 }
 
 function isEntrypoint(): boolean {
