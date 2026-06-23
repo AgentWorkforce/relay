@@ -84,13 +84,13 @@ async def test_connect_and_disconnect_manage_registration_and_websocket(relay_se
             "send_dm",
             ("Review-Core", "hello"),
             "send_dm",
-            {"to": "Review-Core", "text": "hello"},
+            {"to": "Review-Core", "text": "hello", "mode": "wait"},
         ),
         (
             "post_message",
             ("core-py", "status update"),
             "post_message",
-            {"channel": "core-py", "text": "status update"},
+            {"channel": "core-py", "text": "status update", "mode": "wait"},
         ),
         (
             "reply",
@@ -206,16 +206,11 @@ async def test_websocket_messages_are_decoded_and_delivered_to_callback(relay_se
 
 
 @pytest.mark.asyncio
-async def test_transport_reconnects_after_websocket_disconnect(relay_server, monkeypatch):
-    transport_module = _transport_module()
-    RelayTransport = transport_module.RelayTransport
-    sleep_calls: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
-        await _ORIGINAL_ASYNCIO_SLEEP(0)
-
-    monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+async def test_transport_reconnects_after_websocket_disconnect(relay_server):
+    # Reconnection is now owned by relay_sdk's WsClient. Verify the transport
+    # re-establishes the socket and continues delivering messages after the
+    # server drops the connection.
+    RelayTransport = _transport_class()
 
     transport = RelayTransport("TransportTester", relay_server.make_config())
     received: list[Message] = []
@@ -239,7 +234,7 @@ async def test_transport_reconnects_after_websocket_disconnect(relay_server, mon
             text="reconnected",
             message_id="message-reconnect-1",
         )
-        await asyncio.wait_for(delivered.wait(), timeout=1.0)
+        await asyncio.wait_for(delivered.wait(), timeout=2.0)
     finally:
         await transport.disconnect()
 
@@ -251,7 +246,6 @@ async def test_transport_reconnects_after_websocket_disconnect(relay_server, mon
         timestamp=None,
         message_id="message-reconnect-1",
     )
-    assert [delay for delay in sleep_calls if delay >= 1][:1] == [1]
 
 
 @pytest.mark.asyncio
@@ -310,19 +304,10 @@ async def test_send_dm_raises_connection_error_on_client_error(relay_server):
 
 
 @pytest.mark.asyncio
-async def test_send_dm_retries_transient_server_errors_before_succeeding(
-    relay_server,
-    monkeypatch,
-):
-    transport_module = _transport_module()
-    RelayTransport = transport_module.RelayTransport
-    sleep_calls: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
-        await _ORIGINAL_ASYNCIO_SLEEP(0)
-
-    monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+async def test_send_dm_retries_transient_server_errors_before_succeeding(relay_server):
+    # 5xx retry is owned by relay_sdk's HTTP client (3 retries after the first
+    # attempt). Two transient 503s should be retried away transparently.
+    RelayTransport = _transport_class()
 
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
@@ -341,23 +326,13 @@ async def test_send_dm_retries_transient_server_errors_before_succeeding(
 
     assert message_id.startswith("message-")
     assert relay_server.request_count("send_dm") == 3
-    assert [delay for delay in sleep_calls if delay >= 1][:2] == [1, 2]
 
 
 @pytest.mark.asyncio
-async def test_send_dm_raises_after_exhausting_server_error_retries(
-    relay_server,
-    monkeypatch,
-):
-    transport_module = _transport_module()
-    RelayTransport = transport_module.RelayTransport
-    sleep_calls: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
-        await _ORIGINAL_ASYNCIO_SLEEP(0)
-
-    monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+async def test_send_dm_raises_after_exhausting_server_error_retries(relay_server):
+    # relay_sdk issues the initial attempt plus 3 retries (4 total). Queue 4
+    # persistent 503s so every attempt fails and the error surfaces.
+    RelayTransport = _transport_class()
 
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
@@ -367,7 +342,7 @@ async def test_send_dm_raises_after_exhausting_server_error_retries(
             "send_dm",
             status=503,
             message="Still failing",
-            repeat=3,
+            repeat=4,
         )
 
         with pytest.raises(RelayConnectionError, match="Still failing") as exc_info:
@@ -376,5 +351,4 @@ async def test_send_dm_raises_after_exhausting_server_error_retries(
         await transport.disconnect()
 
     assert exc_info.value.status_code == 503
-    assert relay_server.request_count("send_dm") == 3
-    assert [delay for delay in sleep_calls if delay >= 1][:2] == [1, 2]
+    assert relay_server.request_count("send_dm") == 4

@@ -225,6 +225,7 @@ class MockRelayServer:
                     "token": token,
                     "type": payload.get("type", "agent"),
                     "status": "online",
+                    "created_at": "2024-01-01T00:00:00Z",
                 },
             },
             status=201,
@@ -313,8 +314,10 @@ class MockRelayServer:
                 "data": {
                     "id": message_id,
                     "channel": channel,
+                    "agent_id": self.find_agent_id(sender["name"]) or "agent-unknown",
                     "agent_name": sender["name"],
                     "text": payload["text"],
+                    "created_at": "2024-01-01T00:00:00Z",
                 },
             },
             status=201,
@@ -347,8 +350,10 @@ class MockRelayServer:
                 "data": {
                     "id": reply_id,
                     "thread_id": thread_id,
+                    "agent_id": self.find_agent_id(sender["name"]) or "agent-unknown",
                     "agent_name": sender["name"],
                     "text": payload["text"],
+                    "created_at": "2024-01-01T00:00:00Z",
                 },
             },
             status=201,
@@ -399,7 +404,16 @@ class MockRelayServer:
             {agent["name"] for agent in self.registered_agents.values()} | self.extra_agents
         )
         agents = [
-            {"id": f"agent-mock-{i}", "name": name, "type": "agent", "status": "online"}
+            {
+                "id": f"agent-mock-{i}",
+                "workspace_id": self.workspace,
+                "name": name,
+                "type": "agent",
+                "token_hash": f"hash-{i}",
+                "status": "online",
+                "created_at": "2024-01-01T00:00:00Z",
+                "last_seen": "2024-01-01T00:00:00Z",
+            }
             for i, name in enumerate(names, start=1)
         ]
         return web.json_response({"ok": True, "data": agents})
