@@ -297,7 +297,7 @@ describe('agent-relay-mcp startup helpers', () => {
 
     expect(mod.normalizeBaseUrl('https://api.relaycast.dev///')).toBe('https://api.relaycast.dev');
     expect(mod.normalizeBaseUrl(`https://api.relaycast.dev${'/'.repeat(1000)}`)).toBe(
-      'https://api.relaycast.dev',
+      'https://api.relaycast.dev'
     );
     expect(mod.envFlagEnabled(' on ')).toBe(true);
     expect(mod.envFlagEnabled('0')).toBe(false);
