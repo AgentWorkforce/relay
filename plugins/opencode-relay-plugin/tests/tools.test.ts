@@ -11,7 +11,7 @@ import relayPlugin, {
 import {
   MockRelayServer,
   connectRelayState,
-  createMockFetch,
+  createMockRelayCastFactory,
   createPluginContext,
 } from './mock-relay-server.js';
 
@@ -20,11 +20,9 @@ describe('OpenCode relay core tools', () => {
 
   beforeEach(() => {
     server = new MockRelayServer();
-    vi.stubGlobal('fetch', createMockFetch(server) as typeof fetch);
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -47,7 +45,9 @@ describe('OpenCode relay core tools', () => {
   it('connects successfully and stores the relay token', async () => {
     const state = new RelayState();
 
-    const result = await createRelayConnectTool(state).handler({
+    const result = await createRelayConnectTool(state, {
+      createRelayCast: createMockRelayCastFactory(server),
+    }).handler({
       workspace: 'rk_live_test_fake_workspace_key',
       name: 'Lead',
     });
@@ -75,7 +75,9 @@ describe('OpenCode relay core tools', () => {
     const state = new RelayState();
 
     await expect(
-      createRelayConnectTool(state).handler({
+      createRelayConnectTool(state, {
+        createRelayCast: createMockRelayCastFactory(server),
+      }).handler({
         workspace: 'workspace-test',
         name: 'Lead',
       })
@@ -86,7 +88,7 @@ describe('OpenCode relay core tools', () => {
   });
 
   it('sends a DM through relay_send', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
 
     const result = await createRelaySendTool(state).handler({
       to: 'Researcher',
@@ -113,9 +115,9 @@ describe('OpenCode relay core tools', () => {
   });
 
   it('returns inbox messages and clears the queue', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
     server.injectMessage('Researcher', 'ACK: Looking into auth.');
-    server.injectMessage('Reviewer', 'DONE: Reviewed the patch.', { channel: 'wave1-opencode' });
+    server.injectMessage('Reviewer', 'DONE: Reviewed the patch.');
 
     const firstCheck = await createRelayInboxTool(state).handler({});
     const secondCheck = await createRelayInboxTool(state).handler({});
@@ -129,14 +131,13 @@ describe('OpenCode relay core tools', () => {
       expect.objectContaining({
         from: 'Reviewer',
         text: 'DONE: Reviewed the patch.',
-        channel: 'wave1-opencode',
       }),
     ]);
     expect(secondCheck).toEqual({ count: 0, messages: [] });
   });
 
   it('lists agents through relay_agents', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
     server.agents = ['Lead', 'Researcher', 'Reviewer'];
 
     const result = await createRelayAgentsTool(state).handler({});
@@ -148,7 +149,7 @@ describe('OpenCode relay core tools', () => {
   });
 
   it('posts a channel message through relay_post', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
 
     const result = await createRelayPostTool(state).handler({
       channel: 'wave1-opencode',

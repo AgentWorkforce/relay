@@ -1,7 +1,9 @@
+import type { AgentClient, RelayCast } from '@relaycast/sdk';
+
 import { registerHooks } from './hooks.js';
 import { registerTools, type ToolContext } from './tools.js';
 
-export const DEFAULT_RELAYCAST_API_BASE_URL = 'https://www.relaycast.dev/api/v1';
+export const DEFAULT_RELAYCAST_API_BASE_URL = 'https://cast.agentrelay.com';
 export const DEFAULT_IDLE_POLL_INTERVAL_MS = 3_000;
 
 export interface SessionIdleResult {
@@ -54,6 +56,10 @@ export class RelayState {
   lastIdlePollAt = 0;
   spawned = new Map<string, SpawnedAgent>();
   connected = false;
+  /** Workspace-scoped client (apiKey = workspace key). Owns agent registry calls. */
+  relay: RelayCast | null = null;
+  /** Agent-scoped client (token = registered agent token). Owns messaging calls. */
+  agent: AgentClient | null = null;
 }
 export default async function relayPlugin(ctx: PluginContext): Promise<RelayState> {
   const state = new RelayState();
@@ -80,18 +86,18 @@ export {
   createRelaySendTool,
   createRelaySpawnTool,
   createRelayTools,
+  inboxToMessages,
   registerTools,
-  relaycastAPI,
 } from './tools.js';
 export type {
   EmptyInput,
   Message,
-  RelayAPIResponse,
   RelayConnectInput,
   RelayDismissInput,
   RelayPostInput,
   RelaySendInput,
   RelaySpawnInput,
+  RelayCastFactory,
   SpawnLike,
   ToolDefinition,
   ToolDependencies,

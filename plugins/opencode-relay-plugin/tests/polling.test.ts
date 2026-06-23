@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RelayState, type HookHandler } from '../src/index.js';
 import { registerHooks } from '../src/hooks.js';
+import type { InboxResponse } from '@relaycast/sdk';
 
 type HookRegistry = Record<string, HookHandler>;
 type HookRegistrationContext = {
@@ -20,44 +21,43 @@ function createContext(): { ctx: HookRegistrationContext; hooks: HookRegistry } 
   };
 }
 
-function createConnectedState(): RelayState {
+function emptyInbox(): InboxResponse {
+  return {
+    unreadChannels: [],
+    mentions: [],
+    unreadDms: [],
+    recentReactions: [],
+  } as unknown as InboxResponse;
+}
+
+function createConnectedState(inbox: () => Promise<InboxResponse>): {
+  state: RelayState;
+  inboxMock: ReturnType<typeof vi.fn>;
+} {
   const state = new RelayState();
   state.connected = true;
   state.agentName = 'Lead';
   state.workspace = 'rk_live_1234567890abcdef';
   state.token = 'tok_test';
-  return state;
-}
-
-function jsonResponse(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    json: vi.fn().mockResolvedValue(body),
-    text: vi.fn().mockResolvedValue(JSON.stringify(body)),
-  };
+  const inboxMock = vi.fn(inbox);
+  state.agent = { inbox: inboxMock } as unknown as RelayState['agent'];
+  return { state, inboxMock };
 }
 
 describe('OpenCode relay hooks', () => {
-  const fetchMock = vi.fn();
-
   beforeEach(() => {
-    fetchMock.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-13T15:00:00Z'));
-    vi.stubGlobal('fetch', fetchMock);
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('idle-no-messages', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ messages: [] }));
-
     const { ctx, hooks } = createContext();
-    const state = createConnectedState();
+    const { state, inboxMock } = createConnectedState(async () => emptyInbox());
     registerHooks(ctx, state);
 
     const firstResult = await hooks['session.idle']();
@@ -68,53 +68,62 @@ describe('OpenCode relay hooks', () => {
     expect(firstResult).toBeUndefined();
     expect(secondResult).toBeUndefined();
     expect(thirdResult).toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://www.relaycast.dev/api/v1/inbox/check', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer tok_test',
-      },
-      body: '{}',
-    });
+    // Second call is throttled by the watermark; only the 1st and 3rd poll.
+    expect(inboxMock).toHaveBeenCalledTimes(2);
   });
 
   it('idle-surfaces-messages', async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
-        messages: [
-          {
+    const inbox: InboxResponse = {
+      unreadChannels: [],
+      mentions: [
+        {
+          id: 'msg-2',
+          channelName: 'general',
+          agentName: 'bob',
+          text: 'Standup in five minutes.',
+          createdAt: '2026-03-13T15:00:01Z',
+        },
+      ],
+      unreadDms: [
+        {
+          conversationId: 'conv-alice',
+          from: 'alice',
+          unreadCount: 1,
+          lastMessage: {
             id: 'msg-1',
-            from: 'alice',
             text: 'Please review auth middleware.',
-            ts: '2026-03-13T15:00:00Z',
+            createdAt: '2026-03-13T15:00:00Z',
           },
-          {
-            id: 'msg-2',
-            from: 'bob',
-            channel: 'general',
-            text: 'Standup in five minutes.',
-            ts: '2026-03-13T15:00:01Z',
-          },
-        ],
-      })
-    );
+        },
+      ],
+      recentReactions: [],
+    } as unknown as InboxResponse;
 
     const { ctx, hooks } = createContext();
-    const state = createConnectedState();
+    const { state } = createConnectedState(async () => inbox);
     registerHooks(ctx, state);
 
     await expect(hooks['session.idle']()).resolves.toEqual({
       inject:
-        'Relay message from alice: Please review auth middleware.\n\n' +
-        'Relay message from bob [#general]: Standup in five minutes.',
+        'Relay message from bob [#general]: Standup in five minutes.\n\n' +
+        'Relay message from alice: Please review auth middleware.',
       continue: true,
     });
   });
 
+  it('idle-swallows-errors', async () => {
+    const { ctx, hooks } = createContext();
+    const { state } = createConnectedState(async () => {
+      throw new Error('boom');
+    });
+    registerHooks(ctx, state);
+
+    await expect(hooks['session.idle']()).resolves.toBeUndefined();
+  });
+
   it('compacting-preserves', async () => {
     const { ctx, hooks } = createContext();
-    const state = createConnectedState();
+    const { state } = createConnectedState(async () => emptyInbox());
     state.spawned.set('worker-a', {
       name: 'worker-a',
       process: { kill: vi.fn().mockReturnValue(true) },
@@ -146,7 +155,7 @@ describe('OpenCode relay hooks', () => {
     const doneKill = vi.fn().mockReturnValue(true);
 
     const { ctx, hooks } = createContext();
-    const state = createConnectedState();
+    const { state } = createConnectedState(async () => emptyInbox());
     state.spawned.set('worker-a', {
       name: 'worker-a',
       process: { kill: runningKill },
