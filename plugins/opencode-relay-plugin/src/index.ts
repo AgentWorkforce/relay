@@ -1,7 +1,9 @@
+import type { AgentClient, RelayCast } from '@relaycast/sdk';
+
 import { registerHooks } from './hooks.js';
 import { registerTools, type ToolContext } from './tools.js';
 
-export const DEFAULT_RELAYCAST_API_BASE_URL = 'https://www.relaycast.dev/api/v1';
+export const DEFAULT_RELAYCAST_API_BASE_URL = 'https://cast.agentrelay.com';
 export const DEFAULT_IDLE_POLL_INTERVAL_MS = 3_000;
 
 export interface SessionIdleResult {
@@ -53,7 +55,20 @@ export class RelayState {
   idlePollIntervalMs = DEFAULT_IDLE_POLL_INTERVAL_MS;
   lastIdlePollAt = 0;
   spawned = new Map<string, SpawnedAgent>();
+  /**
+   * IDs of messages already surfaced to the agent. The engine `inbox()` is
+   * read-only, so the durable drain happens on the delivery ledger
+   * (`ackDelivery`); this local watermark is the in-session backstop that keeps
+   * the same message from being re-injected even if a ledger ack lags or fails.
+   * Bounded via FIFO eviction (see `MAX_SEEN_MESSAGE_IDS` / `rememberSeen`) so
+   * it cannot grow unboundedly over a long session.
+   */
+  seenMessageIds = new Set<string>();
   connected = false;
+  /** Workspace-scoped client (apiKey = workspace key). Owns agent registry calls. */
+  relay: RelayCast | null = null;
+  /** Agent-scoped client (token = registered agent token). Owns messaging calls. */
+  agent: AgentClient | null = null;
 }
 export default async function relayPlugin(ctx: PluginContext): Promise<RelayState> {
   const state = new RelayState();
@@ -80,18 +95,21 @@ export {
   createRelaySendTool,
   createRelaySpawnTool,
   createRelayTools,
+  collectInboxMessages,
+  inboxToMessages,
+  rememberSeen,
   registerTools,
-  relaycastAPI,
+  MAX_SEEN_MESSAGE_IDS,
 } from './tools.js';
 export type {
   EmptyInput,
   Message,
-  RelayAPIResponse,
   RelayConnectInput,
   RelayDismissInput,
   RelayPostInput,
   RelaySendInput,
   RelaySpawnInput,
+  RelayCastFactory,
   SpawnLike,
   ToolDefinition,
   ToolDependencies,

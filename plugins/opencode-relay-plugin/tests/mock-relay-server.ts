@@ -1,102 +1,305 @@
 import { vi } from 'vitest';
 
-import type { Message, PluginContext, RelayState, ToolDefinition } from '../src/index.js';
+import type { Message, PluginContext, RelayCastFactory, RelayState, ToolDefinition } from '../src/index.js';
 
-interface MockResponse {
-  status: number;
-  body: unknown;
-}
-
+/**
+ * Records every call the plugin makes through the SDK, keyed by a stable
+ * `endpoint` label so tests can assert on transport behavior the same way they
+ * did against the old bespoke HTTP server.
+ */
 export interface MockRequest {
   endpoint: string;
   body: Record<string, unknown>;
-  headers: HeadersInit | undefined;
 }
 
+interface QueuedDm {
+  id: string;
+  from: string;
+  text: string;
+  ts: string;
+  channel?: string;
+  conversationId?: string;
+}
+
+/**
+ * In-memory stand-in for the relaycast engine. It models just enough of the
+ * RelayCast (workspace) + AgentClient (agent) surface that the plugin touches,
+ * and exposes the recorded request log + an inbox queue for assertions.
+ */
 export class MockRelayServer {
   messages: Message[] = [];
   agents: string[] = [];
   requests: MockRequest[] = [];
-  responses = new Map<string, MockResponse>();
+  registerShouldFail = false;
+
+  /**
+   * Unread items the engine inbox reports. The engine inbox is *read-only*: it
+   * keeps reporting these until the agent drains each one on the durable
+   * delivery ledger via `ackDelivery`. We model that here so tests exercise the
+   * plugin's drain (delivery ack + watermark) path.
+   */
+  private inboxItems: QueuedDm[] = [];
+  /**
+   * Durable delivery ledger keyed by deliveryId. Each row points at the
+   * underlying messageId. An item is "unread" until its delivery is acked.
+   */
+  private deliveryRows: { deliveryId: string; messageId: string; acked: boolean }[] = [];
+  /** Message IDs whose durable delivery has been acked. */
+  readMessageIds = new Set<string>();
+
+  private enqueueDelivery(messageId: string): void {
+    this.deliveryRows.push({ deliveryId: `dlv-${messageId}`, messageId, acked: false });
+  }
 
   injectMessage(from: string, text: string, extra: Partial<Message> = {}): void {
-    this.messages.push({
-      id: crypto.randomUUID(),
-      from,
-      text,
-      ts: new Date().toISOString(),
-      ...extra,
-    });
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    this.messages.push({ id, from, text, ts, ...extra });
+    // The engine inbox exposes DMs (and channel mentions); model these as DMs.
+    this.inboxItems.push({ id, from, text, ts, conversationId: `conv-${from}` });
+    this.enqueueDelivery(id);
   }
 
-  setResponse(endpoint: string, status: number, body: unknown): void {
-    this.responses.set(endpoint, { status, body });
+  /** Inject a channel mention (surfaces under inbox `mentions`). */
+  injectMention(from: string, channel: string, text: string): string {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    this.inboxItems.push({ id, from, text, ts, channel });
+    this.enqueueDelivery(id);
+    return id;
   }
 
-  async handle(endpoint: string, body: Record<string, unknown>): Promise<unknown> {
-    switch (endpoint) {
-      case 'dm/send':
-        this.messages.push({
-          id: crypto.randomUUID(),
-          from: 'self',
-          text: String(body.text ?? ''),
-          ts: new Date().toISOString(),
-        });
-        return { ok: true };
-      case 'message/post':
-        return { ok: true };
-      case 'inbox/check': {
-        const queued = [...this.messages];
-        this.messages = [];
-        return { messages: queued };
-      }
-      case 'agent/list':
-        return { agents: this.agents };
-      case 'register':
-        return { token: 'test-token-123' };
-      case 'agent/add': {
-        const name = body.name;
-        if (typeof name === 'string' && !this.agents.includes(name)) {
-          this.agents.push(name);
-        }
-        return { ok: true };
-      }
-      case 'agent/remove': {
-        const name = body.name;
-        if (typeof name === 'string') {
-          this.agents = this.agents.filter((agent) => agent !== name);
-        }
-        return { ok: true };
-      }
-      default:
-        return { ok: true };
+  /** Inject a DM into an explicit conversation (for multi-message DM tests). */
+  injectDm(from: string, conversationId: string, text: string): string {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    this.inboxItems.push({ id, from, text, ts, conversationId });
+    this.enqueueDelivery(id);
+    return id;
+  }
+
+  /** Inject an unread channel post that does NOT mention the reader. */
+  injectChannelPost(from: string, channel: string, text: string): string {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    // No `mention` flag: lands under unread_channels, not mentions.
+    this.inboxItems.push({ id, from, text, ts, channel, conversationId: undefined });
+    // Tag as a non-mention channel post via a sentinel on the object.
+    (this.inboxItems[this.inboxItems.length - 1] as QueuedDm & { channelPost?: boolean }).channelPost = true;
+    this.enqueueDelivery(id);
+    return id;
+  }
+
+  record(endpoint: string, body: Record<string, unknown>): void {
+    this.requests.push({ endpoint, body });
+  }
+
+  /** All unacked items for a given conversation, oldest-first. */
+  conversationMessages(conversationId: string): QueuedDm[] {
+    return this.inboxItems.filter(
+      (m) => m.conversationId === conversationId && !this.readMessageIds.has(m.id)
+    );
+  }
+
+  /** All unacked posts for a given channel, oldest-first. */
+  channelMessages(channel: string): QueuedDm[] {
+    return this.inboxItems.filter((m) => m.channel === channel && !this.readMessageIds.has(m.id));
+  }
+
+  /** Non-terminal (unacked) delivery rows, each carrying its messageId. */
+  deliveries(): { deliveryId: string; messageId: string }[] {
+    return this.deliveryRows
+      .filter((row) => !row.acked)
+      .map((row) => ({ deliveryId: row.deliveryId, messageId: row.messageId }));
+  }
+
+  /** Ack a delivery by deliveryId; marks its message read so the inbox drains. */
+  ackDelivery(deliveryId: string): void {
+    const row = this.deliveryRows.find((r) => r.deliveryId === deliveryId);
+    if (row) {
+      row.acked = true;
+      this.readMessageIds.add(row.messageId);
     }
+  }
+
+  /** Build the engine inbox *summary* from current unacked items (read-only). */
+  buildInbox() {
+    const unread = this.inboxItems.filter((m) => !this.readMessageIds.has(m.id));
+
+    const mentions = unread
+      .filter((m) => m.channel && !(m as QueuedDm & { channelPost?: boolean }).channelPost)
+      .map((m) => ({
+        id: m.id,
+        channelName: m.channel ?? '',
+        agentName: m.from,
+        text: m.text,
+        createdAt: m.ts,
+      }));
+
+    // Group DM items by conversation; summary carries only the last message.
+    const dmConvIds = [
+      ...new Set(unread.filter((m) => m.conversationId).map((m) => m.conversationId as string)),
+    ];
+    const unreadDms = dmConvIds.map((conversationId) => {
+      const items = unread.filter((m) => m.conversationId === conversationId);
+      const last = items[items.length - 1];
+      return {
+        conversationId,
+        from: last.from,
+        unreadCount: items.length,
+        lastMessage: { id: last.id, text: last.text, createdAt: last.ts },
+      };
+    });
+
+    // Channel posts (non-mentions) only surface as an unread count in summary.
+    const channelPosts = unread.filter(
+      (m) => m.channel && (m as QueuedDm & { channelPost?: boolean }).channelPost
+    );
+    const channelNames = [...new Set(channelPosts.map((m) => m.channel as string))];
+    const unreadChannels = channelNames.map((channelName) => ({
+      channelName,
+      unreadCount: channelPosts.filter((m) => m.channel === channelName).length,
+    }));
+
+    return {
+      unreadChannels,
+      mentions,
+      unreadDms,
+      recentReactions: [],
+    };
   }
 }
 
-export function createMockFetch(server: MockRelayServer) {
-  return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const url =
-      typeof input === 'string' || input instanceof URL ? new URL(String(input)) : new URL(input.url);
-    const endpoint = url.pathname.replace(/^\/api\/v1\//, '');
-    const body =
-      typeof init?.body === 'string' && init.body.length > 0
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : {};
+class MockAgentClient {
+  dms: {
+    messages: (conversationId: string, opts?: { limit?: number }) => Promise<unknown[]>;
+  };
 
-    server.requests.push({
-      endpoint,
-      body,
-      headers: init?.headers,
-    });
+  constructor(private readonly server: MockRelayServer) {
+    this.dms = {
+      // Returns newest-first, mirroring the engine contract.
+      messages: async (conversationId, opts) => {
+        this.server.record('dm/messages', { conversationId, limit: opts?.limit ?? null });
+        const items = this.server.conversationMessages(conversationId).slice().reverse();
+        const limit = opts?.limit ?? items.length;
+        return items.slice(0, limit).map((m) => ({
+          id: m.id,
+          agentId: m.from,
+          agentName: m.from,
+          text: m.text,
+          createdAt: m.ts,
+        }));
+      },
+    };
+  }
 
-    const override = server.responses.get(endpoint);
-    if (override) {
-      return createResponse(override.body, override.status);
+  async dm(agent: string, text: string) {
+    this.server.record('dm/send', { to: agent, text });
+    return {
+      conversationId: `conv-${agent}`,
+      message: { id: crypto.randomUUID(), agentId: 'self', agentName: 'self', text },
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  async post(channel: string, text: string) {
+    this.server.record('message/post', { channel, text });
+    return { id: crypto.randomUUID(), channel, text };
+  }
+
+  // Channel message listing, newest-first.
+  async messages(channel: string, opts?: { limit?: number }) {
+    this.server.record('message/list', { channel, limit: opts?.limit ?? null });
+    const items = this.server.channelMessages(channel).slice().reverse();
+    const limit = opts?.limit ?? items.length;
+    return items.slice(0, limit).map((m) => ({
+      id: m.id,
+      channelId: channel,
+      agentId: m.from,
+      agentName: m.from,
+      text: m.text,
+      createdAt: m.ts,
+    }));
+  }
+
+  async inbox() {
+    this.server.record('inbox/check', {});
+    return this.server.buildInbox();
+  }
+
+  async deliveries(opts?: { status?: string; limit?: number }) {
+    this.server.record('deliveries/list', { status: opts?.status ?? null, limit: opts?.limit ?? null });
+    return this.server.deliveries().map((row) => ({
+      id: row.deliveryId,
+      messageId: row.messageId,
+      status: 'delivered',
+    }));
+  }
+
+  async ackDelivery(deliveryId: string) {
+    this.server.record('deliveries/ack', { deliveryId });
+    this.server.ackDelivery(deliveryId);
+    return { id: deliveryId, status: 'acked' };
+  }
+}
+
+class MockRelayCast {
+  agents: {
+    list: () => Promise<unknown[]>;
+    registerOrGet: (data: { name: string; metadata?: Record<string, unknown> }) => Promise<unknown>;
+    delete: (name: string) => Promise<void>;
+  };
+
+  private agentClient: MockAgentClient;
+
+  constructor(private readonly server: MockRelayServer) {
+    this.agentClient = new MockAgentClient(server);
+    this.agents = {
+      list: async () => {
+        server.record('agent/list', {});
+        return server.agents;
+      },
+      registerOrGet: async (data) => {
+        server.record('agent/add', { name: data.name, ...(data.metadata ?? {}) });
+        if (typeof data.name === 'string' && !server.agents.includes(data.name)) {
+          server.agents.push(data.name);
+        }
+        return { id: crypto.randomUUID(), name: data.name, token: 'worker-token', status: 'online' };
+      },
+      delete: async (name) => {
+        server.record('agent/remove', { name });
+        server.agents = server.agents.filter((a) => a !== name);
+      },
+    };
+  }
+
+  async registerOrRotate(data: { name: string }) {
+    this.server.record('register', { name: data.name, workspace: this.apiKey, cli: 'opencode' });
+    if (this.server.registerShouldFail) {
+      throw new Error('register failed');
     }
+    return {
+      id: crypto.randomUUID(),
+      name: data.name,
+      token: 'test-token-123',
+      status: 'online',
+      createdAt: new Date().toISOString(),
+    };
+  }
 
-    return createResponse(await server.handle(endpoint, body), 200);
-  });
+  apiKey = '';
+
+  as(_token: string) {
+    return this.agentClient;
+  }
+}
+
+export function createMockRelayCastFactory(server: MockRelayServer): RelayCastFactory {
+  return vi.fn((options: { apiKey: string }) => {
+    const relay = new MockRelayCast(server);
+    relay.apiKey = options.apiKey;
+    return relay as unknown as ReturnType<RelayCastFactory>;
+  }) as unknown as RelayCastFactory;
 }
 
 export function createPluginContext() {
@@ -110,18 +313,18 @@ export function createPluginContext() {
   return { ctx, tools };
 }
 
-export function connectRelayState(state: RelayState): RelayState {
+/**
+ * Connect a RelayState directly against the mock SDK (skips the real connect
+ * handler) for tests that start from an already-connected state.
+ */
+export function connectRelayState(state: RelayState, server: MockRelayServer): RelayState {
+  const relay = new MockRelayCast(server);
+  relay.apiKey = 'rk_live_test_workspace';
   state.agentName = 'Lead';
   state.workspace = 'rk_live_test_workspace';
   state.token = 'test-token-123';
+  state.relay = relay as unknown as RelayState['relay'];
+  state.agent = relay.as('test-token-123') as unknown as RelayState['agent'];
   state.connected = true;
   return state;
-}
-
-function createResponse(body: unknown, status: number): Response {
-  const payload = typeof body === 'string' ? body : JSON.stringify(body);
-  return new Response(payload, {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
 }
