@@ -57,9 +57,11 @@ export class RelayState {
   spawned = new Map<string, SpawnedAgent>();
   /**
    * IDs of messages already surfaced to the agent. The engine `inbox()` is
-   * read-only, so we drain via `markRead` and also keep this local watermark as
-   * a backstop so the same message is never re-injected even if a read-receipt
-   * write lags or fails.
+   * read-only, so the durable drain happens on the delivery ledger
+   * (`ackDelivery`); this local watermark is the in-session backstop that keeps
+   * the same message from being re-injected even if a ledger ack lags or fails.
+   * Bounded via FIFO eviction (see `MAX_SEEN_MESSAGE_IDS` / `rememberSeen`) so
+   * it cannot grow unboundedly over a long session.
    */
   seenMessageIds = new Set<string>();
   connected = false;
@@ -95,7 +97,9 @@ export {
   createRelayTools,
   collectInboxMessages,
   inboxToMessages,
+  rememberSeen,
   registerTools,
+  MAX_SEEN_MESSAGE_IDS,
 } from './tools.js';
 export type {
   EmptyInput,

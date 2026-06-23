@@ -4,6 +4,7 @@ import {
   RelayCast,
   RelayError,
   type AgentClient,
+  type DeliveryItem,
   type DmMessage,
   type InboxResponse,
   type MessageWithMeta,
@@ -110,6 +111,79 @@ export function assertConnected(state: RelayState): asserts state is RelayState 
  * summary reports more than one unread item. Keeps a single idle poll bounded.
  */
 const MAX_UNREAD_FETCH = 50;
+
+/**
+ * Upper bound on how many delivery-ledger items we scan per drain when matching
+ * surfaced messages to their durable delivery rows. The engine returns the
+ * non-terminal queue (queued + delivered) which is naturally small, but cap it
+ * so a single poll never fans out unboundedly.
+ */
+const MAX_DELIVERY_SCAN = 200;
+
+/**
+ * Hard cap on {@link RelayState.seenMessageIds}. The watermark only needs to
+ * cover messages the engine might still re-surface; older ids are safe to evict
+ * because the delivery ledger has already acked them server-side. Keeping the
+ * most-recent N ids bounds memory over a long-lived session.
+ */
+export const MAX_SEEN_MESSAGE_IDS = 2_000;
+
+/**
+ * Record `id` as seen, bounding the set with FIFO eviction so it cannot grow
+ * unboundedly. `Set` preserves insertion order, so the first entries are the
+ * oldest; we evict from the front once over the cap.
+ */
+export function rememberSeen(seen: Set<string>, id: string, max = MAX_SEEN_MESSAGE_IDS): void {
+  if (seen.has(id)) {
+    return;
+  }
+  seen.add(id);
+  while (seen.size > max) {
+    const oldest = seen.values().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    seen.delete(oldest);
+  }
+}
+
+/**
+ * Drain surfaced messages from the durable delivery ledger so they stop being
+ * replayed across restarts. The engine models inbox delivery as a per-agent
+ * ledger keyed by `deliveryId`; each row carries the underlying `messageId`.
+ * We list the non-terminal queue, match it to the message ids we just surfaced,
+ * and `ackDelivery` each match (transitioning it to `acked` server-side).
+ *
+ * This is the real server-side drain (it survives restarts), unlike a read
+ * receipt which does not change delivery state. Best-effort: any failure leaves
+ * the local `seenMessageIds` watermark as the backstop against re-injection.
+ */
+async function ackSurfacedDeliveries(agent: AgentClient, messageIds: Set<string>): Promise<void> {
+  if (messageIds.size === 0) {
+    return;
+  }
+  let deliveries: DeliveryItem[];
+  try {
+    deliveries = await agent.deliveries({ limit: MAX_DELIVERY_SCAN });
+  } catch {
+    return;
+  }
+  if (!Array.isArray(deliveries)) {
+    return;
+  }
+  const toAck = deliveries.filter(
+    (delivery) => delivery?.id && delivery?.messageId && messageIds.has(delivery.messageId)
+  );
+  await Promise.all(
+    toAck.map(async (delivery) => {
+      try {
+        await agent.ackDelivery(delivery.id);
+      } catch {
+        // Best-effort: the local watermark already prevents re-injection.
+      }
+    })
+  );
+}
 
 /**
  * Flatten an engine inbox *summary* payload into the flat message list the
@@ -224,8 +298,9 @@ async function fetchUnreadChannelMessages(
  *    that did not mention us are hydrated from the DM / channel message APIs so
  *    earlier instructions and non-mention channel traffic are not dropped.
  *  - Every surfaced message is drained: recorded in `state.seenMessageIds`
- *    (so it is never re-injected) and `markRead`-acked on the engine
- *    (best-effort) so the summary stops reporting it as unread.
+ *    (so it is never re-injected within this session) and acked on the durable
+ *    delivery ledger (best-effort) so it stops being replayed server-side,
+ *    including across restarts.
  */
 export async function collectInboxMessages(
   agent: AgentClient,
@@ -286,20 +361,13 @@ export async function collectInboxMessages(
     }
   }
 
-  // Drain: drop anything already surfaced, then watermark + ack the rest.
+  // Drain: drop anything already surfaced, then watermark + ack the rest on the
+  // durable delivery ledger so it survives restarts.
   const fresh = collected.filter((message) => !seen.has(message.id));
   for (const message of fresh) {
-    seen.add(message.id);
+    rememberSeen(seen, message.id);
   }
-  await Promise.all(
-    fresh.map(async (message) => {
-      try {
-        await agent.markRead(message.id);
-      } catch {
-        // Best-effort: the local watermark already prevents re-injection.
-      }
-    })
-  );
+  await ackSurfacedDeliveries(agent, new Set(fresh.map((message) => message.id)));
 
   return fresh;
 }

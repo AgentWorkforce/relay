@@ -32,13 +32,14 @@ function emptyInbox(): InboxResponse {
 
 function createConnectedState(
   inbox: () => Promise<InboxResponse>,
-  overrides: Partial<Record<'markRead' | 'messages', ReturnType<typeof vi.fn>>> & {
+  overrides: Partial<Record<'deliveries' | 'ackDelivery' | 'messages', ReturnType<typeof vi.fn>>> & {
     dms?: { messages: ReturnType<typeof vi.fn> };
   } = {}
 ): {
   state: RelayState;
   inboxMock: ReturnType<typeof vi.fn>;
-  markReadMock: ReturnType<typeof vi.fn>;
+  deliveriesMock: ReturnType<typeof vi.fn>;
+  ackDeliveryMock: ReturnType<typeof vi.fn>;
 } {
   const state = new RelayState();
   state.connected = true;
@@ -46,14 +47,16 @@ function createConnectedState(
   state.workspace = 'rk_live_1234567890abcdef';
   state.token = 'tok_test';
   const inboxMock = vi.fn(inbox);
-  const markReadMock = overrides.markRead ?? vi.fn(async () => ({ messageId: 'x' }));
+  const deliveriesMock = overrides.deliveries ?? vi.fn(async () => []);
+  const ackDeliveryMock = overrides.ackDelivery ?? vi.fn(async () => ({ id: 'x', status: 'acked' }));
   state.agent = {
     inbox: inboxMock,
-    markRead: markReadMock,
+    deliveries: deliveriesMock,
+    ackDelivery: ackDeliveryMock,
     messages: overrides.messages ?? vi.fn(async () => []),
     dms: overrides.dms ?? { messages: vi.fn(async () => []) },
   } as unknown as RelayState['agent'];
-  return { state, inboxMock, markReadMock };
+  return { state, inboxMock, deliveriesMock, ackDeliveryMock };
 }
 
 describe('OpenCode relay hooks', () => {
@@ -124,8 +127,9 @@ describe('OpenCode relay hooks', () => {
   });
 
   it('idle-drains-and-does-not-reinject', async () => {
-    // The read-only engine inbox keeps reporting the same DM until acked, so the
-    // plugin must markRead + watermark to avoid re-injecting it every poll.
+    // The read-only engine inbox keeps reporting the same DM until its durable
+    // delivery is acked, so the plugin must ackDelivery + watermark to avoid
+    // re-injecting it every poll.
     const inbox: InboxResponse = {
       unreadChannels: [],
       mentions: [],
@@ -144,9 +148,15 @@ describe('OpenCode relay hooks', () => {
       recentReactions: [],
     } as unknown as InboxResponse;
 
-    const markReadMock = vi.fn(async () => ({ messageId: 'msg-1' }));
+    const deliveriesMock = vi.fn(async () => [
+      { id: 'dlv-1', messageId: 'msg-1', status: 'delivered' },
+    ]);
+    const ackDeliveryMock = vi.fn(async () => ({ id: 'dlv-1', status: 'acked' }));
     const { ctx, hooks } = createContext();
-    const { state } = createConnectedState(async () => inbox, { markRead: markReadMock });
+    const { state } = createConnectedState(async () => inbox, {
+      deliveries: deliveriesMock,
+      ackDelivery: ackDeliveryMock,
+    });
     registerHooks(ctx, state);
 
     const first = await hooks['session.idle']();
@@ -154,14 +164,15 @@ describe('OpenCode relay hooks', () => {
       inject: 'Relay message from alice: Please review auth middleware.',
       continue: true,
     });
-    expect(markReadMock).toHaveBeenCalledWith('msg-1');
+    // Drains the surfaced message on the durable delivery ledger (survives restarts).
+    expect(ackDeliveryMock).toHaveBeenCalledWith('dlv-1');
 
     // Next poll (past the throttle window) returns the same read-only inbox, but
     // the watermark suppresses re-injection.
     vi.advanceTimersByTime(3_000);
     const second = await hooks['session.idle']();
     expect(second).toBeUndefined();
-    expect(markReadMock).toHaveBeenCalledTimes(1);
+    expect(ackDeliveryMock).toHaveBeenCalledTimes(1);
   });
 
   it('idle-swallows-errors', async () => {

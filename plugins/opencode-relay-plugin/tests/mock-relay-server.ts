@@ -34,12 +34,22 @@ export class MockRelayServer {
 
   /**
    * Unread items the engine inbox reports. The engine inbox is *read-only*: it
-   * keeps reporting these until the agent acks each one via `markRead`. We model
-   * that here so tests exercise the plugin's drain (markRead + watermark) path.
+   * keeps reporting these until the agent drains each one on the durable
+   * delivery ledger via `ackDelivery`. We model that here so tests exercise the
+   * plugin's drain (delivery ack + watermark) path.
    */
   private inboxItems: QueuedDm[] = [];
-  /** Message IDs the agent has acked via markRead. */
+  /**
+   * Durable delivery ledger keyed by deliveryId. Each row points at the
+   * underlying messageId. An item is "unread" until its delivery is acked.
+   */
+  private deliveryRows: { deliveryId: string; messageId: string; acked: boolean }[] = [];
+  /** Message IDs whose durable delivery has been acked. */
   readMessageIds = new Set<string>();
+
+  private enqueueDelivery(messageId: string): void {
+    this.deliveryRows.push({ deliveryId: `dlv-${messageId}`, messageId, acked: false });
+  }
 
   injectMessage(from: string, text: string, extra: Partial<Message> = {}): void {
     const id = crypto.randomUUID();
@@ -47,6 +57,7 @@ export class MockRelayServer {
     this.messages.push({ id, from, text, ts, ...extra });
     // The engine inbox exposes DMs (and channel mentions); model these as DMs.
     this.inboxItems.push({ id, from, text, ts, conversationId: `conv-${from}` });
+    this.enqueueDelivery(id);
   }
 
   /** Inject a channel mention (surfaces under inbox `mentions`). */
@@ -54,6 +65,7 @@ export class MockRelayServer {
     const id = crypto.randomUUID();
     const ts = new Date().toISOString();
     this.inboxItems.push({ id, from, text, ts, channel });
+    this.enqueueDelivery(id);
     return id;
   }
 
@@ -62,6 +74,7 @@ export class MockRelayServer {
     const id = crypto.randomUUID();
     const ts = new Date().toISOString();
     this.inboxItems.push({ id, from, text, ts, conversationId });
+    this.enqueueDelivery(id);
     return id;
   }
 
@@ -73,6 +86,7 @@ export class MockRelayServer {
     this.inboxItems.push({ id, from, text, ts, channel, conversationId: undefined });
     // Tag as a non-mention channel post via a sentinel on the object.
     (this.inboxItems[this.inboxItems.length - 1] as QueuedDm & { channelPost?: boolean }).channelPost = true;
+    this.enqueueDelivery(id);
     return id;
   }
 
@@ -92,8 +106,20 @@ export class MockRelayServer {
     return this.inboxItems.filter((m) => m.channel === channel && !this.readMessageIds.has(m.id));
   }
 
-  markRead(messageId: string): void {
-    this.readMessageIds.add(messageId);
+  /** Non-terminal (unacked) delivery rows, each carrying its messageId. */
+  deliveries(): { deliveryId: string; messageId: string }[] {
+    return this.deliveryRows
+      .filter((row) => !row.acked)
+      .map((row) => ({ deliveryId: row.deliveryId, messageId: row.messageId }));
+  }
+
+  /** Ack a delivery by deliveryId; marks its message read so the inbox drains. */
+  ackDelivery(deliveryId: string): void {
+    const row = this.deliveryRows.find((r) => r.deliveryId === deliveryId);
+    if (row) {
+      row.acked = true;
+      this.readMessageIds.add(row.messageId);
+    }
   }
 
   /** Build the engine inbox *summary* from current unacked items (read-only). */
@@ -201,10 +227,19 @@ class MockAgentClient {
     return this.server.buildInbox();
   }
 
-  async markRead(messageId: string) {
-    this.server.record('message/read', { messageId });
-    this.server.markRead(messageId);
-    return { messageId, readAt: new Date().toISOString() };
+  async deliveries(opts?: { status?: string; limit?: number }) {
+    this.server.record('deliveries/list', { status: opts?.status ?? null, limit: opts?.limit ?? null });
+    return this.server.deliveries().map((row) => ({
+      id: row.deliveryId,
+      messageId: row.messageId,
+      status: 'delivered',
+    }));
+  }
+
+  async ackDelivery(deliveryId: string) {
+    this.server.record('deliveries/ack', { deliveryId });
+    this.server.ackDelivery(deliveryId);
+    return { id: deliveryId, status: 'acked' };
   }
 }
 

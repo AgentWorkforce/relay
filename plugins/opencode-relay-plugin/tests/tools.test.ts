@@ -8,6 +8,8 @@ import relayPlugin, {
   createRelayPostTool,
   createRelaySendTool,
   inboxToMessages,
+  rememberSeen,
+  MAX_SEEN_MESSAGE_IDS,
 } from '../src/index.js';
 import type { InboxResponse } from '@relaycast/sdk';
 import {
@@ -138,18 +140,21 @@ describe('OpenCode relay core tools', () => {
     expect(secondCheck).toEqual({ count: 0, messages: [] });
   });
 
-  it('drains surfaced inbox messages via markRead so the read-only inbox stops re-surfacing them', async () => {
+  it('drains surfaced inbox messages via the delivery ledger so the read-only inbox stops re-surfacing them', async () => {
     const state = connectRelayState(new RelayState(), server);
     server.injectMessage('Researcher', 'ACK: Looking into auth.');
 
     const firstCheck = await createRelayInboxTool(state).handler({});
     expect(firstCheck.count).toBe(1);
 
-    // The plugin must ack the surfaced message; the mock inbox is read-only and
-    // only stops reporting an item once it has been markRead'd.
-    const readReqs = server.requests.filter((r) => r.endpoint === 'message/read');
-    expect(readReqs).toHaveLength(1);
-    expect(readReqs[0].body.messageId).toBe(firstCheck.messages[0].id);
+    // The plugin must durably ack the surfaced message on the delivery ledger;
+    // the mock inbox is read-only and only stops reporting an item once its
+    // delivery is acked (which survives restarts, unlike a read receipt).
+    const ackReqs = server.requests.filter((r) => r.endpoint === 'deliveries/ack');
+    expect(ackReqs).toHaveLength(1);
+    expect(ackReqs[0].body.deliveryId).toBe(`dlv-${firstCheck.messages[0].id}`);
+    // No read-receipt drain is attempted (markRead is a no-op on delivery state).
+    expect(server.requests.some((r) => r.endpoint === 'message/read')).toBe(false);
 
     // A subsequent poll sees nothing new even though inbox() is read-only.
     const secondCheck = await createRelayInboxTool(state).handler({});
@@ -173,8 +178,8 @@ describe('OpenCode relay core tools', () => {
     ]);
     // Hydration goes through the DM messages API.
     expect(server.requests.some((r) => r.endpoint === 'dm/messages')).toBe(true);
-    // All three are drained.
-    expect(server.requests.filter((r) => r.endpoint === 'message/read')).toHaveLength(3);
+    // All three are drained on the delivery ledger.
+    expect(server.requests.filter((r) => r.endpoint === 'deliveries/ack')).toHaveLength(3);
   });
 
   it('surfaces unread channel posts that did not mention the reader', async () => {
@@ -223,6 +228,33 @@ describe('OpenCode relay core tools', () => {
         text: 'DONE: Phase 1 complete.',
       },
     });
+  });
+});
+
+describe('rememberSeen watermark bounding', () => {
+  it('is a no-op for an already-seen id', () => {
+    const seen = new Set<string>(['a']);
+    rememberSeen(seen, 'a', 5);
+    expect([...seen]).toEqual(['a']);
+  });
+
+  it('evicts the oldest ids via FIFO once over the cap', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 10; i++) {
+      rememberSeen(seen, `id-${i}`, 4);
+    }
+    // Only the last 4 ids survive; older ones are evicted oldest-first.
+    expect(seen.size).toBe(4);
+    expect([...seen]).toEqual(['id-6', 'id-7', 'id-8', 'id-9']);
+  });
+
+  it('exposes a sane default cap', () => {
+    expect(MAX_SEEN_MESSAGE_IDS).toBeGreaterThan(0);
+    const seen = new Set<string>();
+    for (let i = 0; i < MAX_SEEN_MESSAGE_IDS + 50; i++) {
+      rememberSeen(seen, `id-${i}`);
+    }
+    expect(seen.size).toBe(MAX_SEEN_MESSAGE_IDS);
   });
 });
 
