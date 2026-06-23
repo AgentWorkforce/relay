@@ -148,9 +148,7 @@ describe('OpenCode relay hooks', () => {
       recentReactions: [],
     } as unknown as InboxResponse;
 
-    const deliveriesMock = vi.fn(async () => [
-      { id: 'dlv-1', messageId: 'msg-1', status: 'delivered' },
-    ]);
+    const deliveriesMock = vi.fn(async () => [{ id: 'dlv-1', messageId: 'msg-1', status: 'delivered' }]);
     const ackDeliveryMock = vi.fn(async () => ({ id: 'dlv-1', status: 'acked' }));
     const { ctx, hooks } = createContext();
     const { state } = createConnectedState(async () => inbox, {
