@@ -7,16 +7,9 @@ import PackageDescription
 // relaycast's Swift SDK lives in a subdirectory of the relaycast monorepo
 // (`packages/sdk-swift`), so it cannot be consumed as a plain git-URL SwiftPM
 // dependency on its own (git dependencies require `Package.swift` at the
-// repository root). A root-level manifest that vends the `Relaycast` library is
-// added in the relaycast monorepo (see AgentWorkforce/relaycast#208); this
-// package depends on it via that repository's git URL.
-//
-// The dependency is pinned to a specific revision of the `swift-root-package`
-// branch until that PR is merged and the monorepo is re-tagged. Once a tag that
-// includes the root manifest is published, replace `revision:` with
-// `from: "x.y.z"`:
-//
-//     .package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "4.1.7")
+// repository root). A root-level manifest vending the `Relaycast` library was
+// added in the relaycast monorepo (AgentWorkforce/relaycast#208) and published
+// as v4.2.0; this package depends on it via that repository's git URL.
 //
 let package = Package(
     name: "AgentRelaySDK",
@@ -33,7 +26,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/AgentWorkforce/relaycast.git",
-            revision: "24c9140824518bf371a6c09f8be1f2a298efaf56"
+            from: "4.2.0"
         )
     ],
     targets: [

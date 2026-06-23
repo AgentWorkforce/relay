@@ -39,14 +39,11 @@ added to the relaycast monorepo (see
 and this package depends on it via that repository's git URL:
 
 ```swift
-.package(url: "https://github.com/AgentWorkforce/relaycast.git", revision: "<sha>")
+.package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "4.2.0")
 ```
 
-The dependency is pinned to a revision of the `swift-root-package` branch until
-that PR is merged and the relaycast monorepo is re-tagged. Once a tag that
-includes the root manifest is published, replace `revision:` with a version
-requirement, e.g.
-`.package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "4.1.7")`.
+The root manifest landed in relaycast#208 and was published as v4.2.0, so this
+package depends on it by version.
 
 ## Quick start
 
