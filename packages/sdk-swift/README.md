@@ -21,6 +21,36 @@ Add the package in Swift Package Manager:
 
 Then depend on either `AgentRelaySDK` or `AgentRelayBrokerSDK`.
 
+### `AgentRelaySDK` wraps the relaycast engine SDK
+
+`AgentRelaySDK`'s hosted transport is a thin facade over the published relaycast
+Swift engine SDK (product `Relaycast`, package `relaycast-swift`, which lives in
+the relaycast monorepo under `packages/sdk-swift`). All HTTP and realtime
+WebSocket work is delegated to relaycast; `AgentRelaySDK` keeps only the
+relay-specific glue (action-dispatch loop, `RelayChannelEvent` shape, and the
+`AsyncStream`-based public API).
+
+Because relaycast-swift is not at its repository root, SwiftPM cannot consume it
+by git URL directly, and its directory basename (`sdk-swift`) collides with this
+package's own identity. The dependency is therefore wired through a committed
+symlink (`packages/sdk-swift/.relaycast-swift`) that points at a sibling clone of
+the relaycast monorepo:
+
+```
+.relaycast-swift -> ../../../relaycast/packages/sdk-swift
+```
+
+To use a relaycast checkout in a different location, repoint that symlink:
+
+```sh
+ln -sfn /path/to/relaycast/packages/sdk-swift packages/sdk-swift/.relaycast-swift
+```
+
+Once a root-level mirror/tag of relaycast-swift is published, replace the path
+dependency in `Package.swift` with a git/registry reference, e.g.
+`.package(url: "https://github.com/AgentWorkforce/relaycast-swift.git", from: "4.1.6")`
+(matching a relaycast monorepo tag such as `v4.1.6`).
+
 ## Quick start
 
 ```swift
