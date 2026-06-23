@@ -69,21 +69,39 @@ public typealias AgentRelayClient = AgentRelay
 final class HostedWorkspaceCore: @unchecked Sendable {
     let workspaceKey: String
     let baseURL: URL
-    let relay: Relaycast.RelayCast
+    // `Relaycast.RelayCast(options:)` can throw (e.g. empty apiKey, invalid
+    // baseURL). The public `AgentRelay` initializers are non-throwing, so we
+    // capture the construction result eagerly and rethrow a translated
+    // `RelayError` on first use instead of force-unwrapping (which would crash
+    // the process on bad configuration).
+    private let relayResult: Result<Relaycast.RelayCast, Error>
 
     init(workspaceKey: String, baseURL: URL) {
         self.workspaceKey = workspaceKey
         self.baseURL = baseURL
         // PRESERVE the configured host: pass it explicitly into relaycast.
-        self.relay = (try? Relaycast.RelayCast(
-            options: Relaycast.RelayCastOptions(
-                apiKey: workspaceKey,
-                baseURL: baseURL.absoluteString
+        self.relayResult = Result {
+            try Relaycast.RelayCast(
+                options: Relaycast.RelayCastOptions(
+                    apiKey: workspaceKey,
+                    baseURL: baseURL.absoluteString
+                )
             )
-        ))!
+        }
+    }
+
+    /// Resolve the wrapped relaycast engine, surfacing configuration errors as
+    /// `RelayError` rather than crashing.
+    func relayCast() throws -> Relaycast.RelayCast {
+        do {
+            return try relayResult.get()
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     func register(name: String, type: RelayAgentType) async throws -> AgentRegistration {
+        let relay = try relayCast()
         do {
             let created = try await relay.agents.register(
                 Relaycast.CreateAgentRequest(name: name, type: type.relaycastType)
@@ -95,6 +113,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
     }
 
     func registerOrRotate(name: String, type: RelayAgentType) async throws -> AgentRegistration {
+        let relay = try relayCast()
         do {
             let created = try await relay.registerOrRotate(
                 Relaycast.RegisterAgentRequest(name: name, type: type.relaycastType)
@@ -106,10 +125,11 @@ final class HostedWorkspaceCore: @unchecked Sendable {
     }
 
     func reconnect(apiToken: String) async throws -> AgentClient {
+        let relay = try relayCast()
         do {
             let engine = try await relay.reconnect(Relaycast.AgentReconnectOptions(apiToken: apiToken))
             let me = try await engine.me()
-            let core = HostedParticipantCore(engine: engine, relay: relay, agentId: me.id, agentName: me.name, token: apiToken, baseURL: baseURL)
+            let core = HostedParticipantCore(engineSource: .ready(engine: engine, relay: relay), agentId: me.id, agentName: me.name, token: apiToken, baseURL: baseURL)
             return AgentClient(core: core, id: me.id, name: me.name, token: apiToken)
         } catch let error as Relaycast.RelayError {
             throw RelayError(error)
@@ -122,6 +142,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
     }
 
     func workspaceInfo() async throws -> JSONValue {
+        let relay = try relayCast()
         do {
             let workspace = try await relay.workspace.info()
             return Self.workspaceJSON(workspace)
@@ -131,21 +152,23 @@ final class HostedWorkspaceCore: @unchecked Sendable {
     }
 
     func makeParticipantCore(id: String, name: String, token: String) -> HostedParticipantCore {
-        Self.makeParticipantCore(relay: relay, baseURL: baseURL, id: id, name: name, token: token)
+        Self.makeParticipantCore(relayResult: relayResult, baseURL: baseURL, id: id, name: name, token: token)
     }
 
-    static func makeParticipantCore(relay: Relaycast.RelayCast, baseURL: URL, id: String, name: String, token: String) -> HostedParticipantCore {
-        let engine = (try? relay.asAgent(token))!
-        return HostedParticipantCore(engine: engine, relay: relay, agentId: id, agentName: name, token: token, baseURL: baseURL)
+    static func makeParticipantCore(relayResult: Result<Relaycast.RelayCast, Error>, baseURL: URL, id: String, name: String, token: String) -> HostedParticipantCore {
+        // Defer the per-agent engine build (`relay.asAgent`) into the actor so
+        // that configuration/handshake errors propagate through the first async
+        // call as `RelayError` instead of force-unwrapping and crashing.
+        return HostedParticipantCore(engineSource: .deferred(relayResult: relayResult, token: token), agentId: id, agentName: name, token: token, baseURL: baseURL)
     }
 
     func makeRegistration(_ response: Relaycast.CreateAgentResponse) -> AgentRegistration {
-        // Capture the transport state (`relay`, `baseURL`) strongly so a
+        // Capture the transport state (`relayResult`, `baseURL`) strongly so a
         // persisted `AgentRegistration` stays usable even if the owning
         // `AgentRelay`/`HostedWorkspaceCore` is released before `asClient()` is
         // called. `Relaycast.RelayCast` is the only shared, reusable state; the
         // per-agent engine is created lazily from it in the closure.
-        let relay = self.relay
+        let relayResult = self.relayResult
         let baseURL = self.baseURL
         return AgentRegistration(
             id: response.id,
@@ -155,7 +178,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
             createdAt: response.createdAt
         ) { id, agentName, token in
             let core = HostedWorkspaceCore.makeParticipantCore(
-                relay: relay,
+                relayResult: relayResult,
                 baseURL: baseURL,
                 id: id,
                 name: agentName,
@@ -293,12 +316,22 @@ private struct RegisteredAction: Sendable {
 /// HTTP calls are delegated to the wrapped `Relaycast.AgentClient` /
 /// `Relaycast.RelayCast`.
 actor HostedParticipantCore {
+    /// How the per-agent engine is obtained. `.ready` is used by `reconnect`,
+    /// which already has a live engine; `.deferred` builds the engine lazily via
+    /// `relay.asAgent(token)` on first connect so that `asAgent`/configuration
+    /// errors propagate as `RelayError` instead of crashing at construction.
+    enum EngineSource {
+        case ready(engine: Relaycast.AgentClient, relay: Relaycast.RelayCast)
+        case deferred(relayResult: Result<Relaycast.RelayCast, Error>, token: String)
+    }
+
     let agentId: String
     let agentName: String
     let token: String
     let baseURL: URL
-    private let engine: Relaycast.AgentClient
-    private let relay: Relaycast.RelayCast
+    private let engineSource: EngineSource
+    private var resolvedEngine: Relaycast.AgentClient?
+    private var resolvedRelay: Relaycast.RelayCast?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -312,31 +345,86 @@ actor HostedParticipantCore {
     private var actionHandlers: [String: RegisteredAction] = [:]
     private var unsubscribeHandlers: [() -> Void] = []
 
-    init(engine: Relaycast.AgentClient, relay: Relaycast.RelayCast, agentId: String, agentName: String, token: String, baseURL: URL) {
-        self.engine = engine
-        self.relay = relay
+    // Serialized inbound-event pipeline. The engine delivers events in order
+    // from a single receive loop; we yield them (synchronously, FIFO) into this
+    // stream and drain them through `routeEvent` on one consumer task so that
+    // ordering is preserved end-to-end. (Spawning an unstructured `Task` per
+    // event would let the scheduler reorder closely-spaced events.)
+    private var eventBuffer: AsyncStream<RelayEvent>.Continuation?
+    private var eventPump: Task<Void, Never>?
+
+    init(engineSource: EngineSource, agentId: String, agentName: String, token: String, baseURL: URL) {
+        self.engineSource = engineSource
         self.agentId = agentId
         self.agentName = agentName
         self.token = token
         self.baseURL = baseURL
     }
 
+    /// Resolve (and cache) the relaycast `RelayCast` engine wrapper. Surfaces
+    /// configuration errors as `RelayError`.
+    private func relayCast() throws -> Relaycast.RelayCast {
+        if let resolvedRelay { return resolvedRelay }
+        switch engineSource {
+        case .ready(_, let relay):
+            resolvedRelay = relay
+            return relay
+        case .deferred(let relayResult, _):
+            do {
+                let relay = try relayResult.get()
+                resolvedRelay = relay
+                return relay
+            } catch let error as Relaycast.RelayError {
+                throw RelayError(error)
+            }
+        }
+    }
+
+    /// Resolve (and cache) the per-agent engine, building it lazily for the
+    /// `.deferred` source. Surfaces `asAgent`/configuration errors as `RelayError`.
+    private func engine() throws -> Relaycast.AgentClient {
+        if let resolvedEngine { return resolvedEngine }
+        switch engineSource {
+        case .ready(let engine, _):
+            resolvedEngine = engine
+            return engine
+        case .deferred(_, let token):
+            let relay = try relayCast()
+            do {
+                let engine = try relay.asAgent(token)
+                resolvedEngine = engine
+                return engine
+            } catch let error as Relaycast.RelayError {
+                throw RelayError(error)
+            }
+        }
+    }
+
     func ensureConnected() async throws {
-        installListenersIfNeeded()
+        let engine = try engine()
+        installListenersIfNeeded(engine: engine)
         if !connected {
             engine.connect()
             connected = true
         }
         notifyConnectionState(.connected)
-        syncSubscriptions()
+        syncSubscriptions(engine: engine)
     }
 
     func disconnect() async {
-        await engine.disconnect()
+        // Only tear down an engine that was actually built/connected; building
+        // one here just to disconnect it would be pointless (and could throw).
+        if let resolvedEngine {
+            await resolvedEngine.disconnect()
+        }
         connected = false
         for unsubscribe in unsubscribeHandlers { unsubscribe() }
         unsubscribeHandlers.removeAll()
         listenersInstalled = false
+        eventBuffer?.finish()
+        eventBuffer = nil
+        eventPump?.cancel()
+        eventPump = nil
         notifyConnectionState(.disconnected)
         for continuations in channelContinuations.values {
             for continuation in continuations { continuation.finish() }
@@ -372,6 +460,7 @@ actor HostedParticipantCore {
     }
 
     func post(channel: String, text: String) async throws {
+        let engine = try engine()
         do {
             _ = try await engine.send(Self.normalizeChannel(channel), text: text, options: Relaycast.SendMessageOptions(mode: .wait))
         } catch let error as Relaycast.RelayError {
@@ -380,6 +469,7 @@ actor HostedParticipantCore {
     }
 
     func dm(to target: String, text: String) async throws {
+        let engine = try engine()
         do {
             _ = try await engine.dm(Self.stripSigil(target), text: text, options: Relaycast.DMOptions(mode: .wait))
         } catch let error as Relaycast.RelayError {
@@ -427,6 +517,7 @@ actor HostedParticipantCore {
     }
 
     private func registerActionDescriptor(name: String, description: String, inputSchema: [String: Relaycast.JSONValue]) async throws {
+        let relay = try relayCast()
         do {
             _ = try await relay.actions.register(
                 Relaycast.RegisterActionRequest(
@@ -442,6 +533,7 @@ actor HostedParticipantCore {
     }
 
     private func unregisterActionDescriptor(name: String) async throws {
+        let relay = try relayCast()
         do {
             try await relay.actions.delete(name)
         } catch let error as Relaycast.RelayError {
@@ -449,22 +541,40 @@ actor HostedParticipantCore {
         }
     }
 
-    private func syncSubscriptions() {
+    private func syncSubscriptions(engine: Relaycast.AgentClient) {
         guard !subscribedChannels.isEmpty else { return }
         engine.subscribe(Array(subscribedChannels).sorted())
     }
 
     // MARK: - Realtime listeners
 
-    private func installListenersIfNeeded() {
+    private func installListenersIfNeeded(engine: Relaycast.AgentClient) {
         guard !listenersInstalled else { return }
         listenersInstalled = true
 
-        unsubscribeHandlers.append(engine.on.messageCreated { [weak self] event in self?.ingest(event) })
-        unsubscribeHandlers.append(engine.on.threadReply { [weak self] event in self?.ingest(event) })
-        unsubscribeHandlers.append(engine.on.dmReceived { [weak self] event in self?.ingest(event) })
-        unsubscribeHandlers.append(engine.on.groupDMReceived { [weak self] event in self?.ingest(event) })
-        unsubscribeHandlers.append(engine.on.actionInvoked { [weak self] event in self?.ingest(event) })
+        // Build the serialized event pipeline before wiring engine callbacks so
+        // the first delivered event already has a place to queue.
+        var continuation: AsyncStream<RelayEvent>.Continuation!
+        let stream = AsyncStream<RelayEvent> { continuation = $0 }
+        eventBuffer = continuation
+        eventPump = Task { [weak self] in
+            for await event in stream {
+                await self?.routeEvent(event)
+            }
+        }
+
+        // `engine.on.*` fire in order from the engine's single receive loop;
+        // yielding into `buffer` (synchronously) preserves that order, and the
+        // single `eventPump` consumer drains them sequentially.
+        let buffer = continuation!
+        let ingest: @Sendable (Relaycast.WsEvent) -> Void = { event in
+            buffer.yield(RelayEvent(event))
+        }
+        unsubscribeHandlers.append(engine.on.messageCreated(ingest))
+        unsubscribeHandlers.append(engine.on.threadReply(ingest))
+        unsubscribeHandlers.append(engine.on.dmReceived(ingest))
+        unsubscribeHandlers.append(engine.on.groupDMReceived(ingest))
+        unsubscribeHandlers.append(engine.on.actionInvoked(ingest))
 
         unsubscribeHandlers.append(engine.on.connected { [weak self] in
             guard let self else { return }
@@ -472,7 +582,7 @@ actor HostedParticipantCore {
         })
         unsubscribeHandlers.append(engine.on.disconnected { [weak self] in
             guard let self else { return }
-            Task { await self.notifyConnectionStateAsync(.disconnected) }
+            Task { await self.handleEngineDisconnect() }
         })
         unsubscribeHandlers.append(engine.on.reconnecting { [weak self] attempt in
             guard let self else { return }
@@ -480,17 +590,26 @@ actor HostedParticipantCore {
         })
     }
 
-    private nonisolated func ingest(_ event: Relaycast.WsEvent) {
-        Task { await self.routeEvent(RelayEvent(event)) }
-    }
-
     private func transportDidConnect() async {
         notifyConnectionState(.connected)
-        syncSubscriptions()
+        // The engine is necessarily resolved here: this fires from the engine's
+        // own `connected` callback, which is only installed after `engine()` ran.
+        if let resolvedEngine {
+            syncSubscriptions(engine: resolvedEngine)
+        }
     }
 
     private func notifyConnectionStateAsync(_ state: ConnectionStateChange) async {
         notifyConnectionState(state)
+    }
+
+    /// Handle an engine-initiated disconnect. Reset `connected` so that a later
+    /// `ensureConnected()` will actually re-issue `engine.connect()`, matching
+    /// the manual `disconnect()` path (which also clears the flag). Without this
+    /// the flag stays `true` after an engine drop and reconnection is skipped.
+    private func handleEngineDisconnect() async {
+        connected = false
+        notifyConnectionState(.disconnected)
     }
 
     // MARK: - Event routing (glue kept on top of the engine)
@@ -572,6 +691,7 @@ actor HostedParticipantCore {
     }
 
     private func loadInvocation(actionName: String, invocationId: String) async throws -> Relaycast.ActionInvocation {
+        let engine = try engine()
         do {
             return try await engine.actions.getInvocation(name: actionName, invocationID: invocationId)
         } catch let error as Relaycast.RelayError {
@@ -580,6 +700,7 @@ actor HostedParticipantCore {
     }
 
     private func completeInvocation(actionName: String, invocationId: String, output: [String: Relaycast.JSONValue]) async throws {
+        let engine = try engine()
         do {
             _ = try await engine.actions.completeInvocation(
                 name: actionName,
@@ -592,6 +713,7 @@ actor HostedParticipantCore {
     }
 
     private func completeInvocation(actionName: String, invocationId: String, error: String) async throws {
+        let engine = try engine()
         do {
             _ = try await engine.actions.completeInvocation(
                 name: actionName,
