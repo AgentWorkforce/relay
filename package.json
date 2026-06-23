@@ -5,8 +5,7 @@
   "description": "Agent Relay monorepo",
   "type": "module",
   "workspaces": [
-    "packages/*",
-    "web"
+    "packages/*"
   ],
   "scripts": {
     "typecheck": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:fleet && cd packages/cli && npx tsc --noEmit",
@@ -97,8 +96,6 @@
     "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
     "codegen:models:ts": "node packages/utils/codegen-ts.mjs",
     "codegen:models:py": "node packages/utils/codegen-py.mjs",
-    "dev:web": "cd web && ../node_modules/.bin/sst dev",
-    "web": "cd web && npm run dev",
     "evals:compile": "node scripts/evals/compile-cases.mjs",
     "evals": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs",
     "evals:list": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --list",
@@ -130,7 +127,6 @@
     "jsdom": "^25.0.1",
     "knip": "^5.84.1",
     "prettier": "^3.6.2",
-    "sst": "^4.5.1",
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "5.9.3",
