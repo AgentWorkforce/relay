@@ -19,6 +19,7 @@ import asyncio
 from contextlib import suppress
 from inspect import isawaitable
 from typing import Any
+from urllib.parse import quote
 
 try:
     from relay_sdk import AsyncRelay, RelayError, WsClient
@@ -100,6 +101,12 @@ class RelayTransport:
             with suppress(asyncio.CancelledError):
                 await ws_task
 
+        # Close the agent's HTTP client before unregister_agent() clears the
+        # reference, otherwise the underlying httpx.AsyncClient is leaked. The
+        # workspace relay client is kept alive because unregister_agent() still
+        # needs it to issue the cleanup DELETE.
+        await self._close_agent_client()
+
         with suppress(Exception):
             await self.unregister_agent()
 
@@ -134,8 +141,11 @@ class RelayTransport:
         # hatch to issue DELETE /v1/agents/{name}. This is a best-effort cleanup
         # path, so swallow any error (including the empty-body decode error
         # relay_sdk raises when the server replies 204 No Content).
+        # Percent-encode the name so reserved characters (e.g. '/', '?', '#')
+        # don't alter the route and silently leave the agent registered.
+        encoded_name = quote(self.agent_name, safe="")
         with suppress(Exception):
-            await relay._client.delete(f"/v1/agents/{self.agent_name}")
+            await relay._client.delete(f"/v1/agents/{encoded_name}")
 
         self.agent_id = None
         self.token = None
@@ -295,10 +305,53 @@ class RelayTransport:
 
         # WsClient.connect() blocks for the socket's lifetime, so we run it in
         # the background. Wait for the first "open" so callers (and tests) can
-        # rely on the socket being live once connect() returns. A failure to
-        # open is non-fatal here: core falls back to HTTP polling.
-        with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(self._ws_open.wait(), timeout=5)
+        # rely on the socket being live once connect() returns.
+        #
+        # Crucially we must distinguish "opened then later closed" from "never
+        # opened": if the socket never opens (endpoint blocked/unavailable, or
+        # connect() errors out before emitting "open"), connect() must NOT
+        # report a connected state. We tear the socket down and raise so the
+        # caller (Relay._ensure_connected) falls back to HTTP polling — the
+        # exact no-WebSocket environment the fallback exists for. Once "open"
+        # has fired, a subsequent close is normal lifecycle and handled by
+        # WsClient's own reconnect logic, so we treat connect() as successful.
+        open_wait = asyncio.ensure_future(self._ws_open.wait())
+        ws_task = self._ws_task
+        done, _pending = await asyncio.wait(
+            {open_wait, ws_task},
+            timeout=5,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if not self._ws_open.is_set():
+            # Either the wait timed out or _ws_run() finished before the socket
+            # ever opened. Cancel our wait helper, tear the socket down, and
+            # signal failure so the caller can fall back to polling.
+            open_wait.cancel()
+            with suppress(asyncio.CancelledError):
+                await open_wait
+            await self._teardown_failed_websocket()
+            raise RelayConnectionError(0, "WebSocket failed to open")
+
+        if open_wait not in done:
+            open_wait.cancel()
+            with suppress(asyncio.CancelledError):
+                await open_wait
+
+    async def _teardown_failed_websocket(self) -> None:
+        ws = self._ws
+        self._ws = None
+        if ws is not None:
+            with suppress(Exception):
+                ws.disconnect()
+
+        ws_task = self._ws_task
+        self._ws_task = None
+        if ws_task is not None and not ws_task.done():
+            ws_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await ws_task
+        self._ws_open = None
 
     async def _ws_run(self) -> None:
         ws = self._ws
@@ -400,12 +453,15 @@ class RelayTransport:
             self._agent = self._ensure_relay().as_agent(self.token)
         return self._agent
 
-    async def _close_clients(self) -> None:
+    async def _close_agent_client(self) -> None:
         agent = self._agent
         self._agent = None
         if agent is not None:
             with suppress(Exception):
                 await agent.client.close()
+
+    async def _close_clients(self) -> None:
+        await self._close_agent_client()
 
         relay = self._relay
         self._relay = None

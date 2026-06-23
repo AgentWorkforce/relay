@@ -43,6 +43,9 @@ class MockRelayServer:
         self.extra_agents: set[str] = set()
         self.received_ws_messages: list[dict[str, Any]] = []
         self.ws_connection_counts: dict[str, int] = defaultdict(int)
+        # When True, the WS endpoint refuses the upgrade so the socket never
+        # opens — simulating an environment where WebSockets are blocked.
+        self.reject_websocket = False
 
         self._active_websockets: dict[str, web.WebSocketResponse] = {}
         self._queued_errors: dict[str, deque[tuple[int, dict[str, Any]]]] = defaultdict(deque)
@@ -419,6 +422,9 @@ class MockRelayServer:
         return web.json_response({"ok": True, "data": agents})
 
     async def _handle_ws(self, request: web.Request) -> web.StreamResponse:
+        if self.reject_websocket:
+            raise web.HTTPServiceUnavailable(text="WebSocket disabled")
+
         token = request.query.get("token")
         agent_id = next(
             (
@@ -462,6 +468,9 @@ class MockRelayServer:
                 "headers": dict(request.headers),
                 "json": payload,
                 "path": request.path,
+                # raw_path preserves percent-encoding from the wire, unlike the
+                # decoded `path`, so tests can assert on what was actually sent.
+                "raw_path": request.raw_path,
             }
         )
 

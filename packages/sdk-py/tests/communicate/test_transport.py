@@ -249,6 +249,51 @@ async def test_transport_reconnects_after_websocket_disconnect(relay_server):
 
 
 @pytest.mark.asyncio
+async def test_connect_raises_when_websocket_never_opens(relay_server):
+    # When the WS endpoint is blocked but HTTP registration succeeds, connect()
+    # must NOT report a connected state — it should signal failure so the caller
+    # falls back to HTTP polling. (Registration stays in place for polling.)
+    RelayTransport = _transport_class()
+    relay_server.reject_websocket = True
+
+    transport = RelayTransport("TransportTester", relay_server.make_config())
+
+    with pytest.raises(RelayConnectionError):
+        await transport.connect()
+
+    # Agent is still registered (so polling can deliver messages) and no socket
+    # is left dangling.
+    assert transport.agent_id is not None
+    assert transport._ws is None
+    assert transport._ws_task is None
+    assert not relay_server.websocket_connected(transport.agent_id)
+
+    await transport.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unregister_agent_percent_encodes_name(relay_server):
+    # Names containing route-reserved characters must be percent-encoded in the
+    # cleanup DELETE so they hit the intended route and are actually removed.
+    RelayTransport = _transport_class()
+    name = "team/agent?x#y"
+    transport = RelayTransport(name, relay_server.make_config())
+
+    await transport.register_agent()
+    agent_id = transport.agent_id
+    assert agent_id in relay_server.registered_agents
+
+    await transport.unregister_agent()
+
+    assert relay_server.request_count("unregister_agent") == 1
+    # The server matched and removed the agent, proving the route was correct.
+    assert agent_id not in relay_server.registered_agents
+    # The raw reserved characters were percent-encoded on the wire.
+    raw_path = relay_server.requests["unregister_agent"][-1]["raw_path"]
+    assert "team%2Fagent%3Fx%23y" in raw_path
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("workspace", "api_key", "missing_name"),
     [
