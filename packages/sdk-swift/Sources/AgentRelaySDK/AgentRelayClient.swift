@@ -58,7 +58,7 @@ public final class AgentRelay: @unchecked Sendable {
         if let baseURL {
             return baseURL
         }
-        return URL(string: "https://gateway.relaycast.dev")!
+        return URL(string: "https://cast.agentrelay.com")!
     }
 }
 

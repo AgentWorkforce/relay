@@ -15,7 +15,7 @@ final class HostedParticipantSDKTests: XCTestCase {
     func testClientInitDefaultsToHostedGateway() {
         let client = AgentRelayClient(apiKey: "rk_test_key")
         XCTAssertEqual(client.workspaceKey, "rk_test_key")
-        XCTAssertEqual(client.baseURL.absoluteString, "https://gateway.relaycast.dev")
+        XCTAssertEqual(client.baseURL.absoluteString, "https://cast.agentrelay.com")
     }
 
     func testClientHonoursExplicitBaseURL() {
