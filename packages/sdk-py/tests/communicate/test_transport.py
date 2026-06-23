@@ -439,20 +439,16 @@ async def test_async_callback_task_is_retained_until_complete(relay_server):
 
 
 @pytest.mark.asyncio
-async def test_pong_task_is_retained_via_track(relay_server):
-    # _on_ws_ping schedules ws._send_json({"type": "pong"}) through _track so
-    # the pong isn't dropped by GC before it's sent. Verify a "ping" event
-    # produces a retained task that delivers a pong to the server.
+async def test_server_ping_is_answered_with_pong_by_sdk(relay_server):
+    # relay_sdk's WsClient auto-replies pong to a server {"type": "ping"} frame
+    # (0.2.0+), so the wrapper no longer needs a manual ping handler. Verify a
+    # server ping reaches the socket and is answered with a pong end-to-end.
     RelayTransport = _transport_class()
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
 
     try:
-        transport._on_ws_ping({"type": "ping"})
-        # The scheduled send was retained as a task.
-        assert len(transport._pending_tasks) >= 1
-        # And it actually completes (and is discarded) and reaches the server.
-        await _wait_for(lambda: len(transport._pending_tasks) == 0)
+        await relay_server.push_ws_ping(transport.agent_id)
         await _wait_for(
             lambda: any(
                 msg.get("type") == "pong" for msg in relay_server.received_ws_messages

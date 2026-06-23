@@ -155,6 +155,13 @@ class MockRelayServer:
         await ws.send_json(payload)
         return payload
 
+    async def push_ws_ping(self, agent_id: str) -> None:
+        """Send a server keepalive {"type": "ping"} frame to the agent's socket."""
+        ws = self._active_websockets.get(agent_id)
+        if ws is None or ws.closed:
+            raise AssertionError(f"No active websocket for agent {agent_id!r}")
+        await ws.send_json({"type": "ping"})
+
     async def close_ws(self, agent_id: str) -> None:
         ws = self._active_websockets.get(agent_id)
         if ws is not None and not ws.closed:

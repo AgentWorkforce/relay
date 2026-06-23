@@ -20,7 +20,6 @@ import logging
 from contextlib import suppress
 from inspect import isawaitable
 from typing import Any
-from urllib.parse import quote
 
 try:
     from relay_sdk import AsyncRelay, RelayError, WsClient
@@ -78,9 +77,10 @@ class RelayTransport:
         self._message_callback: MessageCallback | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closing = False
-        # Strong references to fire-and-forget tasks (pong replies, async
-        # message callbacks). asyncio only weakly references tasks, so without
-        # this they could be garbage-collected before they run.
+        # Strong references to fire-and-forget tasks (async message callbacks).
+        # asyncio only weakly references tasks, so without this they could be
+        # garbage-collected before they run, intermittently dropping delivered
+        # messages.
         self._pending_tasks: set[asyncio.Task[Any]] = set()
 
     def _track(self, coro: Any) -> asyncio.Task[Any]:
@@ -151,15 +151,12 @@ class RelayTransport:
             return
 
         relay = self._ensure_relay()
-        # relay_sdk's agents namespace has no delete(); use the client escape
-        # hatch to issue DELETE /v1/agents/{name}. This is a best-effort cleanup
-        # path, so swallow any error (including the empty-body decode error
-        # relay_sdk raises when the server replies 204 No Content).
-        # Percent-encode the name so reserved characters (e.g. '/', '?', '#')
-        # don't alter the route and silently leave the agent registered.
-        encoded_name = quote(self.agent_name, safe="")
+        # relay_sdk's agents namespace owns DELETE /v1/agents/{name} as of
+        # 0.2.0 (it percent-encodes the name internally so reserved characters
+        # like '/', '?', '#' can't alter the route). This is a best-effort
+        # cleanup path, so swallow any error and continue.
         try:
-            await relay._client.delete(f"/v1/agents/{encoded_name}")
+            await relay.agents.delete(self.agent_name)
         except Exception as exc:  # noqa: BLE001 - best-effort cleanup
             # Log so a genuine server-side failure (e.g. the agent was not
             # actually removed) is visible, then continue: this is best-effort.
@@ -309,9 +306,8 @@ class RelayTransport:
         # The hosted mock and some deployments emit a flat {"type":"message"}
         # frame; handle it too.
         ws.on("message", self._on_ws_event)
-        # relay_sdk's WsClient has no built-in pong-on-server-ping; keep a
-        # minimal workaround so server keepalive pings are answered.
-        ws.on("ping", self._on_ws_ping)
+        # relay_sdk's WsClient auto-replies pong to server keepalive pings as of
+        # 0.2.0, so no manual ping handler is needed here.
 
         loop = asyncio.get_running_loop()
         self._ws_open = asyncio.Event()
@@ -386,16 +382,6 @@ class RelayTransport:
         event = self._ws_open
         if event is not None:
             event.set()
-
-    def _on_ws_ping(self, _payload: dict[str, Any]) -> None:
-        ws = self._ws
-        if ws is None:
-            return
-        # _send_json is the only send primitive WsClient exposes; schedule a
-        # pong on the running loop. Retain a strong reference via _track so the
-        # task isn't garbage-collected before it sends.
-        with suppress(Exception):
-            self._track(ws._send_json({"type": "pong"}))
 
     def _on_ws_event(self, payload: dict[str, Any]) -> None:
         message = self._message_from_event(payload)
