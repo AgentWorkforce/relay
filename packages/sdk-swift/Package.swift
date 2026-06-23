@@ -1,35 +1,23 @@
 // swift-tools-version: 5.9
 import PackageDescription
-import Foundation
 
 // The hosted-participant transport (`AgentRelaySDK`) is a thin facade over the
-// published relaycast Swift engine SDK (product `Relaycast`, package
-// `relaycast-swift`).
+// relaycast Swift engine SDK (product `Relaycast`).
 //
-// relaycast-swift lives in a subdirectory of the relaycast monorepo
-// (`packages/sdk-swift`), so SwiftPM cannot consume it directly via a git URL
-// (git dependencies require `Package.swift` at the repository root). Until a
-// root-level mirror/tag is published, this package references relaycast-swift by
-// a local checkout. To build against a published version instead, replace the
-// `.package(...)` entry below with a git/registry reference whose root is the
-// relaycast Swift package, e.g.:
+// relaycast's Swift SDK lives in a subdirectory of the relaycast monorepo
+// (`packages/sdk-swift`), so it cannot be consumed as a plain git-URL SwiftPM
+// dependency on its own (git dependencies require `Package.swift` at the
+// repository root). A root-level manifest that vends the `Relaycast` library is
+// added in the relaycast monorepo (see AgentWorkforce/relaycast#208); this
+// package depends on it via that repository's git URL.
 //
-//     .package(url: "https://github.com/AgentWorkforce/relaycast-swift.git", from: "4.1.6")
+// The dependency is pinned to a specific revision of the `swift-root-package`
+// branch until that PR is merged and the monorepo is re-tagged. Once a tag that
+// includes the root manifest is published, replace `revision:` with
+// `from: "x.y.z"`:
 //
-// (matching one of the relaycast monorepo tags, e.g. v4.1.6).
+//     .package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "4.1.7")
 //
-// Local-checkout details:
-//   * The relaycast Swift package directory is named `sdk-swift` — the same
-//     basename as THIS package. SwiftPM derives a path dependency's identity
-//     from that basename, so referencing it directly collides with this
-//     package's own identity. To avoid the collision we depend on the relaycast
-//     package through the uniquely named symlink committed alongside this
-//     manifest: `.relaycast-swift`. It points (relative) at a sibling clone of
-//     the relaycast monorepo:
-//         .relaycast-swift -> ../../../relaycast/packages/sdk-swift
-//   * To point at a checkout in a different location, repoint that symlink, e.g.
-//         ln -sfn /path/to/relaycast/packages/sdk-swift \
-//             packages/sdk-swift/.relaycast-swift
 let package = Package(
     name: "AgentRelaySDK",
     platforms: [
@@ -43,13 +31,16 @@ let package = Package(
         .library(name: "AgentRelayBrokerSDK", targets: ["AgentRelayBrokerSDK"])
     ],
     dependencies: [
-        .package(name: "relaycast-swift", path: ".relaycast-swift")
+        .package(
+            url: "https://github.com/AgentWorkforce/relaycast.git",
+            revision: "24c9140824518bf371a6c09f8be1f2a298efaf56"
+        )
     ],
     targets: [
         .target(
             name: "AgentRelaySDK",
             dependencies: [
-                .product(name: "Relaycast", package: "relaycast-swift")
+                .product(name: "Relaycast", package: "relaycast")
             ],
             path: "Sources/AgentRelaySDK"
         ),

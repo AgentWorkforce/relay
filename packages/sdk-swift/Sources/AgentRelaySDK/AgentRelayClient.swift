@@ -131,22 +131,36 @@ final class HostedWorkspaceCore: @unchecked Sendable {
     }
 
     func makeParticipantCore(id: String, name: String, token: String) -> HostedParticipantCore {
+        Self.makeParticipantCore(relay: relay, baseURL: baseURL, id: id, name: name, token: token)
+    }
+
+    static func makeParticipantCore(relay: Relaycast.RelayCast, baseURL: URL, id: String, name: String, token: String) -> HostedParticipantCore {
         let engine = (try? relay.asAgent(token))!
         return HostedParticipantCore(engine: engine, relay: relay, agentId: id, agentName: name, token: token, baseURL: baseURL)
     }
 
-    private func makeRegistration(_ response: Relaycast.CreateAgentResponse) -> AgentRegistration {
-        AgentRegistration(
+    func makeRegistration(_ response: Relaycast.CreateAgentResponse) -> AgentRegistration {
+        // Capture the transport state (`relay`, `baseURL`) strongly so a
+        // persisted `AgentRegistration` stays usable even if the owning
+        // `AgentRelay`/`HostedWorkspaceCore` is released before `asClient()` is
+        // called. `Relaycast.RelayCast` is the only shared, reusable state; the
+        // per-agent engine is created lazily from it in the closure.
+        let relay = self.relay
+        let baseURL = self.baseURL
+        return AgentRegistration(
             id: response.id,
             name: response.name,
             token: response.token,
             status: RelayAgentStatus(response.status),
             createdAt: response.createdAt
-        ) { [weak self] id, agentName, token in
-            guard let self else {
-                fatalError("HostedWorkspaceCore deallocated before AgentRegistration.asClient()")
-            }
-            let core = self.makeParticipantCore(id: id, name: agentName, token: token)
+        ) { id, agentName, token in
+            let core = HostedWorkspaceCore.makeParticipantCore(
+                relay: relay,
+                baseURL: baseURL,
+                id: id,
+                name: agentName,
+                token: token
+            )
             return AgentClient(core: core, id: id, name: agentName, token: token)
         }
     }

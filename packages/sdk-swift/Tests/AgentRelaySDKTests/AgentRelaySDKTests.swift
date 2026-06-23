@@ -132,6 +132,37 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertNil(event.message)
     }
 
+    // MARK: - Registration lifecycle
+
+    /// A persisted `AgentRegistration` must stay usable even if the owning
+    /// `AgentRelay`/`HostedWorkspaceCore` is released before `asClient()` is
+    /// called. The factory captures the relay/baseURL transport state strongly,
+    /// so this must not trap.
+    func testRegistrationAsClientSurvivesCoreRelease() throws {
+        let response = try makeCreateAgentResponse(id: "agent_1", name: "swift-agent", token: "rk_token")
+
+        var core: HostedWorkspaceCore? = HostedWorkspaceCore(
+            workspaceKey: "rk_test_key",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!
+        )
+        let registration = core!.makeRegistration(response)
+
+        // Drop the owning core before using the persisted registration.
+        core = nil
+
+        let client = registration.asClient()
+        XCTAssertEqual(client.id, "agent_1")
+        XCTAssertEqual(client.name, "swift-agent")
+        XCTAssertEqual(client.token, "rk_token")
+    }
+
+    private func makeCreateAgentResponse(id: String, name: String, token: String) throws -> Relaycast.CreateAgentResponse {
+        let json = """
+        {"id":"\(id)","name":"\(name)","token":"\(token)","status":"online","createdAt":"2026-06-20T00:00:00Z"}
+        """
+        return try JSONDecoder().decode(Relaycast.CreateAgentResponse.self, from: Data(json.utf8))
+    }
+
     // MARK: - Action handle lifecycle
 
     func testActionHandleExposesName() async {

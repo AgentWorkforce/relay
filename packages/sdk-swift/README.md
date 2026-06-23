@@ -30,26 +30,23 @@ WebSocket work is delegated to relaycast; `AgentRelaySDK` keeps only the
 relay-specific glue (action-dispatch loop, `RelayChannelEvent` shape, and the
 `AsyncStream`-based public API).
 
-Because relaycast-swift is not at its repository root, SwiftPM cannot consume it
-by git URL directly, and its directory basename (`sdk-swift`) collides with this
-package's own identity. The dependency is therefore wired through a committed
-symlink (`packages/sdk-swift/.relaycast-swift`) that points at a sibling clone of
-the relaycast monorepo:
+relaycast's Swift SDK lives in a subdirectory of the relaycast monorepo
+(`packages/sdk-swift`), so it cannot be consumed as a plain git-URL SwiftPM
+dependency on its own (git dependencies require `Package.swift` at the
+repository root). A root-level manifest that vends the `Relaycast` library is
+added to the relaycast monorepo (see
+[AgentWorkforce/relaycast#208](https://github.com/AgentWorkforce/relaycast/pull/208)),
+and this package depends on it via that repository's git URL:
 
-```
-.relaycast-swift -> ../../../relaycast/packages/sdk-swift
-```
-
-To use a relaycast checkout in a different location, repoint that symlink:
-
-```sh
-ln -sfn /path/to/relaycast/packages/sdk-swift packages/sdk-swift/.relaycast-swift
+```swift
+.package(url: "https://github.com/AgentWorkforce/relaycast.git", revision: "<sha>")
 ```
 
-Once a root-level mirror/tag of relaycast-swift is published, replace the path
-dependency in `Package.swift` with a git/registry reference, e.g.
-`.package(url: "https://github.com/AgentWorkforce/relaycast-swift.git", from: "4.1.6")`
-(matching a relaycast monorepo tag such as `v4.1.6`).
+The dependency is pinned to a revision of the `swift-root-package` branch until
+that PR is merged and the relaycast monorepo is re-tagged. Once a tag that
+includes the root manifest is published, replace `revision:` with a version
+requirement, e.g.
+`.package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "4.1.7")`.
 
 ## Quick start
 
