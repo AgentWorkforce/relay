@@ -175,7 +175,10 @@ function formatCommand(binaryPath: string, args: string[]): string {
 
 export function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
-    if (child.exitCode !== null) {
+    // A process that already exited via signal has exitCode === null but
+    // signalCode !== null; check both so we don't wait the full timeout and
+    // then issue a redundant SIGKILL.
+    if (child.exitCode !== null || child.signalCode !== null) {
       resolve();
       return;
     }
