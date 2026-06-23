@@ -2040,7 +2040,8 @@ mod tests {
             args.contains(&"mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
         );
         assert!(args.contains(
-            &"mcp_servers.agent-relay.env.RELAY_BASE_URL=\"https://cast.agentrelay.com\"".to_string()
+            &"mcp_servers.agent-relay.env.RELAY_BASE_URL=\"https://cast.agentrelay.com\""
+                .to_string()
         ));
         assert!(args
             .contains(&"mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string()));
