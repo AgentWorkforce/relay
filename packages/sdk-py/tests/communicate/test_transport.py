@@ -397,3 +397,66 @@ async def test_send_dm_raises_after_exhausting_server_error_retries(relay_server
 
     assert exc_info.value.status_code == 503
     assert relay_server.request_count("send_dm") == 4
+
+
+@pytest.mark.asyncio
+async def test_async_callback_task_is_retained_until_complete(relay_server):
+    # An async message callback returns a coroutine that _on_ws_event schedules
+    # via _track. The task must be held in _pending_tasks (asyncio only keeps a
+    # weak reference) so it can't be GC'd before it runs, and must be discarded
+    # once it finishes.
+    RelayTransport = _transport_class()
+    transport = RelayTransport("TransportTester", relay_server.make_config())
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def on_message(_message: Message) -> None:
+        started.set()
+        await release.wait()
+
+    transport.on_ws_message(on_message)
+    await transport.connect()
+
+    try:
+        await relay_server.push_ws_message(
+            transport.agent_id,
+            sender="Review-Core",
+            text="hold me",
+            channel="core-py",
+            message_id="message-ws-retained",
+        )
+        # While the callback is suspended, its task is retained.
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert len(transport._pending_tasks) == 1
+
+        # Let it finish; the done-callback must drop it from the set.
+        release.set()
+        await _wait_for(lambda: len(transport._pending_tasks) == 0)
+    finally:
+        release.set()
+        await transport.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_pong_task_is_retained_via_track(relay_server):
+    # _on_ws_ping schedules ws._send_json({"type": "pong"}) through _track so
+    # the pong isn't dropped by GC before it's sent. Verify a "ping" event
+    # produces a retained task that delivers a pong to the server.
+    RelayTransport = _transport_class()
+    transport = RelayTransport("TransportTester", relay_server.make_config())
+    await transport.connect()
+
+    try:
+        transport._on_ws_ping({"type": "ping"})
+        # The scheduled send was retained as a task.
+        assert len(transport._pending_tasks) >= 1
+        # And it actually completes (and is discarded) and reaches the server.
+        await _wait_for(lambda: len(transport._pending_tasks) == 0)
+        await _wait_for(
+            lambda: any(
+                msg.get("type") == "pong" for msg in relay_server.received_ws_messages
+            )
+        )
+    finally:
+        await transport.disconnect()

@@ -16,6 +16,7 @@ drives everything an agent does (post, reply, dm, inbox, websocket) via the
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from inspect import isawaitable
 from typing import Any
@@ -39,6 +40,8 @@ from .types import (
     RelayConfigError,
     RelayConnectionError,
 )
+
+logger = logging.getLogger(__name__)
 
 # Events emitted by the hosted gateway that carry a deliverable message.
 _MESSAGE_EVENTS = ("message.created", "thread.reply", "dm.received", "group_dm.received")
@@ -75,6 +78,17 @@ class RelayTransport:
         self._message_callback: MessageCallback | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closing = False
+        # Strong references to fire-and-forget tasks (pong replies, async
+        # message callbacks). asyncio only weakly references tasks, so without
+        # this they could be garbage-collected before they run.
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
+
+    def _track(self, coro: Any) -> asyncio.Task[Any]:
+        """Schedule a coroutine and retain a strong reference until it finishes."""
+        task = asyncio.ensure_future(coro)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -144,8 +158,12 @@ class RelayTransport:
         # Percent-encode the name so reserved characters (e.g. '/', '?', '#')
         # don't alter the route and silently leave the agent registered.
         encoded_name = quote(self.agent_name, safe="")
-        with suppress(Exception):
+        try:
             await relay._client.delete(f"/v1/agents/{encoded_name}")
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+            # Log so a genuine server-side failure (e.g. the agent was not
+            # actually removed) is visible, then continue: this is best-effort.
+            logger.debug("Best-effort agent unregister failed for %r: %s", self.agent_name, exc)
 
         self.agent_id = None
         self.token = None
@@ -374,9 +392,10 @@ class RelayTransport:
         if ws is None:
             return
         # _send_json is the only send primitive WsClient exposes; schedule a
-        # pong on the running loop.
+        # pong on the running loop. Retain a strong reference via _track so the
+        # task isn't garbage-collected before it sends.
         with suppress(Exception):
-            asyncio.ensure_future(ws._send_json({"type": "pong"}))
+            self._track(ws._send_json({"type": "pong"}))
 
     def _on_ws_event(self, payload: dict[str, Any]) -> None:
         message = self._message_from_event(payload)
@@ -389,8 +408,10 @@ class RelayTransport:
 
         result = callback(message)
         if isawaitable(result):
-            # WsClient invokes handlers synchronously; schedule the coroutine.
-            asyncio.ensure_future(result)
+            # WsClient invokes handlers synchronously; schedule the coroutine
+            # and keep a strong reference (via _track) so it isn't GC'd
+            # mid-flight, which would intermittently drop delivered messages.
+            self._track(result)
 
     @staticmethod
     def _message_from_event(payload: dict[str, Any]) -> Message | None:
