@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, TypeAlias
 
-DEFAULT_RELAY_BASE_URL = "https://api.relaycast.dev"
+DEFAULT_RELAY_BASE_URL = "https://cast.agentrelay.com"
 
 
 @dataclass(frozen=True)

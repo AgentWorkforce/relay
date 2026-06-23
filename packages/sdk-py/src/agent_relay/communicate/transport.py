@@ -487,7 +487,7 @@ class RelayTransport:
             )
 
     def _base_url(self) -> str:
-        # Preserve relay's configured host (defaults to api.relaycast.dev) and
+        # Preserve relay's configured host (defaults to cast.agentrelay.com) and
         # pass it explicitly into relay_sdk so its own default host is never used.
         return (self.config.base_url or DEFAULT_RELAY_BASE_URL).rstrip("/")
 
