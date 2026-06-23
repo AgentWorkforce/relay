@@ -221,6 +221,109 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertEqual(dmBody["text"] as? String, "ping")
     }
 
+    func testThreadFetchesRepliesFromHostedEndpoint() async throws {
+        let threadPath = "/v1/messages/msg_root/replies"
+        let agentHTTP = MockHostedHTTP(
+            getResponses: [
+                threadPath: MockHostedHTTP.envelope(
+                    #"""
+                    {
+                      "parent": {"id":"msg_root","text":"root question","from":{"name":"alice"}},
+                      "replies": [
+                        {"id":"msg_reply_1","text":"first answer","from":{"name":"bob"},"parent_id":"msg_root"},
+                        {"id":"msg_reply_2","text":"second answer","from":{"name":"carol"},"parent_id":"msg_root"}
+                      ]
+                    }
+                    """#
+                )
+            ]
+        )
+        let core = HostedParticipantCore(
+            agentId: "ag_1",
+            agentName: "swift-agent",
+            token: "at_test",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            workspaceHTTP: MockHostedHTTP(),
+            agentHTTP: agentHTTP,
+            transport: MockHostedTransport()
+        )
+        let client = AgentClient(core: core, id: "ag_1", name: "swift-agent", token: "at_test")
+
+        let thread = try await client.thread("msg_root", limit: 50)
+
+        XCTAssertEqual(thread.parent.id, "msg_root")
+        XCTAssertEqual(thread.parent.text, "root question")
+        XCTAssertEqual(thread.replies.count, 2)
+        XCTAssertEqual(thread.replies.map(\.text), ["first answer", "second answer"])
+        XCTAssertEqual(thread.replies[0].from.name, "bob")
+
+        let requests = await agentHTTP.allRequests()
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].method, "GET")
+        XCTAssertEqual(requests[0].path, threadPath)
+    }
+
+    func testThreadDefaultsRepliesToEmptyWhenAbsent() async throws {
+        let threadPath = "/v1/messages/msg_root/replies"
+        let agentHTTP = MockHostedHTTP(
+            getResponses: [
+                threadPath: MockHostedHTTP.envelope(
+                    #"{"parent":{"id":"msg_root","text":"root","from":{"name":"alice"}}}"#
+                )
+            ]
+        )
+        let core = HostedParticipantCore(
+            agentId: "ag_1",
+            agentName: "swift-agent",
+            token: "at_test",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            workspaceHTTP: MockHostedHTTP(),
+            agentHTTP: agentHTTP,
+            transport: MockHostedTransport()
+        )
+        let client = AgentClient(core: core, id: "ag_1", name: "swift-agent", token: "at_test")
+
+        let thread = try await client.thread("msg_root")
+
+        XCTAssertEqual(thread.parent.id, "msg_root")
+        XCTAssertTrue(thread.replies.isEmpty)
+    }
+
+    func testReplyPostsToHostedRepliesEndpoint() async throws {
+        let replyPath = "/v1/messages/msg_root/replies"
+        let agentHTTP = MockHostedHTTP(
+            postResponses: [
+                replyPath: MockHostedHTTP.envelope(
+                    #"{"id":"msg_reply","text":"on it","from":{"name":"swift-agent"},"parent_id":"msg_root","thread_id":"msg_root"}"#
+                )
+            ]
+        )
+        let core = HostedParticipantCore(
+            agentId: "ag_1",
+            agentName: "swift-agent",
+            token: "at_test",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            workspaceHTTP: MockHostedHTTP(),
+            agentHTTP: agentHTTP,
+            transport: MockHostedTransport()
+        )
+        let client = AgentClient(core: core, id: "ag_1", name: "swift-agent", token: "at_test")
+
+        let reply = try await client.reply(to: "msg_root", message: "on it")
+
+        XCTAssertEqual(reply.id, "msg_reply")
+        XCTAssertEqual(reply.text, "on it")
+        XCTAssertEqual(reply.parentId, "msg_root")
+        XCTAssertEqual(reply.threadId, "msg_root")
+
+        let requests = await agentHTTP.allRequests()
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].method, "POST")
+        XCTAssertEqual(requests[0].path, replyPath)
+        let body = try jsonObject(try XCTUnwrap(requests[0].body))
+        XCTAssertEqual(body["text"] as? String, "on it")
+    }
+
     func testChannelSubscribeSendsHostedSubscribeFrameAndRoutesMessages() async throws {
         let transport = MockHostedTransport()
         let core = HostedParticipantCore(

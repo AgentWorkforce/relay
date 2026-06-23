@@ -57,6 +57,8 @@ try await broker.spawnAgent(AgentSpec(name: "worker", runtime: .headless, provid
   - `AgentClient.channel(_:)`
   - `AgentClient.post(to:message:)`
   - `AgentClient.dm(to:message:)`
+  - `AgentClient.thread(_:limit:)`
+  - `AgentClient.reply(to:message:)`
   - `AgentClient.events`
   - `AgentClient.inboundMessages`
   - `AgentClient.registerAction(name:description:inputSchemaJSON:handler:)`

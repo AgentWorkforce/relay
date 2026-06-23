@@ -258,6 +258,28 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
     }
 }
 
+/// A threaded conversation: the parent message and its replies. Mirrors the
+/// TypeScript participant SDK `RelayThread` (`packages/sdk/src/messaging/types.ts`).
+public struct RelayThread: Decodable, Sendable, Equatable {
+    public let parent: RelayMessage
+    public let replies: [RelayMessage]
+
+    public init(parent: RelayMessage, replies: [RelayMessage]) {
+        self.parent = parent
+        self.replies = replies
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case parent, replies
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        parent = try container.decode(RelayMessage.self, forKey: .parent)
+        replies = try container.decodeIfPresent([RelayMessage].self, forKey: .replies) ?? []
+    }
+}
+
 public struct RelayEvent: Decodable, Sendable {
     public let type: String
     public let id: String?

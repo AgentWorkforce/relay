@@ -234,6 +234,26 @@ public final class AgentClient: @unchecked Sendable {
         try await core.dm(to: agentName, text: message)
     }
 
+    /// Fetch a threaded conversation: the parent message and its replies.
+    /// Mirrors the TypeScript participant SDK `relay.threads.get(messageId)`.
+    /// - Parameters:
+    ///   - messageId: The id of the parent (root) message.
+    ///   - limit: Optional cap on the number of replies returned.
+    /// - Returns: The parent message and its replies.
+    public func thread(_ messageId: String, limit: Int? = nil) async throws -> RelayThread {
+        try await core.thread(messageId: messageId, limit: limit)
+    }
+
+    /// Post a threaded reply to a specific parent message. Mirrors the
+    /// TypeScript participant SDK `relay.threads.reply({ messageId, text })`.
+    /// - Parameters:
+    ///   - messageId: The id of the parent message to reply to.
+    ///   - message: The reply text.
+    /// - Returns: The created reply message.
+    public func reply(to messageId: String, message: String) async throws -> RelayMessage {
+        try await core.reply(to: messageId, text: message)
+    }
+
     public func registerAction(
         name: String,
         description: String,
@@ -404,6 +424,20 @@ actor HostedParticipantCore {
     func dm(to target: String, text: String) async throws {
         let body = try encode(SendDirectMessageRequest(to: Self.stripSigil(target), text: text, mode: "wait"))
         _ = try await agentHTTP.post(path: "/v1/dm", body: body)
+    }
+
+    func thread(messageId: String, limit: Int?) async throws -> RelayThread {
+        let path = "/v1/messages/\(Self.escapePath(messageId))/replies"
+        let query = limit.map { ["limit": String($0)] }
+        let data = try await agentHTTP.get(path: path, query: query)
+        return try decodeAPIData(data, as: RelayThread.self)
+    }
+
+    func reply(to messageId: String, text: String) async throws -> RelayMessage {
+        let path = "/v1/messages/\(Self.escapePath(messageId))/replies"
+        let body = try encode(ReplyMessageRequest(text: text))
+        let data = try await agentHTTP.post(path: path, body: body)
+        return try decodeAPIData(data, as: RelayMessage.self)
     }
 
     func registerAction(
@@ -678,6 +712,10 @@ private struct SendDirectMessageRequest: Encodable {
     let to: String
     let text: String
     let mode: String
+}
+
+private struct ReplyMessageRequest: Encodable {
+    let text: String
 }
 
 private struct SocketSubscribeMessage: Encodable {
