@@ -30,9 +30,15 @@ function emptyInbox(): InboxResponse {
   } as unknown as InboxResponse;
 }
 
-function createConnectedState(inbox: () => Promise<InboxResponse>): {
+function createConnectedState(
+  inbox: () => Promise<InboxResponse>,
+  overrides: Partial<Record<'markRead' | 'messages', ReturnType<typeof vi.fn>>> & {
+    dms?: { messages: ReturnType<typeof vi.fn> };
+  } = {}
+): {
   state: RelayState;
   inboxMock: ReturnType<typeof vi.fn>;
+  markReadMock: ReturnType<typeof vi.fn>;
 } {
   const state = new RelayState();
   state.connected = true;
@@ -40,8 +46,14 @@ function createConnectedState(inbox: () => Promise<InboxResponse>): {
   state.workspace = 'rk_live_1234567890abcdef';
   state.token = 'tok_test';
   const inboxMock = vi.fn(inbox);
-  state.agent = { inbox: inboxMock } as unknown as RelayState['agent'];
-  return { state, inboxMock };
+  const markReadMock = overrides.markRead ?? vi.fn(async () => ({ messageId: 'x' }));
+  state.agent = {
+    inbox: inboxMock,
+    markRead: markReadMock,
+    messages: overrides.messages ?? vi.fn(async () => []),
+    dms: overrides.dms ?? { messages: vi.fn(async () => []) },
+  } as unknown as RelayState['agent'];
+  return { state, inboxMock, markReadMock };
 }
 
 describe('OpenCode relay hooks', () => {
@@ -109,6 +121,47 @@ describe('OpenCode relay hooks', () => {
         'Relay message from alice: Please review auth middleware.',
       continue: true,
     });
+  });
+
+  it('idle-drains-and-does-not-reinject', async () => {
+    // The read-only engine inbox keeps reporting the same DM until acked, so the
+    // plugin must markRead + watermark to avoid re-injecting it every poll.
+    const inbox: InboxResponse = {
+      unreadChannels: [],
+      mentions: [],
+      unreadDms: [
+        {
+          conversationId: 'conv-alice',
+          from: 'alice',
+          unreadCount: 1,
+          lastMessage: {
+            id: 'msg-1',
+            text: 'Please review auth middleware.',
+            createdAt: '2026-03-13T15:00:00Z',
+          },
+        },
+      ],
+      recentReactions: [],
+    } as unknown as InboxResponse;
+
+    const markReadMock = vi.fn(async () => ({ messageId: 'msg-1' }));
+    const { ctx, hooks } = createContext();
+    const { state } = createConnectedState(async () => inbox, { markRead: markReadMock });
+    registerHooks(ctx, state);
+
+    const first = await hooks['session.idle']();
+    expect(first).toEqual({
+      inject: 'Relay message from alice: Please review auth middleware.',
+      continue: true,
+    });
+    expect(markReadMock).toHaveBeenCalledWith('msg-1');
+
+    // Next poll (past the throttle window) returns the same read-only inbox, but
+    // the watermark suppresses re-injection.
+    vi.advanceTimersByTime(3_000);
+    const second = await hooks['session.idle']();
+    expect(second).toBeUndefined();
+    expect(markReadMock).toHaveBeenCalledTimes(1);
   });
 
   it('idle-swallows-errors', async () => {

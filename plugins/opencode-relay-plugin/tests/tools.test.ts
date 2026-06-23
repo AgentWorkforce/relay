@@ -7,7 +7,9 @@ import relayPlugin, {
   createRelayInboxTool,
   createRelayPostTool,
   createRelaySendTool,
+  inboxToMessages,
 } from '../src/index.js';
+import type { InboxResponse } from '@relaycast/sdk';
 import {
   MockRelayServer,
   connectRelayState,
@@ -136,6 +138,60 @@ describe('OpenCode relay core tools', () => {
     expect(secondCheck).toEqual({ count: 0, messages: [] });
   });
 
+  it('drains surfaced inbox messages via markRead so the read-only inbox stops re-surfacing them', async () => {
+    const state = connectRelayState(new RelayState(), server);
+    server.injectMessage('Researcher', 'ACK: Looking into auth.');
+
+    const firstCheck = await createRelayInboxTool(state).handler({});
+    expect(firstCheck.count).toBe(1);
+
+    // The plugin must ack the surfaced message; the mock inbox is read-only and
+    // only stops reporting an item once it has been markRead'd.
+    const readReqs = server.requests.filter((r) => r.endpoint === 'message/read');
+    expect(readReqs).toHaveLength(1);
+    expect(readReqs[0].body.messageId).toBe(firstCheck.messages[0].id);
+
+    // A subsequent poll sees nothing new even though inbox() is read-only.
+    const secondCheck = await createRelayInboxTool(state).handler({});
+    expect(secondCheck).toEqual({ count: 0, messages: [] });
+  });
+
+  it('hydrates earlier messages of a multi-message DM conversation', async () => {
+    const state = connectRelayState(new RelayState(), server);
+    // Three unread DMs in one conversation; the summary would only carry the last.
+    server.injectDm('alice', 'conv-alice', 'Step 1: pull the branch.');
+    server.injectDm('alice', 'conv-alice', 'Step 2: run migrations.');
+    server.injectDm('alice', 'conv-alice', 'Step 3: deploy.');
+
+    const result = await createRelayInboxTool(state).handler({});
+
+    expect(result.count).toBe(3);
+    expect(result.messages.map((m) => m.text)).toEqual([
+      'Step 1: pull the branch.',
+      'Step 2: run migrations.',
+      'Step 3: deploy.',
+    ]);
+    // Hydration goes through the DM messages API.
+    expect(server.requests.some((r) => r.endpoint === 'dm/messages')).toBe(true);
+    // All three are drained.
+    expect(server.requests.filter((r) => r.endpoint === 'message/read')).toHaveLength(3);
+  });
+
+  it('surfaces unread channel posts that did not mention the reader', async () => {
+    const state = connectRelayState(new RelayState(), server);
+    server.injectChannelPost('Bob', 'wave1', 'Build is green.');
+    server.injectChannelPost('Bob', 'wave1', 'Shipping now.');
+
+    const result = await createRelayInboxTool(state).handler({});
+
+    expect(result.count).toBe(2);
+    expect(result.messages).toEqual([
+      expect.objectContaining({ from: 'Bob', channel: 'wave1', text: 'Build is green.' }),
+      expect.objectContaining({ from: 'Bob', channel: 'wave1', text: 'Shipping now.' }),
+    ]);
+    expect(server.requests.some((r) => r.endpoint === 'message/list')).toBe(true);
+  });
+
   it('lists agents through relay_agents', async () => {
     const state = connectRelayState(new RelayState(), server);
     server.agents = ['Lead', 'Researcher', 'Reviewer'];
@@ -167,5 +223,22 @@ describe('OpenCode relay core tools', () => {
         text: 'DONE: Phase 1 complete.',
       },
     });
+  });
+});
+
+describe('inboxToMessages defensive handling', () => {
+  it('returns [] for null/undefined inbox', () => {
+    expect(inboxToMessages(null)).toEqual([]);
+    expect(inboxToMessages(undefined)).toEqual([]);
+  });
+
+  it('tolerates missing / non-array mentions and unreadDms', () => {
+    expect(inboxToMessages({} as unknown as InboxResponse)).toEqual([]);
+    expect(
+      inboxToMessages({
+        mentions: 'nope',
+        unreadDms: null,
+      } as unknown as InboxResponse)
+    ).toEqual([]);
   });
 });

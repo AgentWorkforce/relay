@@ -17,6 +17,8 @@ interface QueuedDm {
   from: string;
   text: string;
   ts: string;
+  channel?: string;
+  conversationId?: string;
 }
 
 /**
@@ -30,43 +32,112 @@ export class MockRelayServer {
   requests: MockRequest[] = [];
   registerShouldFail = false;
 
-  /** Pending DMs that the next `inbox()` call should surface, then drain. */
-  private inboxDms: QueuedDm[] = [];
+  /**
+   * Unread items the engine inbox reports. The engine inbox is *read-only*: it
+   * keeps reporting these until the agent acks each one via `markRead`. We model
+   * that here so tests exercise the plugin's drain (markRead + watermark) path.
+   */
+  private inboxItems: QueuedDm[] = [];
+  /** Message IDs the agent has acked via markRead. */
+  readMessageIds = new Set<string>();
 
   injectMessage(from: string, text: string, extra: Partial<Message> = {}): void {
     const id = crypto.randomUUID();
     const ts = new Date().toISOString();
     this.messages.push({ id, from, text, ts, ...extra });
     // The engine inbox exposes DMs (and channel mentions); model these as DMs.
-    this.inboxDms.push({ id, from, text, ts });
+    this.inboxItems.push({ id, from, text, ts, conversationId: `conv-${from}` });
+  }
+
+  /** Inject a channel mention (surfaces under inbox `mentions`). */
+  injectMention(from: string, channel: string, text: string): string {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    this.inboxItems.push({ id, from, text, ts, channel });
+    return id;
+  }
+
+  /** Inject a DM into an explicit conversation (for multi-message DM tests). */
+  injectDm(from: string, conversationId: string, text: string): string {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    this.inboxItems.push({ id, from, text, ts, conversationId });
+    return id;
+  }
+
+  /** Inject an unread channel post that does NOT mention the reader. */
+  injectChannelPost(from: string, channel: string, text: string): string {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    // No `mention` flag: lands under unread_channels, not mentions.
+    this.inboxItems.push({ id, from, text, ts, channel, conversationId: undefined });
+    // Tag as a non-mention channel post via a sentinel on the object.
+    (this.inboxItems[this.inboxItems.length - 1] as QueuedDm & { channelPost?: boolean }).channelPost =
+      true;
+    return id;
   }
 
   record(endpoint: string, body: Record<string, unknown>): void {
     this.requests.push({ endpoint, body });
   }
 
-  drainInbox() {
-    const mentions = this.inboxDms
-      .filter((m) => 'channel' in m)
+  /** All unacked items for a given conversation, oldest-first. */
+  conversationMessages(conversationId: string): QueuedDm[] {
+    return this.inboxItems.filter(
+      (m) => m.conversationId === conversationId && !this.readMessageIds.has(m.id)
+    );
+  }
+
+  /** All unacked posts for a given channel, oldest-first. */
+  channelMessages(channel: string): QueuedDm[] {
+    return this.inboxItems.filter((m) => m.channel === channel && !this.readMessageIds.has(m.id));
+  }
+
+  markRead(messageId: string): void {
+    this.readMessageIds.add(messageId);
+  }
+
+  /** Build the engine inbox *summary* from current unacked items (read-only). */
+  buildInbox() {
+    const unread = this.inboxItems.filter((m) => !this.readMessageIds.has(m.id));
+
+    const mentions = unread
+      .filter((m) => m.channel && !(m as QueuedDm & { channelPost?: boolean }).channelPost)
       .map((m) => ({
         id: m.id,
-        channelName: '',
+        channelName: m.channel ?? '',
         agentName: m.from,
         text: m.text,
         createdAt: m.ts,
       }));
 
-    const unreadDms = this.inboxDms.map((m) => ({
-      conversationId: `conv-${m.from}`,
-      from: m.from,
-      unreadCount: 1,
-      lastMessage: { id: m.id, text: m.text, createdAt: m.ts },
+    // Group DM items by conversation; summary carries only the last message.
+    const dmConvIds = [
+      ...new Set(unread.filter((m) => m.conversationId).map((m) => m.conversationId as string)),
+    ];
+    const unreadDms = dmConvIds.map((conversationId) => {
+      const items = unread.filter((m) => m.conversationId === conversationId);
+      const last = items[items.length - 1];
+      return {
+        conversationId,
+        from: last.from,
+        unreadCount: items.length,
+        lastMessage: { id: last.id, text: last.text, createdAt: last.ts },
+      };
+    });
+
+    // Channel posts (non-mentions) only surface as an unread count in summary.
+    const channelPosts = unread.filter(
+      (m) => m.channel && (m as QueuedDm & { channelPost?: boolean }).channelPost
+    );
+    const channelNames = [...new Set(channelPosts.map((m) => m.channel as string))];
+    const unreadChannels = channelNames.map((channelName) => ({
+      channelName,
+      unreadCount: channelPosts.filter((m) => m.channel === channelName).length,
     }));
 
-    this.inboxDms = [];
-
     return {
-      unreadChannels: [],
+      unreadChannels,
       mentions,
       unreadDms,
       recentReactions: [],
@@ -75,7 +146,27 @@ export class MockRelayServer {
 }
 
 class MockAgentClient {
-  constructor(private readonly server: MockRelayServer) {}
+  dms: {
+    messages: (conversationId: string, opts?: { limit?: number }) => Promise<unknown[]>;
+  };
+
+  constructor(private readonly server: MockRelayServer) {
+    this.dms = {
+      // Returns newest-first, mirroring the engine contract.
+      messages: async (conversationId, opts) => {
+        this.server.record('dm/messages', { conversationId, limit: opts?.limit ?? null });
+        const items = this.server.conversationMessages(conversationId).slice().reverse();
+        const limit = opts?.limit ?? items.length;
+        return items.slice(0, limit).map((m) => ({
+          id: m.id,
+          agentId: m.from,
+          agentName: m.from,
+          text: m.text,
+          createdAt: m.ts,
+        }));
+      },
+    };
+  }
 
   async dm(agent: string, text: string) {
     this.server.record('dm/send', { to: agent, text });
@@ -91,9 +182,30 @@ class MockAgentClient {
     return { id: crypto.randomUUID(), channel, text };
   }
 
+  // Channel message listing, newest-first.
+  async messages(channel: string, opts?: { limit?: number }) {
+    this.server.record('message/list', { channel, limit: opts?.limit ?? null });
+    const items = this.server.channelMessages(channel).slice().reverse();
+    const limit = opts?.limit ?? items.length;
+    return items.slice(0, limit).map((m) => ({
+      id: m.id,
+      channelId: channel,
+      agentId: m.from,
+      agentName: m.from,
+      text: m.text,
+      createdAt: m.ts,
+    }));
+  }
+
   async inbox() {
     this.server.record('inbox/check', {});
-    return this.server.drainInbox();
+    return this.server.buildInbox();
+  }
+
+  async markRead(messageId: string) {
+    this.server.record('message/read', { messageId });
+    this.server.markRead(messageId);
+    return { messageId, readAt: new Date().toISOString() };
   }
 }
 

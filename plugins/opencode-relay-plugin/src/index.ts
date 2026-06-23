@@ -55,6 +55,13 @@ export class RelayState {
   idlePollIntervalMs = DEFAULT_IDLE_POLL_INTERVAL_MS;
   lastIdlePollAt = 0;
   spawned = new Map<string, SpawnedAgent>();
+  /**
+   * IDs of messages already surfaced to the agent. The engine `inbox()` is
+   * read-only, so we drain via `markRead` and also keep this local watermark as
+   * a backstop so the same message is never re-injected even if a read-receipt
+   * write lags or fails.
+   */
+  seenMessageIds = new Set<string>();
   connected = false;
   /** Workspace-scoped client (apiKey = workspace key). Owns agent registry calls. */
   relay: RelayCast | null = null;
@@ -86,6 +93,7 @@ export {
   createRelaySendTool,
   createRelaySpawnTool,
   createRelayTools,
+  collectInboxMessages,
   inboxToMessages,
   registerTools,
 } from './tools.js';

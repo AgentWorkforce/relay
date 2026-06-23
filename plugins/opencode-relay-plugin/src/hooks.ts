@@ -1,5 +1,5 @@
 import type { RelayState } from './index.js';
-import { inboxToMessages } from './tools.js';
+import { collectInboxMessages } from './tools.js';
 
 interface HookContext {
   hook(name: string, handler: HookHandler): void;
@@ -103,7 +103,7 @@ async function pollInbox(state: RelayState): Promise<RelayMessage[]> {
   }
 
   const inbox = await state.agent.inbox();
-  return inboxToMessages(inbox);
+  return collectInboxMessages(state.agent, inbox, state.seenMessageIds);
 }
 
 function formatInjectedMessages(messages: RelayMessage[]): string {

@@ -4,7 +4,9 @@ import {
   RelayCast,
   RelayError,
   type AgentClient,
+  type DmMessage,
   type InboxResponse,
+  type MessageWithMeta,
   type RelayCastOptions,
 } from '@relaycast/sdk';
 
@@ -104,14 +106,30 @@ export function assertConnected(state: RelayState): asserts state is RelayState 
 }
 
 /**
- * Flatten an engine inbox payload into the flat message list the plugin's UX
- * (inbox tool + idle hook) is built around. /v1/inbox has no `messages` array;
- * the message-like items are channel `mentions` and `unread_dms`.
+ * Per-conversation/channel cap on how many unread messages we hydrate when the
+ * summary reports more than one unread item. Keeps a single idle poll bounded.
  */
-export function inboxToMessages(inbox: InboxResponse): RelayMessage[] {
+const MAX_UNREAD_FETCH = 50;
+
+/**
+ * Flatten an engine inbox *summary* payload into the flat message list the
+ * plugin's UX is built around. `/v1/inbox` has no `messages` array; the
+ * message-like items are channel `mentions` and the `lastMessage` of each
+ * unread DM conversation.
+ *
+ * This is summary-only: it cannot recover earlier unread DMs (when
+ * `unreadCount > 1`) or unread channel posts that did not mention us. Use
+ * {@link collectInboxMessages} to hydrate those from the messages APIs.
+ *
+ * Defensive against a null/partial payload: the engine contract guarantees the
+ * arrays, but treat anything missing or non-array as empty rather than throwing
+ * inside an idle poll.
+ */
+export function inboxToMessages(inbox: InboxResponse | null | undefined): RelayMessage[] {
   const messages: RelayMessage[] = [];
 
-  for (const mention of inbox.mentions) {
+  const mentions = Array.isArray(inbox?.mentions) ? inbox.mentions : [];
+  for (const mention of mentions) {
     messages.push({
       id: mention.id,
       from: mention.agentName,
@@ -121,7 +139,8 @@ export function inboxToMessages(inbox: InboxResponse): RelayMessage[] {
     });
   }
 
-  for (const dm of inbox.unreadDms) {
+  const unreadDms = Array.isArray(inbox?.unreadDms) ? inbox.unreadDms : [];
+  for (const dm of unreadDms) {
     if (!dm.lastMessage) {
       continue;
     }
@@ -134,6 +153,155 @@ export function inboxToMessages(inbox: InboxResponse): RelayMessage[] {
   }
 
   return messages;
+}
+
+/** Best-effort hydration of a multi-message DM conversation's unread tail. */
+async function fetchUnreadDmMessages(
+  agent: AgentClient,
+  conversationId: string,
+  from: string,
+  unreadCount: number
+): Promise<RelayMessage[]> {
+  const limit = Math.min(unreadCount, MAX_UNREAD_FETCH);
+  let dmMessages: DmMessage[];
+  try {
+    dmMessages = await agent.dms.messages(conversationId, { limit });
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(dmMessages)) {
+    return [];
+  }
+  // `dms.messages` returns newest-first; take the unread tail and restore
+  // chronological order so multi-message instructions read top-to-bottom.
+  return dmMessages
+    .slice(0, limit)
+    .reverse()
+    .map((message) => ({
+      id: message.id,
+      from: message.agentName ?? from,
+      text: message.text,
+      ts: message.createdAt,
+    }));
+}
+
+/** Best-effort hydration of unread posts in a channel we are not mentioned in. */
+async function fetchUnreadChannelMessages(
+  agent: AgentClient,
+  channelName: string,
+  unreadCount: number
+): Promise<RelayMessage[]> {
+  const limit = Math.min(unreadCount, MAX_UNREAD_FETCH);
+  let channelMessages: MessageWithMeta[];
+  try {
+    channelMessages = await agent.messages(channelName, { limit });
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(channelMessages)) {
+    return [];
+  }
+  return channelMessages
+    .slice(0, limit)
+    .reverse()
+    .map((message) => ({
+      id: message.id,
+      from: message.agentName,
+      text: message.text,
+      channel: channelName,
+      ts: message.createdAt,
+    }));
+}
+
+/**
+ * Build the flat, ordered list of *new* inbox messages and drain them, faithfully
+ * replicating the old `/inbox/check` queue behavior on top of the read-only
+ * engine inbox summary:
+ *
+ *  - Channel `mentions` and unread-DM `lastMessage`s come straight from the
+ *    summary (as in {@link inboxToMessages}).
+ *  - Multi-message DM conversations (`unreadCount > 1`) and unread channel posts
+ *    that did not mention us are hydrated from the DM / channel message APIs so
+ *    earlier instructions and non-mention channel traffic are not dropped.
+ *  - Every surfaced message is drained: recorded in `state.seenMessageIds`
+ *    (so it is never re-injected) and `markRead`-acked on the engine
+ *    (best-effort) so the summary stops reporting it as unread.
+ */
+export async function collectInboxMessages(
+  agent: AgentClient,
+  inbox: InboxResponse | null | undefined,
+  seen: Set<string>
+): Promise<RelayMessage[]> {
+  const collected: RelayMessage[] = [];
+  const seenInBatch = new Set<string>();
+
+  const push = (message: RelayMessage): void => {
+    if (!message.id || seenInBatch.has(message.id)) {
+      return;
+    }
+    seenInBatch.add(message.id);
+    collected.push(message);
+  };
+
+  const mentions = Array.isArray(inbox?.mentions) ? inbox.mentions : [];
+  for (const mention of mentions) {
+    push({
+      id: mention.id,
+      from: mention.agentName,
+      text: mention.text,
+      channel: mention.channelName,
+      ts: mention.createdAt,
+    });
+  }
+
+  const unreadDms = Array.isArray(inbox?.unreadDms) ? inbox.unreadDms : [];
+  for (const dm of unreadDms) {
+    if ((dm.unreadCount ?? 0) > 1 && dm.conversationId) {
+      const hydrated = await fetchUnreadDmMessages(agent, dm.conversationId, dm.from, dm.unreadCount);
+      if (hydrated.length > 0) {
+        for (const message of hydrated) {
+          push(message);
+        }
+        continue;
+      }
+    }
+    if (dm.lastMessage) {
+      push({
+        id: dm.lastMessage.id,
+        from: dm.from,
+        text: dm.lastMessage.text,
+        ts: dm.lastMessage.createdAt,
+      });
+    }
+  }
+
+  const unreadChannels = Array.isArray(inbox?.unreadChannels) ? inbox.unreadChannels : [];
+  for (const channel of unreadChannels) {
+    if (!channel.channelName || (channel.unreadCount ?? 0) <= 0) {
+      continue;
+    }
+    const hydrated = await fetchUnreadChannelMessages(agent, channel.channelName, channel.unreadCount);
+    for (const message of hydrated) {
+      push(message);
+    }
+  }
+
+  // Drain: drop anything already surfaced, then watermark + ack the rest.
+  const fresh = collected.filter((message) => !seen.has(message.id));
+  for (const message of fresh) {
+    seen.add(message.id);
+  }
+  await Promise.all(
+    fresh.map(async (message) => {
+      try {
+        await agent.markRead(message.id);
+      } catch {
+        // Best-effort: the local watermark already prevents re-injection.
+      }
+    })
+  );
+
+  return fresh;
 }
 
 export function createRelayConnectTool(
@@ -166,12 +334,12 @@ export function createRelayConnectTool(
 
       const relay = createRelayCast({ apiKey: workspace, baseUrl: state.apiBaseUrl });
 
-      let token: string;
+      let token: string | undefined;
       try {
         // Register (or rotate) this agent identity in the workspace and obtain
         // its agent token; this is the SDK equivalent of the old /register call.
         const registration = await relay.registerOrRotate({ name });
-        token = registration.token;
+        token = registration?.token;
       } catch (error) {
         if (isAuthError(error)) {
           throw new Error('Invalid workspace key. Get one at relaycast.dev');
@@ -231,7 +399,7 @@ export function createRelayInboxTool(
     async handler() {
       assertConnected(state);
       const inbox = await state.agent.inbox();
-      const messages = inboxToMessages(inbox);
+      const messages = await collectInboxMessages(state.agent, inbox, state.seenMessageIds);
       return { count: messages.length, messages };
     },
   };
