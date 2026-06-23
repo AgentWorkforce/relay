@@ -72,8 +72,7 @@ export class MockRelayServer {
     // No `mention` flag: lands under unread_channels, not mentions.
     this.inboxItems.push({ id, from, text, ts, channel, conversationId: undefined });
     // Tag as a non-mention channel post via a sentinel on the object.
-    (this.inboxItems[this.inboxItems.length - 1] as QueuedDm & { channelPost?: boolean }).channelPost =
-      true;
+    (this.inboxItems[this.inboxItems.length - 1] as QueuedDm & { channelPost?: boolean }).channelPost = true;
     return id;
   }
 
