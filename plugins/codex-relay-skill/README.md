@@ -63,7 +63,7 @@ features.codex_hooks = true
 [mcp_servers.agent-relay]
 command = "npx"
 args = ["-y", "agent-relay", "mcp"]
-env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://gateway.relaycast.dev", RELAY_AGENT_TYPE = "agent" }
+env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://cast.agentrelay.com", RELAY_AGENT_TYPE = "agent" }
 ```
 
 2. Copy hooks config:
@@ -124,7 +124,7 @@ Use Relaycast when workers need to message each other directly, not only the lea
 | Variable           | Required | Default                         | Description                                                          |
 | ------------------ | -------- | ------------------------------- | -------------------------------------------------------------------- |
 | `RELAY_API_KEY`    | No       | `""` in the template config     | Relaycast workspace key                                              |
-| `RELAY_BASE_URL`   | No       | `https://gateway.relaycast.dev` | Relaycast API base URL                                               |
+| `RELAY_BASE_URL`   | No       | `https://cast.agentrelay.com` | Relaycast API base URL                                               |
 | `RELAY_AGENT_TYPE` | No       | `agent`                         | Default Relaycast agent type                                         |
 | `RELAY_AGENT_NAME` | No       | unset                           | Optional stable relay identity when your workflow wants a fixed name |
 

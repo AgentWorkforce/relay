@@ -49,7 +49,7 @@ MESSAGES=$(curl -fsS -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}' \
-  "${RELAY_BASE_URL:-https://gateway.relaycast.dev}/v1/inbox/check" 2>/dev/null || true)
+  "${RELAY_BASE_URL:-https://cast.agentrelay.com}/v1/inbox/check" 2>/dev/null || true)
 
 if [ -z "${MESSAGES:-}" ]; then
   printf '%s\n' "$EMPTY_OUTPUT"

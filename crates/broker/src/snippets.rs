@@ -1581,7 +1581,7 @@ mod tests {
         .expect("write existing mcp file");
 
         let report =
-            ensure_agent_relay_mcp_config(root, None, Some("https://api.relaycast.dev"), None)
+            ensure_agent_relay_mcp_config(root, None, Some("https://cast.agentrelay.com"), None)
                 .expect("update mcp config");
         assert_eq!(report.created, 0);
         assert_eq!(report.updated, 1);
@@ -1646,7 +1646,7 @@ mod tests {
             "codex",
             "Lead",
             Some("rk_live_test"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
         )
@@ -1677,7 +1677,7 @@ mod tests {
             "claude",
             "Worker",
             Some("rk_live_abc"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
         )
@@ -1715,7 +1715,7 @@ mod tests {
             "claude",
             "Worker",
             Some("rk_live_secret"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
         )
@@ -1778,7 +1778,7 @@ mod tests {
             "claude",
             "Worker",
             Some("rk_live_abc"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &existing,
             temp.path(),
         )
@@ -1802,7 +1802,7 @@ mod tests {
             "claude",
             "Worker",
             Some("rk_live_abc"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &existing,
             temp.path(),
         )
@@ -1875,7 +1875,7 @@ mod tests {
     fn grok_mcp_add_args_use_command_and_args_flags() {
         let args = super::grok_mcp_add_args(
             Some("rk_live_xyz"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             Some("GrokWorker"),
             Some("tok_grok_123"),
             None,
@@ -1908,7 +1908,7 @@ mod tests {
     fn droid_mcp_add_args_include_option_separator() {
         let args = super::gemini_droid_mcp_add_args(
             Some("rk_live_xyz"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             None,
             None,
             false,
@@ -1931,7 +1931,7 @@ mod tests {
     fn gemini_mcp_add_args_do_not_include_option_separator() {
         let args = super::gemini_droid_mcp_add_args(
             Some("rk_live_xyz"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             Some("GeminiWorker"),
             Some("tok_gem_123"),
             true,
@@ -1941,7 +1941,7 @@ mod tests {
 
         assert!(args.contains(&"-e".to_string()));
         assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
-        assert!(args.contains(&"RELAY_BASE_URL=https://api.relaycast.dev".to_string()));
+        assert!(args.contains(&"RELAY_BASE_URL=https://cast.agentrelay.com".to_string()));
         assert!(args.contains(&"RELAY_AGENT_NAME=GeminiWorker".to_string()));
         assert!(args.contains(&"RELAY_AGENT_TYPE=agent".to_string()));
         assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
@@ -1972,7 +1972,7 @@ mod tests {
     fn droid_mcp_add_args_include_env_flags_and_token() {
         let args = super::gemini_droid_mcp_add_args(
             Some("rk_live_xyz"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             Some("DroidWorker"),
             Some("tok_droid_123"),
             false,
@@ -1982,7 +1982,7 @@ mod tests {
 
         assert!(args.contains(&"--env".to_string()));
         assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
-        assert!(args.contains(&"RELAY_BASE_URL=https://api.relaycast.dev".to_string()));
+        assert!(args.contains(&"RELAY_BASE_URL=https://cast.agentrelay.com".to_string()));
         assert!(args.contains(&"RELAY_AGENT_NAME=DroidWorker".to_string()));
         assert!(args.contains(&"RELAY_AGENT_TYPE=agent".to_string()));
         assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
@@ -1994,7 +1994,7 @@ mod tests {
         let config = test_agent_result_config();
         let args = super::gemini_droid_mcp_add_args_with_result(
             Some("rk_live_xyz"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             Some("GeminiWorker"),
             Some("tok_gem_123"),
             true,
@@ -2020,7 +2020,7 @@ mod tests {
             "codex",
             "CodexAgent",
             Some("rk_live_xyz"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
         )
@@ -2040,7 +2040,7 @@ mod tests {
             args.contains(&"mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
         );
         assert!(args.contains(
-            &"mcp_servers.agent-relay.env.RELAY_BASE_URL=\"https://api.relaycast.dev\"".to_string()
+            &"mcp_servers.agent-relay.env.RELAY_BASE_URL=\"https://cast.agentrelay.com\"".to_string()
         ));
         assert!(args
             .contains(&"mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string()));
@@ -2207,7 +2207,7 @@ mod tests {
             "opencode",
             "OcAgent",
             Some("rk_live_oc"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
         )
@@ -2241,7 +2241,7 @@ mod tests {
         );
         assert_eq!(
             oc_env["RELAY_BASE_URL"].as_str(),
-            Some("https://api.relaycast.dev")
+            Some("https://cast.agentrelay.com")
         );
         assert_eq!(oc_env["RELAY_AGENT_NAME"].as_str(), Some("OcAgent"));
         assert_eq!(oc_env["RELAY_AGENT_TYPE"].as_str(), Some("agent"));
@@ -2264,7 +2264,7 @@ mod tests {
             "opencode",
             "OcAgent",
             Some("rk_live_oc"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
             None,
@@ -2354,7 +2354,7 @@ mod tests {
             "cursor",
             "CursorAgent",
             Some("rk_live_cursor"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
         )
@@ -2381,7 +2381,7 @@ mod tests {
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_BASE_URL"].as_str(),
-            Some("https://api.relaycast.dev")
+            Some("https://cast.agentrelay.com")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
@@ -2405,7 +2405,7 @@ mod tests {
             "cursor",
             "CursorAgent",
             Some("rk_live_cursor"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
             None,
@@ -2470,7 +2470,7 @@ mod tests {
             "aider",
             "Agent",
             Some("rk_live_abc"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
         )
@@ -2501,7 +2501,7 @@ mod tests {
     fn mcp_config_json_produces_valid_structure() {
         let json_str = super::agent_relay_mcp_config_json(
             Some("rk_live_test"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             Some("TestAgent"),
         );
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
@@ -2583,7 +2583,7 @@ mod tests {
     fn mcp_config_json_trims_whitespace_values() {
         let json_str = super::agent_relay_mcp_config_json(
             Some("  rk_live_test  "),
-            Some("  https://api.relaycast.dev  "),
+            Some("  https://cast.agentrelay.com  "),
             Some("  Agent  "),
         );
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
@@ -2591,7 +2591,7 @@ mod tests {
         // base_url and agent_name are trimmed
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_BASE_URL"].as_str(),
-            Some("https://api.relaycast.dev")
+            Some("https://cast.agentrelay.com")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
@@ -2667,7 +2667,7 @@ mod tests {
         super::ensure_opencode_config(
             temp.path(),
             Some("rk_live_test"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             Some("Agent"),
             None,
             None,
@@ -3134,7 +3134,7 @@ mod tests {
             "claude",
             "TestWorker",
             Some("rk_live_test"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
             Some("tok_abc"),
@@ -3431,7 +3431,7 @@ mod tests {
 
         let merged = super::merge_agent_relay_with_project_mcp_inner(
             Some("rk_key"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             Some("agent"),
             Some("tok_test"),
             temp.path(),
@@ -3632,7 +3632,7 @@ mod tests {
             "opencode",
             "headless-worker",
             Some("rk_live_hl"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
             Some("tok_hl_123"),
@@ -3665,7 +3665,7 @@ mod tests {
             "claude",
             "headless-worker",
             Some("rk_live_hl"),
-            Some("https://api.relaycast.dev"),
+            Some("https://cast.agentrelay.com"),
             &[],
             temp.path(),
             Some("tok_hl_123"),
