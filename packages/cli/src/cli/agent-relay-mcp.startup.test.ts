@@ -295,6 +295,7 @@ describe('agent-relay-mcp startup helpers', () => {
     vi.stubEnv('RELAY_STRICT_AGENT_NAME', ' yes ');
     vi.stubEnv('RELAY_SKIP_BOOTSTRAP', '1');
 
+    expect(mod.normalizeBaseUrl('https://api.relaycast.dev///')).toBe('https://api.relaycast.dev');
     expect(mod.envFlagEnabled(' on ')).toBe(true);
     expect(mod.envFlagEnabled('0')).toBe(false);
     expect(mod.normalizeAgentType('agent')).toBe('agent');

@@ -105,6 +105,19 @@ function resolveEnv(key: string): string | undefined {
   return v;
 }
 
+/**
+ * Normalize a base URL by stripping trailing slashes, falling back to the
+ * gateway default when none is provided.
+ *
+ * @deprecated No longer used internally — the base URL default is now owned by
+ * `@relaycast/sdk` (`RelayCast`/`WsClient`/`AgentRelay` all default
+ * `options.baseUrl` to `https://gateway.relaycast.dev`). Retained only to keep
+ * the public `agent-relay/mcp` export surface stable for downstream importers.
+ */
+export function normalizeBaseUrl(baseUrl?: string): string {
+  return (baseUrl ?? 'https://gateway.relaycast.dev').replace(/\/+$/, '');
+}
+
 function isEntrypoint(): boolean {
   const invocationPath = process.argv[1];
   if (!invocationPath) return false;
