@@ -123,7 +123,7 @@ setup_test_environment() {
   echo ""
   echo "  Codex:  $CLOUD_URL/api/test/auto-login?redirect=/providers/setup/codex?workspace=$WORKSPACE_ID"
   echo ""
-  log "Or access the dashboard:"
+  log "Or access the cloud web app:"
   echo ""
   echo "  $CLOUD_URL/api/test/auto-login?redirect=/app"
   echo ""

@@ -67,28 +67,23 @@ describe('classifyBrokerStartError', () => {
 });
 
 describe('classifyBrokerStartStage', () => {
-  it('marks dashboard port conflicts when the dashboard was requested', () => {
-    const err = Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' });
-    expect(classifyBrokerStartStage(err, 'listen EADDRINUSE', true)).toBe('dashboard_port');
-  });
-
   it('marks already-running brokers from the message text', () => {
     const message = 'another broker instance is already running in this directory (/tmp/x)';
-    expect(classifyBrokerStartStage(new Error(message), message, false)).toBe('already_running');
+    expect(classifyBrokerStartStage(new Error(message), message)).toBe('already_running');
   });
 
   it('classifies fetch failures as connect-stage errors', () => {
     const cause = Object.assign(new Error('ECONNREFUSED'), { code: 'ECONNREFUSED' });
     const err = new TypeError('fetch failed', { cause });
-    expect(classifyBrokerStartStage(err, 'fetch failed', false)).toBe('connect');
+    expect(classifyBrokerStartStage(err, 'fetch failed')).toBe('connect');
   });
 
   it('classifies broker-exited-before-ready as a spawn failure', () => {
     const message = 'Broker process exited with code 1 before becoming ready (pid=123; …)';
-    expect(classifyBrokerStartStage(new Error(message), message, false)).toBe('spawn');
+    expect(classifyBrokerStartStage(new Error(message), message)).toBe('spawn');
   });
 
   it('falls back to startup for everything else', () => {
-    expect(classifyBrokerStartStage(new Error('???'), '???', false)).toBe('startup');
+    expect(classifyBrokerStartStage(new Error('???'), '???')).toBe('startup');
   });
 });

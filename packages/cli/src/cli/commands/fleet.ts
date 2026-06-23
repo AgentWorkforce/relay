@@ -7,7 +7,11 @@ import { enrollFleetNode, type FleetNodeEnrollment } from '@agent-relay/cloud';
 import type { FleetNodeDefinition } from '@agent-relay/fleet';
 
 import { withDefaults, type CoreDependencies, type CoreProjectPaths } from './core.js';
-import { readBrokerConnection, startBrokerWithPortFallback } from '../lib/broker-lifecycle.js';
+import {
+  readBrokerConnection,
+  resolveBrokerBasePort,
+  startBrokerWithPortFallback,
+} from '../lib/broker-lifecycle.js';
 import {
   buildNodeSupervision,
   createImplicitLocalFleetNode,
@@ -358,8 +362,8 @@ async function runFleetServe(
   const nameOverride = nameOption ?? enrollment?.nodeName ?? undefined;
   const baseUrl = baseUrlOverride || enrollment?.relaycastUrl || undefined;
 
-  const dashboardPort = Number.parseInt(deps.core.env.AGENT_RELAY_DASHBOARD_PORT ?? '3888', 10) || 3888;
-  const started = await startBrokerWithPortFallback(paths, dashboardPort, deps.core);
+  const basePort = resolveBrokerBasePort(deps.core);
+  const started = await startBrokerWithPortFallback(paths, basePort, deps.core);
   const connection = connectionFromFile(paths.dataDir);
   const controller = new AbortController();
   const stop = () => controller.abort();

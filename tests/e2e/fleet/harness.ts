@@ -277,7 +277,7 @@ export class FleetNode {
       engineBaseUrl: string;
       brokerBinary: string;
       tmpRoot: string;
-      dashboardPort: number;
+      brokerPort: number;
     }
   ) {
     this.projectDir = path.join(opts.tmpRoot, `node-${opts.name}`);
@@ -331,7 +331,7 @@ export class FleetNode {
           RELAY_API_KEY: o.workspaceKey,
           AGENT_RELAY_PROJECT: this.projectDir,
           AGENT_RELAY_STATE_DIR: stateDir,
-          AGENT_RELAY_DASHBOARD_PORT: String(o.dashboardPort),
+          AGENT_RELAY_BROKER_PORT: String(o.brokerPort),
         }),
         stdio: ['ignore', 'pipe', 'pipe'],
       }

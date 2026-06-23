@@ -612,7 +612,9 @@ function registerAgentRelayTools(
       description: 'Invoke the fleet spawn action. Optionally target a specific node.',
       inputSchema: {
         name: z.string().describe('Agent name'),
-        cli: z.enum(['claude', 'codex', 'gemini', 'aider', 'goose']).describe('AI CLI to launch'),
+        cli: z
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'])
+          .describe('AI CLI to launch'),
         task: z.string().optional().describe('Initial task instructions'),
         channel: z.string().optional().describe('Channel to join'),
         channels: z.array(z.string()).optional().describe('Channels to join'),

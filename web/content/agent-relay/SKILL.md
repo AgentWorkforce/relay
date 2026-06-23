@@ -69,7 +69,7 @@ and `join_channel`.
 1. Start Relay from the project root:
 
    ```bash
-   agent-relay local up --no-dashboard --verbose
+   agent-relay local up --verbose
    agent-relay local status --wait-for 10
    ```
 

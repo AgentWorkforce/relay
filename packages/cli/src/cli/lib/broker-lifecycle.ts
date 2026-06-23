@@ -10,15 +10,6 @@ import type {
   SpawnedProcess,
 } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
-import {
-  getDefaultDashboardRelayUrl,
-  isDebugLikeLoggingEnabled,
-  normalizeDashboardPath,
-  resolveDashboardPortWithFallback,
-  resolveDashboardRelayUrl,
-  startDashboardWithFallback,
-  waitForDashboard,
-} from './broker-dashboard.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 import {
@@ -29,14 +20,9 @@ import {
 } from './fleet-sidecar.js';
 
 type UpOptions = {
-  dashboard?: boolean;
-  port?: string;
   spawn?: boolean;
   background?: boolean;
-  foreground?: boolean;
   verbose?: boolean;
-  dashboardPath?: string;
-  reuseExistingBroker?: boolean;
   workspaceKey?: string;
   stateDir?: string;
   brokerName?: string;
@@ -50,8 +36,8 @@ type DownOptions = {
 };
 
 const MAX_API_PORT_ATTEMPTS = 25;
-const MAX_DASHBOARD_PORT_ATTEMPTS = 25;
 const MAX_PORT = 65535;
+const DEFAULT_BROKER_BASE_PORT = 3888;
 
 /** The broker writes this file with URL, port, API key, and PID. */
 const CONNECTION_FILENAME = 'connection.json';
@@ -195,8 +181,7 @@ export function classifyBrokerStartError(err: unknown): string {
 }
 
 /** Exported for testing. */
-export function classifyBrokerStartStage(err: unknown, message: string, wantsDashboard: boolean): string {
-  if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) return 'dashboard_port';
+export function classifyBrokerStartStage(_err: unknown, message: string): string {
   if (isBrokerAlreadyRunningError(message)) return 'already_running';
   if (/fetch failed/i.test(message)) return 'connect';
   if (/Broker did not report API port/i.test(message)) return 'spawn';
@@ -227,16 +212,26 @@ async function resolveApiPortWithFallback(
   throw new Error(`Failed to find an available API port near ${startApiPort}.`);
 }
 
+/**
+ * The broker base port. `AGENT_RELAY_BROKER_PORT` overrides the default so
+ * multiple brokers can run side by side (e.g. in tests); the broker HTTP API
+ * binds near `basePort + 1` with fallback scanning.
+ */
+export function resolveBrokerBasePort(deps: Pick<CoreDependencies, 'env'>): number {
+  const raw = Number.parseInt(deps.env.AGENT_RELAY_BROKER_PORT ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BROKER_BASE_PORT;
+}
+
 export async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
-  dashboardPort: number,
+  basePort: number,
   deps: CoreDependencies,
   brokerName?: string
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
-  const startApiPort = dashboardPort + 1;
+  const startApiPort = basePort + 1;
   const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
 
   const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName);
@@ -260,19 +255,27 @@ function startImplicitLocalFleetSidecar(
     deps.warn('Fleet local node skipped: broker connection file was not available.');
     return undefined;
   }
-  const node = createImplicitLocalFleetNode({
-    paths,
-    teamsConfig,
-    name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
-  });
-  return startFleetSidecar({
-    definition: node,
-    connection: { url: conn.url, apiKey: conn.api_key },
-    workspaceKey: relay.workspaceKey,
-    statusPath: fleetStatusPath(paths),
-    reconnect: true,
-    warn: (message) => deps.warn(message),
-  });
+  // The implicit local fleet node is best-effort: it lets this broker advertise
+  // itself as a fleet node, but the broker is already up and usable without it.
+  // Never let a sidecar setup failure abort `up`.
+  try {
+    const node = createImplicitLocalFleetNode({
+      paths,
+      teamsConfig,
+      name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
+    });
+    return startFleetSidecar({
+      definition: node,
+      connection: { url: conn.url, apiKey: conn.api_key },
+      workspaceKey: relay.workspaceKey,
+      statusPath: fleetStatusPath(paths),
+      reconnect: true,
+      warn: (message) => deps.warn(message),
+    });
+  } catch (err) {
+    deps.warn(`Fleet local node skipped: ${toErrorMessage(err)}`);
+    return undefined;
+  }
 }
 
 function isBrokerAlreadyRunningError(message: string): boolean {
@@ -354,18 +357,20 @@ function isBrokerExecutableCommand(command: string): boolean {
   return basename === 'agent-relay-broker' || basename.startsWith('agent-relay-broker-');
 }
 
-function isForegroundBrokerCliCommand(command: string): boolean {
+function isAttachedBrokerCliCommand(command: string): boolean {
   if (command.includes('agent-relay-mcp')) {
     return false;
   }
-  if (!/(?:^|\s)up(?:\s|$)/.test(command) || !/(?:^|\s)--foreground(?:\s|=|$)/.test(command)) {
+  // The attached `up` process holds the broker. Skip the transient
+  // `up --background` launcher, which exits as soon as the child is ready.
+  if (!/(?:^|\s)up(?:\s|$)/.test(command) || /(?:^|\s)--background(?:\s|=|$)/.test(command)) {
     return false;
   }
   return /(?:^|\s)(?:\S*agent-relay(?:\.js)?|\S*agent-relay-[^\s]+)(?:\s|$)/.test(command);
 }
 
 function isBrokerProcessCommand(command: string): boolean {
-  return isBrokerExecutableCommand(command) || isForegroundBrokerCliCommand(command);
+  return isBrokerExecutableCommand(command) || isAttachedBrokerCliCommand(command);
 }
 
 function escapeRegExp(value: string): string {
@@ -580,12 +585,7 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies): string[] {
-  const args = cliUserArgs(deps).filter(
-    (arg) => !['--background', '--foreground'].some((name) => matchesCliOption(arg, name))
-  );
-  if (options.dashboard === false && !args.includes('--no-dashboard')) {
-    args.push('--no-dashboard');
-  }
+  const args = cliUserArgs(deps).filter((arg) => !matchesCliOption(arg, '--background'));
   if (options.stateDir && !hasCliOption(args, '--state-dir')) {
     args.push('--state-dir', path.resolve(options.stateDir));
   }
@@ -597,9 +597,6 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
   }
   if (options.verbose === true && !args.includes('--verbose')) {
     args.push('--verbose');
-  }
-  if (options.dashboard === false && !args.includes('--foreground')) {
-    args.push('--foreground');
   }
   return args;
 }
@@ -700,62 +697,14 @@ async function waitForBrokerReadiness(
   return latest;
 }
 
-async function discoverExistingBrokerApiPort(
-  preferredApiPort: number,
-  maxAttempts: number,
-  deps: Pick<CoreDependencies, 'warn'>
-): Promise<number> {
-  const attempts = Math.max(1, maxAttempts);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const candidatePort = preferredApiPort + attempt;
-    if (candidatePort > MAX_PORT) {
-      return preferredApiPort;
-    }
-    try {
-      const response = await fetch(`http://localhost:${candidatePort}/health`);
-      if (response.ok) {
-        if (attempt > 0) {
-          deps.warn(`Detected existing broker API on port ${candidatePort}.`);
-        }
-        return candidatePort;
-      }
-    } catch {
-      // Keep scanning.
-    }
-  }
-  return preferredApiPort;
-}
-
-async function shutdownUpResources(
-  relay: CoreRelay,
-  dashboardProcess: SpawnedProcess | undefined,
-  dataDir: string,
-  deps: CoreDependencies,
-  ownsBroker: boolean
-): Promise<void> {
-  if (dashboardProcess && !dashboardProcess.killed) {
-    try {
-      dashboardProcess.kill('SIGTERM');
-    } catch {
-      // Best-effort cleanup.
-    }
-  }
-
+async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: CoreDependencies): Promise<void> {
   await relay.shutdown().catch(() => undefined);
-  if (ownsBroker) {
-    safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
-  }
+  safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
 }
 
 // eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
-
-  if (options.background && options.foreground) {
-    deps.error('Cannot use --background and --foreground together.');
-    deps.exit(1);
-    return;
-  }
 
   const paths = deps.getProjectPaths();
   // --state-dir overrides where the broker writes state / connection files
@@ -765,7 +714,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.env.AGENT_RELAY_STATE_DIR = resolved;
   }
 
-  if (options.background || (options.dashboard === false && !options.foreground)) {
+  if (options.background) {
     const preflight = await recoverHalfStartedBroker(paths, deps);
     if (preflight === 'running') {
       const pid = readBrokerPid(paths.dataDir, deps);
@@ -840,27 +789,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     return;
   }
 
-  const wantsDashboard = options.dashboard !== false;
-  const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
-  const shouldReuseExistingBroker = options.reuseExistingBroker === true;
-  const dashboardPort = wantsDashboard
-    ? await resolveDashboardPortWithFallback(requestedDashboardPort, MAX_DASHBOARD_PORT_ATTEMPTS, deps)
-    : requestedDashboardPort;
-  if (wantsDashboard && dashboardPort !== requestedDashboardPort) {
-    deps.warn(
-      `Requested dashboard port ${requestedDashboardPort} is already in use; active dashboard will run on ${dashboardPort}.`
-    );
-  }
-
+  const basePort = resolveBrokerBasePort(deps);
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
-  let existingPid = readBrokerPid(paths.dataDir, deps);
-  let ownsBroker = true;
+  const existingPid = readBrokerPid(paths.dataDir, deps);
 
   let relay: CoreRelay | null = null;
-  let apiPort = dashboardPort + 1;
-  let dashboardProcess: SpawnedProcess | undefined;
   let fleetSidecar: RunningFleetSidecar | undefined;
-  const dashboardVerbose = Boolean(options.verbose) || isDebugLikeLoggingEnabled(deps);
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
@@ -872,7 +806,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       } else {
         shutdownPromise = (async () => {
           await fleetSidecar?.stop();
-          await shutdownUpResources(relay, dashboardProcess, paths.dataDir, deps, ownsBroker);
+          await shutdownUpResources(relay, paths.dataDir, deps);
         })();
       }
     }
@@ -881,116 +815,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   try {
     if (existingPid !== null) {
       if (isProcessRunning(existingPid, deps)) {
-        if (!shouldReuseExistingBroker || !wantsDashboard) {
-          deps.error(`Broker already running for this project (pid: ${existingPid}).`);
-          deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
-          deps.exit(1);
-          return;
-        }
-
-        apiPort = await discoverExistingBrokerApiPort(Math.max(1, apiPort), MAX_API_PORT_ATTEMPTS, deps);
-        const reusableRelay = await deps.createRelay(paths.projectRoot, apiPort);
-        try {
-          await reusableRelay.getStatus();
-        } catch {
-          await reusableRelay.shutdown().catch(() => undefined);
-          deps.warn(
-            `Broker already running for this project (pid: ${existingPid}), but API port ${apiPort} is not responding.`
-          );
-          deps.warn('Treating this as stale broker state and starting a fresh broker.');
-          safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
-          existingPid = null;
-        }
-
-        if (existingPid === null) {
-          // fallthrough and start a fresh broker
-        } else {
-          relay = reusableRelay;
-          ownsBroker = false;
-          const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
-          const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
-          if (
-            deps.env.RELAY_DASHBOARD_RELAY_URL &&
-            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
-            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
-          ) {
-            deps.warn(
-              `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
-                `but this session computed ${expectedRelayUrl}.`
-            );
-          }
-          deps.log(`Relay API: ${dashboardRelayUrl}`);
-          if (dashboardVerbose) {
-            deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
-          }
-          deps.log(`Project: ${paths.projectRoot}`);
-          deps.log('Mode: broker (stdio)');
-          deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
-          deps.log('Broker already running for this project; reusing existing broker.');
-
-          if (wantsDashboard) {
-            const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
-            const dashboardStart = await startDashboardWithFallback(
-              paths,
-              dashboardPort,
-              apiPort,
-              deps,
-              dashboardVerbose,
-              relay?.workspaceKey,
-              brokerConn?.api_key
-            );
-            dashboardProcess = dashboardStart.process;
-            const startedDashboardPort = dashboardStart.port;
-            if (startedDashboardPort === null) {
-              deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-            } else {
-              if (startedDashboardPort !== dashboardPort) {
-                deps.warn(
-                  `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-                );
-              }
-              const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-              const dashboardUrl = dashboardPath
-                ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-                : `http://localhost:${startedDashboardPort}`;
-              deps.log(`Dashboard: ${dashboardUrl}`);
-
-              waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(
-                () => {}
-              );
-            }
-          }
-
-          fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps);
-
-          deps.onSignal('SIGINT', async () => {
-            sigintCount += 1;
-            if (shuttingDown) {
-              if (sigintCount >= 2) {
-                deps.warn('Force exiting...');
-                deps.exit(130);
-              }
-              return;
-            }
-            deps.log('\nStopping...');
-            await shutdownOnce();
-            deps.exit(0);
-          });
-          deps.onSignal('SIGTERM', async () => {
-            if (shuttingDown) {
-              return;
-            }
-            await shutdownOnce();
-            deps.exit(0);
-          });
-
-          await deps.holdOpen();
-          return;
-        }
+        deps.error(`Broker already running for this project (pid: ${existingPid}).`);
+        deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
+        deps.exit(1);
+        return;
       }
-
       safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
-      existingPid = null;
     }
 
     // If a workspace key was explicitly provided, inject it into the environment
@@ -1004,62 +834,14 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
-    const started = await startBrokerWithPortFallback(paths, dashboardPort, deps, options.brokerName);
+    const started = await startBrokerWithPortFallback(paths, basePort, deps, options.brokerName);
     relay = started.relay;
-    apiPort = started.apiPort;
-    const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
-    const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
-    if (
-      deps.env.RELAY_DASHBOARD_RELAY_URL &&
-      deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
-      deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
-    ) {
-      deps.warn(
-        `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
-          `but this session computed ${expectedRelayUrl}.`
-      );
-    }
-    deps.log(`Relay API: ${dashboardRelayUrl}`);
-    if (dashboardVerbose) {
-      deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
-    }
 
+    deps.log(`Relay API: http://localhost:${started.apiPort}`);
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
     deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
-
-    if (wantsDashboard) {
-      const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
-      const dashboardStart = await startDashboardWithFallback(
-        paths,
-        dashboardPort,
-        apiPort,
-        deps,
-        dashboardVerbose,
-        relay?.workspaceKey,
-        brokerConn?.api_key
-      );
-      dashboardProcess = dashboardStart.process;
-      const startedDashboardPort = dashboardStart.port;
-      if (startedDashboardPort === null) {
-        deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-      } else {
-        if (startedDashboardPort !== dashboardPort) {
-          deps.warn(
-            `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-          );
-        }
-        const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-        const dashboardUrl = dashboardPath
-          ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-          : `http://localhost:${startedDashboardPort}`;
-        deps.log(`Dashboard: ${dashboardUrl}`);
-
-        // Verify the dashboard is actually reachable (non-blocking)
-        waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(() => {});
-      }
-    }
 
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
     fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig);
@@ -1067,18 +849,14 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
-      if (wantsDashboard) {
-        deps.warn('Warning: auto-spawn from teams.json is skipped when dashboard mode manages the broker');
-      } else {
-        for (const agent of teamsConfig.agents) {
-          await relay.spawn({
-            name: agent.name,
-            cli: agent.cli,
-            channels: ['general'],
-            task: agent.task ?? '',
-            team: teamsConfig.team,
-          });
-        }
+      for (const agent of teamsConfig.agents) {
+        await relay.spawn({
+          name: agent.name,
+          cli: agent.cli,
+          channels: ['general'],
+          task: agent.task ?? '',
+          team: teamsConfig.team,
+        });
       }
     } else if (options.spawn === true && !teamsConfig) {
       deps.warn('Warning: --spawn specified but no teams.json found');
@@ -1109,14 +887,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   } catch (err: unknown) {
     await shutdownOnce();
     const message = toErrorMessage(err);
-    const stage = classifyBrokerStartStage(err, message, wantsDashboard);
+    const stage = classifyBrokerStartStage(err, message);
     track('broker_start_failed', {
       stage,
       error_class: classifyBrokerStartError(err),
     });
-    if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) {
-      deps.error(`Dashboard port ${dashboardPort} is already in use.`);
-    } else if (isBrokerAlreadyRunningError(message)) {
+    if (isBrokerAlreadyRunningError(message)) {
       reportAlreadyRunningError(message, paths.dataDir, deps);
     } else {
       deps.error(`Failed to start broker: ${describeError(err)}`);

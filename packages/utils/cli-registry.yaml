@@ -1,6 +1,6 @@
 # CLI Registry
 # Single source of truth for CLI tools, versions, and models.
-# Used by: TS SDK, Python SDK, relay-cloud, relay-dashboard
+# Used by: TS SDK, Python SDK, relay-cloud
 #
 # To update: Edit this file, then run `npm run codegen:models`
 

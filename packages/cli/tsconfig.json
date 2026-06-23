@@ -14,26 +14,12 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true,
-    "baseUrl": ".",
-    "paths": {
-      "@agent-relay/config": ["../config/dist/index.d.ts"],
-      "@agent-relay/config/*": ["../config/dist/*"],
-      "@agent-relay/policy": ["../policy/dist/index.d.ts"],
-      "@agent-relay/policy/*": ["../policy/dist/*"],
-      "@agent-relay/sdk": ["../sdk/dist/index.d.ts"],
-      "@agent-relay/sdk/*": ["../sdk/dist/*"],
-      "@agent-relay/harness-driver": ["../harness-driver/dist/index.d.ts"],
-      "@agent-relay/harness-driver/*": ["../harness-driver/dist/*"],
-      "@agent-relay/harnesses": ["../harnesses/dist/index.d.ts"],
-      "@agent-relay/harnesses/*": ["../harnesses/dist/*"],
-      "@agent-relay/fleet": ["../fleet/dist/index.d.ts"],
-      "@agent-relay/fleet/*": ["../fleet/dist/*"],
-      "@agent-relay/utils": ["../utils/dist/index.d.ts"],
-      "@agent-relay/utils/*": ["../utils/dist/*"],
-      "@agent-relay/cloud": ["../cloud/dist/index.d.ts"],
-      "@agent-relay/cloud/*": ["../cloud/dist/*"]
-    }
+    "sourceMap": true
+    // No `paths` for @agent-relay/* on purpose: the npm workspace symlinks them
+    // into node_modules, so tsc resolves their `.d.ts` and bundlers (bun,
+    // esbuild) resolve their `.js`. Mapping them to `dist/index.d.ts` here made
+    // the compiled CLI inline the declaration files and lose every workspace
+    // export at runtime (e.g. `local up` → "Fleet local node skipped").
   },
   "include": ["src/index.ts", "src/cli/index.ts", "src/cli/bootstrap.ts", "src/cli/agent-relay-mcp.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]

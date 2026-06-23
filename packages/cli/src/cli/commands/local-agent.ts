@@ -168,8 +168,7 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
 
 /**
  * Register the `local agent …` subtree (and `runtime tail`) onto the driver
- * group. List/spawn/release/kill talk to a running local broker; attach/new/tail
- * are interactive PTY operations and point the user at the dashboard.
+ * group. List/spawn/release/kill talk to a running local broker.
  */
 export function registerLocalAgentCommands(
   group: Command,

@@ -69,7 +69,7 @@ full matrix; the matrix itself is ~30s, the wall-clock is build-dominated.
 
 Each `fleet serve` runs in a hermetic env: all ambient `RELAY_*` / `AGENT_RELAY_*`
 vars are stripped (so the broker never rejoins the operator's real workspace), with
-its own `HOME`, project dir, state dir, and dashboard port. The broker reads its
+its own `HOME`, project dir, state dir, and broker port. The broker reads its
 node id from `<data_local_dir>/agent-relay/machine-id`, which the harness pre-seeds
 to match the enrolled node id (otherwise `node.register` is rejected
 `node_id_mismatch`). `FleetNode.stop()` kills the broker child too (by its

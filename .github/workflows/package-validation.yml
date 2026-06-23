@@ -127,7 +127,7 @@ jobs:
           # Check dist files exist (skip non-Node package directories).
           # broker-* packages ship a Rust-built binary in bin/, not a JS
           # dist — they live under packages/ only for workspace linkage.
-          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas telemetry"
+          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
             if [ ! -f "$pkg_dir/package.json" ]; then
@@ -192,13 +192,13 @@ jobs:
       - name: Test CLI startup
         run: |
           echo "=== Testing CLI broker lifecycle ==="
-          TEST_PORT=3899
-          API_PORT=$((TEST_PORT + 1))
-          # Start broker+dashboard in background
-          node packages/cli/dist/cli/index.js local up --port "$TEST_PORT" &
+          BROKER_PORT=3899
+          API_PORT=$((BROKER_PORT + 1))
+          # Start the broker in background
+          AGENT_RELAY_BROKER_PORT="$BROKER_PORT" node packages/cli/dist/cli/index.js local up &
           DAEMON_PID=$!
 
-          # Wait for health endpoint (broker API is dashboard port + 1)
+          # Wait for health endpoint (broker API is the base port + 1)
           for i in {1..20}; do
             if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
               break

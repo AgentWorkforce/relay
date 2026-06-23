@@ -1,9 +1,9 @@
 ---
 title: 'Broker lifecycle'
-description: 'Start, inspect, and stop the optional local broker runtime used for managed CLI agents and the local dashboard.'
+description: 'Start, inspect, and stop the optional local broker runtime used for managed CLI agents.'
 ---
 
-The version 8 core product is workspace messaging. The local broker is optional: use it when this machine should run managed CLI agents, expose a local dashboard, or attach to PTY/headless sessions.
+The version 8 core product is workspace messaging. The local broker is optional: use it when this machine should run managed CLI agents or attach to PTY/headless sessions.
 
 Broker commands live under `agent-relay local`.
 
@@ -17,12 +17,9 @@ Useful flags:
 
 | Flag | Description |
 | --- | --- |
-| `--no-dashboard` | Start the broker without the web dashboard. |
-| `--port <port>` | Dashboard port. The broker API uses the next available port. |
 | `--spawn` | Force auto-spawn from local team config. |
 | `--no-spawn` | Start only the broker. |
-| `--background` | Detach and leave the broker running. |
-| `--foreground` | Keep a no-dashboard broker attached to this terminal. |
+| `--background` | Detach and leave the broker running. The default is to stay attached to this terminal. |
 | `--workspace-key <key>` | Join a pre-existing Relay workspace. |
 | `--state-dir <path>` | Write runtime state outside `.agentworkforce/relay/`. |
 | `--broker-name <name>` | Override the broker identity. |

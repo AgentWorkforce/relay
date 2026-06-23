@@ -245,7 +245,7 @@ jobs:
 
       - name: Build standalone binary
         # `AGENT_RELAY_POSTHOG_KEY` (the code-side name read by
-        # packages/telemetry/src/posthog-config.ts via process.env) is
+        # packages/cli/src/cli/telemetry/posthog-config.ts via process.env) is
         # populated from the `POSTHOG_PROJECT_KEY` repository *variable*
         # (Settings → Variables, NOT Secrets). The bun standalone is an
         # end-user-shipped artifact, so we bake the key in via --define
@@ -898,7 +898,6 @@ jobs:
           - utils
           - cloud
           - sdk
-          - telemetry
           - brand
           - harness-driver
           - integration-prompts
@@ -1088,7 +1087,6 @@ jobs:
           - cloud
           - config
           - sdk
-          - telemetry
           - utils
           - harness-driver
 

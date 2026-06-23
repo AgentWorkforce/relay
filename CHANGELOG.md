@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Bun-compiled `agent-relay` standalone binary now bundles workspace packages from their compiled JS instead of their `.d.ts`, so `local up` starts the implicit Fleet local node instead of failing with `Fleet local node skipped: … is not a function`. The `tsconfig` `paths` that mapped `@agent-relay/*` to declaration files (no runtime exports) were redundant with the npm workspace symlinks and have been removed.
 - `agent-relay` and `@agent-relay/sdk` require `@relaycast/sdk` `^4.1.2`, whose matching `@relaycast/types` package is now published, so publish installs resolve cleanly without pinning.
 - `agent-relay fleet serve <node-def>` loads plain JavaScript node definitions without `jiti`, so the published Bun-compiled CLI can serve compiled JS node files.
 - Spawned opencode worker agents no longer pause for interactive tool-approval prompts; the broker injects a wildcard allow-all permission block into every generated `opencode.json`, augmenting existing partial permission objects rather than replacing them.
@@ -19,12 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/harness-driver` adds local fleet sidecar protocol frames for node and handler registration, clean node deregistration, broker handler invocation, handler results, handler-attributed spawns, object-record capability metadata, and sidecar supervision metadata.
 - `@agent-relay/cloud` adds a canonical cloud session and active-workspace contract, including `ensureCloudSession`, `resolveActiveWorkspace`, promoted workspace-store APIs, access-token-only `agent-relay cloud session --json`, and `agent-relay workspace active --json` for cross-language consumers.
 - `agent-relay-broker` adds a fleet node control plane: a `node_control` client that drives the harness-driver sidecar over the local protocol, runtime wiring that registers nodes and handlers, dispatches broker handler invocations, and attributes handler spawns, with hardened node/handler registration timing.
-- `agent-relay-broker` fleet node heartbeats now carry the node roster snapshot (name, node_id, capabilities, max_agents, version) alongside live load/liveness, so the relaycast engine refreshes a node's descriptor from the steady-state heartbeat — keeping `nodes.list()` accurate for live load, active agents, capabilities, and liveness across reconnects and engine restarts — and the broker additionally republishes the load snapshot after a worker is released, exits, or restarts so counts never go stale until the next periodic heartbeat (the SDK `RelayNode` read-model exposes `nodeId` plus liveness fields). The heartbeat omits `last_heartbeat_at`: the engine stamps receipt time server-side as the single source of truth for liveness.
+- `agent-relay-broker` keeps fleet node rosters and load counts accurate across reconnects, restarts, and worker lifecycle changes.
 - `@agent-relay/fleet` ships the fleet node SDK — `defineNode`/`action`/`spawn`/`onMessage` declare a node's typed capabilities and channel-message triggers. Trigger `match` regexes must be flag-free: a flagged regex (e.g. `/ship/i`) is rejected at `defineNode` rather than silently matched case-sensitively — use character classes like `[Ss]hip`.
 - `agent-relay fleet serve|nodes|status` runs a fleet node sidecar and inspects registered nodes, and the broker MCP surface adds `query_nodes` and `spawn` tools.
 - `@agent-relay/integration-prompts` provides shared Relayfile integration descriptor discovery and prompt builders for prescriptive, full-inject, and slim writeback instructions.
 - `@agent-relay/config` `CLI_AUTH_CONFIG` adds an `xai` provider (Grok CLI): `grok login --device-auth` device-code connect, `~/.grok/auth.json` credential capture, and the official x.ai installer as the sandbox fallback — so cloud sandboxes can authenticate the `grok` harness from a connected account instead of an API key.
 - `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`, `inbox.subscribe`, `inbox.ack/fail/defer`, and `deliveries.ack/fail/defer` now use the hosted delivery ledger, agent-scoped capabilities report `serverDeliveryState: true`, and `DeliveryRunner` works against Relaycast-backed inbox items.
+- `sdk-swift` splits broker orchestration into `AgentRelayBrokerSDK` and adds hosted participant `AgentRelaySDK` APIs for workspace registration, channel/DM messaging, inbound events, and relay-routed `AgentClient.registerAction(...)` handlers.
 - `@agent-relay/sdk` adds `placement.spawn({ capability, node?, repo? })` — node-targeted/`self`/least-eligible placement that gates on advertised capability and repo-key map, queues with a bounded TTL until an eligible live node appears, and surfaces queue/fail visibility through `onReconcile` events. A `spawn:<cli>` capability pins the broker harness — a mismatched `input.cli` is rejected — and the exported `RelayPlacementError` reports `capability_mismatch` / `placement_queue_full` / `placement_ttl_expired` / `unmapped_repo`.
 - `agent-relay fleet config|enable|disable|inherit` and `@agent-relay/sdk` `workspace.fleetNodes` expose the per-workspace fleet node rollout flag.
 - Two-node fleet E2E (`tests/e2e/fleet`, `npm run test:e2e`, `Fleet E2E` CI workflow): boots a real relaycast engine plus two `agent-relay fleet serve` nodes (real Rust broker + sidecar each) and asserts the live control wire — boot/register (real broker `Authorization: Bearer` node auth), negative auth, capability-filtered roster, cross-node action dispatch + ack, declarative trigger fire-once with loop guard, end-to-end spawn completion (token mint+inject), capability-routed + least-loaded + resume placement, `capability_mismatch` failure, in-flight reschedule on node death + restart reconcile, and bounded-mailbox TTL dead-letter.
@@ -32,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `@agent-relay/sdk` and `@agent-relay/cli` now depend on `@relaycast/sdk` 4.0 (durable-delivery status model `queued|delivered|acked|failed|dead_lettered`).
+- `agent-relay-broker` upgrades the bundled `relaycast` crate from 3.0 to 4.1, changing the relaycast-backed local delivery store schema.
+- `agent-relay` and `@agent-relay/sdk` update `@relaycast/sdk` to the latest `4.1.6` patch.
 
 - `codex-relay-skill` and `gemini-relay-extension` now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK. Set `RELAY_BASE_URL` to keep using `https://api.relaycast.dev`.
 - `agent-relay local agent message hold|flush|auto <name>` now owns local broker delivery controls; the old top-level `agent-relay agent message ...` path was removed.
@@ -45,6 +49,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/cloud` refresh now fails with typed, timeout-bounded errors and migrates legacy `~/.agent-relay/cloud-auth.json` credentials into the canonical `~/.agentworkforce/relay/cloud-auth.json` store without dual-writing.
 - `@agent-relay/cloud` preserves operator refresh-token expiry metadata and refreshes canonical cloud sessions before access or refresh tokens reach their renewal windows.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
+
+### Removed
+
+- The local web dashboard is removed. `agent-relay up` no longer starts a dashboard, the installer no longer fetches the `relay-dashboard-server` binary / UI or installs `@agent-relay/dashboard-server`, and `up` drops the `--no-dashboard`, `--port`, and `--foreground` flags.
+- Telemetry drops the `human_dashboard` `ActionSource` (CLI and `agent-relay-broker`); broker HTTP-API spawns now report `human_cli`.
+
+### Breaking Changes
+
+- `agent-relay up` is broker-only and runs attached by default. The previous `--no-dashboard` (which detached) is gone — use `--background` to run detached. The `--no-dashboard`, `--port`, and `--foreground` flags now error as unknown options.
+- The `AGENT_RELAY_DASHBOARD_PORT` environment variable is replaced by `AGENT_RELAY_BROKER_PORT`, which sets the broker base port (the HTTP API binds the next free port above it).
+
+### Migration Guidance
+
+- Replace `agent-relay up --no-dashboard` with `agent-relay up --background`.
+- Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
+- Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
+
+## [9.0.1] - 2026-06-21
+
+### Changed
+
+- Drop the removed @agent-relay/telemetry package
+- Remove the deprecated @agent-relay/telemetry placeholder package
+- Bump relaycast to latest (broker crate 4.1.1 + CLI SDK 4.1.6)
+- Record the relay dashboard removal
+- Remove the local relay dashboard
+- Drop the legacy ~/.agent-relay auth fallback
+- Fix verifiable gaps between docs and code
+
+## [8.9.2] - 2026-06-19
+
+### Fixed
+
+- Accept grok and opencode in the spawn tool cli enum
 
 ## [8.9.1] - 2026-06-19
 

@@ -89,7 +89,6 @@ export default defineConfig({
         // actually unit-test here.
         'packages/cloud/src/workflows.ts',
         'packages/cloud/src/api-client.ts',
-        'packages/telemetry/**',
       ],
       // Thresholds recalibrated for Vitest 4's AST-aware V8 coverage
       // remapping, which reports a few points lower than v3 on the same

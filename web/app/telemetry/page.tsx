@@ -222,12 +222,12 @@ export default function TelemetryPage() {
           <p>
             The telemetry implementation is fully open source. You can inspect exactly what is collected:{' '}
             <a
-              href="https://github.com/AgentWorkforce/relay/tree/main/packages/telemetry"
+              href="https://github.com/AgentWorkforce/relay/tree/main/packages/cli/src/cli/telemetry"
               target="_blank"
               rel="noopener noreferrer"
               className={s.link}
             >
-              packages/telemetry
+              packages/cli/src/cli/telemetry
             </a>
           </p>
         </section>

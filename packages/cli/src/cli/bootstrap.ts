@@ -109,7 +109,7 @@ function resolveProgramName(argv: string[] = process.argv): string {
 
 /**
  * Export the resolved CLI + SDK versions on the current process env so that
- * any child process we spawn (the Rust broker, the dashboard server, etc.)
+ * any child process we spawn (the Rust broker, etc.)
  * inherits them and can attach them as common telemetry properties without
  * having to re-resolve `package.json`s on its own.
  *

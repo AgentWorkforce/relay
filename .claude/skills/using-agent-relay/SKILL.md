@@ -194,7 +194,7 @@ operations:
 
 ```bash
 agent-relay status
-agent-relay local up --no-dashboard --verbose
+agent-relay local up --verbose
 agent-relay local status --wait-for 10
 agent-relay local agent list
 agent-relay local agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
