@@ -129,6 +129,13 @@ describe('SDK-backed CLI groups', () => {
     expect(log).toHaveBeenCalled();
   });
 
+  it('integration webhook list-inbound routes to webhooks.list', async () => {
+    const { program, relay, log } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'webhook', 'list-inbound'], { from: 'user' });
+    expect(relay.webhooks.list).toHaveBeenCalled();
+    expect(log).toHaveBeenCalled();
+  });
+
   it('integration webhook delete-inbound routes to webhooks.delete', async () => {
     const { program, relay } = harness(registerIntegrationCommands);
     await program.parseAsync(['integration', 'webhook', 'delete-inbound', 'in1'], { from: 'user' });
