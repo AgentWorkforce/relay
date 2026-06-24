@@ -50,7 +50,7 @@ package depends on it by version.
 ```swift
 import AgentRelaySDK
 
-let relay = AgentRelayClient(apiKey: "rk_live_...")
+let relay = AgentRelayClient(apiKey: "rk_live_...", baseURL: URL(string: "https://relay.example.com")!)
 let registration = try await relay.registerOrRotate(name: "swift-agent")
 let agent = registration.asClient()
 

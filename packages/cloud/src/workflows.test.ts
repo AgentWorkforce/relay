@@ -218,6 +218,92 @@ describe('parseWorkflowPaths', () => {
       { name: 'relay', path: '../relay' },
     ]);
   });
+
+  it('reads a YAML block scalar pushPrBody', () => {
+    const paths = parseWorkflowPaths(
+      [
+        'paths:',
+        '  - name: cloud',
+        '    path: .',
+        '    pushPrBody: |',
+        '      First line',
+        '      Second line',
+        '    pushBranch: feature/x',
+        'swarm:',
+        '  pattern: dag',
+      ].join('\n'),
+      'yaml'
+    );
+
+    expect(paths).toEqual([
+      {
+        name: 'cloud',
+        path: '.',
+        pushBranch: 'feature/x',
+        pushPrBody: 'First line\nSecond line',
+      },
+    ]);
+  });
+
+  it('folds a YAML folded (>) pushPrBody', () => {
+    const paths = parseWorkflowPaths(
+      [
+        'paths:',
+        '  - name: cloud',
+        '    path: .',
+        '    pushPrBody: >',
+        '      First line',
+        '      still first paragraph',
+        '',
+        '      Second paragraph',
+      ].join('\n'),
+      'yaml'
+    );
+
+    expect(paths).toEqual([
+      {
+        name: 'cloud',
+        path: '.',
+        pushPrBody: 'First line still first paragraph\nSecond paragraph',
+      },
+    ]);
+  });
+
+  it('ignores commented-out paths in TS workflow source', () => {
+    const paths = parseWorkflowPaths(
+      `
+      export const config = {
+        // paths: [{ name: 'old', path: '../old' }],
+        paths: [
+          { name: 'cloud', path: '.' },
+          /* { name: 'disabled', path: '../disabled' }, */
+          { name: 'relay', path: '../relay' },
+        ],
+      };
+      `,
+      'ts'
+    );
+
+    expect(paths).toEqual([
+      { name: 'cloud', path: '.' },
+      { name: 'relay', path: '../relay' },
+    ]);
+  });
+
+  it('does not treat // inside a TS string as a comment', () => {
+    const paths = parseWorkflowPaths(
+      `
+      export const config = {
+        paths: [
+          { name: 'cloud', path: 'https://example.com/repo' },
+        ],
+      };
+      `,
+      'ts'
+    );
+
+    expect(paths).toEqual([{ name: 'cloud', path: 'https://example.com/repo' }]);
+  });
 });
 
 describe('parseGitHubRemote', () => {

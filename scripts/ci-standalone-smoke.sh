@@ -127,7 +127,11 @@ sleep 8
 UP_EXIT=""
 if kill -0 "$UP_PID" 2>/dev/null; then
   run_cli local down --force --timeout 5000 >/dev/null 2>&1 || true
+  # Hard-kill after 15s if down --force didn't terminate the process (e.g. macOS 26 hang)
+  ( sleep 15 && kill -9 "$UP_PID" 2>/dev/null || true ) &
+  KILLER_PID=$!
   wait "$UP_PID" || true
+  kill "$KILLER_PID" 2>/dev/null || true
 else
   if wait "$UP_PID"; then
     UP_EXIT=0

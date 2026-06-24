@@ -47,7 +47,6 @@
     "packages/personas",
     "packages/policy",
     "packages/slack-primitive",
-    "packages/trajectory",
-    "web"
+    "packages/trajectory"
   ]
 }

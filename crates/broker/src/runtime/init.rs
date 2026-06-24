@@ -194,7 +194,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     log_startup_phase(startup_debug, broker_start, "connect_relay completed");
 
     let RelaySession {
-        http_base,
+        configured_base,
         default_workspace_id,
         workspaces,
         ws_inbound_rx,
@@ -228,10 +228,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let node_name = crate::node_control::default_node_name(
         (!cmd.name.trim().is_empty()).then_some(cmd.name.as_str()),
     );
-    let fleet_ws_url = format!(
-        "{}/v1/node/ws",
-        derive_ws_base_url_from_http(&http_base).trim_end_matches('/')
-    );
+    let fleet_ws_url = relaycast::node_control_ws_url(configured_base.as_deref());
     let node_token = std::env::var("RELAY_NODE_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
@@ -283,6 +280,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         events_tx: events_tx.clone(),
         replay_buffer: replay_buffer.clone(),
         workspace_key: Some(relay_workspace_key.clone()),
+        relay_base_url: configured_base.clone(),
         memberships: workspace_memberships.clone(),
         default_workspace_id: default_workspace_id.clone(),
         persist: cmd.persist,
@@ -373,7 +371,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
 
     let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
     let mut worker_env = vec![
-        ("RELAY_BASE_URL".to_string(), http_base.clone()),
         (
             "AGENT_RELAY_WORKSPACE_KEY".to_string(),
             relay_workspace_key.clone(),
@@ -392,6 +389,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             relay_workspaces_json.clone(),
         ),
     ];
+    // Pass RELAY_BASE_URL to workers only when an override is configured; when
+    // unset, workers inherit the SDK default.
+    if let Some(base) = configured_base.as_deref() {
+        worker_env.push(("RELAY_BASE_URL".to_string(), base.to_string()));
+    }
     if let Some(default_workspace_id) = default_workspace_id.clone() {
         // Do NOT stamp RELAYFILE_WORKSPACE from default_workspace_id. The
         // relaycast workspace id and the relayfile workspace id are

@@ -3,7 +3,7 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import relayPlugin, {
+import {
   RelayState,
   type SpawnLike,
   createRelayConnectTool,
@@ -11,12 +11,7 @@ import relayPlugin, {
   createRelaySendTool,
   createRelaySpawnTool,
 } from '../src/index.js';
-import {
-  MockRelayServer,
-  connectRelayState,
-  createMockFetch,
-  createPluginContext,
-} from './mock-relay-server.js';
+import { MockRelayServer, connectRelayState, createMockRelayCastFactory } from './mock-relay-server.js';
 
 class FakeChildProcess extends EventEmitter implements Pick<ChildProcess, 'kill' | 'pid'> {
   pid: number;
@@ -36,11 +31,9 @@ describe('Integration tests', () => {
 
   beforeEach(() => {
     server = new MockRelayServer();
-    vi.stubGlobal('fetch', createMockFetch(server) as typeof fetch);
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -48,7 +41,9 @@ describe('Integration tests', () => {
     const state = new RelayState();
 
     // Connect
-    await createRelayConnectTool(state).handler({
+    await createRelayConnectTool(state, {
+      createRelayCast: createMockRelayCastFactory(server),
+    }).handler({
       workspace: 'rk_live_test_workspace',
       name: 'Alice',
     });
@@ -77,7 +72,7 @@ describe('Integration tests', () => {
   });
 
   it('spawn-ack-flow: spawn worker, worker ACKs, worker sends DONE, dismiss', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
     const proc = new FakeChildProcess(9999);
     const spawnMock = vi.fn<SpawnLike>(() => proc as unknown as ChildProcess);
 
