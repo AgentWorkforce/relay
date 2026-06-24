@@ -847,8 +847,12 @@ mod tests {
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
-        let client =
-            RelaycastHttpClient::new(Some(base_url.to_string()), "rk_live_test", "broker", "codex");
+        let client = RelaycastHttpClient::new(
+            Some(base_url.to_string()),
+            "rk_live_test",
+            "broker",
+            "codex",
+        );
         client.seed_agent_token("broker", "at_live_test");
         client
     }

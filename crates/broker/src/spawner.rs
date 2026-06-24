@@ -234,10 +234,7 @@ pub fn spawn_env_vars(
     ];
     // Pass RELAY_BASE_URL to the child only when an override is configured; when
     // unset, the child inherits the SDK default.
-    if let Some(base_url) = base_url
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
         env.push(("RELAY_BASE_URL".to_string(), base_url.to_string()));
     }
     // Per-worker attribution: tell the spawned agent's JS SDK its origin_actor
