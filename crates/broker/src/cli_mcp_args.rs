@@ -144,7 +144,7 @@ async fn register_agent_token_for_mcp_args(
         })?;
     let cli_lower = detect_cli_name_for_mcp_args(cli).to_lowercase();
     let client = RelaycastHttpClient::new(
-        base_url.clone(),
+        Some(base_url.clone()),
         api_key.clone(),
         agent_name.to_string(),
         cli_lower.clone(),
@@ -319,7 +319,7 @@ mod tests {
             cli: cli.to_string(),
             agent_name: "test-agent".to_string(),
             api_key: Some("rk_live_test".to_string()),
-            base_url: Some("https://api.test.relaycast.dev".to_string()),
+            base_url: Some("https://relay.example.com".to_string()),
             agent_token: Some("at_live_test".to_string()),
             register: false,
             workspaces_json: Some(r#"{"workspaces":[]}"#.to_string()),
@@ -650,7 +650,7 @@ mod tests {
             "claude",
             "test-agent",
             Some("rk_live_test"),
-            Some("https://api.test.relaycast.dev"),
+            Some("https://relay.example.com"),
             &[],
             &temp.path().canonicalize().unwrap(),
             Some("at_live_test"),
@@ -675,7 +675,7 @@ mod tests {
             "codex",
             "test-agent",
             Some("rk_live_test"),
-            Some("https://api.test.relaycast.dev"),
+            Some("https://relay.example.com"),
             &[],
             &temp.path().canonicalize().unwrap(),
             Some("at_live_test"),
@@ -702,7 +702,7 @@ mod tests {
         // there's no risk of state leaking even on panic.
         let _env = EnvGuard::all();
         std::env::set_var("RELAY_API_KEY", "rk_live_from_env");
-        std::env::set_var("RELAY_BASE_URL", "https://api.env.relaycast.dev");
+        std::env::set_var("RELAY_BASE_URL", "https://relay.example.com");
         std::env::set_var("RELAY_AGENT_TOKEN", "at_live_from_env");
         std::env::set_var("RELAY_WORKSPACES_JSON", r#"{"workspaces":["env-ws"]}"#);
         std::env::set_var("RELAY_DEFAULT_WORKSPACE", "env-default-workspace");
@@ -739,7 +739,7 @@ mod tests {
         // so if env fallback works the sentinel values show up in the env
         // block or the RELAY_API_KEY that claude's injection path writes.
         assert!(
-            config_json.contains("https://api.env.relaycast.dev"),
+            config_json.contains("https://relay.example.com"),
             "base url from env missing in claude config: {config_json}"
         );
         assert!(

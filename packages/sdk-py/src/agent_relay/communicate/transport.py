@@ -19,7 +19,6 @@ except ImportError:
     )
 
 from .types import (
-    DEFAULT_RELAY_BASE_URL,
     Message,
     MessageCallback,
     RelayAuthError,
@@ -281,7 +280,11 @@ class RelayTransport:
             )
 
     def _base_url(self) -> str:
-        return (self.config.base_url or DEFAULT_RELAY_BASE_URL).rstrip("/")
+        if not self.config.base_url:
+            raise RelayConfigError(
+                "base_url is required: pass base_url=... to RelayConfig or set RELAY_BASE_URL."
+            )
+        return self.config.base_url.rstrip("/")
 
     @staticmethod
     def _unwrap(body: Any) -> Any:

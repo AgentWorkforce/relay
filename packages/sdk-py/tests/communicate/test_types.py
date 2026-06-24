@@ -155,14 +155,11 @@ class TestRelayConfig:
         config = RelayConfig()
         assert config.base_url == "https://env.api.dev"
 
-    def test_base_url_default_when_no_env(self, monkeypatch):
-        """When RELAY_BASE_URL is not set, base_url defaults to the Relaycast cloud URL."""
+    def test_base_url_none_when_no_env(self, monkeypatch):
+        """When RELAY_BASE_URL is not set and no value is passed, base_url stays None."""
         monkeypatch.delenv("RELAY_BASE_URL", raising=False)
         config = RelayConfig()
-        # base_url should resolve to the default cloud URL when accessed
-        # The exact resolution may happen at init or lazily; either None or the default is acceptable
-        # but the resolved value should be "https://api.relaycast.dev"
-        assert config.base_url is None or config.base_url == "https://api.relaycast.dev"
+        assert config.base_url is None
 
     def test_explicit_value_overrides_env_var(self, monkeypatch):
         monkeypatch.setenv("RELAY_WORKSPACE", "env-workspace")

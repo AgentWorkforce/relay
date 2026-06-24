@@ -667,7 +667,7 @@ pub(crate) async fn run_wrap(
     tracing::debug!("connected to relaycast");
 
     let RelaySession {
-        http_base,
+        configured_base,
         default_workspace_id,
         workspaces,
         mut ws_inbound_rx,
@@ -702,7 +702,7 @@ pub(crate) async fn run_wrap(
     }
     .cloned()
     .context("no relay workspace available for wrap mode")?;
-    let child_base_url = http_base.clone();
+    let child_base_url = configured_base.clone();
     let child_workspaces_json = serde_json::to_string(
         &workspaces
             .iter()
@@ -1059,7 +1059,7 @@ pub(crate) async fn run_wrap(
                                     let env_vars = spawn_env_vars(
                                         &params.name,
                                         &workspace_child_api_key,
-                                        &child_base_url,
+                                        child_base_url.as_deref(),
                                         &channels,
                                         Some(&child_workspaces_json),
                                         default_workspace_id.as_deref(),

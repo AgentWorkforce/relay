@@ -6,7 +6,7 @@
  *
  * Run:
  *   node tests/integration/sdk/v8-api-smoke.mjs
- *   RELAY_BASE_URL=https://api.relaycast.dev node tests/integration/sdk/v8-api-smoke.mjs
+ *   RELAY_BASE_URL=http://localhost:8787 node tests/integration/sdk/v8-api-smoke.mjs
  *
  * Exits 0 on success, non-zero on the first failed assertion.
  */

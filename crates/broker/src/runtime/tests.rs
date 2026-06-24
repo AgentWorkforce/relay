@@ -31,10 +31,10 @@ use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
     build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
     clear_pending_delivery_if_event_matches, continuity_dir,
-    delivery_read_ack_is_relaycast_message, delivery_retry_interval, derive_ws_base_url_from_http,
-    display_target_for_dashboard, drop_pending_for_worker, emit_delivery_attempt_outcome,
-    emit_dropped_delivery_failures, ensure_ephemeral_paths, extract_mcp_message_ids,
-    http_api_event_emit_timeout, http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
+    delivery_read_ack_is_relaycast_message, delivery_retry_interval, display_target_for_dashboard,
+    drop_pending_for_worker, emit_delivery_attempt_outcome, emit_dropped_delivery_failures,
+    ensure_ephemeral_paths, extract_mcp_message_ids, http_api_event_emit_timeout,
+    http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
     is_relaycast_self_control_target, is_unknown_worker_error_message, load_pending_deliveries,
     mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, normalize_channel,
     normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
@@ -690,18 +690,6 @@ fn exit_after_task_instruction_appends_clean_exit_contract() {
     let task = apply_exit_after_task_instruction(Some("Ship the patch".to_string()));
     assert!(task.starts_with("Ship the patch\n\n## Post-task exit"));
     assert!(task.contains("output `/exit` on its own line"));
-}
-
-#[test]
-fn ws_base_derivation() {
-    assert_eq!(
-        derive_ws_base_url_from_http("https://cast.agentrelay.com"),
-        "wss://cast.agentrelay.com"
-    );
-    assert_eq!(
-        derive_ws_base_url_from_http("http://localhost:8787"),
-        "ws://localhost:8787"
-    );
 }
 
 #[test]
@@ -1608,7 +1596,8 @@ async fn confirmed_delivery_read_ack_marks_relaycast_exactly_once() {
             }
         }));
     });
-    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     seed_supplied_agent_token(&client, "recipient", "at_live_supplied_recipient");
     let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
     let (tx, mut rx) = mpsc::channel(4);
@@ -1687,7 +1676,8 @@ async fn duplicate_delivery_read_ack_suppresses_repeat_mark_read() {
             }
         }));
     });
-    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     seed_supplied_agent_token(&client, "recipient", "at_live_recipient_dup");
     let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
     let (tx, mut rx) = mpsc::channel(4);
@@ -1743,7 +1733,8 @@ async fn stale_delivery_ack_event_id_does_not_mark_read() {
         when.method(POST).path("/v1/messages/msg_current/read");
         then.status(200).json_body(json!({"ok": true, "data": {}}));
     });
-    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     seed_supplied_agent_token(&client, "recipient", "at_live_recipient");
     let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
     let (tx, mut rx) = mpsc::channel(4);
@@ -1787,7 +1778,8 @@ async fn synthetic_delivery_read_ack_skips_mark_read() {
         when.method(POST).path("/v1/messages/init_123/read");
         then.status(200).json_body(json!({"ok": true, "data": {}}));
     });
-    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
     let (tx, mut rx) = mpsc::channel(4);
 
@@ -1848,7 +1840,8 @@ async fn slow_delivery_read_ack_does_not_block_confirmation_path() {
                 }
             }));
     });
-    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     seed_supplied_agent_token(&client, "recipient", "at_live_slow_recipient");
     let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
     let (tx, mut rx) = mpsc::channel(4);

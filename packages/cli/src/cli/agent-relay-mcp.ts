@@ -106,20 +106,21 @@ function resolveEnv(key: string): string | undefined {
 }
 
 /**
- * Normalize a base URL by stripping trailing slashes, falling back to the
- * gateway default when none is provided.
+ * Normalize a base URL by stripping trailing slashes. Returns `undefined` when
+ * no base URL is provided — this helper never injects a default. The hosted
+ * base-URL default is owned by `@relaycast/sdk` (`RelayCast`/`WsClient`/
+ * `AgentRelay` apply it when `options.baseUrl` is omitted).
  *
- * @deprecated No longer used internally — the base URL default is now owned by
- * `@relaycast/sdk` (`RelayCast`/`WsClient`/`AgentRelay` all default
- * `options.baseUrl` to `https://gateway.relaycast.dev`). Retained only to keep
- * the public `agent-relay/mcp` export surface stable for downstream importers.
+ * @deprecated No longer used internally; retained only to keep the public
+ * `agent-relay/mcp` export surface stable for downstream importers.
  */
-export function normalizeBaseUrl(baseUrl?: string): string {
+export function normalizeBaseUrl(baseUrl?: string): string | undefined {
+  if (!baseUrl) return undefined;
   // Strip trailing slashes with a linear loop rather than a regex. A pattern
   // like `/\/+$/` triggers CodeQL's polynomial-backtracking (ReDoS) warning on
   // uncontrolled input with many repeated '/'; `endsWith`/`slice` is O(n) and
   // has no backtracking.
-  let url = baseUrl ?? 'https://cast.agentrelay.com';
+  let url = baseUrl;
   while (url.endsWith('/')) url = url.slice(0, -1);
   return url;
 }
