@@ -161,9 +161,7 @@ export function registerIntegrationCommands(
       const payload = JSON.parse((o.payload as string) ?? '{}') as Record<string, unknown>;
       printJson(
         deps,
-        await runIntegrationOperation(deps, o, (relay) =>
-          relay.integrations.webhooks.trigger(id, payload)
-        )
+        await runIntegrationOperation(deps, o, (relay) => relay.integrations.webhooks.trigger(id, payload))
       );
     });
   });
@@ -220,9 +218,7 @@ export function registerIntegrationCommands(
     await runSdk(deps, async () => {
       printJson(
         deps,
-        await runIntegrationOperation(deps, o, (relay) =>
-          relay.integrations.subscriptions.create({ event })
-        )
+        await runIntegrationOperation(deps, o, (relay) => relay.integrations.subscriptions.create({ event }))
       );
     });
   });

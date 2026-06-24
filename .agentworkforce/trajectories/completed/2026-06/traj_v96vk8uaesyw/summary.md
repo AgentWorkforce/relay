@@ -18,6 +18,7 @@ Addressed PR 1198 feedback by broadening integration auth fallback matching, gen
 ## Key Decisions
 
 ### Generalized integration auth fallback and included broker Relaycast base URL
+
 - **Chose:** Generalized integration auth fallback and included broker Relaycast base URL
 - **Reasoning:** PR feedback pointed out brittle auth matching and inbound-only fallback; exposing relay_base_url in /api/session also prevents retrying a broker workspace key against the wrong Relaycast backend.
 
@@ -26,6 +27,7 @@ Addressed PR 1198 feedback by broadening integration auth fallback matching, gen
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Generalized integration auth fallback and included broker Relaycast base URL: Generalized integration auth fallback and included broker Relaycast base URL
