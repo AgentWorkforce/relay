@@ -86,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pin verify-standalone-macos to macos-15 and add smoke wait timeout
 - Record workspace_id from agent registration response
 - Use @relaycast/sdk instead of dead bespoke RPC API
-- Drop redundant @agent-relay/* tsconfig paths so the compiled CLI keeps workspace exports
+- Drop redundant @agent-relay/\* tsconfig paths so the compiled CLI keeps workspace exports
 
 ## [9.0.1] - 2026-06-21
 
