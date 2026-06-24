@@ -88,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Retry inbound webhook auth from local broker
-- Escape glob in @agent-relay/* to satisfy prettier
+- Escape glob in @agent-relay/\* to satisfy prettier
 
 ## [9.1.0] - 2026-06-24
 
