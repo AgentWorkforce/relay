@@ -18,6 +18,7 @@ Fixed inbound webhook CLI local workflow auth fallback. The new create-inbound/l
 ## Key Decisions
 
 ### Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure
+
 - **Chose:** Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure
 - **Reasoning:** PR 1193 added command wrappers, but local workflows can still use stale global SDK auth; retrying only inbound webhook commands preserves explicit --workspace-key behavior while making local broker sessions work.
 
@@ -26,7 +27,8 @@ Fixed inbound webhook CLI local workflow auth fallback. The new create-inbound/l
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure: Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure
 - Focused CLI tests and package build pass; change is scoped to inbound webhook auth fallback
