@@ -1411,7 +1411,7 @@ jobs:
   verify-standalone-macos:
     name: Verify Standalone (macOS)
     needs: [build-standalone, build-broker]
-    runs-on: macos-latest
+    runs-on: macos-15
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
       fail-fast: false
