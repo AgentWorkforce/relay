@@ -1,5 +1,13 @@
 import Foundation
+import Relaycast
 
+/// Hosted-participant client. This is a thin facade over the relaycast Swift
+/// engine SDK (`Relaycast`): registration, reconnect, workspace lookup, channel
+/// posting, DMs, action handling, and the realtime event stream are all served
+/// by `Relaycast.RelayCast` / `Relaycast.AgentClient` / `Relaycast.WsClient`.
+///
+/// The public surface (types, method signatures, AsyncStream APIs) is preserved
+/// so existing callers keep working; only the transport implementation changed.
 public final class AgentRelay: @unchecked Sendable {
     private let core: HostedWorkspaceCore
     public let workspaceKey: String
@@ -9,8 +17,7 @@ public final class AgentRelay: @unchecked Sendable {
         self.workspaceKey = workspaceKey
         let resolved = Self.resolveBaseURL(from: baseURL)
         self.baseURL = resolved
-        let http = HostedHTTP(baseURL: resolved, apiKey: workspaceKey)
-        self.core = HostedWorkspaceCore(workspaceKey: workspaceKey, baseURL: resolved, http: http)
+        self.core = HostedWorkspaceCore(workspaceKey: workspaceKey, baseURL: resolved)
     }
 
     public convenience init(apiKey: String, baseURL: URL? = nil) {
@@ -51,7 +58,7 @@ public final class AgentRelay: @unchecked Sendable {
         if let baseURL {
             return baseURL
         }
-        return URL(string: "https://gateway.relaycast.dev")!
+        return URL(string: "https://cast.agentrelay.com")!
     }
 }
 
@@ -62,141 +69,142 @@ public typealias AgentRelayClient = AgentRelay
 final class HostedWorkspaceCore: @unchecked Sendable {
     let workspaceKey: String
     let baseURL: URL
-    let http: any HostedHTTPClient
-    let encoder = JSONEncoder()
+    // `Relaycast.RelayCast(options:)` can throw (e.g. empty apiKey, invalid
+    // baseURL). The public `AgentRelay` initializers are non-throwing, so we
+    // capture the construction result eagerly and rethrow a translated
+    // `RelayError` on first use instead of force-unwrapping (which would crash
+    // the process on bad configuration).
+    private let relayResult: Result<Relaycast.RelayCast, Error>
 
-    init(workspaceKey: String, baseURL: URL, http: any HostedHTTPClient) {
+    init(workspaceKey: String, baseURL: URL) {
         self.workspaceKey = workspaceKey
         self.baseURL = baseURL
-        self.http = http
+        // PRESERVE the configured host: pass it explicitly into relaycast.
+        self.relayResult = Result {
+            try Relaycast.RelayCast(
+                options: Relaycast.RelayCastOptions(
+                    apiKey: workspaceKey,
+                    baseURL: baseURL.absoluteString
+                )
+            )
+        }
+    }
+
+    /// Resolve the wrapped relaycast engine, surfacing configuration errors as
+    /// `RelayError` rather than crashing.
+    func relayCast() throws -> Relaycast.RelayCast {
+        do {
+            return try relayResult.get()
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     func register(name: String, type: RelayAgentType) async throws -> AgentRegistration {
-        let body = try encode(RegisterAgentRequest(name: name, type: type))
-        let response = try await http.post(path: "/v1/agents", body: body)
-        let registration = try decodeAPIData(response, as: AgentRegistrationResponse.self)
-        return makeRegistration(registration)
+        let relay = try relayCast()
+        do {
+            let created = try await relay.agents.register(
+                Relaycast.CreateAgentRequest(name: name, type: type.relaycastType)
+            )
+            return makeRegistration(created)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     func registerOrRotate(name: String, type: RelayAgentType) async throws -> AgentRegistration {
+        let relay = try relayCast()
         do {
-            return try await register(name: name, type: type)
-        } catch RelayError.protocolError(code: let code, message: let message, retryable: _) where isNameConflict(code: code, message: message) {
-            let agent = try await getAgent(name: name)
-            let token = try await rotateToken(name: agent.name)
-            return AgentRegistration(
-                id: agent.id,
-                name: agent.name,
-                token: token,
-                status: agent.status,
-                createdAt: agent.createdAt ?? agent.lastSeenAt
-            ) { [baseURL, http] id, agentName, token in
-                let agentHTTP = HostedHTTP(baseURL: baseURL, apiKey: token)
-                let transport = RelayEventTransport(baseURL: baseURL, token: token)
-                let core = HostedParticipantCore(
-                    agentId: id,
-                    agentName: agentName,
-                    token: token,
-                    baseURL: baseURL,
-                    workspaceHTTP: http,
-                    agentHTTP: agentHTTP,
-                    transport: transport
-                )
-                return AgentClient(core: core, id: id, name: agentName, token: token)
-            }
+            let created = try await relay.registerOrRotate(
+                Relaycast.RegisterAgentRequest(name: name, type: type.relaycastType)
+            )
+            return makeRegistration(created)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
         }
     }
 
     func reconnect(apiToken: String) async throws -> AgentClient {
-        let agentHTTP = HostedHTTP(baseURL: baseURL, apiKey: apiToken)
-        let data = try await agentHTTP.get(path: "/v1/agent", query: nil)
-        let agent = try decodeAPIData(data, as: RelayAgent.self)
-        return agentClient(id: agent.id, name: agent.name, token: apiToken)
+        let relay = try relayCast()
+        do {
+            let engine = try await relay.reconnect(Relaycast.AgentReconnectOptions(apiToken: apiToken))
+            let me = try await engine.me()
+            let core = HostedParticipantCore(engineSource: .ready(engine: engine, relay: relay), agentId: me.id, agentName: me.name, token: apiToken, baseURL: baseURL)
+            return AgentClient(core: core, id: me.id, name: me.name, token: apiToken)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     func agentClient(id: String, name: String, token: String) -> AgentClient {
-        let agentHTTP = HostedHTTP(baseURL: baseURL, apiKey: token)
-        let transport = RelayEventTransport(baseURL: baseURL, token: token)
-        let core = HostedParticipantCore(
-            agentId: id,
-            agentName: name,
-            token: token,
-            baseURL: baseURL,
-            workspaceHTTP: http,
-            agentHTTP: agentHTTP,
-            transport: transport
-        )
+        let core = makeParticipantCore(id: id, name: name, token: token)
         return AgentClient(core: core, id: id, name: name, token: token)
     }
 
     func workspaceInfo() async throws -> JSONValue {
-        let data = try await http.get(path: "/v1/workspace", query: nil)
-        return try decodeAPIData(data, as: JSONValue.self)
+        let relay = try relayCast()
+        do {
+            let workspace = try await relay.workspace.info()
+            return Self.workspaceJSON(workspace)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
-    private func getAgent(name: String) async throws -> RelayAgent {
-        let data = try await http.get(path: "/v1/agents/\(Self.escapePath(name))", query: nil)
-        return try decodeAPIData(data, as: RelayAgent.self)
+    func makeParticipantCore(id: String, name: String, token: String) -> HostedParticipantCore {
+        Self.makeParticipantCore(relayResult: relayResult, baseURL: baseURL, id: id, name: name, token: token)
     }
 
-    private func rotateToken(name: String) async throws -> String {
-        let data = try await http.post(path: "/v1/agents/\(Self.escapePath(name))/rotate-token", body: encodeEmptyObject())
-        return try decodeAPIData(data, as: RotateTokenResponse.self).token
+    static func makeParticipantCore(relayResult: Result<Relaycast.RelayCast, Error>, baseURL: URL, id: String, name: String, token: String) -> HostedParticipantCore {
+        // Defer the per-agent engine build (`relay.asAgent`) into the actor so
+        // that configuration/handshake errors propagate through the first async
+        // call as `RelayError` instead of force-unwrapping and crashing.
+        return HostedParticipantCore(engineSource: .deferred(relayResult: relayResult, token: token), agentId: id, agentName: name, token: token, baseURL: baseURL)
     }
 
-    private func makeRegistration(_ response: AgentRegistrationResponse) -> AgentRegistration {
-        AgentRegistration(
+    func makeRegistration(_ response: Relaycast.CreateAgentResponse) -> AgentRegistration {
+        // Capture the transport state (`relayResult`, `baseURL`) strongly so a
+        // persisted `AgentRegistration` stays usable even if the owning
+        // `AgentRelay`/`HostedWorkspaceCore` is released before `asClient()` is
+        // called. `Relaycast.RelayCast` is the only shared, reusable state; the
+        // per-agent engine is created lazily from it in the closure.
+        let relayResult = self.relayResult
+        let baseURL = self.baseURL
+        return AgentRegistration(
             id: response.id,
             name: response.name,
             token: response.token,
-            status: response.status,
+            status: RelayAgentStatus(response.status),
             createdAt: response.createdAt
-        ) { [baseURL, http] id, agentName, token in
-            let agentHTTP = HostedHTTP(baseURL: baseURL, apiKey: token)
-            let transport = RelayEventTransport(baseURL: baseURL, token: token)
-            let core = HostedParticipantCore(
-                agentId: id,
-                agentName: agentName,
-                token: token,
+        ) { id, agentName, token in
+            let core = HostedWorkspaceCore.makeParticipantCore(
+                relayResult: relayResult,
                 baseURL: baseURL,
-                workspaceHTTP: http,
-                agentHTTP: agentHTTP,
-                transport: transport
+                id: id,
+                name: agentName,
+                token: token
             )
             return AgentClient(core: core, id: id, name: agentName, token: token)
         }
     }
 
-    private func encode<T: Encodable>(_ value: T) throws -> Data {
-        do {
-            return try encoder.encode(value)
-        } catch {
-            throw RelayError.encodingFailed(String(describing: error))
+    private static func workspaceJSON(_ workspace: Relaycast.Workspace) -> JSONValue {
+        var object: [String: JSONValue] = [
+            "id": .string(workspace.id),
+            "name": .string(workspace.name),
+            "created_at": .string(workspace.createdAt)
+        ]
+        if let systemPrompt = workspace.systemPrompt {
+            object["system_prompt"] = .string(systemPrompt)
         }
-    }
-
-    private func encodeEmptyObject() -> Data {
-        Data("{}".utf8)
-    }
-
-    private static func escapePath(_ value: String) -> String {
-        var allowed = CharacterSet.urlPathAllowed
-        allowed.remove(charactersIn: "/")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-    }
-
-    private func isNameConflict(code: String, message: String) -> Bool {
-        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if ["agent_already_exists", "name_conflict", "name_taken", "agent_exists", "conflict", "duplicate", "http_409"].contains(normalizedCode) {
-            return true
+        if let plan = workspace.plan {
+            object["plan"] = .string(plan)
         }
-        return message.lowercased().contains("already exists")
+        if let metadata = workspace.metadata {
+            object["metadata"] = .object(metadata.mapValues { JSONValue($0) })
+        }
+        return .object(object)
     }
-}
-
-private struct RegisterAgentRequest: Encodable {
-    let name: String
-    let type: RelayAgentType
 }
 
 public final class AgentClient: @unchecked Sendable {
@@ -302,65 +310,121 @@ private struct RegisteredAction: Sendable {
     let handler: RelayActionHandler
 }
 
+/// Higher-level glue kept ON TOP of the relaycast engine SDK: the
+/// action-dispatch loop, channel-event normalization into `RelayChannelEvent`,
+/// AsyncStream fan-out, and subscription bookkeeping. The realtime socket and
+/// HTTP calls are delegated to the wrapped `Relaycast.AgentClient` /
+/// `Relaycast.RelayCast`.
 actor HostedParticipantCore {
+    /// How the per-agent engine is obtained. `.ready` is used by `reconnect`,
+    /// which already has a live engine; `.deferred` builds the engine lazily via
+    /// `relay.asAgent(token)` on first connect so that `asAgent`/configuration
+    /// errors propagate as `RelayError` instead of crashing at construction.
+    enum EngineSource {
+        case ready(engine: Relaycast.AgentClient, relay: Relaycast.RelayCast)
+        case deferred(relayResult: Result<Relaycast.RelayCast, Error>, token: String)
+    }
+
     let agentId: String
     let agentName: String
     let token: String
     let baseURL: URL
-    let workspaceHTTP: any HostedHTTPClient
-    let agentHTTP: any HostedHTTPClient
-    let transport: any HostedEventTransportClient
-    let encoder = JSONEncoder()
-    let decoder = JSONDecoder()
+    private let engineSource: EngineSource
+    private var resolvedEngine: Relaycast.AgentClient?
+    private var resolvedRelay: Relaycast.RelayCast?
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
 
-    private var routerTask: Task<Void, Never>?
+    private var connected = false
+    private var listenersInstalled = false
     private var subscribedChannels: Set<String> = []
     private var channelContinuations: [String: [AsyncStream<RelayChannelEvent>.Continuation]] = [:]
     private var inboundMessageContinuations: [AsyncStream<RelayChannelEvent>.Continuation] = []
     private var eventContinuations: [AsyncStream<RelayEvent>.Continuation] = []
     private var connectionStateContinuations: [AsyncStream<ConnectionStateChange>.Continuation] = []
     private var actionHandlers: [String: RegisteredAction] = [:]
+    private var unsubscribeHandlers: [() -> Void] = []
 
-    init(
-        agentId: String,
-        agentName: String,
-        token: String,
-        baseURL: URL,
-        workspaceHTTP: any HostedHTTPClient,
-        agentHTTP: any HostedHTTPClient,
-        transport: any HostedEventTransportClient
-    ) {
+    // Serialized inbound-event pipeline. The engine delivers events in order
+    // from a single receive loop; we yield them (synchronously, FIFO) into this
+    // stream and drain them through `routeEvent` on one consumer task so that
+    // ordering is preserved end-to-end. (Spawning an unstructured `Task` per
+    // event would let the scheduler reorder closely-spaced events.)
+    private var eventBuffer: AsyncStream<RelayEvent>.Continuation?
+    private var eventPump: Task<Void, Never>?
+
+    init(engineSource: EngineSource, agentId: String, agentName: String, token: String, baseURL: URL) {
+        self.engineSource = engineSource
         self.agentId = agentId
         self.agentName = agentName
         self.token = token
         self.baseURL = baseURL
-        self.workspaceHTTP = workspaceHTTP
-        self.agentHTTP = agentHTTP
-        self.transport = transport
+    }
+
+    /// Resolve (and cache) the relaycast `RelayCast` engine wrapper. Surfaces
+    /// configuration errors as `RelayError`.
+    private func relayCast() throws -> Relaycast.RelayCast {
+        if let resolvedRelay { return resolvedRelay }
+        switch engineSource {
+        case .ready(_, let relay):
+            resolvedRelay = relay
+            return relay
+        case .deferred(let relayResult, _):
+            do {
+                let relay = try relayResult.get()
+                resolvedRelay = relay
+                return relay
+            } catch let error as Relaycast.RelayError {
+                throw RelayError(error)
+            }
+        }
+    }
+
+    /// Resolve (and cache) the per-agent engine, building it lazily for the
+    /// `.deferred` source. Surfaces `asAgent`/configuration errors as `RelayError`.
+    private func engine() throws -> Relaycast.AgentClient {
+        if let resolvedEngine { return resolvedEngine }
+        switch engineSource {
+        case .ready(let engine, _):
+            resolvedEngine = engine
+            return engine
+        case .deferred(_, let token):
+            let relay = try relayCast()
+            do {
+                let engine = try relay.asAgent(token)
+                resolvedEngine = engine
+                return engine
+            } catch let error as Relaycast.RelayError {
+                throw RelayError(error)
+            }
+        }
     }
 
     func ensureConnected() async throws {
-        if routerTask == nil || routerTask?.isCancelled == true {
-            routerTask = Task { [weak self] in await self?.routeFrames() }
+        let engine = try engine()
+        installListenersIfNeeded(engine: engine)
+        if !connected {
+            engine.connect()
+            connected = true
         }
-        await transport.setOnConnect { [weak self] in
-            await self?.transportDidReconnect()
-        }
-        try await transport.connect()
         notifyConnectionState(.connected)
-        try await syncSubscriptions()
-    }
-
-    func transportDidReconnect() async {
-        notifyConnectionState(.connected)
-        try? await syncSubscriptions()
+        syncSubscriptions(engine: engine)
     }
 
     func disconnect() async {
-        routerTask?.cancel()
-        routerTask = nil
-        await transport.disconnect()
-        _ = try? await agentHTTP.post(path: "/v1/agents/disconnect", body: Data("{}".utf8))
+        // Only tear down an engine that was actually built/connected; building
+        // one here just to disconnect it would be pointless (and could throw).
+        if let resolvedEngine {
+            await resolvedEngine.disconnect()
+        }
+        connected = false
+        for unsubscribe in unsubscribeHandlers { unsubscribe() }
+        unsubscribeHandlers.removeAll()
+        listenersInstalled = false
+        eventBuffer?.finish()
+        eventBuffer = nil
+        eventPump?.cancel()
+        eventPump = nil
         notifyConnectionState(.disconnected)
         for continuations in channelContinuations.values {
             for continuation in continuations { continuation.finish() }
@@ -396,14 +460,21 @@ actor HostedParticipantCore {
     }
 
     func post(channel: String, text: String) async throws {
-        let path = "/v1/channels/\(Self.escapePath(Self.normalizeChannel(channel)))/messages"
-        let body = try encode(SendChannelMessageRequest(text: text, mode: "wait"))
-        _ = try await agentHTTP.post(path: path, body: body)
+        let engine = try engine()
+        do {
+            _ = try await engine.send(Self.normalizeChannel(channel), text: text, options: Relaycast.SendMessageOptions(mode: .wait))
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     func dm(to target: String, text: String) async throws {
-        let body = try encode(SendDirectMessageRequest(to: Self.stripSigil(target), text: text, mode: "wait"))
-        _ = try await agentHTTP.post(path: "/v1/dm", body: body)
+        let engine = try engine()
+        do {
+            _ = try await engine.dm(Self.stripSigil(target), text: text, options: Relaycast.DMOptions(mode: .wait))
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     func registerAction(
@@ -416,7 +487,7 @@ actor HostedParticipantCore {
         guard !actionName.isEmpty else {
             throw RelayError.protocolError(code: "invalid_action_name", message: "Action name cannot be empty", retryable: false)
         }
-        let inputSchema = try decodeJSONValue(inputSchemaJSON)
+        let inputSchema = try decodeRelaycastObject(inputSchemaJSON)
 
         let registrationId = UUID().uuidString
         actionHandlers[actionName] = RegisteredAction(id: registrationId, handler: handler)
@@ -445,36 +516,103 @@ actor HostedParticipantCore {
         }
     }
 
-    private func registerActionDescriptor(name: String, description: String, inputSchema: JSONValue) async throws {
-        let request = RegisterActionDescriptorRequest(
-            name: name,
-            description: description,
-            handlerAgent: agentName,
-            inputSchema: inputSchema
-        )
-        let body = try encode(request)
-        _ = try await workspaceHTTP.post(path: "/v1/actions", body: body)
+    private func registerActionDescriptor(name: String, description: String, inputSchema: [String: Relaycast.JSONValue]) async throws {
+        let relay = try relayCast()
+        do {
+            _ = try await relay.actions.register(
+                Relaycast.RegisterActionRequest(
+                    name: name,
+                    description: description,
+                    handlerAgent: agentName,
+                    inputSchema: inputSchema
+                )
+            )
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     private func unregisterActionDescriptor(name: String) async throws {
-        _ = try await workspaceHTTP.delete(path: "/v1/actions/\(Self.escapePath(name))")
-    }
-
-    private func syncSubscriptions() async throws {
-        guard !subscribedChannels.isEmpty else { return }
-        let body = try encode(SocketSubscribeMessage(channels: Array(subscribedChannels).sorted()))
-        try await transport.send(body)
-    }
-
-    private func routeFrames() async {
-        for await data in transport.inbound {
-            guard let event = try? decoder.decode(RelayEvent.self, from: data) else {
-                continue
-            }
-            routeEvent(event)
+        let relay = try relayCast()
+        do {
+            try await relay.actions.delete(name)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
         }
+    }
+
+    private func syncSubscriptions(engine: Relaycast.AgentClient) {
+        guard !subscribedChannels.isEmpty else { return }
+        engine.subscribe(Array(subscribedChannels).sorted())
+    }
+
+    // MARK: - Realtime listeners
+
+    private func installListenersIfNeeded(engine: Relaycast.AgentClient) {
+        guard !listenersInstalled else { return }
+        listenersInstalled = true
+
+        // Build the serialized event pipeline before wiring engine callbacks so
+        // the first delivered event already has a place to queue.
+        var continuation: AsyncStream<RelayEvent>.Continuation!
+        let stream = AsyncStream<RelayEvent> { continuation = $0 }
+        eventBuffer = continuation
+        eventPump = Task { [weak self] in
+            for await event in stream {
+                await self?.routeEvent(event)
+            }
+        }
+
+        // `engine.on.*` fire in order from the engine's single receive loop;
+        // yielding into `buffer` (synchronously) preserves that order, and the
+        // single `eventPump` consumer drains them sequentially.
+        let buffer = continuation!
+        let ingest: @Sendable (Relaycast.WsEvent) -> Void = { event in
+            buffer.yield(RelayEvent(event))
+        }
+        unsubscribeHandlers.append(engine.on.messageCreated(ingest))
+        unsubscribeHandlers.append(engine.on.threadReply(ingest))
+        unsubscribeHandlers.append(engine.on.dmReceived(ingest))
+        unsubscribeHandlers.append(engine.on.groupDMReceived(ingest))
+        unsubscribeHandlers.append(engine.on.actionInvoked(ingest))
+
+        unsubscribeHandlers.append(engine.on.connected { [weak self] in
+            guard let self else { return }
+            Task { await self.transportDidConnect() }
+        })
+        unsubscribeHandlers.append(engine.on.disconnected { [weak self] in
+            guard let self else { return }
+            Task { await self.handleEngineDisconnect() }
+        })
+        unsubscribeHandlers.append(engine.on.reconnecting { [weak self] attempt in
+            guard let self else { return }
+            Task { await self.notifyConnectionStateAsync(.reconnecting(attempt: attempt)) }
+        })
+    }
+
+    private func transportDidConnect() async {
+        notifyConnectionState(.connected)
+        // The engine is necessarily resolved here: this fires from the engine's
+        // own `connected` callback, which is only installed after `engine()` ran.
+        if let resolvedEngine {
+            syncSubscriptions(engine: resolvedEngine)
+        }
+    }
+
+    private func notifyConnectionStateAsync(_ state: ConnectionStateChange) async {
+        notifyConnectionState(state)
+    }
+
+    /// Handle an engine-initiated disconnect. Reset `connected` so that a later
+    /// `ensureConnected()` will actually re-issue `engine.connect()`, matching
+    /// the manual `disconnect()` path (which also clears the flag). Without this
+    /// the flag stays `true` after an engine drop and reconnection is skipped.
+    private func handleEngineDisconnect() async {
+        connected = false
         notifyConnectionState(.disconnected)
     }
+
+    // MARK: - Event routing (glue kept on top of the engine)
 
     private func routeEvent(_ event: RelayEvent) {
         for continuation in eventContinuations {
@@ -543,7 +681,7 @@ actor HostedParticipantCore {
     ) async {
         do {
             let invocation = try await loadInvocation(actionName: actionName, invocationId: invocationId)
-            let input = invocation.input ?? .object([:])
+            let input = invocation.input ?? [:]
             let inputString = actionInputString(input)
             let output = await registration.handler(inputString)
             try await completeInvocation(actionName: actionName, invocationId: invocationId, output: parseHandlerOutput(output))
@@ -552,63 +690,79 @@ actor HostedParticipantCore {
         }
     }
 
-    private func loadInvocation(actionName: String, invocationId: String) async throws -> RelayActionInvocation {
-        let path = "/v1/actions/\(Self.escapePath(actionName))/invocations/\(Self.escapePath(invocationId))"
-        let data = try await agentHTTP.get(path: path, query: nil)
-        return try decodeAPIData(data, as: RelayActionInvocation.self)
+    private func loadInvocation(actionName: String, invocationId: String) async throws -> Relaycast.ActionInvocation {
+        let engine = try engine()
+        do {
+            return try await engine.actions.getInvocation(name: actionName, invocationID: invocationId)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
-    private func completeInvocation(actionName: String, invocationId: String, output: JSONValue) async throws {
-        try await completeInvocation(
-            actionName: actionName,
-            invocationId: invocationId,
-            body: CompleteInvocationRequest(output: Self.outputRecord(output), error: nil)
-        )
+    private func completeInvocation(actionName: String, invocationId: String, output: [String: Relaycast.JSONValue]) async throws {
+        let engine = try engine()
+        do {
+            _ = try await engine.actions.completeInvocation(
+                name: actionName,
+                invocationID: invocationId,
+                data: Relaycast.CompleteInvocationRequest(output: output)
+            )
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
     }
 
     private func completeInvocation(actionName: String, invocationId: String, error: String) async throws {
-        try await completeInvocation(actionName: actionName, invocationId: invocationId, body: CompleteInvocationRequest(output: nil, error: error))
+        let engine = try engine()
+        do {
+            _ = try await engine.actions.completeInvocation(
+                name: actionName,
+                invocationID: invocationId,
+                data: Relaycast.CompleteInvocationRequest(error: error)
+            )
+        } catch let relayError as Relaycast.RelayError {
+            throw RelayError(relayError)
+        }
     }
 
-    private func completeInvocation(actionName: String, invocationId: String, body value: CompleteInvocationRequest) async throws {
-        let path = "/v1/actions/\(Self.escapePath(actionName))/invocations/\(Self.escapePath(invocationId))/complete"
-        _ = try await agentHTTP.post(path: path, body: try encode(value))
-    }
+    // MARK: - JSON helpers
 
-    private func decodeJSONValue(_ json: String) throws -> JSONValue {
+    private func decodeRelaycastObject(_ json: String) throws -> [String: Relaycast.JSONValue] {
         guard let data = json.data(using: .utf8) else {
             throw RelayError.encodingFailed("Input schema is not valid UTF-8")
         }
         do {
-            return try decoder.decode(JSONValue.self, from: data)
+            let value = try decoder.decode(Relaycast.JSONValue.self, from: data)
+            guard case .object(let object) = value else {
+                throw RelayError.decodingFailed("Input schema must be a JSON object")
+            }
+            return object
+        } catch let error as RelayError {
+            throw error
         } catch {
             throw RelayError.decodingFailed("Invalid inputSchemaJSON: \(error)")
         }
     }
 
-    private func actionInputString(_ input: JSONValue) -> String {
-        guard let data = try? encoder.encode(input), let string = String(data: data, encoding: .utf8) else {
+    private func actionInputString(_ input: [String: Relaycast.JSONValue]) -> String {
+        guard let data = try? encoder.encode(Relaycast.JSONValue.object(input)),
+              let string = String(data: data, encoding: .utf8) else {
             return "{}"
         }
         return string
     }
 
-    private func parseHandlerOutput(_ output: String) -> JSONValue {
+    private func parseHandlerOutput(_ output: String) -> [String: Relaycast.JSONValue] {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty,
            let data = trimmed.data(using: .utf8),
-           let value = try? decoder.decode(JSONValue.self, from: data) {
-            return value
+           let value = try? decoder.decode(Relaycast.JSONValue.self, from: data) {
+            if case .object(let object) = value {
+                return object
+            }
+            return ["value": value]
         }
-        return .string(output)
-    }
-
-    private func encode<T: Encodable>(_ value: T) throws -> Data {
-        do {
-            return try encoder.encode(value)
-        } catch {
-            throw RelayError.encodingFailed(String(describing: error))
-        }
+        return ["value": .string(output)]
     }
 
     private func notifyConnectionState(_ state: ConnectionStateChange) {
@@ -626,12 +780,6 @@ actor HostedParticipantCore {
 
     private static func normalizeChannel(_ value: String) -> String {
         stripSigil(value).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func escapePath(_ value: String) -> String {
-        var allowed = CharacterSet.urlPathAllowed
-        allowed.remove(charactersIn: "/")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private static func date(from timestamp: String?) -> Date {
@@ -659,65 +807,5 @@ actor HostedParticipantCore {
             }
         }
         return error.localizedDescription
-    }
-
-    private static func outputRecord(_ value: JSONValue) -> JSONValue {
-        if case .object = value {
-            return value
-        }
-        return .object(["value": value])
-    }
-}
-
-private struct SendChannelMessageRequest: Encodable {
-    let text: String
-    let mode: String
-}
-
-private struct SendDirectMessageRequest: Encodable {
-    let to: String
-    let text: String
-    let mode: String
-}
-
-private struct SocketSubscribeMessage: Encodable {
-    let type = "subscribe"
-    let channels: [String]
-}
-
-private struct RegisterActionDescriptorRequest: Encodable {
-    let name: String
-    let description: String
-    let handlerAgent: String
-    let inputSchema: JSONValue
-
-    enum CodingKeys: String, CodingKey {
-        case name, description
-        case handlerAgent = "handler_agent"
-        case inputSchema = "input_schema"
-    }
-}
-
-private struct CompleteInvocationRequest: Encodable {
-    let output: JSONValue?
-    let error: String?
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch (output, error) {
-        case (.some(let output), .none):
-            try container.encode(output, forKey: .output)
-        case (.none, .some(let error)):
-            try container.encode(error, forKey: .error)
-        default:
-            throw EncodingError.invalidValue(
-                self,
-                EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "completion requires output or error")
-            )
-        }
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case output, error
     }
 }

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { registerAgentCommands } from './agent.js';
 import { registerChannelCommands } from './channel.js';
 import { registerMessageCommands } from './message.js';
-import { registerIntegrationCommands } from './integration.js';
+import { registerIntegrationCommands, type IntegrationCommandDependencies } from './integration.js';
 import { registerCapabilitiesCommands } from './capabilities.js';
 import type { SdkCommandDeps } from '../lib/sdk-command.js';
 
@@ -38,8 +38,25 @@ function createRelayMock() {
       webhooks: {
         create: vi.fn(async (i: unknown) => ({ id: 'wh1', ...(i as object) })),
         list: vi.fn(async () => []),
+        delete: vi.fn(async () => undefined),
+        trigger: vi.fn(async (_id: string, payload: unknown) => ({ triggered: true, payload })),
       },
-      subscriptions: { create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })) },
+      subscriptions: {
+        create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })),
+        list: vi.fn(async () => []),
+        get: vi.fn(async (id: string) => ({ id })),
+        delete: vi.fn(async () => undefined),
+      },
+    },
+    webhooks: {
+      createInbound: vi.fn(async (i: { channel: string; name?: string }) => ({
+        webhookId: 'in1',
+        url: 'https://relay.example/webhooks/in1',
+        token: 'tok_once',
+        ...i,
+      })),
+      list: vi.fn(async () => []),
+      delete: vi.fn(async () => undefined),
     },
     capabilities: {
       register: vi.fn(async (i: unknown) => ({ ...(i as object) })),
@@ -104,6 +121,136 @@ describe('SDK-backed CLI groups', () => {
       url: 'https://x',
       event: 'message.created',
     });
+  });
+
+  it('integration webhook create retries with local broker auth after unauthorized SDK auth', async () => {
+    const firstRelay = createRelayMock();
+    const secondRelay = createRelayMock();
+    firstRelay.integrations.webhooks.create.mockRejectedValueOnce(new Error('Unauthorized'));
+    const createAgentRelay = vi.fn().mockReturnValueOnce(firstRelay).mockReturnValueOnce(secondRelay);
+    const resolveLocalRelayOptions = vi.fn(async () => ({
+      workspaceKey: 'rk_live_local',
+      baseUrl: 'https://relay.local',
+    }));
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: createAgentRelay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(
+      ['integration', 'webhook', 'create', 'https://x', '--event', 'message.created'],
+      { from: 'user' }
+    );
+
+    expect(resolveLocalRelayOptions).toHaveBeenCalled();
+    expect(createAgentRelay).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+    );
+    expect(secondRelay.integrations.webhooks.create).toHaveBeenCalledWith({
+      url: 'https://x',
+      event: 'message.created',
+    });
+    expect(log).toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('integration webhook create-inbound routes to webhooks.createInbound', async () => {
+    const { program, relay, log } = harness(registerIntegrationCommands);
+    await program.parseAsync(
+      ['integration', 'webhook', 'create-inbound', 'incidents', '--name', 'Slack incidents'],
+      { from: 'user' }
+    );
+    expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'incidents',
+      name: 'Slack incidents',
+    });
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('integration webhook create-inbound retries with the local broker workspace key after invalid SDK auth', async () => {
+    const firstRelay = createRelayMock();
+    const secondRelay = createRelayMock();
+    firstRelay.webhooks.createInbound.mockRejectedValueOnce(new Error('Invalid workspace key'));
+    const createAgentRelay = vi.fn().mockReturnValueOnce(firstRelay).mockReturnValueOnce(secondRelay);
+    const resolveLocalRelayOptions = vi.fn(async () => ({
+      workspaceKey: 'rk_live_local',
+      baseUrl: 'https://relay.local',
+    }));
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: createAgentRelay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(['integration', 'webhook', 'create-inbound', 'general'], { from: 'user' });
+
+    expect(resolveLocalRelayOptions).toHaveBeenCalled();
+    expect(createAgentRelay).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+    );
+    expect(secondRelay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'general',
+      name: undefined,
+    });
+    expect(log).toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('integration webhook create-inbound does not retry an explicit workspace key', async () => {
+    const relay = createRelayMock();
+    relay.webhooks.createInbound.mockRejectedValueOnce(new Error('Invalid API key'));
+    const resolveLocalRelayOptions = vi.fn(async () => ({ workspaceKey: 'rk_live_local' }));
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(
+      ['integration', 'webhook', 'create-inbound', 'general', '--workspace-key', 'rk_live_explicit'],
+      { from: 'user' }
+    );
+
+    expect(resolveLocalRelayOptions).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Invalid API key');
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('integration webhook list-inbound routes to webhooks.list', async () => {
+    const { program, relay, log } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'webhook', 'list-inbound'], { from: 'user' });
+    expect(relay.webhooks.list).toHaveBeenCalled();
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('integration webhook delete-inbound routes to webhooks.delete', async () => {
+    const { program, relay } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'webhook', 'delete-inbound', 'in1'], { from: 'user' });
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('in1');
   });
 
   it('capabilities register routes to capabilities.register', async () => {

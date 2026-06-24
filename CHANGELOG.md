@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The hosted engine base URL default is owned solely by the relaycast SDK. `agent-relay`, `agent-relay-broker`, and the bundled SDKs no longer hardcode a base URL — they pass `RELAYCAST_BASE_URL`/`RELAY_BASE_URL` through for self-hosting and otherwise inherit the SDK default (`cast.agentrelay.com`). The broker reaches the fleet node-control endpoint via the SDK's `node_control_ws_url` helper and only injects `RELAY_BASE_URL` into spawned agents when an override is set.
+
+### Removed
+
+- Removed all `gateway.relaycast.dev` / `api.relaycast.dev` references; clients target `cast.agentrelay.com` only.
+- **Breaking (SDKs):** relay's Swift `AgentRelay` client and Python `communicate` client no longer default the base URL — callers must pass `baseURL`/`base_url` or set `RELAY_BASE_URL`.
+
 ### Fixed
 
+- `agent-relay integration webhook|subscription` commands work reliably in local broker workflows even when shell auth is stale or missing.
 - The Bun-compiled `agent-relay` standalone binary now bundles workspace packages from their compiled JS instead of their `.d.ts`, so `local up` starts the implicit Fleet local node instead of failing with `Fleet local node skipped: … is not a function`. The `tsconfig` `paths` that mapped `@agent-relay/*` to declaration files (no runtime exports) were redundant with the npm workspace symlinks and have been removed.
 - `agent-relay` and `@agent-relay/sdk` require `@relaycast/sdk` `^4.1.2`, whose matching `@relaycast/types` package is now published, so publish installs resolve cleanly without pinning.
 - `agent-relay fleet serve <node-def>` loads plain JavaScript node definitions without `jiti`, so the published Bun-compiled CLI can serve compiled JS node files.
@@ -16,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay integration webhook create-inbound <channel> [--name]` mints an inbound channel webhook (returns a scoped URL + one-time token) so external services can push messages into an agent's channel without the SDK; `list-inbound` and `delete-inbound` manage them. Closes the CLI gap where inbound webhooks were reachable only via the SDK/MCP.
 - `agent-relay` spawn APIs add an optional task-exit mode so spawned CLI agents run the injected task and then cleanly self-terminate with `/exit`.
 - `@agent-relay/harness-driver` adds local fleet sidecar protocol frames for node and handler registration, clean node deregistration, broker handler invocation, handler results, handler-attributed spawns, object-record capability metadata, and sidecar supervision metadata.
 - `@agent-relay/cloud` adds a canonical cloud session and active-workspace contract, including `ensureCloudSession`, `resolveActiveWorkspace`, promoted workspace-store APIs, access-token-only `agent-relay cloud session --json`, and `agent-relay workspace active --json` for cross-language consumers.
@@ -65,6 +76,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace `agent-relay up --no-dashboard` with `agent-relay up --background`.
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
+
+## [9.1.2] - 2026-06-24
+
+### Changed
+
+- Drop relay base-URL defaults; inherit from relaycast SDK 4.2.0
+
+## [9.1.1] - 2026-06-24
+
+### Fixed
+
+- Retry inbound webhook auth from local broker
+- Escape glob in @agent-relay/\* to satisfy prettier
+
+## [9.1.0] - 2026-06-24
+
+### Added
+
+- Add inbound channel webhook commands (create-inbound/list-inbound/delete-inbound)
+
+### Changed
+
+- Default Agent Relay clients to cast.agentrelay.com
+- Decompose the three largest TypeScript god files into single-responsibility modules
+- Drop redundant gateway.relaycast.dev default in MCP server
+- Clarify positioning
+- Remove the web app (moved to AgentWorkforce/agentrelay.com)
+
+### Fixed
+
+- Pin verify-standalone-macos to macos-15 and add smoke wait timeout
+- Record workspace_id from agent registration response
+- Use @relaycast/sdk instead of dead bespoke RPC API
+- Drop redundant `@agent-relay/*` tsconfig paths so the compiled CLI keeps workspace exports
 
 ## [9.0.1] - 2026-06-21
 

@@ -125,34 +125,6 @@ public struct RelayAgent: Decodable, Sendable {
     }
 }
 
-struct AgentRegistrationResponse: Decodable, Sendable {
-    let id: String
-    let name: String
-    let token: String
-    let status: RelayAgentStatus
-    let createdAt: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, token, status
-        case createdAt = "created_at"
-        case createdAtCamel = "createdAt"
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        name = try container.decode(String.self, forKey: .name)
-        token = try container.decode(String.self, forKey: .token)
-        status = (try? container.decode(RelayAgentStatus.self, forKey: .status)) ?? .unknown
-        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
-            ?? container.decodeIfPresent(String.self, forKey: .createdAtCamel)
-    }
-}
-
-struct RotateTokenResponse: Decodable, Sendable {
-    let token: String
-}
-
 public struct RelayChannelEvent: Sendable {
     public let from: String
     public let body: String
@@ -270,6 +242,30 @@ public struct RelayEvent: Decodable, Sendable {
     public let status: String?
     public let rawJSON: JSONValue?
 
+    init(
+        type: String,
+        id: String? = nil,
+        channel: String? = nil,
+        message: RelayMessage? = nil,
+        invocationId: String? = nil,
+        actionName: String? = nil,
+        callerName: String? = nil,
+        agentName: String? = nil,
+        status: String? = nil,
+        rawJSON: JSONValue? = nil
+    ) {
+        self.type = type
+        self.id = id
+        self.channel = channel
+        self.message = message
+        self.invocationId = invocationId
+        self.actionName = actionName
+        self.callerName = callerName
+        self.agentName = agentName
+        self.status = status
+        self.rawJSON = rawJSON
+    }
+
     enum CodingKeys: String, CodingKey {
         case type, id, channel, message, status, payload
         case invocationId = "invocation_id"
@@ -330,36 +326,6 @@ public struct RelayEvent: Decodable, Sendable {
 
 private struct RelaycastEventAgent: Decodable {
     let name: String?
-}
-
-struct RelayActionInvocation: Decodable, Sendable {
-    let invocationId: String
-    let actionName: String
-    let callerName: String?
-    let input: JSONValue?
-    let status: String
-
-    enum CodingKeys: String, CodingKey {
-        case invocationId = "invocation_id"
-        case invocationIdCamel = "invocationId"
-        case actionName = "action_name"
-        case actionNameCamel = "actionName"
-        case callerName = "caller_name"
-        case callerNameCamel = "callerName"
-        case input, status
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        invocationId = try container.decodeIfPresent(String.self, forKey: .invocationId)
-            ?? container.decode(String.self, forKey: .invocationIdCamel)
-        actionName = try container.decodeIfPresent(String.self, forKey: .actionName)
-            ?? container.decode(String.self, forKey: .actionNameCamel)
-        callerName = try container.decodeIfPresent(String.self, forKey: .callerName)
-            ?? container.decodeIfPresent(String.self, forKey: .callerNameCamel)
-        input = try container.decodeIfPresent(JSONValue.self, forKey: .input)
-        status = (try? container.decode(String.self, forKey: .status)) ?? "invoked"
-    }
 }
 
 public actor ActionHandle {

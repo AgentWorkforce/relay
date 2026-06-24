@@ -21,12 +21,36 @@ Add the package in Swift Package Manager:
 
 Then depend on either `AgentRelaySDK` or `AgentRelayBrokerSDK`.
 
+### `AgentRelaySDK` wraps the relaycast engine SDK
+
+`AgentRelaySDK`'s hosted transport is a thin facade over the published relaycast
+Swift engine SDK (product `Relaycast`, package `relaycast-swift`, which lives in
+the relaycast monorepo under `packages/sdk-swift`). All HTTP and realtime
+WebSocket work is delegated to relaycast; `AgentRelaySDK` keeps only the
+relay-specific glue (action-dispatch loop, `RelayChannelEvent` shape, and the
+`AsyncStream`-based public API).
+
+relaycast's Swift SDK lives in a subdirectory of the relaycast monorepo
+(`packages/sdk-swift`), so it cannot be consumed as a plain git-URL SwiftPM
+dependency on its own (git dependencies require `Package.swift` at the
+repository root). A root-level manifest that vends the `Relaycast` library is
+added to the relaycast monorepo (see
+[AgentWorkforce/relaycast#208](https://github.com/AgentWorkforce/relaycast/pull/208)),
+and this package depends on it via that repository's git URL:
+
+```swift
+.package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "4.2.0")
+```
+
+The root manifest landed in relaycast#208 and was published as v4.2.0, so this
+package depends on it by version.
+
 ## Quick start
 
 ```swift
 import AgentRelaySDK
 
-let relay = AgentRelayClient(apiKey: "rk_live_...")
+let relay = AgentRelayClient(apiKey: "rk_live_...", baseURL: URL(string: "https://relay.example.com")!)
 let registration = try await relay.registerOrRotate(name: "swift-agent")
 let agent = registration.asClient()
 

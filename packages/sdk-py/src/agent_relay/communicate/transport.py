@@ -31,7 +31,6 @@ except ImportError as exc:  # pragma: no cover - exercised via install matrix
     ) from exc
 
 from .types import (
-    DEFAULT_RELAY_BASE_URL,
     Message,
     MessageCallback,
     RelayAuthError,
@@ -293,7 +292,7 @@ class RelayTransport:
             return
 
         assert self.token is not None
-        ws = WsClient(self.token, base_url=self._base_url())
+        ws = WsClient(self.token, **self._base_url_kwargs())
 
         # Subscribe to declared channels so message.created events for those
         # channels are delivered to this socket.
@@ -446,7 +445,7 @@ class RelayTransport:
         if self._relay is None:
             self._require_config()
             assert self.config.api_key is not None
-            self._relay = AsyncRelay(self.config.api_key, base_url=self._base_url())
+            self._relay = AsyncRelay(self.config.api_key, **self._base_url_kwargs())
         return self._relay
 
     async def _ensure_registered(self) -> None:
@@ -486,10 +485,10 @@ class RelayTransport:
                 "Missing RELAY_WORKSPACE. Set the environment variable or pass workspace= to RelayConfig."
             )
 
-    def _base_url(self) -> str:
-        # Preserve relay's configured host (defaults to cast.agentrelay.com) and
-        # pass it explicitly into relay_sdk so its own default host is never used.
-        return (self.config.base_url or DEFAULT_RELAY_BASE_URL).rstrip("/")
+    def _base_url_kwargs(self) -> dict[str, str]:
+        if not self.config.base_url:
+            return {}
+        return {"base_url": self.config.base_url.rstrip("/")}
 
     @staticmethod
     def _message_id_from_dm(data: Any) -> str:

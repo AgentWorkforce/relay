@@ -17,7 +17,7 @@ fi
 TOKEN_FILE="${RELAY_DIR}/token"
 STATE_FILE="${RELAY_DIR}/codex-session.json"
 LAST_POLL_FILE="${RELAY_DIR}/last-poll"
-DEFAULT_BASE_URL="https://gateway.relaycast.dev"
+DEFAULT_BASE_URL="https://cast.agentrelay.com"
 EMPTY_OUTPUT='{}'
 MAX_RENDERED_MESSAGES=20
 MIN_POLL_INTERVAL=3

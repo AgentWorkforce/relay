@@ -312,6 +312,8 @@ struct ListenApiState {
     /// endpoint so the dashboard can bootstrap Relaycast calls without a
     /// relaycast.json or env var.
     workspace_key: Option<String>,
+    /// Relaycast HTTP base URL that owns the workspace key.
+    relay_base_url: Option<String>,
     memberships: Vec<WorkspaceMembershipSummary>,
     default_workspace_id: Option<WorkspaceId>,
     /// Broker version string (from Cargo.toml)
@@ -346,6 +348,7 @@ pub struct ListenApiConfig {
     pub events_tx: broadcast::Sender<String>,
     pub replay_buffer: ReplayBuffer,
     pub workspace_key: Option<String>,
+    pub relay_base_url: Option<String>,
     pub memberships: Vec<WorkspaceMembershipSummary>,
     pub default_workspace_id: Option<WorkspaceId>,
     pub persist: bool,
@@ -377,6 +380,10 @@ fn listen_api_router_with_auth(
         replay_buffer: config.replay_buffer,
         workspace_key: config
             .workspace_key
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        relay_base_url: config
+            .relay_base_url
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         memberships: config.memberships,
@@ -514,6 +521,7 @@ async fn listen_api_session(
         "broker_version": state.broker_version,
         "protocol_version": 2,
         "workspace_key": state.workspace_key,
+        "relay_base_url": state.relay_base_url,
         "default_workspace_id": state.default_workspace_id,
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
@@ -2540,6 +2548,7 @@ mod auth_tests {
                     events_tx,
                     replay_buffer,
                     workspace_key: None,
+                    relay_base_url: Some("https://relay.test".to_string()),
                     memberships: vec![],
                     default_workspace_id: None,
                     persist: false,
@@ -3144,6 +3153,7 @@ mod auth_tests {
         let body = response_json(response).await;
         assert!(body["broker_version"].is_string());
         assert_eq!(body["protocol_version"], 2);
+        assert_eq!(body["relay_base_url"], "https://relay.test");
         assert_eq!(body["mode"], "ephemeral");
     }
 

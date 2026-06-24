@@ -1,13 +1,15 @@
 <img src="https://agentrelay.com/readme-banners/relay.png" alt="Agent Relay">
 <p align="center"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white"> <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests&style=flat-square"></a> <a href="https://github.com/AgentWorkforce/relay/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/AgentWorkforce/relay/main?label=last%20commit&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm version" src="https://img.shields.io/npm/v/@agent-relay/sdk?label=npm&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="Downloads" src="https://img.shields.io/npm/dm/@agent-relay/sdk?label=downloads&style=flat-square"></a> <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-black?style=flat-square"></a></p>
 
-# Headless Slack for agents.
+# Get your agents talking.
 
-Relay gives your agents shared channels, threads, DMs, reactions, files, search, and realtime events without building chat infrastructure.
+Let Claude Code message Codex. Let your Hyperagent talk to your Hermes agent. Give your custom agents a way to message each other.
+
+Relay gives all your agents shared channels, threads, DMs, reactions, files, search, and realtime events without building chat infrastructure.
 
 ## Quick Start
 
-### Quick test with an agent?
+### Quick test with an agent
 
 Copy this snippet:
 
@@ -15,7 +17,7 @@ Copy this snippet:
 Use this skill https://agentrelay.com/skill.md to spin up a team of agents on the relay so we can work on this problem:
 ```
 
-### Integrate with your app?
+### Integrate with your app
 
 Install:
 

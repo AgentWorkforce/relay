@@ -15,7 +15,6 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { actionSchemaToJsonSchema, type ActionSchema } from '@agent-relay/sdk/actions';
 import {
   BrokerTransport,
   HarnessDriverProtocolError,
@@ -28,14 +27,12 @@ import type {
   BrokerStats,
   BrokerStatus,
   CrashInsightsResponse,
-  HeadlessProvider,
   PendingRelayMessage,
   PtySnapshot,
   InboundDeliveryMode,
   SnapshotFormat,
 } from './protocol.js';
 import type {
-  AgentTransport,
   SpawnAgentResult,
   SpawnCliInput,
   SpawnHeadlessInput,
@@ -56,6 +53,26 @@ import type {
 } from './lifecycle-hooks.js';
 import { buildBrokerSpawnConfig, type RuntimeSpawnOptions } from './spawn-config.js';
 export type { BrokerInitArgs, BrokerSpawnConfig, RuntimeSpawnOptions } from './spawn-config.js';
+import {
+  applySpawnPatch,
+  buildSpawnCliBody,
+  buildSpawnPtyBody,
+  isBundledHeadlessCli,
+  resolveSpawnTransport,
+} from './spawn-request.js';
+import {
+  cloneBrokerExitInfo,
+  drainBrokerStdioAfterStartup,
+  formatBrokerStartupError,
+  isProcessRunning,
+  pushBufferedLine,
+  waitForApiUrl,
+  waitForExit,
+  type BrokerExitInfo,
+} from './broker-process.js';
+// Re-exported so `export * from './client.js'` keeps BrokerExitInfo on the
+// public surface after it moved into the broker-process module.
+export type { BrokerExitInfo } from './broker-process.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -74,17 +91,6 @@ export interface HarnessDriverClientOptions {
    * hooks fired here.
    */
   eventBus?: EventBus<HarnessDriverEvents>;
-}
-
-export interface BrokerExitInfo {
-  /** Exit code, or null when the process was killed by signal. */
-  code: number | null;
-  /** Terminating signal, or null when the process exited normally. */
-  signal: NodeJS.Signals | null;
-  /** PID of the managed broker process that exited. */
-  pid: number | undefined;
-  /** Recent stderr lines captured from the managed broker process. */
-  recentStderr: string[];
 }
 
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
@@ -107,6 +113,7 @@ export interface SessionInfo {
   broker_version: string;
   protocol_version: number;
   workspace_key?: string;
+  relay_base_url?: string;
   default_workspace_id?: string;
   mode: string;
   uptime_secs: number;
@@ -124,124 +131,7 @@ export interface WorkerStreamSubscriptionOptions {
   sinceSeq?: number;
 }
 
-interface BrokerStartupDebugContext {
-  binaryPath: string;
-  args: string[];
-  cwd: string;
-  stdoutLines: string[];
-  stderrLines: string[];
-}
-
 type BrokerExitListener = (info: BrokerExitInfo) => void;
-
-function isBundledHeadlessCli(value: string): value is HeadlessProvider {
-  return value === 'claude' || value === 'opencode';
-}
-
-function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
-  if (input.transport) return input.transport;
-  if (input.harnessConfig) return input.harnessConfig.runtime;
-  return input.cli === 'opencode' ? 'headless' : 'pty';
-}
-
-/**
- * Coerce an `agentResultSchema` into the plain JSON Schema the broker accepts.
- * Raw JSON Schema (object or boolean) passes through unchanged; zod-style
- * validators are converted via the SDK's actions coercion helper.
- */
-function resolveAgentResultSchema(
-  schema: SpawnPtyInput['agentResultSchema']
-): Record<string, unknown> | boolean | undefined {
-  if (schema === undefined || typeof schema === 'boolean') return schema;
-  return actionSchemaToJsonSchema(schema as ActionSchema);
-}
-
-/**
- * Serialize a {@link SpawnPtyInput} for the broker `/api/spawn` endpoint.
- * Factored out of {@link HarnessDriverClient.spawnPty} so the same shape can
- * be applied to the post-`beforeAgentSpawn` resolved input.
- */
-function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
-  return {
-    name: input.name,
-    cli: input.cli,
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    args: input.args ?? [],
-    ...(input.task !== undefined ? { task: input.task } : {}),
-    channels: input.channels ?? [],
-    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-    ...(input.team !== undefined ? { team: input.team } : {}),
-    ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-    ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-    ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-    ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
-    ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-    ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-    ...(input.spawnMode !== undefined ? { spawnMode: input.spawnMode } : {}),
-    ...(input.exitAfterTask !== undefined ? { exitAfterTask: input.exitAfterTask } : {}),
-    ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-    ...(input.agentResultSchema !== undefined
-      ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
-      : {}),
-  };
-}
-
-function buildSpawnCliBody(input: SpawnCliInput, transport: AgentTransport): Record<string, unknown> {
-  return {
-    name: input.name,
-    cli: input.cli,
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    args: input.args ?? [],
-    ...(input.task !== undefined ? { task: input.task } : {}),
-    channels: input.channels ?? [],
-    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-    ...(input.team !== undefined ? { team: input.team } : {}),
-    ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-    ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-    ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-    ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
-    ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-    ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-    ...(input.spawnMode !== undefined ? { spawnMode: input.spawnMode } : {}),
-    ...(input.exitAfterTask !== undefined ? { exitAfterTask: input.exitAfterTask } : {}),
-    ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-    ...(input.agentResultSchema !== undefined
-      ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
-      : {}),
-    transport,
-  };
-}
-
-function applySpawnPatch<TInput extends SpawnPtyInput | SpawnCliInput>(
-  input: TInput,
-  patch: SpawnPatch
-): TInput {
-  if (Object.hasOwn(patch, 'args')) input.args = patch.args;
-  if (Object.hasOwn(patch, 'channels')) input.channels = patch.channels;
-  if (Object.hasOwn(patch, 'task')) input.task = patch.task;
-  if (Object.hasOwn(patch, 'model')) input.model = patch.model;
-  if (Object.hasOwn(patch, 'team')) input.team = patch.team;
-  if (Object.hasOwn(patch, 'agentToken')) input.agentToken = patch.agentToken;
-  if (Object.hasOwn(patch, 'harnessConfig')) input.harnessConfig = patch.harnessConfig;
-  if (Object.hasOwn(patch, 'spawnMode')) input.spawnMode = patch.spawnMode;
-  if (Object.hasOwn(patch, 'exitAfterTask')) input.exitAfterTask = patch.exitAfterTask;
-  return input;
-}
-
-function isProcessRunning(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
 
 // ── Client ─────────────────────────────────────────────────────────────
 
@@ -1036,164 +926,7 @@ export class HarnessDriverClient {
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-/**
- * Parse the API URL from the broker's stdout. The broker prints:
- *   [agent-relay] API listening on http://{bind}:{port}
- * Returns the full URL (e.g. "http://127.0.0.1:3889").
- */
-async function waitForApiUrl(
-  child: ChildProcess,
-  timeoutMs: number,
-  debug: BrokerStartupDebugContext
-): Promise<string> {
-  const { createInterface } = await import('node:readline');
-
-  return new Promise<string>((resolve, reject) => {
-    if (!child.stdout) {
-      reject(new Error('Broker stdout not available'));
-      return;
-    }
-
-    let resolved = false;
-    const rl = createInterface({ input: child.stdout });
-
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        rl.close();
-        child.kill('SIGTERM');
-        reject(
-          new Error(
-            formatBrokerStartupError(`Broker did not report API port within ${timeoutMs}ms`, child, debug)
-          )
-        );
-      }
-    }, timeoutMs);
-
-    child.on('exit', (code) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        reject(
-          new Error(
-            formatBrokerStartupError(
-              `Broker process exited with code ${code} before becoming ready`,
-              child,
-              debug
-            )
-          )
-        );
-      }
-    });
-
-    child.on('error', (err) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        reject(new Error(formatBrokerStartupError(`Failed to start broker: ${err.message}`, child, debug)));
-      }
-    });
-
-    rl.on('line', (line) => {
-      if (resolved) return;
-      pushBufferedLine(debug.stdoutLines, line);
-
-      const match = line.match(/API listening on (https?:\/\/[^\s]+)/);
-      if (match) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        resolve(match[1]);
-      }
-    });
-  });
-}
-
-function drainBrokerStdioAfterStartup(child: ChildProcess): void {
-  // Drain both stdout AND stderr after startup so high-volume broker
-  // diagnostics/events cannot fill either pipe and block the broker process.
-  // Stderr also has a readline consumer above for line buffering/onStderr; this
-  // raw drain is intentionally no-op and exists only to keep the stream flowing
-  // if that consumer is changed or removed later.
-  for (const stream of [child.stdout, child.stderr]) {
-    if (!stream) continue;
-    stream.on('data', () => {});
-    stream.resume();
-  }
-}
-
 /** @internal Test-only hooks; not part of the public SDK API. */
 export const __clientTestInternals = {
   drainBrokerStdioAfterStartup,
 };
-
-function pushBufferedLine(lines: string[], line: string): void {
-  lines.push(line);
-  if (lines.length > 40) {
-    lines.splice(0, lines.length - 40);
-  }
-}
-
-function cloneBrokerExitInfo(info: BrokerExitInfo): BrokerExitInfo {
-  return {
-    ...info,
-    recentStderr: [...info.recentStderr],
-  };
-}
-
-function formatBrokerStartupError(
-  message: string,
-  child: ChildProcess,
-  debug: BrokerStartupDebugContext
-): string {
-  const details = [
-    `pid=${child.pid ?? 'unknown'}`,
-    `cwd=${debug.cwd}`,
-    `command=${formatCommand(debug.binaryPath, debug.args)}`,
-    `stdout_tail=${formatBufferedLines(debug.stdoutLines)}`,
-    `stderr_tail=${formatBufferedLines(debug.stderrLines)}`,
-  ];
-  return `${message} (${details.join('; ')})`;
-}
-
-function formatBufferedLines(lines: string[]): string {
-  if (lines.length === 0) {
-    return '<empty>';
-  }
-  return lines
-    .slice(-8)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .join(' | ');
-}
-
-function formatCommand(binaryPath: string, args: string[]): string {
-  const render = [binaryPath, ...args].map((value) => {
-    if (/^[A-Za-z0-9_./:@=-]+$/u.test(value)) {
-      return value;
-    }
-    return JSON.stringify(value);
-  });
-  return render.join(' ');
-}
-
-function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (child.exitCode !== null) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      resolve();
-    }, timeoutMs);
-    child.on('exit', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-}
