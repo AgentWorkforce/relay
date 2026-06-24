@@ -695,8 +695,8 @@ fn exit_after_task_instruction_appends_clean_exit_contract() {
 #[test]
 fn ws_base_derivation() {
     assert_eq!(
-        derive_ws_base_url_from_http("https://api.relaycast.dev"),
-        "wss://api.relaycast.dev"
+        derive_ws_base_url_from_http("https://cast.agentrelay.com"),
+        "wss://cast.agentrelay.com"
     );
     assert_eq!(
         derive_ws_base_url_from_http("http://localhost:8787"),

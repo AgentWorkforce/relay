@@ -119,7 +119,7 @@ export function normalizeBaseUrl(baseUrl?: string): string {
   // like `/\/+$/` triggers CodeQL's polynomial-backtracking (ReDoS) warning on
   // uncontrolled input with many repeated '/'; `endsWith`/`slice` is O(n) and
   // has no backtracking.
-  let url = baseUrl ?? 'https://gateway.relaycast.dev';
+  let url = baseUrl ?? 'https://cast.agentrelay.com';
   while (url.endsWith('/')) url = url.slice(0, -1);
   return url;
 }
