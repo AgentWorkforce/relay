@@ -283,6 +283,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         events_tx: events_tx.clone(),
         replay_buffer: replay_buffer.clone(),
         workspace_key: Some(relay_workspace_key.clone()),
+        relay_base_url: Some(http_base.clone()),
         memberships: workspace_memberships.clone(),
         default_workspace_id: default_workspace_id.clone(),
         persist: cmd.persist,

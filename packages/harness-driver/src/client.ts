@@ -113,6 +113,7 @@ export interface SessionInfo {
   broker_version: string;
   protocol_version: number;
   workspace_key?: string;
+  relay_base_url?: string;
   default_workspace_id?: string;
   mode: string;
   uptime_secs: number;
