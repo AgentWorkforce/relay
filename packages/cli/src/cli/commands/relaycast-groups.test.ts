@@ -129,6 +129,67 @@ describe('SDK-backed CLI groups', () => {
     expect(log).toHaveBeenCalled();
   });
 
+  it('integration webhook create-inbound retries with the local broker workspace key after invalid SDK auth', async () => {
+    const firstRelay = createRelayMock();
+    const secondRelay = createRelayMock();
+    firstRelay.webhooks.createInbound.mockRejectedValueOnce(new Error('Invalid API key'));
+    const createAgentRelay = vi.fn().mockReturnValueOnce(firstRelay).mockReturnValueOnce(secondRelay);
+    const resolveLocalWorkspaceKey = vi.fn(async () => 'rk_live_local');
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: createAgentRelay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalWorkspaceKey,
+    });
+
+    await program.parseAsync(['integration', 'webhook', 'create-inbound', 'general'], { from: 'user' });
+
+    expect(resolveLocalWorkspaceKey).toHaveBeenCalled();
+    expect(createAgentRelay).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ workspaceKey: 'rk_live_local' })
+    );
+    expect(secondRelay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'general',
+      name: undefined,
+    });
+    expect(log).toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('integration webhook create-inbound does not retry an explicit workspace key', async () => {
+    const relay = createRelayMock();
+    relay.webhooks.createInbound.mockRejectedValueOnce(new Error('Invalid API key'));
+    const resolveLocalWorkspaceKey = vi.fn(async () => 'rk_live_local');
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalWorkspaceKey,
+    });
+
+    await program.parseAsync(
+      ['integration', 'webhook', 'create-inbound', 'general', '--workspace-key', 'rk_live_explicit'],
+      { from: 'user' }
+    );
+
+    expect(resolveLocalWorkspaceKey).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Invalid API key');
+    expect(log).not.toHaveBeenCalled();
+  });
+
   it('integration webhook list-inbound routes to webhooks.list', async () => {
     const { program, relay, log } = harness(registerIntegrationCommands);
     await program.parseAsync(['integration', 'webhook', 'list-inbound'], { from: 'user' });

@@ -1,0 +1,65 @@
+{
+  "id": "traj_ikt549lejpvk",
+  "version": 1,
+  "task": {
+    "title": "Debug invalid API key for integration webhook create-inbound"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-24T13:34:15.300Z",
+  "completedAt": "2026-06-24T13:38:26.732Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-24T13:37:36.196Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_3u2wlfcx1nz4",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-24T13:37:36.196Z",
+      "endedAt": "2026-06-24T13:38:26.732Z",
+      "events": [
+        {
+          "ts": 1782308256198,
+          "type": "decision",
+          "content": "Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure: Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure",
+          "raw": {
+            "question": "Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure",
+            "chosen": "Retry inbound webhook CLI operations with local broker workspace key after SDK auth failure",
+            "alternatives": [],
+            "reasoning": "PR 1193 added command wrappers, but local workflows can still use stale global SDK auth; retrying only inbound webhook commands preserves explicit --workspace-key behavior while making local broker sessions work."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1782308294395,
+          "type": "reflection",
+          "content": "Focused CLI tests and package build pass; change is scoped to inbound webhook auth fallback",
+          "raw": {
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.86"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed inbound webhook CLI local workflow auth fallback. The new create-inbound/list-inbound/delete-inbound commands now retry once with the running project broker's workspace key after SDK Invalid API key or missing-key failures, preserving explicit --workspace-key behavior. Added focused tests and changelog entry; CLI package build passes.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e08b39ede25d51277182dbe64185898c4ad420bf",
+    "endRef": "e08b39ede25d51277182dbe64185898c4ad420bf"
+  }
+}

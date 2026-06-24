@@ -1,4 +1,6 @@
 import type { Command } from 'commander';
+import { getProjectPaths } from '@agent-relay/config';
+import type { AgentRelayAgent } from '@agent-relay/sdk';
 
 import {
   addSdkOptions,
@@ -8,14 +10,76 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 
-export type IntegrationCommandDependencies = SdkCommandDeps;
+export type IntegrationCommandDependencies = SdkCommandDeps & {
+  resolveLocalWorkspaceKey: () => Promise<string | undefined>;
+};
+
+async function resolveLocalBrokerWorkspaceKey(): Promise<string | undefined> {
+  let client: { getSession: () => Promise<{ workspace_key?: string }>; disconnect?: () => void } | undefined;
+  try {
+    client = connectProjectBrokerClient(getProjectPaths().projectRoot);
+    const key = (await client.getSession()).workspace_key?.trim();
+    return key || undefined;
+  } catch {
+    return undefined;
+  } finally {
+    client?.disconnect?.();
+  }
+}
+
+function withIntegrationDefaults(
+  overrides: Partial<IntegrationCommandDependencies> = {}
+): IntegrationCommandDependencies {
+  return {
+    ...withSdkDefaults(overrides),
+    resolveLocalWorkspaceKey: resolveLocalBrokerWorkspaceKey,
+    ...overrides,
+  };
+}
+
+function explicitWorkspaceKey(opts: Record<string, unknown>): boolean {
+  return typeof opts.workspaceKey === 'string' && opts.workspaceKey.trim() !== '';
+}
+
+function shouldRetryWithLocalWorkspaceKey(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /invalid api key/i.test(message) || /no workspace key found/i.test(message);
+}
+
+async function runInboundWebhookOperation<T>(
+  deps: IntegrationCommandDependencies,
+  commandOpts: Record<string, unknown>,
+  operation: (relay: AgentRelayAgent) => Promise<T>
+): Promise<T> {
+  const options = sdkOptionsFromOpts(commandOpts);
+  try {
+    return await operation(deps.createAgentRelay(options));
+  } catch (error) {
+    if (explicitWorkspaceKey(commandOpts) || !shouldRetryWithLocalWorkspaceKey(error)) {
+      throw error;
+    }
+
+    const localWorkspaceKey = await deps.resolveLocalWorkspaceKey();
+    if (!localWorkspaceKey) {
+      throw error;
+    }
+
+    return await operation(
+      deps.createAgentRelay({
+        ...options,
+        workspaceKey: localWorkspaceKey,
+      })
+    );
+  }
+}
 
 export function registerIntegrationCommands(
   program: Command,
   overrides: Partial<IntegrationCommandDependencies> = {}
 ): void {
-  const deps = withSdkDefaults(overrides);
+  const deps = withIntegrationDefaults(overrides);
   const opts = (o: Record<string, unknown>) => sdkOptionsFromOpts(o);
   const group = program.command('integration').description('Webhooks and event subscriptions');
 
@@ -80,10 +144,12 @@ export function registerIntegrationCommands(
     await runSdk(deps, async () => {
       printJson(
         deps,
-        await deps.createAgentRelay(opts(o)).webhooks.createInbound({
-          channel,
-          name: o.name as string | undefined,
-        })
+        await runInboundWebhookOperation(deps, o, (relay) =>
+          relay.webhooks.createInbound({
+            channel,
+            name: o.name as string | undefined,
+          })
+        )
       );
     });
   });
@@ -91,7 +157,7 @@ export function registerIntegrationCommands(
   addSdkOptions(webhook.command('list-inbound').description('List inbound webhooks')).action(
     async (o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
-        printJson(deps, await deps.createAgentRelay(opts(o)).webhooks.list());
+        printJson(deps, await runInboundWebhookOperation(deps, o, (relay) => relay.webhooks.list()));
       });
     }
   );
@@ -103,7 +169,7 @@ export function registerIntegrationCommands(
       .argument('<webhookId>', 'Inbound webhook id')
   ).action(async (webhookId: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      await deps.createAgentRelay(opts(o)).webhooks.delete(webhookId);
+      await runInboundWebhookOperation(deps, o, (relay) => relay.webhooks.delete(webhookId));
       deps.log(`Deleted inbound webhook ${webhookId}.`);
     });
   });
