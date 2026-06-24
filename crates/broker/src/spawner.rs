@@ -218,7 +218,7 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
 pub fn spawn_env_vars(
     name: &str,
     api_key: &str,
-    base_url: &str,
+    base_url: Option<&str>,
     channels: &str,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
@@ -229,10 +229,17 @@ pub fn spawn_env_vars(
         ("AGENT_RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
         ("RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
         ("RELAY_API_KEY".to_string(), api_key.to_string()),
-        ("RELAY_BASE_URL".to_string(), base_url.to_string()),
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
+    // Pass RELAY_BASE_URL to the child only when an override is configured; when
+    // unset, the child inherits the SDK default.
+    if let Some(base_url) = base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        env.push(("RELAY_BASE_URL".to_string(), base_url.to_string()));
+    }
     // Per-worker attribution: tell the spawned agent's JS SDK its origin_actor
     // path (`agent-relay-cli/agent/<harness>`) via env, so its relaycast
     // telemetry is attributed to the harness it runs rather than "unknown".
@@ -288,7 +295,7 @@ mod tests {
         let env = spawn_env_vars(
             "a",
             "rk_live_x",
-            "https://gw",
+            Some("https://gw"),
             "#c",
             None,
             None,
@@ -303,7 +310,7 @@ mod tests {
 
     #[test]
     fn spawn_env_vars_omits_origin_actor_when_absent() {
-        let env = spawn_env_vars("a", "rk_live_x", "https://gw", "#c", None, None, None);
+        let env = spawn_env_vars("a", "rk_live_x", Some("https://gw"), "#c", None, None, None);
         assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_ORIGIN_ACTOR"));
     }
 

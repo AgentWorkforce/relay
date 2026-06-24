@@ -27,7 +27,7 @@ pub enum WsControl {
 
 #[derive(Clone)]
 pub struct RelaycastWsClient {
-    ws_base_url: String,
+    ws_base_url: Option<String>,
     workspace_http: RelaycastHttpClient,
     /// Reference-counted channel subscriptions: channel_name -> number of agents subscribed.
     /// The WS only unsubscribes when the count drops to zero.
@@ -36,7 +36,7 @@ pub struct RelaycastWsClient {
 
 impl RelaycastWsClient {
     pub fn new(
-        ws_base_url: impl Into<String>,
+        ws_base_url: Option<String>,
         workspace_http: RelaycastHttpClient,
         channels: impl IntoIterator<Item = String>,
     ) -> Self {
@@ -45,7 +45,7 @@ impl RelaycastWsClient {
             *subs.entry(crate::ids::ChannelName::from(ch)).or_insert(0) += 1;
         }
         Self {
-            ws_base_url: ws_base_url.into(),
+            ws_base_url,
             workspace_http,
             subscriptions: Arc::new(Mutex::new(subs)),
         }
@@ -75,9 +75,11 @@ impl RelaycastWsClient {
             // Attribute the broker's own relaycast traffic (the workspace
             // stream) to the agent-relay CLI as the origin actor — forwarded as
             // the `origin_actor` query param (WS upgrades can't set headers).
-            let ws_opts = WsClientOptions::new(self.workspace_http.api_key.clone())
-                .with_base_url(self.ws_base_url.clone())
+            let mut ws_opts = WsClientOptions::new(self.workspace_http.api_key.clone())
                 .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+            if let Some(ws_base_url) = self.ws_base_url.clone() {
+                ws_opts = ws_opts.with_base_url(ws_base_url);
+            }
             let mut ws = WsClient::new(ws_opts);
 
             match ws.connect().await {
@@ -90,7 +92,7 @@ impl RelaycastWsClient {
                     has_connected = true;
                     tracing::info!(
                         target = "broker::ws",
-                        base_url = %self.ws_base_url,
+                        base_url = ?self.ws_base_url,
                         status = %status,
                         "WebSocket {status}"
                     );
@@ -292,7 +294,7 @@ impl RelaycastWsClient {
                 Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::ws",
-                        base_url = %self.ws_base_url,
+                        base_url = ?self.ws_base_url,
                         error = %error,
                         "SDK ws connect failed"
                     );
@@ -317,7 +319,7 @@ impl RelaycastWsClient {
 /// target is not a local worker.
 #[derive(Clone)]
 pub struct RelaycastHttpClient {
-    pub base_url: String,
+    pub base_url: Option<String>,
     pub api_key: String,
     relay: Arc<Option<RelayCast>>,
     registration: Arc<Option<AgentRegistrationClient>>,
@@ -333,15 +335,14 @@ pub(crate) use relaycast::registration_retry_after_secs;
 
 impl RelaycastHttpClient {
     pub fn new(
-        base_url: impl Into<String>,
+        base_url: Option<String>,
         api_key: impl Into<String>,
         agent_name: impl Into<String>,
         default_cli: impl Into<String>,
     ) -> Self {
-        let base_url = base_url.into();
         let api_key = api_key.into();
         let default_cli = default_cli.into();
-        let relay = Arc::new(build_relay_client(&api_key, &base_url));
+        let relay = Arc::new(build_relay_client(&api_key, base_url.as_deref()));
         let registration = Arc::new(
             relay
                 .as_ref()
@@ -801,11 +802,14 @@ impl RelaycastHttpClient {
     }
 }
 
-/// Build a `RelayCast` workspace client from an API key and base URL.
-fn build_relay_client(api_key: &str, base_url: &str) -> Option<RelayCast> {
-    let opts = RelayCastOptions::new(api_key)
-        .with_base_url(base_url)
-        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+/// Build a `RelayCast` workspace client from an API key and optional base URL.
+/// When `base_url` is `None`, the SDK applies its own default.
+fn build_relay_client(api_key: &str, base_url: Option<&str>) -> Option<RelayCast> {
+    let mut opts =
+        RelayCastOptions::new(api_key).with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+    if let Some(base_url) = base_url {
+        opts = opts.with_base_url(base_url);
+    }
     RelayCast::new(opts).ok()
 }
 
@@ -844,7 +848,7 @@ mod tests {
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
         let client =
-            RelaycastHttpClient::new(base_url.to_string(), "rk_live_test", "broker", "codex");
+            RelaycastHttpClient::new(Some(base_url.to_string()), "rk_live_test", "broker", "codex");
         client.seed_agent_token("broker", "at_live_test");
         client
     }
@@ -906,7 +910,8 @@ mod tests {
             }));
         });
 
-        let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
         client.seed_agent_token("recipient", "at_live_existing_recipient");
 
         let result = client

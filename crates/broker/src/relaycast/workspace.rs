@@ -40,8 +40,8 @@ pub struct MultiWorkspaceSession {
 impl MultiWorkspaceSession {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        http_base: impl Into<String>,
-        ws_base: impl Into<String>,
+        http_base: Option<String>,
+        ws_base: Option<String>,
         _auth: AuthClient,
         sessions: AuthSessionSet,
         channels: Vec<String>,
@@ -49,8 +49,6 @@ impl MultiWorkspaceSession {
         runtime_cwd: &std::path::Path,
         events: EventEmitter,
     ) -> Self {
-        let http_base = http_base.into();
-        let ws_base = ws_base.into();
         let (merged_tx, inbound_rx) = mpsc::channel(1024);
         let mut handles = Vec::with_capacity(sessions.memberships.len());
 

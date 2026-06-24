@@ -287,7 +287,7 @@ describe('agent-relay-mcp startup helpers', () => {
   it('parses startup options and helper flags from the environment', async () => {
     const { mod } = await loadAgentRelayMcpModule();
     vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_env');
-    vi.stubEnv('RELAY_BASE_URL', 'https://api.relaycast.dev///');
+    vi.stubEnv('RELAY_BASE_URL', 'https://relay.example.com///');
     vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_env');
     vi.stubEnv('RELAY_AGENT_NAME', '');
     vi.stubEnv('RELAY_CLAW_NAME', 'FallbackClaw');
@@ -295,17 +295,18 @@ describe('agent-relay-mcp startup helpers', () => {
     vi.stubEnv('RELAY_STRICT_AGENT_NAME', ' yes ');
     vi.stubEnv('RELAY_SKIP_BOOTSTRAP', '1');
 
-    expect(mod.normalizeBaseUrl('https://api.relaycast.dev///')).toBe('https://api.relaycast.dev');
-    expect(mod.normalizeBaseUrl(`https://api.relaycast.dev${'/'.repeat(1000)}`)).toBe(
-      'https://api.relaycast.dev'
+    expect(mod.normalizeBaseUrl('https://relay.example.com///')).toBe('https://relay.example.com');
+    expect(mod.normalizeBaseUrl(`https://relay.example.com${'/'.repeat(1000)}`)).toBe(
+      'https://relay.example.com'
     );
+    expect(mod.normalizeBaseUrl(undefined)).toBeUndefined();
     expect(mod.envFlagEnabled(' on ')).toBe(true);
     expect(mod.envFlagEnabled('0')).toBe(false);
     expect(mod.normalizeAgentType('agent')).toBe('agent');
     expect(mod.normalizeAgentType('robot')).toBeUndefined();
     expect(mod.optionsFromEnv()).toEqual({
       workspaceKey: 'rk_live_env',
-      baseUrl: 'https://api.relaycast.dev///',
+      baseUrl: 'https://relay.example.com///',
       agentToken: 'at_live_env',
       agentName: 'FallbackClaw',
       agentType: 'human',
@@ -319,7 +320,7 @@ describe('createAgentRelayMcpServer', () => {
   it('registers owned tools, prompt text, fleet tools, and strips execution metadata from tools/list', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
 
-    mod.createAgentRelayMcpServer({ baseUrl: 'https://api.relaycast.dev/' });
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
     const server = mocks.serverInstances[0];
 
     expect(server.tools.get('create_workspace')).toBeDefined();
@@ -350,7 +351,7 @@ describe('createAgentRelayMcpServer', () => {
       .get('create_workspace')
       ?.handler({ name: 'Coverage Workspace' });
     expect(mocks.RelayCast.createWorkspace).toHaveBeenCalledWith('Coverage Workspace', {
-      baseUrl: 'https://api.relaycast.dev/',
+      baseUrl: 'https://relay.example.com/',
     });
     expect(workspaceResult.structuredContent).toEqual({
       workspaceKey: 'rk_live_created',
@@ -464,7 +465,7 @@ describe('createAgentRelayMcpServer', () => {
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
-      baseUrl: 'https://api.relaycast.dev/',
+      baseUrl: 'https://relay.example.com/',
       telemetryTransport: 'stdio',
     });
 
@@ -474,7 +475,7 @@ describe('createAgentRelayMcpServer', () => {
     const agentRelay = mocks.relayInstances.find((instance) => instance.config.apiKey === 'at_live_existing');
     expect(agentRelay?.config).toMatchObject({
       apiKey: 'at_live_existing',
-      baseUrl: 'https://api.relaycast.dev/',
+      baseUrl: 'https://relay.example.com/',
       originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
@@ -489,14 +490,14 @@ describe('createAgentRelayMcpServer', () => {
     );
     expect(workspaceRelay?.config).toMatchObject({
       apiKey: 'rk_live_existing',
-      baseUrl: 'https://api.relaycast.dev/',
+      baseUrl: 'https://relay.example.com/',
       originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
 
     await server.tools.get('create_workspace')?.handler({ name: 'Telemetry Workspace' });
     expect(mocks.RelayCast.createWorkspace).toHaveBeenCalledWith('Telemetry Workspace', {
-      baseUrl: 'https://api.relaycast.dev/',
+      baseUrl: 'https://relay.example.com/',
       agentRelayDistinctId: 'distinct_test',
     });
 
@@ -504,14 +505,14 @@ describe('createAgentRelayMcpServer', () => {
       apiKey: 'rk_live_bootstrap',
       agentName: 'BootstrapWorker',
       agentToken: 'jwt_or_external_token',
-      baseUrl: 'https://api.relaycast.dev/',
+      baseUrl: 'https://relay.example.com/',
     });
     const bootstrapRelay = mocks.relayInstances.find(
       (instance) => instance.config.apiKey === 'rk_live_bootstrap'
     );
     expect(bootstrapRelay?.config).toMatchObject({
       apiKey: 'rk_live_bootstrap',
-      baseUrl: 'https://api.relaycast.dev/',
+      baseUrl: 'https://relay.example.com/',
       originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
@@ -689,7 +690,7 @@ describe('createAgentRelayMcpServer', () => {
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
-      baseUrl: 'https://api.relaycast.dev',
+      baseUrl: 'https://relay.example.com',
     });
 
     const server = mocks.serverInstances[0];
@@ -704,7 +705,7 @@ describe('createAgentRelayMcpServer', () => {
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
-      baseUrl: 'https://api.relaycast.dev',
+      baseUrl: 'https://relay.example.com',
     });
 
     const server = mocks.serverInstances[0];
@@ -734,7 +735,7 @@ describe('resolveStdioBootstrapOptions', () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     const options = {
       apiKey: 'rk_live_workspace',
-      baseUrl: 'https://api.relaycast.dev',
+      baseUrl: 'https://relay.example.com',
       agentName: 'WorkerA',
       agentToken: 'at_live_existing',
       agentType: 'agent' as const,

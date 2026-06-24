@@ -132,15 +132,15 @@ private func waitForRequest(
 }
 
 final class HostedParticipantSDKTests: XCTestCase {
-    func testClientInitDefaultsToHostedGateway() {
-        let client = AgentRelayClient(apiKey: "rk_test_key")
+    func testClientInitUsesProvidedBaseURL() {
+        let client = AgentRelayClient(apiKey: "rk_test_key", baseURL: URL(string: "https://relay.example.com")!)
         XCTAssertEqual(client.workspaceKey, "rk_test_key")
-        XCTAssertEqual(client.baseURL.absoluteString, "https://gateway.relaycast.dev")
+        XCTAssertEqual(client.baseURL.absoluteString, "https://relay.example.com")
     }
 
     func testHostedWebSocketURLUsesV1WSAndToken() {
         let url = RelayEventTransport.resolveWebSocketURL(
-            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            baseURL: URL(string: "https://relay.example.com")!,
             token: "at_test"
         )
         XCTAssertEqual(url?.scheme, "wss")
@@ -149,8 +149,8 @@ final class HostedParticipantSDKTests: XCTestCase {
     }
 
     func testHostedAPIURLAppendsV1Path() {
-        let url = HostedHTTP.resolveAPIURL(baseURL: URL(string: "https://gateway.relaycast.dev")!, path: "/v1/dm")
-        XCTAssertEqual(url?.absoluteString, "https://gateway.relaycast.dev/v1/dm")
+        let url = HostedHTTP.resolveAPIURL(baseURL: URL(string: "https://relay.example.com")!, path: "/v1/dm")
+        XCTAssertEqual(url?.absoluteString, "https://relay.example.com/v1/dm")
     }
 
     func testRegisterOrRotateTreatsAgentAlreadyExistsAsConflict() async throws {
@@ -173,7 +173,7 @@ final class HostedParticipantSDKTests: XCTestCase {
         )
         let core = HostedWorkspaceCore(
             workspaceKey: "rk_test",
-            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            baseURL: URL(string: "https://relay.example.com")!,
             http: workspaceHTTP
         )
 
@@ -201,7 +201,7 @@ final class HostedParticipantSDKTests: XCTestCase {
             agentId: "ag_1",
             agentName: "swift-agent",
             token: "at_test",
-            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            baseURL: URL(string: "https://relay.example.com")!,
             workspaceHTTP: workspaceHTTP,
             agentHTTP: agentHTTP,
             transport: transport
@@ -227,7 +227,7 @@ final class HostedParticipantSDKTests: XCTestCase {
             agentId: "ag_1",
             agentName: "swift-agent",
             token: "at_test",
-            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            baseURL: URL(string: "https://relay.example.com")!,
             workspaceHTTP: MockHostedHTTP(),
             agentHTTP: MockHostedHTTP(),
             transport: transport
@@ -294,7 +294,7 @@ final class HostedParticipantSDKTests: XCTestCase {
             agentId: "ag_1",
             agentName: "swift-agent",
             token: "at_test",
-            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            baseURL: URL(string: "https://relay.example.com")!,
             workspaceHTTP: workspaceHTTP,
             agentHTTP: agentHTTP,
             transport: transport
@@ -367,7 +367,7 @@ final class HostedParticipantSDKTests: XCTestCase {
             agentId: "ag_1",
             agentName: "swift-agent",
             token: "at_test",
-            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            baseURL: URL(string: "https://relay.example.com")!,
             workspaceHTTP: workspaceHTTP,
             agentHTTP: agentHTTP,
             transport: transport
@@ -408,7 +408,7 @@ final class HostedParticipantSDKTests: XCTestCase {
             agentId: "ag_1",
             agentName: "swift-agent",
             token: "at_test",
-            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            baseURL: URL(string: "https://relay.example.com")!,
             workspaceHTTP: workspaceHTTP,
             agentHTTP: MockHostedHTTP(),
             transport: MockHostedTransport()

@@ -5,15 +5,14 @@ public final class AgentRelay: @unchecked Sendable {
     public let workspaceKey: String
     public let baseURL: URL
 
-    public init(workspaceKey: String, baseURL: URL? = nil) {
+    public init(workspaceKey: String, baseURL: URL) {
         self.workspaceKey = workspaceKey
-        let resolved = Self.resolveBaseURL(from: baseURL)
-        self.baseURL = resolved
-        let http = HostedHTTP(baseURL: resolved, apiKey: workspaceKey)
-        self.core = HostedWorkspaceCore(workspaceKey: workspaceKey, baseURL: resolved, http: http)
+        self.baseURL = baseURL
+        let http = HostedHTTP(baseURL: baseURL, apiKey: workspaceKey)
+        self.core = HostedWorkspaceCore(workspaceKey: workspaceKey, baseURL: baseURL, http: http)
     }
 
-    public convenience init(apiKey: String, baseURL: URL? = nil) {
+    public convenience init(apiKey: String, baseURL: URL) {
         self.init(workspaceKey: apiKey, baseURL: baseURL)
     }
 
@@ -45,13 +44,6 @@ public final class AgentRelay: @unchecked Sendable {
 
     public func workspaceInfo() async throws -> JSONValue {
         try await core.workspaceInfo()
-    }
-
-    private static func resolveBaseURL(from baseURL: URL?) -> URL {
-        if let baseURL {
-            return baseURL
-        }
-        return URL(string: "https://gateway.relaycast.dev")!
     }
 }
 
