@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.1.1] - 2026-06-24
+
+### Fixed
+
+- Retry inbound webhook auth from local broker
+- Escape glob in @agent-relay/* to satisfy prettier
+
 ## [9.1.0] - 2026-06-24
 
 ### Added
