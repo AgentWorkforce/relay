@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "9.0.1",
+  "version": "9.1.0",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",

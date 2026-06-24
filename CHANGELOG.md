@@ -67,6 +67,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.1.0] - 2026-06-24
+
+### Added
+
+- Add inbound channel webhook commands (create-inbound/list-inbound/delete-inbound)
+
+### Changed
+
+- Default Agent Relay clients to cast.agentrelay.com
+- Decompose the three largest TypeScript god files into single-responsibility modules
+- Drop redundant gateway.relaycast.dev default in MCP server
+- Clarify positioning
+- Remove the web app (moved to AgentWorkforce/agentrelay.com)
+
+### Fixed
+
+- Pin verify-standalone-macos to macos-15 and add smoke wait timeout
+- Record workspace_id from agent registration response
+- Use @relaycast/sdk instead of dead bespoke RPC API
+- Drop redundant @agent-relay/* tsconfig paths so the compiled CLI keeps workspace exports
+
 ## [9.0.1] - 2026-06-21
 
 ### Changed
