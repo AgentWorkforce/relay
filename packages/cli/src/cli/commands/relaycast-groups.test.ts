@@ -41,6 +41,16 @@ function createRelayMock() {
       },
       subscriptions: { create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })) },
     },
+    webhooks: {
+      createInbound: vi.fn(async (i: { channel: string; name?: string }) => ({
+        webhookId: 'in1',
+        url: 'https://relay.example/webhooks/in1',
+        token: 'tok_once',
+        ...i,
+      })),
+      list: vi.fn(async () => []),
+      delete: vi.fn(async () => undefined),
+    },
     capabilities: {
       register: vi.fn(async (i: unknown) => ({ ...(i as object) })),
       list: vi.fn(async () => []),
@@ -104,6 +114,32 @@ describe('SDK-backed CLI groups', () => {
       url: 'https://x',
       event: 'message.created',
     });
+  });
+
+  it('integration webhook create-inbound routes to webhooks.createInbound', async () => {
+    const { program, relay, log } = harness(registerIntegrationCommands);
+    await program.parseAsync(
+      ['integration', 'webhook', 'create-inbound', 'incidents', '--name', 'Slack incidents'],
+      { from: 'user' }
+    );
+    expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'incidents',
+      name: 'Slack incidents',
+    });
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('integration webhook list-inbound routes to webhooks.list', async () => {
+    const { program, relay, log } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'webhook', 'list-inbound'], { from: 'user' });
+    expect(relay.webhooks.list).toHaveBeenCalled();
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('integration webhook delete-inbound routes to webhooks.delete', async () => {
+    const { program, relay } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'webhook', 'delete-inbound', 'in1'], { from: 'user' });
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('in1');
   });
 
   it('capabilities register routes to capabilities.register', async () => {
