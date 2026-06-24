@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay integration webhook|subscription` commands work reliably in local broker workflows even when shell auth is stale or missing.
 - The Bun-compiled `agent-relay` standalone binary now bundles workspace packages from their compiled JS instead of their `.d.ts`, so `local up` starts the implicit Fleet local node instead of failing with `Fleet local node skipped: … is not a function`. The `tsconfig` `paths` that mapped `@agent-relay/*` to declaration files (no runtime exports) were redundant with the npm workspace symlinks and have been removed.
 - `agent-relay` and `@agent-relay/sdk` require `@relaycast/sdk` `^4.1.2`, whose matching `@relaycast/types` package is now published, so publish installs resolve cleanly without pinning.
 - `agent-relay fleet serve <node-def>` loads plain JavaScript node definitions without `jiti`, so the published Bun-compiled CLI can serve compiled JS node files.

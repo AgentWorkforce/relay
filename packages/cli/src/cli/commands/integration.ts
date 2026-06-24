@@ -1,4 +1,6 @@
 import type { Command } from 'commander';
+import { getProjectPaths } from '@agent-relay/config';
+import type { AgentRelayAgent } from '@agent-relay/sdk';
 
 import {
   addSdkOptions,
@@ -8,15 +10,102 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
+import type { SdkClientOptions } from '../lib/sdk-client.js';
 
-export type IntegrationCommandDependencies = SdkCommandDeps;
+export interface LocalRelayOptions {
+  workspaceKey: string;
+  baseUrl?: string;
+}
+
+export type IntegrationCommandDependencies = SdkCommandDeps & {
+  resolveLocalRelayOptions: () => Promise<LocalRelayOptions | undefined>;
+};
+
+async function resolveLocalBrokerRelayOptions(): Promise<LocalRelayOptions | undefined> {
+  let client:
+    | {
+        getSession: () => Promise<{ workspace_key?: string; relay_base_url?: string }>;
+        disconnect?: () => void;
+      }
+    | undefined;
+  try {
+    client = connectProjectBrokerClient(getProjectPaths().projectRoot);
+    const session = await client.getSession();
+    const workspaceKey = session.workspace_key?.trim();
+    if (!workspaceKey) {
+      return undefined;
+    }
+    const baseUrl = session.relay_base_url?.trim();
+    return {
+      workspaceKey,
+      ...(baseUrl ? { baseUrl } : {}),
+    };
+  } catch {
+    return undefined;
+  } finally {
+    client?.disconnect?.();
+  }
+}
+
+function withIntegrationDefaults(
+  overrides: Partial<IntegrationCommandDependencies> = {}
+): IntegrationCommandDependencies {
+  return {
+    ...withSdkDefaults(overrides),
+    resolveLocalRelayOptions: resolveLocalBrokerRelayOptions,
+    ...overrides,
+  };
+}
+
+function explicitWorkspaceKey(opts: Record<string, unknown>): boolean {
+  return typeof opts.workspaceKey === 'string' && opts.workspaceKey.trim() !== '';
+}
+
+function shouldRetryWithLocalWorkspaceKey(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /invalid (api|workspace) key/i.test(message) ||
+    /no workspace key found/i.test(message) ||
+    /unauthorized/i.test(message)
+  );
+}
+
+function localRetryOptions(options: SdkClientOptions, local: LocalRelayOptions): SdkClientOptions {
+  return {
+    ...options,
+    workspaceKey: local.workspaceKey,
+    baseUrl: options.baseUrl ?? local.baseUrl,
+  };
+}
+
+async function runIntegrationOperation<T>(
+  deps: IntegrationCommandDependencies,
+  commandOpts: Record<string, unknown>,
+  operation: (relay: AgentRelayAgent) => Promise<T>
+): Promise<T> {
+  const options = sdkOptionsFromOpts(commandOpts);
+  try {
+    return await operation(deps.createAgentRelay(options));
+  } catch (error) {
+    if (explicitWorkspaceKey(commandOpts) || !shouldRetryWithLocalWorkspaceKey(error)) {
+      throw error;
+    }
+
+    const local = await deps.resolveLocalRelayOptions();
+    if (!local) {
+      throw error;
+    }
+
+    return await operation(deps.createAgentRelay(localRetryOptions(options, local)));
+  }
+}
 
 export function registerIntegrationCommands(
   program: Command,
   overrides: Partial<IntegrationCommandDependencies> = {}
 ): void {
-  const deps = withSdkDefaults(overrides);
-  const opts = (o: Record<string, unknown>) => sdkOptionsFromOpts(o);
+  const deps = withIntegrationDefaults(overrides);
   const group = program.command('integration').description('Webhooks and event subscriptions');
 
   const webhook = group.command('webhook').description('Webhooks');
@@ -31,10 +120,12 @@ export function registerIntegrationCommands(
     await runSdk(deps, async () => {
       printJson(
         deps,
-        await deps.createAgentRelay(opts(o)).integrations.webhooks.create({
-          url,
-          event: o.event as string | undefined,
-        })
+        await runIntegrationOperation(deps, o, (relay) =>
+          relay.integrations.webhooks.create({
+            url,
+            event: o.event as string | undefined,
+          })
+        )
       );
     });
   });
@@ -42,7 +133,10 @@ export function registerIntegrationCommands(
   addSdkOptions(webhook.command('list').description('List registered webhooks')).action(
     async (o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
-        printJson(deps, await deps.createAgentRelay(opts(o)).integrations.webhooks.list());
+        printJson(
+          deps,
+          await runIntegrationOperation(deps, o, (relay) => relay.integrations.webhooks.list())
+        );
       });
     }
   );
@@ -51,7 +145,7 @@ export function registerIntegrationCommands(
     webhook.command('delete').description('Delete a webhook').argument('<id>', 'Webhook id')
   ).action(async (id: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      await deps.createAgentRelay(opts(o)).integrations.webhooks.delete(id);
+      await runIntegrationOperation(deps, o, (relay) => relay.integrations.webhooks.delete(id));
       deps.log(`Deleted webhook ${id}.`);
     });
   });
@@ -65,7 +159,10 @@ export function registerIntegrationCommands(
   ).action(async (id: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const payload = JSON.parse((o.payload as string) ?? '{}') as Record<string, unknown>;
-      printJson(deps, await deps.createAgentRelay(opts(o)).integrations.webhooks.trigger(id, payload));
+      printJson(
+        deps,
+        await runIntegrationOperation(deps, o, (relay) => relay.integrations.webhooks.trigger(id, payload))
+      );
     });
   });
 
@@ -80,10 +177,12 @@ export function registerIntegrationCommands(
     await runSdk(deps, async () => {
       printJson(
         deps,
-        await deps.createAgentRelay(opts(o)).webhooks.createInbound({
-          channel,
-          name: o.name as string | undefined,
-        })
+        await runIntegrationOperation(deps, o, (relay) =>
+          relay.webhooks.createInbound({
+            channel,
+            name: o.name as string | undefined,
+          })
+        )
       );
     });
   });
@@ -91,7 +190,7 @@ export function registerIntegrationCommands(
   addSdkOptions(webhook.command('list-inbound').description('List inbound webhooks')).action(
     async (o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
-        printJson(deps, await deps.createAgentRelay(opts(o)).webhooks.list());
+        printJson(deps, await runIntegrationOperation(deps, o, (relay) => relay.webhooks.list()));
       });
     }
   );
@@ -103,7 +202,7 @@ export function registerIntegrationCommands(
       .argument('<webhookId>', 'Inbound webhook id')
   ).action(async (webhookId: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      await deps.createAgentRelay(opts(o)).webhooks.delete(webhookId);
+      await runIntegrationOperation(deps, o, (relay) => relay.webhooks.delete(webhookId));
       deps.log(`Deleted inbound webhook ${webhookId}.`);
     });
   });
@@ -117,14 +216,20 @@ export function registerIntegrationCommands(
       .argument('<event>', 'Event name')
   ).action(async (event: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      printJson(deps, await deps.createAgentRelay(opts(o)).integrations.subscriptions.create({ event }));
+      printJson(
+        deps,
+        await runIntegrationOperation(deps, o, (relay) => relay.integrations.subscriptions.create({ event }))
+      );
     });
   });
 
   addSdkOptions(subscription.command('list').description('List created subscriptions')).action(
     async (o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
-        printJson(deps, await deps.createAgentRelay(opts(o)).integrations.subscriptions.list());
+        printJson(
+          deps,
+          await runIntegrationOperation(deps, o, (relay) => relay.integrations.subscriptions.list())
+        );
       });
     }
   );
@@ -133,7 +238,10 @@ export function registerIntegrationCommands(
     subscription.command('get').description('Get subscription details').argument('<id>', 'Subscription id')
   ).action(async (id: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      printJson(deps, await deps.createAgentRelay(opts(o)).integrations.subscriptions.get(id));
+      printJson(
+        deps,
+        await runIntegrationOperation(deps, o, (relay) => relay.integrations.subscriptions.get(id))
+      );
     });
   });
 
@@ -141,7 +249,7 @@ export function registerIntegrationCommands(
     subscription.command('delete').description('Delete a subscription').argument('<id>', 'Subscription id')
   ).action(async (id: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      await deps.createAgentRelay(opts(o)).integrations.subscriptions.delete(id);
+      await runIntegrationOperation(deps, o, (relay) => relay.integrations.subscriptions.delete(id));
       deps.log(`Deleted subscription ${id}.`);
     });
   });
