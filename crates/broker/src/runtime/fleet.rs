@@ -1,8 +1,9 @@
 use super::*;
 use crate::{
     fleet_wire::{
-        ActionInvoke, ActionResult, AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver,
-        DeliveryMode, RelaycastToBroker, FLEET_WIRE_VERSION,
+        ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
+        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, RelaycastToBroker,
+        FLEET_WIRE_VERSION,
     },
     node_control::{delivery_ack, HandlerDispatchDecision},
     protocol::{BrokerToSdk, SdkToBroker},
@@ -315,9 +316,17 @@ impl BrokerRuntime {
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {
+                // Node delivery is live: message delivery now flows solely over
+                // /v1/node/ws, so suppress the workspace firehose delivery path
+                // (handle_relaycast_message) to avoid double-delivery. This flag
+                // is intentionally NOT cleared on Disconnected — the engine holds
+                // deliveries while the node is offline and resumes from the ack
+                // cursor (at-least-once resume), so reverting to firehose
+                // delivery during a reconnect would risk double-injection.
+                self.fleet_mode_enabled = true;
                 tracing::info!(
                     target = "relay_broker::fleet",
-                    "fleet node control connected"
+                    "fleet node control connected; node delivery active"
                 );
             }
             FleetControlEvent::Disconnected => {
@@ -342,13 +351,13 @@ impl BrokerRuntime {
         let decision = self.fleet_delivery_book.observe(&deliver);
         let up_to_seq = match decision {
             crate::node_control::DeliveryDecision::Deliver { up_to_seq: _ } => {
-                let relay_delivery = self.fleet_relay_delivery(&deliver);
-                match self.workers.deliver(&deliver.agent, relay_delivery).await {
+                match self.surface_fleet_deliver(&deliver).await {
                     Ok(()) => self.fleet_delivery_book.commit_delivered(&deliver),
                     Err(error) => {
                         tracing::warn!(
                             target = "relay_broker::fleet",
                             agent = %deliver.agent,
+                            delivery_id = %deliver.delivery_id,
                             msg_id = %deliver.msg_id,
                             error = %error,
                             "fleet delivery injection failed; withholding ack"
@@ -368,6 +377,47 @@ impl BrokerRuntime {
                 up_to_seq,
             )))
             .await;
+    }
+
+    /// Surface a node `deliver` frame by branching on its payload `type`:
+    /// message-class events inject into the recipient worker's PTY; reaction /
+    /// read receipts are acked with a tracing log only (PTY surfacing deferred).
+    /// An `Ok` return means the delivery may be committed and acked; an `Err`
+    /// means injection failed and the ack must be withheld so the engine
+    /// redelivers.
+    async fn surface_fleet_deliver(&mut self, deliver: &Deliver) -> Result<(), anyhow::Error> {
+        let payload_type = deliver
+            .payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        match classify_fleet_delivery(payload_type) {
+            FleetDeliverySurfacing::Inject => {
+                let relay_delivery = self.fleet_relay_delivery(deliver);
+                self.workers.deliver(&deliver.agent, relay_delivery).await
+            }
+            FleetDeliverySurfacing::AckOnly => {
+                tracing::info!(
+                    target = "relay_broker::fleet",
+                    agent = %deliver.agent,
+                    delivery_id = %deliver.delivery_id,
+                    msg_id = %deliver.msg_id,
+                    payload_type = %payload_type,
+                    "acking node receipt/reaction delivery without PTY surfacing (deferred)"
+                );
+                Ok(())
+            }
+            FleetDeliverySurfacing::AckUnknown => {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    agent = %deliver.agent,
+                    delivery_id = %deliver.delivery_id,
+                    payload_type = %payload_type,
+                    "acking unrecognized node delivery payload type without surfacing"
+                );
+                Ok(())
+            }
+        }
     }
 
     fn fleet_relay_delivery(&self, deliver: &Deliver) -> RelayDelivery {
@@ -416,7 +466,7 @@ impl BrokerRuntime {
                     .and_then(priority_from_label)
             });
         RelayDelivery {
-            delivery_id: DeliveryId::new(deliver.msg_id.clone()),
+            delivery_id: DeliveryId::new(deliver.delivery_id.clone()),
             event_id: EventId::new(deliver.msg_id.clone()),
             workspace_id: self.default_workspace_id.clone(),
             workspace_alias: self.default_workspace.workspace_alias.clone(),
@@ -433,6 +483,20 @@ impl BrokerRuntime {
     }
 
     async fn handle_fleet_action_invoke(&mut self, invoke: ActionInvoke) {
+        // Spawn / release are node actions, not sidecar handlers: the engine
+        // targets this node for placement and the broker runs them directly.
+        // `spawn` / `spawn:<harness>` both map to the local spawn fn; `release`
+        // routes by the invoke's agent_name/agent_id to the local release fn.
+        let action = invoke.action.as_str();
+        if action == "spawn" || action.starts_with("spawn:") {
+            self.handle_fleet_action_spawn(invoke).await;
+            return;
+        }
+        if action == "release" {
+            self.handle_fleet_action_release(invoke).await;
+            return;
+        }
+
         match self.fleet_handlers.handle_invoke(&invoke) {
             HandlerDispatchDecision::Dispatch {
                 invocation_id,
@@ -467,6 +531,154 @@ impl BrokerRuntime {
                 self.send_fleet_action_result(result).await;
             }
         }
+    }
+
+    /// Run a `spawn` / `spawn:<harness>` node action by parsing the invoke input
+    /// into spawn fields and calling the local spawn fn (which binds the agent
+    /// to this node). Replies with `action.result { output }` on success or
+    /// `{ error }` on failure.
+    async fn handle_fleet_action_spawn(&mut self, invoke: ActionInvoke) {
+        self.fleet_mode_enabled = true;
+        let Some(name) = action_invoke_agent_name(&invoke) else {
+            self.reply_action_error(&invoke.invocation_id, "spawn_missing_agent_name")
+                .await;
+            return;
+        };
+        let cli = match action_invoke_string(&invoke.input, &["cli", "command", "provider"]) {
+            Some(cli) => cli,
+            None => {
+                self.reply_action_error(&invoke.invocation_id, "spawn_missing_cli")
+                    .await;
+                return;
+            }
+        };
+        let task = action_invoke_string(&invoke.input, &["task", "initial_task", "prompt"]);
+        let channel = action_invoke_string(&invoke.input, &["channel"]);
+        let model = action_invoke_string(&invoke.input, &["model"]);
+
+        // Reuse the action input as the `ws_value` the spawn fn reads
+        // harnessConfig / supplied tokens from, mirroring the firehose payload
+        // shape (top-level and nested-`agent` lookups both work).
+        let ws_value = invoke.input.clone();
+        let workspace_id = self
+            .default_workspace_id
+            .clone()
+            .or_else(|| self.workspaces.first().map(|w| w.workspace_id.clone()));
+        let Some(workspace_id) = workspace_id else {
+            self.reply_action_error(&invoke.invocation_id, "no_workspace_available")
+                .await;
+            return;
+        };
+        let workspace_state = self
+            .workspace_lookup
+            .get(&workspace_id)
+            .cloned()
+            .unwrap_or_else(|| self.default_workspace.clone());
+
+        super::relaycast_events::spawn_worker_from_request(
+            name.clone(),
+            cli,
+            task,
+            channel,
+            model,
+            &ws_value,
+            &workspace_id,
+            None,
+            &workspace_state,
+            &mut self.workers,
+            &mut self.state,
+            &self.paths,
+            &self.telemetry,
+            &self.sdk_out_tx,
+            &mut self.dedup,
+            &mut self.agent_spawn_count,
+            &self.fleet_control_tx,
+        )
+        .await;
+
+        self.publish_fleet_load(true).await;
+
+        // `spawn_worker_from_request` does not return a result; treat presence of
+        // the worker as success so the engine's invocation resolves.
+        if self.workers.workers.contains_key(&name) {
+            self.reply_action_output(
+                &invoke.invocation_id,
+                json!({ "spawned": true, "name": name.as_str() }),
+            )
+            .await;
+        } else {
+            self.reply_action_error(&invoke.invocation_id, "spawn_failed")
+                .await;
+        }
+    }
+
+    /// Run a `release` node action, routing by the invoke's agent_name (then
+    /// agent_id) to the local release fn. Replies with `action.result`.
+    async fn handle_fleet_action_release(&mut self, invoke: ActionInvoke) {
+        let Some(name) = action_invoke_agent_name(&invoke) else {
+            self.reply_action_error(&invoke.invocation_id, "release_missing_agent_name")
+                .await;
+            return;
+        };
+        let workspace_id = self
+            .default_workspace_id
+            .clone()
+            .or_else(|| self.workspaces.first().map(|w| w.workspace_id.clone()));
+        let workspace_state = workspace_id
+            .as_ref()
+            .and_then(|id| self.workspace_lookup.get(id).cloned())
+            .unwrap_or_else(|| self.default_workspace.clone());
+
+        super::relaycast_events::release_worker_locally(
+            name.clone(),
+            &workspace_state,
+            &mut self.workers,
+            &mut self.state,
+            &self.paths,
+            &self.telemetry,
+            &self.sdk_out_tx,
+            &mut self.pending_deliveries,
+            &mut self.pending_requests,
+            &mut self.delivery_states,
+            &mut self.agent_result_tokens,
+        )
+        .await;
+
+        prune_fleet_agent_state(
+            &self.fleet_control_tx,
+            &mut self.fleet_inventory,
+            &mut self.fleet_delivery_book,
+            &name,
+        )
+        .await;
+        self.publish_fleet_load(true).await;
+        self.reply_action_output(
+            &invoke.invocation_id,
+            json!({ "released": true, "name": name.as_str() }),
+        )
+        .await;
+    }
+
+    async fn reply_action_output(&self, invocation_id: &str, output: Value) {
+        self.send_fleet_action_result(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            invocation_id: invocation_id.to_string(),
+            result: ActionResultPayload::Output(ActionResultOutput { output }),
+        })
+        .await;
+    }
+
+    async fn reply_action_error(&self, invocation_id: &str, error: &str) {
+        self.send_fleet_action_result(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            invocation_id: invocation_id.to_string(),
+            result: ActionResultPayload::Error(ActionResultError {
+                error: error.to_string(),
+            }),
+        })
+        .await;
     }
 
     async fn handle_fleet_spawn_agent(
@@ -525,25 +737,13 @@ impl BrokerRuntime {
         invocation_id: Option<String>,
         session_ref: Option<String>,
     ) -> Result<crate::node_control::AgentRegistrationToken, String> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.fleet_control_tx
-            .send(FleetControlCommand::RegisterAgent {
-                request: AgentRegister {
-                    v: FLEET_WIRE_VERSION,
-                    id: None,
-                    name: spec.name.as_str().to_string(),
-                    invocation_id,
-                    session_ref: session_ref.clone(),
-                    resumable: session_ref.as_ref().map(|_| true),
-                },
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| "fleet_control_unavailable".to_string())?;
-        tokio::time::timeout(FLEET_AGENT_REGISTER_TIMEOUT, reply_rx)
-            .await
-            .map_err(|_| "agent_register_timeout".to_string())?
-            .map_err(|_| "agent_register_reply_dropped".to_string())?
+        register_node_agent_token(
+            &self.fleet_control_tx,
+            spec.name.as_str(),
+            invocation_id,
+            session_ref,
+        )
+        .await
     }
 
     async fn spawn_from_agent_spec(
@@ -702,6 +902,40 @@ impl BrokerRuntime {
     }
 }
 
+/// Bind an agent to this node by sending node-control `agent.register` and
+/// awaiting the engine reply with the minted agent token. This is the single
+/// "register agent via node" step both the `/api/spawn` path and the node
+/// `action.invoke` spawn converge on, so every spawned agent is born
+/// `via_node`-bound to the broker. The returned token is injected into the
+/// worker as `RELAY_AGENT_TOKEN` (which also sets `RELAY_SKIP_BOOTSTRAP`), so
+/// the worker MCP never re-registers over HTTP.
+pub(super) async fn register_node_agent_token(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    name: &str,
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
+) -> Result<crate::node_control::AgentRegistrationToken, String> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fleet_control_tx
+        .send(FleetControlCommand::RegisterAgent {
+            request: AgentRegister {
+                v: FLEET_WIRE_VERSION,
+                id: None,
+                name: name.to_string(),
+                invocation_id,
+                session_ref: session_ref.clone(),
+                resumable: session_ref.as_ref().map(|_| true),
+            },
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| "fleet_control_unavailable".to_string())?;
+    tokio::time::timeout(FLEET_AGENT_REGISTER_TIMEOUT, reply_rx)
+        .await
+        .map_err(|_| "agent_register_timeout".to_string())?
+        .map_err(|_| "agent_register_reply_dropped".to_string())?
+}
+
 pub(super) async fn publish_fleet_load_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     active_agents: u32,
@@ -838,6 +1072,71 @@ fn non_empty(value: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+/// How a node `deliver` frame should be surfaced, decided by its payload `type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FleetDeliverySurfacing {
+    /// Directive message class — inject into the recipient worker's PTY.
+    Inject,
+    /// Ambient receipt/reaction — ack + log only (PTY surfacing deferred).
+    AckOnly,
+    /// Unrecognized class — ack (so it is not redelivered forever) without
+    /// injecting, and warn so new event types are visible.
+    AckUnknown,
+}
+
+/// Classify a node `deliver` payload `type` into a surfacing decision. The empty
+/// type covers legacy/plain payloads that carry the message body directly
+/// (text/body/content), preserving pre-node delivery behavior.
+fn classify_fleet_delivery(payload_type: &str) -> FleetDeliverySurfacing {
+    match payload_type {
+        "message.reacted" | "message.read" => FleetDeliverySurfacing::AckOnly,
+        "message.created" | "thread.reply" | "dm.received" | "group_dm.received" | "" => {
+            FleetDeliverySurfacing::Inject
+        }
+        _ => FleetDeliverySurfacing::AckUnknown,
+    }
+}
+
+/// Resolve the worker name a node `action.invoke` targets: prefer the frame's
+/// `agent_name`, then the input's `name`/`agent`/`agent_name`/`agent_id`
+/// fields. Returns `None` when no non-empty identity is present.
+fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
+    invoke
+        .agent_name
+        .as_deref()
+        .and_then(non_empty)
+        .map(WorkerName::from)
+        .or_else(|| {
+            action_invoke_string(&invoke.input, &["name", "agent_name", "agent"])
+                .map(WorkerName::from)
+        })
+        .or_else(|| {
+            invoke
+                .agent_id
+                .as_deref()
+                .and_then(non_empty)
+                .map(WorkerName::from)
+        })
+}
+
+/// Read the first non-empty string at any of the given top-level keys of an
+/// `action.invoke` input object (also checks under a nested `agent` object,
+/// mirroring the firehose payload shape).
+fn action_invoke_string(input: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = input.get(key).and_then(Value::as_str).and_then(non_empty) {
+            return Some(value.to_string());
+        }
+    }
+    let agent = input.get("agent")?;
+    for key in keys {
+        if let Some(value) = agent.get(key).and_then(Value::as_str).and_then(non_empty) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 fn priority_from_label(label: &str) -> Option<u8> {
     match label.trim().to_ascii_lowercase().as_str() {
         "low" => Some(1),
@@ -904,6 +1203,89 @@ mod tests {
             channels: Vec::new(),
             restart_policy: None,
         }
+    }
+
+    #[test]
+    fn classify_fleet_delivery_injects_message_classes_and_acks_receipts() {
+        for inject in [
+            "message.created",
+            "thread.reply",
+            "dm.received",
+            "group_dm.received",
+            "",
+        ] {
+            assert_eq!(
+                classify_fleet_delivery(inject),
+                FleetDeliverySurfacing::Inject,
+                "{inject} should inject"
+            );
+        }
+        for ack_only in ["message.reacted", "message.read"] {
+            assert_eq!(
+                classify_fleet_delivery(ack_only),
+                FleetDeliverySurfacing::AckOnly,
+                "{ack_only} should ack-only"
+            );
+        }
+        assert_eq!(
+            classify_fleet_delivery("something.new"),
+            FleetDeliverySurfacing::AckUnknown
+        );
+    }
+
+    fn action_invoke(input: Value, agent_name: Option<&str>, agent_id: Option<&str>) -> ActionInvoke {
+        ActionInvoke {
+            v: FLEET_WIRE_VERSION,
+            invocation_id: "inv-1".to_string(),
+            action: "spawn".to_string(),
+            input,
+            agent_id: agent_id.map(ToOwned::to_owned),
+            agent_name: agent_name.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn action_invoke_agent_name_prefers_frame_then_input_then_agent_id() {
+        assert_eq!(
+            action_invoke_agent_name(&action_invoke(json!({"name": "from-input"}), Some("from-frame"), None)),
+            Some(WorkerName::from("from-frame"))
+        );
+        assert_eq!(
+            action_invoke_agent_name(&action_invoke(json!({"name": "from-input"}), None, Some("agt-1"))),
+            Some(WorkerName::from("from-input"))
+        );
+        assert_eq!(
+            action_invoke_agent_name(&action_invoke(json!({}), None, Some("agt-1"))),
+            Some(WorkerName::from("agt-1"))
+        );
+        assert_eq!(
+            action_invoke_agent_name(&action_invoke(json!({"agent": {"name": "nested"}}), None, None)),
+            Some(WorkerName::from("nested"))
+        );
+        assert_eq!(
+            action_invoke_agent_name(&action_invoke(json!({}), Some("  "), None)),
+            None
+        );
+    }
+
+    #[test]
+    fn action_invoke_string_reads_top_level_and_nested_agent() {
+        let input = json!({"cli": "codex", "agent": {"model": "gpt-5"}});
+        assert_eq!(
+            action_invoke_string(&input, &["cli"]).as_deref(),
+            Some("codex")
+        );
+        assert_eq!(
+            action_invoke_string(&input, &["model"]).as_deref(),
+            Some("gpt-5")
+        );
+        assert_eq!(action_invoke_string(&input, &["missing"]), None);
+        // blank values are skipped
+        assert_eq!(
+            action_invoke_string(&json!({"cli": "  ", "command": "claude"}), &["cli", "command"])
+                .as_deref(),
+            Some("claude")
+        );
     }
 
     #[test]

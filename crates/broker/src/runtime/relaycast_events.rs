@@ -455,7 +455,6 @@ fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfi
 /// arm. The v5.0.1 SDK removed that event variant; node control invokes this
 /// directly via `action.invoke`. `workspace_state` supplies the per-workspace
 /// HTTP client, self-name set, and WS control channel the original arm captured.
-#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn release_worker_locally(
     name: WorkerName,
@@ -557,7 +556,6 @@ pub(super) async fn release_worker_locally(
 /// `ws_value` is retained for `harnessConfig`/token extraction exactly as
 /// before. `control_dedup_key` carries the firehose control dedup key so the
 /// local spawn-echo dedup behaves identically.
-#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn spawn_worker_from_request(
     name: WorkerName,
@@ -576,6 +574,7 @@ pub(super) async fn spawn_worker_from_request(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     dedup: &mut DedupCache,
     agent_spawn_count: &mut u32,
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
 ) {
     let workspace_http = &workspace_state.http_client;
     eprintln!(
@@ -680,39 +679,68 @@ pub(super) async fn spawn_worker_from_request(
     // no relaycast tool names land in deferred_tools. The
     // short timeout keeps spawn latency bounded while still
     // giving the registration call a real chance.
+    // Bind the agent to this node via node-control `agent.register` — the same
+    // step the HTTP `/api/spawn` path converges on — so the agent is born
+    // `via_node`-bound and delivery flows over /v1/node/ws. The minted token is
+    // injected as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP), so
+    // the worker MCP never re-registers over HTTP. Falls back to HTTP
+    // pre-registration when node binding is unavailable.
     let worker_relay_key = {
         if let Some(token) = relaycast_ws_spawn_token(ws_value) {
             seed_supplied_agent_token(workspace_http, &name, &token);
             Some(token)
         } else {
-            const REG_TIMEOUT: Duration = Duration::from_secs(3);
-            match tokio::time::timeout(
-                REG_TIMEOUT,
-                workspace_http.register_agent_token(&name, Some(cli.as_str())),
+            match super::fleet::register_node_agent_token(
+                fleet_control_tx,
+                name.as_str(),
+                None,
+                None,
             )
             .await
             {
-                Ok(Ok(token)) => {
+                Ok(token) => {
                     tracing::info!(
                         worker = %name,
-                        "pre-registered agent via broker for WS spawn"
+                        "bound agent to node via agent.register for action.invoke spawn"
                     );
-                    Some(token)
+                    Some(token.token)
                 }
-                Ok(Err(error)) => {
+                Err(node_error) => {
                     tracing::warn!(
                         worker = %name,
-                        error = %error,
-                        "WS spawn pre-registration failed; agent will self-register"
+                        error = %node_error,
+                        "node agent.register unavailable; falling back to HTTP pre-registration"
                     );
-                    None
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        worker = %name,
-                        "WS spawn pre-registration timed out (3s); agent will self-register"
-                    );
-                    None
+                    const REG_TIMEOUT: Duration = Duration::from_secs(3);
+                    match tokio::time::timeout(
+                        REG_TIMEOUT,
+                        workspace_http.register_agent_token(&name, Some(cli.as_str())),
+                    )
+                    .await
+                    {
+                        Ok(Ok(token)) => {
+                            tracing::info!(
+                                worker = %name,
+                                "pre-registered agent via broker for WS spawn"
+                            );
+                            Some(token)
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "WS spawn pre-registration failed; agent will self-register"
+                            );
+                            None
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                worker = %name,
+                                "WS spawn pre-registration timed out (3s); agent will self-register"
+                            );
+                            None
+                        }
+                    }
                 }
             }
         }

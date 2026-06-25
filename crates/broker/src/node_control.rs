@@ -401,6 +401,51 @@ pub(crate) fn default_node_id_path() -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join("agent-relay").join("machine-id"))
 }
 
+/// Path to the persisted node token, kept next to the node id file so a node's
+/// identity and its minted control token live and rotate together.
+pub(crate) fn default_node_token_path() -> Option<std::path::PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join("agent-relay").join("node-token.json"))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedNodeToken {
+    node_id: String,
+    token: String,
+}
+
+/// Load a previously minted node token, but only if it was minted for the same
+/// `node_id`. A mismatch means the machine id rotated since the token was
+/// written, so the cached token no longer authenticates this node and is
+/// ignored (the caller mints a fresh one).
+pub(crate) fn load_node_token(path: &Path, node_id: &str) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let persisted: PersistedNodeToken = serde_json::from_str(&raw).ok()?;
+    if persisted.node_id != node_id {
+        return None;
+    }
+    let token = persisted.token.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+/// Persist a minted node token next to the node id, scoped to `node_id` so a
+/// later id rotation invalidates it. Failures are surfaced as `Err` but are
+/// non-fatal to startup — the caller logs and continues with the in-memory
+/// token.
+pub(crate) fn persist_node_token(path: &Path, node_id: &str, token: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
+    }
+    let body = serde_json::to_string(&PersistedNodeToken {
+        node_id: node_id.to_string(),
+        token: token.to_string(),
+    })
+    .context("failed to serialize node token")?;
+    fs::write(path, body)
+        .with_context(|| format!("failed to write node token file {}", path.display()))?;
+    Ok(())
+}
+
 pub(crate) async fn run_node_control_client(
     config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
