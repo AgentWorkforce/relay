@@ -50,7 +50,7 @@
     "@agent-relay/sdk": "9.1.2",
     "@agent-relay/utils": "9.1.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@relaycast/sdk": "^4.1.6",
+    "@relaycast/sdk": "^5.0.0",
     "@relayflows/cli": "^1.0.1",
     "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",

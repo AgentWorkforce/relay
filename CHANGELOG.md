@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bumped the bundled relaycast SDKs to v5: `agent-relay-broker` builds against the `relaycast` crate 5.0.0, `agent-relay`/`@agent-relay/sdk` use `@relaycast/sdk` ^5.0.0, the Python `communicate` client uses `relaycast-sdk` 0.3.0, and the Swift SDK tracks relaycast 5.0.0. Node delivery is unconditional in v5, so the broker no longer toggles the per-workspace stream (the removed `workspace_stream_set` API).
 - The hosted engine base URL default is owned solely by the relaycast SDK. `agent-relay`, `agent-relay-broker`, and the bundled SDKs no longer hardcode a base URL — they pass `RELAYCAST_BASE_URL`/`RELAY_BASE_URL` through for self-hosting and otherwise inherit the SDK default (`cast.agentrelay.com`). The broker reaches the fleet node-control endpoint via the SDK's `node_control_ws_url` helper and only injects `RELAY_BASE_URL` into spawned agents when an override is set.
 
 ### Removed

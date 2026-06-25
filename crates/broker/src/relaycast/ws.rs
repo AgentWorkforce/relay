@@ -64,14 +64,6 @@ impl RelaycastWsClient {
         let mut has_connected = false;
 
         loop {
-            if let Err(error) = self.workspace_http.ensure_workspace_stream_enabled().await {
-                tracing::warn!(
-                    target = "relay_broker::ws",
-                    error = %error,
-                    "failed to enable workspace stream before websocket connect"
-                );
-            }
-
             // Attribute the broker's own relaycast traffic (the workspace
             // stream) to the agent-relay CLI as the origin actor — forwarded as
             // the `origin_actor` query param (WS upgrades can't set headers).
@@ -567,26 +559,6 @@ impl RelaycastHttpClient {
             .send(channel, text, None, None, None)
             .await
             .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
-        Ok(())
-    }
-
-    /// Ensure workspace-wide WebSocket fanout is enabled for this workspace.
-    pub async fn ensure_workspace_stream_enabled(&self) -> Result<()> {
-        let Some(relay) = (*self.relay).as_ref() else {
-            tracing::warn!("SDK relay client not initialized; cannot enable workspace stream");
-            return Ok(());
-        };
-
-        let config = relay
-            .workspace_stream_set(true)
-            .await
-            .map_err(|error| anyhow::anyhow!("relaycast workspace_stream_set failed: {error}"))?;
-        tracing::debug!(
-            enabled = config.enabled,
-            default_enabled = config.default_enabled,
-            override = ?config.override_value,
-            "ensured workspace stream enabled"
-        );
         Ok(())
     }
 
