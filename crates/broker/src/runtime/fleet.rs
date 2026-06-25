@@ -421,60 +421,17 @@ impl BrokerRuntime {
     }
 
     fn fleet_relay_delivery(&self, deliver: &Deliver) -> RelayDelivery {
-        let body = first_string(
-            &deliver.payload,
-            &["/text", "/body", "/content", "/message", "/payload/text"],
-        )
-        .unwrap_or_else(|| deliver.payload.to_string());
-        let from = first_string(
-            &deliver.payload,
-            &[
-                "/from",
-                "/sender",
-                "/author",
-                "/message/from",
-                "/payload/from",
-            ],
-        )
-        .unwrap_or_else(|| "relaycast".to_string());
-        let target = first_string(
-            &deliver.payload,
-            &["/target", "/to", "/recipient", "/message/target"],
-        )
-        .or_else(|| {
-            first_string(&deliver.payload, &["/channel", "/message/channel"]).map(|channel| {
-                if channel.starts_with('#') {
-                    channel
-                } else {
-                    format!("#{channel}")
-                }
-            })
-        })
-        .unwrap_or_else(|| deliver.agent.clone());
-        let thread_id =
-            first_string(&deliver.payload, &["/thread_id", "/threadId"]).map(ThreadId::new);
-        let priority = deliver
-            .payload
-            .pointer("/priority")
-            .and_then(Value::as_u64)
-            .and_then(|value| u8::try_from(value).ok())
-            .or_else(|| {
-                deliver
-                    .payload
-                    .pointer("/metadata/priority")
-                    .and_then(Value::as_str)
-                    .and_then(priority_from_label)
-            });
+        let fields = fleet_delivery_fields(&deliver.payload, &deliver.agent);
         RelayDelivery {
             delivery_id: DeliveryId::new(deliver.delivery_id.clone()),
             event_id: EventId::new(deliver.msg_id.clone()),
             workspace_id: self.default_workspace_id.clone(),
             workspace_alias: self.default_workspace.workspace_alias.clone(),
-            from,
-            target: MessageTarget::new(target),
-            body,
-            thread_id,
-            priority,
+            from: fields.from,
+            target: MessageTarget::new(fields.target),
+            body: fields.body,
+            thread_id: fields.thread_id,
+            priority: fields.priority,
             injection_mode: match deliver.mode {
                 DeliveryMode::Wait => MessageInjectionMode::Wait,
                 DeliveryMode::Steer => MessageInjectionMode::Steer,
@@ -1087,12 +1044,39 @@ enum FleetDeliverySurfacing {
 /// Classify a node `deliver` payload `type` into a surfacing decision. The empty
 /// type covers legacy/plain payloads that carry the message body directly
 /// (text/body/content), preserving pre-node delivery behavior.
+///
+/// The message-class arm mirrors relaycast's `parse_inbound_kind` alias set
+/// (events.rs): the engine may emit any of these alias `type` values for a
+/// message-class event, and acking-without-injecting any of them would
+/// permanently drop the message (at-least-once never redelivers an acked
+/// delivery). `AckUnknown` is reserved for genuinely non-message control types.
 fn classify_fleet_delivery(payload_type: &str) -> FleetDeliverySurfacing {
     match payload_type {
         "message.reacted" | "message.read" => FleetDeliverySurfacing::AckOnly,
-        "message.created" | "thread.reply" | "dm.received" | "group_dm.received" | "" => {
-            FleetDeliverySurfacing::Inject
-        }
+        // message-class aliases — mirror relaycast parse_inbound_kind.
+        "message.created"
+        | "message.received"
+        | "message.new"
+        | "message.sent"
+        | "message.delivered"
+        | "thread.reply"
+        | "thread.message.created"
+        | "thread.message.sent"
+        | "dm.received"
+        | "dm.created"
+        | "dm.new"
+        | "dm.sent"
+        | "dm.message.created"
+        | "direct_message.received"
+        | "direct_message.created"
+        | "direct_message.new"
+        | "direct_message.sent"
+        | "group_dm.received"
+        | "group_dm.created"
+        | "group_dm.new"
+        | "group_dm.sent"
+        | "group_dm.message.created"
+        | "" => FleetDeliverySurfacing::Inject,
         _ => FleetDeliverySurfacing::AckUnknown,
     }
 }
@@ -1135,6 +1119,90 @@ fn action_invoke_string(input: &Value, keys: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+/// Message fields extracted from a node `deliver` payload, ready to build a
+/// [`RelayDelivery`].
+struct FleetDeliveryFields {
+    body: String,
+    from: String,
+    target: String,
+    thread_id: Option<ThreadId>,
+    priority: Option<u8>,
+}
+
+/// Extract message body/sender/target/thread/priority from a node `deliver`
+/// payload.
+///
+/// The relaycast v5 node `deliver` frame nests the message under
+/// `payload.data` with `type` at `payload.type` (see relaycast
+/// `normalize_node_deliver`): the text lives at `data.text`, the sender at
+/// `data.agent_name` (falling back to `data.from_name`), the channel at
+/// `data.channel_name`, and the thread at `data.thread_id`. We read those
+/// `data.*` paths first, then fall back to the legacy flat/`message.*` paths so
+/// older or test payloads still map. `fallback_target` (the recipient agent
+/// name) is used only when no channel/target is present, i.e. for direct
+/// messages.
+fn fleet_delivery_fields(payload: &Value, fallback_target: &str) -> FleetDeliveryFields {
+    let body = first_string(
+        payload,
+        &[
+            "/data/text",
+            "/text",
+            "/body",
+            "/content",
+            "/message/text",
+            "/payload/text",
+        ],
+    )
+    .unwrap_or_else(|| payload.to_string());
+    let from = first_string(
+        payload,
+        &[
+            "/data/agent_name",
+            "/data/from_name",
+            "/from",
+            "/sender",
+            "/author",
+            "/message/agent_name",
+            "/message/from",
+            "/payload/from",
+        ],
+    )
+    .unwrap_or_else(|| "relaycast".to_string());
+    let target = first_string(payload, &["/target", "/to", "/recipient", "/message/target"])
+        .or_else(|| {
+            first_string(
+                payload,
+                &["/data/channel_name", "/channel", "/message/channel"],
+            )
+            .map(|channel| {
+                if channel.starts_with('#') {
+                    channel
+                } else {
+                    format!("#{channel}")
+                }
+            })
+        })
+        .unwrap_or_else(|| fallback_target.to_string());
+    let thread_id = first_string(
+        payload,
+        &["/data/thread_id", "/thread_id", "/threadId", "/data/parent_id"],
+    )
+    .map(ThreadId::new);
+    let priority = first_u64(payload, &["/data/priority", "/priority"])
+        .and_then(|value| u8::try_from(value).ok())
+        .or_else(|| {
+            first_string(payload, &["/data/metadata/priority", "/metadata/priority"])
+                .and_then(|label| priority_from_label(&label))
+        });
+    FleetDeliveryFields {
+        body,
+        from,
+        target,
+        thread_id,
+        priority,
+    }
 }
 
 fn priority_from_label(label: &str) -> Option<u8> {
@@ -1207,11 +1275,31 @@ mod tests {
 
     #[test]
     fn classify_fleet_delivery_injects_message_classes_and_acks_receipts() {
+        // Mirrors relaycast parse_inbound_kind message-class alias set: any of
+        // these must inject, not ack-and-drop.
         for inject in [
             "message.created",
+            "message.received",
+            "message.new",
+            "message.sent",
+            "message.delivered",
             "thread.reply",
+            "thread.message.created",
+            "thread.message.sent",
             "dm.received",
+            "dm.created",
+            "dm.new",
+            "dm.sent",
+            "dm.message.created",
+            "direct_message.received",
+            "direct_message.created",
+            "direct_message.new",
+            "direct_message.sent",
             "group_dm.received",
+            "group_dm.created",
+            "group_dm.new",
+            "group_dm.sent",
+            "group_dm.message.created",
             "",
         ] {
             assert_eq!(
@@ -1231,6 +1319,62 @@ mod tests {
             classify_fleet_delivery("something.new"),
             FleetDeliverySurfacing::AckUnknown
         );
+    }
+
+    #[test]
+    fn fleet_delivery_fields_reads_node_data_envelope() {
+        // The real relaycast v5 node `deliver` payload: { type, data: { ... } }.
+        let payload = json!({
+            "type": "message.created",
+            "data": {
+                "id": "msg-1",
+                "agent_name": "alice",
+                "from_name": "ignored-when-agent-name-present",
+                "channel_name": "general",
+                "text": "hello world",
+                "thread_id": "thr-9",
+            }
+        });
+        let fields = fleet_delivery_fields(&payload, "recipient-agent");
+        assert_eq!(fields.body, "hello world");
+        assert_eq!(fields.from, "alice");
+        assert_eq!(fields.target, "#general");
+        assert_eq!(
+            fields.thread_id.as_ref().map(ThreadId::as_str),
+            Some("thr-9")
+        );
+    }
+
+    #[test]
+    fn fleet_delivery_fields_falls_back_to_from_name_and_dm_target() {
+        // DM-shaped data: no channel_name, sender carried as from_name only.
+        let payload = json!({
+            "type": "dm.received",
+            "data": {
+                "from_name": "bob",
+                "text": "ping",
+            }
+        });
+        let fields = fleet_delivery_fields(&payload, "recipient-agent");
+        assert_eq!(fields.body, "ping");
+        assert_eq!(fields.from, "bob");
+        // No channel -> direct message addressed to the recipient agent.
+        assert_eq!(fields.target, "recipient-agent");
+        assert!(fields.thread_id.is_none());
+    }
+
+    #[test]
+    fn fleet_delivery_fields_supports_legacy_flat_payload() {
+        // Legacy/plain payload that carries the body directly.
+        let payload = json!({
+            "text": "flat body",
+            "from": "carol",
+            "channel": "#ops",
+        });
+        let fields = fleet_delivery_fields(&payload, "recipient-agent");
+        assert_eq!(fields.body, "flat body");
+        assert_eq!(fields.from, "carol");
+        assert_eq!(fields.target, "#ops");
     }
 
     fn action_invoke(input: Value, agent_name: Option<&str>, agent_id: Option<&str>) -> ActionInvoke {

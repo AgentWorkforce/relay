@@ -1,0 +1,50 @@
+{
+  "id": "traj_nda08hijihz5",
+  "version": 1,
+  "task": {
+    "title": "Fix node-delivery payload.data extraction and message-alias classification in fleet.rs",
+    "source": {
+      "system": "plain",
+      "id": "Inc2 adversarial review"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-06-25T18:50:27.966Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-25T18:54:05.721Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_pk0hs0e37qh0",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-25T18:54:05.721Z",
+      "events": [
+        {
+          "ts": 1782413645723,
+          "type": "decision",
+          "content": "Read node deliver fields from payload.data envelope and widened message-alias classification: Read node deliver fields from payload.data envelope and widened message-alias classification",
+          "raw": {
+            "question": "Read node deliver fields from payload.data envelope and widened message-alias classification",
+            "chosen": "Read node deliver fields from payload.data envelope and widened message-alias classification",
+            "alternatives": [],
+            "reasoning": "Mirrors relaycast 5.0.1 normalize_node_deliver (data.text/channel_name/agent_name/from_name/thread_id) and parse_inbound_kind alias set; legacy flat fallbacks retained"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "cb61bde9bc218f9f912ac6851bb62a5b82b49f57",
+    "endRef": "cb61bde9bc218f9f912ac6851bb62a5b82b49f57"
+  }
+}
