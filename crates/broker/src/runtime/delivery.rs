@@ -599,31 +599,6 @@ pub(crate) async fn inject_pending_relay_message(
     }
 }
 
-pub(crate) async fn queue_and_try_delivery(
-    workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
-    worker_name: &str,
-    mapped: &crate::types::InboundRelayEvent,
-    retry_interval: Duration,
-) -> Result<()> {
-    queue_and_try_delivery_raw(
-        workers,
-        pending_deliveries,
-        worker_name,
-        &mapped.event_id,
-        &mapped.from,
-        &mapped.target,
-        &mapped.text,
-        mapped.thread_id.clone(),
-        Some(mapped.workspace_id.clone()),
-        mapped.workspace_alias.clone(),
-        mapped.priority.as_u8(),
-        MessageInjectionMode::Wait,
-        retry_interval,
-    )
-    .await
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn queue_and_try_delivery_raw(
     workers: &mut WorkerRegistry,

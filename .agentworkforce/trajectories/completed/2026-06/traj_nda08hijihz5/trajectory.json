@@ -8,8 +8,9 @@
       "id": "Inc2 adversarial review"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-06-25T18:50:27.966Z",
+  "completedAt": "2026-06-25T18:54:26.091Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-25T18:54:05.721Z",
+      "endedAt": "2026-06-25T18:54:26.091Z",
       "events": [
         {
           "ts": 1782413645723,
@@ -39,12 +41,24 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Fixed node-delivery payload.data extraction and widened message-alias classification in fleet.rs; both adversarial findings applied, build+tests green",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [
+    "715d8b7e"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_nda08hijihz5/trajectory.json",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/tests/fixtures/fleet-wire/deliver.json"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "cb61bde9bc218f9f912ac6851bb62a5b82b49f57",
-    "endRef": "cb61bde9bc218f9f912ac6851bb62a5b82b49f57"
+    "endRef": "715d8b7e0cddbf3831ffe78aab84d1da4e405fcd",
+    "traceId": "6dceebf3-4f0b-4f13-a407-3ddff586a234"
   }
 }

@@ -10,7 +10,6 @@ use crate::listen_api::{
     broadcast_if_relevant, listen_api_router, DeliveryRouteError, FleetSidecarFrameResponse,
     ListenApiConfig, ListenApiRequest, SetInboundDeliveryModeOk,
 };
-use crate::routing::display_target_for_dashboard;
 use crate::util::ansi::floor_char_boundary;
 
 use anyhow::{Context, Result};
@@ -41,9 +40,8 @@ use crate::{
         PROTOCOL_VERSION,
     },
     relaycast::{
-        agent_name_eq, format_worker_preregistration_error, is_self_name, map_ws_event,
-        registration_retry_after_secs, resolve_dm_participants_cached, retry_agent_registration,
-        AuthClient, DmParticipantsCache, MultiWorkspaceSession, RegRetryOutcome,
+        format_worker_preregistration_error, registration_retry_after_secs,
+        retry_agent_registration, AuthClient, MultiWorkspaceSession, RegRetryOutcome,
         RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
@@ -51,7 +49,7 @@ use crate::{
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
         AgentResultMcpConfig, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
-        InboundKind, PendingRelayMessage,
+        PendingRelayMessage,
     },
 };
 
@@ -59,7 +57,7 @@ use crate::cli::{
     DumpPtyCommand, DumpPtyFormat, HeadlessAppServerCommand, HeadlessCommand, InitCommand,
 };
 use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
-use crate::{broker, listen_api, routing, worker_request};
+use crate::{broker, listen_api, worker_request};
 
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;

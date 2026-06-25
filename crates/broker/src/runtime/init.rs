@@ -512,7 +512,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // exit (`Release` arm or `reap_exited` sweep).
     let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
     let agent_result_tokens: HashMap<String, WorkerName> = HashMap::new();
-    let dm_participants_cache = DmParticipantsCache::new();
     let recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
         tracing::info!(
@@ -564,7 +563,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         fleet_control_tx,
         fleet_event_rx,
         fleet_control_open: true,
-        fleet_mode_enabled: false,
         fleet_delivery_book: FleetDeliveryBook::default(),
         fleet_handlers: HandlerDispatchState::default(),
         fleet_sidecar_out_tx: None,
@@ -590,7 +588,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         pending_requests,
         delivery_states,
         agent_result_tokens,
-        dm_participants_cache,
         recent_thread_messages,
         shutdown,
         lease_duration,

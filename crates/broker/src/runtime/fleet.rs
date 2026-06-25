@@ -66,7 +66,6 @@ impl BrokerRuntime {
         &mut self,
         outbound: mpsc::Sender<ProtocolEnvelope<Value>>,
     ) -> Result<Value, String> {
-        self.fleet_mode_enabled = true;
         self.fleet_sidecar_out_tx = Some(outbound);
         self.fleet_handlers.connect_sidecar();
         self.publish_fleet_load(true).await;
@@ -134,7 +133,6 @@ impl BrokerRuntime {
                 manifest,
                 supervision,
             } => {
-                self.fleet_mode_enabled = true;
                 self.fleet_max_agents = manifest.max_agents.unwrap_or(self.fleet_max_agents);
                 self.fleet_sidecar_restart.reset(
                     supervision
@@ -316,14 +314,9 @@ impl BrokerRuntime {
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {
-                // Node delivery is live: message delivery now flows solely over
-                // /v1/node/ws, so suppress the workspace firehose delivery path
-                // (handle_relaycast_message) to avoid double-delivery. This flag
-                // is intentionally NOT cleared on Disconnected — the engine holds
-                // deliveries while the node is offline and resumes from the ack
-                // cursor (at-least-once resume), so reverting to firehose
-                // delivery during a reconnect would risk double-injection.
-                self.fleet_mode_enabled = true;
+                // Node delivery is live: message delivery flows solely over
+                // /v1/node/ws. The workspace firehose delivery path was removed,
+                // so there is no firehose injection to suppress here.
                 tracing::info!(
                     target = "relay_broker::fleet",
                     "fleet node control connected; node delivery active"
@@ -495,7 +488,6 @@ impl BrokerRuntime {
     /// to this node). Replies with `action.result { output }` on success or
     /// `{ error }` on failure.
     async fn handle_fleet_action_spawn(&mut self, invoke: ActionInvoke) {
-        self.fleet_mode_enabled = true;
         let Some(name) = action_invoke_agent_name(&invoke) else {
             self.reply_action_error(&invoke.invocation_id, "spawn_missing_agent_name")
                 .await;
@@ -645,7 +637,6 @@ impl BrokerRuntime {
         initial_task: Option<String>,
         skip_relay_prompt: bool,
     ) -> Result<Value, String> {
-        self.fleet_mode_enabled = true;
         let initial_session_ref = fleet_initial_session_ref(&spec);
         let token = self
             .register_fleet_agent_token(&spec, invocation_id.clone(), initial_session_ref.clone())
