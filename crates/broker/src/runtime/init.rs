@@ -243,9 +243,22 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     )
     .await;
     if node_token.is_none() {
-        tracing::warn!(
+        // Node-only delivery requires this broker to be a functioning relaycast
+        // node: without a node token it cannot open /v1/node/ws, so the engine
+        // delivers nothing and every spawned agent is effectively unreachable.
+        // This is a hard operational fault, not a benign warning. We do NOT exit
+        // (a token may arrive via env/mint later), but make the failure mode
+        // unmistakable in logs and on stderr.
+        tracing::error!(
             node_id = %node_id,
-            "no node token available (env unset, no cached token, mint failed); node delivery will be unavailable until a token is provided"
+            "NO NODE TOKEN: this broker is NOT a functioning relaycast node (env unset, no cached token, mint failed). \
+             /v1/node/ws will not connect and realtime delivery will FAIL for every agent until a node token is available \
+             (set RELAY_NODE_TOKEN or restore connectivity so a token can be minted)."
+        );
+        eprintln!(
+            "[agent-relay] FATAL CONFIG: no node token available for node '{}'. \
+             Realtime delivery is DISABLED until RELAY_NODE_TOKEN is set or a token can be minted.",
+            node_id
         );
     }
     // Capability the engine uses for placement: this broker is a generic spawn
@@ -262,6 +275,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         tags: None,
         version: Some(broker_version.clone()),
     };
+    // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
+    // fallback (used when node-control `agent.register` is unavailable) binds
+    // spawned agents to this node so they become `via_node` and node delivery
+    // reaches them.
+    let fleet_node_name = node_name.clone();
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
     tokio::spawn(crate::node_control::run_node_control_client(
@@ -561,6 +579,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
+        fleet_node_name,
         fleet_event_rx,
         fleet_control_open: true,
         fleet_delivery_book: FleetDeliveryBook::default(),

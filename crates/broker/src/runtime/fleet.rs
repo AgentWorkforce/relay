@@ -542,6 +542,7 @@ impl BrokerRuntime {
             &mut self.dedup,
             &mut self.agent_spawn_count,
             &self.fleet_control_tx,
+            &self.fleet_node_name,
         )
         .await;
 
@@ -578,7 +579,7 @@ impl BrokerRuntime {
             .and_then(|id| self.workspace_lookup.get(id).cloned())
             .unwrap_or_else(|| self.default_workspace.clone());
 
-        super::relaycast_events::release_worker_locally(
+        let outcome = super::relaycast_events::release_worker_locally(
             name.clone(),
             &workspace_state,
             &mut self.workers,
@@ -601,11 +602,19 @@ impl BrokerRuntime {
         )
         .await;
         self.publish_fleet_load(true).await;
-        self.reply_action_output(
-            &invoke.invocation_id,
-            json!({ "released": true, "name": name.as_str() }),
-        )
-        .await;
+        match outcome {
+            super::relaycast_events::ReleaseOutcome::Released => {
+                self.reply_action_output(
+                    &invoke.invocation_id,
+                    json!({ "released": true, "name": name.as_str() }),
+                )
+                .await;
+            }
+            super::relaycast_events::ReleaseOutcome::Failed => {
+                self.reply_action_error(&invoke.invocation_id, "release_failed")
+                    .await;
+            }
+        }
     }
 
     async fn reply_action_output(&self, invocation_id: &str, output: Value) {
@@ -1041,8 +1050,23 @@ enum FleetDeliverySurfacing {
 /// message-class event, and acking-without-injecting any of them would
 /// permanently drop the message (at-least-once never redelivers an acked
 /// delivery). `AckUnknown` is reserved for genuinely non-message control types.
+///
+/// Action-result types are part of the engine's `seq:0` fan-out family
+/// (`relaycast` engine `invocationCompletion.ts` emits `action.completed` /
+/// `action.failed` to the caller; `routes/action.ts` emits `action.denied`).
+/// They are injected so the agent that invoked the action receives the result.
+///
+/// PTY surfacing of `message.reacted` / `message.read` (and presence) is
+/// intentionally deferred in this node-only-delivery migration: those frames are
+/// acked (so the engine does not redeliver) but not injected. They remain
+/// `AckOnly` until a dedicated reaction/receipt surfacing path is built.
 fn classify_fleet_delivery(payload_type: &str) -> FleetDeliverySurfacing {
     match payload_type {
+        // seq:0 fan-out action results delivered to the caller agent — inject.
+        "action.completed" | "action.failed" | "action.denied" => {
+            FleetDeliverySurfacing::Inject
+        }
+        // seq:0 fan-out reactions/read receipts — ack-only (PTY surfacing deferred).
         "message.reacted" | "message.read" => FleetDeliverySurfacing::AckOnly,
         // message-class aliases — mirror relaycast parse_inbound_kind.
         "message.created"
@@ -1144,6 +1168,10 @@ fn fleet_delivery_fields(payload: &Value, fallback_target: &str) -> FleetDeliver
             "/content",
             "/message/text",
             "/payload/text",
+            // Action-result fan-out (action.completed/failed/denied) carries the
+            // result under data.output / data.error rather than a text field.
+            "/data/output",
+            "/data/error",
         ],
     )
     .unwrap_or_else(|| payload.to_string());
@@ -1291,6 +1319,10 @@ mod tests {
             "group_dm.new",
             "group_dm.sent",
             "group_dm.message.created",
+            // seq:0 action-result fan-out delivered to the caller agent.
+            "action.completed",
+            "action.failed",
+            "action.denied",
             "",
         ] {
             assert_eq!(

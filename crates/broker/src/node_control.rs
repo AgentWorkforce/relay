@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     path::Path,
     time::{Duration, Instant},
@@ -128,10 +128,43 @@ pub(crate) enum DeliveryDecision {
     Gap { up_to_seq: u64 },
 }
 
+/// Per-agent set of recently-seen `msg_id`s, capped at a fixed size with FIFO
+/// eviction. Bounds memory: without this, the dedup set grows unbounded for the
+/// lifetime of a long-lived agent. `seq:0` fan-out frames (reactions, read
+/// receipts, action results) all share seq 0, so `msg_id`-based dedup is the
+/// only duplicate-suppression mechanism available for them; the cap is generous
+/// enough that legitimate same-frame retries are still recognized.
+#[derive(Debug, Default, Clone)]
+struct SeenMsgIds {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl SeenMsgIds {
+    const CAPACITY: usize = 512;
+
+    fn contains(&self, msg_id: &str) -> bool {
+        self.set.contains(msg_id)
+    }
+
+    fn insert(&mut self, msg_id: &str) {
+        if self.set.contains(msg_id) {
+            return;
+        }
+        if self.order.len() >= Self::CAPACITY {
+            if let Some(evicted) = self.order.pop_front() {
+                self.set.remove(&evicted);
+            }
+        }
+        self.set.insert(msg_id.to_string());
+        self.order.push_back(msg_id.to_string());
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct AgentDeliveryCursor {
     up_to_seq: u64,
-    seen_msg_ids: HashSet<String>,
+    seen_msg_ids: SeenMsgIds,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -146,6 +179,23 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn observe(&self, deliver: &Deliver) -> DeliveryDecision {
+        // `seq:0` is the engine's fan-out family (reactions, read receipts, and
+        // action.completed/action.failed/action.denied results delivered to the
+        // caller). These share seq 0, so they bypass the monotonic-sequence gate
+        // and are always surfaced-and-acked, with `msg_id` as the only duplicate
+        // suppression. The cumulative ack reports the current cursor (the engine
+        // ack is monotonic, so re-acking up_to_seq for a seq-0 frame is a no-op).
+        if deliver.seq == 0 {
+            let up_to_seq = self.agents.get(&deliver.agent).map_or(0, |c| c.up_to_seq);
+            if self
+                .agents
+                .get(&deliver.agent)
+                .is_some_and(|c| c.seen_msg_ids.contains(&deliver.msg_id))
+            {
+                return DeliveryDecision::Duplicate { up_to_seq };
+            }
+            return DeliveryDecision::Deliver { up_to_seq };
+        }
         let Some(cursor) = self.agents.get(&deliver.agent) else {
             return if deliver.seq == 1 {
                 DeliveryDecision::Deliver { up_to_seq: 1 }
@@ -178,8 +228,14 @@ impl FleetDeliveryBook {
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
         let cursor = self.agents.entry(deliver.agent.clone()).or_default();
+        // seq:0 fan-out frames never advance the sequence cursor; they are
+        // deduped purely by msg_id.
+        if deliver.seq == 0 {
+            cursor.seen_msg_ids.insert(&deliver.msg_id);
+            return cursor.up_to_seq;
+        }
         if deliver.seq == cursor.up_to_seq.saturating_add(1) {
-            cursor.seen_msg_ids.insert(deliver.msg_id.clone());
+            cursor.seen_msg_ids.insert(&deliver.msg_id);
             cursor.up_to_seq = deliver.seq;
         }
         cursor.up_to_seq
@@ -1037,6 +1093,107 @@ mod tests {
             book.observe(&deliver),
             DeliveryDecision::Deliver { up_to_seq: 1 }
         );
+    }
+
+    #[test]
+    fn delivery_book_surfaces_seq_zero_fanout_without_advancing_cursor() {
+        let mut book = FleetDeliveryBook::default();
+        book.seed_ack("agent-a", 5);
+
+        // A seq:0 fan-out frame (e.g. action.completed) is always surfaced,
+        // bypassing the monotonic-sequence gate, and acks the current cursor.
+        let fanout = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "evt_action_completed".to_string(),
+            msg_id: "inv-1".to_string(),
+            seq: 0,
+            mode: DeliveryMode::Wait,
+            payload: json!({"type": "action.completed"}),
+        };
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Deliver { up_to_seq: 5 }
+        );
+        // Committing a seq:0 frame does not move the cumulative cursor.
+        assert_eq!(book.commit_delivered(&fanout), 5);
+
+        // The same msg_id is suppressed as a duplicate (seq stays 0).
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Duplicate { up_to_seq: 5 }
+        );
+
+        // A different seq:0 msg_id surfaces again.
+        let other = Deliver {
+            msg_id: "inv-2".to_string(),
+            ..fanout.clone()
+        };
+        assert_eq!(
+            book.observe(&other),
+            DeliveryDecision::Deliver { up_to_seq: 5 }
+        );
+
+        // Sequenced delivery still works normally after seq:0 traffic.
+        let seq6 = Deliver {
+            msg_id: "msg-6".to_string(),
+            seq: 6,
+            ..fanout
+        };
+        assert_eq!(
+            book.observe(&seq6),
+            DeliveryDecision::Deliver { up_to_seq: 6 }
+        );
+        assert_eq!(book.commit_delivered(&seq6), 6);
+    }
+
+    #[test]
+    fn delivery_book_surfaces_seq_zero_for_unknown_agent() {
+        let mut book = FleetDeliveryBook::default();
+        // First-ever frame for an agent may be a seq:0 fan-out (no cursor yet).
+        let fanout = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-new".to_string(),
+            agent_id: "agent-new-id".to_string(),
+            delivery_id: "evt_reacted".to_string(),
+            msg_id: "react-1".to_string(),
+            seq: 0,
+            mode: DeliveryMode::Wait,
+            payload: json!({"type": "message.reacted"}),
+        };
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Deliver { up_to_seq: 0 }
+        );
+        assert_eq!(book.commit_delivered(&fanout), 0);
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Duplicate { up_to_seq: 0 }
+        );
+    }
+
+    #[test]
+    fn seen_msg_ids_evicts_oldest_when_capacity_exceeded() {
+        let mut seen = SeenMsgIds::default();
+        for i in 0..(SeenMsgIds::CAPACITY + 10) {
+            seen.insert(&format!("msg-{i}"));
+        }
+        assert!(seen.order.len() <= SeenMsgIds::CAPACITY);
+        // The 10 oldest entries were evicted.
+        assert!(!seen.contains("msg-0"));
+        assert!(!seen.contains("msg-9"));
+        // The most recent entries are retained.
+        assert!(seen.contains(&format!("msg-{}", SeenMsgIds::CAPACITY + 9)));
+    }
+
+    #[test]
+    fn seen_msg_ids_reinsert_is_idempotent() {
+        let mut seen = SeenMsgIds::default();
+        seen.insert("dup");
+        seen.insert("dup");
+        assert_eq!(seen.order.len(), 1);
+        assert!(seen.contains("dup"));
     }
 
     #[test]

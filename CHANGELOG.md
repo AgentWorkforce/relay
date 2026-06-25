@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-broker` node-only delivery: agents spawned via the HTTP-register fallback (when node-control `agent.register` is unavailable) are now bound to the broker's node so the engine delivers to them; a failed bind surfaces a loud `registration_warning` instead of silently producing an undeliverable agent. A missing node token is now logged as a hard fault (realtime delivery disabled) rather than a quiet warning.
+- `agent-relay-broker` node-only delivery: `seq:0` fan-out frames (reactions, read receipts, and `action.completed`/`action.failed`/`action.denied` results) are no longer dropped — action results are injected into the calling agent's PTY; reaction/read receipts are acked (PTY surfacing deferred). Inbound `deliver`/`action.invoke` frames tolerate unknown future engine fields instead of being dropped without an ack (which caused infinite redelivery), and the broker's per-agent delivery-dedup memory is now bounded.
+- `agent-relay-broker` node `release` action reports a faithful `action.result`: a genuinely unknown worker returns an error while an already-exited worker still reports success.
 - `agent-relay integration webhook|subscription` commands work reliably in local broker workflows even when shell auth is stale or missing.
 - The Bun-compiled `agent-relay` standalone binary now bundles workspace packages from their compiled JS instead of their `.d.ts`, so `local up` starts the implicit Fleet local node instead of failing with `Fleet local node skipped: … is not a function`. The `tsconfig` `paths` that mapped `@agent-relay/*` to declaration files (no runtime exports) were redundant with the npm workspace symlinks and have been removed.
 - `agent-relay` and `@agent-relay/sdk` require `@relaycast/sdk` `^4.1.2`, whose matching `@relaycast/types` package is now published, so publish installs resolve cleanly without pinning.

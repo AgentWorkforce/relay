@@ -31,6 +31,7 @@ impl BrokerRuntime {
         let sdk_out_tx = &self.sdk_out_tx;
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_node_name = self.fleet_node_name.as_str();
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
@@ -137,7 +138,25 @@ impl BrokerRuntime {
                                 "node agent.register unavailable; falling back to HTTP pre-registration"
                             );
                             match retry_agent_registration(relaycast_http, &name, Some(&cli)).await {
-                                Ok(token) => Some(token),
+                                Ok(token) => {
+                                    // HTTP registration alone leaves the agent
+                                    // without a node binding; the engine only
+                                    // delivers to `via_node` agents in node-only
+                                    // delivery. Bind it to this node so it is
+                                    // deliverable, surfacing a loud warning if the
+                                    // bind fails.
+                                    if let Some(warning) =
+                                        super::relaycast_events::bind_http_registered_agent_to_node(
+                                            relaycast_http,
+                                            fleet_node_name,
+                                            &name,
+                                        )
+                                        .await
+                                    {
+                                        preregistration_warning = Some(warning);
+                                    }
+                                    Some(token)
+                                }
                                 Err(RegRetryOutcome::RetryableExhausted(error)) => {
                                     let message = format_worker_preregistration_error(&name, &error);
                                     tracing::warn!(

@@ -68,12 +68,78 @@ fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfi
     }
 }
 
+/// Bind a freshly HTTP-registered agent to this broker's relaycast node so it
+/// becomes `locationType='via_node'`.
+///
+/// In node-only delivery the engine only delivers to `via_node` agents. The HTTP
+/// `register_agent_token` fallback (taken when node-control `agent.register` is
+/// unavailable) registers a plain agent with NO node binding, so without this
+/// bind the agent receives zero messages. Returns the warning message to surface
+/// on failure (the agent is registered but undeliverable), or `None` on success.
+pub(super) async fn bind_http_registered_agent_to_node(
+    relaycast_http: &RelaycastHttpClient,
+    node_name: &str,
+    agent_name: &str,
+) -> Option<String> {
+    let Some(relay) = relaycast_http.relay_client() else {
+        let message = format!(
+            "agent '{agent_name}' was HTTP-registered but no relaycast client is available to \
+             bind it to node '{node_name}'; node-only delivery will NOT reach this agent"
+        );
+        tracing::error!(worker = %agent_name, node = %node_name, "{message}");
+        return Some(message);
+    };
+    let request = relaycast::BindAgentToNodeRequest {
+        agent_name: agent_name.to_string(),
+        session_ref: None,
+        priority: None,
+    };
+    match relay.bind_agent_to_node(node_name, request).await {
+        Ok(_) => {
+            tracing::info!(
+                worker = %agent_name,
+                node = %node_name,
+                "bound HTTP-registered agent to node (via_node) after agent.register fallback"
+            );
+            None
+        }
+        Err(error) => {
+            let message = format!(
+                "agent '{agent_name}' was HTTP-registered but binding it to node '{node_name}' \
+                 failed ({error}); node-only delivery will NOT reach this agent until it is bound"
+            );
+            tracing::error!(
+                worker = %agent_name,
+                node = %node_name,
+                error = %error,
+                "failed to bind HTTP-registered agent to node; delivery will not work for this agent"
+            );
+            Some(message)
+        }
+    }
+}
+
+/// Outcome of a local release request, so callers can report a faithful
+/// `action.result` to the node control plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReleaseOutcome {
+    /// The worker was released, or was the broker self (ignored), or was already
+    /// exited — all of which the caller should report as a successful release.
+    Released,
+    /// The release genuinely failed for an unknown/other reason.
+    Failed,
+}
+
 /// Release a worker that the fleet/node control plane asked the broker to drop.
 ///
 /// Extracted verbatim from the former `WsEvent::AgentReleaseRequested` firehose
 /// arm. The v5.0.1 SDK removed that event variant; node control invokes this
 /// directly via `action.invoke`. `workspace_state` supplies the per-workspace
 /// HTTP client, self-name set, and WS control channel the original arm captured.
+///
+/// Returns `ReleaseOutcome::Released` on success (including an already-exited
+/// worker, which is a no-op success) and `ReleaseOutcome::Failed` when the
+/// release genuinely failed.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn release_worker_locally(
     name: WorkerName,
@@ -87,7 +153,7 @@ pub(super) async fn release_worker_locally(
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
-) {
+) -> ReleaseOutcome {
     let workspace_http = &workspace_state.http_client;
     if is_relaycast_self_control_target(
         &name,
@@ -99,7 +165,7 @@ pub(super) async fn release_worker_locally(
             worker = %name,
             "ignoring relaycast release request for broker self"
         );
-        return;
+        return ReleaseOutcome::Released;
     }
     workers.supervisor.unregister(&name);
     workers.metrics.on_release(&name);
@@ -139,6 +205,7 @@ pub(super) async fn release_worker_locally(
             .await;
             tracing::info!(child = %name, "released worker via relaycast in broker mode");
             eprintln!("[agent-relay] released worker '{}' via relaycast", name);
+            ReleaseOutcome::Released
         }
         Err(error) => {
             let message = error.to_string();
@@ -158,9 +225,12 @@ pub(super) async fn release_worker_locally(
                     child = %name,
                     "ignoring duplicate relaycast release for already exited worker"
                 );
+                // An already-exited worker is still a successful release.
+                ReleaseOutcome::Released
             } else {
                 tracing::error!(child = %name, error = %error, "failed to release worker via relaycast");
                 eprintln!("[agent-relay] failed to release '{}': {}", name, error);
+                ReleaseOutcome::Failed
             }
         }
     }
@@ -194,6 +264,7 @@ pub(super) async fn spawn_worker_from_request(
     dedup: &mut DedupCache,
     agent_spawn_count: &mut u32,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    node_name: &str,
 ) {
     let workspace_http = &workspace_state.http_client;
     eprintln!(
@@ -342,6 +413,12 @@ pub(super) async fn spawn_worker_from_request(
                                 worker = %name,
                                 "pre-registered agent via broker for WS spawn"
                             );
+                            // HTTP registration alone leaves the agent without a
+                            // node binding; in node-only delivery the engine only
+                            // delivers to `via_node` agents. Bind it to this node
+                            // so it becomes deliverable.
+                            bind_http_registered_agent_to_node(workspace_http, node_name, &name)
+                                .await;
                             Some(token)
                         }
                         Ok(Err(error)) => {

@@ -379,8 +379,11 @@ pub struct InventorySync {
     pub agents: Vec<InventoryAgent>,
 }
 
+// Inbound (server -> broker): intentionally NOT `deny_unknown_fields`. A future
+// top-level field added by the engine must not make `from_str` fail, or the
+// frame is dropped before a `delivery.ack` is sent and the engine redelivers it
+// forever. Forward compatibility wins over strictness on inbound frames.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Deliver {
     pub v: FleetWireVersion,
     pub agent: String,
@@ -392,8 +395,9 @@ pub struct Deliver {
     pub payload: Value,
 }
 
+// Inbound (server -> broker): intentionally NOT `deny_unknown_fields` for the
+// same forward-compatibility reason as `Deliver` above.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ActionInvoke {
     pub v: FleetWireVersion,
     pub invocation_id: String,
