@@ -13,7 +13,6 @@ use crate::listen_api::{
 use crate::routing::display_target_for_dashboard;
 use crate::util::ansi::floor_char_boundary;
 
-use ::relaycast::WsEvent;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
