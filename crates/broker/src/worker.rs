@@ -1006,7 +1006,6 @@ impl WorkerRegistry {
         let workers = self.routing_workers();
         routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
     }
-
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {

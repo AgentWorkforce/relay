@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     fleet_wire::{
         ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
-        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, RelaycastToBroker,
-        FLEET_WIRE_VERSION,
+        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode,
+        RelaycastToBroker, FLEET_WIRE_VERSION,
     },
     node_control::{delivery_ack, HandlerDispatchDecision},
     protocol::{BrokerToSdk, SdkToBroker},
@@ -1063,9 +1063,7 @@ enum FleetDeliverySurfacing {
 fn classify_fleet_delivery(payload_type: &str) -> FleetDeliverySurfacing {
     match payload_type {
         // seq:0 fan-out action results delivered to the caller agent — inject.
-        "action.completed" | "action.failed" | "action.denied" => {
-            FleetDeliverySurfacing::Inject
-        }
+        "action.completed" | "action.failed" | "action.denied" => FleetDeliverySurfacing::Inject,
         // seq:0 fan-out reactions/read receipts — ack-only (PTY surfacing deferred).
         "message.reacted" | "message.read" => FleetDeliverySurfacing::AckOnly,
         // message-class aliases — mirror relaycast parse_inbound_kind.
@@ -1189,24 +1187,32 @@ fn fleet_delivery_fields(payload: &Value, fallback_target: &str) -> FleetDeliver
         ],
     )
     .unwrap_or_else(|| "relaycast".to_string());
-    let target = first_string(payload, &["/target", "/to", "/recipient", "/message/target"])
-        .or_else(|| {
-            first_string(
-                payload,
-                &["/data/channel_name", "/channel", "/message/channel"],
-            )
-            .map(|channel| {
-                if channel.starts_with('#') {
-                    channel
-                } else {
-                    format!("#{channel}")
-                }
-            })
+    let target = first_string(
+        payload,
+        &["/target", "/to", "/recipient", "/message/target"],
+    )
+    .or_else(|| {
+        first_string(
+            payload,
+            &["/data/channel_name", "/channel", "/message/channel"],
+        )
+        .map(|channel| {
+            if channel.starts_with('#') {
+                channel
+            } else {
+                format!("#{channel}")
+            }
         })
-        .unwrap_or_else(|| fallback_target.to_string());
+    })
+    .unwrap_or_else(|| fallback_target.to_string());
     let thread_id = first_string(
         payload,
-        &["/data/thread_id", "/thread_id", "/threadId", "/data/parent_id"],
+        &[
+            "/data/thread_id",
+            "/thread_id",
+            "/threadId",
+            "/data/parent_id",
+        ],
     )
     .map(ThreadId::new);
     let priority = first_u64(payload, &["/data/priority", "/priority"])
@@ -1400,7 +1406,11 @@ mod tests {
         assert_eq!(fields.target, "#ops");
     }
 
-    fn action_invoke(input: Value, agent_name: Option<&str>, agent_id: Option<&str>) -> ActionInvoke {
+    fn action_invoke(
+        input: Value,
+        agent_name: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> ActionInvoke {
         ActionInvoke {
             v: FLEET_WIRE_VERSION,
             invocation_id: "inv-1".to_string(),
@@ -1414,11 +1424,19 @@ mod tests {
     #[test]
     fn action_invoke_agent_name_prefers_frame_then_input_then_agent_id() {
         assert_eq!(
-            action_invoke_agent_name(&action_invoke(json!({"name": "from-input"}), Some("from-frame"), None)),
+            action_invoke_agent_name(&action_invoke(
+                json!({"name": "from-input"}),
+                Some("from-frame"),
+                None
+            )),
             Some(WorkerName::from("from-frame"))
         );
         assert_eq!(
-            action_invoke_agent_name(&action_invoke(json!({"name": "from-input"}), None, Some("agt-1"))),
+            action_invoke_agent_name(&action_invoke(
+                json!({"name": "from-input"}),
+                None,
+                Some("agt-1")
+            )),
             Some(WorkerName::from("from-input"))
         );
         assert_eq!(
@@ -1426,7 +1444,11 @@ mod tests {
             Some(WorkerName::from("agt-1"))
         );
         assert_eq!(
-            action_invoke_agent_name(&action_invoke(json!({"agent": {"name": "nested"}}), None, None)),
+            action_invoke_agent_name(&action_invoke(
+                json!({"agent": {"name": "nested"}}),
+                None,
+                None
+            )),
             Some(WorkerName::from("nested"))
         );
         assert_eq!(
@@ -1449,8 +1471,11 @@ mod tests {
         assert_eq!(action_invoke_string(&input, &["missing"]), None);
         // blank values are skipped
         assert_eq!(
-            action_invoke_string(&json!({"cli": "  ", "command": "claude"}), &["cli", "command"])
-                .as_deref(),
+            action_invoke_string(
+                &json!({"cli": "  ", "command": "claude"}),
+                &["cli", "command"]
+            )
+            .as_deref(),
             Some("claude")
         );
     }

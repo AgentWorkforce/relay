@@ -178,7 +178,8 @@ pub(super) async fn release_worker_locally(
                                 sdk_out_tx,
                                 json!({"kind":"delivery_dropped","name":name,"count":dropped.len(),"reason":"agent_released"}),
                             ).await;
-                let _ = emit_dropped_delivery_failures(sdk_out_tx, &dropped, "agent_released").await;
+                let _ =
+                    emit_dropped_delivery_failures(sdk_out_tx, &dropped, "agent_released").await;
             }
             fail_pending_requests_for_worker(pending_requests, &name, "relaycast_release");
             delivery_states.remove(&name);

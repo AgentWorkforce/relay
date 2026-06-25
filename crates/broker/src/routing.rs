@@ -118,8 +118,12 @@ mod tests {
         ];
         let routing_workers = routing_workers(&workers);
 
-        let targets =
-            worker_names_for_channel_delivery(&routing_workers, "#general", "Alpha", Some("ws_test"));
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "Alpha",
+            Some("ws_test"),
+        );
 
         assert_eq!(targets, vec!["Charlie".to_string()]);
     }
@@ -159,13 +163,21 @@ mod tests {
         ];
 
         // Event from ws_a should only reach Alpha.
-        let targets =
-            worker_names_for_channel_delivery(&routing_workers, "#general", "External", Some("ws_a"));
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_a"),
+        );
         assert_eq!(targets, vec!["Alpha".to_string()]);
 
         // Event from ws_b should only reach Bravo.
-        let targets =
-            worker_names_for_channel_delivery(&routing_workers, "#general", "External", Some("ws_b"));
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_b"),
+        );
         assert_eq!(targets, vec!["Bravo".to_string()]);
     }
 
@@ -190,13 +202,21 @@ mod tests {
         ];
 
         // Event from ws_a: Alpha matches (no ws filter), Bravo doesn't (ws_b != ws_a).
-        let targets =
-            worker_names_for_channel_delivery(&routing_workers, "#general", "External", Some("ws_a"));
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_a"),
+        );
         assert_eq!(targets, vec!["Alpha".to_string()]);
 
         // Event from ws_b: both match.
-        let targets =
-            worker_names_for_channel_delivery(&routing_workers, "#general", "External", Some("ws_b"));
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_b"),
+        );
         assert_eq!(targets, vec!["Alpha".to_string(), "Bravo".to_string()]);
     }
 }

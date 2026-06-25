@@ -137,7 +137,8 @@ impl BrokerRuntime {
                                 error = %node_error,
                                 "node agent.register unavailable; falling back to HTTP pre-registration"
                             );
-                            match retry_agent_registration(relaycast_http, &name, Some(&cli)).await {
+                            match retry_agent_registration(relaycast_http, &name, Some(&cli)).await
+                            {
                                 Ok(token) => {
                                     // HTTP registration alone leaves the agent
                                     // without a node binding; the engine only
@@ -158,7 +159,8 @@ impl BrokerRuntime {
                                     Some(token)
                                 }
                                 Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                                    let message = format_worker_preregistration_error(&name, &error);
+                                    let message =
+                                        format_worker_preregistration_error(&name, &error);
                                     tracing::warn!(
                                         worker = %name,
                                         error = %error,
@@ -168,8 +170,9 @@ impl BrokerRuntime {
                                     None
                                 }
                                 Err(RegRetryOutcome::Fatal(error)) => {
-                                    let _ = reply
-                                        .send(Err(format_worker_preregistration_error(&name, &error)));
+                                    let _ = reply.send(Err(format_worker_preregistration_error(
+                                        &name, &error,
+                                    )));
                                     return;
                                 }
                             }
