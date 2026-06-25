@@ -2,6 +2,8 @@
   "v": 1,
   "type": "deliver",
   "agent": "codex-builder-1",
+  "agent_id": "agt_01J7FLEET000000000000101",
+  "delivery_id": "dlv_01J7FLEET000000000000301",
   "msg_id": "msg_01J7FLEET000000000000201",
   "seq": 43,
   "mode": "wait",

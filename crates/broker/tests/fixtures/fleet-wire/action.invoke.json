@@ -7,5 +7,7 @@
     "agent": "codex-builder-1",
     "model": "gpt-5",
     "args": ["--sandbox", "workspace-write"]
-  }
+  },
+  "agent_id": "agt_01J7FLEET000000000000101",
+  "agent_name": "codex-builder-1"
 }

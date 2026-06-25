@@ -1072,6 +1072,8 @@ mod tests {
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-a".to_string(),
             msg_id: "msg-a".to_string(),
             seq: 1,
             mode: DeliveryMode::Wait,

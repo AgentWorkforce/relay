@@ -880,6 +880,8 @@ mod tests {
         let first = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-1".to_string(),
             msg_id: "msg-1".to_string(),
             seq: 1,
             mode: DeliveryMode::Wait,
@@ -921,6 +923,8 @@ mod tests {
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-43".to_string(),
             msg_id: "msg-43".to_string(),
             seq: 43,
             mode: DeliveryMode::Steer,
@@ -940,6 +944,8 @@ mod tests {
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-1".to_string(),
             msg_id: "msg-1".to_string(),
             seq: 1,
             mode: DeliveryMode::Wait,
@@ -968,6 +974,8 @@ mod tests {
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-1".to_string(),
             msg_id: "msg-1".to_string(),
             seq: 1,
             mode: DeliveryMode::Wait,
@@ -1021,6 +1029,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({"suite": "unit"}),
+            agent_id: None,
+            agent_name: None,
         };
 
         assert!(matches!(
@@ -1054,6 +1064,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({"suite": "unit"}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1084,6 +1096,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1116,6 +1130,8 @@ mod tests {
             invocation_id: "inv-err".to_string(),
             action: "run:test".to_string(),
             input: json!({}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1148,6 +1164,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1225,6 +1243,8 @@ mod tests {
                 serde_json::to_string(&RelaycastToBroker::Deliver(Deliver {
                     v: FLEET_WIRE_VERSION,
                     agent: "agent-a".to_string(),
+                    agent_id: "agent-a-id".to_string(),
+                    delivery_id: "delivery-1".to_string(),
                     msg_id: "msg-1".to_string(),
                     seq: 1,
                     mode: DeliveryMode::Wait,
@@ -1243,6 +1263,8 @@ mod tests {
                     invocation_id: "inv-1".to_string(),
                     action: "run:test".to_string(),
                     input: json!({"suite": "unit"}),
+                    agent_id: None,
+                    agent_name: None,
                 }))
                 .unwrap(),
             ))

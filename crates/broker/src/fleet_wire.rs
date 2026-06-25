@@ -384,6 +384,8 @@ pub struct InventorySync {
 pub struct Deliver {
     pub v: FleetWireVersion,
     pub agent: String,
+    pub agent_id: String,
+    pub delivery_id: String,
     pub msg_id: String,
     pub seq: u64,
     pub mode: DeliveryMode,
@@ -397,6 +399,18 @@ pub struct ActionInvoke {
     pub invocation_id: String,
     pub action: String,
     pub input: Value,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -878,6 +892,8 @@ mod tests {
         let msg = RelaycastToBroker::Deliver(Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "codex-1".to_string(),
+            agent_id: "codex-1-id".to_string(),
+            delivery_id: "delivery_1".to_string(),
             msg_id: "msg_1".to_string(),
             seq: 42,
             mode: DeliveryMode::Wait,

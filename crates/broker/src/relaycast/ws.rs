@@ -64,14 +64,6 @@ impl RelaycastWsClient {
         let mut has_connected = false;
 
         loop {
-            if let Err(error) = self.workspace_http.ensure_workspace_stream_enabled().await {
-                tracing::warn!(
-                    target = "relay_broker::ws",
-                    error = %error,
-                    "failed to enable workspace stream before websocket connect"
-                );
-            }
-
             // Attribute the broker's own relaycast traffic (the workspace
             // stream) to the agent-relay CLI as the origin actor — forwarded as
             // the `origin_actor` query param (WS upgrades can't set headers).
@@ -570,26 +562,6 @@ impl RelaycastHttpClient {
         Ok(())
     }
 
-    /// Ensure workspace-wide WebSocket fanout is enabled for this workspace.
-    pub async fn ensure_workspace_stream_enabled(&self) -> Result<()> {
-        let Some(relay) = (*self.relay).as_ref() else {
-            tracing::warn!("SDK relay client not initialized; cannot enable workspace stream");
-            return Ok(());
-        };
-
-        let config = relay
-            .workspace_stream_set(true)
-            .await
-            .map_err(|error| anyhow::anyhow!("relaycast workspace_stream_set failed: {error}"))?;
-        tracing::debug!(
-            enabled = config.enabled,
-            default_enabled = config.default_enabled,
-            override = ?config.override_value,
-            "ensured workspace stream enabled"
-        );
-        Ok(())
-    }
-
     /// Ensure default workspace channels (general, engineering) exist.
     ///
     /// Creates the channels if they don't already exist, ignoring 409 Conflict errors.
@@ -896,19 +868,15 @@ mod tests {
             }));
         });
         let spawn_mock = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/spawn");
+            when.method(POST).path("/v1/agents");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
-                    "agent": {
-                        "id": "agent_fresh_wrong",
-                        "name": "recipient",
-                        "type": "agent",
-                        "status": "online",
-                        "created_at": "2026-06-08T10:00:00.000Z",
-                        "last_seen": "2026-06-08T10:00:00.000Z",
-                        "metadata": {}
-                    },
+                    "id": "agent_fresh_wrong",
+                    "workspace_id": "ws_fresh_wrong",
+                    "name": "recipient",
+                    "status": "online",
+                    "created_at": "2026-06-08T10:00:00.000Z",
                     "token": "at_live_fresh_wrong"
                 }
             }));

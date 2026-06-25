@@ -1579,19 +1579,15 @@ async fn confirmed_delivery_read_ack_marks_relaycast_exactly_once() {
         }));
     });
     let spawn_mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/spawn");
+        when.method(POST).path("/v1/agents");
         then.status(200).json_body(json!({
             "ok": true,
             "data": {
-                "agent": {
-                    "id": "agent_fresh_wrong",
-                    "name": "recipient",
-                    "type": "agent",
-                    "status": "online",
-                    "created_at": "2026-06-08T10:00:00.000Z",
-                    "last_seen": "2026-06-08T10:00:00.000Z",
-                    "metadata": {}
-                },
+                "id": "agent_fresh_wrong",
+                "workspace_id": "ws_fresh_wrong",
+                "name": "recipient",
+                "status": "online",
+                "created_at": "2026-06-08T10:00:00.000Z",
                 "token": "at_live_fresh_wrong"
             }
         }));
@@ -1659,19 +1655,15 @@ async fn duplicate_delivery_read_ack_suppresses_repeat_mark_read() {
         }));
     });
     let spawn_mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/spawn");
+        when.method(POST).path("/v1/agents");
         then.status(200).json_body(json!({
             "ok": true,
             "data": {
-                "agent": {
-                    "id": "agent_fresh_wrong",
-                    "name": "recipient",
-                    "type": "agent",
-                    "status": "online",
-                    "created_at": "2026-06-08T10:00:00.000Z",
-                    "last_seen": "2026-06-08T10:00:00.000Z",
-                    "metadata": {}
-                },
+                "id": "agent_fresh_wrong",
+                "workspace_id": "ws_fresh_wrong",
+                "name": "recipient",
+                "status": "online",
+                "created_at": "2026-06-08T10:00:00.000Z",
                 "token": "at_live_fresh_wrong"
             }
         }));
