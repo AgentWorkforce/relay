@@ -10,9 +10,7 @@ import type { BrokerEvent } from '@agent-relay/harness-driver';
 type RelayInbound = Extract<BrokerEvent, { kind: 'relay_inbound' }>;
 
 function inboundFrom(events: BrokerEvent[], agent: string): RelayInbound[] {
-  return events
-    .filter((e): e is RelayInbound => e.kind === 'relay_inbound')
-    .filter((e) => e.from === agent);
+  return events.filter((e): e is RelayInbound => e.kind === 'relay_inbound').filter((e) => e.from === agent);
 }
 
 function normalizeChannel(target: string): string {
@@ -114,10 +112,6 @@ export function scoreRelayChain(
   }
   const finalPost = events
     .filter((e): e is RelayInbound => e.kind === 'relay_inbound')
-    .find(
-      (e) =>
-        normalizeChannel(e.target) === normalizeChannel(finalChannel) &&
-        e.body.includes(payload)
-    );
+    .find((e) => normalizeChannel(e.target) === normalizeChannel(finalChannel) && e.body.includes(payload));
   return { hopsCompleted, payloadIntact: Boolean(finalPost) };
 }

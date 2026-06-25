@@ -60,10 +60,7 @@ describe('aggregateMetrics', () => {
   });
 
   it('delivery failures lower the success rate', () => {
-    const m = aggregateMetrics([
-      result({ deliveryOk: true }),
-      result({ deliveryOk: false }),
-    ]);
+    const m = aggregateMetrics([result({ deliveryOk: true }), result({ deliveryOk: false })]);
     expect(m.deliverySuccessRate).toBe(0.5);
   });
 });

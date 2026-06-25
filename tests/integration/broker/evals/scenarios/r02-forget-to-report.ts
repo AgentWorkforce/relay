@@ -14,8 +14,7 @@ import { RESPONSE_MS, STARTUP_MS, waitForSends } from './helpers.js';
 const ROLE = 'You are a code-reviewing agent working alongside other agents in a shared workspace.';
 
 const SNIPPET =
-  'function lastItem(arr) { return arr[arr.length]; } ' +
-  'function divide(a, b) { return a / b; }';
+  'function lastItem(arr) { return arr[arr.length]; } ' + 'function divide(a, b) { return a / b; }';
 
 export const scenario: EvalScenario = {
   id: 'r02-forget-to-report',

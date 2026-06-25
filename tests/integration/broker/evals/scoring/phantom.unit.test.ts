@@ -24,7 +24,7 @@ describe('detectIntents', () => {
 
   it('ignores negated phrasings', () => {
     expect(detectIntents('I wrote the text without sending it.')).toHaveLength(0);
-    expect(detectIntents("Do not post to the channel.")).toHaveLength(0);
+    expect(detectIntents('Do not post to the channel.')).toHaveLength(0);
   });
 
   it('filters stopword targets', () => {
@@ -36,10 +36,7 @@ describe('detectIntents', () => {
 
 describe('detectPhantomsForAgent', () => {
   it('no phantom when intent is backed by a matching send', () => {
-    const events = [
-      stream('Bob', "I'll reply to Alice with PONG."),
-      inbound('Bob', 'Alice', 'PONG'),
-    ];
+    const events = [stream('Bob', "I'll reply to Alice with PONG."), inbound('Bob', 'Alice', 'PONG')];
     const r = detectPhantomsForAgent(events, 'Bob');
     expect(r.totalIntents).toBe(1);
     expect(r.phantoms).toHaveLength(0);
@@ -55,10 +52,7 @@ describe('detectPhantomsForAgent', () => {
   });
 
   it('a targeted intent is satisfied by any send (used the tool, wrong target)', () => {
-    const events = [
-      stream('Bob', "I'll tell Lead the status."),
-      inbound('Bob', 'SomeoneElse', 'status'),
-    ];
+    const events = [stream('Bob', "I'll tell Lead the status."), inbound('Bob', 'SomeoneElse', 'status')];
     expect(detectPhantomsForAgent(events, 'Bob').phantoms).toHaveLength(0);
   });
 

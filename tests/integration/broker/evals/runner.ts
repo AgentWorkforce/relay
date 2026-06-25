@@ -46,7 +46,8 @@ function parseFlags(argv: string[]): Flags {
     const [key, value] = arg.replace(/^--/, '').split('=');
     if (key === 'harness' && value) flags.harnesses = value.split(',').map((s) => s.trim());
     else if (key === 'scenario' && value) flags.scenarioIds = value.split(',').map((s) => s.trim());
-    else if (key === 'tier' && (value === 'smoke' || value === 'realistic' || value === 'all')) flags.tier = value;
+    else if (key === 'tier' && (value === 'smoke' || value === 'realistic' || value === 'all'))
+      flags.tier = value;
     else if (key === 'repeat' && value) flags.repeat = Math.max(1, Number(value) || 1);
     else if (key === 'baseline' && value) flags.baseline = value;
   }
@@ -183,10 +184,14 @@ async function main(): Promise<void> {
 
   const scenarios = selectScenarios(flags);
   if (scenarios.length === 0) {
-    console.error(`No scenario matched (scenario=${flags.scenarioIds?.join(',') ?? '-'}, tier=${flags.tier}).`);
+    console.error(
+      `No scenario matched (scenario=${flags.scenarioIds?.join(',') ?? '-'}, tier=${flags.tier}).`
+    );
     process.exit(2);
   }
-  console.log(`Running ${scenarios.length} scenario(s) [tier=${flags.scenarioIds ? 'explicit' : flags.tier}]`);
+  console.log(
+    `Running ${scenarios.length} scenario(s) [tier=${flags.scenarioIds ? 'explicit' : flags.tier}]`
+  );
 
   const startedAt = new Date();
   const stamp = isoStamp(startedAt);
@@ -217,7 +222,9 @@ async function main(): Promise<void> {
         const deltas = compareReports(readReport(flags.baseline), report);
         const regressions = deltas.filter((d) => d.regression);
         for (const d of regressions) {
-          console.log(`  ⚠ regression: ${d.metric} ${d.baseline} → ${d.current} (${d.delta > 0 ? '+' : ''}${d.delta.toFixed(3)})`);
+          console.log(
+            `  ⚠ regression: ${d.metric} ${d.baseline} → ${d.current} (${d.delta > 0 ? '+' : ''}${d.delta.toFixed(3)})`
+          );
         }
         if (regressions.length > 0) anyRegression = true;
       } catch (err) {

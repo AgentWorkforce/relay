@@ -28,13 +28,13 @@ Select with `--tier=realistic|smoke|all` (default `realistic`).
 
 ## Metrics
 
-| Metric | Meaning |
-| --- | --- |
-| `messageSentRate` | actual sends ÷ expected sends |
-| `phantomRate` / `phantomCount` | forward-looking intents with no backing send |
-| `protocolAdherence` | ACK-before-DONE, correct-channel reply |
-| `deliverySuccessRate` | scenarios with no dropped / ACL-denied deliveries |
-| `wrongChannelReplies` | replies sent to a DM/other channel instead of the shown one |
+| Metric                         | Meaning                                                     |
+| ------------------------------ | ----------------------------------------------------------- |
+| `messageSentRate`              | actual sends ÷ expected sends                               |
+| `phantomRate` / `phantomCount` | forward-looking intents with no backing send                |
+| `protocolAdherence`            | ACK-before-DONE, correct-channel reply                      |
+| `deliverySuccessRate`          | scenarios with no dropped / ACL-denied deliveries           |
+| `wrongChannelReplies`          | replies sent to a DM/other channel instead of the shown one |
 
 ## Running
 
