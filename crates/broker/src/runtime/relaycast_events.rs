@@ -25,6 +25,21 @@ impl BrokerRuntime {
     }
 }
 
+/// Derive the initial session ref for a spawn request from its `ws_value`,
+/// mirroring `spawn_worker_from_request`'s own `session_id` derivation (the
+/// harness config's `session_id`). Returns `None` when the harness config is
+/// absent or invalid, or carries no session id. Used by the node `action.invoke`
+/// spawn path to forward a resumable session ref into `agent.register`, matching
+/// the sidecar's `fleet_initial_session_ref(&spec)`.
+pub(super) fn relaycast_spawn_session_ref(ws_value: &Value) -> Option<String> {
+    relaycast_harness_config(ws_value)
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(ResolvedHarnessConfig::session_id)
+        .map(ToOwned::to_owned)
+}
+
 fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
     let agent = value.get("agent");
     let harness_id = agent
@@ -266,6 +281,8 @@ pub(super) async fn spawn_worker_from_request(
     agent_spawn_count: &mut u32,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     node_name: &str,
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
 ) {
     let workspace_http = &workspace_state.http_client;
     eprintln!(
@@ -384,8 +401,8 @@ pub(super) async fn spawn_worker_from_request(
             match super::fleet::register_node_agent_token(
                 fleet_control_tx,
                 name.as_str(),
-                None,
-                None,
+                invocation_id.clone(),
+                session_ref.clone(),
             )
             .await
             {

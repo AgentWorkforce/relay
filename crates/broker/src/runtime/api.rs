@@ -116,11 +116,17 @@ impl BrokerRuntime {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
                     Some(token)
                 } else {
+                    // Derive the session ref from the resolved spec the same way
+                    // the fleet/sidecar paths do, so an HTTP spawn carrying a
+                    // `harnessConfig.session_id` registers as a resumable session
+                    // rather than a fresh spawn. No invocation id exists on the
+                    // HTTP path.
+                    let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                     match super::fleet::register_node_agent_token(
                         fleet_control_tx,
                         name.as_str(),
                         None,
-                        None,
+                        session_ref,
                     )
                     .await
                     {

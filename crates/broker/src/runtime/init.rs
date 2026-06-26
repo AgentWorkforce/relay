@@ -303,7 +303,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
                 node_id: node_id.clone(),
                 node_name: node_name.clone(),
                 broker_version: broker_version.clone(),
-                token_path: crate::node_control::default_node_token_path(),
+                token_path: crate::node_control::default_node_token_path(&node_id),
             });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
@@ -672,7 +672,7 @@ async fn resolve_node_token(
         return Some(token);
     }
 
-    let token_path = crate::node_control::default_node_token_path();
+    let token_path = crate::node_control::default_node_token_path(node_id);
     if let Some(token) = token_path.as_deref().and_then(|path| {
         crate::node_control::load_node_token(path, node_id, workspace_id, base_url)
     }) {

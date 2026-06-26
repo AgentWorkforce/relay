@@ -31,6 +31,16 @@ const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
 /// re-mint) before giving up and surfacing a hard error instead of looping.
 const MAX_UNAUTHORIZED_BEFORE_GIVING_UP: u32 = 5;
 
+/// Whether a fresh re-mint should still be attempted at this consecutive-401
+/// count. The count is incremented for the current 401 *before* this is called,
+/// so the very first 401 (count 1) is still within budget. Crucially this is
+/// independent of whether prior mints succeeded — the loop only resets the count
+/// when a connection actually establishes — so N consecutive 401s trip the cap
+/// even when every mint succeeds.
+fn should_attempt_remint(consecutive_unauthorized: u32) -> bool {
+    consecutive_unauthorized <= MAX_UNAUTHORIZED_BEFORE_GIVING_UP
+}
+
 #[derive(Clone)]
 pub(crate) struct FleetControlConfig {
     pub(crate) ws_url: String,
@@ -616,10 +626,35 @@ pub(crate) fn default_node_id_path() -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join("agent-relay").join("machine-id"))
 }
 
-/// Path to the persisted node token, kept next to the node id file so a node's
-/// identity and its minted control token live and rotate together.
-pub(crate) fn default_node_token_path() -> Option<std::path::PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join("agent-relay").join("node-token.json"))
+/// Path to the persisted node token for a given `node_id`. The cache is scoped
+/// per node id (which is itself derived per machine + working directory) so two
+/// brokers on the same host never overwrite each other's cached token. The id is
+/// `node_<32hex>` and thus already filename-safe, but it is sanitized defensively
+/// so an unexpected value can never escape the cache directory.
+pub(crate) fn default_node_token_path(node_id: &str) -> Option<std::path::PathBuf> {
+    let file = format!("{}.json", sanitize_node_id_for_filename(node_id));
+    dirs::data_local_dir().map(|dir| dir.join("agent-relay").join("node-tokens").join(file))
+}
+
+/// Map a `node_id` to a filename-safe stem: keep ASCII alphanumerics, `-` and
+/// `_`; replace anything else (including path separators) with `_`. Empty input
+/// falls back to `node` so the path always has a stem.
+fn sanitize_node_id_for_filename(node_id: &str) -> String {
+    let sanitized: String = node_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "node".to_string()
+    } else {
+        sanitized
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -707,8 +742,11 @@ pub(crate) async fn run_node_control_client(
     let mut load = FleetLoadSnapshot::default();
     let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
     // Bound re-minting so a persistently-rejecting engine can't spin a tight
-    // mint loop: only attempt a re-mint after this many consecutive 401s, then
-    // reset the counter on a successful mint (or any non-401 outcome).
+    // mint loop. This counter increments on every consecutive `/v1/node/ws` 401
+    // and only resets once a connection actually establishes (the `Disconnected`
+    // arm below) — NOT on a successful re-mint. So repeated 401s accumulate
+    // toward [`MAX_UNAUTHORIZED_BEFORE_GIVING_UP`] even when each mint succeeds,
+    // and each retry honors the backoff sleep at the bottom of the loop.
     let mut consecutive_unauthorized: u32 = 0;
 
     loop {
@@ -795,19 +833,31 @@ pub(crate) async fn run_node_control_client(
             consecutive_unauthorized = 0;
             continue;
         }
+        if matches!(result, ControlRunResult::Disconnected) {
+            // A real connection was established and then dropped, so the current
+            // token authenticated successfully. Reset the 401 counter only here —
+            // NOT after a successful re-mint — so a tight loop where each mint
+            // succeeds but the engine keeps 401-ing `/v1/node/ws` still
+            // accumulates toward the cap instead of resetting on every iteration.
+            consecutive_unauthorized = 0;
+        }
         if matches!(result, ControlRunResult::Unauthorized) {
             // The engine rejected our current node token. Re-mint a fresh one
             // (bounded) rather than reconnecting forever on the rejected token.
             consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
             if let Some(minter) = config.token_minter.as_ref() {
-                if consecutive_unauthorized <= MAX_UNAUTHORIZED_BEFORE_GIVING_UP {
+                if should_attempt_remint(consecutive_unauthorized) {
                     if let Some(fresh) = minter.remint().await {
+                        // Install the fresh token and retry, but fall through to
+                        // the shared backoff sleep at the bottom of the loop
+                        // rather than `continue`-ing past it. The delay throttles
+                        // the next connect attempt so a server that 401s every
+                        // freshly minted token can't be hammered. The counter is
+                        // intentionally NOT reset here; it only resets once a
+                        // connection actually establishes (the `Disconnected` arm
+                        // above), so repeated 401s still accumulate toward the cap
+                        // even when each mint succeeds.
                         config.node_token = Some(fresh);
-                        consecutive_unauthorized = 0;
-                        // Retry immediately with the fresh token.
-                        reconnect_delay = INITIAL_RECONNECT_DELAY;
-                        let _ = event_tx.send(FleetControlEvent::Disconnected).await;
-                        continue;
                     }
                 } else {
                     tracing::error!(
@@ -2421,5 +2471,83 @@ mod tests {
         assert!(!connect_error_is_unauthorized(&WsError::Http(forbidden)));
 
         assert!(!connect_error_is_unauthorized(&WsError::ConnectionClosed));
+    }
+
+    #[test]
+    fn default_node_token_path_is_scoped_per_node_id() {
+        // The cache file must carry the node id so two brokers on one host (each
+        // with a distinct per-cwd node id) never overwrite each other's token.
+        let a = default_node_token_path("node_aaaa");
+        let b = default_node_token_path("node_bbbb");
+        // When the data dir is unavailable both are None; skip in that case.
+        if let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) {
+            assert_ne!(a, b, "distinct node ids must map to distinct cache files");
+            assert!(a.ends_with("node_aaaa.json"));
+            assert!(b.ends_with("node_bbbb.json"));
+            // Same broker (same node id) is stable across calls/restarts.
+            assert_eq!(a, &default_node_token_path("node_aaaa").unwrap());
+            // Cache lives under a per-node directory, not a single global file.
+            assert!(a.parent().unwrap().ends_with("node-tokens"));
+        }
+    }
+
+    #[test]
+    fn sanitize_node_id_keeps_safe_chars_and_replaces_separators() {
+        // The canonical id is already filename-safe.
+        assert_eq!(
+            sanitize_node_id_for_filename("node_0123abcd-XY"),
+            "node_0123abcd-XY"
+        );
+        // Path separators and other unsafe chars are neutralized so the cache
+        // path can never escape the node-tokens directory.
+        assert_eq!(
+            sanitize_node_id_for_filename("../../etc/passwd"),
+            "______etc_passwd"
+        );
+        assert_eq!(sanitize_node_id_for_filename("a/b\\c"), "a_b_c");
+        // Empty input still yields a usable stem.
+        assert_eq!(sanitize_node_id_for_filename(""), "node");
+    }
+
+    #[test]
+    fn remint_cap_trips_after_n_consecutive_401s_even_when_mints_succeed() {
+        // Models the loop's counter discipline (Bug 3): the consecutive-401
+        // counter is incremented per 401 and only reset when a connection
+        // actually establishes — NEVER on a successful re-mint. So even if every
+        // mint succeeds, N consecutive 401s exhaust the budget and trip the cap.
+        let mut consecutive_unauthorized: u32 = 0;
+        let mint_always_succeeds = true;
+        let mut mints_attempted = 0u32;
+
+        // Simulate an unbroken run of 401s (no intervening `Disconnected`, so the
+        // counter is never reset).
+        loop {
+            consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
+            if should_attempt_remint(consecutive_unauthorized) {
+                // A mint is attempted and (per the scenario) succeeds — but the
+                // counter is deliberately NOT reset here.
+                assert!(mint_always_succeeds);
+                mints_attempted += 1;
+            } else {
+                // Budget exhausted: the loop would surface the loud "giving up"
+                // error instead of minting again.
+                break;
+            }
+            // Guard against a regression that loops forever.
+            assert!(consecutive_unauthorized <= MAX_UNAUTHORIZED_BEFORE_GIVING_UP + 2);
+        }
+
+        // The cap is reachable: minting stops after the budget is spent.
+        assert_eq!(mints_attempted, MAX_UNAUTHORIZED_BEFORE_GIVING_UP);
+        assert_eq!(
+            consecutive_unauthorized,
+            MAX_UNAUTHORIZED_BEFORE_GIVING_UP + 1
+        );
+
+        // A connection establishing (`Disconnected` arm) resets the budget.
+        consecutive_unauthorized = 0;
+        assert!(should_attempt_remint(
+            consecutive_unauthorized.saturating_add(1)
+        ));
     }
 }

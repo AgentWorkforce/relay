@@ -524,6 +524,13 @@ impl BrokerRuntime {
             .cloned()
             .unwrap_or_else(|| self.default_workspace.clone());
 
+        // Forward the invocation id and the harness session ref into the node
+        // `agent.register` the spawn emits, mirroring the sidecar path
+        // (`fleet_initial_session_ref(&spec)`). Without these, the invocation is
+        // not correlated to the agent and a resumable `spawn:<harness>` (when
+        // `harnessConfig.session_id` is set) silently becomes a fresh spawn.
+        let session_ref = super::relaycast_events::relaycast_spawn_session_ref(&ws_value);
+
         super::relaycast_events::spawn_worker_from_request(
             name.clone(),
             cli,
@@ -543,6 +550,8 @@ impl BrokerRuntime {
             &mut self.agent_spawn_count,
             &self.fleet_control_tx,
             &self.fleet_node_name,
+            Some(invoke.invocation_id.clone()),
+            session_ref,
         )
         .await;
 
@@ -1240,7 +1249,7 @@ fn priority_from_label(label: &str) -> Option<u8> {
     }
 }
 
-fn fleet_initial_session_ref(spec: &AgentSpec) -> Option<String> {
+pub(super) fn fleet_initial_session_ref(spec: &AgentSpec) -> Option<String> {
     spec.session_id.clone().or_else(|| {
         spec.harness_config
             .as_ref()
@@ -1492,6 +1501,74 @@ mod tests {
         assert_eq!(
             fleet_initial_session_ref(&spec).as_deref(),
             Some("session-harness")
+        );
+    }
+
+    #[tokio::test]
+    async fn action_invoke_spawn_forwards_session_ref_and_invocation_into_agent_register() {
+        // An `action.invoke` spawn carrying `harnessConfig.session_id` must
+        // forward a non-None session_ref (and the invocation id) into the node
+        // `agent.register` it emits, so the spawn resumes the session and the
+        // invocation is correlated to the agent (Bug 2). Previously both were
+        // hardcoded to None on this path.
+        let ws_value = json!({
+            "agent": {
+                "harnessConfig": {
+                    "runtime": "pty",
+                    "command": "codex",
+                    "sessionId": "sess-resume-7",
+                }
+            }
+        });
+        let session_ref = super::super::relaycast_events::relaycast_spawn_session_ref(&ws_value);
+        assert_eq!(
+            session_ref.as_deref(),
+            Some("sess-resume-7"),
+            "session ref must be derived from harnessConfig.session_id"
+        );
+
+        // Drive the exact registration step the spawn path uses and capture the
+        // emitted AgentRegister to confirm both fields are threaded through.
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
+        let register_handle = tokio::spawn(async move {
+            register_node_agent_token(&tx, "agent-a", Some("inv-42".to_string()), session_ref).await
+        });
+
+        let command = rx.recv().await.expect("register command emitted");
+        let FleetControlCommand::RegisterAgent { request, reply } = command else {
+            panic!("expected RegisterAgent command");
+        };
+        assert_eq!(request.invocation_id.as_deref(), Some("inv-42"));
+        assert_eq!(request.session_ref.as_deref(), Some("sess-resume-7"));
+        // A session ref implies the spawn is resumable.
+        assert_eq!(request.resumable, Some(true));
+
+        // Satisfy the awaiting caller so the task completes cleanly.
+        reply
+            .send(Ok(crate::node_control::AgentRegistrationToken {
+                name: "agent-a".to_string(),
+                agent_id: "agent-a-id".to_string(),
+                token: "at_test".to_string(),
+            }))
+            .unwrap();
+        let token = register_handle.await.unwrap().unwrap();
+        assert_eq!(token.token, "at_test");
+    }
+
+    #[test]
+    fn relaycast_spawn_session_ref_is_none_without_harness_session() {
+        // A spawn with no harnessConfig session id yields None — the spawn is a
+        // fresh (non-resume) spawn, matching the pre-fix behavior for that case.
+        let ws_value = json!({
+            "agent": { "harnessConfig": { "runtime": "pty", "command": "codex" } }
+        });
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&ws_value),
+            None
+        );
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&json!({})),
+            None
         );
     }
 
