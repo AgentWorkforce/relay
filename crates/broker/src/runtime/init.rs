@@ -288,20 +288,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             node_id
         );
     }
-    // Capability the engine uses for placement: this broker is a generic spawn
-    // host that can run spawn/spawn:* action invocations for its agents.
-    let node_manifest = NodeManifest {
-        name: node_name.clone(),
-        node_id: Some(node_id.clone()),
-        capabilities: vec![NodeCapabilityManifest {
-            name: "spawn".to_string(),
-            kind: Some("spawn".to_string()),
-            metadata: None,
-        }],
-        max_agents: None,
-        tags: None,
-        version: Some(broker_version.clone()),
-    };
+    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -769,10 +756,53 @@ fn bracket_ipv6_host(host: &str) -> String {
     }
 }
 
+/// Build the bootstrap node descriptor the broker sends before the fleet sidecar
+/// reports its real `defineNode` manifest.
+///
+/// It carries NO capabilities: the node's real `spawn:*`/action capabilities
+/// arrive on the sidecar's `node.register` (see `SdkToBroker::RegisterNode`). The
+/// bootstrap manifest must never advertise a bare `"spawn"` capability, because
+/// the relaycast engine does not treat `"spawn"` as a placement capability (only
+/// `spawn:*` is). A bare `"spawn"` makes the engine materialize a generic `spawn`
+/// ACTION pinned to this node's id, which then short-circuits capability-based
+/// spawn placement for the whole workspace — every `spawn` invoke is dispatched
+/// to whichever node bootstrapped first, ignoring `cli`/`target_node`/least-loaded
+/// routing. An empty manifest keeps the node online (registered) without claiming
+/// any handler until the sidecar supplies the authoritative capability set.
+fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str) -> NodeManifest {
+    NodeManifest {
+        name: node_name.to_string(),
+        node_id: Some(node_id.to_string()),
+        capabilities: Vec::new(),
+        max_agents: None,
+        tags: None,
+        version: Some(broker_version.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn bootstrap_node_manifest_advertises_no_capabilities() {
+        // Regression: a bare `"spawn"` capability in the bootstrap manifest makes
+        // the engine create a generic `spawn` action pinned to the bootstrapping
+        // node, hijacking capability-based spawn placement for the workspace. The
+        // bootstrap descriptor must carry the node's identity but ZERO
+        // capabilities; the real capability set arrives from the sidecar's
+        // `node.register`.
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        assert!(
+            manifest.capabilities.is_empty(),
+            "bootstrap manifest must advertise no capabilities, got {:?}",
+            manifest.capabilities
+        );
+        assert_eq!(manifest.name, "node-a");
+        assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
+        assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+    }
 
     #[test]
     fn callback_host_uses_family_specific_loopback_for_wildcards() {

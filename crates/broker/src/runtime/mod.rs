@@ -35,7 +35,7 @@ use crate::{
     },
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
-        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, NodeCapabilityManifest,
+        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode,
         NodeManifest, NodeSupervision, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig,
         PROTOCOL_VERSION,
     },
