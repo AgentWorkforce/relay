@@ -409,6 +409,14 @@ impl HandlerDispatchState {
         self.sidecar_connected && !self.handlers.is_empty()
     }
 
+    /// Whether the connected sidecar registered a handler for `action`. Used to
+    /// decide whether a `spawn:<harness>` node action should be dispatched to the
+    /// sidecar (which owns the declared harness) rather than run directly with the
+    /// raw `cli` from the action input.
+    pub(crate) fn has_handler(&self, action: &str) -> bool {
+        self.sidecar_connected && self.handlers.contains(action)
+    }
+
     pub(crate) fn has_in_flight(&self) -> bool {
         !self.in_flight.is_empty()
     }
@@ -1704,6 +1712,31 @@ mod tests {
             state.handle_invoke(&invoke),
             HandlerDispatchDecision::AlreadyInFlight
         );
+    }
+
+    #[test]
+    fn has_handler_gates_spawn_dispatch_on_sidecar_registration() {
+        // `has_handler` is the predicate that decides whether a `spawn:<harness>`
+        // node action is dispatched to the sidecar (which owns the declared
+        // harness) instead of being run directly with the raw `cli` from the
+        // action input. It is true only when the sidecar is connected AND
+        // registered a handler for that exact capability name.
+        let mut state = HandlerDispatchState::default();
+        // No sidecar connected: a spawn:* action has no declared harness, so the
+        // broker must take the direct raw-`cli` path.
+        assert!(!state.has_handler("spawn:claude"));
+
+        state.connect_sidecar();
+        state.register_handlers(vec!["spawn:claude".to_string(), "echo".to_string()]);
+        // The sidecar declared `spawn:claude` → dispatch to it so its
+        // `spawn(<harness>)` handler resolves the DECLARED harness.
+        assert!(state.has_handler("spawn:claude"));
+        // A capability the sidecar did not register stays on the direct path.
+        assert!(!state.has_handler("spawn:codex"));
+
+        // A dropped sidecar clears handlers, so spawn falls back to direct.
+        state.disconnect_sidecar();
+        assert!(!state.has_handler("spawn:claude"));
     }
 
     #[test]

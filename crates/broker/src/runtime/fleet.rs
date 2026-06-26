@@ -433,12 +433,22 @@ impl BrokerRuntime {
     }
 
     async fn handle_fleet_action_invoke(&mut self, invoke: ActionInvoke) {
-        // Spawn / release are node actions, not sidecar handlers: the engine
-        // targets this node for placement and the broker runs them directly.
-        // `spawn` / `spawn:<harness>` both map to the local spawn fn; `release`
-        // routes by the invoke's agent_name/agent_id to the local release fn.
+        // Spawn / release are node actions, not ordinary sidecar handlers: the
+        // engine targets this node for placement and the broker runs them.
+        //
+        // A `spawn:<harness>` for which the sidecar registered a handler is the
+        // exception: in the fleet/sidecar model the sidecar OWNS the harness. Its
+        // `spawn(<harness>)` handler resolves the declared harness spec and calls
+        // `ctx.spawnAgent` (→ `spawn_agent` → `handle_fleet_spawn_agent`), so the
+        // broker spawns the DECLARED harness, not the raw `cli` from the action
+        // input. Dispatch those to the sidecar exactly like `echo`/`work`.
+        //
+        // The broker-direct `handle_fleet_action_spawn` (which runs the raw `cli`)
+        // is reserved for the direct / no-sidecar path where no sidecar handler is
+        // registered for the action and there is no declared harness to resolve.
         let action = invoke.action.as_str();
-        if action == "spawn" || action.starts_with("spawn:") {
+        let spawn_action = action == "spawn" || action.starts_with("spawn:");
+        if spawn_action && !self.fleet_handlers.has_handler(action) {
             self.handle_fleet_action_spawn(invoke).await;
             return;
         }
