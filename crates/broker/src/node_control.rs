@@ -2128,8 +2128,14 @@ mod tests {
     fn load_node_token_round_trips_when_node_and_workspace_match() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node-token.json");
-        persist_node_token(&path, "node-a", "ws-a", Some("https://engine.test"), "nt_123")
-            .unwrap();
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_123",
+        )
+        .unwrap();
 
         let loaded = load_node_token(&path, "node-a", "ws-a", Some("https://engine.test"));
         assert_eq!(loaded.as_deref(), Some("nt_123"));

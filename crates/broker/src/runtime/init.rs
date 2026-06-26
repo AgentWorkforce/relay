@@ -673,10 +673,9 @@ async fn resolve_node_token(
     }
 
     let token_path = crate::node_control::default_node_token_path();
-    if let Some(token) = token_path
-        .as_deref()
-        .and_then(|path| crate::node_control::load_node_token(path, node_id, workspace_id, base_url))
-    {
+    if let Some(token) = token_path.as_deref().and_then(|path| {
+        crate::node_control::load_node_token(path, node_id, workspace_id, base_url)
+    }) {
         tracing::info!(node_id = %node_id, workspace_id = %workspace_id, "reusing cached node token");
         return Some(token);
     }
