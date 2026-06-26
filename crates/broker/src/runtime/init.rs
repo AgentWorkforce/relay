@@ -219,10 +219,29 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
     let node_id = match crate::node_control::default_node_id_path() {
-        Some(path) => crate::node_control::load_or_create_node_id(&path).unwrap_or_else(|error| {
-            tracing::warn!(error = %error, "failed to load fleet node machine id; using ephemeral id");
-            format!("node_{}", Uuid::new_v4().simple())
-        }),
+        Some(path) => {
+            // Node-id mode — explicit vs auto:
+            //   * Explicit / fleet: when an operator pre-enrolls this node and
+            //     supplies `RELAY_NODE_TOKEN`, the node id is pinned (via the
+            //     machine-id file) and MUST be sent verbatim in `node.register`,
+            //     or the engine rejects it with `node_id_mismatch`. Use the file
+            //     content as-is — do NOT derive.
+            //   * Auto / direct: with no supplied token the broker mints its own
+            //     node via `create_node`; derive the id from the machine seed +
+            //     cwd so one host serving multiple workspaces/dirs doesn't collide.
+            let pinned = std::env::var("RELAY_NODE_TOKEN")
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty());
+            let loaded = if pinned {
+                crate::node_control::load_or_create_machine_seed(&path)
+            } else {
+                crate::node_control::load_or_create_node_id(&path)
+            };
+            loaded.unwrap_or_else(|error| {
+                tracing::warn!(error = %error, "failed to load fleet node machine id; using ephemeral id");
+                format!("node_{}", Uuid::new_v4().simple())
+            })
+        }
         None => format!("node_{}", Uuid::new_v4().simple()),
     };
     let node_name = crate::node_control::default_node_name(
