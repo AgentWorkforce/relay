@@ -582,10 +582,12 @@ pub(crate) fn derive_node_id(seed: &str, cwd: &str) -> String {
     hasher.update([0u8]);
     hasher.update(cwd.as_bytes());
     let digest = hasher.finalize();
-    let hex = digest.iter().fold(String::with_capacity(64), |mut acc, byte| {
-        acc.push_str(&format!("{byte:02x}"));
-        acc
-    });
+    let hex = digest
+        .iter()
+        .fold(String::with_capacity(64), |mut acc, byte| {
+            acc.push_str(&format!("{byte:02x}"));
+            acc
+        });
     format!("node_{}", &hex[..32])
 }
 
@@ -1235,7 +1237,10 @@ mod tests {
         let seed = "node_seed123";
         let a = derive_node_id(seed, "/Users/will/Projects/workspace-a");
         let b = derive_node_id(seed, "/Users/will/Projects/workspace-b");
-        assert_ne!(a, b, "different cwd on the same machine must derive distinct node ids");
+        assert_ne!(
+            a, b,
+            "different cwd on the same machine must derive distinct node ids"
+        );
     }
 
     #[test]
@@ -1243,7 +1248,10 @@ mod tests {
         let cwd = "/Users/will/Projects/relay";
         let a = derive_node_id("seed-a", cwd);
         let b = derive_node_id("seed-b", cwd);
-        assert_ne!(a, b, "different machine seeds must derive distinct node ids");
+        assert_ne!(
+            a, b,
+            "different machine seeds must derive distinct node ids"
+        );
     }
 
     #[test]
