@@ -35,9 +35,8 @@ use crate::{
     },
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
-        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode,
-        NodeManifest, NodeSupervision, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig,
-        PROTOCOL_VERSION,
+        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, NodeManifest,
+        NodeSupervision, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
         format_worker_preregistration_error, registration_retry_after_secs,
