@@ -235,10 +235,18 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // explicit RELAY_NODE_TOKEN override, then a token previously minted for
     // THIS node id, otherwise mint one now with the workspace key and persist
     // it next to the node id so it rotates with the machine identity.
+    // The node token is scoped to the workspace (and engine) it was minted
+    // against. Thread the resolved workspace id and base URL through so the
+    // cached token is only reused when both match, and so a re-mint after a
+    // node-control 401 rewrites the correctly-scoped cache.
+    let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
+    let node_base_url = configured_base.clone();
     let node_token = resolve_node_token(
         &node_id,
         &node_name,
         &broker_version,
+        &node_workspace_id,
+        node_base_url.as_deref(),
         relaycast_http.relay_client(),
     )
     .await;
@@ -280,6 +288,23 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // spawned agents to this node so they become `via_node` and node delivery
     // reaches them.
     let fleet_node_name = node_name.clone();
+    // Wire a re-mint facility so a node-control 401 (stale/wrong-scoped token)
+    // discards the cached token and mints a fresh one, instead of looping
+    // forever on the rejected token. Mirrors the initial mint above. Absent when
+    // no workspace RelayCast client is available (then a 401 surfaces a hard
+    // error rather than recovering).
+    let token_minter =
+        relaycast_http
+            .relay_client()
+            .map(|client| crate::node_control::NodeTokenMinter {
+                relay_client: client.clone(),
+                workspace_id: node_workspace_id.clone(),
+                base_url: node_base_url.clone(),
+                node_id: node_id.clone(),
+                node_name: node_name.clone(),
+                broker_version: broker_version.clone(),
+                token_path: crate::node_control::default_node_token_path(),
+            });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
     tokio::spawn(crate::node_control::run_node_control_client(
@@ -289,6 +314,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             node_id,
             node_name,
             broker_version,
+            token_minter,
         },
         fleet_control_rx,
         fleet_event_tx,
@@ -634,6 +660,8 @@ async fn resolve_node_token(
     node_id: &str,
     node_name: &str,
     broker_version: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
     relay_client: Option<&relaycast::RelayCast>,
 ) -> Option<String> {
     if let Some(token) = std::env::var("RELAY_NODE_TOKEN")
@@ -647,9 +675,9 @@ async fn resolve_node_token(
     let token_path = crate::node_control::default_node_token_path();
     if let Some(token) = token_path
         .as_deref()
-        .and_then(|path| crate::node_control::load_node_token(path, node_id))
+        .and_then(|path| crate::node_control::load_node_token(path, node_id, workspace_id, base_url))
     {
-        tracing::info!(node_id = %node_id, "reusing cached node token");
+        tracing::info!(node_id = %node_id, workspace_id = %workspace_id, "reusing cached node token");
         return Some(token);
     }
 
@@ -674,11 +702,17 @@ async fn resolve_node_token(
                 return None;
             }
             if let Some(path) = token_path.as_deref() {
-                if let Err(error) = crate::node_control::persist_node_token(path, node_id, &token) {
+                if let Err(error) = crate::node_control::persist_node_token(
+                    path,
+                    node_id,
+                    workspace_id,
+                    base_url,
+                    &token,
+                ) {
                     tracing::warn!(node_id = %node_id, error = %error, "failed to persist minted node token");
                 }
             }
-            tracing::info!(node_id = %node_id, "minted node token via create_node");
+            tracing::info!(node_id = %node_id, workspace_id = %workspace_id, "minted node token via create_node");
             Some(token)
         }
         Err(error) => {

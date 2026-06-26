@@ -26,14 +26,117 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
+/// How many consecutive `/v1/node/ws` 401s to tolerate (each triggering a
+/// re-mint) before giving up and surfacing a hard error instead of looping.
+const MAX_UNAUTHORIZED_BEFORE_GIVING_UP: u32 = 5;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct FleetControlConfig {
     pub(crate) ws_url: String,
     pub(crate) node_token: Option<String>,
     pub(crate) node_id: String,
     pub(crate) node_name: String,
     pub(crate) broker_version: String,
+    /// Optional facility to re-mint a node token when the engine rejects the
+    /// current one with HTTP 401 on the `/v1/node/ws` handshake. Absent in tests
+    /// and when no workspace `RelayCast` client is available.
+    pub(crate) token_minter: Option<NodeTokenMinter>,
+}
+
+/// Re-mints a fresh node token via `RelayCast::create_node` and rewrites the
+/// workspace-scoped cache, used to recover from a stale/rejected cached token
+/// (HTTP 401 on the node-control handshake) instead of looping forever on the
+/// same token. Mirrors the initial mint wired in `runtime::init::resolve_node_token`.
+#[derive(Clone)]
+pub(crate) struct NodeTokenMinter {
+    pub(crate) relay_client: relaycast::RelayCast,
+    pub(crate) workspace_id: String,
+    pub(crate) base_url: Option<String>,
+    pub(crate) node_id: String,
+    pub(crate) node_name: String,
+    pub(crate) broker_version: String,
+    /// Path of the persisted, workspace-scoped token cache (`None` when the data
+    /// dir is unavailable; the freshly minted token is still used in memory).
+    pub(crate) token_path: Option<std::path::PathBuf>,
+}
+
+impl NodeTokenMinter {
+    /// Discard the cached token for this workspace and mint a fresh one. Returns
+    /// the new token on success. On failure the caller surfaces a loud error and
+    /// backs off rather than looping on the rejected token.
+    async fn remint(&self) -> Option<String> {
+        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
+        // stale token behind for the next start.
+        if let Some(path) = self.token_path.as_deref() {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        error = %error,
+                        "failed to clear rejected node token cache before re-mint"
+                    );
+                }
+            }
+        }
+        let request = relaycast::CreateNodeRequest {
+            node_id: Some(self.node_id.clone()),
+            name: self.node_name.clone(),
+            kind: Some("ws".to_string()),
+            role: Some("broker".to_string()),
+            delivery_adapter: None,
+            delivery: None,
+            capabilities: None,
+            max_agents: None,
+            tags: None,
+            version: Some(self.broker_version.clone()),
+        };
+        match self.relay_client.create_node(request).await {
+            Ok(response) => {
+                let token = response.token.trim().to_string();
+                if token.is_empty() {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        "re-mint create_node returned an empty token"
+                    );
+                    return None;
+                }
+                if let Some(path) = self.token_path.as_deref() {
+                    if let Err(error) = persist_node_token(
+                        path,
+                        &self.node_id,
+                        &self.workspace_id,
+                        self.base_url.as_deref(),
+                        &token,
+                    ) {
+                        tracing::warn!(
+                            target = "relay_broker::fleet",
+                            node_id = %self.node_id,
+                            error = %error,
+                            "failed to persist re-minted node token"
+                        );
+                    }
+                }
+                tracing::info!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    workspace_id = %self.workspace_id,
+                    "re-minted node token after node-control 401"
+                );
+                Some(token)
+            }
+            Err(error) => {
+                tracing::error!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    error = %error,
+                    "failed to re-mint node token after node-control 401"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -466,34 +569,70 @@ pub(crate) fn default_node_token_path() -> Option<std::path::PathBuf> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PersistedNodeToken {
     node_id: String,
+    /// Workspace this token was minted for. A node token is only valid against
+    /// the workspace (and engine) that issued it, so a token cached for
+    /// workspace A must never be reused against workspace B.
+    workspace_id: String,
+    /// Engine base URL the token was minted against (when known). Switching
+    /// `RELAYCAST_BASE_URL`/`with_base_url` re-mints. Optional for forward and
+    /// backward compatibility with caches written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
     token: String,
 }
 
 /// Load a previously minted node token, but only if it was minted for the same
-/// `node_id`. A mismatch means the machine id rotated since the token was
-/// written, so the cached token no longer authenticates this node and is
-/// ignored (the caller mints a fresh one).
-pub(crate) fn load_node_token(path: &Path, node_id: &str) -> Option<String> {
+/// `node_id` AND the same `workspace_id` (and, when both sides know it, the same
+/// engine `base_url`). A `node_id` mismatch means the machine id rotated; a
+/// `workspace_id`/`base_url` mismatch means the cached token was minted for a
+/// different workspace or engine and would be rejected with HTTP 401. In every
+/// mismatch case the cache is ignored and the caller mints a fresh token.
+pub(crate) fn load_node_token(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+) -> Option<String> {
     let raw = fs::read_to_string(path).ok()?;
     let persisted: PersistedNodeToken = serde_json::from_str(&raw).ok()?;
     if persisted.node_id != node_id {
         return None;
     }
+    if persisted.workspace_id != workspace_id {
+        return None;
+    }
+    // Only enforce the base URL when both the cache and the current run carry
+    // one; a cache written before base_url existed (None) stays usable so long
+    // as the workspace matches.
+    if let (Some(cached), Some(current)) = (persisted.base_url.as_deref(), base_url) {
+        if cached != current {
+            return None;
+        }
+    }
     let token = persisted.token.trim();
     (!token.is_empty()).then(|| token.to_string())
 }
 
-/// Persist a minted node token next to the node id, scoped to `node_id` so a
-/// later id rotation invalidates it. Failures are surfaced as `Err` but are
-/// non-fatal to startup — the caller logs and continues with the in-memory
-/// token.
-pub(crate) fn persist_node_token(path: &Path, node_id: &str, token: &str) -> Result<()> {
+/// Persist a minted node token next to the node id, scoped to `node_id`,
+/// `workspace_id` and the engine `base_url` so an id rotation, a different
+/// workspace, or a different engine all invalidate it. Failures are surfaced as
+/// `Err` but are non-fatal to startup — the caller logs and continues with the
+/// in-memory token.
+pub(crate) fn persist_node_token(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
     }
     let body = serde_json::to_string(&PersistedNodeToken {
         node_id: node_id.to_string(),
+        workspace_id: workspace_id.to_string(),
+        base_url: base_url.map(ToOwned::to_owned),
         token: token.to_string(),
     })
     .context("failed to serialize node token")?;
@@ -503,7 +642,7 @@ pub(crate) fn persist_node_token(path: &Path, node_id: &str, token: &str) -> Res
 }
 
 pub(crate) async fn run_node_control_client(
-    config: FleetControlConfig,
+    mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
     event_tx: mpsc::Sender<FleetControlEvent>,
 ) {
@@ -511,6 +650,10 @@ pub(crate) async fn run_node_control_client(
     let mut inventory: Vec<InventoryAgent> = Vec::new();
     let mut load = FleetLoadSnapshot::default();
     let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
+    // Bound re-minting so a persistently-rejecting engine can't spin a tight
+    // mint loop: only attempt a re-mint after this many consecutive 401s, then
+    // reset the counter on a successful mint (or any non-401 outcome).
+    let mut consecutive_unauthorized: u32 = 0;
 
     loop {
         while registration.is_none() {
@@ -593,7 +736,40 @@ pub(crate) async fn run_node_control_client(
         }
         if matches!(result, ControlRunResult::Deregistered) {
             reconnect_delay = INITIAL_RECONNECT_DELAY;
+            consecutive_unauthorized = 0;
             continue;
+        }
+        if matches!(result, ControlRunResult::Unauthorized) {
+            // The engine rejected our current node token. Re-mint a fresh one
+            // (bounded) rather than reconnecting forever on the rejected token.
+            consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
+            if let Some(minter) = config.token_minter.as_ref() {
+                if consecutive_unauthorized <= MAX_UNAUTHORIZED_BEFORE_GIVING_UP {
+                    if let Some(fresh) = minter.remint().await {
+                        config.node_token = Some(fresh);
+                        consecutive_unauthorized = 0;
+                        // Retry immediately with the fresh token.
+                        reconnect_delay = INITIAL_RECONNECT_DELAY;
+                        let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                        continue;
+                    }
+                } else {
+                    tracing::error!(
+                        target = "relay_broker::fleet",
+                        node_id = %config.node_id,
+                        attempts = consecutive_unauthorized,
+                        "NODE TOKEN REJECTED: re-mint kept failing after repeated node-control 401s; \
+                         realtime delivery is DISABLED. Check workspace key / engine connectivity."
+                    );
+                }
+            } else {
+                tracing::error!(
+                    target = "relay_broker::fleet",
+                    node_id = %config.node_id,
+                    "NODE TOKEN REJECTED (401) on node-control and no minter is available to recover; \
+                     realtime delivery is DISABLED until a valid RELAY_NODE_TOKEN is supplied."
+                );
+            }
         }
         let _ = event_tx.send(FleetControlEvent::Disconnected).await;
         tokio::time::sleep(reconnect_delay).await;
@@ -604,8 +780,23 @@ pub(crate) async fn run_node_control_client(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlRunResult {
     Disconnected,
+    /// The `/v1/node/ws` handshake was rejected with HTTP 401/Unauthorized,
+    /// i.e. the current node token is stale or scoped to a different
+    /// workspace/engine and must be re-minted before retrying.
+    Unauthorized,
     Deregistered,
     Shutdown,
+}
+
+/// True when a `connect_async` failure is an HTTP 401/Unauthorized handshake
+/// rejection — i.e. the node token was refused by the engine. Other transport
+/// errors (DNS, TCP, TLS, 5xx) are treated as ordinary disconnects.
+fn connect_error_is_unauthorized(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if response.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+    )
 }
 
 async fn run_connected_once(
@@ -645,6 +836,9 @@ async fn run_connected_once(
         Ok(connected) => connected,
         Err(error) => {
             tracing::warn!(target = "relay_broker::fleet", url = %config.ws_url, error = %error, "fleet node ws connect failed");
+            if connect_error_is_unauthorized(&error) {
+                return ControlRunResult::Unauthorized;
+            }
             return ControlRunResult::Disconnected;
         }
     };
@@ -1427,6 +1621,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1537,6 +1732,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1661,6 +1857,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1767,6 +1964,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1825,6 +2023,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1923,5 +2122,92 @@ mod tests {
             tags: Some(vec!["test".to_string()]),
             version: Some("sidecar/test".to_string()),
         }
+    }
+
+    #[test]
+    fn load_node_token_round_trips_when_node_and_workspace_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", Some("https://engine.test"), "nt_123")
+            .unwrap();
+
+        let loaded = load_node_token(&path, "node-a", "ws-a", Some("https://engine.test"));
+        assert_eq!(loaded.as_deref(), Some("nt_123"));
+    }
+
+    #[test]
+    fn load_node_token_returns_none_on_workspace_mismatch_even_when_node_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_123").unwrap();
+
+        // Same node id, different workspace: the cached token would be rejected
+        // with HTTP 401, so it must not be reused.
+        assert_eq!(load_node_token(&path, "node-a", "ws-b", None), None);
+        // Same workspace still round-trips.
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_123")
+        );
+    }
+
+    #[test]
+    fn load_node_token_returns_none_on_node_id_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_123").unwrap();
+
+        assert_eq!(load_node_token(&path, "node-b", "ws-a", None), None);
+    }
+
+    #[test]
+    fn load_node_token_returns_none_on_base_url_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", Some("https://engine.a"), "nt_123").unwrap();
+
+        // Switching engine base URL re-mints.
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", Some("https://engine.b")),
+            None
+        );
+        // A run that no longer knows its base URL still reuses on workspace match.
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_123")
+        );
+    }
+
+    #[test]
+    fn load_node_token_reuses_legacy_cache_without_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        // A cache written before base_url existed has no base_url field.
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_123").unwrap();
+
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", Some("https://engine.test")).as_deref(),
+            Some("nt_123")
+        );
+    }
+
+    #[test]
+    fn connect_error_is_unauthorized_detects_401_only() {
+        use tokio_tungstenite::tungstenite::http::{Response, StatusCode};
+        use tokio_tungstenite::tungstenite::Error as WsError;
+
+        let unauthorized = Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(None)
+            .unwrap();
+        assert!(connect_error_is_unauthorized(&WsError::Http(unauthorized)));
+
+        let forbidden = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(None)
+            .unwrap();
+        assert!(!connect_error_is_unauthorized(&WsError::Http(forbidden)));
+
+        assert!(!connect_error_is_unauthorized(&WsError::ConnectionClosed));
     }
 }
