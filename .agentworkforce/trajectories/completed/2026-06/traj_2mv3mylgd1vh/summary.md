@@ -19,10 +19,12 @@ Removed dead broker-runtime firehose delivery path for node-only delivery: delet
 ## Key Decisions
 
 ### Remove fleet_mode_enabled field entirely (only reader was the firehose drop) and gut the firehose delivery: stop RelaycastWsClient connecting to /v1/ws and strip the map_ws_event injection body from handle_relaycast_message
+
 - **Chose:** Remove fleet_mode_enabled field entirely (only reader was the firehose drop) and gut the firehose delivery: stop RelaycastWsClient connecting to /v1/ws and strip the map_ws_event injection body from handle_relaycast_message
 - **Reasoning:** fleet_mode_enabled's sole reader is the firehose drop at relaycast_events.rs:77-85; node delivery (Inc2) is the only delivery path. Keep WsControl plumbing (Publish loopback / Subscribe / Unsubscribe / Shutdown) since it is sent from many call sites and Publish/agent.state loopback is already a no-op; only remove the workspace-WS connection + raw-event pump + message injection.
 
 ### Kept RelaycastWsClient::run and map_ws_event intact
+
 - **Chose:** Kept RelaycastWsClient::run and map_ws_event intact
 - **Reasoning:** wrap mode (agent-relay-broker wrap) shares connect_relay -> MultiWorkspaceSession -> RelaycastWsClient::run -> ws_inbound_rx and legitimately uses the firehose for single-agent PTY injection; removing the WS connection would break wrap. Scope limited to the broker fleet runtime firehose consumer.
 
@@ -31,7 +33,8 @@ Removed dead broker-runtime firehose delivery path for node-only delivery: delet
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Remove fleet_mode_enabled field entirely (only reader was the firehose drop) and gut the firehose delivery: stop RelaycastWsClient connecting to /v1/ws and strip the map_ws_event injection body from handle_relaycast_message: Remove fleet_mode_enabled field entirely (only reader was the firehose drop) and gut the firehose delivery: stop RelaycastWsClient connecting to /v1/ws and strip the map_ws_event injection body from handle_relaycast_message
 - Kept RelaycastWsClient::run and map_ws_event intact: Kept RelaycastWsClient::run and map_ws_event intact

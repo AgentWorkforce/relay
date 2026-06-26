@@ -18,6 +18,7 @@ Applied 6 adversarial-review correctness fixes to broker node-only delivery: HTT
 ## Key Decisions
 
 ### Route action.completed/action.failed/action.denied (seq-0 fan-out) to Inject; keep message.reacted/read ack-only
+
 - **Chose:** Route action.completed/action.failed/action.denied (seq-0 fan-out) to Inject; keep message.reacted/read ack-only
 - **Reasoning:** Engine invocationCompletion.ts emits action.completed/action.failed to caller_id; routes/action.ts emits action.denied; all seq:0 via sendNodeDeliveriesToAgents
 
@@ -26,6 +27,7 @@ Applied 6 adversarial-review correctness fixes to broker node-only delivery: HTT
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Route action.completed/action.failed/action.denied (seq-0 fan-out) to Inject; keep message.reacted/read ack-only: Route action.completed/action.failed/action.denied (seq-0 fan-out) to Inject; keep message.reacted/read ack-only

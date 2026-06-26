@@ -19,6 +19,7 @@ Fixed node-delivery payload.data extraction and widened message-alias classifica
 ## Key Decisions
 
 ### Read node deliver fields from payload.data envelope and widened message-alias classification
+
 - **Chose:** Read node deliver fields from payload.data envelope and widened message-alias classification
 - **Reasoning:** Mirrors relaycast 5.0.1 normalize_node_deliver (data.text/channel_name/agent_name/from_name/thread_id) and parse_inbound_kind alias set; legacy flat fallbacks retained
 
@@ -27,7 +28,8 @@ Fixed node-delivery payload.data extraction and widened message-alias classifica
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Read node deliver fields from payload.data envelope and widened message-alias classification: Read node deliver fields from payload.data envelope and widened message-alias classification
 

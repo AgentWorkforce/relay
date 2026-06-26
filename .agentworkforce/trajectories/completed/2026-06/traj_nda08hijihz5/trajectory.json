@@ -46,9 +46,7 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "715d8b7e"
-  ],
+  "commits": ["715d8b7e"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_nda08hijihz5/trajectory.json",
     "crates/broker/src/runtime/fleet.rs",
