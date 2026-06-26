@@ -1103,20 +1103,44 @@ where
     S::Error: std::error::Error + Send + Sync + 'static,
 {
     let request_id = reply.id.clone();
-    let Some(pending) = pending_agent_registrations.remove(&request_id) else {
-        tracing::warn!(
+    // The engine replies to every node-control request (`node.register`,
+    // `inventory.sync`, ...) with a `reply` frame, but only `agent.register`
+    // replies correspond to a pending registration. Those non-agent replies
+    // carry a fresh engine-minted snowflake id (the broker sends those frames
+    // without an `id`), so they never match `request_id`. To stay robust we:
+    //   1. match on the echoed request id (the happy path), then
+    //   2. fall back to matching the validated reply `data.name` against a
+    //      pending entry (covers an engine that drops/regenerates the id), and
+    //   3. treat a reply that resolves to neither as a non-agent reply and log
+    //      it at debug — never a spurious "did not match" warning.
+    let data = reply.validate_agent_register_data().ok();
+    let resolved = pending_agent_registrations
+        .remove(&request_id)
+        .map(|pending| (request_id.clone(), pending))
+        .or_else(|| {
+            let name = data.as_ref()?.name.as_deref()?;
+            let key = pending_agent_registrations
+                .iter()
+                .find(|(_, pending)| pending.name == name)
+                .map(|(key, _)| key.clone())?;
+            pending_agent_registrations
+                .remove(&key)
+                .map(|pending| (key, pending))
+        });
+    let Some((request_id, pending)) = resolved else {
+        tracing::debug!(
             target = "relay_broker::fleet",
             id = %request_id,
-            "agent.register reply did not match a pending registration"
+            "node-control reply did not match a pending agent.register (likely a node.register/inventory.sync reply)"
         );
         return true;
     };
-    let data = match reply.validate_agent_register_data() {
-        Ok(data) => data,
-        Err(error) => {
+    let data = match data {
+        Some(data) => data,
+        None => {
             let _ = pending
                 .reply
-                .send(Err(format!("invalid_agent_register_reply_data: {error}")));
+                .send(Err("invalid_agent_register_reply_data".to_string()));
             return true;
         }
     };
@@ -1517,6 +1541,83 @@ mod tests {
             reply_rx.try_recv(),
             Ok(Err(reason)) if reason == "agent_register_pending_expired"
         ));
+    }
+
+    #[tokio::test]
+    async fn complete_agent_registration_matches_pending_by_name_when_id_differs() {
+        // The engine reply carries a snowflake id that does not echo the
+        // broker's request id, but it does carry `data.name`. The broker must
+        // still correlate the reply to the pending registration by name rather
+        // than emitting a spurious "did not match" warning.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let mut pending = HashMap::from([(
+            "agent_register_req".to_string(),
+            PendingAgentRegistration {
+                name: "agent-a".to_string(),
+                reply: reply_tx,
+                created_at: Instant::now(),
+            },
+        )]);
+        let mut sink = futures_util::sink::drain();
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "196331520553345024".to_string(),
+            ok: true,
+            data: json!({
+                "name": "agent-a",
+                "agent_id": "agt-1",
+                "token": "at_test"
+            }),
+        };
+
+        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        assert!(
+            pending.is_empty(),
+            "the pending registration must be consumed by the name-based fallback"
+        );
+        assert_eq!(
+            reply_rx.await.unwrap().unwrap(),
+            AgentRegistrationToken {
+                name: "agent-a".to_string(),
+                agent_id: "agt-1".to_string(),
+                token: "at_test".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_agent_registration_ignores_non_agent_reply() {
+        // A `node.register`/`inventory.sync` reply carries a fresh engine
+        // snowflake id and no agent-register-shaped data, so it resolves to no
+        // pending registration. It must be ignored (debug, not warn) and must
+        // not disturb an unrelated in-flight agent registration.
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+        let mut pending = HashMap::from([(
+            "agent_register_req".to_string(),
+            PendingAgentRegistration {
+                name: "agent-a".to_string(),
+                reply: reply_tx,
+                created_at: Instant::now(),
+            },
+        )]);
+        let mut sink = futures_util::sink::drain();
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "196331520553345024".to_string(),
+            ok: true,
+            data: json!({ "node_id": "node-test", "online": true }),
+        };
+
+        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        assert_eq!(
+            pending.len(),
+            1,
+            "an unrelated reply must not consume a pending agent registration"
+        );
+        assert!(
+            matches!(reply_rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "the pending registration must remain in flight"
+        );
     }
 
     #[test]
