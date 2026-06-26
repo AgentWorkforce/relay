@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "9.1.2",
+  "version": "9.1.3",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
@@ -43,12 +43,12 @@
     "pack:validate": "npm pack --dry-run"
   },
   "dependencies": {
-    "@agent-relay/cloud": "9.1.2",
-    "@agent-relay/config": "9.1.2",
-    "@agent-relay/fleet": "9.1.2",
-    "@agent-relay/harness-driver": "9.1.2",
-    "@agent-relay/sdk": "9.1.2",
-    "@agent-relay/utils": "9.1.2",
+    "@agent-relay/cloud": "9.1.3",
+    "@agent-relay/config": "9.1.3",
+    "@agent-relay/fleet": "9.1.3",
+    "@agent-relay/harness-driver": "9.1.3",
+    "@agent-relay/sdk": "9.1.3",
+    "@agent-relay/utils": "9.1.3",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/sdk": "^4.1.6",
     "@relayflows/cli": "^1.0.1",
