@@ -31,15 +31,14 @@ use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
     build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
     clear_pending_delivery_if_event_matches, continuity_dir,
-    delivery_read_ack_is_relaycast_message, delivery_retry_interval, display_target_for_dashboard,
-    drop_pending_for_worker, emit_delivery_attempt_outcome, emit_dropped_delivery_failures,
-    ensure_ephemeral_paths, extract_mcp_message_ids, http_api_event_emit_timeout,
-    http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
-    is_relaycast_self_control_target, is_unknown_worker_error_message, load_pending_deliveries,
-    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, normalize_channel,
-    normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
-    persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
-    relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
+    delivery_read_ack_is_relaycast_message, delivery_retry_interval, drop_pending_for_worker,
+    emit_delivery_attempt_outcome, emit_dropped_delivery_failures, ensure_ephemeral_paths,
+    extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
+    http_api_relaycast_send_timeout, is_relaycast_self_control_target,
+    is_unknown_worker_error_message, load_pending_deliveries, mark_delivery_read_ack,
+    mark_delivery_read_ack_with_timeout, normalize_channel, normalize_initial_task,
+    normalize_sender, parse_sort_key_from_raw_timestamp, persist_pending_on_shutdown,
+    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
     relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
     retry_pending_delivery, seed_supplied_agent_token, send_broker_event,
     sender_is_dashboard_label, should_clear_pending_delivery_for_event,
@@ -693,69 +692,6 @@ fn exit_after_task_instruction_appends_clean_exit_contract() {
 }
 
 #[test]
-fn relaycast_control_dedup_key_prefers_event_id() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "event_id": "evt_123",
-        "agent": { "name": "worker-a", "cli": "claude", "task": "Ship it" }
-    });
-
-    assert_eq!(
-        relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
-        Some("control:ws_1:agent.spawn_requested:evt_123".to_string())
-    );
-}
-
-#[test]
-fn relaycast_control_dedup_key_prefers_spawn_token_for_spawn_requests() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "event_id": "evt_123",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it",
-            "token": "at_live_worker"
-        }
-    });
-
-    assert_eq!(
-        relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
-        Some("control:ws_1:agent.spawn_requested:at_live_worker".to_string())
-    );
-}
-
-#[test]
-fn relaycast_control_dedup_key_falls_back_to_agent_name_for_spawn_requests() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it"
-        }
-    });
-
-    assert_eq!(
-        relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
-        Some("control:ws_1:agent.spawn_requested:worker-a".to_string())
-    );
-}
-
-#[test]
-fn relaycast_control_dedup_key_falls_back_to_serialized_payload() {
-    let value = json!({
-        "type": "agent.release_requested",
-        "agent": { "name": "worker-a" }
-    });
-
-    let key = relaycast_ws_control_dedup_key("ws_1", "agent.release_requested", &value)
-        .expect("fallback dedup key");
-    assert!(key.starts_with("control:ws_1:agent.release_requested:{"));
-    assert!(key.contains("\"worker-a\""));
-}
-
-#[test]
 fn relaycast_ws_spawn_token_extracts_agent_token() {
     let value = json!({
         "type": "agent.spawn_requested",
@@ -773,17 +709,9 @@ fn relaycast_ws_spawn_token_extracts_agent_token() {
 
 #[test]
 fn relaycast_ws_spawn_name_only_control_key_skips_second_name_dedup() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it"
-        }
-    });
-
-    let control_key = relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value)
-        .expect("control dedup key");
+    // A control key keyed on the agent name matches the local spawn-echo key,
+    // so the second (name-based) dedup must NOT fire.
+    let control_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
     let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
 
     assert_eq!(control_key, local_key);
@@ -795,18 +723,9 @@ fn relaycast_ws_spawn_name_only_control_key_skips_second_name_dedup() {
 
 #[test]
 fn relaycast_ws_spawn_event_id_echo_still_uses_local_name_dedup() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "event_id": "evt_123",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it"
-        }
-    });
-
-    let control_key = relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value)
-        .expect("control dedup key");
+    // A control key keyed on an event id differs from the name-based local
+    // spawn-echo key, so the local dedup must still apply.
+    let control_key = "control:ws_1:agent.spawn_requested:evt_123".to_string();
     let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
 
     assert_ne!(control_key, local_key);
@@ -1286,27 +1205,6 @@ fn sender_is_dashboard_label_accepts_legacy_dashboard_senders() {
 }
 
 #[test]
-fn display_target_for_dashboard_maps_self_identity() {
-    let mut self_names = HashSet::new();
-    self_names.insert("broker-951762d5".to_string());
-    self_names.insert("DashProbe".to_string());
-    let primary = "my-project";
-
-    assert_eq!(
-        display_target_for_dashboard("broker-951762d5", &self_names, primary),
-        "my-project"
-    );
-    assert_eq!(
-        display_target_for_dashboard("dashprobe", &self_names, primary),
-        "my-project"
-    );
-    assert_eq!(
-        display_target_for_dashboard("Lead", &self_names, primary),
-        "Lead".to_string()
-    );
-}
-
-#[test]
 fn delivery_retry_interval_uses_default_and_env_override() {
     let _guard = env_test_lock().lock().expect("env test lock");
     std::env::remove_var("AGENT_RELAY_DELIVERY_RETRY_MS");
@@ -1579,19 +1477,15 @@ async fn confirmed_delivery_read_ack_marks_relaycast_exactly_once() {
         }));
     });
     let spawn_mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/spawn");
+        when.method(POST).path("/v1/agents");
         then.status(200).json_body(json!({
             "ok": true,
             "data": {
-                "agent": {
-                    "id": "agent_fresh_wrong",
-                    "name": "recipient",
-                    "type": "agent",
-                    "status": "online",
-                    "created_at": "2026-06-08T10:00:00.000Z",
-                    "last_seen": "2026-06-08T10:00:00.000Z",
-                    "metadata": {}
-                },
+                "id": "agent_fresh_wrong",
+                "workspace_id": "ws_fresh_wrong",
+                "name": "recipient",
+                "status": "online",
+                "created_at": "2026-06-08T10:00:00.000Z",
                 "token": "at_live_fresh_wrong"
             }
         }));
@@ -1659,19 +1553,15 @@ async fn duplicate_delivery_read_ack_suppresses_repeat_mark_read() {
         }));
     });
     let spawn_mock = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/spawn");
+        when.method(POST).path("/v1/agents");
         then.status(200).json_body(json!({
             "ok": true,
             "data": {
-                "agent": {
-                    "id": "agent_fresh_wrong",
-                    "name": "recipient",
-                    "type": "agent",
-                    "status": "online",
-                    "created_at": "2026-06-08T10:00:00.000Z",
-                    "last_seen": "2026-06-08T10:00:00.000Z",
-                    "metadata": {}
-                },
+                "id": "agent_fresh_wrong",
+                "workspace_id": "ws_fresh_wrong",
+                "name": "recipient",
+                "status": "online",
+                "created_at": "2026-06-08T10:00:00.000Z",
                 "token": "at_live_fresh_wrong"
             }
         }));

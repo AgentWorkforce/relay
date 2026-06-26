@@ -8,7 +8,7 @@ use crate::ids::{AgentId, WorkspaceAlias, WorkspaceId};
 
 use super::{
     auth::{AuthClient, AuthSessionSet},
-    ws::{RelaycastHttpClient, RelaycastWsClient, WsControl},
+    ws::{RelaycastHttpClient, WsControl},
 };
 
 #[derive(Debug, Clone)]
@@ -41,13 +41,13 @@ impl MultiWorkspaceSession {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         http_base: Option<String>,
-        ws_base: Option<String>,
+        _ws_base: Option<String>,
         _auth: AuthClient,
         sessions: AuthSessionSet,
-        channels: Vec<String>,
+        _channels: Vec<String>,
         read_mcp_identity: bool,
         runtime_cwd: &std::path::Path,
-        events: EventEmitter,
+        _events: EventEmitter,
     ) -> Self {
         let (merged_tx, inbound_rx) = mpsc::channel(1024);
         let mut handles = Vec::with_capacity(sessions.memberships.len());
@@ -98,34 +98,21 @@ impl MultiWorkspaceSession {
             );
             http_client.seed_agent_token(&self_name, &self_token);
 
-            let (workspace_tx, mut workspace_rx) = mpsc::channel(512);
-            let (ws_control_tx, ws_control_rx) = mpsc::channel(8);
-            let ws_client =
-                RelaycastWsClient::new(ws_base.clone(), http_client.clone(), channels.clone());
-            let merged_tx_clone = merged_tx.clone();
-            let workspace_id_clone = workspace_id.clone();
-            let workspace_alias_clone = workspace_alias.clone();
+            // Node-only delivery (v5.0.1): messages flow over /v1/node/ws and are
+            // injected by the fleet handlers. The legacy `/v1/ws` workspace-stream
+            // WebSocket is observer-only and rejects the broker's workspace key
+            // (HTTP 401), so it is no longer opened. The inbound channel is kept as
+            // an inert empty source — nothing produces `WorkspaceInboundMessage`
+            // frames now — and the control channel is drained so `WsControl` sends
+            // from the runtime/wrap paths never block or error.
+            let (ws_control_tx, mut ws_control_rx) = mpsc::channel(8);
+            // Hold a sender clone for the lifetime of the drain task so the merged
+            // inbound channel stays open (its receiver never observes a spurious
+            // close), while the control channel is drained to a no-op.
+            let inbound_keepalive = merged_tx.clone();
             tokio::spawn(async move {
-                while let Some(value) = workspace_rx.recv().await {
-                    if merged_tx_clone
-                        .send(WorkspaceInboundMessage {
-                            workspace_id: workspace_id_clone.clone(),
-                            workspace_alias: workspace_alias_clone.clone(),
-                            value,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-
-            let workspace_events = events.clone();
-            tokio::spawn(async move {
-                ws_client
-                    .run(workspace_tx, ws_control_rx, workspace_events)
-                    .await;
+                let _inbound_keepalive = inbound_keepalive;
+                while ws_control_rx.recv().await.is_some() {}
             });
 
             handles.push(WorkspaceSessionHandle {

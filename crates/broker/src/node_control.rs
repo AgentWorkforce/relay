@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     path::Path,
     time::{Duration, Instant},
@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use uuid::Uuid;
@@ -26,14 +27,127 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
+/// How many consecutive `/v1/node/ws` 401s to tolerate (each triggering a
+/// re-mint) before giving up and surfacing a hard error instead of looping.
+const MAX_UNAUTHORIZED_BEFORE_GIVING_UP: u32 = 5;
 
-#[derive(Debug, Clone, PartialEq)]
+/// Whether a fresh re-mint should still be attempted at this consecutive-401
+/// count. The count is incremented for the current 401 *before* this is called,
+/// so the very first 401 (count 1) is still within budget. Crucially this is
+/// independent of whether prior mints succeeded — the loop only resets the count
+/// when a connection actually establishes — so N consecutive 401s trip the cap
+/// even when every mint succeeds.
+fn should_attempt_remint(consecutive_unauthorized: u32) -> bool {
+    consecutive_unauthorized <= MAX_UNAUTHORIZED_BEFORE_GIVING_UP
+}
+
+#[derive(Clone)]
 pub(crate) struct FleetControlConfig {
     pub(crate) ws_url: String,
     pub(crate) node_token: Option<String>,
     pub(crate) node_id: String,
     pub(crate) node_name: String,
     pub(crate) broker_version: String,
+    /// Optional facility to re-mint a node token when the engine rejects the
+    /// current one with HTTP 401 on the `/v1/node/ws` handshake. Absent in tests
+    /// and when no workspace `RelayCast` client is available.
+    pub(crate) token_minter: Option<NodeTokenMinter>,
+}
+
+/// Re-mints a fresh node token via `RelayCast::create_node` and rewrites the
+/// workspace-scoped cache, used to recover from a stale/rejected cached token
+/// (HTTP 401 on the node-control handshake) instead of looping forever on the
+/// same token. Mirrors the initial mint wired in `runtime::init::resolve_node_token`.
+#[derive(Clone)]
+pub(crate) struct NodeTokenMinter {
+    pub(crate) relay_client: relaycast::RelayCast,
+    pub(crate) workspace_id: String,
+    pub(crate) base_url: Option<String>,
+    pub(crate) node_id: String,
+    pub(crate) node_name: String,
+    pub(crate) broker_version: String,
+    /// Path of the persisted, workspace-scoped token cache (`None` when the data
+    /// dir is unavailable; the freshly minted token is still used in memory).
+    pub(crate) token_path: Option<std::path::PathBuf>,
+}
+
+impl NodeTokenMinter {
+    /// Discard the cached token for this workspace and mint a fresh one. Returns
+    /// the new token on success. On failure the caller surfaces a loud error and
+    /// backs off rather than looping on the rejected token.
+    async fn remint(&self) -> Option<String> {
+        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
+        // stale token behind for the next start.
+        if let Some(path) = self.token_path.as_deref() {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        error = %error,
+                        "failed to clear rejected node token cache before re-mint"
+                    );
+                }
+            }
+        }
+        let request = relaycast::CreateNodeRequest {
+            node_id: Some(self.node_id.clone()),
+            name: self.node_name.clone(),
+            kind: Some("ws".to_string()),
+            role: Some("broker".to_string()),
+            delivery_adapter: None,
+            delivery: None,
+            capabilities: None,
+            max_agents: None,
+            tags: None,
+            version: Some(self.broker_version.clone()),
+        };
+        match self.relay_client.create_node(request).await {
+            Ok(response) => {
+                let token = response.token.trim().to_string();
+                if token.is_empty() {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        "re-mint create_node returned an empty token"
+                    );
+                    return None;
+                }
+                if let Some(path) = self.token_path.as_deref() {
+                    if let Err(error) = persist_node_token(
+                        path,
+                        &self.node_id,
+                        &self.workspace_id,
+                        self.base_url.as_deref(),
+                        &token,
+                    ) {
+                        tracing::warn!(
+                            target = "relay_broker::fleet",
+                            node_id = %self.node_id,
+                            error = %error,
+                            "failed to persist re-minted node token"
+                        );
+                    }
+                }
+                tracing::info!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    workspace_id = %self.workspace_id,
+                    "re-minted node token after node-control 401"
+                );
+                Some(token)
+            }
+            Err(error) => {
+                tracing::error!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    error = %error,
+                    "failed to re-mint node token after node-control 401"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -128,10 +242,43 @@ pub(crate) enum DeliveryDecision {
     Gap { up_to_seq: u64 },
 }
 
+/// Per-agent set of recently-seen `msg_id`s, capped at a fixed size with FIFO
+/// eviction. Bounds memory: without this, the dedup set grows unbounded for the
+/// lifetime of a long-lived agent. `seq:0` fan-out frames (reactions, read
+/// receipts, action results) all share seq 0, so `msg_id`-based dedup is the
+/// only duplicate-suppression mechanism available for them; the cap is generous
+/// enough that legitimate same-frame retries are still recognized.
+#[derive(Debug, Default, Clone)]
+struct SeenMsgIds {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl SeenMsgIds {
+    const CAPACITY: usize = 512;
+
+    fn contains(&self, msg_id: &str) -> bool {
+        self.set.contains(msg_id)
+    }
+
+    fn insert(&mut self, msg_id: &str) {
+        if self.set.contains(msg_id) {
+            return;
+        }
+        if self.order.len() >= Self::CAPACITY {
+            if let Some(evicted) = self.order.pop_front() {
+                self.set.remove(&evicted);
+            }
+        }
+        self.set.insert(msg_id.to_string());
+        self.order.push_back(msg_id.to_string());
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct AgentDeliveryCursor {
     up_to_seq: u64,
-    seen_msg_ids: HashSet<String>,
+    seen_msg_ids: SeenMsgIds,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -146,6 +293,23 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn observe(&self, deliver: &Deliver) -> DeliveryDecision {
+        // `seq:0` is the engine's fan-out family (reactions, read receipts, and
+        // action.completed/action.failed/action.denied results delivered to the
+        // caller). These share seq 0, so they bypass the monotonic-sequence gate
+        // and are always surfaced-and-acked, with `msg_id` as the only duplicate
+        // suppression. The cumulative ack reports the current cursor (the engine
+        // ack is monotonic, so re-acking up_to_seq for a seq-0 frame is a no-op).
+        if deliver.seq == 0 {
+            let up_to_seq = self.agents.get(&deliver.agent).map_or(0, |c| c.up_to_seq);
+            if self
+                .agents
+                .get(&deliver.agent)
+                .is_some_and(|c| c.seen_msg_ids.contains(&deliver.msg_id))
+            {
+                return DeliveryDecision::Duplicate { up_to_seq };
+            }
+            return DeliveryDecision::Deliver { up_to_seq };
+        }
         let Some(cursor) = self.agents.get(&deliver.agent) else {
             return if deliver.seq == 1 {
                 DeliveryDecision::Deliver { up_to_seq: 1 }
@@ -178,8 +342,14 @@ impl FleetDeliveryBook {
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
         let cursor = self.agents.entry(deliver.agent.clone()).or_default();
+        // seq:0 fan-out frames never advance the sequence cursor; they are
+        // deduped purely by msg_id.
+        if deliver.seq == 0 {
+            cursor.seen_msg_ids.insert(&deliver.msg_id);
+            return cursor.up_to_seq;
+        }
         if deliver.seq == cursor.up_to_seq.saturating_add(1) {
-            cursor.seen_msg_ids.insert(deliver.msg_id.clone());
+            cursor.seen_msg_ids.insert(&deliver.msg_id);
             cursor.up_to_seq = deliver.seq;
         }
         cursor.up_to_seq
@@ -237,6 +407,14 @@ impl HandlerDispatchState {
 
     pub(crate) fn handlers_live(&self) -> bool {
         self.sidecar_connected && !self.handlers.is_empty()
+    }
+
+    /// Whether the connected sidecar registered a handler for `action`. Used to
+    /// decide whether a `spawn:<harness>` node action should be dispatched to the
+    /// sidecar (which owns the declared harness) rather than run directly with the
+    /// raw `cli` from the action input.
+    pub(crate) fn has_handler(&self, action: &str) -> bool {
+        self.sidecar_connected && self.handlers.contains(action)
     }
 
     pub(crate) fn has_in_flight(&self) -> bool {
@@ -380,7 +558,13 @@ pub(crate) fn default_node_name(cli_name: Option<&str>) -> String {
         .unwrap_or_else(|| "relay-node".to_string())
 }
 
-pub(crate) fn load_or_create_node_id(path: &Path) -> Result<String> {
+/// Load (or create) the stable per-machine seed persisted at `path`.
+///
+/// The seed file (`machine-id`) is a stable identifier for the host. It is
+/// reused across runs and across every broker on the machine; the per-broker
+/// node id is then derived from this seed plus the broker's working directory
+/// via [`derive_node_id`].
+pub(crate) fn load_or_create_machine_seed(path: &Path) -> Result<String> {
     if let Ok(existing) = fs::read_to_string(path) {
         let existing = existing.trim();
         if !existing.is_empty() {
@@ -391,18 +575,173 @@ pub(crate) fn load_or_create_node_id(path: &Path) -> Result<String> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create node id dir {}", parent.display()))?;
     }
-    let id = format!("node_{}", Uuid::new_v4().simple());
-    fs::write(path, format!("{id}\n"))
+    let seed = format!("node_{}", Uuid::new_v4().simple());
+    fs::write(path, format!("{seed}\n"))
         .with_context(|| format!("failed to write node id file {}", path.display()))?;
-    Ok(id)
+    Ok(seed)
+}
+
+/// Derive a node id from a stable machine `seed` and the broker's working
+/// directory `cwd`.
+///
+/// The engine scopes nodes globally, so a single host that runs brokers for
+/// two different workspaces (each in its own per-project working directory)
+/// must present a distinct node id per broker — otherwise the second
+/// `create_node` collides with the first. Deriving the id from
+/// `(seed, cwd)` keeps it:
+///
+/// - **stable across restarts** in the same working directory, and
+/// - **distinct across different working directories** on the same machine.
+///
+/// The result has the same `node_<32 hex>` shape as a freshly minted id.
+pub(crate) fn derive_node_id(seed: &str, cwd: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(cwd.as_bytes());
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .fold(String::with_capacity(64), |mut acc, byte| {
+            acc.push_str(&format!("{byte:02x}"));
+            acc
+        });
+    format!("node_{}", &hex[..32])
+}
+
+/// Resolve the node id for this broker: load (or create) the machine seed at
+/// `seed_path`, then derive a per-working-directory node id from it.
+///
+/// The working directory is read from [`std::env::current_dir`] and
+/// canonicalized when possible so equivalent paths resolve to the same id. If
+/// the cwd cannot be read, the id is derived from the seed alone rather than
+/// panicking (every broker on the host then shares one id, matching the old
+/// global-machine-id behavior).
+pub(crate) fn load_or_create_node_id(seed_path: &Path) -> Result<String> {
+    let seed = load_or_create_machine_seed(seed_path)?;
+    let cwd = std::env::current_dir()
+        .map(|path| {
+            std::fs::canonicalize(&path)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_default();
+    Ok(derive_node_id(&seed, &cwd))
 }
 
 pub(crate) fn default_node_id_path() -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join("agent-relay").join("machine-id"))
 }
 
+/// Path to the persisted node token for a given `node_id`. The cache is scoped
+/// per node id (which is itself derived per machine + working directory) so two
+/// brokers on the same host never overwrite each other's cached token. The id is
+/// `node_<32hex>` and thus already filename-safe, but it is sanitized defensively
+/// so an unexpected value can never escape the cache directory.
+pub(crate) fn default_node_token_path(node_id: &str) -> Option<std::path::PathBuf> {
+    let file = format!("{}.json", sanitize_node_id_for_filename(node_id));
+    dirs::data_local_dir().map(|dir| dir.join("agent-relay").join("node-tokens").join(file))
+}
+
+/// Map a `node_id` to a filename-safe stem: keep ASCII alphanumerics, `-` and
+/// `_`; replace anything else (including path separators) with `_`. Empty input
+/// falls back to `node` so the path always has a stem.
+fn sanitize_node_id_for_filename(node_id: &str) -> String {
+    let sanitized: String = node_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "node".to_string()
+    } else {
+        sanitized
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedNodeToken {
+    node_id: String,
+    /// Workspace this token was minted for. A node token is only valid against
+    /// the workspace (and engine) that issued it, so a token cached for
+    /// workspace A must never be reused against workspace B.
+    workspace_id: String,
+    /// Engine base URL the token was minted against (when known). Switching
+    /// `RELAYCAST_BASE_URL`/`with_base_url` re-mints. Optional for forward and
+    /// backward compatibility with caches written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
+    token: String,
+}
+
+/// Load a previously minted node token, but only if it was minted for the same
+/// `node_id` AND the same `workspace_id` (and, when both sides know it, the same
+/// engine `base_url`). A `node_id` mismatch means the machine id rotated; a
+/// `workspace_id`/`base_url` mismatch means the cached token was minted for a
+/// different workspace or engine and would be rejected with HTTP 401. In every
+/// mismatch case the cache is ignored and the caller mints a fresh token.
+pub(crate) fn load_node_token(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let persisted: PersistedNodeToken = serde_json::from_str(&raw).ok()?;
+    if persisted.node_id != node_id {
+        return None;
+    }
+    if persisted.workspace_id != workspace_id {
+        return None;
+    }
+    // Only enforce the base URL when both the cache and the current run carry
+    // one; a cache written before base_url existed (None) stays usable so long
+    // as the workspace matches.
+    if let (Some(cached), Some(current)) = (persisted.base_url.as_deref(), base_url) {
+        if cached != current {
+            return None;
+        }
+    }
+    let token = persisted.token.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+/// Persist a minted node token next to the node id, scoped to `node_id`,
+/// `workspace_id` and the engine `base_url` so an id rotation, a different
+/// workspace, or a different engine all invalidate it. Failures are surfaced as
+/// `Err` but are non-fatal to startup — the caller logs and continues with the
+/// in-memory token.
+pub(crate) fn persist_node_token(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
+    }
+    let body = serde_json::to_string(&PersistedNodeToken {
+        node_id: node_id.to_string(),
+        workspace_id: workspace_id.to_string(),
+        base_url: base_url.map(ToOwned::to_owned),
+        token: token.to_string(),
+    })
+    .context("failed to serialize node token")?;
+    fs::write(path, body)
+        .with_context(|| format!("failed to write node token file {}", path.display()))?;
+    Ok(())
+}
+
 pub(crate) async fn run_node_control_client(
-    config: FleetControlConfig,
+    mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
     event_tx: mpsc::Sender<FleetControlEvent>,
 ) {
@@ -410,6 +749,13 @@ pub(crate) async fn run_node_control_client(
     let mut inventory: Vec<InventoryAgent> = Vec::new();
     let mut load = FleetLoadSnapshot::default();
     let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
+    // Bound re-minting so a persistently-rejecting engine can't spin a tight
+    // mint loop. This counter increments on every consecutive `/v1/node/ws` 401
+    // and only resets once a connection actually establishes (the `Disconnected`
+    // arm below) — NOT on a successful re-mint. So repeated 401s accumulate
+    // toward [`MAX_UNAUTHORIZED_BEFORE_GIVING_UP`] even when each mint succeeds,
+    // and each retry honors the backoff sleep at the bottom of the loop.
+    let mut consecutive_unauthorized: u32 = 0;
 
     loop {
         while registration.is_none() {
@@ -492,7 +838,52 @@ pub(crate) async fn run_node_control_client(
         }
         if matches!(result, ControlRunResult::Deregistered) {
             reconnect_delay = INITIAL_RECONNECT_DELAY;
+            consecutive_unauthorized = 0;
             continue;
+        }
+        if matches!(result, ControlRunResult::Disconnected) {
+            // A real connection was established and then dropped, so the current
+            // token authenticated successfully. Reset the 401 counter only here —
+            // NOT after a successful re-mint — so a tight loop where each mint
+            // succeeds but the engine keeps 401-ing `/v1/node/ws` still
+            // accumulates toward the cap instead of resetting on every iteration.
+            consecutive_unauthorized = 0;
+        }
+        if matches!(result, ControlRunResult::Unauthorized) {
+            // The engine rejected our current node token. Re-mint a fresh one
+            // (bounded) rather than reconnecting forever on the rejected token.
+            consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
+            if let Some(minter) = config.token_minter.as_ref() {
+                if should_attempt_remint(consecutive_unauthorized) {
+                    if let Some(fresh) = minter.remint().await {
+                        // Install the fresh token and retry, but fall through to
+                        // the shared backoff sleep at the bottom of the loop
+                        // rather than `continue`-ing past it. The delay throttles
+                        // the next connect attempt so a server that 401s every
+                        // freshly minted token can't be hammered. The counter is
+                        // intentionally NOT reset here; it only resets once a
+                        // connection actually establishes (the `Disconnected` arm
+                        // above), so repeated 401s still accumulate toward the cap
+                        // even when each mint succeeds.
+                        config.node_token = Some(fresh);
+                    }
+                } else {
+                    tracing::error!(
+                        target = "relay_broker::fleet",
+                        node_id = %config.node_id,
+                        attempts = consecutive_unauthorized,
+                        "NODE TOKEN REJECTED: re-mint kept failing after repeated node-control 401s; \
+                         realtime delivery is DISABLED. Check workspace key / engine connectivity."
+                    );
+                }
+            } else {
+                tracing::error!(
+                    target = "relay_broker::fleet",
+                    node_id = %config.node_id,
+                    "NODE TOKEN REJECTED (401) on node-control and no minter is available to recover; \
+                     realtime delivery is DISABLED until a valid RELAY_NODE_TOKEN is supplied."
+                );
+            }
         }
         let _ = event_tx.send(FleetControlEvent::Disconnected).await;
         tokio::time::sleep(reconnect_delay).await;
@@ -503,8 +894,23 @@ pub(crate) async fn run_node_control_client(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlRunResult {
     Disconnected,
+    /// The `/v1/node/ws` handshake was rejected with HTTP 401/Unauthorized,
+    /// i.e. the current node token is stale or scoped to a different
+    /// workspace/engine and must be re-minted before retrying.
+    Unauthorized,
     Deregistered,
     Shutdown,
+}
+
+/// True when a `connect_async` failure is an HTTP 401/Unauthorized handshake
+/// rejection — i.e. the node token was refused by the engine. Other transport
+/// errors (DNS, TCP, TLS, 5xx) are treated as ordinary disconnects.
+fn connect_error_is_unauthorized(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if response.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+    )
 }
 
 async fn run_connected_once(
@@ -544,6 +950,9 @@ async fn run_connected_once(
         Ok(connected) => connected,
         Err(error) => {
             tracing::warn!(target = "relay_broker::fleet", url = %config.ws_url, error = %error, "fleet node ws connect failed");
+            if connect_error_is_unauthorized(&error) {
+                return ControlRunResult::Unauthorized;
+            }
             return ControlRunResult::Disconnected;
         }
     };
@@ -752,20 +1161,44 @@ where
     S::Error: std::error::Error + Send + Sync + 'static,
 {
     let request_id = reply.id.clone();
-    let Some(pending) = pending_agent_registrations.remove(&request_id) else {
-        tracing::warn!(
+    // The engine replies to every node-control request (`node.register`,
+    // `inventory.sync`, ...) with a `reply` frame, but only `agent.register`
+    // replies correspond to a pending registration. Those non-agent replies
+    // carry a fresh engine-minted snowflake id (the broker sends those frames
+    // without an `id`), so they never match `request_id`. To stay robust we:
+    //   1. match on the echoed request id (the happy path), then
+    //   2. fall back to matching the validated reply `data.name` against a
+    //      pending entry (covers an engine that drops/regenerates the id), and
+    //   3. treat a reply that resolves to neither as a non-agent reply and log
+    //      it at debug — never a spurious "did not match" warning.
+    let data = reply.validate_agent_register_data().ok();
+    let resolved = pending_agent_registrations
+        .remove(&request_id)
+        .map(|pending| (request_id.clone(), pending))
+        .or_else(|| {
+            let name = data.as_ref()?.name.as_deref()?;
+            let key = pending_agent_registrations
+                .iter()
+                .find(|(_, pending)| pending.name == name)
+                .map(|(key, _)| key.clone())?;
+            pending_agent_registrations
+                .remove(&key)
+                .map(|pending| (key, pending))
+        });
+    let Some((request_id, pending)) = resolved else {
+        tracing::debug!(
             target = "relay_broker::fleet",
             id = %request_id,
-            "agent.register reply did not match a pending registration"
+            "node-control reply did not match a pending agent.register (likely a node.register/inventory.sync reply)"
         );
         return true;
     };
-    let data = match reply.validate_agent_register_data() {
-        Ok(data) => data,
-        Err(error) => {
+    let data = match data {
+        Some(data) => data,
+        None => {
             let _ = pending
                 .reply
-                .send(Err(format!("invalid_agent_register_reply_data: {error}")));
+                .send(Err("invalid_agent_register_reply_data".to_string()));
             return true;
         }
     };
@@ -875,11 +1308,59 @@ mod tests {
     use crate::fleet_wire::DeliveryMode;
 
     #[test]
+    fn derive_node_id_is_stable_for_same_seed_and_cwd() {
+        let a = derive_node_id("node_seed123", "/Users/will/Projects/relay");
+        let b = derive_node_id("node_seed123", "/Users/will/Projects/relay");
+        assert_eq!(a, b, "same (seed, cwd) must derive an identical node id");
+    }
+
+    #[test]
+    fn derive_node_id_differs_across_working_directories() {
+        let seed = "node_seed123";
+        let a = derive_node_id(seed, "/Users/will/Projects/workspace-a");
+        let b = derive_node_id(seed, "/Users/will/Projects/workspace-b");
+        assert_ne!(
+            a, b,
+            "different cwd on the same machine must derive distinct node ids"
+        );
+    }
+
+    #[test]
+    fn derive_node_id_differs_across_seeds() {
+        let cwd = "/Users/will/Projects/relay";
+        let a = derive_node_id("seed-a", cwd);
+        let b = derive_node_id("seed-b", cwd);
+        assert_ne!(
+            a, b,
+            "different machine seeds must derive distinct node ids"
+        );
+    }
+
+    #[test]
+    fn derive_node_id_has_node_prefix_and_32_hex_suffix() {
+        let id = derive_node_id("node_seed123", "/Users/will/Projects/relay");
+        let suffix = id
+            .strip_prefix("node_")
+            .expect("derived node id must start with node_");
+        assert_eq!(suffix.len(), 32, "suffix must be 32 hex chars");
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix must be lowercase hex: {suffix}"
+        );
+        assert!(
+            suffix.chars().all(|c| !c.is_ascii_uppercase()),
+            "suffix must be lowercase hex: {suffix}"
+        );
+    }
+
+    #[test]
     fn delivery_book_dedups_and_tracks_cumulative_ack() {
         let mut book = FleetDeliveryBook::default();
         let first = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-1".to_string(),
             msg_id: "msg-1".to_string(),
             seq: 1,
             mode: DeliveryMode::Wait,
@@ -921,6 +1402,8 @@ mod tests {
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-43".to_string(),
             msg_id: "msg-43".to_string(),
             seq: 43,
             mode: DeliveryMode::Steer,
@@ -940,6 +1423,8 @@ mod tests {
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-1".to_string(),
             msg_id: "msg-1".to_string(),
             seq: 1,
             mode: DeliveryMode::Wait,
@@ -968,6 +1453,8 @@ mod tests {
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-1".to_string(),
             msg_id: "msg-1".to_string(),
             seq: 1,
             mode: DeliveryMode::Wait,
@@ -984,6 +1471,107 @@ mod tests {
             book.observe(&deliver),
             DeliveryDecision::Deliver { up_to_seq: 1 }
         );
+    }
+
+    #[test]
+    fn delivery_book_surfaces_seq_zero_fanout_without_advancing_cursor() {
+        let mut book = FleetDeliveryBook::default();
+        book.seed_ack("agent-a", 5);
+
+        // A seq:0 fan-out frame (e.g. action.completed) is always surfaced,
+        // bypassing the monotonic-sequence gate, and acks the current cursor.
+        let fanout = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "evt_action_completed".to_string(),
+            msg_id: "inv-1".to_string(),
+            seq: 0,
+            mode: DeliveryMode::Wait,
+            payload: json!({"type": "action.completed"}),
+        };
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Deliver { up_to_seq: 5 }
+        );
+        // Committing a seq:0 frame does not move the cumulative cursor.
+        assert_eq!(book.commit_delivered(&fanout), 5);
+
+        // The same msg_id is suppressed as a duplicate (seq stays 0).
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Duplicate { up_to_seq: 5 }
+        );
+
+        // A different seq:0 msg_id surfaces again.
+        let other = Deliver {
+            msg_id: "inv-2".to_string(),
+            ..fanout.clone()
+        };
+        assert_eq!(
+            book.observe(&other),
+            DeliveryDecision::Deliver { up_to_seq: 5 }
+        );
+
+        // Sequenced delivery still works normally after seq:0 traffic.
+        let seq6 = Deliver {
+            msg_id: "msg-6".to_string(),
+            seq: 6,
+            ..fanout
+        };
+        assert_eq!(
+            book.observe(&seq6),
+            DeliveryDecision::Deliver { up_to_seq: 6 }
+        );
+        assert_eq!(book.commit_delivered(&seq6), 6);
+    }
+
+    #[test]
+    fn delivery_book_surfaces_seq_zero_for_unknown_agent() {
+        let mut book = FleetDeliveryBook::default();
+        // First-ever frame for an agent may be a seq:0 fan-out (no cursor yet).
+        let fanout = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-new".to_string(),
+            agent_id: "agent-new-id".to_string(),
+            delivery_id: "evt_reacted".to_string(),
+            msg_id: "react-1".to_string(),
+            seq: 0,
+            mode: DeliveryMode::Wait,
+            payload: json!({"type": "message.reacted"}),
+        };
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Deliver { up_to_seq: 0 }
+        );
+        assert_eq!(book.commit_delivered(&fanout), 0);
+        assert_eq!(
+            book.observe(&fanout),
+            DeliveryDecision::Duplicate { up_to_seq: 0 }
+        );
+    }
+
+    #[test]
+    fn seen_msg_ids_evicts_oldest_when_capacity_exceeded() {
+        let mut seen = SeenMsgIds::default();
+        for i in 0..(SeenMsgIds::CAPACITY + 10) {
+            seen.insert(&format!("msg-{i}"));
+        }
+        assert!(seen.order.len() <= SeenMsgIds::CAPACITY);
+        // The 10 oldest entries were evicted.
+        assert!(!seen.contains("msg-0"));
+        assert!(!seen.contains("msg-9"));
+        // The most recent entries are retained.
+        assert!(seen.contains(&format!("msg-{}", SeenMsgIds::CAPACITY + 9)));
+    }
+
+    #[test]
+    fn seen_msg_ids_reinsert_is_idempotent() {
+        let mut seen = SeenMsgIds::default();
+        seen.insert("dup");
+        seen.insert("dup");
+        assert_eq!(seen.order.len(), 1);
+        assert!(seen.contains("dup"));
     }
 
     #[test]
@@ -1013,6 +1601,86 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn complete_agent_registration_matches_pending_by_name_when_id_differs() {
+        // The engine reply carries a snowflake id that does not echo the
+        // broker's request id, but it does carry `data.name`. The broker must
+        // still correlate the reply to the pending registration by name rather
+        // than emitting a spurious "did not match" warning.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let mut pending = HashMap::from([(
+            "agent_register_req".to_string(),
+            PendingAgentRegistration {
+                name: "agent-a".to_string(),
+                reply: reply_tx,
+                created_at: Instant::now(),
+            },
+        )]);
+        let mut sink = futures_util::sink::drain();
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "196331520553345024".to_string(),
+            ok: true,
+            data: json!({
+                "name": "agent-a",
+                "agent_id": "agt-1",
+                "token": "at_test"
+            }),
+        };
+
+        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        assert!(
+            pending.is_empty(),
+            "the pending registration must be consumed by the name-based fallback"
+        );
+        assert_eq!(
+            reply_rx.await.unwrap().unwrap(),
+            AgentRegistrationToken {
+                name: "agent-a".to_string(),
+                agent_id: "agt-1".to_string(),
+                token: "at_test".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_agent_registration_ignores_non_agent_reply() {
+        // A `node.register`/`inventory.sync` reply carries a fresh engine
+        // snowflake id and no agent-register-shaped data, so it resolves to no
+        // pending registration. It must be ignored (debug, not warn) and must
+        // not disturb an unrelated in-flight agent registration.
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+        let mut pending = HashMap::from([(
+            "agent_register_req".to_string(),
+            PendingAgentRegistration {
+                name: "agent-a".to_string(),
+                reply: reply_tx,
+                created_at: Instant::now(),
+            },
+        )]);
+        let mut sink = futures_util::sink::drain();
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "196331520553345024".to_string(),
+            ok: true,
+            data: json!({ "node_id": "node-test", "online": true }),
+        };
+
+        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        assert_eq!(
+            pending.len(),
+            1,
+            "an unrelated reply must not consume a pending agent registration"
+        );
+        assert!(
+            matches!(
+                reply_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ),
+            "the pending registration must remain in flight"
+        );
+    }
+
     #[test]
     fn handler_dispatch_requires_live_registered_handler() {
         let mut state = HandlerDispatchState::default();
@@ -1021,6 +1689,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({"suite": "unit"}),
+            agent_id: None,
+            agent_name: None,
         };
 
         assert!(matches!(
@@ -1045,6 +1715,31 @@ mod tests {
     }
 
     #[test]
+    fn has_handler_gates_spawn_dispatch_on_sidecar_registration() {
+        // `has_handler` is the predicate that decides whether a `spawn:<harness>`
+        // node action is dispatched to the sidecar (which owns the declared
+        // harness) instead of being run directly with the raw `cli` from the
+        // action input. It is true only when the sidecar is connected AND
+        // registered a handler for that exact capability name.
+        let mut state = HandlerDispatchState::default();
+        // No sidecar connected: a spawn:* action has no declared harness, so the
+        // broker must take the direct raw-`cli` path.
+        assert!(!state.has_handler("spawn:claude"));
+
+        state.connect_sidecar();
+        state.register_handlers(vec!["spawn:claude".to_string(), "echo".to_string()]);
+        // The sidecar declared `spawn:claude` → dispatch to it so its
+        // `spawn(<harness>)` handler resolves the DECLARED harness.
+        assert!(state.has_handler("spawn:claude"));
+        // A capability the sidecar did not register stays on the direct path.
+        assert!(!state.has_handler("spawn:codex"));
+
+        // A dropped sidecar clears handlers, so spawn falls back to direct.
+        state.disconnect_sidecar();
+        assert!(!state.has_handler("spawn:claude"));
+    }
+
+    #[test]
     fn handler_unavailable_failure_clears_inflight_invocation() {
         let mut state = HandlerDispatchState::default();
         state.connect_sidecar();
@@ -1054,6 +1749,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({"suite": "unit"}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1084,6 +1781,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1116,6 +1815,8 @@ mod tests {
             invocation_id: "inv-err".to_string(),
             action: "run:test".to_string(),
             input: json!({}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1148,6 +1849,8 @@ mod tests {
             invocation_id: "inv-1".to_string(),
             action: "run:test".to_string(),
             input: json!({}),
+            agent_id: None,
+            agent_name: None,
         };
         assert!(matches!(
             state.handle_invoke(&invoke),
@@ -1207,6 +1910,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1225,6 +1929,8 @@ mod tests {
                 serde_json::to_string(&RelaycastToBroker::Deliver(Deliver {
                     v: FLEET_WIRE_VERSION,
                     agent: "agent-a".to_string(),
+                    agent_id: "agent-a-id".to_string(),
+                    delivery_id: "delivery-1".to_string(),
                     msg_id: "msg-1".to_string(),
                     seq: 1,
                     mode: DeliveryMode::Wait,
@@ -1243,6 +1949,8 @@ mod tests {
                     invocation_id: "inv-1".to_string(),
                     action: "run:test".to_string(),
                     input: json!({"suite": "unit"}),
+                    agent_id: None,
+                    agent_name: None,
                 }))
                 .unwrap(),
             ))
@@ -1313,6 +2021,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1437,6 +2146,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1543,6 +2253,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1601,6 +2312,7 @@ mod tests {
                 node_id: "node-test".to_string(),
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
+                token_minter: None,
             },
             command_rx,
             event_tx,
@@ -1699,5 +2411,176 @@ mod tests {
             tags: Some(vec!["test".to_string()]),
             version: Some("sidecar/test".to_string()),
         }
+    }
+
+    #[test]
+    fn load_node_token_round_trips_when_node_and_workspace_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_123",
+        )
+        .unwrap();
+
+        let loaded = load_node_token(&path, "node-a", "ws-a", Some("https://engine.test"));
+        assert_eq!(loaded.as_deref(), Some("nt_123"));
+    }
+
+    #[test]
+    fn load_node_token_returns_none_on_workspace_mismatch_even_when_node_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_123").unwrap();
+
+        // Same node id, different workspace: the cached token would be rejected
+        // with HTTP 401, so it must not be reused.
+        assert_eq!(load_node_token(&path, "node-a", "ws-b", None), None);
+        // Same workspace still round-trips.
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_123")
+        );
+    }
+
+    #[test]
+    fn load_node_token_returns_none_on_node_id_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_123").unwrap();
+
+        assert_eq!(load_node_token(&path, "node-b", "ws-a", None), None);
+    }
+
+    #[test]
+    fn load_node_token_returns_none_on_base_url_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", Some("https://engine.a"), "nt_123").unwrap();
+
+        // Switching engine base URL re-mints.
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", Some("https://engine.b")),
+            None
+        );
+        // A run that no longer knows its base URL still reuses on workspace match.
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_123")
+        );
+    }
+
+    #[test]
+    fn load_node_token_reuses_legacy_cache_without_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        // A cache written before base_url existed has no base_url field.
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_123").unwrap();
+
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", Some("https://engine.test")).as_deref(),
+            Some("nt_123")
+        );
+    }
+
+    #[test]
+    fn connect_error_is_unauthorized_detects_401_only() {
+        use tokio_tungstenite::tungstenite::http::{Response, StatusCode};
+        use tokio_tungstenite::tungstenite::Error as WsError;
+
+        let unauthorized = Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(None)
+            .unwrap();
+        assert!(connect_error_is_unauthorized(&WsError::Http(unauthorized)));
+
+        let forbidden = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(None)
+            .unwrap();
+        assert!(!connect_error_is_unauthorized(&WsError::Http(forbidden)));
+
+        assert!(!connect_error_is_unauthorized(&WsError::ConnectionClosed));
+    }
+
+    #[test]
+    fn default_node_token_path_is_scoped_per_node_id() {
+        // The cache file must carry the node id so two brokers on one host (each
+        // with a distinct per-cwd node id) never overwrite each other's token.
+        let a = default_node_token_path("node_aaaa");
+        let b = default_node_token_path("node_bbbb");
+        // When the data dir is unavailable both are None; skip in that case.
+        if let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) {
+            assert_ne!(a, b, "distinct node ids must map to distinct cache files");
+            assert!(a.ends_with("node_aaaa.json"));
+            assert!(b.ends_with("node_bbbb.json"));
+            // Same broker (same node id) is stable across calls/restarts.
+            assert_eq!(a, &default_node_token_path("node_aaaa").unwrap());
+            // Cache lives under a per-node directory, not a single global file.
+            assert!(a.parent().unwrap().ends_with("node-tokens"));
+        }
+    }
+
+    #[test]
+    fn sanitize_node_id_keeps_safe_chars_and_replaces_separators() {
+        // The canonical id is already filename-safe.
+        assert_eq!(
+            sanitize_node_id_for_filename("node_0123abcd-XY"),
+            "node_0123abcd-XY"
+        );
+        // Path separators and other unsafe chars are neutralized so the cache
+        // path can never escape the node-tokens directory.
+        assert_eq!(
+            sanitize_node_id_for_filename("../../etc/passwd"),
+            "______etc_passwd"
+        );
+        assert_eq!(sanitize_node_id_for_filename("a/b\\c"), "a_b_c");
+        // Empty input still yields a usable stem.
+        assert_eq!(sanitize_node_id_for_filename(""), "node");
+    }
+
+    #[test]
+    fn remint_cap_trips_after_n_consecutive_401s_even_when_mints_succeed() {
+        // Models the loop's counter discipline (Bug 3): the consecutive-401
+        // counter is incremented per 401 and only reset when a connection
+        // actually establishes — NEVER on a successful re-mint. So even if every
+        // mint succeeds, N consecutive 401s exhaust the budget and trip the cap.
+        let mut consecutive_unauthorized: u32 = 0;
+        let mint_always_succeeds = true;
+        let mut mints_attempted = 0u32;
+
+        // Simulate an unbroken run of 401s (no intervening `Disconnected`, so the
+        // counter is never reset).
+        loop {
+            consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
+            if should_attempt_remint(consecutive_unauthorized) {
+                // A mint is attempted and (per the scenario) succeeds — but the
+                // counter is deliberately NOT reset here.
+                assert!(mint_always_succeeds);
+                mints_attempted += 1;
+            } else {
+                // Budget exhausted: the loop would surface the loud "giving up"
+                // error instead of minting again.
+                break;
+            }
+            // Guard against a regression that loops forever.
+            assert!(consecutive_unauthorized <= MAX_UNAUTHORIZED_BEFORE_GIVING_UP + 2);
+        }
+
+        // The cap is reachable: minting stops after the budget is spent.
+        assert_eq!(mints_attempted, MAX_UNAUTHORIZED_BEFORE_GIVING_UP);
+        assert_eq!(
+            consecutive_unauthorized,
+            MAX_UNAUTHORIZED_BEFORE_GIVING_UP + 1
+        );
+
+        // A connection establishing (`Disconnected` arm) resets the budget.
+        consecutive_unauthorized = 0;
+        assert!(should_attempt_remint(
+            consecutive_unauthorized.saturating_add(1)
+        ));
     }
 }

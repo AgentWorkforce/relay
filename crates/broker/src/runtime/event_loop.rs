@@ -18,9 +18,11 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
+    /// This broker's relaycast node name, used to bind agents to the node over
+    /// HTTP when the node-control `agent.register` path is unavailable.
+    pub(super) fleet_node_name: String,
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
-    pub(super) fleet_mode_enabled: bool,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
     pub(super) fleet_handlers: HandlerDispatchState,
     pub(super) fleet_sidecar_out_tx: Option<mpsc::Sender<ProtocolEnvelope<Value>>>,
@@ -46,7 +48,6 @@ pub(crate) struct BrokerRuntime {
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
-    pub(super) dm_participants_cache: DmParticipantsCache,
     pub(super) recent_thread_messages: VecDeque<Value>,
     pub(super) shutdown: bool,
     pub(super) lease_duration: Option<Duration>,

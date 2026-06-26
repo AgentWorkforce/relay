@@ -31,6 +31,7 @@ impl BrokerRuntime {
         let sdk_out_tx = &self.sdk_out_tx;
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_node_name = self.fleet_node_name.as_str();
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
@@ -102,26 +103,85 @@ impl BrokerRuntime {
                 // Caller-supplied agent_token is authoritative. In fleet mode it
                 // was minted by the node control connection, and the worker must
                 // receive that exact token before its harness starts.
+                //
+                // Otherwise bind the agent to this node via node-control
+                // `agent.register` — the same step the engine `action.invoke`
+                // spawn converges on — so the agent is born `via_node`-bound and
+                // delivery flows over /v1/node/ws. The minted token is injected
+                // as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP) so
+                // the worker MCP never re-registers over HTTP. If node binding is
+                // unavailable, fall back to HTTP pre-registration so a tokenless
+                // node (e.g. mint failure) still spawns a working agent.
                 let worker_relay_key = if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
                     Some(token)
                 } else {
-                    match retry_agent_registration(relaycast_http, &name, Some(&cli)).await {
-                        Ok(token) => Some(token),
-                        Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                            let message = format_worker_preregistration_error(&name, &error);
+                    // Derive the session ref from the resolved spec the same way
+                    // the fleet/sidecar paths do, so an HTTP spawn carrying a
+                    // `harnessConfig.session_id` registers as a resumable session
+                    // rather than a fresh spawn. No invocation id exists on the
+                    // HTTP path.
+                    let session_ref = super::fleet::fleet_initial_session_ref(&spec);
+                    match super::fleet::register_node_agent_token(
+                        fleet_control_tx,
+                        name.as_str(),
+                        None,
+                        session_ref,
+                    )
+                    .await
+                    {
+                        Ok(token) => {
+                            tracing::info!(
+                                worker = %name,
+                                "bound agent to node via agent.register for HTTP spawn"
+                            );
+                            Some(token.token)
+                        }
+                        Err(node_error) => {
                             tracing::warn!(
                                 worker = %name,
-                                error = %error,
-                                "continuing spawn without pre-registration after retries exhausted"
+                                error = %node_error,
+                                "node agent.register unavailable; falling back to HTTP pre-registration"
                             );
-                            preregistration_warning = Some(message);
-                            None
-                        }
-                        Err(RegRetryOutcome::Fatal(error)) => {
-                            let _ =
-                                reply.send(Err(format_worker_preregistration_error(&name, &error)));
-                            return;
+                            match retry_agent_registration(relaycast_http, &name, Some(&cli)).await
+                            {
+                                Ok(token) => {
+                                    // HTTP registration alone leaves the agent
+                                    // without a node binding; the engine only
+                                    // delivers to `via_node` agents in node-only
+                                    // delivery. Bind it to this node so it is
+                                    // deliverable, surfacing a loud warning if the
+                                    // bind fails.
+                                    if let Some(warning) =
+                                        super::relaycast_events::bind_http_registered_agent_to_node(
+                                            relaycast_http,
+                                            fleet_node_name,
+                                            &name,
+                                        )
+                                        .await
+                                    {
+                                        preregistration_warning = Some(warning);
+                                    }
+                                    Some(token)
+                                }
+                                Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                                    let message =
+                                        format_worker_preregistration_error(&name, &error);
+                                    tracing::warn!(
+                                        worker = %name,
+                                        error = %error,
+                                        "continuing spawn without pre-registration after retries exhausted"
+                                    );
+                                    preregistration_warning = Some(message);
+                                    None
+                                }
+                                Err(RegRetryOutcome::Fatal(error)) => {
+                                    let _ = reply.send(Err(format_worker_preregistration_error(
+                                        &name, &error,
+                                    )));
+                                    return;
+                                }
+                            }
                         }
                     }
                 };

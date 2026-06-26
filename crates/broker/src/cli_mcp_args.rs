@@ -47,7 +47,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
     }
 
     // Validate all local inputs BEFORE touching the network. `--register`
-    // rotates the agent's relaycast token (POST /v1/agents/spawn), which is
+    // rotates the agent's relaycast token (POST /v1/agents), which is
     // an observable side effect on an external system — we should not mint
     // or rotate a token if the request is going to fail locally anyway
     // (e.g. malformed --existing-args JSON or an unresolvable --cwd).
@@ -525,21 +525,18 @@ mod tests {
         let server = MockServer::start();
         let register_mock = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/spawn")
+                .path("/v1/agents")
                 .body_contains("\"name\":\"test-agent\"")
                 .body_contains("\"cli\":\"claude\"");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
                     "id": "agent_register_test",
+                    "workspace_id": "ws_register_test",
                     "name": "test-agent",
                     "token": "at_live_register_test_token",
-                    "cli": "claude",
-                    "task": "relay worker session for test-agent",
-                    "channel": null,
                     "status": "online",
-                    "created_at": "2026-01-01T00:00:00.000Z",
-                    "already_existed": false
+                    "created_at": "2026-01-01T00:00:00.000Z"
                 }
             }));
         });
@@ -577,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn register_does_not_hit_network_when_local_validation_fails() {
         // Locally-invalid input (malformed --existing-args JSON) must fail
-        // BEFORE the spawn endpoint is called. A POST /v1/agents/spawn
+        // BEFORE the register endpoint is called. A POST /v1/agents
         // rotates the agent's token, so firing it for a request that was
         // going to fail locally anyway is an unintended external side
         // effect.
@@ -588,19 +585,16 @@ mod tests {
 
         let server = MockServer::start();
         let spawn_mock = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/spawn");
+            when.method(POST).path("/v1/agents");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
                     "id": "agent_should_not_be_called",
+                    "workspace_id": "ws_should_not_be_called",
                     "name": "test-agent",
                     "token": "at_live_should_not_mint",
-                    "cli": "claude",
-                    "task": "relay worker session for test-agent",
-                    "channel": null,
                     "status": "online",
-                    "created_at": "2026-01-01T00:00:00.000Z",
-                    "already_existed": false
+                    "created_at": "2026-01-01T00:00:00.000Z"
                 }
             }));
         });
