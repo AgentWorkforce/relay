@@ -1615,7 +1615,10 @@ mod tests {
             "an unrelated reply must not consume a pending agent registration"
         );
         assert!(
-            matches!(reply_rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            matches!(
+                reply_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ),
             "the pending registration must remain in flight"
         );
     }
