@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use uuid::Uuid;
@@ -539,7 +540,13 @@ pub(crate) fn default_node_name(cli_name: Option<&str>) -> String {
         .unwrap_or_else(|| "relay-node".to_string())
 }
 
-pub(crate) fn load_or_create_node_id(path: &Path) -> Result<String> {
+/// Load (or create) the stable per-machine seed persisted at `path`.
+///
+/// The seed file (`machine-id`) is a stable identifier for the host. It is
+/// reused across runs and across every broker on the machine; the per-broker
+/// node id is then derived from this seed plus the broker's working directory
+/// via [`derive_node_id`].
+pub(crate) fn load_or_create_machine_seed(path: &Path) -> Result<String> {
     if let Ok(existing) = fs::read_to_string(path) {
         let existing = existing.trim();
         if !existing.is_empty() {
@@ -550,10 +557,57 @@ pub(crate) fn load_or_create_node_id(path: &Path) -> Result<String> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create node id dir {}", parent.display()))?;
     }
-    let id = format!("node_{}", Uuid::new_v4().simple());
-    fs::write(path, format!("{id}\n"))
+    let seed = format!("node_{}", Uuid::new_v4().simple());
+    fs::write(path, format!("{seed}\n"))
         .with_context(|| format!("failed to write node id file {}", path.display()))?;
-    Ok(id)
+    Ok(seed)
+}
+
+/// Derive a node id from a stable machine `seed` and the broker's working
+/// directory `cwd`.
+///
+/// The engine scopes nodes globally, so a single host that runs brokers for
+/// two different workspaces (each in its own per-project working directory)
+/// must present a distinct node id per broker — otherwise the second
+/// `create_node` collides with the first. Deriving the id from
+/// `(seed, cwd)` keeps it:
+///
+/// - **stable across restarts** in the same working directory, and
+/// - **distinct across different working directories** on the same machine.
+///
+/// The result has the same `node_<32 hex>` shape as a freshly minted id.
+pub(crate) fn derive_node_id(seed: &str, cwd: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(cwd.as_bytes());
+    let digest = hasher.finalize();
+    let hex = digest.iter().fold(String::with_capacity(64), |mut acc, byte| {
+        acc.push_str(&format!("{byte:02x}"));
+        acc
+    });
+    format!("node_{}", &hex[..32])
+}
+
+/// Resolve the node id for this broker: load (or create) the machine seed at
+/// `seed_path`, then derive a per-working-directory node id from it.
+///
+/// The working directory is read from [`std::env::current_dir`] and
+/// canonicalized when possible so equivalent paths resolve to the same id. If
+/// the cwd cannot be read, the id is derived from the seed alone rather than
+/// panicking (every broker on the host then shares one id, matching the old
+/// global-machine-id behavior).
+pub(crate) fn load_or_create_node_id(seed_path: &Path) -> Result<String> {
+    let seed = load_or_create_machine_seed(seed_path)?;
+    let cwd = std::env::current_dir()
+        .map(|path| {
+            std::fs::canonicalize(&path)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_default();
+    Ok(derive_node_id(&seed, &cwd))
 }
 
 pub(crate) fn default_node_id_path() -> Option<std::path::PathBuf> {
@@ -1168,6 +1222,46 @@ mod tests {
 
     use super::*;
     use crate::fleet_wire::DeliveryMode;
+
+    #[test]
+    fn derive_node_id_is_stable_for_same_seed_and_cwd() {
+        let a = derive_node_id("node_seed123", "/Users/will/Projects/relay");
+        let b = derive_node_id("node_seed123", "/Users/will/Projects/relay");
+        assert_eq!(a, b, "same (seed, cwd) must derive an identical node id");
+    }
+
+    #[test]
+    fn derive_node_id_differs_across_working_directories() {
+        let seed = "node_seed123";
+        let a = derive_node_id(seed, "/Users/will/Projects/workspace-a");
+        let b = derive_node_id(seed, "/Users/will/Projects/workspace-b");
+        assert_ne!(a, b, "different cwd on the same machine must derive distinct node ids");
+    }
+
+    #[test]
+    fn derive_node_id_differs_across_seeds() {
+        let cwd = "/Users/will/Projects/relay";
+        let a = derive_node_id("seed-a", cwd);
+        let b = derive_node_id("seed-b", cwd);
+        assert_ne!(a, b, "different machine seeds must derive distinct node ids");
+    }
+
+    #[test]
+    fn derive_node_id_has_node_prefix_and_32_hex_suffix() {
+        let id = derive_node_id("node_seed123", "/Users/will/Projects/relay");
+        let suffix = id
+            .strip_prefix("node_")
+            .expect("derived node id must start with node_");
+        assert_eq!(suffix.len(), 32, "suffix must be 32 hex chars");
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix must be lowercase hex: {suffix}"
+        );
+        assert!(
+            suffix.chars().all(|c| !c.is_ascii_uppercase()),
+            "suffix must be lowercase hex: {suffix}"
+        );
+    }
 
     #[test]
     fn delivery_book_dedups_and_tracks_cumulative_ack() {
