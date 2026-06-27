@@ -1,0 +1,113 @@
+name: Fleet E2E
+
+# Two-node fleet scenario matrix (RFC #1056, Phase 6). Boots a real relaycast
+# engine + two `agent-relay fleet serve` nodes (each a Rust broker + TS sidecar)
+# and drives the live control wire. Heavier than the unit suite (builds the Rust
+# broker + the relaycast engine), so it runs on its own workflow, gated to fleet
+# paths. The scenario matrix itself runs in well under a minute (~30s locally);
+# the wall-clock is dominated by the cold build (cargo + two npm installs +
+# engine build), which rust-cache amortises on warm runs. The 20-minute job
+# timeout is a cold-build ceiling, not the matrix runtime.
+
+# NOTE on branches: the fleet stack is developed on `feat/fleet-*` branches that
+# merge into each other before `main`, so the trigger must include them — gating
+# on `[main]` alone leaves this job inert for the entire feature stack (it would
+# only run after something reaches main). Update to `[main]` once the stack lands.
+on:
+  push:
+    branches: [main, 'feat/fleet-**']
+    paths:
+      - 'packages/fleet/**'
+      - 'packages/cli/**'
+      - 'packages/harness-driver/**'
+      - 'crates/broker/**'
+      - 'tests/e2e/fleet/**'
+      - 'vitest.e2e.config.ts'
+      - '.github/workflows/fleet-e2e.yml'
+  pull_request:
+    branches: [main, 'feat/fleet-**']
+    paths:
+      - 'packages/fleet/**'
+      - 'packages/cli/**'
+      - 'packages/harness-driver/**'
+      - 'crates/broker/**'
+      - 'tests/e2e/fleet/**'
+      - 'vitest.e2e.config.ts'
+      - '.github/workflows/fleet-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+jobs:
+  fleet-e2e:
+    name: Two-node fleet matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout relay
+        uses: actions/checkout@v4
+
+      # The relaycast engine lives in a separate repo. This E2E REQUIRES the
+      # engine compat fixes it surfaced (Bearer-header node auth + the
+      # agent.register reply frame) AND the node.heartbeat roster-snapshot
+      # acceptance: the broker now carries the node roster (name/node_id/
+      # capabilities/max_agents/version) on the heartbeat, which the engine's
+      # previously-`.strict()` schema rejected wholesale (dropping every live
+      # load update and timing out the spawn/load scenarios). Those land on
+      # `feat/heartbeat-roster-snapshot` (relaycast#197, branched off the
+      # already-merged relaycast#194). Pinned to a SHA for reproducibility (the
+      # same commit the local harness resolves, so local == CI). Re-pin to
+      # `main@<sha>` once relaycast#197 merges down.
+      - name: Checkout relaycast engine (carries the E2E compat fixes)
+        uses: actions/checkout@v4
+        with:
+          repository: AgentWorkforce/relaycast
+          ref: 2f685fa99ad486b09de5fb61091594fd48459815 # feat/heartbeat-roster-snapshot (relaycast#197)
+          path: relaycast-engine
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build relay (CLI + fleet + harness-driver)
+        run: |
+          npm ci
+          npm run build:core
+
+      - name: Build agent-relay-broker
+        run: cargo build --release --bin agent-relay-broker
+
+      - name: Build relaycast engine
+        working-directory: relaycast-engine
+        run: |
+          npm ci
+          npm run build --workspace @relaycast/types
+          npm run build --workspace @relaycast/a2a
+          npm run build --workspace @relaycast/engine
+
+      - name: Run two-node fleet E2E
+        env:
+          RELAYCAST_ENGINE_DIR: ${{ github.workspace }}/relaycast-engine
+          BROKER_BINARY_PATH: ${{ github.workspace }}/target/release/agent-relay-broker
+        run: npm run test:e2e
+
+      - name: Upload node logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-e2e-logs
+          path: /tmp/fleet-e2e-*/**/serve.log
+          if-no-files-found: ignore

@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     ids::{ChannelName, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId},
-    protocol::{MessageInjectionMode, ResolvedHarnessConfig},
+    protocol::{MessageInjectionMode, ProtocolEnvelope, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
     types::{InboundDeliveryMode, PendingRelayMessage},
@@ -49,6 +49,7 @@ pub enum ListenApiRequest {
         shadow_mode: Option<String>,
         continue_from: Option<String>,
         idle_threshold_secs: Option<u64>,
+        exit_after_task: bool,
         skip_relay_prompt: bool,
         restart_policy: Box<Option<Value>>,
         harness_config: Option<ResolvedHarnessConfig>,
@@ -189,6 +190,37 @@ pub enum ListenApiRequest {
         metadata: Option<Value>,
         reply: tokio::sync::oneshot::Sender<Result<Value, AgentResultRouteError>>,
     },
+    FleetSidecarConnect {
+        outbound: mpsc::Sender<ProtocolEnvelope<Value>>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    FleetSidecarDisconnect,
+    FleetSidecarFrame {
+        frame: ProtocolEnvelope<Value>,
+        reply: tokio::sync::oneshot::Sender<Result<FleetSidecarFrameResponse, String>>,
+    },
+}
+
+#[derive(Debug)]
+pub struct FleetSidecarFrameResponse {
+    pub frame: Option<ProtocolEnvelope<Value>>,
+    pub close_socket: bool,
+}
+
+impl FleetSidecarFrameResponse {
+    pub fn frame(frame: ProtocolEnvelope<Value>) -> Self {
+        Self {
+            frame: Some(frame),
+            close_socket: false,
+        }
+    }
+
+    pub fn close_after(frame: ProtocolEnvelope<Value>) -> Self {
+        Self {
+            frame: Some(frame),
+            close_socket: true,
+        }
+    }
 }
 
 /// Typed errors for the inbound-delivery-mode HTTP routes. Keeps the broker arm's
@@ -280,6 +312,8 @@ struct ListenApiState {
     /// endpoint so the dashboard can bootstrap Relaycast calls without a
     /// relaycast.json or env var.
     workspace_key: Option<String>,
+    /// Relaycast HTTP base URL that owns the workspace key.
+    relay_base_url: Option<String>,
     memberships: Vec<WorkspaceMembershipSummary>,
     default_workspace_id: Option<WorkspaceId>,
     /// Broker version string (from Cargo.toml)
@@ -314,6 +348,7 @@ pub struct ListenApiConfig {
     pub events_tx: broadcast::Sender<String>,
     pub replay_buffer: ReplayBuffer,
     pub workspace_key: Option<String>,
+    pub relay_base_url: Option<String>,
     pub memberships: Vec<WorkspaceMembershipSummary>,
     pub default_workspace_id: Option<WorkspaceId>,
     pub persist: bool,
@@ -345,6 +380,10 @@ fn listen_api_router_with_auth(
         replay_buffer: config.replay_buffer,
         workspace_key: config
             .workspace_key
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        relay_base_url: config
+            .relay_base_url
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         memberships: config.memberships,
@@ -413,6 +452,7 @@ fn listen_api_router_with_auth(
         )
         .route("/api/history/stats", routing::get(listen_api_history_stats))
         .route("/api/config", routing::get(listen_api_config))
+        .route("/api/fleet/ws", routing::get(listen_api_fleet_ws))
         .route("/ws", routing::get(listen_api_ws))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
@@ -481,6 +521,7 @@ async fn listen_api_session(
         "broker_version": state.broker_version,
         "protocol_version": 2,
         "workspace_key": state.workspace_key,
+        "relay_base_url": state.relay_base_url,
         "default_workspace_id": state.default_workspace_id,
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
@@ -658,6 +699,30 @@ async fn listen_api_spawn(
         .get("idle_threshold_secs")
         .or_else(|| body.get("idleThresholdSecs"))
         .and_then(Value::as_u64);
+    let spawn_mode = body
+        .get("spawn_mode")
+        .or_else(|| body.get("spawnMode"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase());
+    let spawn_mode_exit_after_task = match spawn_mode.as_deref() {
+        None | Some("") | Some("interactive") => false,
+        Some("task_exit" | "task-exit" | "single_shot" | "single-shot") => true,
+        Some(other) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": format!("unsupported spawnMode '{other}' (expected 'interactive' or 'task_exit')")
+                })),
+            );
+        }
+    };
+    let exit_after_task = body
+        .get("exit_after_task")
+        .or_else(|| body.get("exitAfterTask"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || spawn_mode_exit_after_task;
     let skip_relay_prompt = body
         .get("skip_relay_prompt")
         .or_else(|| body.get("skipRelayPrompt"))
@@ -728,6 +793,7 @@ async fn listen_api_spawn(
             shadow_mode,
             continue_from,
             idle_threshold_secs,
+            exit_after_task,
             skip_relay_prompt,
             restart_policy,
             harness_config,
@@ -2045,6 +2111,149 @@ async fn listen_api_ws(
     })
 }
 
+async fn listen_api_fleet_ws(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| handle_fleet_sidecar_ws(socket, state.tx))
+}
+
+async fn handle_fleet_sidecar_ws(
+    mut socket: axum::extract::ws::WebSocket,
+    tx: mpsc::Sender<ListenApiRequest>,
+) {
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(128);
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let mut clean_close = false;
+    if tx
+        .send(ListenApiRequest::FleetSidecarConnect {
+            outbound: outbound_tx,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+    match reply_rx.await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            let _ = send_fleet_sidecar_error(&mut socket, None, "connect_failed", error).await;
+            return;
+        }
+        Err(_) => return,
+    }
+
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => {
+                let Some(Ok(message)) = incoming else {
+                    break;
+                };
+                match message {
+                    axum::extract::ws::Message::Text(text) => {
+                        let frame = match serde_json::from_str::<ProtocolEnvelope<Value>>(text.as_str()) {
+                            Ok(frame) => frame,
+                            Err(error) => {
+                                if !send_fleet_sidecar_error(&mut socket, None, "invalid_frame", error.to_string()).await {
+                                    break;
+                                }
+                                continue;
+                            }
+                        };
+                        let request_id = frame.request_id.clone();
+                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                        if tx
+                            .send(ListenApiRequest::FleetSidecarFrame {
+                                frame,
+                                reply: reply_tx,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        match reply_rx.await {
+                            Ok(Ok(response)) => {
+                                if let Some(frame) = response.frame {
+                                    if !send_fleet_sidecar_frame(&mut socket, frame).await {
+                                        break;
+                                    }
+                                }
+                                if response.close_socket {
+                                    clean_close = true;
+                                    let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
+                                    break;
+                                }
+                            }
+                            Ok(Err(error)) => {
+                                if !send_fleet_sidecar_error(&mut socket, request_id, "frame_failed", error).await {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    axum::extract::ws::Message::Ping(payload) => {
+                        if socket.send(axum::extract::ws::Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    axum::extract::ws::Message::Close(_) => break,
+                    axum::extract::ws::Message::Binary(_) | axum::extract::ws::Message::Pong(_) => {}
+                }
+            }
+            outbound = outbound_rx.recv() => {
+                let Some(frame) = outbound else {
+                    break;
+                };
+                if !send_fleet_sidecar_frame(&mut socket, frame).await {
+                    break;
+                }
+            }
+        }
+    }
+
+    if !clean_close {
+        let _ = tx.send(ListenApiRequest::FleetSidecarDisconnect).await;
+    }
+}
+
+async fn send_fleet_sidecar_frame(
+    socket: &mut axum::extract::ws::WebSocket,
+    frame: ProtocolEnvelope<Value>,
+) -> bool {
+    match serde_json::to_string(&frame) {
+        Ok(text) => socket
+            .send(axum::extract::ws::Message::Text(text.into()))
+            .await
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
+async fn send_fleet_sidecar_error(
+    socket: &mut axum::extract::ws::WebSocket,
+    request_id: Option<crate::ids::RequestId>,
+    code: &str,
+    message: impl Into<String>,
+) -> bool {
+    send_fleet_sidecar_frame(
+        socket,
+        ProtocolEnvelope {
+            v: crate::protocol::PROTOCOL_VERSION,
+            msg_type: "error".to_string(),
+            request_id,
+            payload: json!({
+                "code": code,
+                "message": message.into(),
+                "retryable": false,
+            }),
+        },
+    )
+    .await
+}
+
 async fn handle_dashboard_ws(
     mut socket: axum::extract::ws::WebSocket,
     mut rx: broadcast::Receiver<String>,
@@ -2318,11 +2527,11 @@ mod auth_tests {
     use tower::ServiceExt;
 
     use super::{
-        listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
-        PtyInputFrame, SetInboundDeliveryModeOk,
+        listen_api_router_with_auth, DeliveryRouteError, FleetSidecarFrameResponse,
+        ListenApiConfig, ListenApiRequest, PtyInputFrame, SetInboundDeliveryModeOk,
     };
     use crate::ids::{EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
-    use crate::protocol::MessageInjectionMode;
+    use crate::protocol::{MessageInjectionMode, ProtocolEnvelope};
     use crate::types::{InboundDeliveryMode, PendingRelayMessage};
     use crate::worker_request::RequestWorkerError;
 
@@ -2339,6 +2548,7 @@ mod auth_tests {
                     events_tx,
                     replay_buffer,
                     workspace_key: None,
+                    relay_base_url: Some("https://relay.test".to_string()),
                     memberships: vec![],
                     default_workspace_id: None,
                     persist: false,
@@ -2475,6 +2685,7 @@ mod auth_tests {
                     shadow_mode,
                     continue_from,
                     idle_threshold_secs,
+                    exit_after_task,
                     skip_relay_prompt: _,
                     restart_policy: _,
                     harness_config,
@@ -2498,6 +2709,7 @@ mod auth_tests {
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
                     assert_eq!(idle_threshold_secs, Some(30));
+                    assert!(exit_after_task);
                     assert!(harness_config.is_some());
                     assert_eq!(
                         agent_result_schema,
@@ -2533,6 +2745,7 @@ mod auth_tests {
                             "shadowMode": "subagent",
                             "continueFrom": "worker-prev",
                             "idleThresholdSecs": 30,
+                            "spawnMode": "task_exit",
                             "harnessConfig": {
                                 "runtime": "pty",
                                 "command": "codex",
@@ -2940,6 +3153,7 @@ mod auth_tests {
         let body = response_json(response).await;
         assert!(body["broker_version"].is_string());
         assert_eq!(body["protocol_version"], 2);
+        assert_eq!(body["relay_base_url"], "https://relay.test");
         assert_eq!(body["mode"], "ephemeral");
     }
 
@@ -3892,5 +4106,18 @@ mod auth_tests {
                 "{method} {path} should require auth"
             );
         }
+    }
+
+    #[test]
+    fn fleet_sidecar_close_response_marks_socket_for_close() {
+        let response = FleetSidecarFrameResponse::close_after(ProtocolEnvelope {
+            v: crate::protocol::PROTOCOL_VERSION,
+            msg_type: "ok".to_string(),
+            request_id: None,
+            payload: json!({"result": {"deregistered": true}}),
+        });
+
+        assert!(response.close_socket);
+        assert!(response.frame.is_some());
     }
 }

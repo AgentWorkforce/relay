@@ -1,22 +1,28 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
-import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import type {
+  CoreDependencies,
+  CoreProjectPaths,
+  CoreRelay,
+  CoreTeamsConfig,
+  SpawnedProcess,
+} from '../commands/core.js';
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
+import {
+  createImplicitLocalFleetNode,
+  fleetStatusPath,
+  startFleetSidecar,
+  type RunningFleetSidecar,
+} from './fleet-sidecar.js';
 
 type UpOptions = {
-  dashboard?: boolean;
-  port?: string;
   spawn?: boolean;
   background?: boolean;
-  foreground?: boolean;
   verbose?: boolean;
-  dashboardPath?: string;
-  reuseExistingBroker?: boolean;
   workspaceKey?: string;
   stateDir?: string;
   brokerName?: string;
@@ -30,8 +36,8 @@ type DownOptions = {
 };
 
 const MAX_API_PORT_ATTEMPTS = 25;
-const MAX_DASHBOARD_PORT_ATTEMPTS = 25;
 const MAX_PORT = 65535;
+const DEFAULT_BROKER_BASE_PORT = 3888;
 
 /** The broker writes this file with URL, port, API key, and PID. */
 const CONNECTION_FILENAME = 'connection.json';
@@ -175,8 +181,7 @@ export function classifyBrokerStartError(err: unknown): string {
 }
 
 /** Exported for testing. */
-export function classifyBrokerStartStage(err: unknown, message: string, wantsDashboard: boolean): string {
-  if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) return 'dashboard_port';
+export function classifyBrokerStartStage(_err: unknown, message: string): string {
   if (isBrokerAlreadyRunningError(message)) return 'already_running';
   if (/fetch failed/i.test(message)) return 'connect';
   if (/Broker did not report API port/i.test(message)) return 'spawn';
@@ -207,16 +212,26 @@ async function resolveApiPortWithFallback(
   throw new Error(`Failed to find an available API port near ${startApiPort}.`);
 }
 
-async function startBrokerWithPortFallback(
+/**
+ * The broker base port. `AGENT_RELAY_BROKER_PORT` overrides the default so
+ * multiple brokers can run side by side (e.g. in tests); the broker HTTP API
+ * binds near `basePort + 1` with fallback scanning.
+ */
+export function resolveBrokerBasePort(deps: Pick<CoreDependencies, 'env'>): number {
+  const raw = Number.parseInt(deps.env.AGENT_RELAY_BROKER_PORT ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BROKER_BASE_PORT;
+}
+
+export async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
-  dashboardPort: number,
+  basePort: number,
   deps: CoreDependencies,
   brokerName?: string
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
-  const startApiPort = dashboardPort + 1;
+  const startApiPort = basePort + 1;
   const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
 
   const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName);
@@ -225,23 +240,42 @@ async function startBrokerWithPortFallback(
   return { relay: candidate, apiPort };
 }
 
-async function resolveDashboardPortWithFallback(
-  dashboardPort: number,
-  dashboardPortCandidates: number,
-  deps: CoreDependencies
-): Promise<number> {
-  for (let attempt = 0; attempt < dashboardPortCandidates; attempt += 1) {
-    const candidatePort = dashboardPort + attempt;
-    const inUse = await deps.isPortInUse(candidatePort);
-    if (!inUse) {
-      if (attempt > 0) {
-        deps.warn(`Dashboard port ${dashboardPort} is already in use; trying ${candidatePort}`);
-      }
-      return candidatePort;
-    }
+function startImplicitLocalFleetSidecar(
+  paths: CoreProjectPaths,
+  relay: CoreRelay,
+  options: UpOptions,
+  deps: CoreDependencies,
+  teamsConfig: CoreTeamsConfig | null = deps.loadTeamsConfig(paths.projectRoot)
+): RunningFleetSidecar | undefined {
+  if (deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1') {
+    return undefined;
   }
-
-  throw new Error(`Failed to find an available dashboard port near ${dashboardPort}.`);
+  const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
+  if (!conn) {
+    deps.warn('Fleet local node skipped: broker connection file was not available.');
+    return undefined;
+  }
+  // The implicit local fleet node is best-effort: it lets this broker advertise
+  // itself as a fleet node, but the broker is already up and usable without it.
+  // Never let a sidecar setup failure abort `up`.
+  try {
+    const node = createImplicitLocalFleetNode({
+      paths,
+      teamsConfig,
+      name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
+    });
+    return startFleetSidecar({
+      definition: node,
+      connection: { url: conn.url, apiKey: conn.api_key },
+      workspaceKey: relay.workspaceKey,
+      statusPath: fleetStatusPath(paths),
+      reconnect: true,
+      warn: (message) => deps.warn(message),
+    });
+  } catch (err) {
+    deps.warn(`Fleet local node skipped: ${toErrorMessage(err)}`);
+    return undefined;
+  }
 }
 
 function isBrokerAlreadyRunningError(message: string): boolean {
@@ -323,18 +357,20 @@ function isBrokerExecutableCommand(command: string): boolean {
   return basename === 'agent-relay-broker' || basename.startsWith('agent-relay-broker-');
 }
 
-function isForegroundBrokerCliCommand(command: string): boolean {
+function isAttachedBrokerCliCommand(command: string): boolean {
   if (command.includes('agent-relay-mcp')) {
     return false;
   }
-  if (!/(?:^|\s)up(?:\s|$)/.test(command) || !/(?:^|\s)--foreground(?:\s|=|$)/.test(command)) {
+  // The attached `up` process holds the broker. Skip the transient
+  // `up --background` launcher, which exits as soon as the child is ready.
+  if (!/(?:^|\s)up(?:\s|$)/.test(command) || /(?:^|\s)--background(?:\s|=|$)/.test(command)) {
     return false;
   }
   return /(?:^|\s)(?:\S*agent-relay(?:\.js)?|\S*agent-relay-[^\s]+)(?:\s|$)/.test(command);
 }
 
 function isBrokerProcessCommand(command: string): boolean {
-  return isBrokerExecutableCommand(command) || isForegroundBrokerCliCommand(command);
+  return isBrokerExecutableCommand(command) || isAttachedBrokerCliCommand(command);
 }
 
 function escapeRegExp(value: string): string {
@@ -549,12 +585,7 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies): string[] {
-  const args = cliUserArgs(deps).filter(
-    (arg) => !['--background', '--foreground'].some((name) => matchesCliOption(arg, name))
-  );
-  if (options.dashboard === false && !args.includes('--no-dashboard')) {
-    args.push('--no-dashboard');
-  }
+  const args = cliUserArgs(deps).filter((arg) => !matchesCliOption(arg, '--background'));
   if (options.stateDir && !hasCliOption(args, '--state-dir')) {
     args.push('--state-dir', path.resolve(options.stateDir));
   }
@@ -566,9 +597,6 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
   }
   if (options.verbose === true && !args.includes('--verbose')) {
     args.push('--verbose');
-  }
-  if (options.dashboard === false && !args.includes('--foreground')) {
-    args.push('--foreground');
   }
   return args;
 }
@@ -669,608 +697,14 @@ async function waitForBrokerReadiness(
   return latest;
 }
 
-function pickDashboardStaticDir(candidates: string[], deps: CoreDependencies): string | null {
-  const existingCandidates = Array.from(new Set(candidates)).filter((candidate) =>
-    deps.fs.existsSync(candidate)
-  );
-  if (existingCandidates.length === 0) {
-    return null;
-  }
-
-  const pageMarkerPriority = [
-    ['metrics.html', path.join('metrics', 'index.html')],
-    ['app.html'],
-    ['index.html'],
-  ];
-
-  for (const markerGroup of pageMarkerPriority) {
-    const withMarker = existingCandidates.find((candidate) =>
-      markerGroup.some((marker) => deps.fs.existsSync(path.join(candidate, marker)))
-    );
-    if (withMarker) {
-      return withMarker;
-    }
-  }
-
-  return existingCandidates[0];
-}
-
-function getHomeDashboardRoot(deps: CoreDependencies): string {
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
-  return path.join(homeDir, '.agentworkforce/relay', 'dashboard');
-}
-
-function getPriorDashboardRoot(deps: CoreDependencies): string | null {
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
-  if (!homeDir) {
-    return null;
-  }
-  return path.join(homeDir, '.relay', 'dashboard');
-}
-
-function getDashboardRootFromBinary(dashboardBinary: string | null, deps: CoreDependencies): string | null {
-  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
-    return null;
-  }
-
-  const binaryDir = path.dirname(dashboardBinary);
-  if (path.basename(binaryDir) !== 'bin') {
-    return null;
-  }
-
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
-  const resolvedBinaryDir = path.resolve(binaryDir);
-  const ignoredBinDirs = [
-    homeDir ? path.join(homeDir, '.local', 'bin') : null,
-    path.join('/usr/local', 'bin'),
-  ]
-    .filter((candidate): candidate is string => Boolean(candidate))
-    .map((candidate) => path.resolve(candidate));
-  if (ignoredBinDirs.includes(resolvedBinaryDir)) {
-    return null;
-  }
-
-  return path.join(path.dirname(binaryDir), 'dashboard');
-}
-
-function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDependencies): string | null {
-  const explicitStaticDir = deps.env.RELAY_DASHBOARD_STATIC_DIR ?? deps.env.STATIC_DIR;
-  if (explicitStaticDir && explicitStaticDir.trim()) {
-    return explicitStaticDir;
-  }
-
-  if (!dashboardBinary) {
-    return null;
-  }
-
-  if (dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
-    const dashboardServerOutDir = path.resolve(path.dirname(dashboardBinary), '..', 'out');
-    const siblingDashboardOutDir = path.resolve(
-      path.dirname(dashboardBinary),
-      '..',
-      '..',
-      'dashboard',
-      'out'
-    );
-    return pickDashboardStaticDir([dashboardServerOutDir, siblingDashboardOutDir], deps);
-  }
-
-  // Installs place UI assets under the install dir (~/.agentworkforce/relay/dashboard/out
-  // by default, or next to a custom install's bin/ directory). ~/.relay/dashboard/out is
-  // read as a fallback for installs predating that move.
-  const installDashboardRoot = getDashboardRootFromBinary(dashboardBinary, deps);
-  const priorDashboardRoot = getPriorDashboardRoot(deps);
-  const candidates = [
-    installDashboardRoot ? path.join(installDashboardRoot, 'out') : null,
-    path.join(getHomeDashboardRoot(deps), 'out'),
-    priorDashboardRoot ? path.join(priorDashboardRoot, 'out') : null,
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  return pickDashboardStaticDir(candidates, deps);
-}
-
-function normalizeLocalhostRelayUrl(relayUrl: string): string {
-  try {
-    const parsed = new URL(relayUrl);
-    if (parsed.hostname === 'localhost') {
-      parsed.hostname = '127.0.0.1';
-    }
-    return parsed.toString().replace(/\/+$/, '');
-  } catch {
-    return relayUrl;
-  }
-}
-
-function getDefaultDashboardRelayUrl(apiPort: number): string {
-  return normalizeLocalhostRelayUrl(`http://localhost:${apiPort}`);
-}
-
-function resolveDashboardRelayUrl(apiPort: number, deps: CoreDependencies): string {
-  const explicitRelayUrl = deps.env.RELAY_DASHBOARD_RELAY_URL;
-  if (explicitRelayUrl && explicitRelayUrl.trim()) {
-    return normalizeLocalhostRelayUrl(explicitRelayUrl.trim());
-  }
-
-  return getDefaultDashboardRelayUrl(apiPort);
-}
-
-function isDebugLikeLoggingEnabled(deps: CoreDependencies): boolean {
-  const rawLevel = String(deps.env.RUST_LOG ?? '').toLowerCase();
-  return rawLevel.includes('debug') || rawLevel.includes('trace');
-}
-
-function getDashboardSpawnEnv(
-  deps: CoreDependencies,
-  relayUrl: string,
-  enableVerboseLogging: boolean,
-  relayApiKey?: string,
-  brokerApiKey?: string
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...deps.env,
-    RELAY_URL: relayUrl,
-    VERBOSE: enableVerboseLogging || deps.env.VERBOSE === 'true' ? 'true' : deps.env.VERBOSE,
-  };
-  // Pass the workspace key so the dashboard can make Agent Relay calls
-  // (e.g. posting thread replies) without requiring a relaycast.json file.
-  if (relayApiKey) {
-    if (!env.RELAY_WORKSPACE_KEY) {
-      env.RELAY_WORKSPACE_KEY = relayApiKey;
-    }
-    if (!env.RELAY_API_KEY) {
-      env.RELAY_API_KEY = relayApiKey;
-    }
-  }
-  // Pass the broker API key so the dashboard can authenticate with the
-  // broker's HTTP API (e.g. /api/spawn, /api/spawned).
-  if (brokerApiKey) {
-    env.RELAY_BROKER_API_KEY = brokerApiKey;
-  }
-  return env;
-}
-
-function getDashboardSpawnArgs(
-  paths: CoreProjectPaths,
-  port: number,
-  apiPort: number,
-  dashboardBinary: string | null,
-  relayUrl: string,
-  enableVerboseLogging: boolean,
-  deps: CoreDependencies
-): string[] {
-  const args = ['--port', String(port), '--data-dir', paths.dataDir];
-  args.push('--relay-url', relayUrl);
-  const staticDir = resolveDashboardStaticDir(dashboardBinary, deps);
-  if (staticDir) {
-    args.push('--static-dir', staticDir);
-  }
-  if (enableVerboseLogging) {
-    args.push('--verbose');
-  }
-  return args;
-}
-
-function normalizeDashboardPath(rawDashboardPath: string | undefined): string | undefined {
-  const trimmed = rawDashboardPath?.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.startsWith('/')) {
-    return trimmed;
-  }
-  return `/${trimmed}`;
-}
-
-interface DashboardStartupProcess extends SpawnedProcess {
-  stdout?: {
-    on?: (event: string, cb: (chunk: Buffer) => void) => void;
-    removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
-    off?: (event: string, cb: (...args: unknown[]) => void) => void;
-  };
-  stderr?: {
-    on?: (event: string, cb: (chunk: Buffer) => void) => void;
-    removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
-    off?: (event: string, cb: (...args: unknown[]) => void) => void;
-  };
-}
-
-function startDashboard(
-  paths: CoreProjectPaths,
-  port: number,
-  apiPort: number,
-  deps: CoreDependencies,
-  enableVerboseLogging: boolean,
-  dashboardBinaryOverride?: string | null,
-  relayApiKey?: string,
-  brokerApiKey?: string
-): DashboardStartupProcess {
-  const dashboardBinary =
-    dashboardBinaryOverride === undefined ? deps.findDashboardBinary() : dashboardBinaryOverride;
-  const relayUrl = resolveDashboardRelayUrl(apiPort, deps);
-  const shouldEnableVerbose = enableVerboseLogging || isDebugLikeLoggingEnabled(deps);
-  const args = getDashboardSpawnArgs(
-    paths,
-    port,
-    apiPort,
-    dashboardBinary,
-    relayUrl,
-    shouldEnableVerbose,
-    deps
-  );
-  const launchTarget = dashboardBinary
-    ? dashboardBinary.endsWith('.js')
-      ? `node ${dashboardBinary}`
-      : dashboardBinary
-    : 'npx --yes @agent-relay/dashboard-server@latest';
-
-  const spawnOpts = {
-    stdio: ['ignore', 'pipe', 'pipe'] as unknown,
-    env: getDashboardSpawnEnv(deps, relayUrl, shouldEnableVerbose, relayApiKey, brokerApiKey),
-  };
-  if (shouldEnableVerbose) {
-    deps.log(`[dashboard] Starting: ${launchTarget} ${args.join(' ')}`);
-  }
-
-  let child: SpawnedProcess;
-  if (dashboardBinary) {
-    // If the binary is a .js file (local dev), run it with node
-    if (dashboardBinary.endsWith('.js')) {
-      child = deps.spawnProcess('node', [dashboardBinary, ...args], spawnOpts);
-    } else {
-      child = deps.spawnProcess(dashboardBinary, args, spawnOpts);
-    }
-  } else {
-    child = deps.spawnProcess('npx', ['--yes', '@agent-relay/dashboard-server@latest', ...args], spawnOpts);
-  }
-
-  // Capture stderr for error reporting
-  const childAny = child as unknown as {
-    stdout?: { on?: (event: string, cb: (chunk: Buffer) => void) => void };
-    stderr?: { on?: (event: string, cb: (chunk: Buffer) => void) => void };
-    on?: (event: string, cb: (...args: unknown[]) => void) => void;
-  };
-  let stderrBuf = '';
-
-  const logChunk = (chunk: Buffer, logger: (line: string) => void, prefix: string) => {
-    if (!shouldEnableVerbose) {
-      return;
-    }
-    const text = chunk.toString();
-    for (const line of text.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (trimmed) {
-        logger(`[dashboard] ${prefix}: ${trimmed}`);
-      }
-    }
-  };
-
-  childAny.stdout?.on?.('data', (chunk: Buffer) => {
-    logChunk(chunk, deps.log, 'stdout');
-  });
-  childAny.stderr?.on?.('data', (chunk: Buffer) => {
-    stderrBuf += chunk.toString();
-    logChunk(chunk, deps.warn, 'stderr');
-  });
-
-  // Report early crashes
-  childAny.on?.('exit', (...exitArgs: unknown[]) => {
-    const code = exitArgs[0] as number | null;
-    const signal = exitArgs[1] as string | null;
-    if (code !== null && code !== 0) {
-      deps.error(`Dashboard process exited with code ${code}`);
-      if (stderrBuf.trim()) {
-        deps.error(stderrBuf.trim().split('\n').slice(-5).join('\n'));
-      }
-    } else if (signal && signal !== 'SIGINT' && signal !== 'SIGTERM') {
-      deps.error(`Dashboard process killed by signal ${signal}`);
-    }
-  });
-
-  return child;
-}
-
-async function resolveStartedDashboardPort(
-  process: DashboardStartupProcess,
-  preferredPort: number,
-  deps: CoreDependencies
-): Promise<number | null> {
-  return new Promise((resolve) => {
-    let resolved = false;
-    const processAny = process as DashboardStartupProcess & {
-      on?: (event: string, cb: (...args: unknown[]) => void) => void;
-      off?: (event: string, cb: (...args: unknown[]) => void) => void;
-      removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
-    };
-    const detach = () => {
-      process.stdout?.off?.('data', extractPort);
-      process.stdout?.removeListener?.('data', extractPort);
-      process.stderr?.off?.('data', extractPort);
-      process.stderr?.removeListener?.('data', extractPort);
-      processAny.off?.('exit', handleExit);
-      processAny.removeListener?.('exit', handleExit);
-      clearTimeout(timer);
-    };
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      detach();
-      deps.warn(`Dashboard did not report its bound port quickly; assuming requested port ${preferredPort}`);
-      resolve(preferredPort);
-    }, 3000);
-
-    const finalize = (port: number) => {
-      if (resolved) return;
-      resolved = true;
-      detach();
-      resolve(port);
-    };
-    const handleExit = (...exitArgs: unknown[]) => {
-      const code = exitArgs[0] as number | null;
-      const signal = exitArgs[1] as string | null;
-      if (resolved) {
-        return;
-      }
-      resolved = true;
-      detach();
-      if (code !== null && code !== 0) {
-        deps.warn(`Dashboard exited before reporting its port (code: ${code}).`);
-      } else if (signal && signal !== 'SIGINT' && signal !== 'SIGTERM') {
-        deps.warn(`Dashboard exited before reporting its port (signal: ${signal}).`);
-      } else {
-        deps.warn('Dashboard exited before reporting its bound port.');
-      }
-      resolve(null);
-    };
-
-    const extractPort = (...chunkArgs: unknown[]) => {
-      const firstChunk = chunkArgs[0];
-      if (!firstChunk) {
-        return;
-      }
-
-      const chunk = Buffer.isBuffer(firstChunk)
-        ? firstChunk
-        : typeof firstChunk === 'string'
-          ? Buffer.from(firstChunk)
-          : Buffer.from(JSON.stringify(firstChunk));
-
-      const match = chunk.toString().match(/Server running at http:\/\/localhost:(\d+)/i);
-      if (!match?.[1]) {
-        return;
-      }
-      const parsed = Number.parseInt(match[1], 10);
-      if (!Number.isNaN(parsed)) {
-        finalize(parsed);
-      }
-    };
-
-    process.stdout?.on?.('data', extractPort);
-    process.stderr?.on?.('data', extractPort);
-    processAny.on?.('exit', handleExit);
-  });
-}
-
-/**
- * Check if the cached dashboard UI assets match the installed dashboard-server
- * binary version. If they are stale (or missing a version marker), re-download
- * the latest assets from the relay-dashboard GitHub release.
- */
-async function refreshDashboardAssetsIfStale(
-  dashboardBinary: string | null,
-  deps: CoreDependencies
-): Promise<void> {
-  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
-    // Dev mode or npx — skip
-    return;
-  }
-
-  // Get installed binary version (async to avoid blocking event loop)
-  let binaryVersion: string;
-  try {
-    const versionResult = await deps.execCommand(`${JSON.stringify(dashboardBinary)} --version`);
-    binaryVersion = versionResult.stdout.trim();
-  } catch {
-    return; // Can't determine version — skip
-  }
-
-  if (!binaryVersion) {
-    return;
-  }
-
-  const targetDir = getDashboardRootFromBinary(dashboardBinary, deps) ?? getHomeDashboardRoot(deps);
-  const assetsDir = path.join(targetDir, 'out');
-  const versionFile = path.join(targetDir, '.version');
-
-  // Check if assets match the binary version
-  try {
-    const cachedVersion = deps.fs.readFileSync(versionFile, 'utf-8').trim();
-    if (cachedVersion === binaryVersion) {
-      return; // Up to date
-    }
-  } catch {
-    // No version file — need to download if assets exist but are unversioned,
-    // or if assets don't exist at all
-    if (deps.fs.existsSync(assetsDir)) {
-      // Assets exist but no version marker — they're from an old install
-    } else {
-      // No assets at all — need to download
-    }
-  }
-
-  deps.log(`Updating dashboard UI assets (${binaryVersion})...`);
-
-  const uiUrl =
-    'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
-  let tempDir: string | undefined;
-  let tempFile: string | undefined;
-
-  try {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `dashboard-ui-${deps.pid}-`));
-    tempFile = path.join(tempDir, 'dashboard-ui.tar.gz');
-    // Download (async to avoid blocking event loop during network I/O)
-    await deps.execCommand(
-      `curl -fsSL --max-time 30 ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`
-    );
-
-    // Verify it's a valid gzip
-    const header = Buffer.alloc(2);
-    const fd = fs.openSync(tempFile, 'r');
-    fs.readSync(fd, header, 0, 2, 0);
-    fs.closeSync(fd);
-    if (header[0] !== 0x1f || header[1] !== 0x8b) {
-      if (tempFile) deps.fs.unlinkSync(tempFile);
-      return; // Not a valid gzip file
-    }
-
-    // Remove old assets and extract (async to avoid blocking event loop)
-    deps.fs.rmSync(assetsDir, { recursive: true, force: true });
-    deps.fs.mkdirSync(targetDir, { recursive: true });
-    await deps.execCommand(`tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`);
-    if (tempFile) deps.fs.unlinkSync(tempFile);
-
-    // Write version marker only after confirming extraction succeeded
-    if (deps.fs.existsSync(path.join(assetsDir, 'index.html'))) {
-      deps.fs.writeFileSync(versionFile, binaryVersion);
-      deps.log(`Dashboard UI assets updated to ${binaryVersion}`);
-    } else {
-      deps.warn('Dashboard UI extraction may be incomplete — skipping version marker');
-    }
-  } catch {
-    // Best-effort — don't block startup
-    try {
-      if (tempFile) deps.fs.unlinkSync(tempFile);
-    } catch {
-      /* ignore */
-    }
-  } finally {
-    try {
-      if (tempDir) deps.fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-async function startDashboardWithFallback(
-  paths: CoreProjectPaths,
-  dashboardPort: number,
-  apiPort: number,
-  deps: CoreDependencies,
-  enableVerboseLogging: boolean,
-  relayApiKey?: string,
-  brokerApiKey?: string
-): Promise<{ process: SpawnedProcess; port: number | null }> {
-  const preferredBinary = deps.findDashboardBinary();
-  await refreshDashboardAssetsIfStale(preferredBinary, deps);
-  let process = startDashboard(
-    paths,
-    dashboardPort,
-    apiPort,
-    deps,
-    enableVerboseLogging,
-    preferredBinary,
-    relayApiKey,
-    brokerApiKey
-  );
-  let port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
-
-  if (port === null && preferredBinary) {
-    deps.warn('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
-    process = startDashboard(
-      paths,
-      dashboardPort,
-      apiPort,
-      deps,
-      enableVerboseLogging,
-      null,
-      relayApiKey,
-      brokerApiKey
-    );
-    port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
-  }
-
-  return { process, port };
-}
-
-async function waitForDashboard(
-  port: number,
-  process: SpawnedProcess,
-  deps: Pick<CoreDependencies, 'warn'>,
-  isShuttingDown: () => boolean
-): Promise<void> {
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    if (process.killed) {
-      if (!isShuttingDown()) {
-        deps.warn(`Warning: Dashboard process exited before becoming ready on port ${port}`);
-      }
-      return;
-    }
-    try {
-      const resp = await fetch(`http://localhost:${port}/health`);
-      if (resp.ok) return; // Dashboard is up
-    } catch {
-      // Not ready yet
-    }
-  }
-  if (!isShuttingDown()) {
-    deps.warn(`Warning: Dashboard not responding on port ${port} after 10s`);
-  }
-}
-
-async function discoverExistingBrokerApiPort(
-  preferredApiPort: number,
-  maxAttempts: number,
-  deps: Pick<CoreDependencies, 'warn'>
-): Promise<number> {
-  const attempts = Math.max(1, maxAttempts);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const candidatePort = preferredApiPort + attempt;
-    if (candidatePort > MAX_PORT) {
-      return preferredApiPort;
-    }
-    try {
-      const response = await fetch(`http://localhost:${candidatePort}/health`);
-      if (response.ok) {
-        if (attempt > 0) {
-          deps.warn(`Detected existing broker API on port ${candidatePort}.`);
-        }
-        return candidatePort;
-      }
-    } catch {
-      // Keep scanning.
-    }
-  }
-  return preferredApiPort;
-}
-
-async function shutdownUpResources(
-  relay: CoreRelay,
-  dashboardProcess: SpawnedProcess | undefined,
-  dataDir: string,
-  deps: CoreDependencies,
-  ownsBroker: boolean
-): Promise<void> {
-  if (dashboardProcess && !dashboardProcess.killed) {
-    try {
-      dashboardProcess.kill('SIGTERM');
-    } catch {
-      // Best-effort cleanup.
-    }
-  }
-
+async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: CoreDependencies): Promise<void> {
   await relay.shutdown().catch(() => undefined);
-  if (ownsBroker) {
-    safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
-  }
+  safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
 }
 
 // eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
-
-  if (options.background && options.foreground) {
-    deps.error('Cannot use --background and --foreground together.');
-    deps.exit(1);
-    return;
-  }
 
   const paths = deps.getProjectPaths();
   // --state-dir overrides where the broker writes state / connection files
@@ -1280,7 +714,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.env.AGENT_RELAY_STATE_DIR = resolved;
   }
 
-  if (options.background || (options.dashboard === false && !options.foreground)) {
+  if (options.background) {
     const preflight = await recoverHalfStartedBroker(paths, deps);
     if (preflight === 'running') {
       const pid = readBrokerPid(paths.dataDir, deps);
@@ -1355,26 +789,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     return;
   }
 
-  const wantsDashboard = options.dashboard !== false;
-  const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
-  const shouldReuseExistingBroker = options.reuseExistingBroker === true;
-  const dashboardPort = wantsDashboard
-    ? await resolveDashboardPortWithFallback(requestedDashboardPort, MAX_DASHBOARD_PORT_ATTEMPTS, deps)
-    : requestedDashboardPort;
-  if (wantsDashboard && dashboardPort !== requestedDashboardPort) {
-    deps.warn(
-      `Requested dashboard port ${requestedDashboardPort} is already in use; active dashboard will run on ${dashboardPort}.`
-    );
-  }
-
+  const basePort = resolveBrokerBasePort(deps);
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
-  let existingPid = readBrokerPid(paths.dataDir, deps);
-  let ownsBroker = true;
+  const existingPid = readBrokerPid(paths.dataDir, deps);
 
   let relay: CoreRelay | null = null;
-  let apiPort = dashboardPort + 1;
-  let dashboardProcess: SpawnedProcess | undefined;
-  const dashboardVerbose = Boolean(options.verbose) || isDebugLikeLoggingEnabled(deps);
+  let fleetSidecar: RunningFleetSidecar | undefined;
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
@@ -1384,7 +804,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       if (relay === null) {
         shutdownPromise = Promise.resolve();
       } else {
-        shutdownPromise = shutdownUpResources(relay, dashboardProcess, paths.dataDir, deps, ownsBroker);
+        shutdownPromise = (async () => {
+          await fleetSidecar?.stop();
+          await shutdownUpResources(relay, paths.dataDir, deps);
+        })();
       }
     }
     await shutdownPromise;
@@ -1392,114 +815,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   try {
     if (existingPid !== null) {
       if (isProcessRunning(existingPid, deps)) {
-        if (!shouldReuseExistingBroker || !wantsDashboard) {
-          deps.error(`Broker already running for this project (pid: ${existingPid}).`);
-          deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
-          deps.exit(1);
-          return;
-        }
-
-        apiPort = await discoverExistingBrokerApiPort(Math.max(1, apiPort), MAX_API_PORT_ATTEMPTS, deps);
-        const reusableRelay = await deps.createRelay(paths.projectRoot, apiPort);
-        try {
-          await reusableRelay.getStatus();
-        } catch {
-          await reusableRelay.shutdown().catch(() => undefined);
-          deps.warn(
-            `Broker already running for this project (pid: ${existingPid}), but API port ${apiPort} is not responding.`
-          );
-          deps.warn('Treating this as stale broker state and starting a fresh broker.');
-          safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
-          existingPid = null;
-        }
-
-        if (existingPid === null) {
-          // fallthrough and start a fresh broker
-        } else {
-          relay = reusableRelay;
-          ownsBroker = false;
-          const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
-          const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
-          if (
-            deps.env.RELAY_DASHBOARD_RELAY_URL &&
-            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
-            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
-          ) {
-            deps.warn(
-              `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
-                `but this session computed ${expectedRelayUrl}.`
-            );
-          }
-          deps.log(`Relay API: ${dashboardRelayUrl}`);
-          if (dashboardVerbose) {
-            deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
-          }
-          deps.log(`Project: ${paths.projectRoot}`);
-          deps.log('Mode: broker (stdio)');
-          deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
-          deps.log('Broker already running for this project; reusing existing broker.');
-
-          if (wantsDashboard) {
-            const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
-            const dashboardStart = await startDashboardWithFallback(
-              paths,
-              dashboardPort,
-              apiPort,
-              deps,
-              dashboardVerbose,
-              relay?.workspaceKey,
-              brokerConn?.api_key
-            );
-            dashboardProcess = dashboardStart.process;
-            const startedDashboardPort = dashboardStart.port;
-            if (startedDashboardPort === null) {
-              deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-            } else {
-              if (startedDashboardPort !== dashboardPort) {
-                deps.warn(
-                  `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-                );
-              }
-              const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-              const dashboardUrl = dashboardPath
-                ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-                : `http://localhost:${startedDashboardPort}`;
-              deps.log(`Dashboard: ${dashboardUrl}`);
-
-              waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(
-                () => {}
-              );
-            }
-          }
-
-          deps.onSignal('SIGINT', async () => {
-            sigintCount += 1;
-            if (shuttingDown) {
-              if (sigintCount >= 2) {
-                deps.warn('Force exiting...');
-                deps.exit(130);
-              }
-              return;
-            }
-            deps.log('\nStopping...');
-            await shutdownOnce();
-            deps.exit(0);
-          });
-          deps.onSignal('SIGTERM', async () => {
-            if (shuttingDown) {
-              return;
-            }
-            await shutdownOnce();
-            deps.exit(0);
-          });
-
-          await deps.holdOpen();
-          return;
-        }
+        deps.error(`Broker already running for this project (pid: ${existingPid}).`);
+        deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
+        deps.exit(1);
+        return;
       }
-
       safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
-      existingPid = null;
     }
 
     // If a workspace key was explicitly provided, inject it into the environment
@@ -1513,80 +834,29 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
-    const started = await startBrokerWithPortFallback(paths, dashboardPort, deps, options.brokerName);
+    const started = await startBrokerWithPortFallback(paths, basePort, deps, options.brokerName);
     relay = started.relay;
-    apiPort = started.apiPort;
-    const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
-    const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
-    if (
-      deps.env.RELAY_DASHBOARD_RELAY_URL &&
-      deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
-      deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
-    ) {
-      deps.warn(
-        `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
-          `but this session computed ${expectedRelayUrl}.`
-      );
-    }
-    deps.log(`Relay API: ${dashboardRelayUrl}`);
-    if (dashboardVerbose) {
-      deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
-    }
 
+    deps.log(`Relay API: http://localhost:${started.apiPort}`);
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
     deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
 
-    if (wantsDashboard) {
-      const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
-      const dashboardStart = await startDashboardWithFallback(
-        paths,
-        dashboardPort,
-        apiPort,
-        deps,
-        dashboardVerbose,
-        relay?.workspaceKey,
-        brokerConn?.api_key
-      );
-      dashboardProcess = dashboardStart.process;
-      const startedDashboardPort = dashboardStart.port;
-      if (startedDashboardPort === null) {
-        deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-      } else {
-        if (startedDashboardPort !== dashboardPort) {
-          deps.warn(
-            `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-          );
-        }
-        const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-        const dashboardUrl = dashboardPath
-          ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-          : `http://localhost:${startedDashboardPort}`;
-        deps.log(`Dashboard: ${dashboardUrl}`);
-
-        // Verify the dashboard is actually reachable (non-blocking)
-        waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(() => {});
-      }
-    }
-
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
+    fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig);
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
-      if (wantsDashboard) {
-        deps.warn('Warning: auto-spawn from teams.json is skipped when dashboard mode manages the broker');
-      } else {
-        for (const agent of teamsConfig.agents) {
-          await relay.spawn({
-            name: agent.name,
-            cli: agent.cli,
-            channels: ['general'],
-            task: agent.task ?? '',
-            team: teamsConfig.team,
-          });
-        }
+      for (const agent of teamsConfig.agents) {
+        await relay.spawn({
+          name: agent.name,
+          cli: agent.cli,
+          channels: ['general'],
+          task: agent.task ?? '',
+          team: teamsConfig.team,
+        });
       }
     } else if (options.spawn === true && !teamsConfig) {
       deps.warn('Warning: --spawn specified but no teams.json found');
@@ -1617,14 +887,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   } catch (err: unknown) {
     await shutdownOnce();
     const message = toErrorMessage(err);
-    const stage = classifyBrokerStartStage(err, message, wantsDashboard);
+    const stage = classifyBrokerStartStage(err, message);
     track('broker_start_failed', {
       stage,
       error_class: classifyBrokerStartError(err),
     });
-    if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) {
-      deps.error(`Dashboard port ${dashboardPort} is already in use.`);
-    } else if (isBrokerAlreadyRunningError(message)) {
+    if (isBrokerAlreadyRunningError(message)) {
       reportAlreadyRunningError(message, paths.dataDir, deps);
     } else {
       deps.error(`Failed to start broker: ${describeError(err)}`);

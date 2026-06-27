@@ -7,13 +7,11 @@ use std::{
 };
 
 use crate::listen_api::{
-    broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
-    ListenApiRequest, SetInboundDeliveryModeOk,
+    broadcast_if_relevant, listen_api_router, DeliveryRouteError, FleetSidecarFrameResponse,
+    ListenApiConfig, ListenApiRequest, SetInboundDeliveryModeOk,
 };
-use crate::routing::display_target_for_dashboard;
 use crate::util::ansi::floor_char_boundary;
 
-use ::relaycast::WsEvent;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,26 +24,31 @@ use uuid::Uuid;
 
 use crate::{
     dedup::DedupCache,
+    fleet_wire::InventoryAgent,
     ids::{
         AgentId, ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
         WorkspaceAlias, WorkspaceId,
     },
+    node_control::{
+        FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot,
+        HandlerDispatchState,
+    },
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
-        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, ProtocolEnvelope,
-        RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
+        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, NodeManifest,
+        NodeSupervision, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
-        agent_name_eq, format_worker_preregistration_error, is_self_name, map_ws_event,
-        registration_retry_after_secs, resolve_dm_participants_cached, retry_agent_registration,
-        AuthClient, DmParticipantsCache, MultiWorkspaceSession, RegRetryOutcome,
+        format_worker_preregistration_error, registration_retry_after_secs,
+        retry_agent_registration, AuthClient, MultiWorkspaceSession, RegRetryOutcome,
         RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
+    supervisor::{RestartDecision, RestartPolicy},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
         AgentResultMcpConfig, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
-        InboundKind, PendingRelayMessage,
+        PendingRelayMessage,
     },
 };
 
@@ -53,11 +56,10 @@ use crate::cli::{
     DumpPtyCommand, DumpPtyFormat, HeadlessAppServerCommand, HeadlessCommand, InitCommand,
 };
 use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
-use crate::{broker, listen_api, routing, worker_request};
+use crate::{broker, listen_api, worker_request};
 
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
-const DEFAULT_RELAYCAST_BASE_URL: &str = "https://gateway.relaycast.dev";
 const THREAD_HISTORY_LIMIT: usize = 1_000;
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
@@ -69,6 +71,7 @@ mod app_server;
 mod connection;
 mod delivery;
 mod event_loop;
+mod fleet;
 mod headless;
 mod init;
 mod io;

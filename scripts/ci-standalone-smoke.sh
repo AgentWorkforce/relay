@@ -118,16 +118,20 @@ echo "=== Smoke: standalone down --force ==="
 DOWN_OUTPUT="$(run_cli local down --force 2>&1 || true)"
 assert_exact_count "$DOWN_OUTPUT" '^Cleaned up \(was not running\)$' 1 'down cleanup line'
 
-echo "=== Smoke: standalone up --no-dashboard ==="
+echo "=== Smoke: standalone up ==="
 UP_LOG="$TMP_ROOT/up.log"
-run_cli local up --no-dashboard >"$UP_LOG" 2>&1 &
+run_cli local up >"$UP_LOG" 2>&1 &
 UP_PID=$!
 
 sleep 8
 UP_EXIT=""
 if kill -0 "$UP_PID" 2>/dev/null; then
   run_cli local down --force --timeout 5000 >/dev/null 2>&1 || true
+  # Hard-kill after 15s if down --force didn't terminate the process (e.g. macOS 26 hang)
+  ( sleep 15 && kill -9 "$UP_PID" 2>/dev/null || true ) &
+  KILLER_PID=$!
   wait "$UP_PID" || true
+  kill "$KILLER_PID" 2>/dev/null || true
 else
   if wait "$UP_PID"; then
     UP_EXIT=0

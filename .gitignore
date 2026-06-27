@@ -83,9 +83,6 @@ __pycache__/
 .agentworkforce/relay/
 .relay/
 
-.sst
-web/waitlist.json
-web/.open-next
 .msd/
 /workflows/*
 .workflow-artifacts/*
@@ -93,3 +90,10 @@ web/.open-next
 !/workflows/refactor/
 !/workflows/relayauth-integration/
 !/workflows/cloud-connect/
+
+# Eval harness JSON reports (generated per run)
+tests/integration/broker/evals-reports/
+
+# Per-harness runtime config written during eval/agent runs — contains live
+# workspace keys and agent tokens; must never be committed.
+/opencode.json

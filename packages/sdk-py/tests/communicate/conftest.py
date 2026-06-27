@@ -43,6 +43,9 @@ class MockRelayServer:
         self.extra_agents: set[str] = set()
         self.received_ws_messages: list[dict[str, Any]] = []
         self.ws_connection_counts: dict[str, int] = defaultdict(int)
+        # When True, the WS endpoint refuses the upgrade so the socket never
+        # opens — simulating an environment where WebSockets are blocked.
+        self.reject_websocket = False
 
         self._active_websockets: dict[str, web.WebSocketResponse] = {}
         self._queued_errors: dict[str, deque[tuple[int, dict[str, Any]]]] = defaultdict(deque)
@@ -152,6 +155,13 @@ class MockRelayServer:
         await ws.send_json(payload)
         return payload
 
+    async def push_ws_ping(self, agent_id: str) -> None:
+        """Send a server keepalive {"type": "ping"} frame to the agent's socket."""
+        ws = self._active_websockets.get(agent_id)
+        if ws is None or ws.closed:
+            raise AssertionError(f"No active websocket for agent {agent_id!r}")
+        await ws.send_json({"type": "ping"})
+
     async def close_ws(self, agent_id: str) -> None:
         ws = self._active_websockets.get(agent_id)
         if ws is not None and not ws.closed:
@@ -225,6 +235,7 @@ class MockRelayServer:
                     "token": token,
                     "type": payload.get("type", "agent"),
                     "status": "online",
+                    "created_at": "2024-01-01T00:00:00Z",
                 },
             },
             status=201,
@@ -313,8 +324,10 @@ class MockRelayServer:
                 "data": {
                     "id": message_id,
                     "channel": channel,
+                    "agent_id": self.find_agent_id(sender["name"]) or "agent-unknown",
                     "agent_name": sender["name"],
                     "text": payload["text"],
+                    "created_at": "2024-01-01T00:00:00Z",
                 },
             },
             status=201,
@@ -347,8 +360,10 @@ class MockRelayServer:
                 "data": {
                     "id": reply_id,
                     "thread_id": thread_id,
+                    "agent_id": self.find_agent_id(sender["name"]) or "agent-unknown",
                     "agent_name": sender["name"],
                     "text": payload["text"],
+                    "created_at": "2024-01-01T00:00:00Z",
                 },
             },
             status=201,
@@ -399,12 +414,24 @@ class MockRelayServer:
             {agent["name"] for agent in self.registered_agents.values()} | self.extra_agents
         )
         agents = [
-            {"id": f"agent-mock-{i}", "name": name, "type": "agent", "status": "online"}
+            {
+                "id": f"agent-mock-{i}",
+                "workspace_id": self.workspace,
+                "name": name,
+                "type": "agent",
+                "token_hash": f"hash-{i}",
+                "status": "online",
+                "created_at": "2024-01-01T00:00:00Z",
+                "last_seen": "2024-01-01T00:00:00Z",
+            }
             for i, name in enumerate(names, start=1)
         ]
         return web.json_response({"ok": True, "data": agents})
 
     async def _handle_ws(self, request: web.Request) -> web.StreamResponse:
+        if self.reject_websocket:
+            raise web.HTTPServiceUnavailable(text="WebSocket disabled")
+
         token = request.query.get("token")
         agent_id = next(
             (
@@ -448,6 +475,9 @@ class MockRelayServer:
                 "headers": dict(request.headers),
                 "json": payload,
                 "path": request.path,
+                # raw_path preserves percent-encoding from the wire, unlike the
+                # decoded `path`, so tests can assert on what was actually sent.
+                "raw_path": request.raw_path,
             }
         )
 

@@ -15,7 +15,7 @@ pub(crate) struct RelayWorkspace {
 }
 
 pub(crate) struct RelaySession {
-    pub(crate) http_base: String,
+    pub(crate) configured_base: Option<String>,
     pub(crate) default_workspace_id: Option<WorkspaceId>,
     pub(crate) workspaces: Vec<RelayWorkspace>,
     pub(crate) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
@@ -102,6 +102,16 @@ pub(crate) fn normalize_initial_task(task: Option<String>) -> Option<String> {
     })
 }
 
+const EXIT_AFTER_TASK_INSTRUCTION: &str = "## Post-task exit\n\
+When the requested task is fully complete and you have reported the final outcome, output `/exit` on its own line so the Agent Relay harness exits cleanly. Do not output `/exit` before the task is complete.";
+
+pub(crate) fn apply_exit_after_task_instruction(task: Option<String>) -> String {
+    match normalize_initial_task(task) {
+        Some(task) => format!("{task}\n\n{EXIT_AFTER_TASK_INSTRUCTION}"),
+        None => EXIT_AFTER_TASK_INSTRUCTION.to_string(),
+    }
+}
+
 pub(crate) struct RelaySessionOptions<'a> {
     pub(crate) paths: &'a RuntimePaths,
     pub(crate) requested_name: &'a str,
@@ -116,12 +126,17 @@ pub(crate) struct RelaySessionOptions<'a> {
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let startup_debug = startup_debug_enabled();
     let connect_started = Instant::now();
-    let http_base = std::env::var("RELAYCAST_BASE_URL")
+    let configured_base: Option<String> = std::env::var("RELAYCAST_BASE_URL")
         .ok()
         .or_else(|| std::env::var("RELAY_BASE_URL").ok())
-        .unwrap_or_else(|| DEFAULT_RELAYCAST_BASE_URL.to_string());
-    let ws_base = std::env::var("RELAYCAST_WS_URL")
-        .unwrap_or_else(|_| derive_ws_base_url_from_http(&http_base));
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    // WS override (rare); else the SDK derives wss from the base.
+    let configured_ws: Option<String> = std::env::var("RELAYCAST_WS_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| configured_base.clone());
 
     log_startup_phase(
         startup_debug,
@@ -132,7 +147,7 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
             opts.channels.join(",")
         ),
     );
-    let auth = AuthClient::new(http_base.clone());
+    let auth = AuthClient::new(configured_base.clone());
     let sessions = auth
         .startup_session_set_with_options(
             Some(opts.requested_name),
@@ -202,8 +217,8 @@ timestamp='{}'
         "MultiWorkspaceSession::new begin",
     );
     let mut multi = MultiWorkspaceSession::new(
-        http_base.clone(),
-        ws_base,
+        configured_base.clone(),
+        configured_ws,
         auth,
         sessions,
         opts.channels,
@@ -239,7 +254,7 @@ timestamp='{}'
         .collect();
 
     Ok(RelaySession {
-        http_base,
+        configured_base,
         default_workspace_id,
         workspaces,
         ws_inbound_rx: multi.inbound_rx,

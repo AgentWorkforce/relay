@@ -14,8 +14,11 @@ import { registerLocalAgentCommands, type LocalAgentDependencies } from './local
 function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const client = {
     listAgents: vi.fn(async () => [{ name: 'lead' }]),
+    spawnPty: vi.fn(async () => undefined),
     release: vi.fn(async () => undefined),
     setModel: vi.fn(async () => ({ name: 'lead', model: 'opus', success: true })),
+    flushPending: vi.fn(async () => ({ flushed: 2 })),
+    setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
   };
   const attach = vi.fn(async () => 0);
   const log = vi.fn();
@@ -64,6 +67,36 @@ describe('local agent subtree', () => {
     expect(client.listAgents).toHaveBeenCalled();
   });
 
+  it('spawn forwards task-exit lifecycle options', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'codex',
+        '--name',
+        'WorkerA',
+        '--task',
+        'Ship it',
+        '--spawn-mode',
+        'task-exit',
+        '--exit-after-task',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'WorkerA',
+        cli: 'codex',
+        task: 'Ship it',
+        spawnMode: 'task_exit',
+        exitAfterTask: true,
+      })
+    );
+  });
+
   it('list connects to the existing project broker instead of spawning one', async () => {
     const client = {
       listAgents: vi.fn(async () => []),
@@ -87,6 +120,17 @@ describe('local agent subtree', () => {
     expect(client.disconnect).toHaveBeenCalled();
   });
 
+  it('spawn forwards --cwd to spawnPty', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'spawn', 'claude', '--name', 'Worker', '--cwd', '/home/user/my-project'],
+      { from: 'user' }
+    );
+    expect(client.spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Worker', cli: 'claude', cwd: '/home/user/my-project' })
+    );
+  });
+
   it('release calls client.release', async () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'release', 'lead'], { from: 'user' });
@@ -97,5 +141,66 @@ describe('local agent subtree', () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
     expect(client.setModel).toHaveBeenCalledWith('lead', 'opus');
+  });
+
+  it('message flush drains a local broker agent queue', async () => {
+    const client = { flushPending: vi.fn(async () => ({ flushed: 2 })) };
+    const connectLocal = vi.fn(async () => client as never);
+    const { program, log } = harness({ connectLocal });
+
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'message',
+        'flush',
+        'claude',
+        '--broker-url',
+        'http://127.0.0.1:3890',
+        '--api-key',
+        'secret',
+        '--state-dir',
+        '/tmp/relay-state',
+      ],
+      { from: 'user' }
+    );
+
+    expect(connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: 'http://127.0.0.1:3890',
+      apiKey: 'secret',
+      stateDir: '/tmp/relay-state',
+    });
+    expect(client.flushPending).toHaveBeenCalledWith('claude');
+    expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
+  });
+
+  it('message hold and auto switch local broker delivery mode', async () => {
+    const client = {
+      setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
+    };
+    const connectLocal = vi.fn(async () => client as never);
+    const { program, log } = harness({ connectLocal });
+
+    await program.parseAsync(['local', 'agent', 'message', 'hold', 'claude'], { from: 'user' });
+    await program.parseAsync(['local', 'agent', 'message', 'auto', 'claude'], { from: 'user' });
+
+    expect(connectLocal).toHaveBeenNthCalledWith(1, '/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir: undefined,
+    });
+    expect(connectLocal).toHaveBeenNthCalledWith(2, '/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir: undefined,
+    });
+    expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(1, 'claude', 'manual_flush');
+    expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(2, 'claude', 'auto_inject');
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ name: 'claude', mode: 'manual_flush', flushed: 0 }, null, 2)
+    );
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ name: 'claude', mode: 'auto_inject', flushed: 0 }, null, 2)
+    );
   });
 });

@@ -25,7 +25,7 @@ import {
   assertEventOrder,
   assertNoAclDenied,
 } from './utils/assert-helpers.js';
-import { HarnessDriverProtocolError } from '@agent-relay/sdk';
+import { HarnessDriverProtocolError } from '@agent-relay/harness-driver';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();

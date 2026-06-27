@@ -1,10 +1,10 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerAgentCommands, type AgentCommandDependencies } from './agent.js';
+import { registerAgentCommands } from './agent.js';
 import { registerChannelCommands } from './channel.js';
 import { registerMessageCommands } from './message.js';
-import { registerIntegrationCommands } from './integration.js';
+import { registerIntegrationCommands, type IntegrationCommandDependencies } from './integration.js';
 import { registerCapabilitiesCommands } from './capabilities.js';
 import type { SdkCommandDeps } from '../lib/sdk-command.js';
 
@@ -38,8 +38,25 @@ function createRelayMock() {
       webhooks: {
         create: vi.fn(async (i: unknown) => ({ id: 'wh1', ...(i as object) })),
         list: vi.fn(async () => []),
+        delete: vi.fn(async () => undefined),
+        trigger: vi.fn(async (_id: string, payload: unknown) => ({ triggered: true, payload })),
       },
-      subscriptions: { create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })) },
+      subscriptions: {
+        create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })),
+        list: vi.fn(async () => []),
+        get: vi.fn(async (id: string) => ({ id })),
+        delete: vi.fn(async () => undefined),
+      },
+    },
+    webhooks: {
+      createInbound: vi.fn(async (i: { channel: string; name?: string }) => ({
+        webhookId: 'in1',
+        url: 'https://relay.example/webhooks/in1',
+        token: 'tok_once',
+        ...i,
+      })),
+      list: vi.fn(async () => []),
+      delete: vi.fn(async () => undefined),
     },
     capabilities: {
       register: vi.fn(async (i: unknown) => ({ ...(i as object) })),
@@ -76,138 +93,6 @@ describe('SDK-backed CLI groups', () => {
     expect(log).toHaveBeenCalled();
   });
 
-  it('agent message flush drains a local broker agent queue', async () => {
-    const relay = createRelayMock();
-    const client = { flushPending: vi.fn(async () => ({ flushed: 2 })) };
-    const log = vi.fn();
-    const deps: Partial<AgentCommandDependencies> = {
-      createAgentRelay: () => relay as never,
-      createWorkspaceRelay: () => relay as never,
-      connectLocal: vi.fn(async () => client as never),
-      cwd: () => '/tmp/project',
-      log,
-      error: vi.fn(),
-      exit: vi.fn() as never,
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerAgentCommands(program, deps);
-
-    await program.parseAsync(
-      [
-        'agent',
-        'message',
-        'flush',
-        'claude',
-        '--broker-url',
-        'http://127.0.0.1:3890',
-        '--api-key',
-        'secret',
-        '--state-dir',
-        '/tmp/relay-state',
-      ],
-      { from: 'user' }
-    );
-
-    expect(deps.connectLocal).toHaveBeenCalledWith('/tmp/project', {
-      brokerUrl: 'http://127.0.0.1:3890',
-      apiKey: 'secret',
-      stateDir: '/tmp/relay-state',
-    });
-    expect(client.flushPending).toHaveBeenCalledWith('claude');
-    expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
-  });
-
-  it('agent message controls resolve broker selection flags with the default local client', async () => {
-    const relay = createRelayMock();
-    const fetch = vi.fn(async () => new Response(JSON.stringify({ flushed: 3 }), { status: 200 }));
-    const readConnectionFile = vi.fn(() => ({ url: 'http://file-broker:1111', api_key: 'file-key' }));
-    const log = vi.fn();
-    const deps: Partial<AgentCommandDependencies> = {
-      createAgentRelay: () => relay as never,
-      createWorkspaceRelay: () => relay as never,
-      cwd: () => '/tmp/project',
-      readConnectionFile,
-      getDefaultStateDir: () => '/tmp/default-state',
-      env: {},
-      fetch: fetch as never,
-      log,
-      error: vi.fn(),
-      exit: vi.fn() as never,
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerAgentCommands(program, deps);
-
-    await program.parseAsync(
-      [
-        'agent',
-        'message',
-        'flush',
-        'claude',
-        '--broker-url',
-        'http://flag-broker:2222/',
-        '--api-key',
-        'flag-key',
-        '--state-dir',
-        '/tmp/relay-state',
-      ],
-      { from: 'user' }
-    );
-
-    expect(readConnectionFile).toHaveBeenCalledWith('/tmp/relay-state');
-    expect(fetch).toHaveBeenCalledWith(
-      'http://flag-broker:2222/api/spawned/claude/flush',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({ 'X-API-Key': 'flag-key' }),
-      })
-    );
-    expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 3 }, null, 2));
-  });
-
-  it('agent message hold and auto switch local broker delivery mode', async () => {
-    const relay = createRelayMock();
-    const client = {
-      setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
-    };
-    const log = vi.fn();
-    const deps: Partial<AgentCommandDependencies> = {
-      createAgentRelay: () => relay as never,
-      createWorkspaceRelay: () => relay as never,
-      connectLocal: vi.fn(async () => client as never),
-      cwd: () => '/tmp/project',
-      log,
-      error: vi.fn(),
-      exit: vi.fn() as never,
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerAgentCommands(program, deps);
-
-    await program.parseAsync(['agent', 'message', 'hold', 'claude'], { from: 'user' });
-    await program.parseAsync(['agent', 'message', 'auto', 'claude'], { from: 'user' });
-
-    expect(deps.connectLocal).toHaveBeenNthCalledWith(1, '/tmp/project', {
-      brokerUrl: undefined,
-      apiKey: undefined,
-      stateDir: undefined,
-    });
-    expect(deps.connectLocal).toHaveBeenNthCalledWith(2, '/tmp/project', {
-      brokerUrl: undefined,
-      apiKey: undefined,
-      stateDir: undefined,
-    });
-    expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(1, 'claude', 'manual_flush');
-    expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(2, 'claude', 'auto_inject');
-    expect(log).toHaveBeenCalledWith(
-      JSON.stringify({ name: 'claude', mode: 'manual_flush', flushed: 0 }, null, 2)
-    );
-    expect(log).toHaveBeenCalledWith(
-      JSON.stringify({ name: 'claude', mode: 'auto_inject', flushed: 0 }, null, 2)
-    );
-  });
-
   it('channel set_topic calls channels.update', async () => {
     const { program, relay } = harness(registerChannelCommands);
     await program.parseAsync(['channel', 'set_topic', 'ops', 'New topic'], { from: 'user' });
@@ -236,6 +121,136 @@ describe('SDK-backed CLI groups', () => {
       url: 'https://x',
       event: 'message.created',
     });
+  });
+
+  it('integration webhook create retries with local broker auth after unauthorized SDK auth', async () => {
+    const firstRelay = createRelayMock();
+    const secondRelay = createRelayMock();
+    firstRelay.integrations.webhooks.create.mockRejectedValueOnce(new Error('Unauthorized'));
+    const createAgentRelay = vi.fn().mockReturnValueOnce(firstRelay).mockReturnValueOnce(secondRelay);
+    const resolveLocalRelayOptions = vi.fn(async () => ({
+      workspaceKey: 'rk_live_local',
+      baseUrl: 'https://relay.local',
+    }));
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: createAgentRelay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(
+      ['integration', 'webhook', 'create', 'https://x', '--event', 'message.created'],
+      { from: 'user' }
+    );
+
+    expect(resolveLocalRelayOptions).toHaveBeenCalled();
+    expect(createAgentRelay).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+    );
+    expect(secondRelay.integrations.webhooks.create).toHaveBeenCalledWith({
+      url: 'https://x',
+      event: 'message.created',
+    });
+    expect(log).toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('integration webhook create-inbound routes to webhooks.createInbound', async () => {
+    const { program, relay, log } = harness(registerIntegrationCommands);
+    await program.parseAsync(
+      ['integration', 'webhook', 'create-inbound', 'incidents', '--name', 'Slack incidents'],
+      { from: 'user' }
+    );
+    expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'incidents',
+      name: 'Slack incidents',
+    });
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('integration webhook create-inbound retries with the local broker workspace key after invalid SDK auth', async () => {
+    const firstRelay = createRelayMock();
+    const secondRelay = createRelayMock();
+    firstRelay.webhooks.createInbound.mockRejectedValueOnce(new Error('Invalid workspace key'));
+    const createAgentRelay = vi.fn().mockReturnValueOnce(firstRelay).mockReturnValueOnce(secondRelay);
+    const resolveLocalRelayOptions = vi.fn(async () => ({
+      workspaceKey: 'rk_live_local',
+      baseUrl: 'https://relay.local',
+    }));
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: createAgentRelay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(['integration', 'webhook', 'create-inbound', 'general'], { from: 'user' });
+
+    expect(resolveLocalRelayOptions).toHaveBeenCalled();
+    expect(createAgentRelay).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+    );
+    expect(secondRelay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'general',
+      name: undefined,
+    });
+    expect(log).toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('integration webhook create-inbound does not retry an explicit workspace key', async () => {
+    const relay = createRelayMock();
+    relay.webhooks.createInbound.mockRejectedValueOnce(new Error('Invalid API key'));
+    const resolveLocalRelayOptions = vi.fn(async () => ({ workspaceKey: 'rk_live_local' }));
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(
+      ['integration', 'webhook', 'create-inbound', 'general', '--workspace-key', 'rk_live_explicit'],
+      { from: 'user' }
+    );
+
+    expect(resolveLocalRelayOptions).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Invalid API key');
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('integration webhook list-inbound routes to webhooks.list', async () => {
+    const { program, relay, log } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'webhook', 'list-inbound'], { from: 'user' });
+    expect(relay.webhooks.list).toHaveBeenCalled();
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('integration webhook delete-inbound routes to webhooks.delete', async () => {
+    const { program, relay } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'webhook', 'delete-inbound', 'in1'], { from: 'user' });
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('in1');
   });
 
   it('capabilities register routes to capabilities.register', async () => {

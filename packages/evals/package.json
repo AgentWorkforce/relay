@@ -1,0 +1,83 @@
+{
+  "name": "@agent-relay/evals",
+  "version": "9.1.4",
+  "description": "Agent Relay eval harness — scenario runner, broker harness, and scoring utilities for testing relay-connected agents",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js",
+      "default": "./dist/types.js"
+    },
+    "./runner": {
+      "types": "./dist/runner.d.ts",
+      "import": "./dist/runner.js",
+      "default": "./dist/runner.js"
+    },
+    "./harness": {
+      "types": "./dist/harness.d.ts",
+      "import": "./dist/harness.js",
+      "default": "./dist/harness.js"
+    },
+    "./scoring/base": {
+      "types": "./dist/scoring/base.d.ts",
+      "import": "./dist/scoring/base.js",
+      "default": "./dist/scoring/base.js"
+    },
+    "./scoring/lifecycle": {
+      "types": "./dist/scoring/lifecycle.d.ts",
+      "import": "./dist/scoring/lifecycle.js",
+      "default": "./dist/scoring/lifecycle.js"
+    },
+    "./scenarios/helpers": {
+      "types": "./dist/scenarios/helpers.d.ts",
+      "import": "./dist/scenarios/helpers.js",
+      "default": "./dist/scenarios/helpers.js"
+    },
+    "./scenarios/onboarding": {
+      "types": "./dist/scenarios/onboarding.d.ts",
+      "import": "./dist/scenarios/onboarding.js",
+      "default": "./dist/scenarios/onboarding.js"
+    },
+    "./scoring/mount": {
+      "types": "./dist/scoring/mount.d.ts",
+      "import": "./dist/scoring/mount.js",
+      "default": "./dist/scoring/mount.js"
+    },
+    "./scenarios/core": {
+      "types": "./dist/scenarios/index.d.ts",
+      "import": "./dist/scenarios/index.js",
+      "default": "./dist/scenarios/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@agent-relay/harness-driver": "9.1.4",
+    "@agent-relay/integration-prompts": "9.1.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/evals"
+  },
+  "license": "Apache-2.0"
+}

@@ -33,6 +33,8 @@ import { registerChannelCommands } from './commands/channel.js';
 import { registerMessageCommands } from './commands/message.js';
 import { registerIntegrationCommands } from './commands/integration.js';
 import { registerCapabilitiesCommands } from './commands/capabilities.js';
+import { registerFleetCommands } from './commands/fleet.js';
+import { registerSkillsCommands } from './commands/skills.js';
 
 dotenvConfig({ quiet: true });
 
@@ -108,7 +110,7 @@ function resolveProgramName(argv: string[] = process.argv): string {
 
 /**
  * Export the resolved CLI + SDK versions on the current process env so that
- * any child process we spawn (the Rust broker, the dashboard server, etc.)
+ * any child process we spawn (the Rust broker, etc.)
  * inherits them and can attach them as common telemetry properties without
  * having to re-resolve `package.json`s on its own.
  *
@@ -292,6 +294,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerLocalWorkflowCommands(local);
 
   registerCoreMaintenance(program);
+  registerFleetCommands(program);
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
@@ -301,6 +304,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerMessageCommands(program);
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
+  registerSkillsCommands(program);
 
   program
     .command('mcp')

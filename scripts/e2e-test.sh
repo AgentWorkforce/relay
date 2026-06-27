@@ -18,7 +18,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Configuration
 AGENT_NAME="e2e-test-agent"
-DASHBOARD_PORT=3889  # Use different port to avoid conflicts with running instances
+BROKER_PORT=3889  # Broker API binds BROKER_PORT+1; kept distinct to avoid conflicts
 SPAWN_TIMEOUT=120
 DAEMON_ONLY=false
 
@@ -30,11 +30,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --port)
-      DASHBOARD_PORT="$2"
+      BROKER_PORT="$2"
       shift 2
       ;;
     --port=*)
-      DASHBOARD_PORT="${1#*=}"
+      BROKER_PORT="${1#*=}"
       shift
       ;;
     *)
@@ -118,7 +118,7 @@ fi
 
 log_info "Configuration:"
 log_info "  Agent name:     $AGENT_NAME"
-log_info "  Dashboard port: $DASHBOARD_PORT"
+log_info "  Broker port:     $BROKER_PORT"
 log_info "  Daemon only:    $DAEMON_ONLY"
 log_info "  CLI command:    $CLI_CMD"
 
@@ -130,9 +130,6 @@ cleanup() {
   # Stop daemon (with timeout to prevent hanging)
   log_info "Ensuring daemon is stopped..."
   run_with_timeout 10 "$CLI_CMD" local down --force --timeout 5000 2>/dev/null || true
-
-  # Force kill any remaining processes if timeout occurred
-  pkill -9 -f "relay-dashboard-server.*--port.*$DASHBOARD_PORT" 2>/dev/null || true
 
   log_info "Cleanup complete."
 }
@@ -154,16 +151,16 @@ log_phase "Phase 1: Broker Startup"
 # Kill any existing daemon (with timeout to prevent hanging)
 run_with_timeout 10 "$CLI_CMD" local down --force --timeout 5000 2>/dev/null || true
 
-# Kill any process using our target port (ensures dashboard can bind)
+# Kill any process using our target port (ensures the broker can bind)
 if command -v lsof &> /dev/null; then
-  lsof -ti:$DASHBOARD_PORT | xargs kill -9 2>/dev/null || true
+  lsof -ti:$BROKER_PORT | xargs kill -9 2>/dev/null || true
 fi
 sleep 1
 
-# Start broker+dashboard in background, redirect output to log file
+# Start broker in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agentworkforce/relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-"$CLI_CMD" local up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
+AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" local up > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"

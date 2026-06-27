@@ -1006,18 +1006,6 @@ impl WorkerRegistry {
         let workers = self.routing_workers();
         routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
     }
-
-    pub(crate) fn has_any_worker(&self) -> bool {
-        !self.workers.is_empty()
-    }
-
-    pub(crate) fn has_worker_by_name_ignoring_case(&self, target: &str) -> bool {
-        let trimmed = target.trim();
-        self.workers.iter().any(|(worker_name, _)| {
-            trimmed.eq_ignore_ascii_case(worker_name)
-                || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
-        })
-    }
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
@@ -1389,14 +1377,14 @@ async fn codex_local_fallback_model(
     }
 
     match codex_debug_models_contains_model(resolved_cli, requested_model).await {
-        Some(true) => None,
-        Some(false) | None => Some(GPT_5_5_FALLBACK),
+        Some(true) | None => None,
+        Some(false) => Some(GPT_5_5_FALLBACK),
     }
 }
 
 async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> Option<bool> {
     let output = timeout(
-        Duration::from_millis(1_500),
+        Duration::from_secs(5),
         Command::new(resolved_cli)
             .arg("debug")
             .arg("models")
@@ -1603,7 +1591,6 @@ mod tests {
     #[test]
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
-        assert!(!reg.has_any_worker());
         assert!(reg.list().is_empty());
     }
 

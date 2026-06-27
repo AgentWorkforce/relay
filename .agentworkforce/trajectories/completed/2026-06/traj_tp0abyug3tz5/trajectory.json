@@ -1,0 +1,20 @@
+{
+  "id": "traj_tp0abyug3tz5",
+  "version": 1,
+  "task": {
+    "title": "Full dependency audit of relay codebase"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-06-12T09:07:15.498Z",
+  "completedAt": "2026-06-12T09:44:44.441Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7cca70aa5440500cb315cfa1c863c768d56be3c9",
+    "endRef": "7cca70aa5440500cb315cfa1c863c768d56be3c9"
+  }
+}

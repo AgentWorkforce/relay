@@ -2,6 +2,23 @@ use super::*;
 
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
+        let req = match req {
+            ListenApiRequest::FleetSidecarConnect { outbound, reply } => {
+                let result = self.handle_fleet_sidecar_connect(outbound).await;
+                let _ = reply.send(result);
+                return;
+            }
+            ListenApiRequest::FleetSidecarDisconnect => {
+                self.handle_fleet_sidecar_disconnect().await;
+                return;
+            }
+            ListenApiRequest::FleetSidecarFrame { frame, reply } => {
+                let result = self.handle_fleet_sidecar_frame(frame).await;
+                let _ = reply.send(result);
+                return;
+            }
+            other => other,
+        };
         let paths = &self.paths;
         let state = &mut self.state;
         let workspaces = &self.workspaces;
@@ -13,6 +30,12 @@ impl BrokerRuntime {
         let ws_control_tx = &self.ws_control_tx;
         let sdk_out_tx = &self.sdk_out_tx;
         let workers = &mut self.workers;
+        let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_node_name = self.fleet_node_name.as_str();
+        let fleet_inventory = &mut self.fleet_inventory;
+        let fleet_delivery_book = &mut self.fleet_delivery_book;
+        let fleet_max_agents = self.fleet_max_agents;
+        let fleet_handlers_live = self.fleet_handlers.handlers_live();
         let telemetry = &self.telemetry;
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
@@ -43,6 +66,7 @@ impl BrokerRuntime {
                 shadow_mode,
                 continue_from,
                 idle_threshold_secs,
+                exit_after_task,
                 skip_relay_prompt,
                 restart_policy,
                 harness_config,
@@ -76,37 +100,97 @@ impl BrokerRuntime {
                     }
                 };
                 let mut preregistration_warning: Option<String> = None;
-                let registration_result =
-                    retry_agent_registration(relaycast_http, &name, Some(&cli)).await;
-                let worker_relay_key = match registration_result {
-                    Ok(token) => Some(token),
-                    Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                        let message = format_worker_preregistration_error(&name, &error);
-                        tracing::warn!(
-                            worker = %name,
-                            error = %error,
-                            "continuing spawn without pre-registration after retries exhausted"
-                        );
-                        preregistration_warning = Some(message);
-                        None
-                    }
-                    Err(RegRetryOutcome::Fatal(error)) => {
-                        let _ = reply.send(Err(format_worker_preregistration_error(&name, &error)));
-                        return;
-                    }
-                };
-
-                // Caller-supplied agent_token overrides auto-registration.
-                // Seed it so broker-side read-acks later act as this exact
-                // recipient identity instead of minting a replacement token.
+                // Caller-supplied agent_token is authoritative. In fleet mode it
+                // was minted by the node control connection, and the worker must
+                // receive that exact token before its harness starts.
+                //
+                // Otherwise bind the agent to this node via node-control
+                // `agent.register` — the same step the engine `action.invoke`
+                // spawn converges on — so the agent is born `via_node`-bound and
+                // delivery flows over /v1/node/ws. The minted token is injected
+                // as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP) so
+                // the worker MCP never re-registers over HTTP. If node binding is
+                // unavailable, fall back to HTTP pre-registration so a tokenless
+                // node (e.g. mint failure) still spawns a working agent.
                 let worker_relay_key = if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
                     Some(token)
                 } else {
-                    worker_relay_key
+                    // Derive the session ref from the resolved spec the same way
+                    // the fleet/sidecar paths do, so an HTTP spawn carrying a
+                    // `harnessConfig.session_id` registers as a resumable session
+                    // rather than a fresh spawn. No invocation id exists on the
+                    // HTTP path.
+                    let session_ref = super::fleet::fleet_initial_session_ref(&spec);
+                    match super::fleet::register_node_agent_token(
+                        fleet_control_tx,
+                        name.as_str(),
+                        None,
+                        session_ref,
+                    )
+                    .await
+                    {
+                        Ok(token) => {
+                            tracing::info!(
+                                worker = %name,
+                                "bound agent to node via agent.register for HTTP spawn"
+                            );
+                            Some(token.token)
+                        }
+                        Err(node_error) => {
+                            tracing::warn!(
+                                worker = %name,
+                                error = %node_error,
+                                "node agent.register unavailable; falling back to HTTP pre-registration"
+                            );
+                            match retry_agent_registration(relaycast_http, &name, Some(&cli)).await
+                            {
+                                Ok(token) => {
+                                    // HTTP registration alone leaves the agent
+                                    // without a node binding; the engine only
+                                    // delivers to `via_node` agents in node-only
+                                    // delivery. Bind it to this node so it is
+                                    // deliverable, surfacing a loud warning if the
+                                    // bind fails.
+                                    if let Some(warning) =
+                                        super::relaycast_events::bind_http_registered_agent_to_node(
+                                            relaycast_http,
+                                            fleet_node_name,
+                                            &name,
+                                        )
+                                        .await
+                                    {
+                                        preregistration_warning = Some(warning);
+                                    }
+                                    Some(token)
+                                }
+                                Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                                    let message =
+                                        format_worker_preregistration_error(&name, &error);
+                                    tracing::warn!(
+                                        worker = %name,
+                                        error = %error,
+                                        "continuing spawn without pre-registration after retries exhausted"
+                                    );
+                                    preregistration_warning = Some(message);
+                                    None
+                                }
+                                Err(RegRetryOutcome::Fatal(error)) => {
+                                    let _ = reply.send(Err(format_worker_preregistration_error(
+                                        &name, &error,
+                                    )));
+                                    return;
+                                }
+                            }
+                        }
+                    }
                 };
 
-                let mut effective_task = normalize_initial_task(task);
+                let mut effective_task = if exit_after_task {
+                    Some(apply_exit_after_task_instruction(task))
+                } else {
+                    normalize_initial_task(task)
+                };
                 if let Some(ref continue_from) = continue_from {
                     let continuity_dir = continuity_dir(&paths.state);
                     let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
@@ -225,6 +309,26 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        // Prepend relay skill text for small-tier models and CLI harnesses that
+                        // need explicit tool guidance to reliably call add_agent / remove_agent.
+                        // Skip when relay prompt injection is opted out — relay tools are absent.
+                        if !skip_relay_prompt {
+                            if let Some(prefix) = relay_skill_prefix(
+                                effective_spec.cli.as_deref().unwrap_or(&cli),
+                                effective_spec.model.as_deref(),
+                            ) {
+                                effective_task = Some(match effective_task {
+                                    Some(task) => format!("{prefix}\n\n{task}"),
+                                    None => prefix,
+                                });
+                                tracing::debug!(
+                                    agent = %name,
+                                    cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
+                                    model = ?effective_spec.model,
+                                    "injected relay skill prefix for model or CLI harness"
+                                );
+                            }
+                        }
                         if let Some(ref task_text) = effective_task {
                             workers
                                 .initial_tasks
@@ -234,7 +338,9 @@ impl BrokerRuntime {
                         telemetry.track(TelemetryEvent::AgentSpawn {
                             cli: cli.clone(),
                             runtime: runtime_label(&effective_spec.runtime).to_string(),
-                            spawn_source: ActionSource::HumanDashboard,
+                            // `/api/spawn` is the HTTP entry point a human drives
+                            // through the CLI (the broker's only human caller).
+                            spawn_source: ActionSource::HumanCli,
                             has_task: effective_task.is_some(),
                             is_shadow: effective_spec.shadow_of.is_some()
                                 || effective_spec.shadow_mode.is_some(),
@@ -437,6 +543,21 @@ impl BrokerRuntime {
                         if paths.persist {
                             let _ = state.save(&paths.state);
                         }
+                        super::fleet::prune_fleet_agent_state(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            fleet_delivery_book,
+                            &name,
+                        )
+                        .await;
+                        super::fleet::publish_fleet_load_snapshot(
+                            fleet_control_tx,
+                            u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                            fleet_max_agents,
+                            fleet_handlers_live,
+                            true,
+                        )
+                        .await;
                         let _ =
                             send_event(sdk_out_tx, json!({"kind":"agent_released","name":&name}))
                                 .await;
@@ -457,6 +578,21 @@ impl BrokerRuntime {
                             if paths.persist {
                                 let _ = state.save(&paths.state);
                             }
+                            super::fleet::prune_fleet_agent_state(
+                                fleet_control_tx,
+                                fleet_inventory,
+                                fleet_delivery_book,
+                                &name,
+                            )
+                            .await;
+                            super::fleet::publish_fleet_load_snapshot(
+                                fleet_control_tx,
+                                u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                                fleet_max_agents,
+                                fleet_handlers_live,
+                                true,
+                            )
+                            .await;
                             tracing::debug!(
                                 worker = %name,
                                 "ignoring duplicate HTTP API release for already exited worker"
@@ -1524,6 +1660,11 @@ impl BrokerRuntime {
                     "persist": persist,
                 })));
             }
+            ListenApiRequest::FleetSidecarConnect { .. }
+            | ListenApiRequest::FleetSidecarDisconnect
+            | ListenApiRequest::FleetSidecarFrame { .. } => {
+                unreachable!("fleet sidecar API requests are handled before runtime borrows")
+            }
         }
     }
 }
@@ -1551,6 +1692,154 @@ fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
     channels
         .iter()
         .any(|existing| existing.as_str().eq_ignore_ascii_case(channel))
+}
+
+/// One-line skill text prepended for CLI harnesses that need a minimal relay lifecycle hint.
+const RELAY_WORKER_ONE_LINER: &str = "\
+Call mcp__agent-relay__add_agent(name, cli, task) to spawn a relay worker \
+(cli: \"claude\", \"codex\", \"gemini\", or \"opencode\"; add model for Claude tier, \
+e.g. model: \"claude-opus-4-8\"), and mcp__agent-relay__remove_agent(name) to release when done.";
+
+/// Skill text prepended to the task for small/fast models (haiku, mini, flash) that need
+/// explicit tool guidance to reliably call mcp__agent-relay__add_agent.
+/// Eval data: haiku achieves 0/5 spawn reliability without guidance, 5/5 with this text.
+/// Sonnet/Opus pass bare (0-shot), so they receive no prefix.
+const SMALL_MODEL_RELAY_SKILL: &str = "\
+## Agent Relay — Worker Management
+
+### Spawn a relay worker
+To delegate a task to a dedicated relay worker agent, call:
+  mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"full task instructions\")
+Required: name (unique string), cli (\"claude\", \"codex\", \"gemini\", or \"opencode\"), task (complete instructions).
+To pin a Claude model: add model: \"claude-opus-4-8\" (Opus), \"claude-sonnet-4-6\" (Sonnet), or \"claude-haiku-4-5-20251001\" (Haiku).
+The relay worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
+
+### Release a relay worker
+When a relay worker reports DONE, immediately release them:
+  mcp__agent-relay__remove_agent(name: \"WorkerName\")
+Always release relay workers — unreleased agents waste resources.
+
+### When to spawn
+Spawn when: the task asks you to delegate or assign work, is large, needs specialised focus, or would block your own progress.";
+
+/// Returns true for small/fast model tiers that need explicit relay skill injection.
+/// Matches haiku (Claude), mini (GPT), flash (Gemini), and generic small-tier names.
+fn is_small_model_tier(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("haiku") || m.contains("-mini") || m.contains("-flash") || m.contains("small")
+}
+
+/// Returns the skill prefix to prepend to the initial task, if any.
+/// Only small-tier models receive the prefix; larger models are self-sufficient.
+fn model_skill_prefix(model: Option<&str>) -> Option<&'static str> {
+    model
+        .filter(|m| is_small_model_tier(m))
+        .map(|_| SMALL_MODEL_RELAY_SKILL)
+}
+
+/// Returns the CLI-specific relay skill prefix, if that harness needs one.
+fn cli_skill_prefix(cli: &str) -> Option<&'static str> {
+    let command = shlex::split(cli)
+        .and_then(|parts| parts.into_iter().next())
+        .or_else(|| cli.split_whitespace().next().map(ToOwned::to_owned))
+        .unwrap_or_else(|| cli.to_string());
+    let cli = Path::new(&command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command.as_str())
+        .to_lowercase();
+    if cli == "gemini" {
+        Some(RELAY_WORKER_ONE_LINER)
+    } else {
+        None
+    }
+}
+
+/// Returns the combined relay skill prefix for a spawned agent.
+pub(super) fn relay_skill_prefix(cli: &str, model: Option<&str>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(prefix) = model_skill_prefix(model) {
+        parts.push(prefix);
+    }
+    if let Some(prefix) = cli_skill_prefix(cli) {
+        parts.push(prefix);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+#[cfg(test)]
+mod skill_injection_tests {
+    use super::{
+        cli_skill_prefix, is_small_model_tier, model_skill_prefix, relay_skill_prefix,
+        RELAY_WORKER_ONE_LINER, SMALL_MODEL_RELAY_SKILL,
+    };
+
+    #[test]
+    fn small_tier_models_receive_prefix() {
+        assert!(is_small_model_tier("claude-haiku-4-5-20251001"));
+        assert!(is_small_model_tier("claude-haiku-4-5"));
+        assert!(is_small_model_tier("gpt-4o-mini"));
+        assert!(is_small_model_tier("gemini-2.0-flash"));
+        assert!(is_small_model_tier("gemini-1.5-flash-latest"));
+    }
+
+    #[test]
+    fn large_tier_models_receive_no_prefix() {
+        assert!(!is_small_model_tier("claude-sonnet-4-6"));
+        assert!(!is_small_model_tier("claude-opus-4-8"));
+        assert!(!is_small_model_tier("gpt-4o"));
+        assert!(!is_small_model_tier("gemini-1.5-pro"));
+    }
+
+    #[test]
+    fn none_model_receives_no_prefix() {
+        assert!(model_skill_prefix(None).is_none());
+    }
+
+    #[test]
+    fn haiku_model_receives_skill_prefix() {
+        let prefix = model_skill_prefix(Some("claude-haiku-4-5-20251001"));
+        assert_eq!(prefix, Some(SMALL_MODEL_RELAY_SKILL));
+        let text = prefix.unwrap();
+        assert!(text.contains("mcp__agent-relay__add_agent"));
+        assert!(text.contains("mcp__agent-relay__remove_agent"));
+        assert!(text.contains("relay worker"));
+        assert!(!text.contains("Do it yourself"));
+    }
+
+    #[test]
+    fn cli_specific_harnesses_receive_prefixes() {
+        assert_eq!(cli_skill_prefix("gemini"), Some(RELAY_WORKER_ONE_LINER));
+        assert_eq!(
+            cli_skill_prefix("gemini --model pro"),
+            Some(RELAY_WORKER_ONE_LINER)
+        );
+        assert_eq!(
+            cli_skill_prefix("/usr/local/bin/gemini --model pro"),
+            Some(RELAY_WORKER_ONE_LINER)
+        );
+        // droid: no injection — broker injection kills s03 bare (0/5 vs 5/5 baseline without it)
+        assert_eq!(cli_skill_prefix("droid"), None);
+        assert_eq!(cli_skill_prefix("/opt/homebrew/bin/droid --foo"), None);
+        assert_eq!(cli_skill_prefix("codex"), None);
+        assert_eq!(cli_skill_prefix("claude"), None);
+    }
+
+    #[test]
+    fn relay_skill_prefix_combines_model_and_cli_guidance() {
+        let prefix = relay_skill_prefix("gemini", Some("gemini-2.0-flash")).unwrap();
+        assert!(prefix.contains("## Agent Relay"));
+        assert!(prefix.contains(RELAY_WORKER_ONE_LINER));
+
+        // droid gets no injection — broker-injected skill text suppresses relay tool use entirely
+        assert!(relay_skill_prefix("droid", None).is_none());
+
+        assert!(relay_skill_prefix("codex", Some("gpt-5.5")).is_none());
+    }
 }
 
 fn persist_agent_channels(

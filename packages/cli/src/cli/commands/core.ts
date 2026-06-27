@@ -16,7 +16,6 @@ import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
-const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
 
 type ExitFn = (code: number) => never;
 
@@ -85,7 +84,6 @@ export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
   createRelay: (cwd: string, apiPort?: number, brokerName?: string) => CoreRelay | Promise<CoreRelay>;
-  findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
@@ -103,7 +101,6 @@ export interface CoreDependencies {
   onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => void;
   holdOpen: () => Promise<void>;
   isPortInUse: (port: number) => Promise<boolean>;
-  findBrokerApiPort: () => Promise<number>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -138,69 +135,6 @@ function resolveCliVersion(fileSystem: CoreFileSystem): string {
   } catch {
     return 'unknown';
   }
-}
-
-function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
-  // Allow explicit override via env var (for local development)
-  const envOverride = process.env.RELAY_DASHBOARD_BINARY;
-  if (envOverride && fileSystem.existsSync(envOverride)) {
-    return envOverride;
-  }
-
-  // In local multi-repo workspaces, prefer a sibling relay-dashboard build when available.
-  // Only when RELAY_LOCAL_DEV is set — otherwise the installed binary should win so
-  // users don't accidentally run a stale dev build.
-  if (process.env.RELAY_LOCAL_DEV === '1') {
-    const siblingWorkspaceBuild = path.resolve(
-      process.cwd(),
-      '..',
-      'relay-dashboard',
-      'packages',
-      'dashboard-server',
-      'dist',
-      'start.js'
-    );
-    if (fileSystem.existsSync(siblingWorkspaceBuild)) {
-      return siblingWorkspaceBuild;
-    }
-  }
-
-  const binaryName = 'relay-dashboard-server';
-  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-
-  const searchPaths = [
-    path.join(homeDir, '.local', 'bin', binaryName),
-    path.join(homeDir, '.agentworkforce/relay', 'bin', binaryName),
-    path.join('/usr/local/bin', binaryName),
-  ];
-
-  for (const candidate of searchPaths) {
-    try {
-      if (!fileSystem.existsSync(candidate)) {
-        continue;
-      }
-      fileSystem.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching.
-    }
-  }
-
-  const envPath = process.env.PATH || '';
-  for (const dir of envPath.split(path.delimiter)) {
-    const candidate = path.join(dir, binaryName);
-    try {
-      if (!fileSystem.existsSync(candidate)) {
-        continue;
-      }
-      fileSystem.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching.
-    }
-  }
-
-  return null;
 }
 
 async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string): Promise<CoreRelay> {
@@ -240,7 +174,7 @@ async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string)
   return relay;
 }
 
-function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
+export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
     existsSync: fs.existsSync,
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
@@ -259,7 +193,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     loadTeamsConfig: (projectRoot: string) =>
       (loadTeamsConfig(projectRoot) as unknown as CoreTeamsConfig | null) ?? null,
     createRelay: createDefaultRelay,
-    findDashboardBinary: () => findDashboardBinaryDefault(fileSystem),
     spawnProcess: (command, args, options) =>
       spawnProcess(command, args, options as Parameters<typeof spawnProcess>[2]) as unknown as SpawnedProcess,
     execCommand: async (command: string) => {
@@ -307,21 +240,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     warn: (...args: unknown[]) => console.warn(...args),
-    findBrokerApiPort: async () => {
-      const dp = Number.parseInt(process.env.AGENT_RELAY_DASHBOARD_PORT ?? '3888', 10);
-      const startPort = (Number.isFinite(dp) ? dp : 3888) + 1;
-      for (let i = 0; i < 25; i++) {
-        const port = startPort + i;
-        if (port > 65535) break;
-        try {
-          const res = await fetch(`http://localhost:${port}/health`);
-          if (res.ok) return port;
-        } catch {
-          // Not responding, keep scanning.
-        }
-      }
-      return 0;
-    },
     exit: defaultExit,
     ...overrides,
   };
@@ -332,13 +250,10 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
 
   program
     .command('up')
-    .description('Start broker with web dashboard')
-    .option('--no-dashboard', 'Disable web dashboard')
-    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+    .description('Start the local broker')
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
-    .option('--foreground', 'Run --no-dashboard attached to this terminal')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
     .option(
@@ -348,11 +263,8 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
     .action(
       async (options: {
-        dashboard?: boolean;
-        port?: string;
         spawn?: boolean;
         background?: boolean;
-        foreground?: boolean;
         verbose?: boolean;
         workspaceKey?: string;
         stateDir?: string;

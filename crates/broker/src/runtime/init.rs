@@ -194,7 +194,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     log_startup_phase(startup_debug, broker_start, "connect_relay completed");
 
     let RelaySession {
-        http_base,
+        configured_base,
         default_workspace_id,
         workspaces,
         ws_inbound_rx,
@@ -218,6 +218,125 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
+    let node_id = match crate::node_control::default_node_id_path() {
+        Some(path) => {
+            // Node-id mode — explicit vs auto:
+            //   * Explicit / fleet: when an operator pre-enrolls this node and
+            //     supplies `RELAY_NODE_TOKEN`, the node id is pinned (via the
+            //     machine-id file) and MUST be sent verbatim in `node.register`,
+            //     or the engine rejects it with `node_id_mismatch`. Use the file
+            //     content as-is — do NOT derive.
+            //   * Auto / direct: with no supplied token the broker mints its own
+            //     node via `create_node`; derive the id from the machine seed +
+            //     cwd so one host serving multiple workspaces/dirs doesn't collide.
+            let pinned = std::env::var("RELAY_NODE_TOKEN")
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty());
+            let loaded = if pinned {
+                crate::node_control::load_or_create_machine_seed(&path)
+            } else {
+                crate::node_control::load_or_create_node_id(&path)
+            };
+            loaded.unwrap_or_else(|error| {
+                tracing::warn!(error = %error, "failed to load fleet node machine id; using ephemeral id");
+                format!("node_{}", Uuid::new_v4().simple())
+            })
+        }
+        None => format!("node_{}", Uuid::new_v4().simple()),
+    };
+    let node_name = crate::node_control::default_node_name(
+        (!cmd.name.trim().is_empty()).then_some(cmd.name.as_str()),
+    );
+    let fleet_ws_url = relaycast::node_control_ws_url(configured_base.as_deref());
+    let broker_version = format!("relay-broker/{}", crate::util::version::broker_version());
+    // The broker enrolls as a relaycast node and delivers/injects solely over
+    // /v1/node/ws. A node token is required to open that connection: prefer an
+    // explicit RELAY_NODE_TOKEN override, then a token previously minted for
+    // THIS node id, otherwise mint one now with the workspace key and persist
+    // it next to the node id so it rotates with the machine identity.
+    // The node token is scoped to the workspace (and engine) it was minted
+    // against. Thread the resolved workspace id and base URL through so the
+    // cached token is only reused when both match, and so a re-mint after a
+    // node-control 401 rewrites the correctly-scoped cache.
+    let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
+    let node_base_url = configured_base.clone();
+    let node_token = resolve_node_token(
+        &node_id,
+        &node_name,
+        &broker_version,
+        &node_workspace_id,
+        node_base_url.as_deref(),
+        relaycast_http.relay_client(),
+    )
+    .await;
+    if node_token.is_none() {
+        // Node-only delivery requires this broker to be a functioning relaycast
+        // node: without a node token it cannot open /v1/node/ws, so the engine
+        // delivers nothing and every spawned agent is effectively unreachable.
+        // This is a hard operational fault, not a benign warning. We do NOT exit
+        // (a token may arrive via env/mint later), but make the failure mode
+        // unmistakable in logs and on stderr.
+        tracing::error!(
+            node_id = %node_id,
+            "NO NODE TOKEN: this broker is NOT a functioning relaycast node (env unset, no cached token, mint failed). \
+             /v1/node/ws will not connect and realtime delivery will FAIL for every agent until a node token is available \
+             (set RELAY_NODE_TOKEN or restore connectivity so a token can be minted)."
+        );
+        eprintln!(
+            "[agent-relay] FATAL CONFIG: no node token available for node '{}'. \
+             Realtime delivery is DISABLED until RELAY_NODE_TOKEN is set or a token can be minted.",
+            node_id
+        );
+    }
+    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
+    // fallback (used when node-control `agent.register` is unavailable) binds
+    // spawned agents to this node so they become `via_node` and node delivery
+    // reaches them.
+    let fleet_node_name = node_name.clone();
+    // Wire a re-mint facility so a node-control 401 (stale/wrong-scoped token)
+    // discards the cached token and mints a fresh one, instead of looping
+    // forever on the rejected token. Mirrors the initial mint above. Absent when
+    // no workspace RelayCast client is available (then a 401 surfaces a hard
+    // error rather than recovering).
+    let token_minter =
+        relaycast_http
+            .relay_client()
+            .map(|client| crate::node_control::NodeTokenMinter {
+                relay_client: client.clone(),
+                workspace_id: node_workspace_id.clone(),
+                base_url: node_base_url.clone(),
+                node_id: node_id.clone(),
+                node_name: node_name.clone(),
+                broker_version: broker_version.clone(),
+                token_path: crate::node_control::default_node_token_path(&node_id),
+            });
+    let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
+    let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
+    tokio::spawn(crate::node_control::run_node_control_client(
+        crate::node_control::FleetControlConfig {
+            ws_url: fleet_ws_url,
+            node_token,
+            node_id,
+            node_name,
+            broker_version,
+            token_minter,
+        },
+        fleet_control_rx,
+        fleet_event_tx,
+    ));
+    // Register this node unconditionally on connect (no sidecar required). This
+    // is the only command that flips the control client out of its idle state
+    // and into the connect loop, so the broker enrolls every startup.
+    if let Err(error) = fleet_control_tx
+        .send(FleetControlCommand::RegisterNode {
+            manifest: node_manifest,
+            resume_cursor: None,
+        })
+        .await
+    {
+        tracing::warn!(error = %error, "failed to queue node.register at startup");
+    }
     let workspace_memberships: Vec<WorkspaceMembershipSummary> = workspaces
         .iter()
         .map(|workspace| WorkspaceMembershipSummary {
@@ -252,6 +371,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         events_tx: events_tx.clone(),
         replay_buffer: replay_buffer.clone(),
         workspace_key: Some(relay_workspace_key.clone()),
+        relay_base_url: configured_base.clone(),
         memberships: workspace_memberships.clone(),
         default_workspace_id: default_workspace_id.clone(),
         persist: cmd.persist,
@@ -342,7 +462,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
 
     let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
     let mut worker_env = vec![
-        ("RELAY_BASE_URL".to_string(), http_base.clone()),
         (
             "AGENT_RELAY_WORKSPACE_KEY".to_string(),
             relay_workspace_key.clone(),
@@ -361,6 +480,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             relay_workspaces_json.clone(),
         ),
     ];
+    // Pass RELAY_BASE_URL to workers only when an override is configured; when
+    // unset, workers inherit the SDK default.
+    if let Some(base) = configured_base.as_deref() {
+        worker_env.push(("RELAY_BASE_URL".to_string(), base.to_string()));
+    }
     if let Some(default_workspace_id) = default_workspace_id.clone() {
         // Do NOT stamp RELAYFILE_WORKSPACE from default_workspace_id. The
         // relaycast workspace id and the relayfile workspace id are
@@ -438,7 +562,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // exit (`Release` arm or `reap_exited` sweep).
     let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
     let agent_result_tokens: HashMap<String, WorkerName> = HashMap::new();
-    let dm_participants_cache = DmParticipantsCache::new();
     let recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
         tracing::info!(
@@ -487,6 +610,19 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         api_open: true,
         ws_inbound_rx,
         relaycast_open: true,
+        fleet_control_tx,
+        fleet_node_name,
+        fleet_event_rx,
+        fleet_control_open: true,
+        fleet_delivery_book: FleetDeliveryBook::default(),
+        fleet_handlers: HandlerDispatchState::default(),
+        fleet_sidecar_out_tx: None,
+        fleet_sidecar_supervision: None,
+        fleet_sidecar_child: None,
+        fleet_sidecar_restart_at: None,
+        fleet_sidecar_restart: fleet::FleetSidecarRestartState::default(),
+        fleet_max_agents: 0,
+        fleet_inventory: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,
         worker_events_open: true,
@@ -503,7 +639,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         pending_requests,
         delivery_states,
         agent_result_tokens,
-        dm_participants_cache,
         recent_thread_messages,
         shutdown,
         lease_duration,
@@ -514,6 +649,82 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     };
 
     runtime.run().await
+}
+
+/// Resolve the node token used to authenticate the `/v1/node/ws` connection.
+///
+/// Precedence:
+/// 1. `RELAY_NODE_TOKEN` env override (operator-supplied; never persisted).
+/// 2. A token previously minted for this exact `node_id` and cached on disk.
+/// 3. A freshly minted token via `RelayCast::create_node` (workspace key),
+///    persisted next to the node id for reuse on the next start.
+///
+/// Returns `None` only when no override or cache exists and minting is
+/// impossible (no relay client) or fails; the caller logs and continues without
+/// node delivery.
+async fn resolve_node_token(
+    node_id: &str,
+    node_name: &str,
+    broker_version: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    relay_client: Option<&relaycast::RelayCast>,
+) -> Option<String> {
+    if let Some(token) = std::env::var("RELAY_NODE_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(token);
+    }
+
+    let token_path = crate::node_control::default_node_token_path(node_id);
+    if let Some(token) = token_path.as_deref().and_then(|path| {
+        crate::node_control::load_node_token(path, node_id, workspace_id, base_url)
+    }) {
+        tracing::info!(node_id = %node_id, workspace_id = %workspace_id, "reusing cached node token");
+        return Some(token);
+    }
+
+    let relay_client = relay_client?;
+    let request = relaycast::CreateNodeRequest {
+        node_id: Some(node_id.to_string()),
+        name: node_name.to_string(),
+        kind: Some("ws".to_string()),
+        role: Some("broker".to_string()),
+        delivery_adapter: None,
+        delivery: None,
+        capabilities: None,
+        max_agents: None,
+        tags: None,
+        version: Some(broker_version.to_string()),
+    };
+    match relay_client.create_node(request).await {
+        Ok(response) => {
+            let token = response.token.trim().to_string();
+            if token.is_empty() {
+                tracing::warn!(node_id = %node_id, "create_node returned an empty token");
+                return None;
+            }
+            if let Some(path) = token_path.as_deref() {
+                if let Err(error) = crate::node_control::persist_node_token(
+                    path,
+                    node_id,
+                    workspace_id,
+                    base_url,
+                    &token,
+                ) {
+                    tracing::warn!(node_id = %node_id, error = %error, "failed to persist minted node token");
+                }
+            }
+            tracing::info!(node_id = %node_id, workspace_id = %workspace_id, "minted node token via create_node");
+            Some(token)
+        }
+        Err(error) => {
+            tracing::warn!(node_id = %node_id, error = %error, "failed to mint node token via create_node");
+            None
+        }
+    }
 }
 
 fn callback_host_for_url(api_bind: &str, local_addr: SocketAddr) -> String {
@@ -545,10 +756,53 @@ fn bracket_ipv6_host(host: &str) -> String {
     }
 }
 
+/// Build the bootstrap node descriptor the broker sends before the fleet sidecar
+/// reports its real `defineNode` manifest.
+///
+/// It carries NO capabilities: the node's real `spawn:*`/action capabilities
+/// arrive on the sidecar's `node.register` (see `SdkToBroker::RegisterNode`). The
+/// bootstrap manifest must never advertise a bare `"spawn"` capability, because
+/// the relaycast engine does not treat `"spawn"` as a placement capability (only
+/// `spawn:*` is). A bare `"spawn"` makes the engine materialize a generic `spawn`
+/// ACTION pinned to this node's id, which then short-circuits capability-based
+/// spawn placement for the whole workspace — every `spawn` invoke is dispatched
+/// to whichever node bootstrapped first, ignoring `cli`/`target_node`/least-loaded
+/// routing. An empty manifest keeps the node online (registered) without claiming
+/// any handler until the sidecar supplies the authoritative capability set.
+fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str) -> NodeManifest {
+    NodeManifest {
+        name: node_name.to_string(),
+        node_id: Some(node_id.to_string()),
+        capabilities: Vec::new(),
+        max_agents: None,
+        tags: None,
+        version: Some(broker_version.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn bootstrap_node_manifest_advertises_no_capabilities() {
+        // Regression: a bare `"spawn"` capability in the bootstrap manifest makes
+        // the engine create a generic `spawn` action pinned to the bootstrapping
+        // node, hijacking capability-based spawn placement for the workspace. The
+        // bootstrap descriptor must carry the node's identity but ZERO
+        // capabilities; the real capability set arrives from the sidecar's
+        // `node.register`.
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        assert!(
+            manifest.capabilities.is_empty(),
+            "bootstrap manifest must advertise no capabilities, got {:?}",
+            manifest.capabilities
+        );
+        assert_eq!(manifest.name, "node-a");
+        assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
+        assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+    }
 
     #[test]
     fn callback_host_uses_family_specific_loopback_for_wildcards() {

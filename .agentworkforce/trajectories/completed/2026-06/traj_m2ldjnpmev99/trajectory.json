@@ -1,0 +1,53 @@
+{
+  "id": "traj_m2ldjnpmev99",
+  "version": 1,
+  "task": {
+    "title": "Fix PR CI command snapshot"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-18T21:12:34.284Z",
+  "completedAt": "2026-06-18T21:13:09.669Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-18T21:13:06.028Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4j4606o10yjt",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-18T21:13:06.028Z",
+      "endedAt": "2026-06-18T21:13:09.669Z",
+      "events": [
+        {
+          "ts": 1781817186029,
+          "type": "decision",
+          "content": "Updated bootstrap expected CLI commands for fleet workspace controls: Updated bootstrap expected CLI commands for fleet workspace controls",
+          "raw": {
+            "question": "Updated bootstrap expected CLI commands for fleet workspace controls",
+            "chosen": "Updated bootstrap expected CLI commands for fleet workspace controls",
+            "alternatives": [],
+            "reasoning": "CI failed because createProgram now registers fleet config/enable/disable/inherit, but the bootstrap test expected list still omitted them."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed PR CI by adding the newly registered fleet workspace CLI commands to the bootstrap expected command list.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6399193c4713e29ae6a9c280720c7d4d4edb4ee1",
+    "endRef": "6399193c4713e29ae6a9c280720c7d4d4edb4ee1"
+  }
+}

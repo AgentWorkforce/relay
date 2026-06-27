@@ -84,13 +84,13 @@ async def test_connect_and_disconnect_manage_registration_and_websocket(relay_se
             "send_dm",
             ("Review-Core", "hello"),
             "send_dm",
-            {"to": "Review-Core", "text": "hello"},
+            {"to": "Review-Core", "text": "hello", "mode": "wait"},
         ),
         (
             "post_message",
             ("core-py", "status update"),
             "post_message",
-            {"channel": "core-py", "text": "status update"},
+            {"channel": "core-py", "text": "status update", "mode": "wait"},
         ),
         (
             "reply",
@@ -206,16 +206,11 @@ async def test_websocket_messages_are_decoded_and_delivered_to_callback(relay_se
 
 
 @pytest.mark.asyncio
-async def test_transport_reconnects_after_websocket_disconnect(relay_server, monkeypatch):
-    transport_module = _transport_module()
-    RelayTransport = transport_module.RelayTransport
-    sleep_calls: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
-        await _ORIGINAL_ASYNCIO_SLEEP(0)
-
-    monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+async def test_transport_reconnects_after_websocket_disconnect(relay_server):
+    # Reconnection is now owned by relay_sdk's WsClient. Verify the transport
+    # re-establishes the socket and continues delivering messages after the
+    # server drops the connection.
+    RelayTransport = _transport_class()
 
     transport = RelayTransport("TransportTester", relay_server.make_config())
     received: list[Message] = []
@@ -239,7 +234,7 @@ async def test_transport_reconnects_after_websocket_disconnect(relay_server, mon
             text="reconnected",
             message_id="message-reconnect-1",
         )
-        await asyncio.wait_for(delivered.wait(), timeout=1.0)
+        await asyncio.wait_for(delivered.wait(), timeout=2.0)
     finally:
         await transport.disconnect()
 
@@ -251,7 +246,51 @@ async def test_transport_reconnects_after_websocket_disconnect(relay_server, mon
         timestamp=None,
         message_id="message-reconnect-1",
     )
-    assert [delay for delay in sleep_calls if delay >= 1][:1] == [1]
+
+
+@pytest.mark.asyncio
+async def test_connect_raises_when_websocket_never_opens(relay_server):
+    # When the WS endpoint is blocked but HTTP registration succeeds, connect()
+    # must NOT report a connected state — it should signal failure so the caller
+    # falls back to HTTP polling. (Registration stays in place for polling.)
+    RelayTransport = _transport_class()
+    relay_server.reject_websocket = True
+
+    transport = RelayTransport("TransportTester", relay_server.make_config())
+
+    with pytest.raises(RelayConnectionError):
+        await transport.connect()
+
+    # Agent is still registered (so polling can deliver messages) and no socket
+    # is left dangling.
+    assert transport.agent_id is not None
+    assert transport._ws is None
+    assert transport._ws_task is None
+    assert not relay_server.websocket_connected(transport.agent_id)
+
+    await transport.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unregister_agent_percent_encodes_name(relay_server):
+    # Names containing route-reserved characters must be percent-encoded in the
+    # cleanup DELETE so they hit the intended route and are actually removed.
+    RelayTransport = _transport_class()
+    name = "team/agent?x#y"
+    transport = RelayTransport(name, relay_server.make_config())
+
+    await transport.register_agent()
+    agent_id = transport.agent_id
+    assert agent_id in relay_server.registered_agents
+
+    await transport.unregister_agent()
+
+    assert relay_server.request_count("unregister_agent") == 1
+    # The server matched and removed the agent, proving the route was correct.
+    assert agent_id not in relay_server.registered_agents
+    # The raw reserved characters were percent-encoded on the wire.
+    raw_path = relay_server.requests["unregister_agent"][-1]["raw_path"]
+    assert "team%2Fagent%3Fx%23y" in raw_path
 
 
 @pytest.mark.asyncio
@@ -310,19 +349,10 @@ async def test_send_dm_raises_connection_error_on_client_error(relay_server):
 
 
 @pytest.mark.asyncio
-async def test_send_dm_retries_transient_server_errors_before_succeeding(
-    relay_server,
-    monkeypatch,
-):
-    transport_module = _transport_module()
-    RelayTransport = transport_module.RelayTransport
-    sleep_calls: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
-        await _ORIGINAL_ASYNCIO_SLEEP(0)
-
-    monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+async def test_send_dm_retries_transient_server_errors_before_succeeding(relay_server):
+    # 5xx retry is owned by relay_sdk's HTTP client (3 retries after the first
+    # attempt). Two transient 503s should be retried away transparently.
+    RelayTransport = _transport_class()
 
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
@@ -341,23 +371,13 @@ async def test_send_dm_retries_transient_server_errors_before_succeeding(
 
     assert message_id.startswith("message-")
     assert relay_server.request_count("send_dm") == 3
-    assert [delay for delay in sleep_calls if delay >= 1][:2] == [1, 2]
 
 
 @pytest.mark.asyncio
-async def test_send_dm_raises_after_exhausting_server_error_retries(
-    relay_server,
-    monkeypatch,
-):
-    transport_module = _transport_module()
-    RelayTransport = transport_module.RelayTransport
-    sleep_calls: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
-        await _ORIGINAL_ASYNCIO_SLEEP(0)
-
-    monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+async def test_send_dm_raises_after_exhausting_server_error_retries(relay_server):
+    # relay_sdk issues the initial attempt plus 3 retries (4 total). Queue 4
+    # persistent 503s so every attempt fails and the error surfaces.
+    RelayTransport = _transport_class()
 
     transport = RelayTransport("TransportTester", relay_server.make_config())
     await transport.connect()
@@ -367,7 +387,7 @@ async def test_send_dm_raises_after_exhausting_server_error_retries(
             "send_dm",
             status=503,
             message="Still failing",
-            repeat=3,
+            repeat=4,
         )
 
         with pytest.raises(RelayConnectionError, match="Still failing") as exc_info:
@@ -376,5 +396,63 @@ async def test_send_dm_raises_after_exhausting_server_error_retries(
         await transport.disconnect()
 
     assert exc_info.value.status_code == 503
-    assert relay_server.request_count("send_dm") == 3
-    assert [delay for delay in sleep_calls if delay >= 1][:2] == [1, 2]
+    assert relay_server.request_count("send_dm") == 4
+
+
+@pytest.mark.asyncio
+async def test_async_callback_task_is_retained_until_complete(relay_server):
+    # An async message callback returns a coroutine that _on_ws_event schedules
+    # via _track. The task must be held in _pending_tasks (asyncio only keeps a
+    # weak reference) so it can't be GC'd before it runs, and must be discarded
+    # once it finishes.
+    RelayTransport = _transport_class()
+    transport = RelayTransport("TransportTester", relay_server.make_config())
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def on_message(_message: Message) -> None:
+        started.set()
+        await release.wait()
+
+    transport.on_ws_message(on_message)
+    await transport.connect()
+
+    try:
+        await relay_server.push_ws_message(
+            transport.agent_id,
+            sender="Review-Core",
+            text="hold me",
+            channel="core-py",
+            message_id="message-ws-retained",
+        )
+        # While the callback is suspended, its task is retained.
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert len(transport._pending_tasks) == 1
+
+        # Let it finish; the done-callback must drop it from the set.
+        release.set()
+        await _wait_for(lambda: len(transport._pending_tasks) == 0)
+    finally:
+        release.set()
+        await transport.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_server_ping_is_answered_with_pong_by_sdk(relay_server):
+    # relay_sdk's WsClient auto-replies pong to a server {"type": "ping"} frame
+    # (0.2.0+), so the wrapper no longer needs a manual ping handler. Verify a
+    # server ping reaches the socket and is answered with a pong end-to-end.
+    RelayTransport = _transport_class()
+    transport = RelayTransport("TransportTester", relay_server.make_config())
+    await transport.connect()
+
+    try:
+        await relay_server.push_ws_ping(transport.agent_id)
+        await _wait_for(
+            lambda: any(
+                msg.get("type") == "pong" for msg in relay_server.received_ws_messages
+            )
+        )
+    finally:
+        await transport.disconnect()

@@ -62,6 +62,13 @@ export interface CLIAuthConfig {
   supportsDeviceFlow?: boolean;
   /** Command to install the CLI if not preinstalled on the sandbox */
   installCommand?: string;
+  /**
+   * Extra environment variables to export before running the auth command in
+   * the sandbox. Consumed by the cloud side when it builds the remote command.
+   * Used by providers that require a pinned callback port or other runtime
+   * environment for their auth flow.
+   */
+  env?: Record<string, string>;
 }
 
 /**
@@ -439,7 +446,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
   xai: {
     command: 'grok',
     args: ['login'],
-    // Device-code flow for headless/remote environments — `grok login` defaults
+    // Device-code flow for headless/remote environments - `grok login` defaults
     // to a loopback OAuth callback that cannot be reached through gateways
     // which don't forward TCP (same limitation codex hit on Daytona SSH).
     deviceFlowArgs: ['login', '--device-auth'],
@@ -458,7 +465,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     waitTimeout: 30000,
     prompts: [
       {
-        // Generic enter prompt (fallback) — device-auth prints a URL + code
+        // Generic enter prompt (fallback) - device-auth prints a URL + code
         // and polls; no interactive menus observed in grok 0.2.x.
         pattern: /press\s*enter|enter\s*to\s*(confirm|continue|proceed)/i,
         response: '\r',
@@ -478,11 +485,65 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         pattern: /auth.*failed|authentication\s*error|invalid.*code|code\s*expired/i,
         message: 'Grok authentication failed',
         recoverable: true,
-        hint: 'Device codes expire quickly — please try again and enter the code promptly.',
+        hint: 'Device codes expire quickly - please try again and enter the code promptly.',
       },
       {
         pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,
         message: 'Network error during authentication',
+        recoverable: true,
+        hint: 'Please check your internet connection and try again.',
+      },
+    ],
+  },
+  daytona: {
+    // NOTE: daytona is captured LOCALLY, not in a sandbox like the other
+    // providers — its `login` is a loopback-only Auth0 (daytonaio.us.auth0.com)
+    // browser flow with no device-code fallback, and Daytona's managed SSH
+    // gateway won't forward the OAuth callback into a sandbox. The local flow
+    // (packages/cloud/src/connect-daytona-local.ts) runs `daytona login` on the
+    // user's own machine and reads the CLI's token store. This entry still drives
+    // that local flow: `command`/`args` are how it's invoked; `credentialPath` is
+    // where the token store lives (resolved cross-platform at capture time — the
+    // value below is the Linux/XDG default). The token shape is nested:
+    // profiles[active].api.token.{accessToken,refreshToken,expiresAt} +
+    // activeOrganizationId, normalized to { accessToken, refreshToken, expiresAt,
+    // orgId? } before upload.
+    command: 'daytona',
+    args: ['login'],
+    urlPattern: /(https:\/\/[^\s]+)/,
+    credentialPath: '~/.config/daytona/config.json',
+    displayName: 'Daytona',
+    // daytona ships as a single Go binary (no npm package).
+    installCommand: 'brew install daytonaio/cli/daytona',
+    waitTimeout: 30000,
+    prompts: [
+      {
+        // Some builds prompt before opening the browser — just continue, since
+        // we surface the URL for the user to open manually.
+        pattern: /press\s*enter\s*to\s*open|open.*browser|opening\s*browser/i,
+        response: '\r',
+        delay: 200,
+        description: 'Open browser prompt',
+      },
+      {
+        pattern:
+          /login\s*successful|logged\s*in.*press\s*enter|press\s*enter\s*to\s*continue|authentication\s*complete/i,
+        response: '\r',
+        delay: 200,
+        description: 'Login success prompt',
+      },
+    ],
+    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /logged\s*in\s*as/i, /welcome/i],
+    errorPatterns: [
+      {
+        pattern: /access_denied|invalid_grant|unauthorized/i,
+        message: 'Daytona authentication was denied',
+        recoverable: true,
+        hint: 'Complete the browser login and authorize the Daytona application, then try again.',
+      },
+      {
+        pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,
+        message: 'Network error during Daytona authentication',
         recoverable: true,
         hint: 'Please check your internet connection and try again.',
       },

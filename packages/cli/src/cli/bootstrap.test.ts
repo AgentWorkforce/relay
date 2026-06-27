@@ -19,6 +19,9 @@ const expectedLeafCommands = [
   'local agent release',
   'local agent set-model',
   'local agent attach',
+  'local agent message flush',
+  'local agent message hold',
+  'local agent message auto',
   // top-level composite status + maintenance + telemetry + mcp
   'status',
   'version',
@@ -26,6 +29,14 @@ const expectedLeafCommands = [
   'uninstall',
   'telemetry',
   'mcp',
+  // fleet
+  'fleet config',
+  'fleet disable',
+  'fleet enable',
+  'fleet inherit',
+  'fleet serve',
+  'fleet nodes',
+  'fleet status',
   // cloud
   'cloud login',
   'cloud logout',
@@ -34,24 +45,27 @@ const expectedLeafCommands = [
   'cloud run',
   'cloud schedule',
   'cloud schedules',
+  'cloud session',
   'cloud status',
   'cloud logs',
   'cloud sync',
   'cloud cancel',
+  'cloud worker register',
+  'cloud worker start',
+  'cloud worker status',
+  'cloud worker logs',
   // workspace
   'workspace create',
+  'workspace active',
   'workspace list',
   'workspace set_key',
   'workspace join',
   'workspace switch',
-  // agent (messaging directory)
+  // workspace agents
   'agent register',
   'agent list',
   'agent add',
   'agent remove',
-  'agent message flush',
-  'agent message hold',
-  'agent message auto',
   // channel
   'channel create',
   'channel list',
@@ -80,6 +94,9 @@ const expectedLeafCommands = [
   'integration webhook list',
   'integration webhook delete',
   'integration webhook trigger',
+  'integration webhook create-inbound',
+  'integration webhook list-inbound',
+  'integration webhook delete-inbound',
   'integration subscription create',
   'integration subscription list',
   'integration subscription get',
@@ -88,6 +105,8 @@ const expectedLeafCommands = [
   'capabilities register',
   'capabilities list',
   'capabilities delete',
+  // skills
+  'skills add',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -128,6 +147,7 @@ describe('bootstrap CLI', () => {
         'message',
         'integration',
         'capabilities',
+        'fleet',
         'status',
         'version',
         'update',
@@ -136,7 +156,7 @@ describe('bootstrap CLI', () => {
         'mcp',
       ])
     );
-    // The dashboard-era surface is gone.
+    // The legacy command surface is gone.
     expect(topLevelCommands).not.toEqual(
       expect.arrayContaining([
         'driver',

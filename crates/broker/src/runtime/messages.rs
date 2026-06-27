@@ -87,50 +87,6 @@ pub(crate) fn first_i64(value: &Value, pointers: &[&str]) -> Option<i64> {
         .find_map(|pointer| value.pointer(pointer).and_then(Value::as_i64))
 }
 
-pub(crate) fn relaycast_ws_control_dedup_key(
-    workspace_id: &str,
-    ws_type: &str,
-    value: &Value,
-) -> Option<String> {
-    let identity = if ws_type == "agent.spawn_requested" {
-        relaycast_ws_spawn_token(value)
-            .or_else(|| {
-                first_string(
-                    value,
-                    &[
-                        "/event_id",
-                        "/id",
-                        "/payload/id",
-                        "/payload/event_id",
-                        "/agent/id",
-                        "/agent/event_id",
-                        "/message/id",
-                        "/message/event_id",
-                        "/message_id",
-                    ],
-                )
-            })
-            .or_else(|| first_string(value, &["/agent/name", "/payload/agent/name", "/name"]))
-    } else {
-        first_string(
-            value,
-            &[
-                "/event_id",
-                "/id",
-                "/payload/id",
-                "/payload/event_id",
-                "/agent/id",
-                "/agent/event_id",
-                "/message/id",
-                "/message/event_id",
-                "/message_id",
-            ],
-        )
-    }
-    .or_else(|| serde_json::to_string(value).ok())?;
-    Some(format!("control:{workspace_id}:{ws_type}:{identity}"))
-}
-
 pub(crate) fn relaycast_ws_spawn_token(value: &Value) -> Option<String> {
     first_string(
         value,

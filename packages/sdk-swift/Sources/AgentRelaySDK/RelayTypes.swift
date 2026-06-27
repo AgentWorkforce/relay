@@ -1,712 +1,37 @@
 import Foundation
 
-public enum AgentRuntime: String, Codable, Sendable {
-    case pty
-    case headless
+public enum RelayError: Error, Sendable {
+    case invalidBaseURL(String)
+    case connectionFailed(String)
+    case handshakeFailed(String)
+    case protocolError(code: String, message: String, retryable: Bool)
+    case encodingFailed(String)
+    case decodingFailed(String)
+    case notConnected
+    case unsupported(String)
+    case timeout(String)
 }
 
-public enum HeadlessProvider: String, Codable, Sendable {
-    case claude
-    case opencode
+public enum RelayAgentType: String, Codable, Sendable {
+    case agent
+    case human
+    case system
 }
 
-public struct RestartPolicy: Codable, Sendable {
-    public var enabled: Bool?
-    public var maxRestarts: Int?
-    public var cooldownMs: Int?
-    public var maxConsecutiveFailures: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case enabled
-        case maxRestarts = "max_restarts"
-        case cooldownMs = "cooldown_ms"
-        case maxConsecutiveFailures = "max_consecutive_failures"
-    }
-
-    public init(enabled: Bool? = nil, maxRestarts: Int? = nil, cooldownMs: Int? = nil, maxConsecutiveFailures: Int? = nil) {
-        self.enabled = enabled
-        self.maxRestarts = maxRestarts
-        self.cooldownMs = cooldownMs
-        self.maxConsecutiveFailures = maxConsecutiveFailures
-    }
+public enum RelayAgentStatus: String, Codable, Sendable {
+    case online
+    case offline
+    case away
+    case unknown
 }
 
-public struct AgentSpec: Codable, Sendable {
-    public var name: String
-    public var runtime: AgentRuntime
-    public var provider: HeadlessProvider?
-    public var cli: String?
-    public var args: [String]?
-    public var channels: [String]?
-    public var model: String?
-    public var cwd: String?
-    public var sessionId: String?
-    public var team: String?
-    public var shadowOf: String?
-    public var shadowMode: String?
-    public var restartPolicy: RestartPolicy?
-
-    enum CodingKeys: String, CodingKey {
-        case name, runtime, provider, cli, args, channels, model, cwd, team
-        case sessionId = "session_id"
-        case shadowOf = "shadow_of"
-        case shadowMode = "shadow_mode"
-        case restartPolicy = "restart_policy"
-    }
-
-    public init(
-        name: String,
-        runtime: AgentRuntime,
-        provider: HeadlessProvider? = nil,
-        cli: String? = nil,
-        args: [String]? = nil,
-        channels: [String]? = nil,
-        model: String? = nil,
-        cwd: String? = nil,
-        sessionId: String? = nil,
-        team: String? = nil,
-        shadowOf: String? = nil,
-        shadowMode: String? = nil,
-        restartPolicy: RestartPolicy? = nil
-    ) {
-        self.name = name
-        self.runtime = runtime
-        self.provider = provider
-        self.cli = cli
-        self.args = args
-        self.channels = channels
-        self.model = model
-        self.cwd = cwd
-        self.sessionId = sessionId
-        self.team = team
-        self.shadowOf = shadowOf
-        self.shadowMode = shadowMode
-        self.restartPolicy = restartPolicy
-    }
+public enum ConnectionStateChange: Sendable {
+    case connected
+    case disconnected
+    case reconnecting(attempt: Int)
 }
 
-
-public typealias MessageInjectionMode = RelayMessageMode
-
-public enum RelayMessageMode: String, Codable, Sendable {
-    case wait
-    case steer
-}
-
-public enum SnapshotFormat: String, Codable, Sendable {
-    case plain
-    case ansi
-}
-
-public enum AgentCurrentState: String, Codable, Sendable {
-    case working
-    case idle
-    case blockedOnSend = "blocked_on_send"
-}
-
-public enum BrokerAgentStatus: String, Codable, Sendable {
-    case healthy
-    case restarting
-    case dead
-    case released
-}
-
-public struct SendMessageResult: Codable, Sendable {
-    public var eventId: String
-    public var targets: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case eventId = "event_id"
-        case targets
-    }
-}
-
-public struct ModelUpdateResult: Codable, Sendable {
-    public var name: String
-    public var model: String
-    public var success: Bool
-}
-
-public struct FlushResult: Codable, Sendable {
-    public var flushed: Int
-}
-
-public struct PreflightResult: Codable, Sendable {
-    public var queued: Int?
-}
-
-public struct RenewLeaseResult: Codable, Sendable {
-    public var renewed: Bool
-    public var expiresInSecs: Int
-
-    enum CodingKeys: String, CodingKey {
-        case renewed
-        case expiresInSecs = "expires_in_secs"
-    }
-}
-
-public struct ListAgent: Codable, Sendable {
-    public var name: String
-    public var runtime: AgentRuntime
-    public var provider: HeadlessProvider?
-    public var cli: String?
-    public var model: String?
-    public var sessionId: String?
-    public var team: String?
-    public var channels: [String]
-    public var parent: String?
-    public var pid: Int?
-    public var lastActivityAt: String?
-    public var lastActivityMs: Int?
-    public var contextBudgetPct: Double?
-    public var currentState: AgentCurrentState?
-
-    enum CodingKeys: String, CodingKey {
-        case name, runtime, provider, cli, model, team, channels, parent, pid
-        case sessionId = "session_id"
-        case lastActivityAt = "last_activity_at"
-        case lastActivityMs = "last_activity_ms"
-        case contextBudgetPct = "context_budget_pct"
-        case currentState = "current_state"
-    }
-}
-
-public struct PendingDeliveryInfo: Codable, Sendable {
-    public var deliveryId: String
-    public var workerName: String
-    public var eventId: String
-    public var from: String?
-    public var to: String?
-    public var attempts: Int
-    public var queuedAtMs: Int?
-    public var ageMs: Int?
-    public var lastError: String?
-
-    enum CodingKeys: String, CodingKey {
-        case from, to, attempts
-        case deliveryId = "delivery_id"
-        case workerName = "worker_name"
-        case eventId = "event_id"
-        case queuedAtMs = "queued_at_ms"
-        case ageMs = "age_ms"
-        case lastError = "last_error"
-    }
-}
-
-public struct BrokerAuthWorkspace: Codable, Sendable {
-    public var workspaceId: String
-    public var workspaceAlias: String?
-    public var selfName: String
-    public var selfAgentId: String
-    public var authenticated: Bool
-    public var `default`: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case authenticated
-        case `default` = "default"
-        case workspaceId = "workspace_id"
-        case workspaceAlias = "workspace_alias"
-        case selfName = "self_name"
-        case selfAgentId = "self_agent_id"
-    }
-}
-
-public struct BrokerAuthStatus: Codable, Sendable {
-    public var authenticated: Bool
-    public var workspaceCount: Int
-    public var defaultWorkspaceId: String?
-    public var workspaces: [BrokerAuthWorkspace]
-
-    enum CodingKeys: String, CodingKey {
-        case authenticated, workspaces
-        case workspaceCount = "workspace_count"
-        case defaultWorkspaceId = "default_workspace_id"
-    }
-}
-
-public struct BrokerStatusAgent: Codable, Sendable {
-    public var name: String
-    public var runtime: AgentRuntime
-    public var provider: HeadlessProvider?
-    public var cli: String?
-    public var model: String?
-    public var team: String?
-    public var channels: [String]
-    public var parent: String?
-    public var pid: Int?
-    public var lastActivityAt: String?
-    public var lastActivityMs: Int?
-    public var contextBudgetPct: Double?
-    public var currentState: AgentCurrentState?
-
-    enum CodingKeys: String, CodingKey {
-        case name, runtime, provider, cli, model, team, channels, parent, pid
-        case lastActivityAt = "last_activity_at"
-        case lastActivityMs = "last_activity_ms"
-        case contextBudgetPct = "context_budget_pct"
-        case currentState = "current_state"
-    }
-}
-
-public struct BrokerStatus: Codable, Sendable {
-    public var agentCount: Int
-    public var agents: [BrokerStatusAgent]
-    public var pendingDeliveryCount: Int
-    public var pendingDeliveries: [PendingDeliveryInfo]
-    public var auth: BrokerAuthStatus?
-
-    enum CodingKeys: String, CodingKey {
-        case agents, auth
-        case agentCount = "agent_count"
-        case pendingDeliveryCount = "pending_delivery_count"
-        case pendingDeliveries = "pending_deliveries"
-    }
-}
-
-public struct AgentStats: Codable, Sendable {
-    public var spawns: Int
-    public var crashes: Int
-    public var restarts: Int
-    public var releases: Int
-    public var status: BrokerAgentStatus
-    public var currentUptimeSecs: Int
-    public var memoryBytes: Int
-
-    enum CodingKeys: String, CodingKey {
-        case spawns, crashes, restarts, releases, status
-        case currentUptimeSecs = "current_uptime_secs"
-        case memoryBytes = "memory_bytes"
-    }
-}
-
-public struct ProcessAgentMetrics: Codable, Sendable {
-    public var name: String
-    public var pid: Int
-    public var memoryBytes: Int
-    public var uptimeSecs: Int
-
-    enum CodingKeys: String, CodingKey {
-        case name, pid
-        case memoryBytes = "memory_bytes"
-        case uptimeSecs = "uptime_secs"
-    }
-}
-
-public struct BrokerStats: Codable, Sendable {
-    public var uptimeSecs: Int
-    public var totalAgentsSpawned: Int
-    public var totalCrashes: Int
-    public var totalRestarts: Int
-    public var activeAgents: Int
-
-    enum CodingKeys: String, CodingKey {
-        case uptimeSecs = "uptime_secs"
-        case totalAgentsSpawned = "total_agents_spawned"
-        case totalCrashes = "total_crashes"
-        case totalRestarts = "total_restarts"
-        case activeAgents = "active_agents"
-    }
-}
-
-public struct MetricsResponse: Codable, Sendable {
-    public var agents: [ProcessAgentMetrics]
-    public var broker: BrokerStats?
-}
-
-public struct CrashRecord: Codable, Sendable {
-    public var name: String
-    public var runtime: AgentRuntime?
-    public var code: Int?
-    public var signal: String?
-    public var atMs: Int?
-    public var restartCount: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case name, runtime, code, signal
-        case atMs = "at_ms"
-        case restartCount = "restart_count"
-    }
-}
-
-public struct CrashPattern: Codable, Sendable {
-    public var name: String
-    public var crashes: Int
-    public var restarts: Int
-    public var status: BrokerAgentStatus?
-    public var lastCrashMs: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case name, crashes, restarts, status
-        case lastCrashMs = "last_crash_ms"
-    }
-}
-
-public struct CrashInsightsResponse: Codable, Sendable {
-    public var recent: [CrashRecord]?
-    public var patterns: [CrashPattern]?
-    public var totalCrashes: Int?
-    public var totalRestarts: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case recent, patterns
-        case totalCrashes = "total_crashes"
-        case totalRestarts = "total_restarts"
-    }
-}
-
-public struct PtySnapshot: Codable, Sendable {
-    public var format: SnapshotFormat
-    public var rows: Int
-    public var cols: Int
-    public var cursor: [Int]
-    public var screen: String
-}
-
-public struct PendingRelayMessage: Codable, Sendable {
-    public var from: String
-    public var body: String
-    public var target: String
-    public var threadId: String?
-    public var workspaceId: String?
-    public var workspaceAlias: String?
-    public var priority: Int
-    public var mode: RelayMessageMode
-    public var queuedAtMs: Int
-    public var eventId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case from, body, target, priority, mode
-        case threadId = "thread_id"
-        case workspaceId = "workspace_id"
-        case workspaceAlias = "workspace_alias"
-        case queuedAtMs = "queued_at_ms"
-        case eventId = "event_id"
-    }
-}
-
-public struct RelayDelivery: Codable, Sendable {
-    public var deliveryId: String
-    public var eventId: String
-    public var workspaceId: String?
-    public var workspaceAlias: String?
-    public var from: String
-    public var target: String
-    public var body: String
-    public var threadId: String?
-    public var priority: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case deliveryId = "delivery_id"
-        case eventId = "event_id"
-        case workspaceId = "workspace_id"
-        case workspaceAlias = "workspace_alias"
-        case from, target, body
-        case threadId = "thread_id"
-        case priority
-    }
-}
-
-public struct ProtocolErrorPayload: Codable, Sendable, Error {
-    public var code: String
-    public var message: String
-    public var retryable: Bool
-    public var data: JSONValue?
-}
-
-public struct HelloAck: Codable, Sendable {
-    public var brokerVersion: String
-    public var protocolVersion: Int
-
-    enum CodingKeys: String, CodingKey {
-        case brokerVersion = "broker_version"
-        case protocolVersion = "protocol_version"
-    }
-}
-
-public struct OkResponse: Codable, Sendable {
-    public var result: JSONValue?
-}
-
-public struct PongPayload: Codable, Sendable {
-    public var tsMs: Int64
-
-    enum CodingKeys: String, CodingKey {
-        case tsMs = "ts_ms"
-    }
-}
-
-public struct WorkerStreamPayload: Codable, Sendable {
-    public var stream: String
-    public var chunk: String
-}
-
-public struct WorkerExitedPayload: Codable, Sendable {
-    public var code: Int?
-    public var signal: String?
-}
-
-public struct EmptyPayload: Codable, Sendable {
-    public init() {}
-}
-
-public struct HelloPayload: Codable, Sendable {
-    public var clientName: String
-    public var clientVersion: String
-    public var apiKey: String?
-
-    enum CodingKeys: String, CodingKey {
-        case clientName = "client_name"
-        case clientVersion = "client_version"
-        case apiKey = "api_key"
-    }
-
-    public init(clientName: String, clientVersion: String, apiKey: String? = nil) {
-        self.clientName = clientName
-        self.clientVersion = clientVersion
-        self.apiKey = apiKey
-    }
-}
-
-public struct SendMessagePayload: Codable, Sendable {
-    public var to: String
-    public var text: String
-    public var from: String?
-    public var threadId: String?
-    public var workspaceId: String?
-    public var workspaceAlias: String?
-    public var priority: Int?
-    public var data: [String: JSONValue]?
-    public var mode: RelayMessageMode?
-
-    enum CodingKeys: String, CodingKey {
-        case to, text, from, priority, data, mode
-        case threadId = "thread_id"
-        case workspaceId = "workspace_id"
-        case workspaceAlias = "workspace_alias"
-    }
-}
-
-public struct SpawnAgentPayload: Codable, Sendable {
-    public var agent: AgentSpec
-    public var initialTask: String?
-    public var skipRelayPrompt: Bool?
-
-    enum CodingKeys: String, CodingKey {
-        case agent
-        case initialTask = "initial_task"
-        case skipRelayPrompt = "skip_relay_prompt"
-    }
-}
-
-public struct ReleaseAgentPayload: Codable, Sendable {
-    public var name: String
-    public var reason: String?
-}
-
-public struct PingPayload: Codable, Sendable {
-    public var tsMs: Int64
-
-    enum CodingKeys: String, CodingKey {
-        case tsMs = "ts_ms"
-    }
-}
-
-public enum BrokerEvent: Sendable {
-    case agentSpawned(AgentSpawnedEvent)
-    case agentReleased(AgentReleasedEvent)
-    case agentExit(AgentExitRequestedEvent)
-    case agentExited(AgentExitedEvent)
-    case relayInbound(RelayInboundEvent)
-    case workerStream(WorkerStreamEvent)
-    case deliveryRetry(DeliveryRetryEvent)
-    case deliveryDropped(DeliveryDroppedEvent)
-    case deliveryQueued(DeliveryStateEvent)
-    case deliveryInjected(DeliveryStateEvent)
-    case deliveryVerified(DeliveryStateEvent)
-    case deliveryFailed(DeliveryFailedEvent)
-    case deliveryActive(DeliveryStateEvent)
-    case deliveryAck(DeliveryStateEvent)
-    case workerReady(WorkerReadyEvent)
-    case workerError(WorkerErrorEvent)
-    case relaycastPublished(RelaycastPublishedEvent)
-    case relaycastPublishFailed(RelaycastPublishFailedEvent)
-    case aclDenied(ACLDeniedEvent)
-    case agentIdle(AgentIdleEvent)
-    case agentRestarting(AgentRestartingEvent)
-    case agentRestarted(AgentRestartedEvent)
-    case agentPermanentlyDead(AgentPermanentlyDeadEvent)
-    /// Catch-all for unrecognized broker event kinds, preserving the raw kind string
-    /// and the full JSON payload for forward compatibility.
-    case unknown(kind: String, rawJSON: Data?)
-}
-
-extension BrokerEvent: Codable {
-    enum CodingKeys: String, CodingKey { case kind }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(String.self, forKey: .kind) {
-        case "agent_spawned": self = .agentSpawned(try AgentSpawnedEvent(from: decoder))
-        case "agent_released": self = .agentReleased(try AgentReleasedEvent(from: decoder))
-        case "agent_exit": self = .agentExit(try AgentExitRequestedEvent(from: decoder))
-        case "agent_exited": self = .agentExited(try AgentExitedEvent(from: decoder))
-        case "relay_inbound": self = .relayInbound(try RelayInboundEvent(from: decoder))
-        case "worker_stream": self = .workerStream(try WorkerStreamEvent(from: decoder))
-        case "delivery_retry": self = .deliveryRetry(try DeliveryRetryEvent(from: decoder))
-        case "delivery_dropped": self = .deliveryDropped(try DeliveryDroppedEvent(from: decoder))
-        case "delivery_queued": self = .deliveryQueued(try DeliveryStateEvent(from: decoder))
-        case "delivery_injected": self = .deliveryInjected(try DeliveryStateEvent(from: decoder))
-        case "delivery_verified": self = .deliveryVerified(try DeliveryStateEvent(from: decoder))
-        case "delivery_failed": self = .deliveryFailed(try DeliveryFailedEvent(from: decoder))
-        case "delivery_active": self = .deliveryActive(try DeliveryStateEvent(from: decoder))
-        case "delivery_ack": self = .deliveryAck(try DeliveryStateEvent(from: decoder))
-        case "worker_ready": self = .workerReady(try WorkerReadyEvent(from: decoder))
-        case "worker_error": self = .workerError(try WorkerErrorEvent(from: decoder))
-        case "relaycast_published": self = .relaycastPublished(try RelaycastPublishedEvent(from: decoder))
-        case "relaycast_publish_failed": self = .relaycastPublishFailed(try RelaycastPublishFailedEvent(from: decoder))
-        case "acl_denied": self = .aclDenied(try ACLDeniedEvent(from: decoder))
-        case "agent_idle": self = .agentIdle(try AgentIdleEvent(from: decoder))
-        case "agent_restarting": self = .agentRestarting(try AgentRestartingEvent(from: decoder))
-        case "agent_restarted": self = .agentRestarted(try AgentRestartedEvent(from: decoder))
-        case "agent_permanently_dead": self = .agentPermanentlyDead(try AgentPermanentlyDeadEvent(from: decoder))
-        default:
-            // Forward-compatible: preserve unknown event kinds with raw JSON data
-            // so consumers can handle new broker events without SDK updates.
-            let kind = try container.decode(String.self, forKey: .kind)
-            self = .unknown(kind: kind, rawJSON: nil)
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        switch self {
-        case .agentSpawned(let value): try value.encode(to: encoder)
-        case .agentReleased(let value): try value.encode(to: encoder)
-        case .agentExit(let value): try value.encode(to: encoder)
-        case .agentExited(let value): try value.encode(to: encoder)
-        case .relayInbound(let value): try value.encode(to: encoder)
-        case .workerStream(let value): try value.encode(to: encoder)
-        case .deliveryRetry(let value): try value.encode(to: encoder)
-        case .deliveryDropped(let value): try value.encode(to: encoder)
-        case .deliveryQueued(let value): try value.encode(to: encoder)
-        case .deliveryInjected(let value): try value.encode(to: encoder)
-        case .deliveryVerified(let value): try value.encode(to: encoder)
-        case .deliveryFailed(let value): try value.encode(to: encoder)
-        case .deliveryActive(let value): try value.encode(to: encoder)
-        case .deliveryAck(let value): try value.encode(to: encoder)
-        case .workerReady(let value): try value.encode(to: encoder)
-        case .workerError(let value): try value.encode(to: encoder)
-        case .relaycastPublished(let value): try value.encode(to: encoder)
-        case .relaycastPublishFailed(let value): try value.encode(to: encoder)
-        case .aclDenied(let value): try value.encode(to: encoder)
-        case .agentIdle(let value): try value.encode(to: encoder)
-        case .agentRestarting(let value): try value.encode(to: encoder)
-        case .agentRestarted(let value): try value.encode(to: encoder)
-        case .agentPermanentlyDead(let value): try value.encode(to: encoder)
-        case .unknown(let kind, _):
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(kind, forKey: .kind)
-        }
-    }
-}
-
-public enum InboundMessage: Sendable {
-    case helloAck(HelloAck)
-    case ok(OkResponse)
-    case error(ProtocolErrorPayload)
-    case event(BrokerEvent)
-    case deliverRelay(RelayDelivery)
-    case workerStream(WorkerStreamPayload)
-    case workerExited(WorkerExitedPayload)
-    case pong(PongPayload)
-    /// Catch-all for unrecognized inbound message types for forward compatibility.
-    case unknown(type: String, rawJSON: Data?)
-}
-
-extension InboundMessage: Codable {
-    enum CodingKeys: String, CodingKey { case type, payload }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let type = try container.decode(String.self, forKey: .type)
-        switch type {
-        case "hello_ack": self = .helloAck(try container.decode(HelloAck.self, forKey: .payload))
-        case "ok": self = .ok(try container.decode(OkResponse.self, forKey: .payload))
-        case "error": self = .error(try container.decode(ProtocolErrorPayload.self, forKey: .payload))
-        case "event": self = .event(try container.decode(BrokerEvent.self, forKey: .payload))
-        case "deliver_relay": self = .deliverRelay(try container.decode(RelayDelivery.self, forKey: .payload))
-        case "worker_stream": self = .workerStream(try container.decode(WorkerStreamPayload.self, forKey: .payload))
-        case "worker_exited": self = .workerExited(try container.decode(WorkerExitedPayload.self, forKey: .payload))
-        case "pong", "ping": self = .pong(try container.decode(PongPayload.self, forKey: .payload))
-        default:
-            // Forward-compatible: preserve unknown message types so consumers
-            // can handle new protocol frames without SDK updates.
-            self = .unknown(type: type, rawJSON: nil)
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .helloAck(let payload): try container.encode("hello_ack", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .ok(let payload): try container.encode("ok", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .error(let payload): try container.encode("error", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .event(let payload): try container.encode("event", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .deliverRelay(let payload): try container.encode("deliver_relay", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .workerStream(let payload): try container.encode("worker_stream", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .workerExited(let payload): try container.encode("worker_exited", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .pong(let payload): try container.encode("pong", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .unknown(let type, _): try container.encode(type, forKey: .type)
-        }
-    }
-}
-
-public enum OutboundMessage: Sendable {
-    case hello(HelloPayload)
-    case sendMessage(SendMessagePayload)
-    case spawnAgent(SpawnAgentPayload)
-    case releaseAgent(ReleaseAgentPayload)
-    case ping(PingPayload)
-    case listAgents(EmptyPayload)
-}
-
-extension OutboundMessage: Encodable {
-    enum CodingKeys: String, CodingKey { case v, type, payload }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(1, forKey: .v)
-        switch self {
-        case .hello(let payload): try container.encode("hello", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .sendMessage(let payload): try container.encode("send_message", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .spawnAgent(let payload): try container.encode("spawn_agent", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .releaseAgent(let payload): try container.encode("release_agent", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .ping(let payload): try container.encode("ping", forKey: .type); try container.encode(payload, forKey: .payload)
-        case .listAgents(let payload): try container.encode("list_agents", forKey: .type); try container.encode(payload, forKey: .payload)
-        }
-    }
-}
-
-public struct AgentSpawnedEvent: Codable, Sendable { public var kind: String = "agent_spawned"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String?; public var sessionId: String?; public var parent: String?; public var pid: Int?; public var source: String?; enum CodingKeys: String, CodingKey { case kind, name, runtime, provider, cli, model, parent, pid, source; case sessionId = "session_id" } }
-public struct AgentReleasedEvent: Codable, Sendable { public var kind: String = "agent_released"; public var name: String }
-public struct AgentExitRequestedEvent: Codable, Sendable { public var kind: String = "agent_exit"; public var name: String; public var reason: String }
-public struct AgentExitedEvent: Codable, Sendable { public var kind: String = "agent_exited"; public var name: String; public var code: Int?; public var signal: String? }
-public struct RelayInboundEvent: Codable, Sendable { public var kind: String = "relay_inbound"; public var eventId: String; public var from: String; public var target: String; public var body: String; public var threadId: String?; enum CodingKeys: String, CodingKey { case kind, from, target, body; case eventId = "event_id"; case threadId = "thread_id" } }
-public struct WorkerStreamEvent: Codable, Sendable { public var kind: String = "worker_stream"; public var name: String; public var stream: String; public var chunk: String }
-public struct DeliveryRetryEvent: Codable, Sendable { public var kind: String = "delivery_retry"; public var name: String; public var deliveryId: String; public var eventId: String; public var attempts: Int; enum CodingKeys: String, CodingKey { case kind, name, attempts; case deliveryId = "delivery_id"; case eventId = "event_id" } }
-public struct DeliveryDroppedEvent: Codable, Sendable { public var kind: String = "delivery_dropped"; public var name: String; public var count: Int; public var reason: String }
-public struct DeliveryStateEvent: Codable, Sendable { public var kind: String; public var name: String; public var deliveryId: String; public var eventId: String; enum CodingKeys: String, CodingKey { case kind, name; case deliveryId = "delivery_id"; case eventId = "event_id" } }
-public struct DeliveryFailedEvent: Codable, Sendable { public var kind: String = "delivery_failed"; public var name: String; public var deliveryId: String; public var eventId: String; public var reason: String; enum CodingKeys: String, CodingKey { case kind, name, reason; case deliveryId = "delivery_id"; case eventId = "event_id" } }
-public struct WorkerReadyEvent: Codable, Sendable { public var kind: String = "worker_ready"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String?; public var sessionId: String?; enum CodingKeys: String, CodingKey { case kind, name, runtime, provider, cli, model; case sessionId = "session_id" } }
-public struct WorkerErrorEvent: Codable, Sendable { public var kind: String = "worker_error"; public var name: String; public var code: String; public var message: String }
-public struct RelaycastPublishedEvent: Codable, Sendable { public var kind: String = "relaycast_published"; public var eventId: String; public var to: String; public var targetType: String; enum CodingKeys: String, CodingKey { case kind, to; case eventId = "event_id"; case targetType = "target_type" } }
-public struct RelaycastPublishFailedEvent: Codable, Sendable { public var kind: String = "relaycast_publish_failed"; public var eventId: String; public var to: String; public var reason: String; enum CodingKeys: String, CodingKey { case kind, to, reason; case eventId = "event_id" } }
-public struct ACLDeniedEvent: Codable, Sendable { public var kind: String = "acl_denied"; public var name: String; public var sender: String; public var ownerChain: [String]; enum CodingKeys: String, CodingKey { case kind, name, sender; case ownerChain = "owner_chain" } }
-public struct AgentIdleEvent: Codable, Sendable { public var kind: String = "agent_idle"; public var name: String; public var idleSecs: Int; enum CodingKeys: String, CodingKey { case kind, name; case idleSecs = "idle_secs" } }
-public struct AgentRestartingEvent: Codable, Sendable { public var kind: String = "agent_restarting"; public var name: String; public var code: Int?; public var signal: String?; public var restartCount: Int; public var delayMs: Int; enum CodingKeys: String, CodingKey { case kind, name, code, signal; case restartCount = "restart_count"; case delayMs = "delay_ms" } }
-public struct AgentRestartedEvent: Codable, Sendable { public var kind: String = "agent_restarted"; public var name: String; public var restartCount: Int; enum CodingKeys: String, CodingKey { case kind, name; case restartCount = "restart_count" } }
-public struct AgentPermanentlyDeadEvent: Codable, Sendable { public var kind: String = "agent_permanently_dead"; public var name: String; public var reason: String }
-
-public enum JSONValue: Codable, Sendable {
+public enum JSONValue: Codable, Sendable, Equatable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -735,5 +60,296 @@ public enum JSONValue: Codable, Sendable {
         case .array(let value): try container.encode(value)
         case .null: try container.encodeNil()
         }
+    }
+}
+
+public struct AgentRegistration: Sendable {
+    public let id: String
+    public let name: String
+    public let token: String
+    public let status: RelayAgentStatus
+    public let createdAt: String?
+    private let factory: @Sendable (String, String, String) -> AgentClient
+
+    public var agentName: String { name }
+
+    public init(
+        id: String,
+        name: String,
+        token: String,
+        status: RelayAgentStatus = .unknown,
+        createdAt: String? = nil,
+        factory: @escaping @Sendable (String, String, String) -> AgentClient
+    ) {
+        self.id = id
+        self.name = name
+        self.token = token
+        self.status = status
+        self.createdAt = createdAt
+        self.factory = factory
+    }
+
+    public func asClient() -> AgentClient {
+        factory(id, name, token)
+    }
+}
+
+public struct RelayAgent: Decodable, Sendable {
+    public let id: String
+    public let name: String
+    public let type: RelayAgentType
+    public let status: RelayAgentStatus
+    public let persona: String?
+    public let createdAt: String?
+    public let lastSeenAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, type, status, persona
+        case createdAt = "created_at"
+        case createdAtCamel = "createdAt"
+        case lastSeenAt = "last_seen_at"
+        case lastSeenAtCamel = "lastSeenAt"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        type = (try? container.decode(RelayAgentType.self, forKey: .type)) ?? .agent
+        status = (try? container.decode(RelayAgentStatus.self, forKey: .status)) ?? .unknown
+        persona = try container.decodeIfPresent(String.self, forKey: .persona)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+            ?? container.decodeIfPresent(String.self, forKey: .createdAtCamel)
+        lastSeenAt = try container.decodeIfPresent(String.self, forKey: .lastSeenAt)
+            ?? container.decodeIfPresent(String.self, forKey: .lastSeenAtCamel)
+    }
+}
+
+public struct RelayChannelEvent: Sendable {
+    public let from: String
+    public let body: String
+    public let channel: String?
+    public let threadId: String?
+    public let messageId: String?
+    public let timestamp: Date
+    public let rawEvent: RelayEvent?
+
+    public init(
+        from: String,
+        body: String,
+        channel: String?,
+        threadId: String? = nil,
+        messageId: String? = nil,
+        timestamp: Date = Date(),
+        rawEvent: RelayEvent? = nil
+    ) {
+        self.from = from
+        self.body = body
+        self.channel = channel
+        self.threadId = threadId
+        self.messageId = messageId
+        self.timestamp = timestamp
+        self.rawEvent = rawEvent
+    }
+}
+
+public struct RelayMessageSender: Decodable, Sendable, Equatable {
+    public let id: String?
+    public let name: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case agentName = "agent_name"
+        case agentNameCamel = "agentName"
+    }
+
+    public init(id: String? = nil, name: String? = nil) {
+        self.id = id
+        self.name = name
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+            ?? container.decodeIfPresent(String.self, forKey: .agentName)
+            ?? container.decodeIfPresent(String.self, forKey: .agentNameCamel)
+    }
+}
+
+public struct RelayMessageChannelRef: Decodable, Sendable, Equatable {
+    public let id: String?
+    public let name: String?
+}
+
+public struct RelayMessage: Decodable, Sendable, Equatable {
+    public let id: String
+    public let messageId: String
+    public let text: String
+    public let from: RelayMessageSender
+    public let channel: RelayMessageChannelRef?
+    public let conversationId: String?
+    public let threadId: String?
+    public let parentId: String?
+    public let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, text, from, channel
+        case body
+        case messageId = "message_id"
+        case messageIdCamel = "messageId"
+        case conversationId = "conversation_id"
+        case conversationIdCamel = "conversationId"
+        case threadId = "thread_id"
+        case threadIdCamel = "threadId"
+        case parentId = "parent_id"
+        case parentIdCamel = "parentId"
+        case createdAt = "created_at"
+        case createdAtCamel = "createdAt"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
+            ?? container.decodeIfPresent(String.self, forKey: .messageIdCamel)
+            ?? id
+        text = (try? container.decode(String.self, forKey: .text))
+            ?? (try? container.decode(String.self, forKey: .body))
+            ?? ""
+        from = (try? container.decode(RelayMessageSender.self, forKey: .from)) ?? RelayMessageSender()
+        channel = try container.decodeIfPresent(RelayMessageChannelRef.self, forKey: .channel)
+        conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId)
+            ?? container.decodeIfPresent(String.self, forKey: .conversationIdCamel)
+        threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+            ?? container.decodeIfPresent(String.self, forKey: .threadIdCamel)
+        parentId = try container.decodeIfPresent(String.self, forKey: .parentId)
+            ?? container.decodeIfPresent(String.self, forKey: .parentIdCamel)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+            ?? container.decodeIfPresent(String.self, forKey: .createdAtCamel)
+    }
+}
+
+public struct RelayEvent: Decodable, Sendable {
+    public let type: String
+    public let id: String?
+    public let channel: String?
+    public let message: RelayMessage?
+    public let invocationId: String?
+    public let actionName: String?
+    public let callerName: String?
+    public let agentName: String?
+    public let status: String?
+    public let rawJSON: JSONValue?
+
+    init(
+        type: String,
+        id: String? = nil,
+        channel: String? = nil,
+        message: RelayMessage? = nil,
+        invocationId: String? = nil,
+        actionName: String? = nil,
+        callerName: String? = nil,
+        agentName: String? = nil,
+        status: String? = nil,
+        rawJSON: JSONValue? = nil
+    ) {
+        self.type = type
+        self.id = id
+        self.channel = channel
+        self.message = message
+        self.invocationId = invocationId
+        self.actionName = actionName
+        self.callerName = callerName
+        self.agentName = agentName
+        self.status = status
+        self.rawJSON = rawJSON
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type, id, channel, message, status, payload
+        case invocationId = "invocation_id"
+        case invocationIdCamel = "invocationId"
+        case actionName = "action_name"
+        case actionNameCamel = "actionName"
+        case callerName = "caller_name"
+        case callerNameCamel = "callerName"
+        case agentName = "agent_name"
+        case agentNameCamel = "agentName"
+        case agent
+    }
+
+    public init(from decoder: Decoder) throws {
+        rawJSON = try? JSONValue(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let payload = try? container.nestedContainer(keyedBy: CodingKeys.self, forKey: .payload)
+        type = try container.decode(String.self, forKey: .type)
+        id = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.id])
+        channel = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.channel])
+        message = Self.decodeIfPresent(RelayMessage.self, from: container, payload: payload, keys: [.message])
+        invocationId = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.invocationId, .invocationIdCamel])
+        actionName = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.actionName, .actionNameCamel])
+        callerName = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.callerName, .callerNameCamel])
+        agentName = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.agentName, .agentNameCamel])
+            ?? RelayEvent.decodeAgentName(from: container)
+            ?? payload.flatMap { RelayEvent.decodeAgentName(from: $0) }
+        status = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.status])
+    }
+
+    private static func decodeIfPresent<T: Decodable>(
+        _ type: T.Type,
+        from container: KeyedDecodingContainer<CodingKeys>,
+        payload: KeyedDecodingContainer<CodingKeys>?,
+        keys: [CodingKeys]
+    ) -> T? {
+        for key in keys {
+            if let value = try? container.decodeIfPresent(type, forKey: key) {
+                return value
+            }
+        }
+        guard let payload else { return nil }
+        for key in keys {
+            if let value = try? payload.decodeIfPresent(type, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func decodeAgentName(from container: KeyedDecodingContainer<CodingKeys>) -> String? {
+        guard let agent = try? container.decodeIfPresent(RelaycastEventAgent.self, forKey: .agent) else {
+            return nil
+        }
+        return agent.name
+    }
+}
+
+private struct RelaycastEventAgent: Decodable {
+    let name: String?
+}
+
+public actor ActionHandle {
+    public nonisolated let name: String
+
+    private var active = true
+    private let unregisterAction: @Sendable () async -> Void
+
+    init(name: String, unregisterAction: @escaping @Sendable () async -> Void) {
+        self.name = name
+        self.unregisterAction = unregisterAction
+    }
+
+    public func unregister() async {
+        await performUnregister()
+    }
+
+    public func unsubscribe() async {
+        await performUnregister()
+    }
+
+    private func performUnregister() async {
+        guard active else { return }
+        active = false
+        await unregisterAction()
     }
 }

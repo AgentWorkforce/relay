@@ -15,6 +15,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "futures-lite",
+ "futures-util",
  "hostname",
  "httpmock",
  "libc",
@@ -32,6 +33,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tower",
  "tracing",
  "tracing-appender",
@@ -1999,9 +2001,9 @@ checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
 name = "relaycast"
-version = "3.0.0"
+version = "5.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f9e462ae4dde5c008f65303cc0c9ee3816d0af19591fa50ae58216a25c29e29"
+checksum = "7ebdb019e721d550a15b602e7a47d024ce76bbb57d5c6cea76c82e1ac96183b0"
 dependencies = [
  "futures-util",
  "reqwest",

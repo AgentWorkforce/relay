@@ -1,154 +1,173 @@
+import Foundation
 import XCTest
+import Relaycast
 @testable import AgentRelaySDK
 
-final class AgentRelaySDKTests: XCTestCase {
-    func testAgentRelayClientInit() {
+/// These tests cover the hosted-participant facade that now wraps the relaycast
+/// Swift engine SDK. Network-dependent behaviour (registration, posting, the
+/// realtime socket) is exercised by the relaycast package's own test suite; here
+/// we verify the facade configuration and the bridging glue that keeps
+/// AgentRelaySDK's public surface intact on top of relaycast.
+final class HostedParticipantSDKTests: XCTestCase {
+
+    // MARK: - Facade configuration
+
+    func testClientInitDefaultsToHostedGateway() {
         let client = AgentRelayClient(apiKey: "rk_test_key")
-        XCTAssertEqual(client.apiKey, "rk_test_key")
+        XCTAssertEqual(client.workspaceKey, "rk_test_key")
+        XCTAssertEqual(client.baseURL.absoluteString, "https://cast.agentrelay.com")
     }
 
-    func testChannelCreation() {
-        let client = AgentRelayClient(apiKey: "rk_test_key")
-        let channel = client.channel("test-channel")
-        XCTAssertEqual(channel.name, "test-channel")
+    func testClientHonoursExplicitBaseURL() {
+        let client = AgentRelayClient(apiKey: "rk_test_key", baseURL: URL(string: "https://example.test")!)
+        XCTAssertEqual(client.baseURL.absoluteString, "https://example.test")
     }
 
-    func testDefaultLocalBrokerURL() {
-        let client = AgentRelayClient(apiKey: "rk_test_key")
-        XCTAssertEqual(client.baseURL.host, "localhost")
-        XCTAssertEqual(client.baseURL.port, 3889)
-    }
-
-    /// The broker emits each event as a bare `{kind: ...}` JSON object on `/ws`.
-    func testBrokerEventDecodesBarePayload() throws {
-        let json = """
-        {
-          "kind": "relay_inbound",
-          "event_id": "evt_1",
-          "from": "alice",
-          "target": "wf-test",
-          "body": "hello",
-          "thread_id": "t1"
-        }
-        """.data(using: .utf8)!
-        let event = try JSONDecoder().decode(BrokerEvent.self, from: json)
-        if case .relayInbound(let inbound) = event {
-            XCTAssertEqual(inbound.from, "alice")
-            XCTAssertEqual(inbound.target, "wf-test")
-            XCTAssertEqual(inbound.body, "hello")
-            XCTAssertEqual(inbound.threadId, "t1")
-        } else {
-            XCTFail("expected relayInbound, got \(event)")
-        }
-    }
-
-
-
-    func testSendMessagePayloadIncludesFullParityFields() throws {
-        let payload = SendMessagePayload(
-            to: "Builder",
-            text: "Please continue",
-            from: "Lead",
-            threadId: "thread-1",
-            workspaceId: "workspace-1",
-            workspaceAlias: "default",
-            priority: 5,
-            data: ["ticket": .string("ENG-123")],
-            mode: .steer
+    func testRelayCastInitUsesConfiguredHost() throws {
+        // Sanity-check that relaycast accepts the preserved host explicitly.
+        let relay = try Relaycast.RelayCast(
+            options: Relaycast.RelayCastOptions(apiKey: "rk_test", baseURL: "https://gateway.relaycast.dev")
         )
-        let data = try JSONEncoder().encode(payload)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(object["thread_id"] as? String, "thread-1")
-        XCTAssertEqual(object["workspace_id"] as? String, "workspace-1")
-        XCTAssertEqual(object["workspace_alias"] as? String, "default")
-        XCTAssertEqual(object["mode"] as? String, "steer")
-        XCTAssertEqual((object["data"] as? [String: Any])?["ticket"] as? String, "ENG-123")
+        XCTAssertEqual(relay.client.baseURL.absoluteString, "https://gateway.relaycast.dev")
     }
 
-    func testBrokerStatusDecodesParityFields() throws {
-        let json = """
-        {
-          "agent_count": 1,
-          "agents": [{
-            "name": "Builder",
-            "runtime": "pty",
-            "cli": "codex",
-            "channels": ["dev"],
-            "last_activity_ms": 42,
-            "context_budget_pct": 12.5,
-            "current_state": "blocked_on_send"
-          }],
-          "pending_delivery_count": 1,
-          "pending_deliveries": [{
-            "delivery_id": "del_1",
-            "worker_name": "Builder",
-            "event_id": "evt_1",
-            "attempts": 2
-          }]
+    // MARK: - Type bridging
+
+    func testAgentTypeBridging() {
+        XCTAssertEqual(RelayAgentType.agent.relaycastType, .agent)
+        XCTAssertEqual(RelayAgentType.human.relaycastType, .human)
+        XCTAssertEqual(RelayAgentType.system.relaycastType, .system)
+    }
+
+    func testAgentStatusBridging() {
+        XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.online), .online)
+        XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.offline), .offline)
+        XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.away), .away)
+    }
+
+    func testJSONValueBridgingPreservesShape() {
+        let relaycastValue: Relaycast.JSONValue = .object([
+            "text": .string("hi"),
+            "count": .int(3),
+            "ratio": .double(1.5),
+            "flag": .bool(true),
+            "items": .array([.string("a"), .int(2)]),
+            "nothing": .null
+        ])
+        let bridged = JSONValue(relaycastValue)
+        guard case .object(let object) = bridged else {
+            return XCTFail("Expected object")
         }
-        """.data(using: .utf8)!
-        let status = try JSONDecoder().decode(BrokerStatus.self, from: json)
-        XCTAssertEqual(status.agentCount, 1)
-        XCTAssertEqual(status.agents.first?.currentState, .blockedOnSend)
-        XCTAssertEqual(status.pendingDeliveries.first?.deliveryId, "del_1")
+        XCTAssertEqual(object["text"], .string("hi"))
+        XCTAssertEqual(object["count"], .number(3))
+        XCTAssertEqual(object["ratio"], .number(1.5))
+        XCTAssertEqual(object["flag"], .bool(true))
+        XCTAssertEqual(object["items"], .array([.string("a"), .number(2)]))
+        XCTAssertEqual(object["nothing"], .null)
     }
 
-    // MARK: - WebSocket URL resolution
-
-    func testWebSocketURLAppendsWS() {
-        let url = RelayTransport.resolveWebSocketURL(baseURL: URL(string: "http://localhost:3889")!)
-        XCTAssertEqual(url?.absoluteString, "ws://localhost:3889/ws")
+    func testErrorBridgingMapsConflictToAlreadyExists() {
+        let relaycastError = Relaycast.RelayError.api(
+            code: "some_code",
+            message: "name_taken",
+            statusCode: 409,
+            retryable: false
+        )
+        let bridged = RelayError(relaycastError)
+        guard case .protocolError(let code, let message, _) = bridged else {
+            return XCTFail("Expected protocolError")
+        }
+        XCTAssertEqual(code, "agent_already_exists")
+        XCTAssertEqual(message, "name_taken")
     }
 
-    func testWebSocketURLUpgradesHTTPS() {
-        let url = RelayTransport.resolveWebSocketURL(baseURL: URL(string: "https://broker.example.com")!)
-        XCTAssertEqual(url?.absoluteString, "wss://broker.example.com/ws")
+    func testErrorBridgingMapsNotConnected() {
+        if case .notConnected = RelayError(Relaycast.RelayError.notConnected) {
+            // ok
+        } else {
+            XCTFail("Expected notConnected")
+        }
     }
 
-    func testWebSocketURLNormalizesTrailingSlash() {
-        let url = RelayTransport.resolveWebSocketURL(baseURL: URL(string: "http://localhost:3889/ws/")!)
-        XCTAssertEqual(url?.absoluteString, "ws://localhost:3889/ws")
+    // MARK: - Realtime event glue
+
+    func testRelayEventFromWsEventExtractsMessageFields() {
+        // relaycast emits flat events: type plus payload fields at the top level.
+        let wsEvent = Relaycast.WsEvent(type: "message.created", payload: [
+            "channel": .string("general"),
+            "message": .object([
+                "id": .string("msg_1"),
+                "message_id": .string("msg_1"),
+                "body": .string("hello"),
+                "from": .object(["name": .string("alice")]),
+                "channel": .object(["name": .string("general")])
+            ])
+        ])
+
+        let event = RelayEvent(wsEvent)
+        XCTAssertEqual(event.type, "message.created")
+        XCTAssertEqual(event.channel, "general")
+        XCTAssertEqual(event.message?.text, "hello")
+        XCTAssertEqual(event.message?.from.name, "alice")
+        XCTAssertEqual(event.message?.channel?.name, "general")
     }
 
-    func testWebSocketURLDoesNotDoubleAppendWS() {
-        let url = RelayTransport.resolveWebSocketURL(baseURL: URL(string: "http://localhost:3889/ws")!)
-        XCTAssertEqual(url?.absoluteString, "ws://localhost:3889/ws")
+    func testRelayEventFromWsEventExtractsActionInvocationFields() {
+        let wsEvent = Relaycast.WsEvent(type: "action.invoked", payload: [
+            "invocation_id": .string("inv_1"),
+            "action_name": .string("echo"),
+            "caller_name": .string("alice")
+        ])
+
+        let event = RelayEvent(wsEvent)
+        XCTAssertEqual(event.type, "action.invoked")
+        XCTAssertEqual(event.invocationId, "inv_1")
+        XCTAssertEqual(event.actionName, "echo")
+        XCTAssertEqual(event.callerName, "alice")
     }
 
-    func testWebSocketURLRewritesLegacyV1WS() {
-        let url = RelayTransport.resolveWebSocketURL(baseURL: URL(string: "http://localhost:3889/v1/ws")!)
-        XCTAssertEqual(url?.absoluteString, "ws://localhost:3889/ws")
+    func testRelayEventFromWsEventPreservesTypeWithEmptyPayload() {
+        let event = RelayEvent(Relaycast.WsEvent(type: "pong"))
+        XCTAssertEqual(event.type, "pong")
+        XCTAssertNil(event.message)
     }
 
-    func testWebSocketURLStripsLegacyTokenQuery() {
-        let url = RelayTransport.resolveWebSocketURL(baseURL: URL(string: "http://localhost:3889/?token=secret")!)
-        XCTAssertEqual(url?.absoluteString, "ws://localhost:3889/ws")
+    // MARK: - Registration lifecycle
+
+    /// A persisted `AgentRegistration` must stay usable even if the owning
+    /// `AgentRelay`/`HostedWorkspaceCore` is released before `asClient()` is
+    /// called. The factory captures the relay/baseURL transport state strongly,
+    /// so this must not trap.
+    func testRegistrationAsClientSurvivesCoreRelease() throws {
+        let response = try makeCreateAgentResponse(id: "agent_1", name: "swift-agent", token: "rk_token")
+
+        var core: HostedWorkspaceCore? = HostedWorkspaceCore(
+            workspaceKey: "rk_test_key",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!
+        )
+        let registration = core!.makeRegistration(response)
+
+        // Drop the owning core before using the persisted registration.
+        core = nil
+
+        let client = registration.asClient()
+        XCTAssertEqual(client.id, "agent_1")
+        XCTAssertEqual(client.name, "swift-agent")
+        XCTAssertEqual(client.token, "rk_token")
     }
 
-    // MARK: - REST API URL resolution
-
-    func testAPIURLAppendsPath() {
-        let url = RelayHTTP.resolveAPIURL(baseURL: URL(string: "http://localhost:3889")!, path: "/api/send")
-        XCTAssertEqual(url?.absoluteString, "http://localhost:3889/api/send")
+    private func makeCreateAgentResponse(id: String, name: String, token: String) throws -> Relaycast.CreateAgentResponse {
+        let json = """
+        {"id":"\(id)","name":"\(name)","token":"\(token)","status":"online","createdAt":"2026-06-20T00:00:00Z"}
+        """
+        return try JSONDecoder().decode(Relaycast.CreateAgentResponse.self, from: Data(json.utf8))
     }
 
-    func testAPIURLStripsWSBasePath() {
-        let url = RelayHTTP.resolveAPIURL(baseURL: URL(string: "http://localhost:3889/ws")!, path: "/api/send")
-        XCTAssertEqual(url?.absoluteString, "http://localhost:3889/api/send")
-    }
+    // MARK: - Action handle lifecycle
 
-    func testAPIURLStripsLegacyV1WSBasePath() {
-        let url = RelayHTTP.resolveAPIURL(baseURL: URL(string: "http://localhost:3889/v1/ws")!, path: "/api/send")
-        XCTAssertEqual(url?.absoluteString, "http://localhost:3889/api/send")
-    }
-
-    func testAPIURLDowngradesWSScheme() {
-        let url = RelayHTTP.resolveAPIURL(baseURL: URL(string: "ws://localhost:3889/ws")!, path: "/api/send")
-        XCTAssertEqual(url?.absoluteString, "http://localhost:3889/api/send")
-    }
-
-    func testAPIURLDowngradesWSSScheme() {
-        let url = RelayHTTP.resolveAPIURL(baseURL: URL(string: "wss://broker.example.com/ws")!, path: "/api/spawn")
-        XCTAssertEqual(url?.absoluteString, "https://broker.example.com/api/spawn")
+    func testActionHandleExposesName() async {
+        let handle = ActionHandle(name: "echo") { }
+        XCTAssertEqual(handle.name, "echo")
+        await handle.unregister()
     }
 }

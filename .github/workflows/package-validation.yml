@@ -18,7 +18,6 @@ jobs:
     name: Detect change scope
     runs-on: ubuntu-latest
     outputs:
-      web_only: ${{ steps.scope.outputs.web_only }}
       sdk_swift_only: ${{ steps.scope.outputs.sdk_swift_only }}
     steps:
       - id: scope
@@ -45,16 +44,14 @@ jobs:
               files = (comparison.data.files || []).map((file) => file.filename);
             }
 
-            const webOnly = files.length > 0 && files.every((file) => file.startsWith('web/'));
             const sdkSwiftOnly = files.length > 0 && files.every((file) => file.startsWith('packages/sdk-swift/'));
             core.info(`Changed files (${files.length}): ${files.join(', ')}`);
-            core.setOutput('web_only', webOnly ? 'true' : 'false');
             core.setOutput('sdk_swift_only', sdkSwiftOnly ? 'true' : 'false');
 
   validate:
     name: Build & Validate
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -127,7 +124,7 @@ jobs:
           # Check dist files exist (skip non-Node package directories).
           # broker-* packages ship a Rust-built binary in bin/, not a JS
           # dist — they live under packages/ only for workspace linkage.
-          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas telemetry"
+          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
             if [ ! -f "$pkg_dir/package.json" ]; then
@@ -192,13 +189,13 @@ jobs:
       - name: Test CLI startup
         run: |
           echo "=== Testing CLI broker lifecycle ==="
-          TEST_PORT=3899
-          API_PORT=$((TEST_PORT + 1))
-          # Start broker+dashboard in background
-          node packages/cli/dist/cli/index.js local up --port "$TEST_PORT" &
+          BROKER_PORT=3899
+          API_PORT=$((BROKER_PORT + 1))
+          # Start the broker in background
+          AGENT_RELAY_BROKER_PORT="$BROKER_PORT" node packages/cli/dist/cli/index.js local up &
           DAEMON_PID=$!
 
-          # Wait for health endpoint (broker API is dashboard port + 1)
+          # Wait for health endpoint (broker API is the base port + 1)
           for i in {1..20}; do
             if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
               break
@@ -228,7 +225,7 @@ jobs:
   publish-fresh-install-build:
     name: Publish Fresh Install Build
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -264,7 +261,7 @@ jobs:
   standalone-macos-smoke:
     name: Standalone macOS Smoke
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: macos-latest
     env:
       NPM_CONFIG_FUND: false
