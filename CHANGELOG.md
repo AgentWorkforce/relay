@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- relaycast SDKs upgraded to latest: `@relaycast/sdk` 5.0.5 (v4→v5 major), `relaycast` crate 5.0.2, `relaycast-sdk` 0.3.0, Swift relaycast 5.0.5. The v5 `agents.release` now returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
 - The hosted engine base URL default is owned solely by the relaycast SDK. `agent-relay`, `agent-relay-broker`, and the bundled SDKs no longer hardcode a base URL — they pass `RELAYCAST_BASE_URL`/`RELAY_BASE_URL` through for self-hosting and otherwise inherit the SDK default (`cast.agentrelay.com`). The broker reaches the fleet node-control endpoint via the SDK's `node_control_ws_url` helper and only injects `RELAY_BASE_URL` into spawned agents when an override is set.
 
 ### Removed
