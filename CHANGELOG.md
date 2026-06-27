@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay reflex on|off|status` manages Reflex history sync with a consent prompt and persisted `~/.agentworkforce/reflex.json` state.
 - `agent-relay integration subscribe|unsubscribe` binds any relayfile provider to a relay channel or agent in one command, with inline connect flow when the provider isn't linked yet.
 - `agent-relay integration subscription create` now accepts `--filter`, `--url`, and `--secret` to scope delivery and secure the writeback endpoint.
 - `agent-relay integration webhook create-inbound <channel> [--name]` mints an inbound channel webhook (returns a scoped URL + one-time token) so external services can push messages into an agent's channel without the SDK; `list-inbound` and `delete-inbound` manage them. Closes the CLI gap where inbound webhooks were reachable only via the SDK/MCP.
