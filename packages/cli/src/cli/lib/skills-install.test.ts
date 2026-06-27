@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   HARNESS_TARGETS,
@@ -157,11 +157,16 @@ describe('installSkill', () => {
 });
 
 describe('fetchSkill', () => {
+  // Always restore the stubbed `fetch`, even if an assertion throws, so a
+  // failed test can't leak the mock into later tests.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('returns the response text on success', async () => {
     const stub = vi.fn(async () => new Response('hello skill', { status: 200 }));
     vi.stubGlobal('fetch', stub);
     await expect(fetchSkill('https://example.com/skill.md')).resolves.toBe('hello skill');
-    vi.unstubAllGlobals();
   });
 
   it('throws a clear error on a non-2xx response', async () => {
@@ -170,7 +175,6 @@ describe('fetchSkill', () => {
       vi.fn(async () => new Response('nope', { status: 404 }))
     );
     await expect(fetchSkill('https://example.com/skill.md')).rejects.toThrow(/HTTP 404/);
-    vi.unstubAllGlobals();
   });
 
   it('throws when the skill body is empty', async () => {
@@ -179,7 +183,6 @@ describe('fetchSkill', () => {
       vi.fn(async () => new Response('   ', { status: 200 }))
     );
     await expect(fetchSkill('https://example.com/skill.md')).rejects.toThrow(/empty/);
-    vi.unstubAllGlobals();
   });
 
   it('aborts and reports a timeout when the download stalls', async () => {
@@ -194,6 +197,5 @@ describe('fetchSkill', () => {
       )
     );
     await expect(fetchSkill('https://example.com/skill.md', 10)).rejects.toThrow(/Timed out/);
-    vi.unstubAllGlobals();
   });
 });
