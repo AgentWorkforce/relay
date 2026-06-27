@@ -196,10 +196,7 @@ async function readRelayfileWritebackTarget(): Promise<RelayfileWritebackTarget 
     const defaultKey = typeof parsed.default === 'string' ? parsed.default : '';
     const match =
       workspaces.find(
-        (w) =>
-          w.relayWorkspaceId === defaultKey ||
-          w.id === defaultKey ||
-          w.name === defaultKey
+        (w) => w.relayWorkspaceId === defaultKey || w.id === defaultKey || w.name === defaultKey
       ) ?? workspaces[0];
     const workspaceId = match?.relayWorkspaceId?.trim() || match?.id?.trim();
     if (!workspaceId) {

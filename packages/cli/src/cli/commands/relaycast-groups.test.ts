@@ -423,7 +423,17 @@ describe('SDK-backed CLI groups', () => {
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(
-      ['integration', 'subscribe', 'slack', '--resource', '#acme', '--to', '@slackbot', '--bridge-secret', 'shared'],
+      [
+        'integration',
+        'subscribe',
+        'slack',
+        '--resource',
+        '#acme',
+        '--to',
+        '@slackbot',
+        '--bridge-secret',
+        'shared',
+      ],
       { from: 'user' }
     );
 
