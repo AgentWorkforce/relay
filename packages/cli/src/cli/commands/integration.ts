@@ -80,9 +80,13 @@ function readProviderConnected(payload: unknown, provider: string): boolean {
   // Handle dict-keyed payloads where the provider name is the key
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     const record = payload as Record<string, unknown>;
-    const entry = Object.entries(record).find(([key]) => key.trim().toLowerCase() === normalizedProvider)?.[1];
+    const entry = Object.entries(record).find(
+      ([key]) => key.trim().toLowerCase() === normalizedProvider
+    )?.[1];
     if (entry && typeof entry === 'object') {
-      const state = String((entry as Record<string, unknown>).state ?? (entry as Record<string, unknown>).status ?? '')
+      const state = String(
+        (entry as Record<string, unknown>).state ?? (entry as Record<string, unknown>).status ?? ''
+      )
         .trim()
         .toLowerCase();
       if (CONNECTED_STATES.includes(state)) {
@@ -440,12 +444,16 @@ async function runUnsubscribe(
   try {
     await relay.webhooks.delete(binding.webhookId);
   } catch (err) {
-    deps.log(`Warning: failed to delete webhook ${binding.webhookId}: ${err instanceof Error ? err.message : String(err)}`);
+    deps.log(
+      `Warning: failed to delete webhook ${binding.webhookId}: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
   try {
     await relay.webhooks.unsubscribe(binding.subscriptionId);
   } catch (err) {
-    deps.log(`Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`);
+    deps.log(
+      `Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
   await deps.relayfile.unbind(provider, resource);
   deps.log(`Unsubscribed ${provider} ${resource}.`);
