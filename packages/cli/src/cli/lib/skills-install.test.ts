@@ -65,7 +65,9 @@ describe('installSkill', () => {
     const results = installSkill({ skill, scope: 'project', harnesses: HARNESS_TARGETS, ctx: CTX, writer });
 
     expect(results.every((r) => r.status === 'installed')).toBe(true);
-    expect(files.get('/proj/.claude/skills/orchestrate/SKILL.md')).toContain('name: orchestrating-agent-relay');
+    expect(files.get('/proj/.claude/skills/orchestrate/SKILL.md')).toContain(
+      'name: orchestrating-agent-relay'
+    );
     expect(files.has('/proj/.codex/prompts/orchestrate.md')).toBe(true);
     expect(files.has('/proj/.cursor/commands/orchestrate.md')).toBe(true);
     expect(files.has('/proj/.gemini/commands/orchestrate.toml')).toBe(true);
@@ -74,7 +76,13 @@ describe('installSkill', () => {
 
   it('resolves global paths under the home directory', () => {
     const { writer, files } = memoryWriter();
-    installSkill({ skill: parseSkill(SAMPLE), scope: 'global', harnesses: HARNESS_TARGETS, ctx: CTX, writer });
+    installSkill({
+      skill: parseSkill(SAMPLE),
+      scope: 'global',
+      harnesses: HARNESS_TARGETS,
+      ctx: CTX,
+      writer,
+    });
     expect(files.has('/home/me/.claude/skills/orchestrate/SKILL.md')).toBe(true);
     // OpenCode's global config lives under ~/.config/opencode.
     expect(files.has('/home/me/.config/opencode/command/orchestrate.md')).toBe(true);
@@ -82,7 +90,13 @@ describe('installSkill', () => {
 
   it('gives Claude the full skill but Codex only the body', () => {
     const { writer, files } = memoryWriter();
-    installSkill({ skill: parseSkill(SAMPLE), scope: 'project', harnesses: HARNESS_TARGETS, ctx: CTX, writer });
+    installSkill({
+      skill: parseSkill(SAMPLE),
+      scope: 'project',
+      harnesses: HARNESS_TARGETS,
+      ctx: CTX,
+      writer,
+    });
     expect(files.get('/proj/.claude/skills/orchestrate/SKILL.md')).toContain('description:');
     expect(files.get('/proj/.codex/prompts/orchestrate.md')).not.toContain('description:');
     expect(files.get('/proj/.codex/prompts/orchestrate.md')).toContain('# Orchestrate');
@@ -90,7 +104,13 @@ describe('installSkill', () => {
 
   it('renders Gemini TOML with an escaped prompt block', () => {
     const { writer, files } = memoryWriter();
-    installSkill({ skill: parseSkill(SAMPLE), scope: 'project', harnesses: HARNESS_TARGETS, ctx: CTX, writer });
+    installSkill({
+      skill: parseSkill(SAMPLE),
+      scope: 'project',
+      harnesses: HARNESS_TARGETS,
+      ctx: CTX,
+      writer,
+    });
     const toml = files.get('/proj/.gemini/commands/orchestrate.toml') ?? '';
     expect(toml).toContain('description = "Use when you orchestrate agents."');
     expect(toml).toContain('prompt = """');
@@ -102,7 +122,13 @@ describe('installSkill', () => {
     const { writer } = memoryWriter();
     const claude = [findHarnessTarget('claude')!];
     installSkill({ skill: parseSkill(SAMPLE), scope: 'project', harnesses: claude, ctx: CTX, writer });
-    const second = installSkill({ skill: parseSkill(SAMPLE), scope: 'project', harnesses: claude, ctx: CTX, writer });
+    const second = installSkill({
+      skill: parseSkill(SAMPLE),
+      scope: 'project',
+      harnesses: claude,
+      ctx: CTX,
+      writer,
+    });
     expect(second[0].status).toBe('overwritten');
   });
 
@@ -134,13 +160,19 @@ describe('fetchSkill', () => {
   });
 
   it('throws a clear error on a non-2xx response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('nope', { status: 404 }))
+    );
     await expect(fetchSkill('https://example.com/skill.md')).rejects.toThrow(/HTTP 404/);
     vi.unstubAllGlobals();
   });
 
   it('throws when the skill body is empty', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('   ', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('   ', { status: 200 }))
+    );
     await expect(fetchSkill('https://example.com/skill.md')).rejects.toThrow(/empty/);
     vi.unstubAllGlobals();
   });

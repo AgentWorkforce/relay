@@ -32,11 +32,7 @@ export interface SkillsDependencies {
   promptHarnesses: (harnesses: HarnessTarget[]) => Promise<string[] | null>;
   getContext: () => TargetContext;
   isInteractive: () => boolean;
-  install: (
-    skill: ReturnType<typeof parseSkill>,
-    plan: SkillPlan,
-    ctx: TargetContext
-  ) => InstallResult[];
+  install: (skill: ReturnType<typeof parseSkill>, plan: SkillPlan, ctx: TargetContext) => InstallResult[];
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -54,8 +50,7 @@ function withDefaults(overrides: Partial<SkillsDependencies> = {}): SkillsDepend
     promptHarnesses: (harnesses) => selectHarnesses(harnesses),
     getContext: () => defaultTargetContext(resolveProjectRoot()),
     isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
-    install: (skill, plan, ctx) =>
-      installSkill({ skill, scope: plan.scope, harnesses: plan.harnesses, ctx }),
+    install: (skill, plan, ctx) => installSkill({ skill, scope: plan.scope, harnesses: plan.harnesses, ctx }),
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -73,7 +68,14 @@ interface AddOptions {
 /** Parse `--harness a,b` into a deduped list of ids. */
 function parseHarnessFlag(raw: string | undefined): string[] {
   if (!raw) return [];
-  return [...new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))];
+  return [
+    ...new Set(
+      raw
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  ];
 }
 
 /** Resolve scope from flags, or null when it must be asked interactively. */
@@ -96,9 +98,7 @@ function harnessesFromFlags(opts: AddOptions, deps: SkillsDependencies): Harness
   for (const id of ids) {
     const target = findHarnessTarget(id);
     if (!target) {
-      deps.error(
-        `Unknown harness "${id}". Known harnesses: ${HARNESS_TARGETS.map((t) => t.id).join(', ')}.`
-      );
+      deps.error(`Unknown harness "${id}". Known harnesses: ${HARNESS_TARGETS.map((t) => t.id).join(', ')}.`);
       deps.exit(1);
     }
     resolved.push(target);
@@ -148,17 +148,12 @@ function reportResults(results: InstallResult[], deps: SkillsDependencies): numb
 
   if (ok.length > 0) {
     deps.log('');
-    deps.log(
-      `/${ORCHESTRATE_SKILL.slug} is ready in ${ok.length} harness${ok.length === 1 ? '' : 'es'}.`
-    );
+    deps.log(`/${ORCHESTRATE_SKILL.slug} is ready in ${ok.length} harness${ok.length === 1 ? '' : 'es'}.`);
   }
   return failed.length > 0 ? 1 : 0;
 }
 
-export function registerSkillsCommands(
-  program: Command,
-  overrides: Partial<SkillsDependencies> = {}
-): void {
+export function registerSkillsCommands(program: Command, overrides: Partial<SkillsDependencies> = {}): void {
   const deps = withDefaults(overrides);
   const group = program
     .command('skills')

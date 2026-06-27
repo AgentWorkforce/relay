@@ -143,8 +143,7 @@ export const HARNESS_TARGETS: HarnessTarget[] = [
     render: (skill) => {
       const description = skill.description ?? `The /${ORCHESTRATE_SKILL.slug} skill`;
       return (
-        `description = ${JSON.stringify(description)}\n` +
-        `prompt = """\n${tomlEscape(skill.body)}\n"""\n`
+        `description = ${JSON.stringify(description)}\n` + `prompt = """\n${tomlEscape(skill.body)}\n"""\n`
       );
     },
   },

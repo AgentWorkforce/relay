@@ -12,14 +12,13 @@ function harness(overrides: Partial<SkillsDependencies> = {}) {
   const exit = vi.fn(() => {
     throw new Error('exit');
   }) as never;
-  const install = vi.fn(
-    (_skill, plan): InstallResult[] =>
-      plan.harnesses.map((h: HarnessTarget) => ({
-        harnessId: h.id,
-        label: h.label,
-        path: `/x/${h.id}`,
-        status: 'installed' as const,
-      }))
+  const install = vi.fn((_skill, plan): InstallResult[] =>
+    plan.harnesses.map((h: HarnessTarget) => ({
+      harnessId: h.id,
+      label: h.label,
+      path: `/x/${h.id}`,
+      status: 'installed' as const,
+    }))
   );
   const ctx: TargetContext = { projectRoot: '/proj', homeDir: '/home/me' };
   const deps: Partial<SkillsDependencies> = {

@@ -18,7 +18,8 @@ Added 'agent-relay skills add': fetches agentrelay.com/skill.md and installs the
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Per-harness install registry mapping claude/codex/cursor/gemini/opencode to native command/skill paths; Gemini rendered as TOML, Codex/OpenCode get body-only prompts, Claude/Cursor keep full frontmatter: Per-harness install registry mapping claude/codex/cursor/gemini/opencode to native command/skill paths; Gemini rendered as TOML, Codex/OpenCode get body-only prompts, Claude/Cursor keep full frontmatter
 - Dependency-free keypress TUI (selectScope + multi-select selectHarnesses) instead of adding a prompt lib; non-interactive shells use --global/--local/--harness/--all flags: Dependency-free keypress TUI (selectScope + multi-select selectHarnesses) instead of adding a prompt lib; non-interactive shells use --global/--local/--harness/--all flags
