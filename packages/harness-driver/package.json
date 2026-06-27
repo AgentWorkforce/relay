@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/harness-driver",
-  "version": "9.1.4",
+  "version": "9.1.5",
   "description": "Managed harness driver for Agent Relay — attach, wrap, spawn, inject, and observe agent runtimes",
   "type": "module",
   "main": "dist/index.js",
@@ -53,16 +53,16 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/sdk": "9.1.4",
+    "@agent-relay/sdk": "9.1.5",
     "ws": "^8.18.3",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
-    "@agent-relay/broker-darwin-arm64": "9.1.4",
-    "@agent-relay/broker-darwin-x64": "9.1.4",
-    "@agent-relay/broker-linux-arm64": "9.1.4",
-    "@agent-relay/broker-linux-x64": "9.1.4",
-    "@agent-relay/broker-win32-x64": "9.1.4"
+    "@agent-relay/broker-darwin-arm64": "9.1.5",
+    "@agent-relay/broker-darwin-x64": "9.1.5",
+    "@agent-relay/broker-linux-arm64": "9.1.5",
+    "@agent-relay/broker-linux-x64": "9.1.5",
+    "@agent-relay/broker-win32-x64": "9.1.5"
   },
   "publishConfig": {
     "access": "public"

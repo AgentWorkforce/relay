@@ -96,6 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.1.5] - 2026-06-27
+
+### Added
+
+- Add agent-relay reflex on/off/status command
+- Add integration subscribe/unsubscribe commands
+- Add `skills add` command to install the /orchestrate skill
+
 ## [9.1.4] - 2026-06-27
 
 ### Changed

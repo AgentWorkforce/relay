@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/integration-prompts",
-  "version": "9.1.4",
+  "version": "9.1.5",
   "description": "Shared Relayfile integration writeback prompt builders for Agent Relay consumers.",
   "type": "module",
   "main": "dist/index.js",
