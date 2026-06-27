@@ -39,8 +39,15 @@ export interface SkillsDependencies {
 }
 
 function resolveProjectRoot(): string {
-  const paths = getProjectPaths() as { projectRoot?: string };
-  return paths.projectRoot ?? process.cwd();
+  // `getProjectPaths()` resolves the nearest project root and otherwise falls
+  // back to the cwd; the try/catch is defensive so a global install can never
+  // be blocked by project resolution from outside an Agent Relay project.
+  try {
+    const paths = getProjectPaths() as { projectRoot?: string };
+    return paths.projectRoot ?? process.cwd();
+  } catch {
+    return process.cwd();
+  }
 }
 
 function withDefaults(overrides: Partial<SkillsDependencies> = {}): SkillsDependencies {

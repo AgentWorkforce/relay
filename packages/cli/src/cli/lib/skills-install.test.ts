@@ -68,10 +68,12 @@ describe('installSkill', () => {
     expect(files.get('/proj/.claude/skills/orchestrate/SKILL.md')).toContain(
       'name: orchestrating-agent-relay'
     );
-    expect(files.has('/proj/.codex/prompts/orchestrate.md')).toBe(true);
+    // Codex discovers skills as `.agents/skills/<name>/SKILL.md`.
+    expect(files.has('/proj/.agents/skills/orchestrate/SKILL.md')).toBe(true);
     expect(files.has('/proj/.cursor/commands/orchestrate.md')).toBe(true);
     expect(files.has('/proj/.gemini/commands/orchestrate.toml')).toBe(true);
-    expect(files.has('/proj/.opencode/command/orchestrate.md')).toBe(true);
+    // OpenCode uses the plural `commands/` directory.
+    expect(files.has('/proj/.opencode/commands/orchestrate.md')).toBe(true);
   });
 
   it('resolves global paths under the home directory', () => {
@@ -84,11 +86,13 @@ describe('installSkill', () => {
       writer,
     });
     expect(files.has('/home/me/.claude/skills/orchestrate/SKILL.md')).toBe(true);
-    // OpenCode's global config lives under ~/.config/opencode.
-    expect(files.has('/home/me/.config/opencode/command/orchestrate.md')).toBe(true);
+    // Codex user-level skills live under ~/.agents/skills.
+    expect(files.has('/home/me/.agents/skills/orchestrate/SKILL.md')).toBe(true);
+    // OpenCode's global config lives under ~/.config/opencode/commands.
+    expect(files.has('/home/me/.config/opencode/commands/orchestrate.md')).toBe(true);
   });
 
-  it('gives Claude the full skill but Codex only the body', () => {
+  it('gives Claude and Codex the full skill but OpenCode only the body', () => {
     const { writer, files } = memoryWriter();
     installSkill({
       skill: parseSkill(SAMPLE),
@@ -98,8 +102,9 @@ describe('installSkill', () => {
       writer,
     });
     expect(files.get('/proj/.claude/skills/orchestrate/SKILL.md')).toContain('description:');
-    expect(files.get('/proj/.codex/prompts/orchestrate.md')).not.toContain('description:');
-    expect(files.get('/proj/.codex/prompts/orchestrate.md')).toContain('# Orchestrate');
+    expect(files.get('/proj/.agents/skills/orchestrate/SKILL.md')).toContain('description:');
+    expect(files.get('/proj/.opencode/commands/orchestrate.md')).not.toContain('description:');
+    expect(files.get('/proj/.opencode/commands/orchestrate.md')).toContain('# Orchestrate');
   });
 
   it('renders Gemini TOML with an escaped prompt block', () => {
@@ -174,6 +179,21 @@ describe('fetchSkill', () => {
       vi.fn(async () => new Response('   ', { status: 200 }))
     );
     await expect(fetchSkill('https://example.com/skill.md')).rejects.toThrow(/empty/);
+    vi.unstubAllGlobals();
+  });
+
+  it('aborts and reports a timeout when the download stalls', async () => {
+    // A fetch that never resolves until its signal aborts.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, init: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          })
+      )
+    );
+    await expect(fetchSkill('https://example.com/skill.md', 10)).rejects.toThrow(/Timed out/);
     vi.unstubAllGlobals();
   });
 });

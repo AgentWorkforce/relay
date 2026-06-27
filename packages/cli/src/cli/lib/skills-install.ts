@@ -41,7 +41,7 @@ export interface ParsedSkill {
  * Tolerant by design: a document with no frontmatter yields `body === raw`.
  */
 export function parseSkill(raw: string): ParsedSkill {
-  const normalized = raw.replace(/^﻿/, '');
+  const normalized = raw.replace(/^\uFEFF/, '');
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(normalized);
   if (!match) {
     return { raw, body: normalized.trim() };
@@ -109,12 +109,15 @@ export const HARNESS_TARGETS: HarnessTarget[] = [
     resolvePath: (scope, ctx) =>
       path.join(
         scope === 'global' ? ctx.homeDir : ctx.projectRoot,
-        '.codex',
-        'prompts',
-        `${ORCHESTRATE_SKILL.slug}.md`
+        '.agents',
+        'skills',
+        ORCHESTRATE_SKILL.slug,
+        'SKILL.md'
       ),
-    // Codex custom prompts are plain markdown; frontmatter would be inert text.
-    render: (skill) => ensureTrailingNewline(skill.body),
+    // Codex discovers skills as `.agents/skills/<name>/SKILL.md` directories
+    // (the portable SKILL.md standard), scanning from the cwd up to the repo
+    // root and from $HOME. The full skill — frontmatter included — is required.
+    render: (skill) => ensureTrailingNewline(skill.raw),
   },
   {
     id: 'cursor',
@@ -152,8 +155,8 @@ export const HARNESS_TARGETS: HarnessTarget[] = [
     label: 'OpenCode',
     resolvePath: (scope, ctx) =>
       scope === 'global'
-        ? path.join(ctx.homeDir, '.config', 'opencode', 'command', `${ORCHESTRATE_SKILL.slug}.md`)
-        : path.join(ctx.projectRoot, '.opencode', 'command', `${ORCHESTRATE_SKILL.slug}.md`),
+        ? path.join(ctx.homeDir, '.config', 'opencode', 'commands', `${ORCHESTRATE_SKILL.slug}.md`)
+        : path.join(ctx.projectRoot, '.opencode', 'commands', `${ORCHESTRATE_SKILL.slug}.md`),
     // OpenCode commands are plain markdown prompts.
     render: (skill) => ensureTrailingNewline(skill.body),
   },
@@ -235,17 +238,34 @@ export function installSkill(opts: {
   });
 }
 
+/** Default time budget for the skill download before it is aborted. */
+export const FETCH_SKILL_TIMEOUT_MS = 15_000;
+
 /**
- * Fetch the published skill markdown over HTTPS. Throws a clear error on a
- * non-2xx response so the command can surface it to the user.
+ * Fetch the published skill markdown over HTTPS. Bounded by an abort timeout so
+ * a stalled connection can't hang `skills add` (notably in CI). Throws a clear
+ * error on timeout or a non-2xx response so the command can surface it.
  */
-export async function fetchSkill(url: string = ORCHESTRATE_SKILL.url): Promise<string> {
+export async function fetchSkill(
+  url: string = ORCHESTRATE_SKILL.url,
+  timeoutMs: number = FETCH_SKILL_TIMEOUT_MS
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
-    res = await fetch(url, { headers: { accept: 'text/markdown, text/plain, */*' } });
+    res = await fetch(url, {
+      headers: { accept: 'text/markdown, text/plain, */*' },
+      signal: controller.signal,
+    });
   } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`Timed out downloading skill from ${url} after ${timeoutMs}ms`);
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to reach ${url}: ${message}`);
+  } finally {
+    clearTimeout(timer);
   }
   if (!res.ok) {
     throw new Error(`Failed to download skill from ${url} (HTTP ${res.status})`);
