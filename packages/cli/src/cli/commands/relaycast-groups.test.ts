@@ -306,9 +306,9 @@ describe('SDK-backed CLI groups', () => {
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
-        resolveWritebackTarget: vi.fn(async () => ({
-          baseUrl: 'https://file.test',
-          workspaceId: 'rw_test',
+        resolveWritebackBinding: vi.fn(async () => ({
+          url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
+          secret: 'test-secret',
         })),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
@@ -334,9 +334,9 @@ describe('SDK-backed CLI groups', () => {
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
-      resolveWritebackTarget: vi.fn(async () => ({
-        baseUrl: 'https://file.test',
-        workspaceId: 'rw_test',
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
+        secret: 'test-secret',
       })),
     };
     const log = vi.fn();
@@ -396,7 +396,7 @@ describe('SDK-backed CLI groups', () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  it('integration subscribe defaults the bridge URL to the workspace-scoped relayfile ingress', async () => {
+  it('integration subscribe fetches the writeback URL + secret from relayfile', async () => {
     const relay = createRelayMock();
     relay.agents.list.mockResolvedValueOnce([{ id: 'a1', name: 'slackbot' }]);
     const relayfile = {
@@ -405,9 +405,9 @@ describe('SDK-backed CLI groups', () => {
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
-      resolveWritebackTarget: vi.fn(async () => ({
-        baseUrl: 'https://file.agentrelay.com',
-        workspaceId: 'rw_7ccfea89',
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
+        secret: 'derived-secret-hex',
       })),
     };
     const program = new Command();
@@ -423,25 +423,15 @@ describe('SDK-backed CLI groups', () => {
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(
-      [
-        'integration',
-        'subscribe',
-        'slack',
-        '--resource',
-        '#acme',
-        '--to',
-        '@slackbot',
-        '--bridge-secret',
-        'shared',
-      ],
+      ['integration', 'subscribe', 'slack', '--resource', '#acme', '--to', '@slackbot'],
       { from: 'user' }
     );
 
-    expect(relayfile.resolveWritebackTarget).toHaveBeenCalled();
+    expect(relayfile.resolveWritebackBinding).toHaveBeenCalledWith('slackbot');
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
-        secret: 'shared',
+        secret: 'derived-secret-hex',
       })
     );
   });
@@ -462,9 +452,9 @@ describe('SDK-backed CLI groups', () => {
         },
       ]),
       unbind: vi.fn(async () => undefined),
-      resolveWritebackTarget: vi.fn(async () => ({
-        baseUrl: 'https://file.test',
-        workspaceId: 'rw_test',
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
+        secret: 'test-secret',
       })),
     };
     const log = vi.fn();
@@ -529,9 +519,9 @@ describe('SDK-backed CLI groups', () => {
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
-        resolveWritebackTarget: vi.fn(async () => ({
-          baseUrl: 'https://file.test',
-          workspaceId: 'rw_test',
+        resolveWritebackBinding: vi.fn(async () => ({
+          url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
+          secret: 'test-secret',
         })),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
@@ -563,9 +553,9 @@ describe('SDK-backed CLI groups', () => {
         },
       ]),
       unbind: vi.fn(async () => undefined),
-      resolveWritebackTarget: vi.fn(async () => ({
-        baseUrl: 'https://file.test',
-        workspaceId: 'rw_test',
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
+        secret: 'test-secret',
       })),
     };
     const log = vi.fn();

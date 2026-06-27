@@ -1,6 +1,5 @@
 import type { Command } from 'commander';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { getProjectPaths } from '@agent-relay/config';
 import type { AgentRelayAgent } from '@agent-relay/sdk';
 
@@ -28,11 +27,11 @@ export interface RelayfileBinding {
   subscriptionId: string;
 }
 
-export interface RelayfileWritebackTarget {
-  /** relayfile-cloud base URL that hosts the writeback ingress. */
-  baseUrl: string;
-  /** relayfile workspace id used to scope the ingress route. */
-  workspaceId: string;
+export interface RelayfileWritebackBinding {
+  /** relayfile-cloud writeback ingress URL the subscription delivers to. */
+  url: string;
+  /** Per-channel HMAC secret the subscription signs deliveries with. */
+  secret: string;
 }
 
 export interface RelayfileBridge {
@@ -49,11 +48,13 @@ export interface RelayfileBridge {
   listBindings(): Promise<RelayfileBinding[]>;
   unbind(provider: string, resource: string): Promise<void>;
   /**
-   * Resolve where agent replies should be written back to: the relayfile-cloud
-   * base URL + the workspace id that scopes the writeback ingress route. Returns
-   * undefined when it can't be determined (caller falls back to --bridge-url).
+   * Resolve the writeback ingress URL + per-channel signing secret for a relay
+   * channel, fetched from relayfile-cloud over the authenticated relayfile
+   * session. Returns undefined when it can't be determined (caller falls back to
+   * --bridge-url / --bridge-secret). The secret is derived server-side, so the
+   * subscription and the ingress agree on it without any static shared secret.
    */
-  resolveWritebackTarget(): Promise<RelayfileWritebackTarget | undefined>;
+  resolveWritebackBinding(channel: string): Promise<RelayfileWritebackBinding | undefined>;
 }
 
 export type IntegrationCommandDependencies = SdkCommandDeps & {
@@ -160,53 +161,27 @@ function defaultRelayfileBridge(): RelayfileBridge {
     async unbind(provider, resource) {
       await runRelayfile(['integration', 'unbind', provider, resource]);
     },
-    async resolveWritebackTarget() {
-      return readRelayfileWritebackTarget();
+    async resolveWritebackBinding(channel) {
+      try {
+        const output = await runRelayfile([
+          'integration',
+          'writeback-secret',
+          '--channel',
+          channel,
+          '--json',
+        ]);
+        const parsed = JSON.parse(output) as { url?: unknown; secret?: unknown };
+        const url = typeof parsed.url === 'string' ? parsed.url.trim() : '';
+        const secret = typeof parsed.secret === 'string' ? parsed.secret.trim() : '';
+        if (!url || !secret) {
+          return undefined;
+        }
+        return { url, secret };
+      } catch {
+        return undefined;
+      }
     },
   };
-}
-
-const DEFAULT_RELAYFILE_BASE_URL = 'https://file.agentrelay.com';
-
-interface RelayfileWorkspaceConfig {
-  name?: string;
-  id?: string;
-  relayWorkspaceId?: string;
-  server?: string;
-}
-
-/**
- * Resolve the writeback ingress target from the local relayfile config
- * (`~/.relayfile/workspaces.json`): the default workspace's server (base URL)
- * and its runtime workspace id (`relayWorkspaceId`, the id the relayfile-cloud
- * fs/ingress routes are keyed by).
- */
-async function readRelayfileWritebackTarget(): Promise<RelayfileWritebackTarget | undefined> {
-  try {
-    const { readFile } = await import('node:fs/promises');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    const configPath = path.join(os.homedir(), '.relayfile', 'workspaces.json');
-    const raw = await readFile(configPath, 'utf-8');
-    const parsed = JSON.parse(raw) as {
-      default?: string;
-      workspaces?: RelayfileWorkspaceConfig[];
-    };
-    const workspaces = Array.isArray(parsed.workspaces) ? parsed.workspaces : [];
-    const defaultKey = typeof parsed.default === 'string' ? parsed.default : '';
-    const match =
-      workspaces.find(
-        (w) => w.relayWorkspaceId === defaultKey || w.id === defaultKey || w.name === defaultKey
-      ) ?? workspaces[0];
-    const workspaceId = match?.relayWorkspaceId?.trim() || match?.id?.trim();
-    if (!workspaceId) {
-      return undefined;
-    }
-    const baseUrl = match?.server?.trim() || DEFAULT_RELAYFILE_BASE_URL;
-    return { baseUrl, workspaceId };
-  } catch {
-    return undefined;
-  }
 }
 
 async function promptLine(question: string): Promise<string> {
@@ -297,44 +272,47 @@ function commaList(raw: unknown): string[] {
 }
 
 /**
- * Resolve the writeback bridge URL the relay subscription should deliver to.
+ * Resolve the writeback delivery URL + signing secret for the relay
+ * subscription. Both come from relayfile-cloud (workspace-scoped ingress URL +
+ * the per-channel derived secret), fetched over the authenticated relayfile
+ * session — so the subscription and the ingress agree on the secret with
+ * nothing to provision.
  *
- * The ingress is hosted by relayfile-cloud and is workspace-scoped, so the URL
- * carries the relayfile workspace id:
- *   {relayfileBaseUrl}/v1/workspaces/{workspaceId}/integrations/relay/writeback
- *
- * Precedence: explicit --bridge-url > resolved relayfile target. Throws with a
- * clear remediation when neither is available (so we never silently create a
- * subscription pointed at a dead URL).
+ * Precedence: explicit --bridge-url/--bridge-secret override each field; the
+ * fetched binding fills the rest. Throws with remediation when a field can't be
+ * resolved, so we never create a subscription with a dead URL or an
+ * unverifiable secret.
  */
-async function resolveBridgeUrl(
+async function resolveWriteback(
   deps: IntegrationCommandDependencies,
-  commandOpts: Record<string, unknown>
-): Promise<string> {
-  const explicit = typeof commandOpts.bridgeUrl === 'string' ? commandOpts.bridgeUrl.trim() : '';
-  if (explicit) {
-    return explicit;
-  }
-  const target = await deps.relayfile.resolveWritebackTarget();
-  if (!target) {
+  commandOpts: Record<string, unknown>,
+  channel: string
+): Promise<{ url: string; secret: string }> {
+  const explicitUrl = typeof commandOpts.bridgeUrl === 'string' ? commandOpts.bridgeUrl.trim() : '';
+  const explicitSecret =
+    typeof commandOpts.bridgeSecret === 'string' ? commandOpts.bridgeSecret.trim() : '';
+
+  const binding =
+    explicitUrl && explicitSecret
+      ? undefined
+      : await deps.relayfile.resolveWritebackBinding(channel);
+
+  const url = explicitUrl || binding?.url;
+  const secret = explicitSecret || binding?.secret;
+
+  if (!url) {
     throw new Error(
-      'Could not resolve the relayfile writeback ingress URL. Pass --bridge-url ' +
-        '<https://file.agentrelay.com/v1/workspaces/<ws>/integrations/relay/writeback>.'
+      'Could not resolve the relayfile writeback ingress URL. Ensure relayfile is ' +
+        'logged in (relayfile login), or pass --bridge-url.'
     );
   }
-  const base = target.baseUrl.replace(/\/+$/, '');
-  return `${base}/v1/workspaces/${encodeURIComponent(target.workspaceId)}/integrations/relay/writeback`;
-}
-
-/**
- * The HMAC secret the subscription signs deliveries with. Must match the
- * relayfile-cloud ingress's RELAY_WRITEBACK_HMAC_SECRET for signatures to
- * verify. Precedence: --bridge-secret > RELAY_WRITEBACK_SECRET env > a random
- * value (unsigned-by-mismatch; only useful when the ingress has no secret set).
- */
-function bridgeSecret(commandOpts: Record<string, unknown>): string {
-  const explicit = typeof commandOpts.bridgeSecret === 'string' ? commandOpts.bridgeSecret.trim() : '';
-  return explicit || process.env.RELAY_WRITEBACK_SECRET?.trim() || randomBytes(24).toString('hex');
+  if (!secret) {
+    throw new Error(
+      'Could not resolve the writeback signing secret. Ensure relayfile is logged ' +
+        'in (relayfile login) and supports `integration writeback-secret`, or pass --bridge-secret.'
+    );
+  }
+  return { url, secret };
 }
 
 function targetChannel(target: string): string {
@@ -476,6 +454,7 @@ async function runSubscribe(
   await ensureRecipient(relay, provider, to, opts);
   const channel = targetChannel(to);
   const events = commaList(opts.events);
+  const writeback = await resolveWriteback(deps, opts, channel);
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
   try {
@@ -484,8 +463,8 @@ async function runSubscribe(
       event: events.length === 1 ? events[0]! : 'message.created',
       events: events.length ? events : ['message.created', 'thread.reply'],
       filter: { channel },
-      url: await resolveBridgeUrl(deps, opts),
-      secret: bridgeSecret(opts),
+      url: writeback.url,
+      secret: writeback.secret,
     });
     await deps.relayfile.bind({
       provider,
