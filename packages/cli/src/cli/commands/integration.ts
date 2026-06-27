@@ -289,13 +289,10 @@ async function resolveWriteback(
   channel: string
 ): Promise<{ url: string; secret: string }> {
   const explicitUrl = typeof commandOpts.bridgeUrl === 'string' ? commandOpts.bridgeUrl.trim() : '';
-  const explicitSecret =
-    typeof commandOpts.bridgeSecret === 'string' ? commandOpts.bridgeSecret.trim() : '';
+  const explicitSecret = typeof commandOpts.bridgeSecret === 'string' ? commandOpts.bridgeSecret.trim() : '';
 
   const binding =
-    explicitUrl && explicitSecret
-      ? undefined
-      : await deps.relayfile.resolveWritebackBinding(channel);
+    explicitUrl && explicitSecret ? undefined : await deps.relayfile.resolveWritebackBinding(channel);
 
   const url = explicitUrl || binding?.url;
   const secret = explicitSecret || binding?.secret;
