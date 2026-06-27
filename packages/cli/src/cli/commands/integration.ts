@@ -76,6 +76,20 @@ function runRelayfile(args: string[], options: { inherit?: boolean } = {}): Prom
 
 function readProviderConnected(payload: unknown, provider: string): boolean {
   const normalizedProvider = provider.trim().toLowerCase();
+  const CONNECTED_STATES = ['connected', 'ready', 'active', 'ok'];
+  // Handle dict-keyed payloads where the provider name is the key
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    const entry = Object.entries(record).find(([key]) => key.trim().toLowerCase() === normalizedProvider)?.[1];
+    if (entry && typeof entry === 'object') {
+      const state = String((entry as Record<string, unknown>).state ?? (entry as Record<string, unknown>).status ?? '')
+        .trim()
+        .toLowerCase();
+      if (CONNECTED_STATES.includes(state)) {
+        return true;
+      }
+    }
+  }
   const values = Array.isArray(payload)
     ? payload
     : payload && typeof payload === 'object'
@@ -92,7 +106,7 @@ function readProviderConnected(payload: unknown, provider: string): boolean {
     const state = String(record.state ?? record.status ?? '')
       .trim()
       .toLowerCase();
-    return name === normalizedProvider && ['connected', 'ready', 'active', 'ok'].includes(state);
+    return name === normalizedProvider && CONNECTED_STATES.includes(state);
   });
 }
 
@@ -228,7 +242,7 @@ function defaultBridgeUrl(commandOpts: Record<string, unknown>, local?: LocalRel
     (typeof commandOpts.baseUrl === 'string' ? commandOpts.baseUrl.trim() : '') ||
     local?.baseUrl ||
     process.env.RELAY_BASE_URL?.trim() ||
-    'https://agentrelay.com';
+    'https://cast.agentrelay.com';
   return `${baseUrl.replace(/\/+$/, '')}/integrations/relayfile/writeback`;
 }
 
@@ -375,23 +389,31 @@ async function runSubscribe(
   );
   await ensureRecipient(relay, provider, to, opts);
   const channel = targetChannel(to);
-  const webhook = await relay.webhooks.createInbound({ channel, name: `relayfile:${provider}` });
   const events = commaList(opts.events);
-  const subscription = await relay.integrations.subscriptions.create({
-    event: events.length === 1 ? events[0]! : 'message.created',
-    events: events.length ? events : ['message.created', 'thread.reply'],
-    filter: { channel },
-    url: defaultBridgeUrl(opts, local),
-    secret: bridgeSecret(opts),
-  });
-  await deps.relayfile.bind({
-    provider,
-    resource,
-    channel,
-    webhookId: webhook.webhookId,
-    webhookToken: webhook.token,
-    subscriptionId: subscription.id,
-  });
+  let webhook: { webhookId: string; token: string } | undefined;
+  let subscription: { id: string } | undefined;
+  try {
+    webhook = await relay.webhooks.createInbound({ channel, name: `relayfile:${provider}` });
+    subscription = await relay.integrations.subscriptions.create({
+      event: events.length === 1 ? events[0]! : 'message.created',
+      events: events.length ? events : ['message.created', 'thread.reply'],
+      filter: { channel },
+      url: defaultBridgeUrl(opts, local),
+      secret: bridgeSecret(opts),
+    });
+    await deps.relayfile.bind({
+      provider,
+      resource,
+      channel,
+      webhookId: webhook.webhookId,
+      webhookToken: webhook.token,
+      subscriptionId: subscription.id,
+    });
+  } catch (err) {
+    if (subscription) await relay.integrations.subscriptions.delete(subscription.id).catch(() => undefined);
+    if (webhook) await relay.webhooks.delete(webhook.webhookId).catch(() => undefined);
+    throw err;
+  }
   deps.log(`✓ ${provider} ${resource} bound -> ${to}`);
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
@@ -415,8 +437,16 @@ async function runUnsubscribe(
   const relay = deps.createAgentRelay(
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions
   );
-  await relay.webhooks.delete(binding.webhookId);
-  await relay.webhooks.unsubscribe(binding.subscriptionId);
+  try {
+    await relay.webhooks.delete(binding.webhookId);
+  } catch (err) {
+    deps.log(`Warning: failed to delete webhook ${binding.webhookId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    await relay.webhooks.unsubscribe(binding.subscriptionId);
+  } catch (err) {
+    deps.log(`Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   await deps.relayfile.unbind(provider, resource);
   deps.log(`Unsubscribed ${provider} ${resource}.`);
 }
