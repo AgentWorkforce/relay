@@ -306,6 +306,10 @@ describe('SDK-backed CLI groups', () => {
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
+        resolveWritebackTarget: vi.fn(async () => ({
+          baseUrl: 'https://file.test',
+          workspaceId: 'rw_test',
+        })),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
 
@@ -330,6 +334,10 @@ describe('SDK-backed CLI groups', () => {
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
+      resolveWritebackTarget: vi.fn(async () => ({
+        baseUrl: 'https://file.test',
+        workspaceId: 'rw_test',
+      })),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -388,6 +396,46 @@ describe('SDK-backed CLI groups', () => {
     expect(error).not.toHaveBeenCalled();
   });
 
+  it('integration subscribe defaults the bridge URL to the workspace-scoped relayfile ingress', async () => {
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValueOnce([{ id: 'a1', name: 'slackbot' }]);
+    const relayfile = {
+      isConnected: vi.fn(async () => true),
+      connect: vi.fn(async () => undefined),
+      bind: vi.fn(async () => undefined),
+      listBindings: vi.fn(async () => []),
+      unbind: vi.fn(async () => undefined),
+      resolveWritebackTarget: vi.fn(async () => ({
+        baseUrl: 'https://file.agentrelay.com',
+        workspaceId: 'rw_7ccfea89',
+      })),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn() as never,
+      resolveLocalRelayOptions: vi.fn(async () => undefined),
+      isInteractive: () => false,
+      relayfile,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(
+      ['integration', 'subscribe', 'slack', '--resource', '#acme', '--to', '@slackbot', '--bridge-secret', 'shared'],
+      { from: 'user' }
+    );
+
+    expect(relayfile.resolveWritebackTarget).toHaveBeenCalled();
+    expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
+        secret: 'shared',
+      })
+    );
+  });
+
   it('integration subscribe --list prints relayfile bindings', async () => {
     const relay = createRelayMock();
     const relayfile = {
@@ -404,6 +452,10 @@ describe('SDK-backed CLI groups', () => {
         },
       ]),
       unbind: vi.fn(async () => undefined),
+      resolveWritebackTarget: vi.fn(async () => ({
+        baseUrl: 'https://file.test',
+        workspaceId: 'rw_test',
+      })),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -467,6 +519,10 @@ describe('SDK-backed CLI groups', () => {
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
+        resolveWritebackTarget: vi.fn(async () => ({
+          baseUrl: 'https://file.test',
+          workspaceId: 'rw_test',
+        })),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
 
@@ -497,6 +553,10 @@ describe('SDK-backed CLI groups', () => {
         },
       ]),
       unbind: vi.fn(async () => undefined),
+      resolveWritebackTarget: vi.fn(async () => ({
+        baseUrl: 'https://file.test',
+        workspaceId: 'rw_test',
+      })),
     };
     const log = vi.fn();
     const error = vi.fn();
