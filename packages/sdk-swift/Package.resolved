@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/AgentWorkforce/relaycast.git",
       "state" : {
-        "revision" : "21830a01a62defcff261d2de59843b6afff7f534",
-        "version" : "4.2.0"
+        "revision" : "2bd03f54fa35a6bfa50cbba5feb353267aba642c",
+        "version" : "5.0.5"
       }
     }
   ],
