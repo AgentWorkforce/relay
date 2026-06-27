@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -22,7 +22,31 @@ export interface ReflexDependencies {
   log: (...args: unknown[]) => void;
 }
 
+const ALLOWED_RELAYHISTORY_HOSTS = new Set(['history.agentrelay.com']);
+
+function validateRelayhistoryBaseUrl(raw: string): { ok: true; url: URL } | { ok: false; error: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, error: `AI_HIST_BASE_URL is not a valid URL: ${raw}` };
+  }
+  const isLocalDev =
+    parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1';
+  if (!isLocalDev && !ALLOWED_RELAYHISTORY_HOSTS.has(parsed.hostname)) {
+    return {
+      ok: false,
+      error: `AI_HIST_BASE_URL hostname "${parsed.hostname}" is not an allowed relayhistory host`,
+    };
+  }
+  return { ok: true, url: parsed };
+}
+
 function promptYesNo(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    return Promise.resolve(false);
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -43,8 +67,12 @@ async function defaultReadRelayAuth(): Promise<{ accessToken: string } | null> {
 }
 
 async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloudResult> {
-  const baseUrl = process.env.AI_HIST_BASE_URL ?? 'https://history.agentrelay.com';
-  const url = `${baseUrl.replace(/\/$/, '')}/v1/cli/login`;
+  const rawBase = process.env.AI_HIST_BASE_URL ?? 'https://history.agentrelay.com';
+  const validated = validateRelayhistoryBaseUrl(rawBase);
+  if (!validated.ok) {
+    return { ok: false, error: validated.error };
+  }
+  const url = `${rawBase.replace(/\/$/, '')}/v1/cli/login`;
 
   let resp: Response;
   try {
@@ -65,7 +93,11 @@ async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloud
 
   let payload: Record<string, unknown>;
   try {
-    payload = (await resp.json()) as Record<string, unknown>;
+    const raw: unknown = await resp.json();
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, error: 'Login response has unexpected shape' };
+    }
+    payload = raw as Record<string, unknown>;
   } catch {
     return { ok: false, error: 'Login response was not valid JSON' };
   }
@@ -79,14 +111,16 @@ async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloud
     const configDir = process.env.AI_HIST_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'ai-hist');
     const authPath = path.join(configDir, 'auth.json');
     const auth = {
-      baseUrl,
+      baseUrl: rawBase.replace(/\/$/, ''),
       accessToken: payload.accessToken,
       ...(typeof payload.refreshToken === 'string' ? { refreshToken: payload.refreshToken } : {}),
     };
     await mkdir(configDir, { recursive: true });
-    await writeFile(authPath, JSON.stringify(auth, null, 2), { mode: 0o600 });
+    await writeFile(authPath, JSON.stringify(auth, null, 2));
+    // Explicitly tighten perms — writeFile mode only applies to newly created files.
+    await chmod(authPath, 0o600);
   } catch {
-    // Non-fatal: local state was written, cloud sync may prompt again next time.
+    // Non-fatal: local state is written; cloud sync may prompt again next run.
   }
 
   return { ok: true };
