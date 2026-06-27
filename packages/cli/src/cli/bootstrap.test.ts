@@ -29,6 +29,10 @@ const expectedLeafCommands = [
   'uninstall',
   'telemetry',
   'mcp',
+  // reflex
+  'reflex on',
+  'reflex off',
+  'reflex status',
   // fleet
   'fleet config',
   'fleet disable',
@@ -146,6 +150,7 @@ describe('bootstrap CLI', () => {
         'integration',
         'capabilities',
         'fleet',
+        'reflex',
         'status',
         'version',
         'update',
