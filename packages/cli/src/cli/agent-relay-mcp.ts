@@ -674,22 +674,12 @@ function registerAgentRelayTools(
         reason: z.string().optional().describe('Removal reason'),
         delete_agent: z.boolean().optional().describe('Permanently delete the agent'),
       },
-      outputSchema: {
-        name: z.string().describe('Removed agent name'),
-        removed: z.boolean().describe('Whether the agent was removed'),
-        deleted: z.boolean().describe('Whether the agent was deleted'),
-        reason: z.string().nullable().describe('Removal reason'),
-      },
+      outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     async ({ name, reason, delete_agent }) => {
-      const released = await getRelay().agents.release({ name, reason, deleteAgent: delete_agent });
-      return jsonContent({
-        name: released.name,
-        removed: released.released,
-        deleted: released.deleted,
-        reason: released.reason,
-      });
+      const invocation = await getRelay().agents.release({ name, reason, deleteAgent: delete_agent });
+      return jsonContent({ invocation });
     }
   );
 }
