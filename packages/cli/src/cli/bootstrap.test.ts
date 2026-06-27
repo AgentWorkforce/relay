@@ -105,6 +105,8 @@ const expectedLeafCommands = [
   'capabilities register',
   'capabilities list',
   'capabilities delete',
+  // skills
+  'skills add',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
