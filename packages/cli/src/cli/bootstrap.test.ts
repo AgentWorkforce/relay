@@ -90,6 +90,8 @@ const expectedLeafCommands = [
   'message inbox get_readers',
   'message file upload',
   // integration
+  'integration subscribe',
+  'integration unsubscribe',
   'integration webhook create',
   'integration webhook list',
   'integration webhook delete',
