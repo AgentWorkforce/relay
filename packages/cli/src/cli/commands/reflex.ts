@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -60,6 +61,32 @@ async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloud
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     return { ok: false, error: `Login failed (HTTP ${resp.status}): ${text.slice(0, 200)}` };
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await resp.json()) as Record<string, unknown>;
+  } catch {
+    return { ok: false, error: 'Login response was not valid JSON' };
+  }
+
+  if (typeof payload.accessToken !== 'string') {
+    return { ok: false, error: 'Login response missing accessToken' };
+  }
+
+  // Persist rth_at_ tokens so ai-hist sync/push can authenticate on subsequent runs.
+  try {
+    const configDir = process.env.AI_HIST_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'ai-hist');
+    const authPath = path.join(configDir, 'auth.json');
+    const auth = {
+      baseUrl,
+      accessToken: payload.accessToken,
+      ...(typeof payload.refreshToken === 'string' ? { refreshToken: payload.refreshToken } : {}),
+    };
+    await mkdir(configDir, { recursive: true });
+    await writeFile(authPath, JSON.stringify(auth, null, 2), { mode: 0o600 });
+  } catch {
+    // Non-fatal: local state was written, cloud sync may prompt again next time.
   }
 
   return { ok: true };
