@@ -38,7 +38,7 @@ function createHarness(overrides?: Partial<ReflexDependencies>) {
     fs,
     homedir: vi.fn(() => tmpHome),
     readRelayAuth: vi.fn(async () => ({ accessToken: FAKE_RELAY_TOKEN })),
-    loginToCloud: vi.fn(async () => ({ ok: true as const, auth: { baseUrl: 'https://history.agentrelay.com', accessToken: 'rth_test' } })),
+    loginToCloud: vi.fn(async () => ({ ok: true as const })),
     prompt: vi.fn(async () => true),
     log: vi.fn(() => undefined),
     ...overrides,

@@ -5,12 +5,12 @@ import readline from 'node:readline';
 
 import { Command } from 'commander';
 
-import type { LoginCloudResult } from 'ai-hist/cloud';
-
 interface ReflexState {
   enabled: boolean;
   enabledAt?: string;
 }
+
+export type LoginCloudResult = { ok: true } | { ok: false; error: string };
 
 export interface ReflexDependencies {
   fs: typeof fs;
@@ -42,8 +42,27 @@ async function defaultReadRelayAuth(): Promise<{ accessToken: string } | null> {
 }
 
 async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloudResult> {
-  const { loginCloud } = await import('ai-hist/cloud');
-  return loginCloud(relayAccessToken);
+  const baseUrl = process.env.AI_HIST_BASE_URL ?? 'https://history.agentrelay.com';
+  const url = `${baseUrl.replace(/\/$/, '')}/v1/cli/login`;
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentRelayToken: relayAccessToken }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (err) {
+    return { ok: false, error: `Network error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    return { ok: false, error: `Login failed (HTTP ${resp.status}): ${text.slice(0, 200)}` };
+  }
+
+  return { ok: true };
 }
 
 function withDefaults(overrides: Partial<ReflexDependencies> = {}): ReflexDependencies {

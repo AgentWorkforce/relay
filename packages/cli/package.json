@@ -44,7 +44,6 @@
   },
   "dependencies": {
     "@agent-relay/cloud": "9.1.4",
-    "ai-hist": "^0.3.6",
     "@agent-relay/config": "9.1.4",
     "@agent-relay/fleet": "9.1.4",
     "@agent-relay/harness-driver": "9.1.4",
