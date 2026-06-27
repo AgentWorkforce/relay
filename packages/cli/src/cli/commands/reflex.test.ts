@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerReflexCommands, type ReflexDependencies } from './reflex.js';
 
 const ENABLED_AT = '2026-06-27T00:00:00.000Z';
+const FAKE_RELAY_TOKEN = 'rly_test_access_token';
 
 let tmpHome: string | undefined;
 
@@ -36,7 +37,8 @@ function createHarness(overrides?: Partial<ReflexDependencies>) {
   const deps: ReflexDependencies = {
     fs,
     homedir: vi.fn(() => tmpHome),
-    spawnSync: vi.fn(() => ({ status: 0, signal: null, output: [], pid: 0, stdout: null, stderr: null })),
+    readRelayAuth: vi.fn(async () => ({ accessToken: FAKE_RELAY_TOKEN })),
+    loginToCloud: vi.fn(async () => ({ ok: true as const, auth: { baseUrl: 'https://history.agentrelay.com', accessToken: 'rth_test' } })),
     prompt: vi.fn(async () => true),
     log: vi.fn(() => undefined),
     ...overrides,
@@ -64,7 +66,7 @@ function outputLines(deps: ReflexDependencies): string[] {
 }
 
 describe('registerReflexCommands', () => {
-  it('reflex on with consent accepted writes enabled state, logs in, and prints success', async () => {
+  it('reflex on with consent accepted writes enabled state, logs in via SDK, and prints success', async () => {
     const { program, deps } = createHarness();
 
     await program.parseAsync(['node', 'agent-relay', 'reflex', 'on']);
@@ -74,8 +76,8 @@ describe('registerReflexCommands', () => {
       enabledAt: ENABLED_AT,
     });
     expect(deps.prompt).toHaveBeenCalledWith('Enable Reflex? (y/N) ');
-    expect(deps.spawnSync).toHaveBeenCalledWith('ai-hist', ['--version'], { stdio: 'ignore' });
-    expect(deps.spawnSync).toHaveBeenCalledWith('ai-hist', ['login', '--cloud'], { stdio: 'inherit' });
+    expect(deps.readRelayAuth).toHaveBeenCalled();
+    expect(deps.loginToCloud).toHaveBeenCalledWith(FAKE_RELAY_TOKEN);
     expect(outputLines(deps)).toEqual(
       expect.arrayContaining([
         'Reflex will capture your agent sessions and sync to history.agentrelay.com',
@@ -125,14 +127,15 @@ describe('registerReflexCommands', () => {
     expect(outputLines(deps)).toEqual(['Reflex is off (never enabled).']);
   });
 
-  it('reflex on with consent denied does not write state or run cloud login', async () => {
+  it('reflex on with consent denied does not write state or call cloud login', async () => {
     const prompt = vi.fn(async () => false);
     const { program, deps } = createHarness({ prompt });
 
     await program.parseAsync(['node', 'agent-relay', 'reflex', 'on']);
 
     expect(fs.existsSync(statePath())).toBe(false);
-    expect(deps.spawnSync).not.toHaveBeenCalled();
+    expect(deps.readRelayAuth).not.toHaveBeenCalled();
+    expect(deps.loginToCloud).not.toHaveBeenCalled();
     expect(outputLines(deps)).toEqual([
       'Reflex will capture your agent sessions and sync to history.agentrelay.com',
       'Reflex was not enabled.',
@@ -147,17 +150,9 @@ describe('registerReflexCommands', () => {
     expect(outputLines(deps)).toEqual(['Reflex is off (never enabled).']);
   });
 
-  it('reflex on with missing ai-hist still writes state and prints install hint', async () => {
-    const spawnSync = vi.fn(() => ({
-      status: null,
-      signal: null,
-      output: [],
-      pid: 0,
-      stdout: null,
-      stderr: null,
-      error: Object.assign(new Error('missing ai-hist'), { code: 'ENOENT' }),
-    }));
-    const { program, deps } = createHarness({ spawnSync });
+  it('reflex on when not logged in to Agent Relay still writes state and prints login hint', async () => {
+    const readRelayAuth = vi.fn(async () => null);
+    const { program, deps } = createHarness({ readRelayAuth });
 
     await program.parseAsync(['node', 'agent-relay', 'reflex', 'on']);
 
@@ -165,24 +160,19 @@ describe('registerReflexCommands', () => {
       enabled: true,
       enabledAt: ENABLED_AT,
     });
-    expect(deps.spawnSync).toHaveBeenCalledTimes(1);
+    expect(deps.loginToCloud).not.toHaveBeenCalled();
     expect(outputLines(deps)).toContain(
-      'ai-hist is not installed or not on PATH. Install it to sync Reflex history: npm install -g @agent-relay/ai-history'
+      'Not logged in to Agent Relay. Run `agent-relay login` first to sync Reflex history to the cloud.'
     );
     expect(outputLines(deps)).toContain('Reflex is on.');
   });
 
-  it('reflex on with a failed ai-hist version probe warns and skips cloud login', async () => {
-    const spawnSync = vi.fn(() => ({
-      status: null,
-      signal: null,
-      output: [],
-      pid: 0,
-      stdout: null,
-      stderr: null,
-      error: Object.assign(new Error('ai-hist cannot execute'), { code: 'EACCES' }),
+  it('reflex on when cloud login fails warns instead of treating it as complete', async () => {
+    const loginToCloud = vi.fn(async () => ({
+      ok: false as const,
+      error: 'Login failed (HTTP 401): Unauthorized',
     }));
-    const { program, deps } = createHarness({ spawnSync });
+    const { program, deps } = createHarness({ loginToCloud });
 
     await program.parseAsync(['node', 'agent-relay', 'reflex', 'on']);
 
@@ -190,33 +180,8 @@ describe('registerReflexCommands', () => {
       enabled: true,
       enabledAt: ENABLED_AT,
     });
-    expect(deps.spawnSync).toHaveBeenCalledTimes(1);
     expect(outputLines(deps)).toContain(
-      'Reflex is enabled locally, but cloud login did not complete (ai-hist failed with EACCES).'
-    );
-    expect(outputLines(deps)).toContain('Reflex is on.');
-  });
-
-  it('reflex on with a failed ai-hist cloud login warns instead of treating it as complete', async () => {
-    const spawnSync = vi
-      .fn()
-      .mockReturnValueOnce({ status: 0, signal: null, output: [], pid: 0, stdout: null, stderr: null })
-      .mockReturnValueOnce({
-        status: null,
-        signal: null,
-        output: [],
-        pid: 0,
-        stdout: null,
-        stderr: null,
-        error: Object.assign(new Error('ai-hist cannot execute'), { code: 'EACCES' }),
-      });
-    const { program, deps } = createHarness({ spawnSync });
-
-    await program.parseAsync(['node', 'agent-relay', 'reflex', 'on']);
-
-    expect(deps.spawnSync).toHaveBeenCalledTimes(2);
-    expect(outputLines(deps)).toContain(
-      'Reflex is enabled locally, but cloud login did not complete (ai-hist failed with EACCES).'
+      'Reflex is enabled locally, but cloud login did not complete: Login failed (HTTP 401): Unauthorized'
     );
     expect(outputLines(deps)).toContain('Reflex is on.');
   });

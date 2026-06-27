@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawnSync } from 'node:child_process';
 
 import { Command } from 'commander';
+
+import type { LoginCloudResult } from 'ai-hist/cloud';
 
 interface ReflexState {
   enabled: boolean;
@@ -14,7 +15,8 @@ interface ReflexState {
 export interface ReflexDependencies {
   fs: typeof fs;
   homedir: () => string;
-  spawnSync: typeof spawnSync;
+  readRelayAuth: () => Promise<{ accessToken: string } | null>;
+  loginToCloud: (relayAccessToken: string) => Promise<LoginCloudResult>;
   prompt: (question: string) => Promise<boolean>;
   log: (...args: unknown[]) => void;
 }
@@ -34,11 +36,22 @@ function promptYesNo(question: string): Promise<boolean> {
   });
 }
 
+async function defaultReadRelayAuth(): Promise<{ accessToken: string } | null> {
+  const { readStoredAuth } = await import('@agent-relay/cloud');
+  return readStoredAuth();
+}
+
+async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloudResult> {
+  const { loginCloud } = await import('ai-hist/cloud');
+  return loginCloud(relayAccessToken);
+}
+
 function withDefaults(overrides: Partial<ReflexDependencies> = {}): ReflexDependencies {
   return {
     fs,
     homedir: os.homedir,
-    spawnSync,
+    readRelayAuth: defaultReadRelayAuth,
+    loginToCloud: defaultLoginToCloud,
     prompt: promptYesNo,
     log: (...args: unknown[]) => console.log(...args),
     ...overrides,
@@ -71,28 +84,6 @@ function readReflexState(deps: ReflexDependencies): ReflexState | null {
   }
 }
 
-function getSpawnErrorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== 'object' || !('code' in error)) {
-    return undefined;
-  }
-
-  const { code } = error;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function isMissingBinary(error: unknown): boolean {
-  return getSpawnErrorCode(error) === 'ENOENT';
-}
-
-function cloudLoginFailureMessage(error?: unknown): string {
-  const code = getSpawnErrorCode(error);
-  if (code) {
-    return `Reflex is enabled locally, but cloud login did not complete (ai-hist failed with ${code}).`;
-  }
-
-  return 'Reflex is enabled locally, but cloud login did not complete.';
-}
-
 export function registerReflexCommands(program: Command, overrides: Partial<ReflexDependencies> = {}): void {
   const deps = withDefaults(overrides);
   const reflex = program.command('reflex').description('Manage Reflex history sync');
@@ -114,23 +105,15 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
         enabledAt: new Date().toISOString(),
       });
 
-      const check = deps.spawnSync('ai-hist', ['--version'], { stdio: 'ignore' });
-      if (isMissingBinary(check.error)) {
+      const relayAuth = await deps.readRelayAuth();
+      if (!relayAuth) {
         deps.log(
-          'ai-hist is not installed or not on PATH. Install it to sync Reflex history: npm install -g @agent-relay/ai-history'
+          'Not logged in to Agent Relay. Run `agent-relay login` first to sync Reflex history to the cloud.'
         );
-      } else if (check.error) {
-        deps.log(cloudLoginFailureMessage(check.error));
       } else {
-        const login = deps.spawnSync('ai-hist', ['login', '--cloud'], { stdio: 'inherit' });
-        if (isMissingBinary(login.error)) {
-          deps.log(
-            'ai-hist is not installed or not on PATH. Install it to sync Reflex history: npm install -g @agent-relay/ai-history'
-          );
-        } else if (login.error) {
-          deps.log(cloudLoginFailureMessage(login.error));
-        } else if (typeof login.status === 'number' && login.status !== 0) {
-          deps.log(cloudLoginFailureMessage());
+        const result = await deps.loginToCloud(relayAuth.accessToken);
+        if (!result.ok) {
+          deps.log(`Reflex is enabled locally, but cloud login did not complete: ${result.error}`);
         }
       }
 
