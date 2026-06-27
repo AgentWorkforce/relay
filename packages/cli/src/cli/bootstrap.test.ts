@@ -94,6 +94,8 @@ const expectedLeafCommands = [
   'message inbox get_readers',
   'message file upload',
   // integration
+  'integration subscribe',
+  'integration unsubscribe',
   'integration webhook create',
   'integration webhook list',
   'integration webhook delete',
@@ -109,6 +111,8 @@ const expectedLeafCommands = [
   'capabilities register',
   'capabilities list',
   'capabilities delete',
+  // skills
+  'skills add',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {

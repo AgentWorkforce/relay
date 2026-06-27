@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agent-relay skills add` installs the `/orchestrate` skill (from `agentrelay.com/skill.md`) into your coding harnesses. An interactive TUI asks whether to install for the current project or globally and which harnesses to target (Claude Code, Codex, Cursor, Gemini, OpenCode); `--global`/`--local`, `--harness <ids>`, and `--all` flags drive it non-interactively.
+
 ### Changed
 
 - relaycast SDKs upgraded to latest: `@relaycast/sdk` 5.0.5 (v4→v5 major), `relaycast` crate 5.0.2, `relaycast-sdk` 0.3.0, Swift relaycast 5.0.5. The v5 `agents.release` now returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
@@ -39,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay reflex on|off|status` manages Reflex history sync with a consent prompt and persisted `~/.agentworkforce/reflex.json` state.
+- `agent-relay integration subscribe|unsubscribe` binds any relayfile provider to a relay channel or agent in one command, with inline connect flow when the provider isn't linked yet.
+- `agent-relay integration subscription create` now accepts `--filter`, `--url`, and `--secret` to scope delivery and secure the writeback endpoint.
 - `agent-relay integration webhook create-inbound <channel> [--name]` mints an inbound channel webhook (returns a scoped URL + one-time token) so external services can push messages into an agent's channel without the SDK; `list-inbound` and `delete-inbound` manage them. Closes the CLI gap where inbound webhooks were reachable only via the SDK/MCP.
 - `agent-relay` spawn APIs add an optional task-exit mode so spawned CLI agents run the injected task and then cleanly self-terminate with `/exit`.
 - `@agent-relay/harness-driver` adds local fleet sidecar protocol frames for node and handler registration, clean node deregistration, broker handler invocation, handler results, handler-attributed spawns, object-record capability metadata, and sidecar supervision metadata.

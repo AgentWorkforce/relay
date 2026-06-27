@@ -57,6 +57,8 @@ function createRelayMock() {
       })),
       list: vi.fn(async () => []),
       delete: vi.fn(async () => undefined),
+      subscriptions: vi.fn(async () => []),
+      unsubscribe: vi.fn(async () => undefined),
     },
     capabilities: {
       register: vi.fn(async (i: unknown) => ({ ...(i as object) })),
@@ -251,6 +253,273 @@ describe('SDK-backed CLI groups', () => {
     const { program, relay } = harness(registerIntegrationCommands);
     await program.parseAsync(['integration', 'webhook', 'delete-inbound', 'in1'], { from: 'user' });
     expect(relay.webhooks.delete).toHaveBeenCalledWith('in1');
+  });
+
+  it('integration subscription create passes filter url and secret to subscriptions.create', async () => {
+    const { program, relay } = harness(registerIntegrationCommands);
+    await program.parseAsync(
+      [
+        'integration',
+        'subscription',
+        'create',
+        'message.created',
+        '--filter',
+        'channel=#ops',
+        '--url',
+        'https://bridge.test/writeback',
+        '--secret',
+        's3cr3t',
+      ],
+      { from: 'user' }
+    );
+    expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
+      event: 'message.created',
+      filter: { channel: '#ops' },
+      url: 'https://bridge.test/writeback',
+      secret: 's3cr3t',
+    });
+  });
+
+  it('integration subscription create keeps optional subscription fields absent by default', async () => {
+    const { program, relay } = harness(registerIntegrationCommands);
+    await program.parseAsync(['integration', 'subscription', 'create', 'message.created'], { from: 'user' });
+    expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({ event: 'message.created' });
+  });
+
+  it('integration subscribe exits with remediation when provider is not connected and no-input is set', async () => {
+    const relay = createRelayMock();
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
+      isInteractive: () => false,
+      relayfile: {
+        isConnected: vi.fn(async () => false),
+        connect: vi.fn(async () => undefined),
+        bind: vi.fn(async () => undefined),
+        listBindings: vi.fn(async () => []),
+        unbind: vi.fn(async () => undefined),
+      },
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(
+      ['integration', 'subscribe', 'slack', '--resource', '#acme', '--to', '@slackbot', '--no-input'],
+      { from: 'user' }
+    );
+
+    expect(error).toHaveBeenCalledWith(
+      "slack isn't connected to this workspace yet.\nRun: relayfile integration connect slack --workspace <ws>, then re-run."
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+  });
+
+  it('integration subscribe creates inbound webhook, subscription, and relayfile binding', async () => {
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValueOnce([{ id: 'a1', name: 'slackbot' }]);
+    const relayfile = {
+      isConnected: vi.fn(async () => true),
+      connect: vi.fn(async () => undefined),
+      bind: vi.fn(async () => undefined),
+      listBindings: vi.fn(async () => []),
+      unbind: vi.fn(async () => undefined),
+    };
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions: vi.fn(async () => ({
+        workspaceKey: 'rk_live_local',
+        baseUrl: 'https://relay.local',
+      })),
+      isInteractive: () => false,
+      relayfile,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(
+      [
+        'integration',
+        'subscribe',
+        'slack',
+        '--resource',
+        '#acme',
+        '--to',
+        '@slackbot',
+        '--bridge-url',
+        'https://bridge.test/writeback',
+        '--bridge-secret',
+        'secret',
+      ],
+      { from: 'user' }
+    );
+
+    expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'slackbot',
+      name: 'relayfile:slack',
+    });
+    expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
+      event: 'message.created',
+      events: ['message.created', 'thread.reply'],
+      filter: { channel: 'slackbot' },
+      url: 'https://bridge.test/writeback',
+      secret: 'secret',
+    });
+    expect(relayfile.bind).toHaveBeenCalledWith({
+      provider: 'slack',
+      resource: '#acme',
+      channel: 'slackbot',
+      webhookId: 'in1',
+      webhookToken: 'tok_once',
+      subscriptionId: 'sub1',
+    });
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('integration subscribe --list prints relayfile bindings', async () => {
+    const relay = createRelayMock();
+    const relayfile = {
+      isConnected: vi.fn(async () => true),
+      connect: vi.fn(async () => undefined),
+      bind: vi.fn(async () => undefined),
+      listBindings: vi.fn(async () => [
+        {
+          provider: 'slack',
+          resource: '#acme',
+          channel: 'slackbot',
+          webhookId: 'in1',
+          subscriptionId: 'sub1',
+        },
+      ]),
+      unbind: vi.fn(async () => undefined),
+    };
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
+      relayfile,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+
+    expect(relayfile.listBindings).toHaveBeenCalled();
+    expect(relay.webhooks.list).toHaveBeenCalled();
+    expect(relay.webhooks.subscriptions).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          bindings: [
+            {
+              provider: 'slack',
+              resource: '#acme',
+              channel: 'slackbot',
+              webhookId: 'in1',
+              subscriptionId: 'sub1',
+            },
+          ],
+          webhooks: [],
+          subscriptions: [],
+        },
+        null,
+        2
+      )
+    );
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('integration subscribe requires explicit spawn when a target agent is absent', async () => {
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValueOnce([]);
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
+      isInteractive: () => false,
+      relayfile: {
+        isConnected: vi.fn(async () => true),
+        connect: vi.fn(async () => undefined),
+        bind: vi.fn(async () => undefined),
+        listBindings: vi.fn(async () => []),
+        unbind: vi.fn(async () => undefined),
+      },
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(['integration', 'subscribe', 'slack', '--resource', '#acme', '--to', '@ghost'], {
+      from: 'user',
+    });
+
+    expect(error).toHaveBeenCalledWith(
+      'Recipient agent @ghost does not exist. Run: agent-relay integration subscribe slack --to @ghost --spawn <cli>'
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+  });
+
+  it('integration unsubscribe removes webhook, subscription, and relayfile binding', async () => {
+    const relay = createRelayMock();
+    const relayfile = {
+      isConnected: vi.fn(async () => true),
+      connect: vi.fn(async () => undefined),
+      bind: vi.fn(async () => undefined),
+      listBindings: vi.fn(async () => [
+        {
+          provider: 'slack',
+          resource: '#acme',
+          channel: 'slackbot',
+          webhookId: 'in1',
+          subscriptionId: 'sub1',
+        },
+      ]),
+      unbind: vi.fn(async () => undefined),
+    };
+    const log = vi.fn();
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerIntegrationCommands(program, {
+      createAgentRelay: () => relay as never,
+      log,
+      error,
+      exit: exit as never,
+      resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
+      relayfile,
+    } satisfies Partial<IntegrationCommandDependencies>);
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', '#acme'], {
+      from: 'user',
+    });
+
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('in1');
+    expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('sub1');
+    expect(relayfile.unbind).toHaveBeenCalledWith('slack', '#acme');
+    expect(error).not.toHaveBeenCalled();
   });
 
   it('capabilities register routes to capabilities.register', async () => {
