@@ -292,7 +292,9 @@ async function resolveWriteback(
   const explicitSecret = typeof commandOpts.bridgeSecret === 'string' ? commandOpts.bridgeSecret.trim() : '';
 
   if ((explicitUrl && !explicitSecret) || (!explicitUrl && explicitSecret)) {
-    throw new Error('--bridge-url and --bridge-secret must be provided together; providing only one is not supported.');
+    throw new Error(
+      '--bridge-url and --bridge-secret must be provided together; providing only one is not supported.'
+    );
   }
 
   if (explicitUrl && explicitSecret) {
