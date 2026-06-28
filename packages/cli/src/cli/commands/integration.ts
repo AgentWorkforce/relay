@@ -291,25 +291,28 @@ async function resolveWriteback(
   const explicitUrl = typeof commandOpts.bridgeUrl === 'string' ? commandOpts.bridgeUrl.trim() : '';
   const explicitSecret = typeof commandOpts.bridgeSecret === 'string' ? commandOpts.bridgeSecret.trim() : '';
 
-  const binding =
-    explicitUrl && explicitSecret ? undefined : await deps.relayfile.resolveWritebackBinding(channel);
+  if ((explicitUrl && !explicitSecret) || (!explicitUrl && explicitSecret)) {
+    throw new Error('--bridge-url and --bridge-secret must be provided together; providing only one is not supported.');
+  }
 
-  const url = explicitUrl || binding?.url;
-  const secret = explicitSecret || binding?.secret;
+  if (explicitUrl && explicitSecret) {
+    return { url: explicitUrl, secret: explicitSecret };
+  }
 
-  if (!url) {
+  const binding = await deps.relayfile.resolveWritebackBinding(channel);
+  if (!binding?.url) {
     throw new Error(
       'Could not resolve the relayfile writeback ingress URL. Ensure relayfile is ' +
-        'logged in (relayfile login), or pass --bridge-url.'
+        'logged in (relayfile login), or pass --bridge-url and --bridge-secret.'
     );
   }
-  if (!secret) {
+  if (!binding?.secret) {
     throw new Error(
       'Could not resolve the writeback signing secret. Ensure relayfile is logged ' +
-        'in (relayfile login) and supports `integration writeback-secret`, or pass --bridge-secret.'
+        'in (relayfile login) and supports `integration writeback-secret`, or pass --bridge-url and --bridge-secret.'
     );
   }
-  return { url, secret };
+  return { url: binding.url, secret: binding.secret };
 }
 
 function targetChannel(target: string): string {
