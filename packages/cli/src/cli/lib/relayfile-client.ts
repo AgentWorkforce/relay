@@ -20,11 +20,12 @@ export const RELAYFILE_API_VERSION = 1;
 
 /**
  * Minimum `relayfile` daemon version the bridge requires. The control-plane
- * (and `resolve-path`/`--version`) first shipped in 0.10.16, so anything that
- * answers `/v1/hello` is already >= this — the check is belt-and-suspenders and
- * the bump point for future contract changes.
+ * (and `resolve-path`/`--version`) first shipped in 0.10.17 (0.10.16 was a prior
+ * native-resource bind release), so anything that answers `/v1/hello` is already
+ * >= this — the check is belt-and-suspenders and the bump point for future
+ * contract changes.
  */
-export const MIN_RELAYFILE_VERSION = '0.10.16';
+export const MIN_RELAYFILE_VERSION = '0.10.17';
 
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+].*)?$/;
 

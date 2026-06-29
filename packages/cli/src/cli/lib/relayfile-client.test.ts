@@ -54,7 +54,7 @@ describe('RelayfileControlPlaneClient lifecycle', () => {
   it('rejects a daemon whose supportedApiVersions excludes this client', async () => {
     const client = new RelayfileControlPlaneClient({ socketPath: '/nope.sock', autoStart: false });
     vi.spyOn(client, 'hello').mockResolvedValue({
-      daemonVersion: '0.10.16',
+      daemonVersion: '0.10.17',
       apiVersion: 2,
       supportedApiVersions: [2],
     });
@@ -64,11 +64,11 @@ describe('RelayfileControlPlaneClient lifecycle', () => {
   it('rejects a daemon older than the minimum version', async () => {
     const client = new RelayfileControlPlaneClient({ socketPath: '/nope.sock', autoStart: false });
     vi.spyOn(client, 'hello').mockResolvedValue({
-      daemonVersion: '0.10.15',
+      daemonVersion: '0.10.16',
       apiVersion: RELAYFILE_API_VERSION,
       supportedApiVersions: [RELAYFILE_API_VERSION],
     });
-    await expect(client.ensureReady()).rejects.toThrow(/0\.10\.16 is required/);
+    await expect(client.ensureReady()).rejects.toThrow(/0\.10\.17 is required/);
   });
 
   it('auto-start with a missing binary fails fast with DAEMON_UNAVAILABLE (no crash)', async () => {
@@ -90,7 +90,7 @@ describe('RelayfileControlPlaneClient lifecycle', () => {
       .spyOn(client, 'hello')
       .mockRejectedValueOnce(new RelayfileControlPlaneError('DAEMON_UNAVAILABLE', 'down'))
       .mockResolvedValue({
-        daemonVersion: '0.10.16',
+        daemonVersion: '0.10.17',
         apiVersion: RELAYFILE_API_VERSION,
         supportedApiVersions: [RELAYFILE_API_VERSION],
       });
