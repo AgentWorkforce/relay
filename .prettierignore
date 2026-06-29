@@ -6,5 +6,8 @@ target/
 packages/*/dist/
 web/content/docs/
 packages/config/src/cli-registry.generated.ts
+# Vendored snapshot of relayfile's authoritative OpenAPI contract — kept
+# byte-identical to the source (npm run codegen:relayfile regenerates the types).
+packages/cli/src/cli/lib/relayfile-contract/relayfile-control-plane-v1.openapi.yaml
 packages/cli/src/cli/lib/relayfile-contract/relayfile-control-plane-v1.gen.ts
 tests/benchmarks/head-to-head.ts

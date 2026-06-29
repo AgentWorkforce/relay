@@ -320,7 +320,9 @@ export interface operations {
             query?: {
                 apiVersion?: components["parameters"]["ApiVersionQuery"];
             };
-            header?: never;
+            header?: {
+                "X-Relayfile-API-Version"?: components["parameters"]["ApiVersionHeader"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -341,7 +343,9 @@ export interface operations {
     helloPost: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Relayfile-API-Version"?: components["parameters"]["ApiVersionHeader"];
+            };
             path?: never;
             cookie?: never;
         };
