@@ -140,13 +140,18 @@ function defaultRelayfileBridge(): RelayfileBridge {
       await runRelayfile(['integration', 'connect', provider], { inherit: true });
     },
     async resolvePath(provider, resource) {
+      const explicitGlob = resource.trim();
+      if (explicitGlob.startsWith('/')) {
+        return explicitGlob;
+      }
       const output = await runRelayfile(['integration', 'resolve-path', provider, resource, '--json']);
-      const parsed = JSON.parse(output) as { pathGlob?: unknown; warning?: unknown };
-      const warning = typeof parsed.warning === 'string' ? parsed.warning.trim() : '';
+      const parsed = JSON.parse(output) as unknown;
+      const record = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+      const warning = typeof record.warning === 'string' ? record.warning.trim() : '';
       if (warning) {
         process.stderr.write(`Warning: ${warning}\n`);
       }
-      const pathGlob = typeof parsed.pathGlob === 'string' ? parsed.pathGlob.trim() : '';
+      const pathGlob = typeof record.pathGlob === 'string' ? record.pathGlob.trim() : '';
       if (!pathGlob) {
         throw new Error(`relayfile integration resolve-path ${provider} ${resource} returned no pathGlob`);
       }
@@ -175,7 +180,7 @@ function defaultRelayfileBridge(): RelayfileBridge {
       // relayfile serializes the binding's resource as `pathGlob`; normalize it
       // (and tolerate `resource`) so callers can match on `resource`.
       return parsed.map((raw): RelayfileBinding => {
-        const record = raw as Record<string, unknown>;
+        const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
         const str = (...keys: string[]): string => {
           for (const key of keys) {
             const value = record[key];
@@ -185,7 +190,7 @@ function defaultRelayfileBridge(): RelayfileBridge {
         };
         return {
           provider: str('provider'),
-          resource: str('resource', 'pathGlob'),
+          resource: str('pathGlob', 'resource'),
           channel: str('channel'),
           webhookId: str('webhookId', 'webhook_id'),
           subscriptionId: str('subscriptionId', 'subscription_id'),

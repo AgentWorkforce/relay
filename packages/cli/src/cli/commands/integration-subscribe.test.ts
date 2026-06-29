@@ -107,7 +107,7 @@ function harness(
     error,
     exit: exit as never,
   } satisfies Partial<IntegrationCommandDependencies>);
-  return { program, relay, relayfile, log, error };
+  return { program, relay, relayfile, log, error, exit };
 }
 
 const RESOURCE = '/slack/channels/C0/**';
@@ -255,8 +255,10 @@ describe('integration subscribe', () => {
     const relay = createRelayMock();
     relay.webhooks.createInbound.mockRejectedValue(new Error('transient'));
     const relayfile = createRelayfileMock([prior]);
-    const { program } = harness({ relay, relayfile });
-    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    const { program, error, exit } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('transient'));
+    expect(exit).toHaveBeenCalledWith(1);
     // The prior webhook/subscription/bind are left intact.
     expect(relay.webhooks.delete).not.toHaveBeenCalledWith('old_wh');
     expect(relay.webhooks.unsubscribe).not.toHaveBeenCalledWith('old_sub');
@@ -298,8 +300,10 @@ describe('integration subscribe', () => {
         throw new Error('relayfile unavailable');
       }),
     });
-    const { program } = harness({ relay, relayfile });
-    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    const { program, error, exit } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('relayfile unavailable'));
+    expect(exit).toHaveBeenCalledWith(1);
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
 
@@ -311,8 +315,10 @@ describe('integration subscribe', () => {
         throw new Error('bind failed');
       }),
     });
-    const { program, error } = harness({ relay, relayfile });
-    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    const { program, error, exit } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('bind failed'));
+    expect(exit).toHaveBeenCalledWith(1);
     expect(error.mock.calls.some((c) => String(c[0]).includes('failed to clean up webhook'))).toBe(true);
   });
 });
