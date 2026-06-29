@@ -1,5 +1,4 @@
 import type { Command } from 'commander';
-import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { getProjectPaths } from '@agent-relay/config';
 import type { AgentRelayAgent } from '@agent-relay/sdk';
@@ -14,6 +13,17 @@ import {
 } from '../lib/sdk-command.js';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import type { SdkClientOptions } from '../lib/sdk-client.js';
+import {
+  MIN_RELAYFILE_VERSION,
+  RelayfileControlPlaneClient,
+  RelayfileControlPlaneError,
+  assertRelayfileVersion,
+  type RelayfileClientOptions,
+} from '@relayfile/client';
+
+// Re-export the version gate so existing tests importing it from this module
+// (and any callers) keep working after it moved to the published client package.
+export { MIN_RELAYFILE_VERSION, assertRelayfileVersion };
 
 export interface LocalRelayOptions {
   workspaceKey: string;
@@ -28,6 +38,13 @@ export interface RelayfileBinding {
   subscriptionId: string;
 }
 
+export interface RelayfileResolvedResource {
+  /** Canonical VFS path glob relayfile stores the binding under (begins with '/'). */
+  pathGlob: string;
+  /** Human-readable note when a wildcard fallback was used (resource not resolved exact). */
+  warning?: string;
+}
+
 export interface RelayfileWritebackBinding {
   /** relayfile-cloud writeback ingress URL the subscription delivers to. */
   url: string;
@@ -38,7 +55,6 @@ export interface RelayfileWritebackBinding {
 export interface RelayfileBridge {
   isConnected(provider: string): Promise<boolean>;
   connect(provider: string): Promise<void>;
-  resolvePath(provider: string, resource: string): Promise<string>;
   bind(input: {
     provider: string;
     resource: string;
@@ -49,6 +65,21 @@ export interface RelayfileBridge {
   }): Promise<void>;
   listBindings(): Promise<RelayfileBinding[]>;
   unbind(provider: string, resource: string): Promise<void>;
+  /**
+   * Canonicalize a provider-native resource (Slack `#chan`, GitHub `owner/repo`,
+   * Linear team key, …) to the VFS path glob relayfile actually keys the binding
+   * on. relayfile stores bindings under the resolved glob, so callers MUST resolve
+   * before matching/find/unbind or they will never hit the stored binding. The
+   * resolution is idempotent: passing an already-resolved glob returns it
+   * unchanged.
+   */
+  resolveResourcePath(provider: string, resource: string): Promise<RelayfileResolvedResource>;
+  /**
+   * Fail fast with an actionable message if the local `relayfile` binary is
+   * missing or older than the version this CLI was built against — turning
+   * contract drift into a startup error instead of a mid-operation surprise.
+   */
+  ensureCompatible(): Promise<void>;
   /**
    * Resolve the writeback ingress URL + per-channel signing secret for a relay
    * channel, fetched from relayfile-cloud over the authenticated relayfile
@@ -66,28 +97,16 @@ export type IntegrationCommandDependencies = SdkCommandDeps & {
   prompt: (question: string) => Promise<string>;
 };
 
-function runRelayfile(args: string[], options: { inherit?: boolean } = {}): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('relayfile', args, {
-      stdio: options.inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve(stdout);
-        return;
-      }
-      reject(new Error(stderr.trim() || `relayfile ${args.join(' ')} exited with code ${code ?? 'unknown'}`));
-    });
-  });
+/**
+ * Shared control-plane client for the default bridge. Lazily constructed so the
+ * socket connection / daemon auto-start happens on first integration op, not at
+ * import time. One instance is enough — it negotiates the daemon version once.
+ */
+let sharedClient: RelayfileControlPlaneClient | undefined;
+function controlPlaneClient(options?: RelayfileClientOptions): RelayfileControlPlaneClient {
+  if (options) return new RelayfileControlPlaneClient(options);
+  if (!sharedClient) sharedClient = new RelayfileControlPlaneClient();
+  return sharedClient;
 }
 
 function readProviderConnected(payload: unknown, provider: string): boolean {
@@ -130,93 +149,86 @@ function readProviderConnected(payload: unknown, provider: string): boolean {
   });
 }
 
-function defaultRelayfileBridge(): RelayfileBridge {
+/**
+ * The default bridge talks to relayfile over the **control-plane unix socket**
+ * (`relayfile control-plane serve`) via a typed client — NO `spawn('relayfile')`,
+ * no stdout parsing. The daemon is auto-started on first use (or required running
+ * under RELAYFILE_REQUIRE_DAEMON=1). The wire contract is version-negotiated, so
+ * field/method drift is a typed error, not a silent runtime surprise.
+ */
+export function defaultRelayfileBridge(options?: RelayfileClientOptions): RelayfileBridge {
+  const client = controlPlaneClient(options);
   return {
     async isConnected(provider) {
-      const output = await runRelayfile(['integration', 'list', '--json']);
-      return readProviderConnected(JSON.parse(output), provider);
+      const entry = await client.providerStatus(provider);
+      if (!entry) return false;
+      // provider-status returns the connection entry only when it's in the
+      // connected set, but re-check its state to honor non-connected states.
+      return readProviderConnected([entry], provider);
     },
     async connect(provider) {
-      await runRelayfile(['integration', 'connect', provider], { inherit: true });
-    },
-    async resolvePath(provider, resource) {
-      const explicitGlob = resource.trim();
-      if (explicitGlob.startsWith('/')) {
-        return explicitGlob;
-      }
-      const output = await runRelayfile(['integration', 'resolve-path', provider, resource, '--json']);
-      const parsed = JSON.parse(output) as unknown;
-      const record = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-      const warning = typeof record.warning === 'string' ? record.warning.trim() : '';
-      if (warning) {
-        process.stderr.write(`Warning: ${warning}\n`);
-      }
-      const pathGlob = typeof record.pathGlob === 'string' ? record.pathGlob.trim() : '';
-      if (!pathGlob) {
-        throw new Error(`relayfile integration resolve-path ${provider} ${resource} returned no pathGlob`);
-      }
-      return pathGlob;
+      // OAuth runs in the daemon; on a local daemon the browser still opens
+      // (noOpen defaults false). The returned output carries any connect URL.
+      const { output } = await client.connect({ provider });
+      if (output?.trim()) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
     },
     async bind(input) {
-      await runRelayfile([
-        'integration',
-        'bind',
-        input.provider,
-        input.resource,
-        '--channel',
-        input.channel,
-        '--webhook',
-        input.webhookId,
-        '--webhook-token',
-        input.webhookToken,
-        '--subscription',
-        input.subscriptionId,
-      ]);
-    },
-    async listBindings() {
-      const output = await runRelayfile(['integration', 'bind', '--list', '--json']);
-      const parsed = JSON.parse(output) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      // relayfile serializes the binding's resource as `pathGlob`; normalize it
-      // (and tolerate `resource`) so callers can match on `resource`.
-      return parsed.map((raw): RelayfileBinding => {
-        const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-        const str = (...keys: string[]): string => {
-          for (const key of keys) {
-            const value = record[key];
-            if (typeof value === 'string' && value) return value;
-          }
-          return '';
-        };
-        return {
-          provider: str('provider'),
-          resource: str('pathGlob', 'resource'),
-          channel: str('channel'),
-          webhookId: str('webhookId', 'webhook_id'),
-          subscriptionId: str('subscriptionId', 'subscription_id'),
-        };
+      await client.bind({
+        provider: input.provider,
+        resource: input.resource,
+        channel: input.channel,
+        webhookId: input.webhookId,
+        webhookToken: input.webhookToken,
+        subscriptionId: input.subscriptionId,
       });
     },
+    async listBindings() {
+      const bindings = await client.listBindings();
+      // relayfile keys bindings on `pathGlob`; surface it as `resource` so callers
+      // (find/unbind) match on the canonical glob.
+      return bindings.map(
+        (b): RelayfileBinding => ({
+          provider: b.provider ?? '',
+          resource: b.pathGlob ?? '',
+          channel: b.channel ?? '',
+          webhookId: b.webhookId ?? '',
+          subscriptionId: b.subscriptionId ?? '',
+        })
+      );
+    },
     async unbind(provider, resource) {
-      await runRelayfile(['integration', 'unbind', provider, resource]);
+      await client.unbind(provider, resource);
+    },
+    async resolveResourcePath(provider, resource) {
+      const resolved = await client.resolvePath(provider, resource);
+      const pathGlob = resolved.pathGlob?.trim();
+      if (!pathGlob) {
+        throw new Error(`relayfile could not resolve a path glob for ${provider} "${resource}".`);
+      }
+      const warning = resolved.warning?.trim() || undefined;
+      return warning ? { pathGlob, warning } : { pathGlob };
+    },
+    async ensureCompatible() {
+      // Connecting negotiates the daemon version via /v1/hello; a too-old daemon
+      // (or one that can't start) throws a typed, actionable error here.
+      await client.ensureReady();
     },
     async resolveWritebackBinding(channel) {
       try {
-        const output = await runRelayfile([
-          'integration',
-          'writeback-secret',
-          '--channel',
-          channel,
-          '--json',
-        ]);
-        const parsed = JSON.parse(output) as { url?: unknown; secret?: unknown };
-        const url = typeof parsed.url === 'string' ? parsed.url.trim() : '';
-        const secret = typeof parsed.secret === 'string' ? parsed.secret.trim() : '';
-        if (!url || !secret) {
-          return undefined;
+        const { url, secret } = await client.writebackSecret(channel);
+        if (!url?.trim() || !secret?.trim()) return undefined;
+        return { url: url.trim(), secret: secret.trim() };
+      } catch (err) {
+        // A missing/disconnected writeback secret is a soft miss (caller falls
+        // back to --bridge-url/--bridge-secret). A daemon outage or version
+        // incompatibility is NOT — re-throw those so the user sees the real
+        // failure instead of a misleading "log in / pass --bridge-url" remedy.
+        if (
+          err instanceof RelayfileControlPlaneError &&
+          (err.code === 'DAEMON_UNAVAILABLE' || err.code === 'VERSION_INCOMPATIBLE')
+        ) {
+          throw err;
         }
-        return { url, secret };
-      } catch {
         return undefined;
       }
     },
@@ -499,17 +511,21 @@ function warnCleanup(deps: IntegrationCommandDependencies, kind: string, id: str
   );
 }
 
-/** The relayfile binding currently backing this (provider, resource), if any. */
+/**
+ * The relayfile binding currently backing this (provider, pathGlob), if any.
+ * `pathGlob` MUST be the resolved VFS glob (see resolveResourcePath) — `listBindings`
+ * returns bindings keyed on the glob, so matching on a native resource never hits.
+ */
 async function findExistingBinding(
   deps: IntegrationCommandDependencies,
   provider: string,
-  resource: string
+  pathGlob: string
 ): Promise<RelayfileBinding | undefined> {
   // Fail fast: this runs before any mutation, so if we can't read the binding
   // store we must abort rather than mistake a read failure for "no prior
   // binding" and create a duplicate. (An empty/absent store resolves to [].)
   const bindings = await deps.relayfile.listBindings();
-  return bindings.find((item) => item.provider === provider && item.resource === resource);
+  return bindings.find((item) => item.provider === provider && item.resource === pathGlob);
 }
 
 /**
@@ -574,6 +590,8 @@ async function runSubscribe(
   providerArg: string | undefined,
   opts: Record<string, unknown>
 ): Promise<void> {
+  await deps.relayfile.ensureCompatible();
+
   if (opts.list) {
     const local = await deps.resolveLocalRelayOptions();
     const relayOptions = sdkOptionsFromOpts(opts);
@@ -592,7 +610,16 @@ async function runSubscribe(
   const { provider, resource, to } = await promptSubscribeOptions(deps, providerArg, opts);
   const local = await deps.resolveLocalRelayOptions();
   await ensureProviderConnected(deps, provider, opts);
-  const resolvedResource = await deps.relayfile.resolvePath(provider, resource);
+
+  // Canonicalize the user's native resource to the VFS glob relayfile keys the
+  // binding under. relayfile stores (and `listBindings` returns) the resolved
+  // glob, not the native spelling — so every subsequent match (findExistingBinding,
+  // unbind, webhook identity) MUST be against the glob or it silently never hits.
+  const resolved = await deps.relayfile.resolveResourcePath(provider, resource);
+  const pathGlob = resolved.pathGlob;
+  if (resolved.warning) {
+    deps.error(`Warning: ${resolved.warning}`);
+  }
 
   const relayOptions = sdkOptionsFromOpts(opts);
   const relay = deps.createAgentRelay(
@@ -602,14 +629,14 @@ async function runSubscribe(
   const channel = targetChannel(to);
   const events = commaList(opts.events);
   const writeback = await resolveWriteback(deps, opts, channel);
-  const prefix = webhookNamePrefix(provider, resolvedResource);
+  const prefix = webhookNamePrefix(provider, pathGlob);
   const name = inboundWebhookName(prefix);
 
   // Capture the binding we're about to replace *before* touching anything, so we
   // can retire it only after the new one is fully live (create-first). A
   // per-attempt nonce in `name` means createInbound never collides on the unique
   // (workspace, name) index, so the replacement can exist alongside the old one.
-  const priorBinding = await findExistingBinding(deps, provider, resolvedResource);
+  const priorBinding = await findExistingBinding(deps, provider, pathGlob);
 
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
@@ -624,7 +651,7 @@ async function runSubscribe(
     });
     await deps.relayfile.bind({
       provider,
-      resource: resolvedResource,
+      resource: pathGlob,
       channel,
       webhookId: webhook.webhookId,
       webhookToken: webhook.token,
@@ -646,7 +673,7 @@ async function runSubscribe(
     throw err;
   }
 
-  // New binding is live (relayfile.bind upserts on (provider, resource)). Now
+  // New binding is live (relayfile.bind upserts on (provider, pathGlob)). Now
   // retire what it superseded — old/orphaned webhooks and the prior subscription.
   await retireSupersededWebhooks(deps, relay, {
     provider,
@@ -655,8 +682,9 @@ async function runSubscribe(
     priorBinding,
   });
 
-  const resourceLabel = resolvedResource === resource ? resource : `${resource} (${resolvedResource})`;
-  deps.log(`✓ ${provider} ${resourceLabel} bound -> ${to}`);
+  // Show the native resource the user typed, plus the resolved glob when they differ.
+  const boundLabel = pathGlob === resource ? resource : `${resource} (${pathGlob})`;
+  deps.log(`✓ ${provider} ${boundLabel} bound -> ${to}`);
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
 
@@ -669,9 +697,12 @@ async function runUnsubscribe(
   if (!resource) {
     throw new Error('Missing --resource <value> for unsubscribe.');
   }
-  const resolvedResource = await deps.relayfile.resolvePath(provider, resource);
+  await deps.relayfile.ensureCompatible();
+  // Resolve native -> glob: relayfile keys bindings on the glob, so the user's
+  // native `--resource` (e.g. owner/repo) must be canonicalized to match.
+  const { pathGlob } = await deps.relayfile.resolveResourcePath(provider, resource);
   const bindings = await deps.relayfile.listBindings();
-  const binding = bindings.find((item) => item.provider === provider && item.resource === resolvedResource);
+  const binding = bindings.find((item) => item.provider === provider && item.resource === pathGlob);
   if (!binding) {
     throw new Error(`No binding found for ${provider} ${resource}.`);
   }
@@ -694,7 +725,7 @@ async function runUnsubscribe(
       `Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
-  await deps.relayfile.unbind(provider, resolvedResource);
+  await deps.relayfile.unbind(provider, pathGlob);
   deps.log(`Unsubscribed ${provider} ${resource}.`);
 }
 
@@ -709,7 +740,7 @@ export function registerIntegrationCommands(
     group
       .command('subscribe [provider]')
       .description('Subscribe a relay recipient to a relayfile integration')
-      .option('--resource <value>', 'Provider-native resource, or an explicit /-prefixed relayfile VFS glob')
+      .option('--resource <value>', 'Provider-native resource (channel, project, label, etc.)')
       .option('--to <target>', 'Relay recipient, e.g. @agent or #channel')
       .option('--spawn <cli>', 'Register the recipient agent when it is absent')
       .option('--events <list>', 'Comma-separated relay event names', 'message.created,thread.reply')
@@ -728,7 +759,7 @@ export function registerIntegrationCommands(
       .command('unsubscribe')
       .description('Remove a relayfile integration subscription')
       .argument('<provider>', 'Integration provider')
-      .option('--resource <value>', 'Provider-native resource or /-prefixed VFS glob used when subscribing')
+      .option('--resource <value>', 'Provider-native resource used when subscribing')
   ).action(async (provider: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       await runUnsubscribe(deps, provider, o);

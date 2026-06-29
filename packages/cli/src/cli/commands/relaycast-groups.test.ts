@@ -303,10 +303,11 @@ describe('SDK-backed CLI groups', () => {
       relayfile: {
         isConnected: vi.fn(async () => false),
         connect: vi.fn(async () => undefined),
-        resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
+        resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+        ensureCompatible: vi.fn(async () => undefined),
         resolveWritebackBinding: vi.fn(async () => ({
           url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
           secret: 'test-secret',
@@ -332,10 +333,11 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
-      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
+      resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+      ensureCompatible: vi.fn(async () => undefined),
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
@@ -404,10 +406,11 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
-      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
+      resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+      ensureCompatible: vi.fn(async () => undefined),
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
         secret: 'derived-secret-hex',
@@ -444,7 +447,6 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
-      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => [
         {
@@ -456,6 +458,8 @@ describe('SDK-backed CLI groups', () => {
         },
       ]),
       unbind: vi.fn(async () => undefined),
+      resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+      ensureCompatible: vi.fn(async () => undefined),
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
@@ -520,10 +524,11 @@ describe('SDK-backed CLI groups', () => {
       relayfile: {
         isConnected: vi.fn(async () => true),
         connect: vi.fn(async () => undefined),
-        resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
+        resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+        ensureCompatible: vi.fn(async () => undefined),
         resolveWritebackBinding: vi.fn(async () => ({
           url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
           secret: 'test-secret',
@@ -547,7 +552,6 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
-      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => [
         {
@@ -559,6 +563,8 @@ describe('SDK-backed CLI groups', () => {
         },
       ]),
       unbind: vi.fn(async () => undefined),
+      resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+      ensureCompatible: vi.fn(async () => undefined),
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',

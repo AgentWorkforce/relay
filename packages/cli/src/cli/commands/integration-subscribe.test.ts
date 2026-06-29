@@ -57,7 +57,6 @@ function createRelayfileMock(
   return {
     isConnected: vi.fn(async () => true),
     connect: vi.fn(async () => undefined),
-    resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
     bind: vi.fn(
       async (input: {
         provider: string;
@@ -80,6 +79,10 @@ function createRelayfileMock(
     ),
     listBindings: vi.fn(async (): Promise<RelayfileBinding[]> => bindings.map((b) => ({ ...b }))),
     unbind: vi.fn(async () => undefined),
+    // Identity resolve: tests pass an already-resolved glob as --resource, mirroring
+    // relayfile's idempotent resolve-path (a glob resolves to itself).
+    resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+    ensureCompatible: vi.fn(async () => undefined),
     resolveWritebackBinding: vi.fn(async () => ({ url: 'https://ingress.example', secret: 's3cr3t' })),
     ...overrides,
   };
@@ -141,7 +144,7 @@ describe('integration subscribe', () => {
   it('resolves provider-native resources before binding and replacement lookup', async () => {
     const resolved = '/slack/channels/C123__watchdog-test/**';
     const relayfile = createRelayfileMock([], {
-      resolvePath: vi.fn(async () => resolved),
+      resolveResourcePath: vi.fn(async () => ({ pathGlob: resolved })),
     });
     const { program, relay } = harness({ relayfile });
     await program.parseAsync(
@@ -149,7 +152,7 @@ describe('integration subscribe', () => {
       { from: 'user' }
     );
 
-    expect(relayfile.resolvePath).toHaveBeenCalledWith('slack', '#watchdog-test');
+    expect(relayfile.resolveResourcePath).toHaveBeenCalledWith('slack', '#watchdog-test');
     expect(relayfile.bind).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'slack', resource: resolved, channel: 'general' })
     );
