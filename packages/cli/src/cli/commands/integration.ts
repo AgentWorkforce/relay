@@ -38,6 +38,7 @@ export interface RelayfileWritebackBinding {
 export interface RelayfileBridge {
   isConnected(provider: string): Promise<boolean>;
   connect(provider: string): Promise<void>;
+  resolvePath(provider: string, resource: string): Promise<string>;
   bind(input: {
     provider: string;
     resource: string;
@@ -138,6 +139,24 @@ function defaultRelayfileBridge(): RelayfileBridge {
     async connect(provider) {
       await runRelayfile(['integration', 'connect', provider], { inherit: true });
     },
+    async resolvePath(provider, resource) {
+      const explicitGlob = resource.trim();
+      if (explicitGlob.startsWith('/')) {
+        return explicitGlob;
+      }
+      const output = await runRelayfile(['integration', 'resolve-path', provider, resource, '--json']);
+      const parsed = JSON.parse(output) as unknown;
+      const record = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+      const warning = typeof record.warning === 'string' ? record.warning.trim() : '';
+      if (warning) {
+        process.stderr.write(`Warning: ${warning}\n`);
+      }
+      const pathGlob = typeof record.pathGlob === 'string' ? record.pathGlob.trim() : '';
+      if (!pathGlob) {
+        throw new Error(`relayfile integration resolve-path ${provider} ${resource} returned no pathGlob`);
+      }
+      return pathGlob;
+    },
     async bind(input) {
       await runRelayfile([
         'integration',
@@ -161,7 +180,7 @@ function defaultRelayfileBridge(): RelayfileBridge {
       // relayfile serializes the binding's resource as `pathGlob`; normalize it
       // (and tolerate `resource`) so callers can match on `resource`.
       return parsed.map((raw): RelayfileBinding => {
-        const record = raw as Record<string, unknown>;
+        const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
         const str = (...keys: string[]): string => {
           for (const key of keys) {
             const value = record[key];
@@ -171,7 +190,7 @@ function defaultRelayfileBridge(): RelayfileBridge {
         };
         return {
           provider: str('provider'),
-          resource: str('resource', 'pathGlob'),
+          resource: str('pathGlob', 'resource'),
           channel: str('channel'),
           webhookId: str('webhookId', 'webhook_id'),
           subscriptionId: str('subscriptionId', 'subscription_id'),
@@ -573,6 +592,7 @@ async function runSubscribe(
   const { provider, resource, to } = await promptSubscribeOptions(deps, providerArg, opts);
   const local = await deps.resolveLocalRelayOptions();
   await ensureProviderConnected(deps, provider, opts);
+  const resolvedResource = await deps.relayfile.resolvePath(provider, resource);
 
   const relayOptions = sdkOptionsFromOpts(opts);
   const relay = deps.createAgentRelay(
@@ -582,14 +602,14 @@ async function runSubscribe(
   const channel = targetChannel(to);
   const events = commaList(opts.events);
   const writeback = await resolveWriteback(deps, opts, channel);
-  const prefix = webhookNamePrefix(provider, resource);
+  const prefix = webhookNamePrefix(provider, resolvedResource);
   const name = inboundWebhookName(prefix);
 
   // Capture the binding we're about to replace *before* touching anything, so we
   // can retire it only after the new one is fully live (create-first). A
   // per-attempt nonce in `name` means createInbound never collides on the unique
   // (workspace, name) index, so the replacement can exist alongside the old one.
-  const priorBinding = await findExistingBinding(deps, provider, resource);
+  const priorBinding = await findExistingBinding(deps, provider, resolvedResource);
 
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
@@ -604,7 +624,7 @@ async function runSubscribe(
     });
     await deps.relayfile.bind({
       provider,
-      resource,
+      resource: resolvedResource,
       channel,
       webhookId: webhook.webhookId,
       webhookToken: webhook.token,
@@ -635,7 +655,8 @@ async function runSubscribe(
     priorBinding,
   });
 
-  deps.log(`✓ ${provider} ${resource} bound -> ${to}`);
+  const resourceLabel = resolvedResource === resource ? resource : `${resource} (${resolvedResource})`;
+  deps.log(`✓ ${provider} ${resourceLabel} bound -> ${to}`);
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
 
@@ -648,8 +669,9 @@ async function runUnsubscribe(
   if (!resource) {
     throw new Error('Missing --resource <value> for unsubscribe.');
   }
+  const resolvedResource = await deps.relayfile.resolvePath(provider, resource);
   const bindings = await deps.relayfile.listBindings();
-  const binding = bindings.find((item) => item.provider === provider && item.resource === resource);
+  const binding = bindings.find((item) => item.provider === provider && item.resource === resolvedResource);
   if (!binding) {
     throw new Error(`No binding found for ${provider} ${resource}.`);
   }
@@ -672,7 +694,7 @@ async function runUnsubscribe(
       `Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
-  await deps.relayfile.unbind(provider, resource);
+  await deps.relayfile.unbind(provider, resolvedResource);
   deps.log(`Unsubscribed ${provider} ${resource}.`);
 }
 
@@ -687,7 +709,7 @@ export function registerIntegrationCommands(
     group
       .command('subscribe [provider]')
       .description('Subscribe a relay recipient to a relayfile integration')
-      .option('--resource <value>', 'Provider-native resource (channel, project, label, etc.)')
+      .option('--resource <value>', 'Provider-native resource, or an explicit /-prefixed relayfile VFS glob')
       .option('--to <target>', 'Relay recipient, e.g. @agent or #channel')
       .option('--spawn <cli>', 'Register the recipient agent when it is absent')
       .option('--events <list>', 'Comma-separated relay event names', 'message.created,thread.reply')
@@ -706,7 +728,7 @@ export function registerIntegrationCommands(
       .command('unsubscribe')
       .description('Remove a relayfile integration subscription')
       .argument('<provider>', 'Integration provider')
-      .option('--resource <value>', 'Provider-native resource used when subscribing')
+      .option('--resource <value>', 'Provider-native resource or /-prefixed VFS glob used when subscribing')
   ).action(async (provider: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       await runUnsubscribe(deps, provider, o);
