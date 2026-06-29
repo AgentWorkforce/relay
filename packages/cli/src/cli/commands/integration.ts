@@ -129,7 +129,7 @@ function readProviderConnected(payload: unknown, provider: string): boolean {
   });
 }
 
-function defaultRelayfileBridge(): RelayfileBridge {
+export function defaultRelayfileBridge(): RelayfileBridge {
   return {
     async isConnected(provider) {
       const output = await runRelayfile(['integration', 'list', '--json']);
@@ -155,7 +155,10 @@ function defaultRelayfileBridge(): RelayfileBridge {
       ]);
     },
     async listBindings() {
-      const output = await runRelayfile(['integration', 'bind', '--list', '--json']);
+      // `relayfile integration bind --list` always emits JSON; it does not
+      // define a `--json` flag, so passing one errors with
+      // "flag provided but not defined: -json".
+      const output = await runRelayfile(['integration', 'bind', '--list']);
       const parsed = JSON.parse(output) as unknown;
       if (!Array.isArray(parsed)) return [];
       // relayfile serializes the binding's resource as `pathGlob`; normalize it
