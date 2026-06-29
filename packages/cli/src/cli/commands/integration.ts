@@ -220,8 +220,15 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
         return { url: url.trim(), secret: secret.trim() };
       } catch (err) {
         // A missing/disconnected writeback secret is a soft miss (caller falls
-        // back to --bridge-url/--bridge-secret); a daemon/version failure is not.
-        if (err instanceof RelayfileControlPlaneError && err.code === 'VERSION_INCOMPATIBLE') throw err;
+        // back to --bridge-url/--bridge-secret). A daemon outage or version
+        // incompatibility is NOT — re-throw those so the user sees the real
+        // failure instead of a misleading "log in / pass --bridge-url" remedy.
+        if (
+          err instanceof RelayfileControlPlaneError &&
+          (err.code === 'DAEMON_UNAVAILABLE' || err.code === 'VERSION_INCOMPATIBLE')
+        ) {
+          throw err;
+        }
         return undefined;
       }
     },

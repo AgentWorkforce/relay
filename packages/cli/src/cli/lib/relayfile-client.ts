@@ -44,9 +44,9 @@ export function compareSemver(a: string, b: string): number {
       .split(/[-+]/)[0]!
       .split('.')
       .map((n) => Number.parseInt(n, 10) || 0);
-  const [a0, a1, a2] = core(a);
-  const [b0, b1, b2] = core(b);
-  return a0! - b0! || a1! - b1! || a2! - b2!;
+  const [a0 = 0, a1 = 0, a2 = 0] = core(a);
+  const [b0 = 0, b1 = 0, b2 = 0] = core(b);
+  return a0 - b0 || a1 - b1 || a2 - b2;
 }
 
 /**
@@ -57,7 +57,10 @@ export function compareSemver(a: string, b: string): number {
 export function assertRelayfileVersion(version: string): void {
   const parsed = firstSemver(version);
   if (!parsed || compareSemver(parsed, MIN_RELAYFILE_VERSION) < 0) {
-    throw new Error(
+    // Typed (not a bare Error) so callers that re-throw daemon/version failures
+    // by code (e.g. resolveWritebackBinding) don't silently swallow it.
+    throw new RelayfileControlPlaneError(
+      'VERSION_INCOMPATIBLE',
       `relayfile >= ${MIN_RELAYFILE_VERSION} is required; found ${
         parsed ? `"${parsed}"` : `unparseable version "${version.trim()}"`
       }. Update relayfile (npm install -g relayfile@latest) or set RELAYFILE_BIN.`
@@ -120,6 +123,8 @@ export interface RelayfileClientOptions {
   autoStart?: boolean;
   /** How long to wait for an auto-started daemon to answer /v1/hello. */
   startTimeoutMs?: number;
+  /** Per-request timeout. A hung socket rejects instead of blocking forever. */
+  requestTimeoutMs?: number;
 }
 
 interface RequestOptions {
@@ -136,6 +141,7 @@ export class RelayfileControlPlaneClient {
   private readonly binary: string;
   private readonly autoStart: boolean;
   private readonly startTimeoutMs: number;
+  private readonly requestTimeoutMs: number;
   private ready: Promise<void> | undefined;
 
   constructor(options: RelayfileClientOptions = {}) {
@@ -143,6 +149,7 @@ export class RelayfileControlPlaneClient {
     this.binary = options.binary ?? relayfileBinary();
     this.autoStart = options.autoStart ?? process.env.RELAYFILE_REQUIRE_DAEMON !== '1';
     this.startTimeoutMs = options.startTimeoutMs ?? 5000;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 10000;
   }
 
   /** Low-level request over the unix socket. Throws RelayfileControlPlaneError. */
@@ -157,11 +164,24 @@ export class RelayfileControlPlaneClient {
     const payload = opts.body == null ? undefined : JSON.stringify(opts.body);
 
     return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const fail = (err: RelayfileControlPlaneError) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+      const ok = (value: T) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+
       const req = request(
         {
           socketPath: this.socketPath,
           method: opts.method,
           path,
+          timeout: this.requestTimeoutMs,
           headers: {
             'X-Relayfile-API-Version': String(RELAYFILE_API_VERSION),
             Accept: 'application/json',
@@ -171,6 +191,11 @@ export class RelayfileControlPlaneClient {
           },
         },
         (res) => {
+          // The response stream can emit 'error' (e.g. socket reset mid-body);
+          // without a listener that's an unhandled error → crash.
+          res.on('error', (err) =>
+            fail(new RelayfileControlPlaneError('DAEMON_UNAVAILABLE', err.message))
+          );
           const chunks: Buffer[] = [];
           res.on('data', (c) => chunks.push(c as Buffer));
           res.on('end', () => {
@@ -180,7 +205,7 @@ export class RelayfileControlPlaneClient {
             try {
               parsed = text ? JSON.parse(text) : undefined;
             } catch {
-              reject(
+              fail(
                 new RelayfileControlPlaneError(
                   'DAEMON_UNAVAILABLE',
                   `relayfile control-plane returned non-JSON (status ${status}): ${text.slice(0, 200)}`,
@@ -190,11 +215,11 @@ export class RelayfileControlPlaneClient {
               return;
             }
             if (status >= 200 && status < 300) {
-              resolve(parsed as T);
+              ok(parsed as T);
               return;
             }
             const err = (parsed as { error?: { code?: string; message?: string } })?.error;
-            reject(
+            fail(
               new RelayfileControlPlaneError(
                 err?.code ?? 'DAEMON_UNAVAILABLE',
                 err?.message ?? `relayfile control-plane error (status ${status})`,
@@ -204,9 +229,23 @@ export class RelayfileControlPlaneClient {
           });
         }
       );
+      // A hung socket (daemon wedged mid-handshake) must not block forever.
+      req.on('timeout', () => {
+        req.destroy(
+          new RelayfileControlPlaneError(
+            'DAEMON_UNAVAILABLE',
+            `relayfile control-plane request timed out after ${this.requestTimeoutMs}ms (${opts.method} ${opts.path})`
+          )
+        );
+      });
       req.on('error', (err: NodeJS.ErrnoException) => {
+        // A RelayfileControlPlaneError here came from our own req.destroy(timeout).
+        if (err instanceof RelayfileControlPlaneError) {
+          fail(err);
+          return;
+        }
         // ENOENT (no socket file) / ECONNREFUSED (nothing listening) => daemon down.
-        reject(
+        fail(
           new RelayfileControlPlaneError(
             'DAEMON_UNAVAILABLE',
             err.code === 'ENOENT' || err.code === 'ECONNREFUSED'
@@ -261,10 +300,17 @@ export class RelayfileControlPlaneClient {
 
   private async startDaemonAndConnect(): Promise<HelloResponse> {
     let child;
+    // A missing binary / bad RELAYFILE_BIN surfaces as an async 'error' event on
+    // the child (ENOENT), NOT a throw from spawn(). Without a listener that's an
+    // uncaught exception that crashes the CLI — capture it and fail fast instead.
+    let spawnError: Error | undefined;
     try {
       child = spawn(this.binary, ['control-plane', 'serve', '--sock', this.socketPath], {
         detached: true,
         stdio: 'ignore',
+      });
+      child.on('error', (err) => {
+        spawnError = err;
       });
     } catch (err) {
       throw new RelayfileControlPlaneError(
@@ -277,6 +323,13 @@ export class RelayfileControlPlaneClient {
     const deadline = Date.now() + this.startTimeoutMs;
     let lastErr: unknown;
     while (Date.now() < deadline) {
+      if (spawnError) {
+        throw new RelayfileControlPlaneError(
+          'DAEMON_UNAVAILABLE',
+          `failed to start relayfile control-plane (${spawnError.message}). ` +
+            `Install relayfile or set RELAYFILE_BIN.`
+        );
+      }
       await sleep(100);
       try {
         return await this.hello();

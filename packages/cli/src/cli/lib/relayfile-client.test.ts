@@ -71,6 +71,19 @@ describe('RelayfileControlPlaneClient lifecycle', () => {
     await expect(client.ensureReady()).rejects.toThrow(/0\.10\.16 is required/);
   });
 
+  it('auto-start with a missing binary fails fast with DAEMON_UNAVAILABLE (no crash)', async () => {
+    // spawn() reports a missing binary via an async 'error' (ENOENT) on the
+    // child, not a throw — without the child 'error' listener this would be an
+    // uncaught exception that crashes the CLI. It must reject cleanly instead.
+    const client = new RelayfileControlPlaneClient({
+      socketPath: join(tmpdir(), `rf-missing-bin-${process.pid}.sock`),
+      binary: join(tmpdir(), 'definitely-not-a-relayfile-binary-xyz'),
+      autoStart: true,
+      startTimeoutMs: 3000,
+    });
+    await expect(client.ensureReady()).rejects.toMatchObject({ code: 'DAEMON_UNAVAILABLE' });
+  }, 10000);
+
   it('does not cache a failed readiness probe (retries next call)', async () => {
     const client = new RelayfileControlPlaneClient({ socketPath: '/nope.sock', autoStart: false });
     const hello = vi
