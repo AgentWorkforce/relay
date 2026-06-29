@@ -486,12 +486,11 @@ async function findExistingBinding(
   provider: string,
   resource: string
 ): Promise<RelayfileBinding | undefined> {
-  try {
-    const bindings = await deps.relayfile.listBindings();
-    return bindings.find((item) => item.provider === provider && item.resource === resource);
-  } catch {
-    return undefined; // best-effort; a missing/empty binding store is not fatal here
-  }
+  // Fail fast: this runs before any mutation, so if we can't read the binding
+  // store we must abort rather than mistake a read failure for "no prior
+  // binding" and create a duplicate. (An empty/absent store resolves to [].)
+  const bindings = await deps.relayfile.listBindings();
+  return bindings.find((item) => item.provider === provider && item.resource === resource);
 }
 
 /**
@@ -536,10 +535,13 @@ async function retireSupersededWebhooks(
 
   const legacyName = `relayfile:${provider}`;
   for (const hook of webhooks) {
-    if (hook.webhookId === keepWebhookId) continue;
+    // Never delete a webhook an active binding references — that includes the
+    // one we just bound, and guards against a concurrent re-subscribe that
+    // upserted a newer same-prefix binding between our bind and this sweep.
+    if (hook.webhookId === keepWebhookId || activeWebhookIds.has(hook.webhookId)) continue;
     const isPrior = priorBinding?.webhookId === hook.webhookId;
     const isSameResourceOrphan = hook.name?.startsWith(`${prefix}:`) ?? false;
-    const isUnboundLegacy = hook.name === legacyName && !activeWebhookIds.has(hook.webhookId);
+    const isUnboundLegacy = hook.name === legacyName;
     if (!isPrior && !isSameResourceOrphan && !isUnboundLegacy) continue;
     await relay.webhooks
       .delete(hook.webhookId)

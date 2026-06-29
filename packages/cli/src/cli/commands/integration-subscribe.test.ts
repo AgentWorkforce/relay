@@ -46,12 +46,38 @@ function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
 
 type RelayfileBridge = IntegrationCommandDependencies['relayfile'];
 
-function createRelayfileMock(overrides: Partial<RelayfileBridge> = {}) {
+// Stateful mock: `bind` upserts on (provider, resource) and `listBindings`
+// reflects it, so a post-bind read sees the new webhook as active — mirroring
+// relayfile's real upsert semantics.
+function createRelayfileMock(
+  initialBindings: RelayfileBinding[] = [],
+  overrides: Partial<RelayfileBridge> = {}
+) {
+  const bindings: RelayfileBinding[] = initialBindings.map((b) => ({ ...b }));
   return {
     isConnected: vi.fn(async () => true),
     connect: vi.fn(async () => undefined),
-    bind: vi.fn(async () => undefined),
-    listBindings: vi.fn(async (): Promise<RelayfileBinding[]> => []),
+    bind: vi.fn(
+      async (input: {
+        provider: string;
+        resource: string;
+        channel: string;
+        webhookId: string;
+        subscriptionId: string;
+      }) => {
+        const record: RelayfileBinding = {
+          provider: input.provider,
+          resource: input.resource,
+          channel: input.channel,
+          webhookId: input.webhookId,
+          subscriptionId: input.subscriptionId,
+        };
+        const idx = bindings.findIndex((b) => b.provider === input.provider && b.resource === input.resource);
+        if (idx >= 0) bindings[idx] = record;
+        else bindings.push(record);
+      }
+    ),
+    listBindings: vi.fn(async (): Promise<RelayfileBinding[]> => bindings.map((b) => ({ ...b }))),
     unbind: vi.fn(async () => undefined),
     resolveWritebackBinding: vi.fn(async () => ({ url: 'https://ingress.example', secret: 's3cr3t' })),
     ...overrides,
@@ -152,7 +178,7 @@ describe('integration subscribe', () => {
         },
       ],
     });
-    const relayfile = createRelayfileMock({ listBindings: vi.fn(async () => [prior]) });
+    const relayfile = createRelayfileMock([prior]);
     const { program } = harness({ relay, relayfile });
     await program.parseAsync(ARGS(), { from: 'user' });
 
@@ -185,7 +211,7 @@ describe('integration subscribe', () => {
         },
       ],
     });
-    const relayfile = createRelayfileMock({ listBindings: vi.fn(async () => [otherBinding]) });
+    const relayfile = createRelayfileMock([otherBinding]);
     const { program } = harness({ relay, relayfile });
     // Subscribe resource A (RESOURCE) to the same channel.
     await program.parseAsync(ARGS(), { from: 'user' });
@@ -204,7 +230,7 @@ describe('integration subscribe', () => {
     };
     const relay = createRelayMock();
     relay.webhooks.createInbound.mockRejectedValue(new Error('transient'));
-    const relayfile = createRelayfileMock({ listBindings: vi.fn(async () => [prior]) });
+    const relayfile = createRelayfileMock([prior]);
     const { program } = harness({ relay, relayfile });
     await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
     // The prior webhook/subscription/bind are left intact.
@@ -213,10 +239,50 @@ describe('integration subscribe', () => {
     expect(relayfile.unbind).not.toHaveBeenCalled();
   });
 
+  it('never deletes a webhook an active binding still references, even at its own prefix', async () => {
+    // Represents a concurrent re-subscribe that already owns this resource's
+    // binding and points at a newer same-prefix webhook.
+    const active: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_active',
+      subscriptionId: 'sub_active',
+    };
+    const relay = createRelayMock({
+      inboundWebhooks: [
+        {
+          webhookId: 'wh_active',
+          url: 'u',
+          token: '',
+          channel: 'general',
+          name: 'relayfile:slack:slack-channels-c0-0123456789:ffffffffff',
+        },
+      ],
+    });
+    // bind is a no-op so the active binding stays pointing at wh_active at sweep time.
+    const relayfile = createRelayfileMock([active], { bind: vi.fn(async () => undefined) });
+    const { program } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('wh_active');
+  });
+
+  it('aborts without creating anything when the binding store cannot be read (fail fast)', async () => {
+    const relay = createRelayMock();
+    const relayfile = createRelayfileMock([], {
+      listBindings: vi.fn(async () => {
+        throw new Error('relayfile unavailable');
+      }),
+    });
+    const { program } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+  });
+
   it('warns (does not swallow) when post-failure rollback cannot delete the new webhook', async () => {
     const relay = createRelayMock();
     relay.webhooks.delete.mockRejectedValue(new Error('gone'));
-    const relayfile = createRelayfileMock({
+    const relayfile = createRelayfileMock([], {
       bind: vi.fn(async () => {
         throw new Error('bind failed');
       }),
