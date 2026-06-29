@@ -194,9 +194,7 @@ export class RelayfileControlPlaneClient {
         (res) => {
           // The response stream can emit 'error' (e.g. socket reset mid-body);
           // without a listener that's an unhandled error → crash.
-          res.on('error', (err) =>
-            fail(new RelayfileControlPlaneError('DAEMON_UNAVAILABLE', err.message))
-          );
+          res.on('error', (err) => fail(new RelayfileControlPlaneError('DAEMON_UNAVAILABLE', err.message)));
           const chunks: Buffer[] = [];
           res.on('data', (c) => chunks.push(c as Buffer));
           res.on('end', () => {
