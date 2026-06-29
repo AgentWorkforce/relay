@@ -110,7 +110,7 @@ function harness(
     error,
     exit: exit as never,
   } satisfies Partial<IntegrationCommandDependencies>);
-  return { program, relay, relayfile, log, error };
+  return { program, relay, relayfile, log, error, exit };
 }
 
 const RESOURCE = '/slack/channels/C0/**';
@@ -139,6 +139,29 @@ describe('integration subscribe', () => {
     expect(relayfile.bind).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'slack', resource: RESOURCE, channel: 'general' })
     );
+  });
+
+  it('resolves provider-native resources before binding and replacement lookup', async () => {
+    const resolved = '/slack/channels/C123__watchdog-test/**';
+    const relayfile = createRelayfileMock([], {
+      resolveResourcePath: vi.fn(async () => ({ pathGlob: resolved })),
+    });
+    const { program, relay } = harness({ relayfile });
+    await program.parseAsync(
+      ['integration', 'subscribe', 'slack', '--resource', '#watchdog-test', '--to', '#general'],
+      { from: 'user' }
+    );
+
+    expect(relayfile.resolveResourcePath).toHaveBeenCalledWith('slack', '#watchdog-test');
+    expect(relayfile.bind).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'slack', resource: resolved, channel: 'general' })
+    );
+    expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'general',
+      name: expect.stringMatching(
+        /^relayfile:slack:slack-channels-c123-watchdog-test-[0-9a-f]{10}:[0-9a-f]{10}$/
+      ),
+    });
   });
 
   it('retires an orphaned, unbound legacy webhook after the new binding is live', async () => {
@@ -235,8 +258,10 @@ describe('integration subscribe', () => {
     const relay = createRelayMock();
     relay.webhooks.createInbound.mockRejectedValue(new Error('transient'));
     const relayfile = createRelayfileMock([prior]);
-    const { program } = harness({ relay, relayfile });
-    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    const { program, error, exit } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('transient'));
+    expect(exit).toHaveBeenCalledWith(1);
     // The prior webhook/subscription/bind are left intact.
     expect(relay.webhooks.delete).not.toHaveBeenCalledWith('old_wh');
     expect(relay.webhooks.unsubscribe).not.toHaveBeenCalledWith('old_sub');
@@ -278,8 +303,10 @@ describe('integration subscribe', () => {
         throw new Error('relayfile unavailable');
       }),
     });
-    const { program } = harness({ relay, relayfile });
-    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    const { program, error, exit } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('relayfile unavailable'));
+    expect(exit).toHaveBeenCalledWith(1);
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
 
@@ -291,8 +318,10 @@ describe('integration subscribe', () => {
         throw new Error('bind failed');
       }),
     });
-    const { program, error } = harness({ relay, relayfile });
-    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    const { program, error, exit } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('bind failed'));
+    expect(exit).toHaveBeenCalledWith(1);
     expect(error.mock.calls.some((c) => String(c[0]).includes('failed to clean up webhook'))).toBe(true);
   });
 });

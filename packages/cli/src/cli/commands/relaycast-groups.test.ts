@@ -302,8 +302,7 @@ describe('SDK-backed CLI groups', () => {
       isInteractive: () => false,
       relayfile: {
         isConnected: vi.fn(async () => false),
-        connect: vi.fn(async () => undefined),
-        bind: vi.fn(async () => undefined),
+        connect: vi.fn(async () => undefined),        bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
         resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
@@ -332,8 +331,7 @@ describe('SDK-backed CLI groups', () => {
     relay.agents.list.mockResolvedValueOnce([{ id: 'a1', name: 'slackbot' }]);
     const relayfile = {
       isConnected: vi.fn(async () => true),
-      connect: vi.fn(async () => undefined),
-      bind: vi.fn(async () => undefined),
+      connect: vi.fn(async () => undefined),      bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
       resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
@@ -405,8 +403,7 @@ describe('SDK-backed CLI groups', () => {
     relay.agents.list.mockResolvedValueOnce([{ id: 'a1', name: 'slackbot' }]);
     const relayfile = {
       isConnected: vi.fn(async () => true),
-      connect: vi.fn(async () => undefined),
-      bind: vi.fn(async () => undefined),
+      connect: vi.fn(async () => undefined),      bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
       resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
@@ -446,8 +443,7 @@ describe('SDK-backed CLI groups', () => {
     const relay = createRelayMock();
     const relayfile = {
       isConnected: vi.fn(async () => true),
-      connect: vi.fn(async () => undefined),
-      bind: vi.fn(async () => undefined),
+      connect: vi.fn(async () => undefined),      bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => [
         {
           provider: 'slack',
@@ -523,8 +519,7 @@ describe('SDK-backed CLI groups', () => {
       isInteractive: () => false,
       relayfile: {
         isConnected: vi.fn(async () => true),
-        connect: vi.fn(async () => undefined),
-        bind: vi.fn(async () => undefined),
+        connect: vi.fn(async () => undefined),        bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
         resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
@@ -551,8 +546,7 @@ describe('SDK-backed CLI groups', () => {
     const relay = createRelayMock();
     const relayfile = {
       isConnected: vi.fn(async () => true),
-      connect: vi.fn(async () => undefined),
-      bind: vi.fn(async () => undefined),
+      connect: vi.fn(async () => undefined),      bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => [
         {
           provider: 'slack',
