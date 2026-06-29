@@ -303,6 +303,7 @@ describe('SDK-backed CLI groups', () => {
       relayfile: {
         isConnected: vi.fn(async () => false),
         connect: vi.fn(async () => undefined),
+        resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
@@ -331,6 +332,7 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
+      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
@@ -402,6 +404,7 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
+      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => []),
       unbind: vi.fn(async () => undefined),
@@ -441,6 +444,7 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
+      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => [
         {
@@ -516,6 +520,7 @@ describe('SDK-backed CLI groups', () => {
       relayfile: {
         isConnected: vi.fn(async () => true),
         connect: vi.fn(async () => undefined),
+        resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
         bind: vi.fn(async () => undefined),
         listBindings: vi.fn(async () => []),
         unbind: vi.fn(async () => undefined),
@@ -542,6 +547,7 @@ describe('SDK-backed CLI groups', () => {
     const relayfile = {
       isConnected: vi.fn(async () => true),
       connect: vi.fn(async () => undefined),
+      resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
       bind: vi.fn(async () => undefined),
       listBindings: vi.fn(async () => [
         {

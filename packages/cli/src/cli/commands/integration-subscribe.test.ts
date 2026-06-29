@@ -57,6 +57,7 @@ function createRelayfileMock(
   return {
     isConnected: vi.fn(async () => true),
     connect: vi.fn(async () => undefined),
+    resolvePath: vi.fn(async (_provider: string, resource: string) => resource),
     bind: vi.fn(
       async (input: {
         provider: string;
@@ -135,6 +136,29 @@ describe('integration subscribe', () => {
     expect(relayfile.bind).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'slack', resource: RESOURCE, channel: 'general' })
     );
+  });
+
+  it('resolves provider-native resources before binding and replacement lookup', async () => {
+    const resolved = '/slack/channels/C123__watchdog-test/**';
+    const relayfile = createRelayfileMock([], {
+      resolvePath: vi.fn(async () => resolved),
+    });
+    const { program, relay } = harness({ relayfile });
+    await program.parseAsync(
+      ['integration', 'subscribe', 'slack', '--resource', '#watchdog-test', '--to', '#general'],
+      { from: 'user' }
+    );
+
+    expect(relayfile.resolvePath).toHaveBeenCalledWith('slack', '#watchdog-test');
+    expect(relayfile.bind).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'slack', resource: resolved, channel: 'general' })
+    );
+    expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
+      channel: 'general',
+      name: expect.stringMatching(
+        /^relayfile:slack:slack-channels-c123-watchdog-test-[0-9a-f]{10}:[0-9a-f]{10}$/
+      ),
+    });
   });
 
   it('retires an orphaned, unbound legacy webhook after the new binding is live', async () => {
