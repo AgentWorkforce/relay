@@ -438,12 +438,7 @@ function inboundWebhookName(provider: string, channel: string): string {
 /** Surface a best-effort cleanup failure instead of swallowing it — a silently
  * failed rollback is exactly what leaves orphaned webhooks that block later
  * subscribe retries. */
-function warnCleanup(
-  deps: IntegrationCommandDependencies,
-  kind: string,
-  id: string,
-  err: unknown
-): void {
+function warnCleanup(deps: IntegrationCommandDependencies, kind: string, id: string, err: unknown): void {
   deps.error(
     `Warning: failed to roll back ${kind} ${id}: ${err instanceof Error ? err.message : String(err)}`
   );

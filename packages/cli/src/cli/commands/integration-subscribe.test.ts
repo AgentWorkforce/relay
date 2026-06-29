@@ -58,10 +58,12 @@ function createRelayfileMock(overrides: Partial<RelayfileBridge> = {}) {
 
 type RelayfileBridge = IntegrationCommandDependencies['relayfile'];
 
-function harness(opts: {
-  relay?: ReturnType<typeof createRelayMock>;
-  relayfile?: ReturnType<typeof createRelayfileMock>;
-} = {}) {
+function harness(
+  opts: {
+    relay?: ReturnType<typeof createRelayMock>;
+    relayfile?: ReturnType<typeof createRelayfileMock>;
+  } = {}
+) {
   const relay = opts.relay ?? createRelayMock();
   const relayfile = opts.relayfile ?? createRelayfileMock();
   const log = vi.fn();
