@@ -376,7 +376,7 @@ describe('SDK-backed CLI groups', () => {
 
     expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
       channel: 'slackbot',
-      name: 'relayfile:slack:slackbot',
+      name: expect.stringMatching(/^relayfile:slack:.+-[0-9a-f]{10}:[0-9a-f]{10}$/),
     });
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
       event: 'message.created',

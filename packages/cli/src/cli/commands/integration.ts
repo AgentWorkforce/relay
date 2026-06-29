@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { getProjectPaths } from '@agent-relay/config';
 import type { AgentRelayAgent } from '@agent-relay/sdk';
 
@@ -156,7 +157,26 @@ function defaultRelayfileBridge(): RelayfileBridge {
     async listBindings() {
       const output = await runRelayfile(['integration', 'bind', '--list', '--json']);
       const parsed = JSON.parse(output) as unknown;
-      return Array.isArray(parsed) ? (parsed as RelayfileBinding[]) : [];
+      if (!Array.isArray(parsed)) return [];
+      // relayfile serializes the binding's resource as `pathGlob`; normalize it
+      // (and tolerate `resource`) so callers can match on `resource`.
+      return parsed.map((raw): RelayfileBinding => {
+        const record = raw as Record<string, unknown>;
+        const str = (...keys: string[]): string => {
+          for (const key of keys) {
+            const value = record[key];
+            if (typeof value === 'string' && value) return value;
+          }
+          return '';
+        };
+        return {
+          provider: str('provider'),
+          resource: str('resource', 'pathGlob'),
+          channel: str('channel'),
+          webhookId: str('webhookId', 'webhook_id'),
+          subscriptionId: str('subscriptionId', 'subscription_id'),
+        };
+      });
     },
     async unbind(provider, resource) {
       await runRelayfile(['integration', 'unbind', provider, resource]);
@@ -428,82 +448,102 @@ async function runIntegrationOperation<T>(
   }
 }
 
-/** Per-channel inbound webhook name. Channel-scoped so subscribing more than
- * one channel of the same provider doesn't collide on the unique
- * (workspace, name) index. */
-function inboundWebhookName(provider: string, channel: string): string {
-  return `relayfile:${provider}:${channel}`;
+/**
+ * Stable per-(provider, resource) prefix for the inbound webhook name. The
+ * webhook's true identity is the binding it backs — (provider, resource) — not
+ * the relay channel, so two resources routed to the same channel get distinct
+ * webhooks and never clobber each other. A short hash keeps the name unique and
+ * charset-safe while a slug stem keeps it recognizable in `webhook list-inbound`.
+ */
+function webhookNamePrefix(provider: string, resource: string): string {
+  const hash = createHash('sha1').update(resource).digest('hex').slice(0, 10);
+  const slug = resource
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+    .slice(0, 40);
+  return slug ? `relayfile:${provider}:${slug}-${hash}` : `relayfile:${provider}:${hash}`;
+}
+
+/** Unique inbound webhook name for a single subscribe attempt. The trailing
+ * nonce lets us create the replacement webhook before deleting the old one
+ * without tripping the unique (workspace, name) index. */
+function inboundWebhookName(prefix: string): string {
+  return `${prefix}:${randomBytes(5).toString('hex')}`;
 }
 
 /** Surface a best-effort cleanup failure instead of swallowing it — a silently
- * failed rollback is exactly what leaves orphaned webhooks that block later
- * subscribe retries. */
+ * failed cleanup is exactly what leaves orphaned webhooks behind. */
 function warnCleanup(deps: IntegrationCommandDependencies, kind: string, id: string, err: unknown): void {
   deps.error(
-    `Warning: failed to roll back ${kind} ${id}: ${err instanceof Error ? err.message : String(err)}`
+    `Warning: failed to clean up ${kind} ${id}: ${err instanceof Error ? err.message : String(err)}`
   );
 }
 
-/**
- * Tear down any existing binding for this provider+resource (webhook +
- * subscription + relayfile bind) so a re-subscribe replaces it cleanly instead
- * of leaving a duplicate subscription that delivers the same events twice.
- */
-async function replaceExistingBinding(
+/** The relayfile binding currently backing this (provider, resource), if any. */
+async function findExistingBinding(
   deps: IntegrationCommandDependencies,
-  relay: AgentRelayAgent,
   provider: string,
   resource: string
-): Promise<void> {
-  let bindings: RelayfileBinding[];
+): Promise<RelayfileBinding | undefined> {
   try {
-    bindings = await deps.relayfile.listBindings();
+    const bindings = await deps.relayfile.listBindings();
+    return bindings.find((item) => item.provider === provider && item.resource === resource);
   } catch {
-    return; // best-effort; a missing/empty binding store is not fatal here
-  }
-  const matches = bindings.filter((item) => item.provider === provider && item.resource === resource);
-  for (const binding of matches) {
-    await relay.webhooks
-      .delete(binding.webhookId)
-      .catch((err) => warnCleanup(deps, 'webhook', binding.webhookId, err));
-    await relay.webhooks
-      .unsubscribe(binding.subscriptionId)
-      .catch((err) => warnCleanup(deps, 'subscription', binding.subscriptionId, err));
-    await deps.relayfile
-      .unbind(provider, resource)
-      .catch((err) => warnCleanup(deps, 'binding', `${provider} ${resource}`, err));
-    deps.log(`Replaced existing ${provider} ${resource} binding.`);
+    return undefined; // best-effort; a missing/empty binding store is not fatal here
   }
 }
 
 /**
- * Remove inbound webhooks that would collide with the one we are about to
- * create. createInbound inserts under a unique (workspace, name) index, so a
- * webhook orphaned by an earlier partial run (rollback is best-effort) would
- * block every retry. Clears the channel-scoped name plus the legacy
- * un-channel-scoped `relayfile:<provider>` name when it points at this channel.
+ * Retire webhooks/subscriptions that the freshly-created binding superseded,
+ * run only after the new binding is fully in place so a transient failure can
+ * never leave the user with no working binding. Removes, by id and best-effort:
+ *
+ * - the prior binding's webhook + subscription (handles legacy
+ *   `relayfile:<provider>` names regardless of channel sigil);
+ * - webhooks orphaned by earlier partial runs of *this same* resource (matched
+ *   by the resource-scoped name prefix, so other resources are never touched);
+ * - a legacy un-scoped `relayfile:<provider>` webhook only when no active
+ *   binding references it.
  */
-async function clearCollidingInboundWebhooks(
+async function retireSupersededWebhooks(
   deps: IntegrationCommandDependencies,
   relay: AgentRelayAgent,
-  provider: string,
-  channel: string
-): Promise<void> {
-  let existing: Awaited<ReturnType<typeof relay.webhooks.list>>;
-  try {
-    existing = await relay.webhooks.list();
-  } catch {
-    return; // best-effort; let createInbound surface the real error if this fails
+  options: {
+    provider: string;
+    prefix: string;
+    keepWebhookId: string;
+    priorBinding: RelayfileBinding | undefined;
   }
-  const scopedName = inboundWebhookName(provider, channel);
+): Promise<void> {
+  const { provider, prefix, keepWebhookId, priorBinding } = options;
+
+  if (priorBinding && priorBinding.subscriptionId) {
+    await relay.webhooks
+      .unsubscribe(priorBinding.subscriptionId)
+      .catch((err) => warnCleanup(deps, 'subscription', priorBinding.subscriptionId, err));
+  }
+
+  let webhooks: Awaited<ReturnType<typeof relay.webhooks.list>>;
+  let activeWebhookIds: Set<string>;
+  try {
+    const [list, bindings] = await Promise.all([relay.webhooks.list(), deps.relayfile.listBindings()]);
+    webhooks = list;
+    activeWebhookIds = new Set(bindings.map((binding) => binding.webhookId));
+  } catch {
+    return; // best-effort hygiene; the new binding is already live
+  }
+
   const legacyName = `relayfile:${provider}`;
-  for (const hook of existing) {
-    const matchesScoped = hook.name === scopedName;
-    const matchesLegacy = hook.name === legacyName && hook.channel === channel;
-    if (!matchesScoped && !matchesLegacy) continue;
+  for (const hook of webhooks) {
+    if (hook.webhookId === keepWebhookId) continue;
+    const isPrior = priorBinding?.webhookId === hook.webhookId;
+    const isSameResourceOrphan = hook.name?.startsWith(`${prefix}:`) ?? false;
+    const isUnboundLegacy = hook.name === legacyName && !activeWebhookIds.has(hook.webhookId);
+    if (!isPrior && !isSameResourceOrphan && !isUnboundLegacy) continue;
     await relay.webhooks
       .delete(hook.webhookId)
-      .then(() => deps.log(`Replaced existing webhook ${hook.webhookId} (${hook.name}).`))
+      .then(() => deps.log(`Retired superseded webhook ${hook.webhookId} (${hook.name ?? 'unnamed'}).`))
       .catch((err) => warnCleanup(deps, 'webhook', hook.webhookId, err));
   }
 }
@@ -540,14 +580,14 @@ async function runSubscribe(
   const channel = targetChannel(to);
   const events = commaList(opts.events);
   const writeback = await resolveWriteback(deps, opts, channel);
-  const name = inboundWebhookName(provider, channel);
+  const prefix = webhookNamePrefix(provider, resource);
+  const name = inboundWebhookName(prefix);
 
-  // Make subscribe idempotent: replace any prior binding for this
-  // provider+resource and clear webhooks orphaned by an earlier partial run, so
-  // re-running neither collides on the unique (workspace, webhook name) index
-  // nor piles up duplicate subscriptions.
-  await replaceExistingBinding(deps, relay, provider, resource);
-  await clearCollidingInboundWebhooks(deps, relay, provider, channel);
+  // Capture the binding we're about to replace *before* touching anything, so we
+  // can retire it only after the new one is fully live (create-first). A
+  // per-attempt nonce in `name` means createInbound never collides on the unique
+  // (workspace, name) index, so the replacement can exist alongside the old one.
+  const priorBinding = await findExistingBinding(deps, provider, resource);
 
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
@@ -569,6 +609,8 @@ async function runSubscribe(
       subscriptionId: subscription.id,
     });
   } catch (err) {
+    // The new binding never fully landed: roll back only what we just created
+    // and leave any prior working binding untouched.
     if (subscription) {
       await relay.integrations.subscriptions
         .delete(subscription.id)
@@ -581,6 +623,16 @@ async function runSubscribe(
     }
     throw err;
   }
+
+  // New binding is live (relayfile.bind upserts on (provider, resource)). Now
+  // retire what it superseded — old/orphaned webhooks and the prior subscription.
+  await retireSupersededWebhooks(deps, relay, {
+    provider,
+    prefix,
+    keepWebhookId: webhook.webhookId,
+    priorBinding,
+  });
+
   deps.log(`✓ ${provider} ${resource} bound -> ${to}`);
   deps.log('✓ Listening. Replies will post back in-thread.');
 }

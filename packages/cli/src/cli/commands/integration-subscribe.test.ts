@@ -44,6 +44,8 @@ function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
   };
 }
 
+type RelayfileBridge = IntegrationCommandDependencies['relayfile'];
+
 function createRelayfileMock(overrides: Partial<RelayfileBridge> = {}) {
   return {
     isConnected: vi.fn(async () => true),
@@ -55,8 +57,6 @@ function createRelayfileMock(overrides: Partial<RelayfileBridge> = {}) {
     ...overrides,
   };
 }
-
-type RelayfileBridge = IntegrationCommandDependencies['relayfile'];
 
 function harness(
   opts: {
@@ -83,67 +83,137 @@ function harness(
   return { program, relay, relayfile, log, error };
 }
 
+const RESOURCE = '/slack/channels/C0/**';
 const ARGS = (extra: string[] = []) => [
   'integration',
   'subscribe',
   'slack',
   '--resource',
-  '/slack/channels/C0/**',
+  RESOURCE,
   '--to',
   '#general',
   ...extra,
 ];
 
+// relayfile:<provider>:<slug>-<hash10>:<nonce10>
+const NAME_RE = /^relayfile:slack:.+-[0-9a-f]{10}:[0-9a-f]{10}$/;
+
 describe('integration subscribe', () => {
-  it('names the inbound webhook per channel so multiple channels do not collide', async () => {
+  it('names the inbound webhook per (provider, resource), unique per attempt', async () => {
     const { program, relay, relayfile } = harness();
     await program.parseAsync(ARGS(), { from: 'user' });
     expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
       channel: 'general',
-      name: 'relayfile:slack:general',
+      name: expect.stringMatching(NAME_RE),
     });
     expect(relayfile.bind).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'slack', resource: '/slack/channels/C0/**', channel: 'general' })
+      expect.objectContaining({ provider: 'slack', resource: RESOURCE, channel: 'general' })
     );
   });
 
-  it('clears an orphaned webhook left by an earlier partial run before creating', async () => {
+  it('retires an orphaned, unbound legacy webhook after the new binding is live', async () => {
     const relay = createRelayMock({
       inboundWebhooks: [
         { webhookId: 'orphan1', url: 'u', token: '', channel: 'general', name: 'relayfile:slack' },
-        { webhookId: 'other', url: 'u', token: '', channel: 'ops', name: 'relayfile:slack:ops' },
+        {
+          webhookId: 'otherchan',
+          url: 'u',
+          token: '',
+          channel: 'ops',
+          name: 'relayfile:slack:ops-aaaaaaaaaa:bbbbbbbbbb',
+        },
       ],
     });
+    // No active binding references either webhook → legacy one is safe to retire.
     const { program } = harness({ relay });
     await program.parseAsync(ARGS(), { from: 'user' });
-    // Legacy-named orphan on this channel is removed; a different channel's webhook is left alone.
-    expect(relay.webhooks.delete).toHaveBeenCalledWith('orphan1');
-    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('other');
     expect(relay.webhooks.createInbound).toHaveBeenCalled();
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('orphan1');
+    // A different resource's webhook (different name prefix) is never touched.
+    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('otherchan');
   });
 
-  it('replaces an existing binding for the same provider+resource (idempotent re-subscribe)', async () => {
-    const relayfile = createRelayfileMock({
-      listBindings: vi.fn(async () => [
+  it('replaces an existing binding create-first, retiring the prior webhook + subscription after', async () => {
+    const prior: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'old_wh',
+      subscriptionId: 'old_sub',
+    };
+    const relay = createRelayMock({
+      inboundWebhooks: [
         {
-          provider: 'slack',
-          resource: '/slack/channels/C0/**',
-          channel: 'general',
           webhookId: 'old_wh',
-          subscriptionId: 'old_sub',
+          url: 'u',
+          token: '',
+          channel: 'general',
+          name: 'relayfile:slack:slack-channels-c0-0123456789:cccccccccc',
         },
-      ]),
+      ],
     });
-    const { program, relay } = harness({ relayfile });
+    const relayfile = createRelayfileMock({ listBindings: vi.fn(async () => [prior]) });
+    const { program } = harness({ relay, relayfile });
     await program.parseAsync(ARGS(), { from: 'user' });
+
+    // New webhook is created before the old one is removed.
+    const createOrder = relay.webhooks.createInbound.mock.invocationCallOrder[0]!;
+    const deleteOrder = relay.webhooks.delete.mock.invocationCallOrder[0]!;
+    expect(createOrder).toBeLessThan(deleteOrder);
+
     expect(relay.webhooks.delete).toHaveBeenCalledWith('old_wh');
     expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('old_sub');
-    expect(relayfile.unbind).toHaveBeenCalledWith('slack', '/slack/channels/C0/**');
-    // Then a fresh webhook+subscription are created.
-    expect(relay.webhooks.createInbound).toHaveBeenCalled();
   });
 
-  it('warns (does not swallow) when rollback after a failed bind cannot delete the webhook', async () => {
+  it('does NOT delete another resource’s webhook routed to the same channel (P2)', async () => {
+    // Resource B already bound to the same #general channel, with its own webhook.
+    const otherBinding: RelayfileBinding = {
+      provider: 'slack',
+      resource: '/slack/channels/C9/**',
+      channel: 'general',
+      webhookId: 'wh_B',
+      subscriptionId: 'sub_B',
+    };
+    const relay = createRelayMock({
+      inboundWebhooks: [
+        {
+          webhookId: 'wh_B',
+          url: 'u',
+          token: '',
+          channel: 'general',
+          name: 'relayfile:slack:slack-channels-c9-9999999999:dddddddddd',
+        },
+      ],
+    });
+    const relayfile = createRelayfileMock({ listBindings: vi.fn(async () => [otherBinding]) });
+    const { program } = harness({ relay, relayfile });
+    // Subscribe resource A (RESOURCE) to the same channel.
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(relay.webhooks.createInbound).toHaveBeenCalled();
+    // Resource B's webhook must survive — it backs an active, unrelated binding.
+    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('wh_B');
+  });
+
+  it('does NOT tear down the prior working binding when creation fails (P1)', async () => {
+    const prior: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'old_wh',
+      subscriptionId: 'old_sub',
+    };
+    const relay = createRelayMock();
+    relay.webhooks.createInbound.mockRejectedValue(new Error('transient'));
+    const relayfile = createRelayfileMock({ listBindings: vi.fn(async () => [prior]) });
+    const { program } = harness({ relay, relayfile });
+    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+    // The prior webhook/subscription/bind are left intact.
+    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('old_wh');
+    expect(relay.webhooks.unsubscribe).not.toHaveBeenCalledWith('old_sub');
+    expect(relayfile.unbind).not.toHaveBeenCalled();
+  });
+
+  it('warns (does not swallow) when post-failure rollback cannot delete the new webhook', async () => {
     const relay = createRelayMock();
     relay.webhooks.delete.mockRejectedValue(new Error('gone'));
     const relayfile = createRelayfileMock({
@@ -153,7 +223,6 @@ describe('integration subscribe', () => {
     });
     const { program, error } = harness({ relay, relayfile });
     await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
-    // The failed cleanup is surfaced, not silently swallowed.
-    expect(error.mock.calls.some((c) => String(c[0]).includes('failed to roll back webhook'))).toBe(true);
+    expect(error.mock.calls.some((c) => String(c[0]).includes('failed to clean up webhook'))).toBe(true);
   });
 });
