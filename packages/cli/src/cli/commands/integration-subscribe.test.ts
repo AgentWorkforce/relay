@@ -79,6 +79,10 @@ function createRelayfileMock(
     ),
     listBindings: vi.fn(async (): Promise<RelayfileBinding[]> => bindings.map((b) => ({ ...b }))),
     unbind: vi.fn(async () => undefined),
+    // Identity resolve: tests pass an already-resolved glob as --resource, mirroring
+    // relayfile's idempotent resolve-path (a glob resolves to itself).
+    resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
+    ensureCompatible: vi.fn(async () => undefined),
     resolveWritebackBinding: vi.fn(async () => ({ url: 'https://ingress.example', secret: 's3cr3t' })),
     ...overrides,
   };

@@ -1,0 +1,502 @@
+openapi: 3.1.0
+info:
+  title: Relayfile Local Control Plane API
+  version: 1.0.0
+  description: |
+    Versioned local control-plane contract for the relayfile daemon/CLI.
+    The service listens on a user-owned Unix domain socket
+    (`RELAYFILE_SOCK`, or `$XDG_RUNTIME_DIR/relayfile.sock`) and uses
+    `X-Relayfile-API-Version: 1` for client compatibility checks.
+servers:
+  - url: http://relayfile.local
+    description: Logical HTTP origin over the relayfile Unix domain socket.
+paths:
+  /v1/hello:
+    get:
+      operationId: hello
+      summary: Negotiate control-plane API compatibility
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionQuery"
+      responses:
+        "200":
+          description: Daemon version and supported API versions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HelloResponse"
+        "426":
+          $ref: "#/components/responses/VersionIncompatible"
+    post:
+      operationId: helloPost
+      summary: Negotiate control-plane API compatibility
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HelloRequest"
+      responses:
+        "200":
+          description: Daemon version and supported API versions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HelloResponse"
+        "426":
+          $ref: "#/components/responses/VersionIncompatible"
+  /v1/integrations/providers:
+    get:
+      operationId: listProviders
+      summary: List known integration providers
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      responses:
+        "200":
+          description: Provider catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Provider"
+  /v1/integrations/provider-status:
+    get:
+      operationId: getProviderStatus
+      summary: Get connected provider status for a workspace
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+        - name: provider
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: workspace
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: cloudApiUrl
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Provider status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderStatus"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: getProviderStatusPost
+      summary: Get connected provider status for a workspace
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderStatusRequest"
+      responses:
+        "200":
+          description: Provider status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderStatus"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/integrations/connect:
+    post:
+      operationId: connectProvider
+      summary: Start or reuse a provider connection
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectProviderRequest"
+      responses:
+        "200":
+          description: Connection command completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectProviderResponse"
+  /v1/integrations/resolve-path:
+    post:
+      operationId: resolveResourcePath
+      summary: Resolve a provider-native resource to a canonical VFS glob
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveResourcePathRequest"
+      responses:
+        "200":
+          description: Resolved path glob
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveResourcePathResponse"
+        "422":
+          $ref: "#/components/responses/ResourceUnresolved"
+  /v1/integrations/bind:
+    post:
+      operationId: bind
+      summary: Upsert a relay integration binding
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BindRequest"
+      responses:
+        "200":
+          description: Created or updated binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BindResponse"
+  /v1/integrations/bindings:
+    get:
+      operationId: listBindings
+      summary: List relay integration bindings
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      responses:
+        "200":
+          description: Existing bindings without one-time webhook token redaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListBindingsResponse"
+  /v1/integrations/unbind:
+    post:
+      operationId: unbind
+      summary: Remove relay integration bindings
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnbindRequest"
+      responses:
+        "200":
+          description: Removed binding count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnbindResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/integrations/writeback-secret:
+    post:
+      operationId: getWritebackBinding
+      summary: Fetch the per-channel writeback URL and signing secret
+      parameters:
+        - $ref: "#/components/parameters/ApiVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WritebackSecretRequest"
+      responses:
+        "200":
+          description: Writeback URL and secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WritebackSecret"
+components:
+  parameters:
+    ApiVersionHeader:
+      name: X-Relayfile-API-Version
+      in: header
+      required: false
+      schema:
+        type: integer
+        format: uint32
+        const: 1
+    ApiVersionQuery:
+      name: apiVersion
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: uint32
+  responses:
+    VersionIncompatible:
+      description: Client and daemon API versions are incompatible
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: Requested provider or binding was not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ResourceUnresolved:
+      description: Provider-native resource could not be resolved
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    HelloRequest:
+      type: object
+      properties:
+        apiVersion:
+          type: integer
+          format: uint32
+    HelloResponse:
+      type: object
+      required: [daemonVersion, apiVersion, supportedApiVersions]
+      properties:
+        daemonVersion:
+          type: string
+        apiVersion:
+          type: integer
+          format: uint32
+        supportedApiVersions:
+          type: array
+          items:
+            type: integer
+            format: uint32
+    Provider:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        configKey:
+          type: string
+        vfsRoot:
+          type: string
+        deprecated:
+          type: boolean
+        backend:
+          type: string
+        backends:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            type: string
+        authMode:
+          type: string
+        categories:
+          type: array
+          items:
+            type: string
+        docs:
+          type: string
+    ProviderStatusRequest:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          type: string
+        workspace:
+          type: string
+        cloudApiUrl:
+          type: string
+    ProviderStatus:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          type: string
+        status:
+          type: string
+        lagSeconds:
+          type: integer
+        lastEventAt:
+          type: string
+        connectionId:
+          type: string
+        webhookHealthy:
+          type: boolean
+        deprecated:
+          type: boolean
+    ConnectProviderRequest:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          type: string
+        workspace:
+          type: string
+        cloudApiUrl:
+          type: string
+        backend:
+          type: string
+        noOpen:
+          type: boolean
+        timeout:
+          type: string
+        waitSync:
+          type: boolean
+    ConnectProviderResponse:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          type: string
+        output:
+          type: string
+    ResolveResourcePathRequest:
+      type: object
+      required: [provider, resource]
+      properties:
+        provider:
+          type: string
+        resource:
+          type: string
+    ResolveResourcePathResponse:
+      type: object
+      required: [provider, resource, pathGlob, resolvedExact]
+      properties:
+        provider:
+          type: string
+        resource:
+          type: string
+        pathGlob:
+          type: string
+          pattern: "^/"
+        resolvedExact:
+          type: boolean
+        warning:
+          type: string
+    BindRequest:
+      type: object
+      required: [provider, resource, channel, webhookId, webhookToken]
+      properties:
+        provider:
+          type: string
+        resource:
+          type: string
+        channel:
+          type: string
+        webhookId:
+          type: string
+        webhookToken:
+          type: string
+        subscriptionId:
+          type: string
+    BindResponse:
+      type: object
+      required: [binding, replaced]
+      properties:
+        binding:
+          $ref: "#/components/schemas/Binding"
+        replaced:
+          type: boolean
+        warning:
+          type: string
+    Binding:
+      type: object
+      required: [provider, pathGlob, channel, webhookId, webhookToken]
+      properties:
+        provider:
+          type: string
+        pathGlob:
+          type: string
+          pattern: "^/"
+        channel:
+          type: string
+        webhookId:
+          type: string
+        webhookToken:
+          type: string
+        subscriptionId:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+    ListBindingsResponse:
+      type: object
+      required: [bindings]
+      properties:
+        bindings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Binding"
+    UnbindRequest:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          type: string
+        resource:
+          type: string
+    UnbindResponse:
+      type: object
+      required: [provider, pathGlob, removed]
+      properties:
+        provider:
+          type: string
+        pathGlob:
+          type: string
+        removed:
+          type: integer
+        warning:
+          type: string
+    WritebackSecretRequest:
+      type: object
+      required: [channel]
+      properties:
+        workspace:
+          type: string
+        channel:
+          type: string
+    WritebackSecret:
+      type: object
+      required: [url, secret]
+      properties:
+        url:
+          type: string
+        secret:
+          type: string
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - INVALID_ARGUMENT
+                - VERSION_INCOMPATIBLE
+                - RESOURCE_UNRESOLVED
+                - BINDING_NOT_FOUND
+                - DAEMON_UNAVAILABLE
+            message:
+              type: string
