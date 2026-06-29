@@ -186,13 +186,15 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       const bindings = await client.listBindings();
       // relayfile keys bindings on `pathGlob`; surface it as `resource` so callers
       // (find/unbind) match on the canonical glob.
-      return bindings.map((b): RelayfileBinding => ({
-        provider: b.provider ?? '',
-        resource: b.pathGlob ?? '',
-        channel: b.channel ?? '',
-        webhookId: b.webhookId ?? '',
-        subscriptionId: b.subscriptionId ?? '',
-      }));
+      return bindings.map(
+        (b): RelayfileBinding => ({
+          provider: b.provider ?? '',
+          resource: b.pathGlob ?? '',
+          channel: b.channel ?? '',
+          webhookId: b.webhookId ?? '',
+          subscriptionId: b.subscriptionId ?? '',
+        })
+      );
     },
     async unbind(provider, resource) {
       await client.unbind(provider, resource);

@@ -6,4 +6,5 @@ target/
 packages/*/dist/
 web/content/docs/
 packages/config/src/cli-registry.generated.ts
+packages/cli/src/cli/lib/relayfile-contract/relayfile-control-plane-v1.gen.ts
 tests/benchmarks/head-to-head.ts

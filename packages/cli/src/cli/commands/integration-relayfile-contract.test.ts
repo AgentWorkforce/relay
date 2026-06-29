@@ -27,7 +27,9 @@ describe('assertRelayfileVersion', () => {
 
   it('rejects a version older than the minimum with an actionable message', () => {
     expect(() => assertRelayfileVersion('0.10.15')).toThrow(
-      new RegExp(`relayfile >= ${MIN_RELAYFILE_VERSION.replace(/\./g, '\\.')} is required; found "0\\.10\\.15"`)
+      new RegExp(
+        `relayfile >= ${MIN_RELAYFILE_VERSION.replace(/\./g, '\\.')} is required; found "0\\.10\\.15"`
+      )
     );
   });
 

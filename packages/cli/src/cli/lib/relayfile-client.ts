@@ -39,10 +39,14 @@ export function firstSemver(value: string): string {
 
 /** Compare two semvers by numeric core; -1 / 0 / 1. Pre-release/build metadata is ignored. */
 export function compareSemver(a: string, b: string): number {
-  const core = (v: string) => v.split(/[-+]/)[0]!.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const core = (v: string) =>
+    v
+      .split(/[-+]/)[0]!
+      .split('.')
+      .map((n) => Number.parseInt(n, 10) || 0);
   const [a0, a1, a2] = core(a);
   const [b0, b1, b2] = core(b);
-  return (a0! - b0!) || (a1! - b1!) || (a2! - b2!);
+  return a0! - b0! || a1! - b1! || a2! - b2!;
 }
 
 /**
