@@ -19,10 +19,10 @@ import {
   RelayfileControlPlaneError,
   assertRelayfileVersion,
   type RelayfileClientOptions,
-} from '../lib/relayfile-client.js';
+} from '@relayfile/client';
 
 // Re-export the version gate so existing tests importing it from this module
-// (and any callers) keep working after it moved to the control-plane client.
+// (and any callers) keep working after it moved to the published client package.
 export { MIN_RELAYFILE_VERSION, assertRelayfileVersion };
 
 export interface LocalRelayOptions {

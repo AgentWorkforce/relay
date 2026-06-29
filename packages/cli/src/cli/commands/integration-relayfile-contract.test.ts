@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { MIN_RELAYFILE_VERSION, assertRelayfileVersion, defaultRelayfileBridge } from './integration.js';
-import { RelayfileControlPlaneClient } from '../lib/relayfile-client.js';
+import { RelayfileControlPlaneClient } from '@relayfile/client';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Pure version-gate unit tests — always run, no daemon required. These lock the
