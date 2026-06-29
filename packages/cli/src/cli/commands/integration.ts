@@ -319,7 +319,10 @@ async function resolveWriteback(
 
 function targetChannel(target: string): string {
   const trimmed = target.trim();
-  return trimmed.startsWith('@') ? trimmed.slice(1) : trimmed;
+  // Strip the leading sigil so the channel id is canonical (`general`, not
+  // `#general`/`@general`) across the webhook name, subscription filter,
+  // relayfile bind, and writeback-secret lookup.
+  return trimmed.startsWith('@') || trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
 }
 
 function agentName(target: string): string | undefined {
@@ -425,6 +428,91 @@ async function runIntegrationOperation<T>(
   }
 }
 
+/** Per-channel inbound webhook name. Channel-scoped so subscribing more than
+ * one channel of the same provider doesn't collide on the unique
+ * (workspace, name) index. */
+function inboundWebhookName(provider: string, channel: string): string {
+  return `relayfile:${provider}:${channel}`;
+}
+
+/** Surface a best-effort cleanup failure instead of swallowing it — a silently
+ * failed rollback is exactly what leaves orphaned webhooks that block later
+ * subscribe retries. */
+function warnCleanup(
+  deps: IntegrationCommandDependencies,
+  kind: string,
+  id: string,
+  err: unknown
+): void {
+  deps.error(
+    `Warning: failed to roll back ${kind} ${id}: ${err instanceof Error ? err.message : String(err)}`
+  );
+}
+
+/**
+ * Tear down any existing binding for this provider+resource (webhook +
+ * subscription + relayfile bind) so a re-subscribe replaces it cleanly instead
+ * of leaving a duplicate subscription that delivers the same events twice.
+ */
+async function replaceExistingBinding(
+  deps: IntegrationCommandDependencies,
+  relay: AgentRelayAgent,
+  provider: string,
+  resource: string
+): Promise<void> {
+  let bindings: RelayfileBinding[];
+  try {
+    bindings = await deps.relayfile.listBindings();
+  } catch {
+    return; // best-effort; a missing/empty binding store is not fatal here
+  }
+  const matches = bindings.filter((item) => item.provider === provider && item.resource === resource);
+  for (const binding of matches) {
+    await relay.webhooks
+      .delete(binding.webhookId)
+      .catch((err) => warnCleanup(deps, 'webhook', binding.webhookId, err));
+    await relay.webhooks
+      .unsubscribe(binding.subscriptionId)
+      .catch((err) => warnCleanup(deps, 'subscription', binding.subscriptionId, err));
+    await deps.relayfile
+      .unbind(provider, resource)
+      .catch((err) => warnCleanup(deps, 'binding', `${provider} ${resource}`, err));
+    deps.log(`Replaced existing ${provider} ${resource} binding.`);
+  }
+}
+
+/**
+ * Remove inbound webhooks that would collide with the one we are about to
+ * create. createInbound inserts under a unique (workspace, name) index, so a
+ * webhook orphaned by an earlier partial run (rollback is best-effort) would
+ * block every retry. Clears the channel-scoped name plus the legacy
+ * un-channel-scoped `relayfile:<provider>` name when it points at this channel.
+ */
+async function clearCollidingInboundWebhooks(
+  deps: IntegrationCommandDependencies,
+  relay: AgentRelayAgent,
+  provider: string,
+  channel: string
+): Promise<void> {
+  let existing: Awaited<ReturnType<typeof relay.webhooks.list>>;
+  try {
+    existing = await relay.webhooks.list();
+  } catch {
+    return; // best-effort; let createInbound surface the real error if this fails
+  }
+  const scopedName = inboundWebhookName(provider, channel);
+  const legacyName = `relayfile:${provider}`;
+  for (const hook of existing) {
+    const matchesScoped = hook.name === scopedName;
+    const matchesLegacy = hook.name === legacyName && hook.channel === channel;
+    if (!matchesScoped && !matchesLegacy) continue;
+    await relay.webhooks
+      .delete(hook.webhookId)
+      .then(() => deps.log(`Replaced existing webhook ${hook.webhookId} (${hook.name}).`))
+      .catch((err) => warnCleanup(deps, 'webhook', hook.webhookId, err));
+  }
+}
+
 async function runSubscribe(
   deps: IntegrationCommandDependencies,
   providerArg: string | undefined,
@@ -457,10 +545,19 @@ async function runSubscribe(
   const channel = targetChannel(to);
   const events = commaList(opts.events);
   const writeback = await resolveWriteback(deps, opts, channel);
+  const name = inboundWebhookName(provider, channel);
+
+  // Make subscribe idempotent: replace any prior binding for this
+  // provider+resource and clear webhooks orphaned by an earlier partial run, so
+  // re-running neither collides on the unique (workspace, webhook name) index
+  // nor piles up duplicate subscriptions.
+  await replaceExistingBinding(deps, relay, provider, resource);
+  await clearCollidingInboundWebhooks(deps, relay, provider, channel);
+
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
   try {
-    webhook = await relay.webhooks.createInbound({ channel, name: `relayfile:${provider}` });
+    webhook = await relay.webhooks.createInbound({ channel, name });
     subscription = await relay.integrations.subscriptions.create({
       event: events.length === 1 ? events[0]! : 'message.created',
       events: events.length ? events : ['message.created', 'thread.reply'],
@@ -477,8 +574,16 @@ async function runSubscribe(
       subscriptionId: subscription.id,
     });
   } catch (err) {
-    if (subscription) await relay.integrations.subscriptions.delete(subscription.id).catch(() => undefined);
-    if (webhook) await relay.webhooks.delete(webhook.webhookId).catch(() => undefined);
+    if (subscription) {
+      await relay.integrations.subscriptions
+        .delete(subscription.id)
+        .catch((cleanupErr) => warnCleanup(deps, 'subscription', subscription!.id, cleanupErr));
+    }
+    if (webhook) {
+      await relay.webhooks
+        .delete(webhook.webhookId)
+        .catch((cleanupErr) => warnCleanup(deps, 'webhook', webhook!.webhookId, cleanupErr));
+    }
     throw err;
   }
   deps.log(`✓ ${provider} ${resource} bound -> ${to}`);
