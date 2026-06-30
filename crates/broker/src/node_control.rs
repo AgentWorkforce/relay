@@ -237,6 +237,9 @@ pub(crate) async fn mint_node_token(
     let client = reqwest::Client::new();
     let mut last_error: Option<CreateNodeMintError> = None;
 
+    // This loop intentionally runs one more time than there are backoffs: the
+    // final iteration returns the last error instead of sleeping again.
+    #[allow(clippy::needless_range_loop)]
     for attempt in 0..=CREATE_NODE_RETRY_BACKOFFS_MS.len() {
         let response = match client
             .post(&url)
