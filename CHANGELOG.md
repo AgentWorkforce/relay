@@ -103,6 +103,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.1.8] - 2026-06-30
+
+### Added
+
+- Drive relayfile integration ops over the control-plane socket (no shell-out)
+
+### Changed
+
+- Resolve integration resources before subscribe
+
+### Fixed
+
+- Workspace-scope auto node id so `up` injection works
+
 ## [9.1.7] - 2026-06-29
 
 ### Fixed
