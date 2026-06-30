@@ -520,8 +520,7 @@ async fn listen_api_health(
 
 async fn fetch_status_for_health(tx: &mpsc::Sender<ListenApiRequest>) -> Option<Value> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(ListenApiRequest::GetStatus { reply: reply_tx })
-        .await
+    tx.try_send(ListenApiRequest::GetStatus { reply: reply_tx })
         .ok()?;
     timeout(HEALTH_STATUS_TIMEOUT, reply_rx)
         .await

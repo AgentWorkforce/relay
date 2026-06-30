@@ -314,6 +314,7 @@ impl BrokerRuntime {
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {
+                self.node_delivery_token_present = true;
                 self.node_delivery_connected = true;
                 // Node delivery is live: message delivery flows solely over
                 // /v1/node/ws. The workspace firehose delivery path was removed,

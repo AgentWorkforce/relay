@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     path::Path,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -237,7 +238,7 @@ pub(crate) async fn mint_node_token(
     let mut last_error: Option<CreateNodeMintError> = None;
 
     for attempt in 0..=CREATE_NODE_RETRY_BACKOFFS_MS.len() {
-        let response = client
+        let response = match client
             .post(&url)
             .bearer_auth(workspace_key)
             .header("X-SDK-Version", crate::util::version::broker_version())
@@ -252,9 +253,52 @@ pub(crate) async fn mint_node_token(
             )
             .json(&request)
             .send()
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let mint_error = CreateNodeMintError::Http(error);
+                log_create_node_mint_error(
+                    "relay_broker::fleet",
+                    context.node_id,
+                    context.workspace_id,
+                    &mint_error,
+                    "create_node mint attempt failed",
+                );
+                if attempt >= CREATE_NODE_RETRY_BACKOFFS_MS.len() {
+                    return Err(mint_error);
+                }
+                last_error = Some(mint_error);
+                tokio::time::sleep(Duration::from_millis(
+                    CREATE_NODE_RETRY_BACKOFFS_MS[attempt],
+                ))
+                .await;
+                continue;
+            }
+        };
         let status = response.status().as_u16();
-        let body = response.text().await?;
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                let mint_error = CreateNodeMintError::Http(error);
+                log_create_node_mint_error(
+                    "relay_broker::fleet",
+                    context.node_id,
+                    context.workspace_id,
+                    &mint_error,
+                    "create_node response body read failed",
+                );
+                if attempt >= CREATE_NODE_RETRY_BACKOFFS_MS.len() {
+                    return Err(mint_error);
+                }
+                last_error = Some(mint_error);
+                tokio::time::sleep(Duration::from_millis(
+                    CREATE_NODE_RETRY_BACKOFFS_MS[attempt],
+                ))
+                .await;
+                continue;
+            }
+        };
         let envelope = serde_json::from_str::<CreateNodeApiResponse>(&body).map_err(|error| {
             CreateNodeMintError::InvalidResponse {
                 status,
@@ -352,17 +396,25 @@ fn normalized_relaycast_base_url(base_url: Option<&str>) -> String {
 }
 
 fn redact_relaycast_secrets(input: &str) -> String {
+    static BEARER_SECRET_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static TOKEN_FIELD_RE: OnceLock<regex::Regex> = OnceLock::new();
+
     let mut redacted = input.to_string();
-    if let Ok(re) =
+    let bearer_re = BEARER_SECRET_RE.get_or_init(|| {
         regex::Regex::new(r#"(rk_live_|at_live_|nt_live_|br_|Bearer\s+)[A-Za-z0-9._-]+"#)
-    {
-        redacted = re.replace_all(&redacted, "${1}[REDACTED]").into_owned();
-    }
-    if let Ok(re) = regex::Regex::new(r#""token"\s*:\s*"[^"]+""#) {
-        redacted = re
-            .replace_all(&redacted, r#""token":"[REDACTED]""#)
-            .into_owned();
-    }
+            .expect("bearer secret redaction regex must compile")
+    });
+    redacted = bearer_re
+        .replace_all(&redacted, "${1}[REDACTED]")
+        .into_owned();
+
+    let token_field_re = TOKEN_FIELD_RE.get_or_init(|| {
+        regex::Regex::new(r#""token"\s*:\s*"[^"]+""#)
+            .expect("token field redaction regex must compile")
+    });
+    redacted = token_field_re
+        .replace_all(&redacted, r#""token":"[REDACTED]""#)
+        .into_owned();
     redacted
 }
 
@@ -1523,8 +1575,14 @@ pub(crate) fn delivery_ack(agent: impl Into<String>, up_to_seq: u64) -> BrokerTo
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     use httpmock::{Method::POST, MockServer};
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
 
@@ -1670,6 +1728,56 @@ mod tests {
                 .is_some_and(|body| body.contains("insert into")),
             "error should preserve response body: {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn mint_node_token_retries_transient_send_error_then_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let attempt = server_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt == 1 {
+                    drop(socket);
+                    continue;
+                }
+
+                let mut buffer = [0_u8; 4096];
+                let _ = socket.read(&mut buffer).await.expect("read request");
+                let body = r#"{"ok":true,"data":{"id":"node_abc","name":"local-node","kind":"ws","role":"broker","version":"relay-broker/test","status":"online","live":true,"handlers_live":true,"load":0.0,"active_agents":0,"max_agents":0,"created_at":"2026-06-30T00:00:00Z","token":"nt_live_retry_success"}}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+                break;
+            }
+        });
+
+        let token = mint_node_token(
+            "rk_live_test",
+            Some(&base_url),
+            create_node_request("node_abc", "local-node", "relay-broker/test"),
+            MintNodeTokenLogContext {
+                node_id: "node_abc",
+                workspace_id: "ws_test",
+            },
+        )
+        .await
+        .expect("transient send failure should be retried");
+
+        server.await.expect("test server should finish");
+        assert_eq!(token, "nt_live_retry_success");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]

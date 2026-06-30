@@ -5,6 +5,7 @@ import {
   classifyBrokerStartStage,
   describeError,
   readNodeDeliveryStatus,
+  waitForNodeDelivery,
 } from './broker-lifecycle.js';
 
 describe('describeError', () => {
@@ -113,5 +114,39 @@ describe('readNodeDeliveryStatus', () => {
   it('rejects non-object status values', () => {
     expect(readNodeDeliveryStatus(null)).toBeNull();
     expect(readNodeDeliveryStatus('nope')).toBeNull();
+  });
+});
+
+describe('waitForNodeDelivery', () => {
+  it('continues polling after a transient status failure', async () => {
+    let now = 0;
+    let calls = 0;
+    const relay = {
+      async getStatus() {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error('broker not ready yet');
+        }
+        return {
+          node_connected: calls >= 3,
+          node_delivery: { token_present: true, connected: calls >= 3 },
+        };
+      },
+    };
+    const deps = {
+      now: () => now,
+      sleep: async (ms: number) => {
+        now += ms;
+      },
+    };
+
+    await expect(waitForNodeDelivery(relay as never, deps as never, 1_000)).resolves.toEqual({
+      ready: true,
+      status: {
+        node_connected: true,
+        node_delivery: { token_present: true, connected: true },
+      },
+    });
+    expect(calls).toBe(3);
   });
 });

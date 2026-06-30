@@ -738,7 +738,7 @@ async function waitForBrokerReadiness(
   return latest;
 }
 
-async function waitForNodeDelivery(
+export async function waitForNodeDelivery(
   relay: CoreRelay,
   deps: CoreDependencies,
   waitMs = NODE_DELIVERY_READY_TIMEOUT_MS
@@ -747,7 +747,11 @@ async function waitForNodeDelivery(
   let latest: unknown = null;
 
   while (true) {
-    latest = await relay.getStatus();
+    try {
+      latest = await relay.getStatus();
+    } catch {
+      latest = null;
+    }
     if (nodeDeliveryReady(latest)) {
       return { ready: true, status: latest };
     }
