@@ -31,6 +31,8 @@ export interface RuntimeSpawnOptions {
   env?: NodeJS.ProcessEnv;
   /** Forward broker stderr to this callback. */
   onStderr?: (line: string) => void;
+  /** Forward human-readable startup step markers to this callback (e.g. for `--verbose`). */
+  onStep?: (message: string) => void;
   /** Timeout in ms to wait for broker to become ready. Default: 45000. */
   startupTimeoutMs?: number;
   /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
