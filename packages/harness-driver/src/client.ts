@@ -290,6 +290,7 @@ export class HarnessDriverClient {
    * 6. Starts event stream + lease renewal
    */
   static async spawn(options?: RuntimeSpawnOptions): Promise<HarnessDriverClient> {
+    const onStep = options?.onStep;
     let binaryPath = options?.binaryPath;
     if (!binaryPath) {
       const resolved = getBrokerBinaryPath();
@@ -298,11 +299,13 @@ export class HarnessDriverClient {
       }
       binaryPath = resolved;
     }
+    onStep?.(`Resolved broker binary: ${binaryPath}`);
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
     const { cwd, timeoutMs, args, env } = buildBrokerSpawnConfig(options, apiKey);
     const stderrLines: string[] = [];
     const stdoutLines: string[] = [];
 
+    onStep?.(`Spawning broker process: ${binaryPath} ${args.join(' ')}`);
     const child = spawn(binaryPath, args, {
       cwd,
       env,
@@ -326,6 +329,7 @@ export class HarnessDriverClient {
       stdoutLines,
       stderrLines,
     });
+    onStep?.(`Broker API listening at ${baseUrl}`);
     drainBrokerStdioAfterStartup(child);
 
     const client = new HarnessDriverClient({
@@ -368,6 +372,7 @@ export class HarnessDriverClient {
     // the broker exits later (e.g. on normal shutdown).
     brokerExited.catch(() => {});
 
+    onStep?.('Waiting for broker session handshake...');
     let session: SessionInfo | undefined;
     for (let attempt = 0; attempt < 10; attempt++) {
       try {
@@ -377,12 +382,15 @@ export class HarnessDriverClient {
         const message = err instanceof Error ? err.message : String(err);
         const is503 = message.includes('503') || message.includes('Service Unavailable');
         if (!is503 || attempt >= 9) throw err;
+        onStep?.(`Broker still starting (handshake attempt ${attempt + 1}/10), retrying in 1s...`);
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
+    onStep?.(`Broker handshake complete (workspace: ${session?.workspace_key ?? 'unknown'})`);
 
     if (!client.brokerExitInfo) {
       client.connectEvents();
+      onStep?.('Event stream connected.');
 
       // Renew the owner lease so the broker doesn't auto-shutdown
       client.leaseTimer = setInterval(() => {

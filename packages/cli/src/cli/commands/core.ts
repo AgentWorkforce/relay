@@ -83,7 +83,12 @@ type UpdateInfo = {
 export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
-  createRelay: (cwd: string, apiPort?: number, brokerName?: string) => CoreRelay | Promise<CoreRelay>;
+  createRelay: (
+    cwd: string,
+    apiPort?: number,
+    brokerName?: string,
+    verbose?: boolean
+  ) => CoreRelay | Promise<CoreRelay>;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
@@ -137,7 +142,12 @@ function resolveCliVersion(fileSystem: CoreFileSystem): string {
   }
 }
 
-async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string): Promise<CoreRelay> {
+async function createDefaultRelay(
+  cwd: string,
+  apiPort = 0,
+  brokerName?: string,
+  verbose = false
+): Promise<CoreRelay> {
   const binaryArgs: BrokerInitArgs = {};
   if (apiPort > 0) {
     binaryArgs.persist = true;
@@ -152,6 +162,12 @@ async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string)
     binaryArgs,
     brokerName,
     preferConnect: apiPort > 0,
+    ...(verbose
+      ? {
+          onStep: (message: string) => console.error(`[agent-relay][verbose] ${message}`),
+          onStderr: (line: string) => console.error(`[broker] ${line}`),
+        }
+      : {}),
   });
 
   const relay: CoreRelay = {

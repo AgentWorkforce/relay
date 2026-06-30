@@ -123,6 +123,13 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Emit a `[verbose]`-prefixed step marker via `deps.log` when `--verbose` is set. */
+function vlog(deps: CoreDependencies, verbose: boolean | undefined, message: string): void {
+  if (verbose) {
+    deps.log(`[verbose] ${message}`);
+  }
+}
+
 type ErrorWithCode = { code?: unknown };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -267,17 +274,23 @@ export async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
   basePort: number,
   deps: CoreDependencies,
-  brokerName?: string
+  brokerName?: string,
+  verbose?: boolean
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
   const startApiPort = basePort + 1;
+  vlog(deps, verbose, `Resolving a free API port starting near ${startApiPort}...`);
   const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
+  vlog(deps, verbose, `API port resolved: ${apiPort}`);
 
-  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName);
+  vlog(deps, verbose, 'Creating broker client (spawns broker process, waits for handshake)...');
+  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
+  vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
   await candidate.getStatus();
+  vlog(deps, verbose, 'Broker status check passed.');
   return { relay: candidate, apiPort };
 }
 
@@ -725,14 +738,20 @@ async function waitForBrokerReadiness(
   paths: CoreProjectPaths,
   deps: CoreDependencies,
   waitMs: number,
-  requireApi: boolean
+  requireApi: boolean,
+  verbose?: boolean
 ): Promise<BrokerReadiness> {
   const deadline = deps.now() + waitMs;
   let latest = await checkBrokerReadiness(paths, deps, requireApi);
+  vlog(deps, verbose, `Broker readiness: ${latest.state}`);
 
   while (latest.state !== 'running' && waitMs > 0 && deps.now() < deadline) {
     await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+    const previousState = latest.state;
     latest = await checkBrokerReadiness(paths, deps, requireApi);
+    if (latest.state !== previousState) {
+      vlog(deps, verbose, `Broker readiness: ${latest.state}`);
+    }
   }
 
   return latest;
@@ -812,7 +831,18 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       return;
     }
     child.unref?.();
-    const readiness = await waitForBrokerReadiness(paths, deps, DETACHED_START_READY_TIMEOUT_MS, true);
+    vlog(
+      deps,
+      options.verbose,
+      `Spawned detached broker child (pid: ${child.pid ?? 'unknown'}), waiting for readiness...`
+    );
+    const readiness = await waitForBrokerReadiness(
+      paths,
+      deps,
+      DETACHED_START_READY_TIMEOUT_MS,
+      true,
+      options.verbose
+    );
     if (readiness.state !== 'running') {
       const pid = readiness.state === 'starting' ? readiness.conn.pid : child.pid;
       deps.error(
@@ -897,9 +927,16 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
+    vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
-    const started = await startBrokerWithPortFallback(paths, basePort, deps, options.brokerName);
+    const started = await startBrokerWithPortFallback(
+      paths,
+      basePort,
+      deps,
+      options.brokerName,
+      options.verbose
+    );
     relay = started.relay;
 
     deps.log(`Relay API: http://localhost:${started.apiPort}`);
@@ -908,12 +945,14 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
 
+    vlog(deps, options.verbose, 'Loading teams.json and starting implicit fleet sidecar (if any)...');
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
     fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig);
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
+      vlog(deps, options.verbose, 'Waiting for broker node delivery (/v1/node/ws) before auto-spawning...');
       const delivery = await waitForNodeDelivery(relay, deps);
       if (!delivery.ready) {
         deps.error('Refusing to auto-spawn agents because broker node delivery is not connected.');
@@ -926,6 +965,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         return;
       }
       for (const agent of teamsConfig.agents) {
+        vlog(deps, options.verbose, `Spawning agent '${agent.name}' (cli: ${agent.cli})...`);
         await relay.spawn({
           name: agent.name,
           cli: agent.cli,

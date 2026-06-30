@@ -213,7 +213,26 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--broker-name', 'relayfile-dev']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'relayfile-dev');
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'relayfile-dev', undefined);
+  });
+
+  it('up --verbose forwards the flag to createRelay and logs startup step markers', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
+    });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up', '--verbose']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, true);
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[verbose\] Resolving a free API port starting near/)
+    );
+    expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/^\[verbose\] API port resolved: 3889/));
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[verbose\] Broker status check passed\.$/)
+    );
   });
 
   it('up exits early when connection metadata points to a running process', async () => {
@@ -332,7 +351,7 @@ describe('registerCoreCommands', () => {
     // Port probing happens before createRelay — only one broker is spawned
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
     // API port = base port (3888) + 1 = 3889
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -344,7 +363,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
