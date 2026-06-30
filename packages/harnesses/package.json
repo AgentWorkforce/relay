@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/harnesses",
-  "version": "9.1.8",
+  "version": "9.1.9",
   "description": "Pre-built harness definitions for Agent Relay.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,8 +23,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "9.1.8",
-    "@agent-relay/sdk": "9.1.8"
+    "@agent-relay/harness-driver": "9.1.9",
+    "@agent-relay/sdk": "9.1.9"
   },
   "publishConfig": {
     "access": "public"
