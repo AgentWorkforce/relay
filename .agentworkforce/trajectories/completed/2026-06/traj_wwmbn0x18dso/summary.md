@@ -18,6 +18,7 @@ Investigated local-up runtime config and PTY broker logs. Found local-up bound t
 ## Key Decisions
 
 ### Treat parent relay-hyperagent log as authoritative for local-up injection failure
+
 - **Chose:** Treat parent relay-hyperagent log as authoritative for local-up injection failure
 - **Reasoning:** Child PTY logs were empty or only had readiness warnings, while the parent broker log records node token mint failure and node binding failures for claude and codex.
 
@@ -26,6 +27,7 @@ Investigated local-up runtime config and PTY broker logs. Found local-up bound t
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Treat parent relay-hyperagent log as authoritative for local-up injection failure: Treat parent relay-hyperagent log as authoritative for local-up injection failure
