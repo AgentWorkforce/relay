@@ -230,7 +230,9 @@ describe('registerCoreCommands', () => {
       expect.stringMatching(/^\[verbose\] Resolving a free API port starting near/)
     );
     expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/^\[verbose\] API port resolved: 3889/));
-    expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/^\[verbose\] Broker status check passed\.$/));
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[verbose\] Broker status check passed\.$/)
+    );
   });
 
   it('up exits early when connection metadata points to a running process', async () => {

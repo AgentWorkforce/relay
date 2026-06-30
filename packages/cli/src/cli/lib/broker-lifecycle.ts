@@ -831,7 +831,11 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       return;
     }
     child.unref?.();
-    vlog(deps, options.verbose, `Spawned detached broker child (pid: ${child.pid ?? 'unknown'}), waiting for readiness...`);
+    vlog(
+      deps,
+      options.verbose,
+      `Spawned detached broker child (pid: ${child.pid ?? 'unknown'}), waiting for readiness...`
+    );
     const readiness = await waitForBrokerReadiness(
       paths,
       deps,
