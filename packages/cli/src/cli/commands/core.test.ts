@@ -263,7 +263,14 @@ describe('registerCoreCommands', () => {
   });
 
   it('up auto-spawns agents from teams config', async () => {
-    const relay = createRelayMock();
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({
+        agent_count: 0,
+        pending_delivery_count: 0,
+        node_connected: true,
+        node_delivery: { token_present: true, connected: true },
+      })),
+    });
     const { program } = createHarness({
       relay,
       teamsConfig: {
@@ -283,6 +290,36 @@ describe('registerCoreCommands', () => {
       task: 'Ship tests',
       team: 'platform',
     });
+  });
+
+  it('up refuses auto-spawn when node delivery is down', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({
+        agent_count: 0,
+        pending_delivery_count: 0,
+        node_connected: false,
+        node_delivery: { token_present: false, connected: false },
+      })),
+    });
+    const { program, deps } = createHarness({
+      relay,
+      teamsConfig: {
+        team: 'platform',
+        autoSpawn: true,
+        agents: [{ name: 'WorkerA', cli: 'codex', task: 'Ship tests' }],
+      },
+      nowImpl: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(10_000).mockReturnValue(10_000),
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(relay.spawn).not.toHaveBeenCalled();
+    expect(relay.shutdown).toHaveBeenCalled();
+    expect(deps.error).toHaveBeenCalledWith(
+      'Refusing to auto-spawn agents because broker node delivery is not connected.'
+    );
+    expect(deps.error).toHaveBeenCalledWith('Node delivery: DOWN (no node token)');
   });
 
   it('up probes for a free API port before spawning the broker', async () => {

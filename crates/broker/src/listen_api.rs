@@ -26,6 +26,7 @@ use uuid::Uuid;
 use crate::worker_request::{RequestWorkerError, DEFAULT_REQUEST_TIMEOUT};
 
 const LISTEN_API_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const HEALTH_STATUS_TIMEOUT: Duration = Duration::from_millis(100);
 
 type PtyInputSerializers = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
@@ -499,16 +500,73 @@ pub(crate) fn listen_api_health_payload(
         "wsConnections": 0,
         "memoryMb": 0,
         "relaycastConnected": startup_error_code.is_none(),
+        "nodeConnected": false,
+        "nodeDelivery": {
+            "tokenPresent": false,
+            "connected": false,
+        },
     })
 }
 
 async fn listen_api_health(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> axum::Json<Value> {
-    axum::Json(listen_api_health_payload(
-        state.default_workspace_id,
-        state.memberships,
-    ))
+    let mut payload = listen_api_health_payload(state.default_workspace_id, state.memberships);
+    if let Some(status) = fetch_status_for_health(&state.tx).await {
+        merge_status_into_health_payload(&mut payload, &status);
+    }
+    axum::Json(payload)
+}
+
+async fn fetch_status_for_health(tx: &mpsc::Sender<ListenApiRequest>) -> Option<Value> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(ListenApiRequest::GetStatus { reply: reply_tx })
+        .await
+        .ok()?;
+    timeout(HEALTH_STATUS_TIMEOUT, reply_rx)
+        .await
+        .ok()?
+        .ok()?
+        .ok()
+}
+
+fn merge_status_into_health_payload(payload: &mut Value, status: &Value) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    if let Some(agent_count) = status.get("agent_count").and_then(Value::as_u64) {
+        object.insert("agentCount".to_string(), json!(agent_count));
+    }
+    if let Some(pending_count) = status.get("pending_delivery_count").and_then(Value::as_u64) {
+        object.insert("pendingDeliveryCount".to_string(), json!(pending_count));
+    }
+    let token_present = status
+        .get("node_delivery")
+        .and_then(|value| value.get("token_present"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let connected = status
+        .get("node_connected")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            status
+                .get("node_delivery")
+                .and_then(|value| value.get("connected"))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
+    object.insert("nodeConnected".to_string(), json!(connected));
+    object.insert(
+        "nodeDelivery".to_string(),
+        json!({
+            "tokenPresent": token_present,
+            "connected": connected,
+        }),
+    );
+    object.insert(
+        "wsConnections".to_string(),
+        json!(if connected { 1 } else { 0 }),
+    );
 }
 
 /// Authenticated endpoint that returns broker configuration, including the

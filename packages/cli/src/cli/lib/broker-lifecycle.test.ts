@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyBrokerStartError, classifyBrokerStartStage, describeError } from './broker-lifecycle.js';
+import {
+  classifyBrokerStartError,
+  classifyBrokerStartStage,
+  describeError,
+  readNodeDeliveryStatus,
+} from './broker-lifecycle.js';
 
 describe('describeError', () => {
   it('returns plain message for a bare Error', () => {
@@ -85,5 +90,28 @@ describe('classifyBrokerStartStage', () => {
 
   it('falls back to startup for everything else', () => {
     expect(classifyBrokerStartStage(new Error('???'), '???')).toBe('startup');
+  });
+});
+
+describe('readNodeDeliveryStatus', () => {
+  it('reads the canonical snake_case broker status shape', () => {
+    expect(
+      readNodeDeliveryStatus({
+        node_connected: true,
+        node_delivery: { token_present: true, connected: true },
+      })
+    ).toEqual({ tokenPresent: true, connected: true });
+  });
+
+  it('defaults absent node delivery fields to false', () => {
+    expect(readNodeDeliveryStatus({ agent_count: 0 })).toEqual({
+      tokenPresent: false,
+      connected: false,
+    });
+  });
+
+  it('rejects non-object status values', () => {
+    expect(readNodeDeliveryStatus(null)).toBeNull();
+    expect(readNodeDeliveryStatus('nope')).toBeNull();
   });
 });

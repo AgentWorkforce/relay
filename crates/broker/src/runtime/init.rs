@@ -218,6 +218,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
+    let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
     let node_id = match crate::node_control::default_node_id_path() {
         Some(path) => {
             // Node-id mode — explicit vs auto:
@@ -235,7 +236,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             let loaded = if pinned {
                 crate::node_control::load_or_create_machine_seed(&path)
             } else {
-                crate::node_control::load_or_create_node_id(&path)
+                crate::node_control::load_or_create_node_id(&path, &node_workspace_id)
             };
             loaded.unwrap_or_else(|error| {
                 tracing::warn!(error = %error, "failed to load fleet node machine id; using ephemeral id");
@@ -258,15 +259,14 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // against. Thread the resolved workspace id and base URL through so the
     // cached token is only reused when both match, and so a re-mint after a
     // node-control 401 rewrites the correctly-scoped cache.
-    let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
     let node_base_url = configured_base.clone();
     let node_token = resolve_node_token(
         &node_id,
         &node_name,
         &broker_version,
         &node_workspace_id,
+        &relay_workspace_key,
         node_base_url.as_deref(),
-        relaycast_http.relay_client(),
     )
     .await;
     if node_token.is_none() {
@@ -299,20 +299,18 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // forever on the rejected token. Mirrors the initial mint above. Absent when
     // no workspace RelayCast client is available (then a 401 surfaces a hard
     // error rather than recovering).
-    let token_minter =
-        relaycast_http
-            .relay_client()
-            .map(|client| crate::node_control::NodeTokenMinter {
-                relay_client: client.clone(),
-                workspace_id: node_workspace_id.clone(),
-                base_url: node_base_url.clone(),
-                node_id: node_id.clone(),
-                node_name: node_name.clone(),
-                broker_version: broker_version.clone(),
-                token_path: crate::node_control::default_node_token_path(&node_id),
-            });
+    let token_minter = Some(crate::node_control::NodeTokenMinter {
+        workspace_key: relay_workspace_key.clone(),
+        workspace_id: node_workspace_id.clone(),
+        base_url: node_base_url.clone(),
+        node_id: node_id.clone(),
+        node_name: node_name.clone(),
+        broker_version: broker_version.clone(),
+        token_path: crate::node_control::default_node_token_path(&node_id),
+    });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
+    let node_delivery_token_present = node_token.is_some();
     tokio::spawn(crate::node_control::run_node_control_client(
         crate::node_control::FleetControlConfig {
             ws_url: fleet_ws_url,
@@ -612,6 +610,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         relaycast_open: true,
         fleet_control_tx,
         fleet_node_name,
+        node_delivery_token_present,
+        node_delivery_connected: false,
         fleet_event_rx,
         fleet_control_open: true,
         fleet_delivery_book: FleetDeliveryBook::default(),
@@ -667,8 +667,8 @@ async fn resolve_node_token(
     node_name: &str,
     broker_version: &str,
     workspace_id: &str,
+    workspace_key: &str,
     base_url: Option<&str>,
-    relay_client: Option<&relaycast::RelayCast>,
 ) -> Option<String> {
     if let Some(token) = std::env::var("RELAY_NODE_TOKEN")
         .ok()
@@ -686,26 +686,19 @@ async fn resolve_node_token(
         return Some(token);
     }
 
-    let relay_client = relay_client?;
-    let request = relaycast::CreateNodeRequest {
-        node_id: Some(node_id.to_string()),
-        name: node_name.to_string(),
-        kind: Some("ws".to_string()),
-        role: Some("broker".to_string()),
-        delivery_adapter: None,
-        delivery: None,
-        capabilities: None,
-        max_agents: None,
-        tags: None,
-        version: Some(broker_version.to_string()),
-    };
-    match relay_client.create_node(request).await {
-        Ok(response) => {
-            let token = response.token.trim().to_string();
-            if token.is_empty() {
-                tracing::warn!(node_id = %node_id, "create_node returned an empty token");
-                return None;
-            }
+    let request = crate::node_control::create_node_request(node_id, node_name, broker_version);
+    match crate::node_control::mint_node_token(
+        workspace_key,
+        base_url,
+        request,
+        crate::node_control::MintNodeTokenLogContext {
+            node_id,
+            workspace_id,
+        },
+    )
+    .await
+    {
+        Ok(token) => {
             if let Some(path) = token_path.as_deref() {
                 if let Err(error) = crate::node_control::persist_node_token(
                     path,
@@ -721,7 +714,13 @@ async fn resolve_node_token(
             Some(token)
         }
         Err(error) => {
-            tracing::warn!(node_id = %node_id, error = %error, "failed to mint node token via create_node");
+            crate::node_control::log_create_node_mint_error(
+                "relay_broker::fleet",
+                node_id,
+                workspace_id,
+                &error,
+                "failed to mint node token via create_node",
+            );
             None
         }
     }

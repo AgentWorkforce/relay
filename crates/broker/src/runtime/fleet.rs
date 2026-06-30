@@ -314,6 +314,7 @@ impl BrokerRuntime {
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {
+                self.node_delivery_connected = true;
                 // Node delivery is live: message delivery flows solely over
                 // /v1/node/ws. The workspace firehose delivery path was removed,
                 // so there is no firehose injection to suppress here.
@@ -323,6 +324,7 @@ impl BrokerRuntime {
                 );
             }
             FleetControlEvent::Disconnected => {
+                self.node_delivery_connected = false;
                 tracing::warn!(
                     target = "relay_broker::fleet",
                     "fleet node control disconnected"

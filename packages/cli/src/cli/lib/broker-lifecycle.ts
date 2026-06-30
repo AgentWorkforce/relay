@@ -43,6 +43,7 @@ const DEFAULT_BROKER_BASE_PORT = 3888;
 const CONNECTION_FILENAME = 'connection.json';
 const STATUS_POLL_INTERVAL_MS = 500;
 const DETACHED_START_READY_TIMEOUT_MS = 10_000;
+const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
 
 export interface BrokerConnection {
   url: string;
@@ -54,6 +55,11 @@ export interface BrokerConnection {
 type BrokerStatusDetails = {
   status: Awaited<ReturnType<HarnessDriverClient['getStatus']>>;
   session: Awaited<ReturnType<HarnessDriverClient['getSession']>> | null;
+};
+
+type NodeDeliveryStatus = {
+  tokenPresent: boolean;
+  connected: boolean;
 };
 
 type BrokerReadiness =
@@ -118,6 +124,41 @@ function toErrorMessage(err: unknown): string {
 }
 
 type ErrorWithCode = { code?: unknown };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function readNodeDeliveryStatus(status: unknown): NodeDeliveryStatus | null {
+  if (!isRecord(status)) {
+    return null;
+  }
+  const snake = isRecord(status.node_delivery) ? status.node_delivery : null;
+  const tokenPresent = typeof snake?.token_present === 'boolean' ? snake.token_present : false;
+  const connected =
+    typeof status.node_connected === 'boolean'
+      ? status.node_connected
+      : typeof snake?.connected === 'boolean'
+        ? snake.connected
+        : false;
+  return { tokenPresent, connected };
+}
+
+function nodeDeliveryReady(status: unknown): boolean {
+  const delivery = readNodeDeliveryStatus(status);
+  return Boolean(delivery?.tokenPresent && delivery.connected);
+}
+
+function formatNodeDeliveryStatus(status: unknown): string {
+  const delivery = readNodeDeliveryStatus(status);
+  if (!delivery) {
+    return 'unknown';
+  }
+  if (!delivery.tokenPresent) {
+    return 'DOWN (no node token)';
+  }
+  return delivery.connected ? 'CONNECTED' : 'DOWN (node websocket disconnected)';
+}
 
 function errorCode(err: unknown): string | undefined {
   if (!err || typeof err !== 'object') return undefined;
@@ -697,6 +738,26 @@ async function waitForBrokerReadiness(
   return latest;
 }
 
+async function waitForNodeDelivery(
+  relay: CoreRelay,
+  deps: CoreDependencies,
+  waitMs = NODE_DELIVERY_READY_TIMEOUT_MS
+): Promise<{ ready: boolean; status: unknown }> {
+  const deadline = deps.now() + waitMs;
+  let latest: unknown = null;
+
+  while (true) {
+    latest = await relay.getStatus();
+    if (nodeDeliveryReady(latest)) {
+      return { ready: true, status: latest };
+    }
+    if (waitMs <= 0 || deps.now() >= deadline) {
+      return { ready: false, status: latest };
+    }
+    await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+  }
+}
+
 async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: CoreDependencies): Promise<void> {
   await relay.shutdown().catch(() => undefined);
   safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
@@ -849,6 +910,17 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
+      const delivery = await waitForNodeDelivery(relay, deps);
+      if (!delivery.ready) {
+        deps.error('Refusing to auto-spawn agents because broker node delivery is not connected.');
+        deps.error(`Node delivery: ${formatNodeDeliveryStatus(delivery.status)}`);
+        deps.error(
+          'Realtime injection depends on /v1/node/ws. Check broker logs for create_node/node token errors, then retry `agent-relay up --spawn`.'
+        );
+        await shutdownOnce();
+        deps.exit(1);
+        return;
+      }
       for (const agent of teamsConfig.agents) {
         await relay.spawn({
           name: agent.name,
@@ -1066,6 +1138,7 @@ export async function runStatusCommand(
     if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
       deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
     }
+    deps.log(`Node delivery: ${formatNodeDeliveryStatus(status)}`);
     if (session?.workspace_key) {
       deps.log(`Workspace Key: ${session.workspace_key}`);
       deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);

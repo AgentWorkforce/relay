@@ -289,6 +289,11 @@ export interface BrokerStatus {
   }>;
   pending_delivery_count: number;
   pending_deliveries: PendingDeliveryInfo[];
+  node_connected?: boolean;
+  node_delivery?: {
+    token_present?: boolean;
+    connected?: boolean;
+  };
   auth?: BrokerAuthStatus;
 }
 
