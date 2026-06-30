@@ -2,11 +2,13 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     path::Path,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
+use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
@@ -27,6 +29,8 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
+const RELAYCAST_DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
+const CREATE_NODE_RETRY_BACKOFFS_MS: [u64; 3] = [200, 400, 800];
 /// How many consecutive `/v1/node/ws` 401s to tolerate (each triggering a
 /// re-mint) before giving up and surfacing a hard error instead of looping.
 const MAX_UNAUTHORIZED_BEFORE_GIVING_UP: u32 = 5;
@@ -50,17 +54,17 @@ pub(crate) struct FleetControlConfig {
     pub(crate) broker_version: String,
     /// Optional facility to re-mint a node token when the engine rejects the
     /// current one with HTTP 401 on the `/v1/node/ws` handshake. Absent in tests
-    /// and when no workspace `RelayCast` client is available.
+    /// and when no workspace key is available.
     pub(crate) token_minter: Option<NodeTokenMinter>,
 }
 
-/// Re-mints a fresh node token via `RelayCast::create_node` and rewrites the
+/// Re-mints a fresh node token via `POST /v1/nodes` and rewrites the
 /// workspace-scoped cache, used to recover from a stale/rejected cached token
 /// (HTTP 401 on the node-control handshake) instead of looping forever on the
 /// same token. Mirrors the initial mint wired in `runtime::init::resolve_node_token`.
 #[derive(Clone)]
 pub(crate) struct NodeTokenMinter {
-    pub(crate) relay_client: relaycast::RelayCast,
+    pub(crate) workspace_key: String,
     pub(crate) workspace_id: String,
     pub(crate) base_url: Option<String>,
     pub(crate) node_id: String,
@@ -90,29 +94,19 @@ impl NodeTokenMinter {
                 }
             }
         }
-        let request = relaycast::CreateNodeRequest {
-            node_id: Some(self.node_id.clone()),
-            name: self.node_name.clone(),
-            kind: Some("ws".to_string()),
-            role: Some("broker".to_string()),
-            delivery_adapter: None,
-            delivery: None,
-            capabilities: None,
-            max_agents: None,
-            tags: None,
-            version: Some(self.broker_version.clone()),
-        };
-        match self.relay_client.create_node(request).await {
-            Ok(response) => {
-                let token = response.token.trim().to_string();
-                if token.is_empty() {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %self.node_id,
-                        "re-mint create_node returned an empty token"
-                    );
-                    return None;
-                }
+        let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
+        match mint_node_token(
+            &self.workspace_key,
+            self.base_url.as_deref(),
+            request,
+            MintNodeTokenLogContext {
+                node_id: &self.node_id,
+                workspace_id: &self.workspace_id,
+            },
+        )
+        .await
+        {
+            Ok(token) => {
                 if let Some(path) = self.token_path.as_deref() {
                     if let Err(error) = persist_node_token(
                         path,
@@ -138,16 +132,293 @@ impl NodeTokenMinter {
                 Some(token)
             }
             Err(error) => {
-                tracing::error!(
-                    target = "relay_broker::fleet",
-                    node_id = %self.node_id,
-                    error = %error,
-                    "failed to re-mint node token after node-control 401"
+                log_create_node_mint_error(
+                    "relay_broker::fleet",
+                    &self.node_id,
+                    &self.workspace_id,
+                    &error,
+                    "failed to re-mint node token after node-control 401",
                 );
                 None
             }
         }
     }
+}
+
+pub(crate) fn create_node_request(
+    node_id: &str,
+    node_name: &str,
+    broker_version: &str,
+) -> relaycast::CreateNodeRequest {
+    relaycast::CreateNodeRequest {
+        node_id: Some(node_id.to_string()),
+        name: node_name.to_string(),
+        kind: Some("ws".to_string()),
+        role: Some("broker".to_string()),
+        delivery_adapter: None,
+        delivery: None,
+        capabilities: None,
+        max_agents: None,
+        tags: None,
+        version: Some(broker_version.to_string()),
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CreateNodeMintError {
+    #[error("HTTP request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("create_node returned HTTP {status} ({code}): {message}")]
+    Api {
+        status: u16,
+        code: String,
+        message: String,
+        body: String,
+    },
+    #[error("create_node returned invalid HTTP {status} response: {reason}")]
+    InvalidResponse {
+        status: u16,
+        reason: String,
+        body: String,
+    },
+}
+
+impl CreateNodeMintError {
+    pub(crate) fn status(&self) -> Option<u16> {
+        match self {
+            Self::Api { status, .. } | Self::InvalidResponse { status, .. } => Some(*status),
+            Self::Http(error) => error.status().map(|status| status.as_u16()),
+        }
+    }
+
+    pub(crate) fn code(&self) -> Option<&str> {
+        match self {
+            Self::Api { code, .. } => Some(code.as_str()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn response_body(&self) -> Option<&str> {
+        match self {
+            Self::Api { body, .. } | Self::InvalidResponse { body, .. } => Some(body.as_str()),
+            Self::Http(_) => None,
+        }
+    }
+}
+
+pub(crate) struct MintNodeTokenLogContext<'a> {
+    pub(crate) node_id: &'a str,
+    pub(crate) workspace_id: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateNodeApiResponse {
+    ok: bool,
+    data: Option<relaycast::CreateNodeResponse>,
+    error: Option<CreateNodeApiError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateNodeApiError {
+    code: String,
+    message: String,
+}
+
+pub(crate) async fn mint_node_token(
+    workspace_key: &str,
+    base_url: Option<&str>,
+    request: relaycast::CreateNodeRequest,
+    context: MintNodeTokenLogContext<'_>,
+) -> std::result::Result<String, CreateNodeMintError> {
+    let url = format!(
+        "{}/v1/nodes",
+        normalized_relaycast_base_url(base_url).trim_end_matches('/')
+    );
+    let client = reqwest::Client::new();
+    let mut last_error: Option<CreateNodeMintError> = None;
+
+    // This loop intentionally runs one more time than there are backoffs: the
+    // final iteration returns the last error instead of sleeping again.
+    #[allow(clippy::needless_range_loop)]
+    for attempt in 0..=CREATE_NODE_RETRY_BACKOFFS_MS.len() {
+        let response = match client
+            .post(&url)
+            .bearer_auth(workspace_key)
+            .header("X-SDK-Version", crate::util::version::broker_version())
+            .header("X-Relaycast-Origin-Client", "agent-relay-broker")
+            .header(
+                "X-Relaycast-Origin-Version",
+                crate::util::version::broker_version(),
+            )
+            .header(
+                "X-Relaycast-Origin-Actor",
+                crate::telemetry::BROKER_ORIGIN_ACTOR,
+            )
+            .json(&request)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let mint_error = CreateNodeMintError::Http(error);
+                log_create_node_mint_error(
+                    "relay_broker::fleet",
+                    context.node_id,
+                    context.workspace_id,
+                    &mint_error,
+                    "create_node mint attempt failed",
+                );
+                if attempt >= CREATE_NODE_RETRY_BACKOFFS_MS.len() {
+                    return Err(mint_error);
+                }
+                last_error = Some(mint_error);
+                tokio::time::sleep(Duration::from_millis(
+                    CREATE_NODE_RETRY_BACKOFFS_MS[attempt],
+                ))
+                .await;
+                continue;
+            }
+        };
+        let status = response.status().as_u16();
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                let mint_error = CreateNodeMintError::Http(error);
+                log_create_node_mint_error(
+                    "relay_broker::fleet",
+                    context.node_id,
+                    context.workspace_id,
+                    &mint_error,
+                    "create_node response body read failed",
+                );
+                if attempt >= CREATE_NODE_RETRY_BACKOFFS_MS.len() {
+                    return Err(mint_error);
+                }
+                last_error = Some(mint_error);
+                tokio::time::sleep(Duration::from_millis(
+                    CREATE_NODE_RETRY_BACKOFFS_MS[attempt],
+                ))
+                .await;
+                continue;
+            }
+        };
+        let envelope = serde_json::from_str::<CreateNodeApiResponse>(&body).map_err(|error| {
+            CreateNodeMintError::InvalidResponse {
+                status,
+                reason: format!("failed to parse JSON: {error}"),
+                body: body.clone(),
+            }
+        })?;
+
+        if envelope.ok {
+            let token = envelope
+                .data
+                .ok_or_else(|| CreateNodeMintError::InvalidResponse {
+                    status,
+                    reason: "response missing data field".to_string(),
+                    body: body.clone(),
+                })?
+                .token
+                .trim()
+                .to_string();
+            if token.is_empty() {
+                return Err(CreateNodeMintError::InvalidResponse {
+                    status,
+                    reason: "response returned an empty token".to_string(),
+                    body,
+                });
+            }
+            return Ok(token);
+        }
+
+        let error = envelope.error.unwrap_or(CreateNodeApiError {
+            code: "unknown_error".to_string(),
+            message: "Unknown error".to_string(),
+        });
+        let mint_error = CreateNodeMintError::Api {
+            status,
+            code: error.code,
+            message: error.message,
+            body,
+        };
+        log_create_node_mint_error(
+            "relay_broker::fleet",
+            context.node_id,
+            context.workspace_id,
+            &mint_error,
+            "create_node mint attempt failed",
+        );
+
+        if !(500..=599).contains(&status) || attempt >= CREATE_NODE_RETRY_BACKOFFS_MS.len() {
+            return Err(mint_error);
+        }
+        last_error = Some(mint_error);
+        tokio::time::sleep(Duration::from_millis(
+            CREATE_NODE_RETRY_BACKOFFS_MS[attempt],
+        ))
+        .await;
+    }
+
+    Err(
+        last_error.unwrap_or_else(|| CreateNodeMintError::InvalidResponse {
+            status: 0,
+            reason: "create_node retry loop exhausted without a response".to_string(),
+            body: String::new(),
+        }),
+    )
+}
+
+pub(crate) fn log_create_node_mint_error(
+    target: &'static str,
+    node_id: &str,
+    workspace_id: &str,
+    error: &CreateNodeMintError,
+    message: &'static str,
+) {
+    let status = error.status();
+    let code = error.code();
+    let response_body = error.response_body().map(redact_relaycast_secrets);
+    tracing::warn!(
+        target = target,
+        node_id = %node_id,
+        workspace_id = %workspace_id,
+        http_status = ?status,
+        error_code = ?code,
+        response_body = ?response_body,
+        error = %error,
+        "{message}"
+    );
+}
+
+fn normalized_relaycast_base_url(base_url: Option<&str>) -> String {
+    base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(RELAYCAST_DEFAULT_BASE_URL)
+        .to_string()
+}
+
+fn redact_relaycast_secrets(input: &str) -> String {
+    static BEARER_SECRET_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static TOKEN_FIELD_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+    let mut redacted = input.to_string();
+    let bearer_re = BEARER_SECRET_RE.get_or_init(|| {
+        regex::Regex::new(r#"(rk_live_|at_live_|nt_live_|br_|Bearer\s+)[A-Za-z0-9._-]+"#)
+            .expect("bearer secret redaction regex must compile")
+    });
+    redacted = bearer_re
+        .replace_all(&redacted, "${1}[REDACTED]")
+        .into_owned();
+
+    let token_field_re = TOKEN_FIELD_RE.get_or_init(|| {
+        regex::Regex::new(r#""token"\s*:\s*"[^"]+""#)
+            .expect("token field redaction regex must compile")
+    });
+    redacted = token_field_re
+        .replace_all(&redacted, r#""token":"[REDACTED]""#)
+        .into_owned();
+    redacted
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -581,24 +852,31 @@ pub(crate) fn load_or_create_machine_seed(path: &Path) -> Result<String> {
     Ok(seed)
 }
 
-/// Derive a node id from a stable machine `seed` and the broker's working
-/// directory `cwd`.
+/// Derive a node id from a stable machine `seed`, the broker's working
+/// directory `cwd`, and the relaycast `workspace_id`.
 ///
 /// The engine scopes nodes globally, so a single host that runs brokers for
 /// two different workspaces (each in its own per-project working directory)
 /// must present a distinct node id per broker — otherwise the second
-/// `create_node` collides with the first. Deriving the id from
-/// `(seed, cwd)` keeps it:
+/// `create_node` collides with the first. The same conflict can happen when
+/// `agent-relay up` creates a fresh workspace for the same project directory:
+/// `(seed, cwd)` stays identical while the workspace changes, so the global
+/// `node_id` would still collide. Deriving the id from
+/// `(seed, cwd, workspace_id)` keeps it:
 ///
-/// - **stable across restarts** in the same working directory, and
-/// - **distinct across different working directories** on the same machine.
+/// - **stable across restarts** in the same working directory and workspace,
+/// - **distinct across different working directories** on the same machine,
+///   and
+/// - **distinct across different workspaces** in the same working directory.
 ///
 /// The result has the same `node_<32 hex>` shape as a freshly minted id.
-pub(crate) fn derive_node_id(seed: &str, cwd: &str) -> String {
+pub(crate) fn derive_node_id(seed: &str, cwd: &str, workspace_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(seed.as_bytes());
     hasher.update([0u8]);
     hasher.update(cwd.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(workspace_id.as_bytes());
     let digest = hasher.finalize();
     let hex = digest
         .iter()
@@ -610,14 +888,14 @@ pub(crate) fn derive_node_id(seed: &str, cwd: &str) -> String {
 }
 
 /// Resolve the node id for this broker: load (or create) the machine seed at
-/// `seed_path`, then derive a per-working-directory node id from it.
+/// `seed_path`, then derive a per-working-directory, per-workspace node id
+/// from it.
 ///
 /// The working directory is read from [`std::env::current_dir`] and
 /// canonicalized when possible so equivalent paths resolve to the same id. If
-/// the cwd cannot be read, the id is derived from the seed alone rather than
-/// panicking (every broker on the host then shares one id, matching the old
-/// global-machine-id behavior).
-pub(crate) fn load_or_create_node_id(seed_path: &Path) -> Result<String> {
+/// the cwd cannot be read, the id is derived from the seed plus workspace
+/// rather than panicking.
+pub(crate) fn load_or_create_node_id(seed_path: &Path, workspace_id: &str) -> Result<String> {
     let seed = load_or_create_machine_seed(seed_path)?;
     let cwd = std::env::current_dir()
         .map(|path| {
@@ -627,7 +905,7 @@ pub(crate) fn load_or_create_node_id(seed_path: &Path) -> Result<String> {
                 .into_owned()
         })
         .unwrap_or_default();
-    Ok(derive_node_id(&seed, &cwd))
+    Ok(derive_node_id(&seed, &cwd, workspace_id))
 }
 
 pub(crate) fn default_node_id_path() -> Option<std::path::PathBuf> {
@@ -1300,7 +1578,14 @@ pub(crate) fn delivery_ack(agent: impl Into<String>, up_to_seq: u64) -> BrokerTo
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use httpmock::{Method::POST, MockServer};
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
 
@@ -1309,16 +1594,20 @@ mod tests {
 
     #[test]
     fn derive_node_id_is_stable_for_same_seed_and_cwd() {
-        let a = derive_node_id("node_seed123", "/Users/will/Projects/relay");
-        let b = derive_node_id("node_seed123", "/Users/will/Projects/relay");
-        assert_eq!(a, b, "same (seed, cwd) must derive an identical node id");
+        let a = derive_node_id("node_seed123", "/Users/will/Projects/relay", "workspace-a");
+        let b = derive_node_id("node_seed123", "/Users/will/Projects/relay", "workspace-a");
+        assert_eq!(
+            a, b,
+            "same (seed, cwd, workspace) must derive an identical node id"
+        );
     }
 
     #[test]
     fn derive_node_id_differs_across_working_directories() {
         let seed = "node_seed123";
-        let a = derive_node_id(seed, "/Users/will/Projects/workspace-a");
-        let b = derive_node_id(seed, "/Users/will/Projects/workspace-b");
+        let workspace_id = "workspace-a";
+        let a = derive_node_id(seed, "/Users/will/Projects/workspace-a", workspace_id);
+        let b = derive_node_id(seed, "/Users/will/Projects/workspace-b", workspace_id);
         assert_ne!(
             a, b,
             "different cwd on the same machine must derive distinct node ids"
@@ -1326,10 +1615,23 @@ mod tests {
     }
 
     #[test]
+    fn derive_node_id_differs_across_workspaces() {
+        let seed = "node_seed123";
+        let cwd = "/Users/will/Projects/relay";
+        let a = derive_node_id(seed, cwd, "workspace-a");
+        let b = derive_node_id(seed, cwd, "workspace-b");
+        assert_ne!(
+            a, b,
+            "same seed and cwd under different workspaces must derive distinct node ids"
+        );
+    }
+
+    #[test]
     fn derive_node_id_differs_across_seeds() {
         let cwd = "/Users/will/Projects/relay";
-        let a = derive_node_id("seed-a", cwd);
-        let b = derive_node_id("seed-b", cwd);
+        let workspace_id = "workspace-a";
+        let a = derive_node_id("seed-a", cwd, workspace_id);
+        let b = derive_node_id("seed-b", cwd, workspace_id);
         assert_ne!(
             a, b,
             "different machine seeds must derive distinct node ids"
@@ -1338,7 +1640,7 @@ mod tests {
 
     #[test]
     fn derive_node_id_has_node_prefix_and_32_hex_suffix() {
-        let id = derive_node_id("node_seed123", "/Users/will/Projects/relay");
+        let id = derive_node_id("node_seed123", "/Users/will/Projects/relay", "workspace-a");
         let suffix = id
             .strip_prefix("node_")
             .expect("derived node id must start with node_");
@@ -1351,6 +1653,134 @@ mod tests {
             suffix.chars().all(|c| !c.is_ascii_uppercase()),
             "suffix must be lowercase hex: {suffix}"
         );
+    }
+
+    #[tokio::test]
+    async fn mint_node_token_does_not_retry_non_retryable_4xx() {
+        let server = MockServer::start();
+        let create_node = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(403).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "forbidden",
+                    "message": "node creation is not allowed"
+                }
+            }));
+        });
+
+        let error = mint_node_token(
+            "rk_live_test",
+            Some(&server.base_url()),
+            create_node_request("node_abc", "local-node", "relay-broker/test"),
+            MintNodeTokenLogContext {
+                node_id: "node_abc",
+                workspace_id: "ws_test",
+            },
+        )
+        .await
+        .expect_err("403 create_node response should fail");
+
+        create_node.assert_hits(1);
+        assert_eq!(error.status(), Some(403));
+        assert_eq!(error.code(), Some("forbidden"));
+        assert!(
+            error
+                .response_body()
+                .is_some_and(|body| body.contains("node creation is not allowed")),
+            "error should preserve response body: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_node_token_preserves_5xx_status_and_body_after_retries() {
+        let server = MockServer::start();
+        let create_node = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(500).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "internal_error",
+                    "message": "Failed query: insert into \"nodes\" ..."
+                }
+            }));
+        });
+
+        let error = mint_node_token(
+            "rk_live_test",
+            Some(&server.base_url()),
+            create_node_request("node_abc", "local-node", "relay-broker/test"),
+            MintNodeTokenLogContext {
+                node_id: "node_abc",
+                workspace_id: "ws_test",
+            },
+        )
+        .await
+        .expect_err("500 create_node response should fail");
+
+        create_node.assert_hits(CREATE_NODE_RETRY_BACKOFFS_MS.len() + 1);
+        assert_eq!(error.status(), Some(500));
+        assert_eq!(error.code(), Some("internal_error"));
+        assert!(
+            error
+                .response_body()
+                .is_some_and(|body| body.contains("insert into")),
+            "error should preserve response body: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_node_token_retries_transient_send_error_then_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let attempt = server_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt == 1 {
+                    drop(socket);
+                    continue;
+                }
+
+                let mut buffer = [0_u8; 4096];
+                let _ = socket.read(&mut buffer).await.expect("read request");
+                let body = r#"{"ok":true,"data":{"id":"node_abc","name":"local-node","kind":"ws","role":"broker","version":"relay-broker/test","status":"online","live":true,"handlers_live":true,"load":0.0,"active_agents":0,"max_agents":0,"created_at":"2026-06-30T00:00:00Z","token":"nt_live_retry_success"}}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+                break;
+            }
+        });
+
+        let token = mint_node_token(
+            "rk_live_test",
+            Some(&base_url),
+            create_node_request("node_abc", "local-node", "relay-broker/test"),
+            MintNodeTokenLogContext {
+                node_id: "node_abc",
+                workspace_id: "ws_test",
+            },
+        )
+        .await
+        .expect("transient send failure should be retried");
+
+        server.await.expect("test server should finish");
+        assert_eq!(token, "nt_live_retry_success");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]

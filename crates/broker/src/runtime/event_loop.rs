@@ -21,6 +21,8 @@ pub(crate) struct BrokerRuntime {
     /// This broker's relaycast node name, used to bind agents to the node over
     /// HTTP when the node-control `agent.register` path is unavailable.
     pub(super) fleet_node_name: String,
+    pub(super) node_delivery_token_present: bool,
+    pub(super) node_delivery_connected: bool,
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
     pub(super) fleet_delivery_book: FleetDeliveryBook,

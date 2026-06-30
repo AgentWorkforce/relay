@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyBrokerStartError, classifyBrokerStartStage, describeError } from './broker-lifecycle.js';
+import {
+  classifyBrokerStartError,
+  classifyBrokerStartStage,
+  describeError,
+  readNodeDeliveryStatus,
+  waitForNodeDelivery,
+} from './broker-lifecycle.js';
 
 describe('describeError', () => {
   it('returns plain message for a bare Error', () => {
@@ -85,5 +91,62 @@ describe('classifyBrokerStartStage', () => {
 
   it('falls back to startup for everything else', () => {
     expect(classifyBrokerStartStage(new Error('???'), '???')).toBe('startup');
+  });
+});
+
+describe('readNodeDeliveryStatus', () => {
+  it('reads the canonical snake_case broker status shape', () => {
+    expect(
+      readNodeDeliveryStatus({
+        node_connected: true,
+        node_delivery: { token_present: true, connected: true },
+      })
+    ).toEqual({ tokenPresent: true, connected: true });
+  });
+
+  it('defaults absent node delivery fields to false', () => {
+    expect(readNodeDeliveryStatus({ agent_count: 0 })).toEqual({
+      tokenPresent: false,
+      connected: false,
+    });
+  });
+
+  it('rejects non-object status values', () => {
+    expect(readNodeDeliveryStatus(null)).toBeNull();
+    expect(readNodeDeliveryStatus('nope')).toBeNull();
+  });
+});
+
+describe('waitForNodeDelivery', () => {
+  it('continues polling after a transient status failure', async () => {
+    let now = 0;
+    let calls = 0;
+    const relay = {
+      async getStatus() {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error('broker not ready yet');
+        }
+        return {
+          node_connected: calls >= 3,
+          node_delivery: { token_present: true, connected: calls >= 3 },
+        };
+      },
+    };
+    const deps = {
+      now: () => now,
+      sleep: async (ms: number) => {
+        now += ms;
+      },
+    };
+
+    await expect(waitForNodeDelivery(relay as never, deps as never, 1_000)).resolves.toEqual({
+      ready: true,
+      status: {
+        node_connected: true,
+        node_delivery: { token_present: true, connected: true },
+      },
+    });
+    expect(calls).toBe(3);
   });
 });
