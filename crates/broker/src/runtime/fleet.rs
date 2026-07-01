@@ -388,9 +388,96 @@ impl BrokerRuntime {
             .and_then(Value::as_str)
             .unwrap_or("");
         match classify_fleet_delivery(payload_type) {
+            // Route through the same per-worker InboundDeliveryMode choke
+            // point as the HTTP/sidecar send path (`queue_inbound_for_delivery_mode`
+            // in runtime/delivery.rs). Node delivery is the ONLY delivery
+            // path now that direct local injection has been removed from
+            // `ListenApiRequest::Send`, so if manual_flush isn't honored
+            // here, it's never honored anywhere.
             FleetDeliverySurfacing::Inject => {
-                let relay_delivery = self.fleet_relay_delivery(deliver);
-                self.workers.deliver(&deliver.agent, relay_delivery).await
+                let fields = fleet_delivery_fields(&deliver.payload, &deliver.agent);
+                let injection_mode = match deliver.mode {
+                    DeliveryMode::Wait => MessageInjectionMode::Wait,
+                    DeliveryMode::Steer => MessageInjectionMode::Steer,
+                };
+                let priority = fields
+                    .priority
+                    .unwrap_or(if fields.target.starts_with('#') { 3 } else { 2 });
+                let queue_result = queue_inbound_for_delivery_mode(
+                    &mut self.delivery_states,
+                    &self.workers,
+                    &deliver.agent,
+                    InboundContext {
+                        from: &fields.from,
+                        body: &fields.body,
+                        target: &fields.target,
+                        thread_id: fields.thread_id.as_deref(),
+                        workspace_id: self.default_workspace_id.as_deref(),
+                        workspace_alias: self.default_workspace.workspace_alias.as_deref(),
+                        priority,
+                        mode: injection_mode,
+                        event_id: Some(&deliver.msg_id),
+                    },
+                );
+                if let Some(dropped_from) = &queue_result.evicted_from {
+                    let _ = send_broker_event(
+                        &self.sdk_out_tx,
+                        delivery_dropped_event_for_eviction(&deliver.agent, dropped_from),
+                    )
+                    .await;
+                }
+                match queue_result.outcome {
+                    InboundQueueOutcome::Queued => {
+                        tracing::info!(
+                            target = "relay_broker::fleet",
+                            agent = %deliver.agent,
+                            delivery_id = %deliver.delivery_id,
+                            msg_id = %deliver.msg_id,
+                            "queued node delivery (manual_flush inbound delivery mode)"
+                        );
+                        Ok(())
+                    }
+                    InboundQueueOutcome::DrainNow(to_drain) => {
+                        // Mirrors the HTTP send path: drain may surface older
+                        // backlog alongside the message this specific `deliver`
+                        // frame is for. Only a failure injecting THIS delivery's
+                        // own message should withhold the ack (causing the
+                        // engine to redeliver it); backlog injection failures
+                        // are logged and otherwise don't block the ack, since
+                        // their own delivery frames already governed their acks.
+                        let mut current_result = Ok(());
+                        for queued in to_drain {
+                            let is_current =
+                                queued.event_id.as_deref() == Some(deliver.msg_id.as_str());
+                            if let Err(error) = try_inject_pending_relay_message(
+                                &mut self.workers,
+                                &mut self.pending_deliveries,
+                                &deliver.agent,
+                                &queued,
+                                self.delivery_retry_interval,
+                            )
+                            .await
+                            {
+                                if is_current {
+                                    current_result = Err(error);
+                                } else {
+                                    tracing::warn!(
+                                        target = "relay_broker::fleet",
+                                        agent = %deliver.agent,
+                                        from = %queued.from,
+                                        error = %error,
+                                        "failed to inject drained backlog message"
+                                    );
+                                }
+                            }
+                        }
+                        current_result
+                    }
+                    InboundQueueOutcome::WorkerMissing => {
+                        let relay_delivery = self.fleet_relay_delivery(deliver);
+                        self.workers.deliver(&deliver.agent, relay_delivery).await
+                    }
+                }
             }
             FleetDeliverySurfacing::AckOnly => {
                 tracing::info!(

@@ -29,7 +29,6 @@ use tokio::{
 
 use crate::{
     cli::command_parse::{normalize_cli_name, parse_cli_command},
-    routing,
     runtime::headless_provider_cli_name,
     spawner::terminate_child,
 };
@@ -975,37 +974,6 @@ impl WorkerRegistry {
         }
         Ok(exited)
     }
-
-    pub(crate) fn routing_workers(&self) -> Vec<routing::RoutingWorker<'_>> {
-        self.workers
-            .iter()
-            .map(|(name, handle)| routing::RoutingWorker {
-                name,
-                channels: &handle.spec.channels,
-                workspace_id: handle.workspace_id.as_deref(),
-            })
-            .collect()
-    }
-
-    pub(crate) fn worker_names_for_channel_delivery(
-        &self,
-        channel: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_channel_delivery(&workers, channel, from, workspace_id)
-    }
-
-    pub(crate) fn worker_names_for_direct_target(
-        &self,
-        target: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
-    }
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
@@ -1718,12 +1686,6 @@ mod tests {
         };
 
         assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
-    }
-
-    #[test]
-    fn routing_workers_empty_when_no_workers() {
-        let reg = make_registry(vec![]);
-        assert!(reg.routing_workers().is_empty());
     }
 
     #[test]

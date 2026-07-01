@@ -131,6 +131,19 @@ impl RelaycastHttpClient {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
+    /// Authenticate as `agent_name` rather than this broker's own identity.
+    ///
+    /// **Callers must only pass a name this broker has custodial
+    /// responsibility for** (a worker it spawned, or its own identity) —
+    /// this is not a safe way to relay an arbitrary, caller-supplied sender
+    /// label. Underneath, `AgentRegistrationClient::register_agent_token`
+    /// either registers a brand-new Relaycast agent under `agent_name` if
+    /// none exists, or — if one already does (409) — ROTATES its token,
+    /// invalidating whatever token that agent was already using. Passing an
+    /// unvalidated `agent_name` therefore risks silently disconnecting an
+    /// unrelated, already-registered agent that happens to share the name.
+    /// Validate against known-local names first; fall back to this
+    /// broker's own identity (`registered_agent_client`) for anything else.
     async fn registered_agent_client_as(
         &self,
         agent_name: &str,
@@ -239,18 +252,27 @@ impl RelaycastHttpClient {
 
     /// Send a direct message to a named agent via the Relaycast REST API.
     pub async fn send_dm(&self, to: &str, text: &str) -> Result<()> {
-        self.send_dm_with_mode(to, text, MessageInjectionMode::Wait)
+        self.send_dm_with_mode(to, text, MessageInjectionMode::Wait, &self.agent_name)
             .await
     }
 
     /// Send a direct message with explicit injection mode via the Relaycast REST API.
+    ///
+    /// `from` is authenticated via [`registered_agent_client_as`] rather than
+    /// always posting as this broker's own registered identity, so a DM
+    /// forwarded from a locally-attached worker is attributed to that
+    /// worker's own Relaycast identity instead of losing sender identity at
+    /// the relay boundary. **The caller must validate `from` first** —
+    /// see [`registered_agent_client_as`]'s doc comment for why passing an
+    /// arbitrary, unvalidated sender label here is unsafe.
     pub async fn send_dm_with_mode(
         &self,
         to: &str,
         text: &str,
         mode: MessageInjectionMode,
+        from: &str,
     ) -> Result<()> {
-        let agent_client = self.registered_agent_client().await?;
+        let agent_client = self.registered_agent_client_as(from, None).await?;
         let relay_mode = match mode {
             MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
             MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
@@ -464,31 +486,57 @@ impl RelaycastHttpClient {
 
     /// Smart send: routes to channel or DM based on `#` prefix.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
-        self.send_with_mode(to, text, MessageInjectionMode::Wait)
+        self.send_with_mode(to, text, MessageInjectionMode::Wait, &self.agent_name, None)
             .await
     }
 
     /// Smart send with explicit injection mode.
+    ///
+    /// `from` is authenticated via [`registered_agent_client_as`] (see
+    /// [`send_dm_with_mode`]) so the Relaycast-recorded sender matches the
+    /// original request's `from` rather than always this broker's own
+    /// identity. **The caller must validate `from` first** (a locally-known
+    /// worker name or this broker's own identity) — see
+    /// [`registered_agent_client_as`]'s doc comment for why an arbitrary,
+    /// unvalidated sender label is unsafe to pass here. This is the only
+    /// delivery path now (no local-injection bypass), so every send's
+    /// sender attribution flows through here.
+    ///
+    /// `thread_id`, when present, is a Relaycast message id to reply to
+    /// (channel targets only — Relaycast DMs have no thread concept): posting
+    /// via [`AgentClient::reply`] instead of a plain channel post is what
+    /// actually creates real thread/conversation grouping on the Relaycast
+    /// side, as opposed to passing an opaque value the server doesn't
+    /// interpret as a reply.
     pub async fn send_with_mode(
         &self,
         to: &str,
         text: &str,
         mode: MessageInjectionMode,
+        from: &str,
+        thread_id: Option<&str>,
     ) -> Result<()> {
         if to.starts_with('#') {
-            let agent_client = self.registered_agent_client().await?;
+            let agent_client = self.registered_agent_client_as(from, None).await?;
             let relay_mode = match mode {
                 MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
                 MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
             };
-            agent_client
-                .send_with_mode(to, text, None, None, relay_mode, None)
-                .await
-                .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+            if let Some(thread_id) = thread_id {
+                agent_client
+                    .reply(thread_id, text, None, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("relaycast thread reply failed: {e}"))?;
+            } else {
+                agent_client
+                    .send_with_mode(to, text, None, None, relay_mode, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+            }
             return Ok(());
         }
 
-        self.send_dm_with_mode(to, text, mode).await
+        self.send_dm_with_mode(to, text, mode, from).await
     }
 }
 
@@ -639,7 +687,13 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .send_with_mode("worker-a", "interrupt", MessageInjectionMode::Steer)
+            .send_with_mode(
+                "worker-a",
+                "interrupt",
+                MessageInjectionMode::Steer,
+                "broker",
+                None,
+            )
             .await
             .expect("relaycast DM steer send should succeed");
     }

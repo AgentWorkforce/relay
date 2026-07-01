@@ -695,13 +695,26 @@ impl BrokerRuntime {
                     normalized_sender
                 };
                 let event_id = format!("http_{}", Uuid::new_v4().simple());
-                let priority = if normalized_to.starts_with('#') { 3 } else { 2 };
-                let mut delivered = 0usize;
-                let mut delivery_errors = 0usize;
                 let request_start = Instant::now();
-                let local_delivery_timeout = http_api_local_delivery_timeout();
                 let relaycast_timeout = http_api_relaycast_send_timeout();
                 let event_emit_timeout = http_api_event_emit_timeout();
+
+                // Only impersonate `from` on the Relaycast publish (see
+                // send_with_mode's doc comment) when it's a name this broker
+                // actually has custodial responsibility for: a worker it
+                // spawned, or its own identity. `delivery_from` is otherwise
+                // caller-supplied and unvalidated — impersonating an
+                // arbitrary string would let any HTTP API caller silently
+                // register a brand-new Relaycast agent under that name, or
+                // worse, ROTATE (and thereby invalidate) the live token of
+                // an unrelated, already-registered agent that happens to
+                // share the name. Falling back to the broker's own identity
+                // is always safe; impersonation is not.
+                let publish_from = if workers.has_worker(&delivery_from) {
+                    delivery_from.as_str()
+                } else {
+                    workspace_self_name.as_str()
+                };
 
                 record_thread_history_event(
                     recent_thread_messages,
@@ -718,356 +731,131 @@ impl BrokerRuntime {
                     }),
                 );
 
-                let targets = if normalized_to.starts_with('#') {
-                    workers.worker_names_for_channel_delivery(
-                        &normalized_to,
-                        &delivery_from,
-                        Some(&selected_workspace_id),
-                    )
-                } else {
-                    workers.worker_names_for_direct_target(
-                        &normalized_to,
-                        &delivery_from,
-                        Some(&selected_workspace_id),
-                    )
-                };
-
+                // All delivery is relaycast-mediated, with no local-injection
+                // shortcut and no fallback switch on whether a recipient
+                // happens to be attached to this broker. Even when the
+                // target is a worker running right here, we publish to
+                // Relaycast (cloud-hosted or a local Relaycast host — either
+                // way, wherever Relaycast is) and let it redeliver over the
+                // node control plane (see `handle_fleet_deliver`), exactly
+                // as it would for any other client. A broker-local shortcut
+                // would let a message reach a worker's PTY without Relaycast
+                // ever seeing it, so anything that only observes state
+                // through Relaycast (a hosted observer, a teammate's Pear,
+                // cross-device sync) would silently miss messages that the
+                // sender's own terminal still showed a reply to.
                 tracing::info!(
                     target = "relay_broker::http_api",
 
                     event_id = %event_id,
                     to = %normalized_to,
                     delivery_from = %delivery_from,
-                    target_count = %targets.len(),
-                    "resolved HTTP API send targets"
+                    publish_from = %publish_from,
+                    ui_from = %ui_from,
+                    relaycast_timeout_ms = %relaycast_timeout.as_millis(),
+                    "publishing to relaycast"
                 );
+                let relaycast_start = Instant::now();
+                match timeout(
+                    relaycast_timeout,
+                    selected_workspace.http_client.send_with_mode(
+                        &normalized_to,
+                        &text,
+                        mode.clone(),
+                        publish_from,
+                        thread_id.as_deref(),
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        tracing::info!(
+                            target = "relay_broker::http_api",
 
-                for worker_name in targets {
-                    // Inbound-delivery queue: every inbound message
-                    // enters the per-worker FIFO first. `auto_inject`
-                    // drains immediately; `manual_flush` holds and
-                    // counts as delivered so the HTTP caller's ack
-                    // semantics are unchanged. We pass the FULL
-                    // routing context so any drain reproduces the
-                    // original delivery (channel/thread/workspace
-                    // /priority/mode), not a stripped-down DM.
-                    let queue_result = queue_inbound_for_delivery_mode(
-                        delivery_states,
-                        workers,
-                        &worker_name,
-                        InboundContext {
-                            from: &delivery_from,
-                            body: &text,
-                            target: &normalized_to,
-                            thread_id: thread_id.as_deref(),
-                            workspace_id: Some(selected_workspace_id.as_str()),
-                            workspace_alias: selected_workspace_alias.as_deref(),
-                            priority,
-                            mode: mode.clone(),
-                            event_id: Some(&event_id),
-                        },
-                    );
-                    if let Some(dropped_from) = &queue_result.evicted_from {
-                        let _ = send_broker_event(
+                            event_id = %event_id,
+                            to = %normalized_to,
+                            relaycast_ms = %relaycast_start.elapsed().as_millis(),
+                            "relaycast publish succeeded"
+                        );
+                        emit_http_api_event_with_timeout(
                             sdk_out_tx,
-                            delivery_dropped_event_for_eviction(&worker_name, dropped_from),
+                            json!({
+                                "kind": "relay_inbound",
+                                "event_id": event_id,
+                                "from": ui_from,
+                                "target": normalized_to,
+                                "body": text,
+                                "thread_id": thread_id.clone(),
+                                "workspace_id": selected_workspace_id.clone(),
+                                "workspace_alias": selected_workspace_alias.clone(),
+                            }),
+                            event_emit_timeout,
                         )
                         .await;
-                    }
-                    match queue_result.outcome {
-                        InboundQueueOutcome::Queued => {
-                            delivered = delivered.saturating_add(1);
-                            tracing::info!(
-                                target = "relay_broker::http_api",
-                                event_id = %event_id,
-                                to = %normalized_to,
-                                worker = %worker_name,
-                                "queued local delivery (manual_flush inbound delivery mode)"
-                            );
-                            let _ = send_event(
-                                sdk_out_tx,
-                                json!({
-                                    "kind":"delivery_queued",
-                                    "name":&worker_name,
-                                    "event_id":&event_id,
-                                    "from":&delivery_from,
-                                    "target":&normalized_to,
-                                    "reason":"inbound_delivery_manual_flush",
-                                }),
-                            )
-                            .await;
-                            continue;
-                        }
-                        InboundQueueOutcome::DrainNow(to_drain) => {
-                            for queued in to_drain {
-                                let queued_event_id = queued.event_id.as_deref().unwrap_or("");
-                                let is_current =
-                                    queued.event_id.as_deref() == Some(event_id.as_str());
-                                match timeout(
-                                    local_delivery_timeout,
-                                    try_inject_pending_relay_message(
-                                        workers,
-                                        pending_deliveries,
-                                        &worker_name,
-                                        &queued,
-                                        delivery_retry_interval,
-                                    ),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(_)) => {
-                                        if is_current {
-                                            delivered = delivered.saturating_add(1);
-                                        }
-                                    }
-                                    Ok(Err(error)) => {
-                                        if is_current {
-                                            delivery_errors = delivery_errors.saturating_add(1);
-                                        }
-                                        tracing::warn!(
-                                            target = "relay_broker::http_api",
-
-                                            event_id = %queued_event_id,
-                                            to = %queued.target,
-                                            worker = %worker_name,
-                                            error = %error,
-                                            "local delivery attempt failed"
-                                        );
-                                    }
-                                    Err(_) => {
-                                        if is_current {
-                                            delivery_errors = delivery_errors.saturating_add(1);
-                                        }
-                                        tracing::warn!(
-                                            target = "relay_broker::http_api",
-
-                                            event_id = %queued_event_id,
-                                            to = %queued.target,
-                                            worker = %worker_name,
-                                            timeout_ms = %local_delivery_timeout.as_millis(),
-                                            "local delivery attempt timed out"
-                                        );
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-                        InboundQueueOutcome::WorkerMissing => {
-                            // Fall through so the standard
-                            // not-found accounting path runs.
-                        }
-                    }
-                    match timeout(
-                        local_delivery_timeout,
-                        queue_and_try_delivery_raw(
-                            workers,
-                            pending_deliveries,
-                            &worker_name,
-                            &event_id,
-                            &delivery_from,
-                            &normalized_to,
-                            &text,
-                            thread_id.clone(),
-                            Some(selected_workspace_id.clone()),
-                            selected_workspace_alias.clone(),
-                            priority,
-                            mode.clone(),
-                            delivery_retry_interval,
-                        ),
-                    )
-                    .await
-                    {
-                        Ok(Ok(_)) => {
-                            delivered = delivered.saturating_add(1);
-                        }
-                        Ok(Err(error)) => {
-                            delivery_errors = delivery_errors.saturating_add(1);
+                        if reply
+                            .send(Ok(json!({
+                                "success": true,
+                                "event_id": event_id,
+                                "relaycast_published": true,
+                                "local": false,
+                                "workspace_id": selected_workspace_id,
+                                "workspace_alias": selected_workspace_alias,
+                            })))
+                            .is_err()
+                        {
                             tracing::warn!(
                                 target = "relay_broker::http_api",
 
                                 event_id = %event_id,
-                                to = %normalized_to,
-                                worker = %worker_name,
-                                error = %error,
-                                "local delivery attempt failed"
-                            );
-                        }
-                        Err(_) => {
-                            delivery_errors = delivery_errors.saturating_add(1);
-                            tracing::warn!(
-                                target = "relay_broker::http_api",
-
-                                event_id = %event_id,
-                                to = %normalized_to,
-                                worker = %worker_name,
-                                timeout_ms = %local_delivery_timeout.as_millis(),
-                                "local delivery attempt timed out"
+                                "broker HTTP API reply channel closed before relaycast response"
                             );
                         }
                     }
-                }
-
-                if delivered > 0 {
-                    tracing::info!(
-                        target = "relay_broker::http_api",
-
-                        event_id = %event_id,
-                        to = %normalized_to,
-                        delivery_from = %delivery_from,
-                        ui_from = %ui_from,
-                        delivered = %delivered,
-                        "local delivery succeeded"
-                    );
-                    emit_http_api_event_with_timeout(
-                        sdk_out_tx,
-                        json!({
-                            "kind": "relay_inbound",
-                            "event_id": event_id,
-                            "from": ui_from,
-                            "target": normalized_to,
-                            "body": text,
-                            "thread_id": thread_id.clone(),
-                            "workspace_id": selected_workspace_id.clone(),
-                            "workspace_alias": selected_workspace_alias.clone(),
-                        }),
-                        event_emit_timeout,
-                    )
-                    .await;
-                    if reply
-                        .send(Ok(json!({
-                            "success": true,
-                            "event_id": event_id,
-                            "delivered": delivered,
-                            "local": true,
-                            "workspace_id": selected_workspace_id,
-                            "workspace_alias": selected_workspace_alias,
-                        })))
-                        .is_err()
-                    {
+                    Ok(Err(error)) => {
                         tracing::warn!(
                             target = "relay_broker::http_api",
 
                             event_id = %event_id,
-                            "broker HTTP API reply channel closed before local delivery response"
+                            to = %normalized_to,
+                            relaycast_ms = %relaycast_start.elapsed().as_millis(),
+                            error = %error,
+                            "relaycast publish failed"
                         );
+                        if reply
+                            .send(Err(format!("Relaycast publish failed: {error}")))
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                target = "relay_broker::http_api",
+
+                                event_id = %event_id,
+                                "broker HTTP API reply channel closed before relaycast failure response"
+                            );
+                        }
                     }
-                } else {
-                    tracing::info!(
-                        target = "relay_broker::http_api",
+                    Err(_) => {
+                        tracing::warn!(
+                            target = "relay_broker::http_api",
 
-                        event_id = %event_id,
-                        to = %normalized_to,
-                        mode = ?mode,
-                        delivery_errors = %delivery_errors,
-                        delivery_from = %delivery_from,
-                        ui_from = %ui_from,
-                        relaycast_timeout_ms = %relaycast_timeout.as_millis(),
-                        "no local deliveries succeeded; forwarding to relaycast"
-                    );
-                    let relaycast_start = Instant::now();
-                    match timeout(
-                        relaycast_timeout,
-                        selected_workspace.http_client.send_with_mode(
-                            &normalized_to,
-                            &text,
-                            mode.clone(),
-                        ),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {
-                            tracing::info!(
-                                target = "relay_broker::http_api",
-
-                                event_id = %event_id,
-                                to = %normalized_to,
-                                relaycast_ms = %relaycast_start.elapsed().as_millis(),
-                                "relaycast publish succeeded"
-                            );
-                            emit_http_api_event_with_timeout(
-                                sdk_out_tx,
-                                json!({
-                                    "kind": "relay_inbound",
-                                    "event_id": event_id,
-                                    "from": ui_from,
-                                    "target": normalized_to,
-                                    "body": text,
-                                    "thread_id": thread_id.clone(),
-                                    "workspace_id": selected_workspace_id.clone(),
-                                    "workspace_alias": selected_workspace_alias.clone(),
-                                }),
-                                event_emit_timeout,
-                            )
-                            .await;
-                            if reply
-                                .send(Ok(json!({
-                                    "success": true,
-                                    "event_id": event_id,
-                                    "relaycast_published": true,
-                                    "local": false,
-                                    "workspace_id": selected_workspace_id,
-                                    "workspace_alias": selected_workspace_alias,
-                                })))
-                                .is_err()
-                            {
-                                tracing::warn!(
-                                    target = "relay_broker::http_api",
-
-                                    event_id = %event_id,
-                                    "broker HTTP API reply channel closed before relaycast response"
-                                );
-                            }
-                        }
-                        Ok(Err(error)) => {
+                            event_id = %event_id,
+                            to = %normalized_to,
+                            relaycast_timeout_ms = %relaycast_timeout.as_millis(),
+                            relaycast_ms = %relaycast_start.elapsed().as_millis(),
+                            "relaycast publish timed out"
+                        );
+                        if reply
+                            .send(Err(format!(
+                                "Relaycast publish timed out after {}ms",
+                                relaycast_timeout.as_millis()
+                            )))
+                            .is_err()
+                        {
                             tracing::warn!(
                                 target = "relay_broker::http_api",
 
                                 event_id = %event_id,
-                                to = %normalized_to,
-                                relaycast_ms = %relaycast_start.elapsed().as_millis(),
-                                error = %error,
-                                "relaycast publish failed"
+                                "broker HTTP API reply channel closed before relaycast timeout response"
                             );
-                            let not_found = format!("Agent \"{}\" not found", normalized_to);
-                            if reply
-                                .send(Err(format!(
-                                    "{not_found} and Relaycast publish failed: {error}"
-                                )))
-                                .is_err()
-                            {
-                                tracing::warn!(
-                                    target = "relay_broker::http_api",
-
-                                    event_id = %event_id,
-                                    "broker HTTP API reply channel closed before relaycast failure response"
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                target = "relay_broker::http_api",
-
-                                event_id = %event_id,
-                                to = %normalized_to,
-                                relaycast_timeout_ms = %relaycast_timeout.as_millis(),
-                                relaycast_ms = %relaycast_start.elapsed().as_millis(),
-                                "relaycast publish timed out"
-                            );
-                            let not_found = format!("Agent \"{}\" not found", normalized_to);
-                            if reply
-                                .send(Err(format!(
-                                    "{not_found} and Relaycast publish timed out after {}ms",
-                                    relaycast_timeout.as_millis()
-                                )))
-                                .is_err()
-                            {
-                                tracing::warn!(
-                                    target = "relay_broker::http_api",
-
-                                    event_id = %event_id,
-                                    "broker HTTP API reply channel closed before relaycast timeout response"
-                                );
-                            }
                         }
                     }
                 }
