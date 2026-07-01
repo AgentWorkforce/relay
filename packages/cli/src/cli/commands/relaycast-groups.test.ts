@@ -11,11 +11,21 @@ import type { SdkCommandDeps } from '../lib/sdk-command.js';
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, data: { url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch', secret: 'inbound-secret' } }), {
-        status: 201,
-        headers: { 'content-type': 'application/json' },
-      })
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+              secret: 'inbound-secret',
+            },
+          }),
+          {
+            status: 201,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
     )
   );
 });

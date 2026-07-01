@@ -438,7 +438,10 @@ async function createRelayfileInboundTarget(
     body = undefined;
   }
   if (!response.ok) {
-    const message = isRecord(body) && typeof body.message === 'string' ? body.message : `relaycast returned ${response.status}`;
+    const message =
+      isRecord(body) && typeof body.message === 'string'
+        ? body.message
+        : `relaycast returned ${response.status}`;
     throw new Error(`Could not create relayfile inbound target: ${message}`);
   }
   const data = isRecord(body) && isRecord(body.data) ? body.data : body;
@@ -764,7 +767,9 @@ async function runSubscribe(
     if (relayfileWebhook) {
       await deps.relayfile
         .deleteWebhookSubscription(relayfileWebhook.subscriptionId)
-        .catch((cleanupErr) => warnCleanup(deps, 'relayfile webhook subscription', relayfileWebhook!.subscriptionId, cleanupErr));
+        .catch((cleanupErr) =>
+          warnCleanup(deps, 'relayfile webhook subscription', relayfileWebhook!.subscriptionId, cleanupErr)
+        );
     }
     throw err;
   }
