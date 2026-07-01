@@ -930,8 +930,10 @@ impl BrokerRuntime {
                 // SDK call hangs, this broker task must not block
                 // indefinitely on it (the HTTP layer already gives up after
                 // `LISTEN_API_SEND_TIMEOUT`, but that alone wouldn't free
-                // this runtime task).
-                let relaycast_timeout = http_api_relaycast_send_timeout();
+                // this runtime task). Uses its own timeout (distinct from
+                // `http_api_relaycast_send_timeout`) so tuning the `/api/send`
+                // path can't unintentionally break token minting.
+                let relaycast_timeout = http_api_observer_token_timeout();
                 match timeout(
                     relaycast_timeout,
                     selected_workspace.http_client.create_observer_token(

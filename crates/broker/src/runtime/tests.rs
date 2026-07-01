@@ -2780,7 +2780,12 @@ fn resolve_workspace_reports_not_found_for_unknown_alias() {
 fn default_observer_token_scopes_are_read_only_and_exclude_unneeded_scopes() {
     let scopes = default_observer_token_scopes();
 
-    for expected in [
+    // Assert the *exact* set (not just "contains these 7"), so an
+    // accidentally-added extra scope -- including a write scope -- fails this
+    // test instead of silently widening the grant on a credential-minting
+    // endpoint.
+    let actual: HashSet<ObserverScope> = scopes.iter().copied().collect();
+    let expected: HashSet<ObserverScope> = [
         ObserverScope::StreamRead,
         ObserverScope::MessagesRead,
         ObserverScope::ThreadsRead,
@@ -2788,25 +2793,17 @@ fn default_observer_token_scopes_are_read_only_and_exclude_unneeded_scopes() {
         ObserverScope::ChannelsRead,
         ObserverScope::ActivityRead,
         ObserverScope::AgentsRead,
-    ] {
-        assert!(
-            scopes.contains(&expected),
-            "expected default observer token scopes to include {expected:?}"
-        );
-    }
+    ]
+    .into_iter()
+    .collect();
 
-    // Scopes the observer-dashboard use case this unblocks doesn't need;
-    // keeping the grant minimal.
-    for unexpected in [
-        ObserverScope::SearchRead,
-        ObserverScope::NodesRead,
-        ObserverScope::DeliveriesRead,
-        ObserverScope::FilesRead,
-        ObserverScope::ReactionsRead,
-    ] {
-        assert!(
-            !scopes.contains(&unexpected),
-            "expected default observer token scopes to exclude {unexpected:?}"
-        );
-    }
+    assert_eq!(
+        scopes.len(),
+        7,
+        "expected exactly 7 default observer token scopes, got {scopes:?}"
+    );
+    assert_eq!(
+        actual, expected,
+        "default observer token scopes must be exactly the minimal read-only set"
+    );
 }
