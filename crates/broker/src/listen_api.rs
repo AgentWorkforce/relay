@@ -617,6 +617,9 @@ async fn listen_api_replay(
         "events": events,
         "gap": gap_oldest.is_some(),
         "oldestAvailable": gap_oldest.unwrap_or(since_seq),
+        "droppedCount": gap_oldest
+            .map(|oldest| dropped_event_count(since_seq, oldest))
+            .unwrap_or(0),
     }))
 }
 
@@ -2311,6 +2314,79 @@ async fn send_fleet_sidecar_error(
     .await
 }
 
+/// Number of durable events that are unrecoverably lost between
+/// `requested_since_seq` (exclusive) and `oldest_available` (inclusive of
+/// everything at/after it being retained). Used to give a `replay_gap`
+/// consumer a concrete sense of how large a gap it needs to resync around,
+/// beyond the boolean fact that a gap exists at all.
+fn dropped_event_count(requested_since_seq: u64, oldest_available: u64) -> u64 {
+    oldest_available
+        .saturating_sub(requested_since_seq)
+        .saturating_sub(1)
+}
+
+/// Build the `replay_gap` notification frame sent to a dashboard WS client
+/// when events it needs are no longer retained anywhere the broker can serve
+/// them from (neither the live broadcast nor the replay buffer). `seq` is the
+/// broker's current sequence cutoff at the moment the gap was detected, so
+/// the client knows every event up to and including that seq is either being
+/// forwarded now or was already delivered.
+fn build_replay_gap_frame(requested_since_seq: u64, oldest_available: u64, seq: u64) -> Value {
+    json!({
+        "kind": "replay_gap",
+        "requestedSinceSeq": requested_since_seq,
+        "oldestAvailable": oldest_available,
+        "seq": seq,
+        "droppedCount": dropped_event_count(requested_since_seq, oldest_available),
+    })
+}
+
+/// Recover from a `broadcast::error::RecvError::Lagged` on a dashboard WS
+/// client's live event subscription.
+///
+/// Tokio's `broadcast` channel is bounded independently of the replay
+/// buffer. A burst of high-frequency ephemeral events (chiefly
+/// `worker_stream`, which is intentionally excluded from the replay buffer
+/// but still flows over the same broadcast channel) can overflow that
+/// channel's ring for a client that's briefly slow to read, causing
+/// `recv()` to silently skip whatever it couldn't buffer. Previously this
+/// was only logged server-side — the client had no idea anything was
+/// dropped, and (unlike a reconnect) nothing prompted it to resync.
+///
+/// Because the replay buffer independently retains durable events (and,
+/// post-hardening, does not have to share capacity with `worker_stream`
+/// churn), it can usually backfill exactly what the broadcast channel
+/// dropped. When it can't (the durable event has also aged out of the
+/// replay buffer), this returns an explicit `replay_gap` frame instead of
+/// staying silent.
+///
+/// Returns the frames to forward to the socket, in order, and the new
+/// high-water `seq` the caller is caught up through.
+async fn catch_up_after_lag(
+    replay_buffer: &ReplayBuffer,
+    last_forwarded_seq: u64,
+) -> (Vec<Value>, u64) {
+    let cutoff_seq = replay_buffer.current_seq();
+    let (entries, gap_oldest) = replay_buffer.replay_since(last_forwarded_seq).await;
+
+    let mut frames = Vec::with_capacity(entries.len() + 1);
+    if let Some(oldest_available) = gap_oldest {
+        frames.push(build_replay_gap_frame(
+            last_forwarded_seq,
+            oldest_available,
+            cutoff_seq,
+        ));
+    }
+    frames.extend(
+        entries
+            .into_iter()
+            .filter(|entry| entry.seq <= cutoff_seq)
+            .map(|entry| entry.event),
+    );
+
+    (frames, cutoff_seq)
+}
+
 async fn handle_dashboard_ws(
     mut socket: axum::extract::ws::WebSocket,
     mut rx: broadcast::Receiver<String>,
@@ -2321,12 +2397,7 @@ async fn handle_dashboard_ws(
     let replay_cutoff_seq = replay_buffer.current_seq();
     let (replay_events, gap_oldest) = replay_buffer.replay_since(since_seq).await;
     if let Some(oldest_available) = gap_oldest {
-        let replay_gap = json!({
-            "kind": "replay_gap",
-            "requestedSinceSeq": since_seq,
-            "oldestAvailable": oldest_available,
-            "seq": replay_cutoff_seq,
-        });
+        let replay_gap = build_replay_gap_frame(since_seq, oldest_available, replay_cutoff_seq);
         if let Ok(msg) = serde_json::to_string(&replay_gap) {
             let _ = socket
                 .send(axum::extract::ws::Message::Text(msg.into()))
@@ -2347,17 +2418,24 @@ async fn handle_dashboard_ws(
             }
         }
     }
+
+    // High-water mark for the last durable (seq-bearing) event this client
+    // is known to be caught up through. Starts at the connect-time cutoff
+    // and advances as durable events are forwarded live; used both to
+    // de-duplicate against the initial replay and, on a broadcast lag, to
+    // ask the replay buffer for exactly what was missed.
+    let mut last_forwarded_seq = replay_cutoff_seq;
+
     let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        let is_duplicate = serde_json::from_str::<Value>(&msg)
+                        let msg_seq = serde_json::from_str::<Value>(&msg)
                             .ok()
-                            .and_then(|value| value.get("seq").and_then(Value::as_u64))
-                            .is_some_and(|seq| seq <= replay_cutoff_seq);
-                        if is_duplicate {
+                            .and_then(|value| value.get("seq").and_then(Value::as_u64));
+                        if msg_seq.is_some_and(|seq| seq <= last_forwarded_seq) {
                             continue;
                         }
                         if socket
@@ -2367,9 +2445,35 @@ async fn handle_dashboard_ws(
                         {
                             break;
                         }
+                        if let Some(seq) = msg_seq {
+                            last_forwarded_seq = seq;
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(skipped = n, "dashboard WS client lagged, skipped messages");
+                        tracing::warn!(
+                            skipped = n,
+                            "dashboard WS client lagged, recovering from replay buffer"
+                        );
+                        let (frames, new_high_water) =
+                            catch_up_after_lag(&replay_buffer, last_forwarded_seq).await;
+                        last_forwarded_seq = new_high_water;
+                        let mut send_failed = false;
+                        for frame in frames {
+                            let Ok(msg) = serde_json::to_string(&frame) else {
+                                continue;
+                            };
+                            if socket
+                                .send(axum::extract::ws::Message::Text(msg.into()))
+                                .await
+                                .is_err()
+                            {
+                                send_failed = true;
+                                break;
+                            }
+                        }
+                        if send_failed {
+                            break;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -2569,6 +2673,195 @@ mod tests {
             rx.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    /// Regression test for the durability gap this change hardens against:
+    /// a burst of high-frequency `worker_stream` PTY-output chunks must not
+    /// evict an earlier, low-frequency `relay_inbound` event from the replay
+    /// buffer. Before `worker_stream`/`delivery_active` were excluded from
+    /// replay-buffer storage, a large enough flood (bigger than
+    /// `DEFAULT_REPLAY_CAPACITY`) would silently push `relay_inbound` out of
+    /// the ring, so a reconnecting dashboard client would never see it
+    /// replayed — exactly the bug reported against Pear.
+    #[tokio::test]
+    async fn worker_stream_flood_does_not_evict_earlier_relay_inbound() {
+        let (tx, _rx) = broadcast::channel::<String>(DEFAULT_REPLAY_CAPACITY * 4);
+        // Deliberately small capacity: if worker_stream shared this capacity
+        // with durable events, a flood many times larger than it would
+        // evict the relay_inbound pushed before the flood.
+        let replay_buffer = ReplayBuffer::new(16);
+
+        let relay_inbound = json!({
+            "kind": "relay_inbound",
+            "from": "Worker",
+            "target": "#general",
+            "body": "the important message",
+        });
+        broadcast_if_relevant(&tx, &replay_buffer, &relay_inbound).await;
+
+        // Flood far more worker_stream chunks than the replay buffer's
+        // capacity, simulating an actively-printing agent.
+        for i in 0..10_000 {
+            let chunk = json!({
+                "kind": "worker_stream",
+                "name": "Worker",
+                "data": format!("chunk-{i}"),
+            });
+            broadcast_if_relevant(&tx, &replay_buffer, &chunk).await;
+        }
+
+        let (events, gap) = replay_buffer.replay_since(0).await;
+        assert!(
+            gap.is_none(),
+            "relay_inbound should still be the oldest (and only) durable entry, no gap expected"
+        );
+        assert_eq!(
+            events.len(),
+            1,
+            "worker_stream events must never be stored in the replay buffer"
+        );
+        assert_eq!(events[0].event["kind"], "relay_inbound");
+        assert_eq!(events[0].event["body"], "the important message");
+    }
+
+    /// `delivery_active` is the other high-frequency ephemeral kind excluded
+    /// from replay-buffer storage (see `broadcast_if_relevant`); make sure a
+    /// flood of it is equally harmless to durable events.
+    #[tokio::test]
+    async fn delivery_active_flood_does_not_evict_earlier_relay_inbound() {
+        let (tx, _rx) = broadcast::channel::<String>(DEFAULT_REPLAY_CAPACITY * 4);
+        let replay_buffer = ReplayBuffer::new(16);
+
+        broadcast_if_relevant(
+            &tx,
+            &replay_buffer,
+            &json!({"kind": "relay_inbound", "from": "Worker", "target": "#general", "body": "hi"}),
+        )
+        .await;
+
+        for _ in 0..5_000 {
+            broadcast_if_relevant(
+                &tx,
+                &replay_buffer,
+                &json!({"kind": "delivery_active", "name": "Worker"}),
+            )
+            .await;
+        }
+
+        let (events, gap) = replay_buffer.replay_since(0).await;
+        assert!(gap.is_none());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event["kind"], "relay_inbound");
+    }
+}
+
+#[cfg(test)]
+mod replay_gap_tests {
+    use super::{build_replay_gap_frame, catch_up_after_lag, dropped_event_count};
+    use crate::replay_buffer::ReplayBuffer;
+    use serde_json::json;
+
+    #[test]
+    fn dropped_event_count_is_zero_when_nothing_was_actually_lost() {
+        // Requested seq 5, oldest available is 6: nothing between them was
+        // dropped (the client just needs 6..).
+        assert_eq!(dropped_event_count(5, 6), 0);
+    }
+
+    #[test]
+    fn dropped_event_count_reports_the_lost_range() {
+        // Requested seq 1, oldest available is 3: seq 2 was evicted.
+        assert_eq!(dropped_event_count(1, 3), 1);
+        // Requested seq 0, oldest available is 3: seq 1 and 2 were evicted.
+        assert_eq!(dropped_event_count(0, 3), 2);
+    }
+
+    #[test]
+    fn build_replay_gap_frame_has_expected_shape() {
+        let frame = build_replay_gap_frame(1, 3, 10);
+        assert_eq!(frame["kind"], "replay_gap");
+        assert_eq!(frame["requestedSinceSeq"], 1);
+        assert_eq!(frame["oldestAvailable"], 3);
+        assert_eq!(frame["seq"], 10);
+        assert_eq!(frame["droppedCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn catch_up_after_lag_backfills_from_replay_buffer_without_a_gap_frame() {
+        // The replay buffer's capacity comfortably covers what a broadcast-
+        // channel lag would have dropped, so recovery should be silent: no
+        // replay_gap frame, just the missed durable events forwarded.
+        let replay_buffer = ReplayBuffer::new(100);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "first"}))
+            .await
+            .unwrap();
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "second"}))
+            .await
+            .unwrap();
+
+        // Client was caught up through seq 0 (nothing yet) when it lagged.
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+
+        assert_eq!(
+            frames.len(),
+            2,
+            "both missed durable events should be backfilled"
+        );
+        assert!(
+            frames.iter().all(|frame| frame["kind"] != "replay_gap"),
+            "no gap frame expected when the replay buffer still has everything"
+        );
+        assert_eq!(frames[0]["body"], "first");
+        assert_eq!(frames[1]["body"], "second");
+        assert_eq!(new_high_water, 2);
+    }
+
+    #[tokio::test]
+    async fn catch_up_after_lag_emits_gap_frame_when_replay_buffer_also_aged_out() {
+        // Tiny capacity: by the time we try to recover, even the replay
+        // buffer no longer has the range the client needs.
+        let replay_buffer = ReplayBuffer::new(2);
+        for i in 0..5 {
+            replay_buffer
+                .push(json!({"kind": "relay_inbound", "body": format!("msg-{i}")}))
+                .await
+                .unwrap();
+        }
+
+        // Client was caught up through seq 0, far behind the buffer's
+        // current oldest (seq 4, since only the last 2 of 5 are retained).
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+
+        assert!(!frames.is_empty());
+        assert_eq!(
+            frames[0]["kind"], "replay_gap",
+            "first frame should be the gap notification"
+        );
+        assert_eq!(frames[0]["requestedSinceSeq"], 0);
+        assert_eq!(frames[0]["oldestAvailable"], 4);
+        assert_eq!(frames[0]["droppedCount"], 3);
+        // Remaining frames are the events still available in the buffer.
+        assert_eq!(frames.len(), 1 + 2);
+        assert_eq!(new_high_water, 5);
+    }
+
+    #[tokio::test]
+    async fn catch_up_after_lag_is_noop_when_nothing_new_happened() {
+        let replay_buffer = ReplayBuffer::new(10);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "only"}))
+            .await
+            .unwrap();
+
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 1).await;
+
+        assert!(
+            frames.is_empty(),
+            "client was already caught up, lag must have been ephemeral-only traffic"
+        );
+        assert_eq!(new_high_water, 1);
     }
 }
 

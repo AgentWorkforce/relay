@@ -21,6 +21,21 @@ pub struct ReplayEntry {
 }
 
 /// Thread-safe ring buffer that stores recent broadcast events.
+///
+/// The buffer is purely capacity-bound FIFO and **kind-agnostic**: it has no
+/// notion of "important" vs. "ephemeral" events, so every call to [`push`]
+/// counts equally against the shared `capacity`. That means callers are
+/// responsible for keeping high-frequency, replay-insensitive event kinds
+/// (e.g. `worker_stream`, which is raw per-chunk PTY output re-rendered from
+/// the terminal's own separate buffer, not something a reconnecting
+/// dashboard client needs replayed) out of this buffer entirely — otherwise a
+/// burst of them can evict low-frequency, durability-sensitive events (e.g.
+/// `relay_inbound`) before a reconnecting client ever gets a chance to
+/// request them. See `listen_api::broadcast_if_relevant` for the filtering
+/// policy the broker's dashboard WS pipeline applies before calling
+/// [`push`].
+///
+/// [`push`]: ReplayBuffer::push
 #[derive(Clone)]
 pub struct ReplayBuffer {
     inner: Arc<RwLock<ReplayBufferInner>>,
@@ -68,14 +83,24 @@ impl ReplayBuffer {
     }
 
     /// Retrieve all events with seq > since_seq.
-    /// Returns `(events, had_gap)` where `had_gap` is true if the requested
-    /// seq is older than the oldest event in the buffer.
+    /// Returns `(events, had_gap)` where `had_gap` is true if events the
+    /// caller needed (i.e. with seq in `(since_seq, oldest)`) have already
+    /// been evicted from the buffer.
+    ///
+    /// Note the strict `since_seq + 1 < oldest` comparison rather than
+    /// `since_seq < oldest`: sequence numbers are 1-based (the first event
+    /// ever pushed gets seq 1), so a brand-new client requesting
+    /// `since_seq = 0` against a buffer that has never evicted anything
+    /// (`oldest == 1`) is not missing anything — there is no seq 0 to have
+    /// lost. Using the looser comparison would falsely report a gap on
+    /// every first-time connection as soon as a single durable event had
+    /// ever been recorded.
     pub async fn replay_since(&self, since_seq: u64) -> (Vec<ReplayEntry>, Option<u64>) {
         let inner = self.inner.read().await;
         let oldest_seq = inner.entries.front().map(|e| e.seq);
 
         let gap = match oldest_seq {
-            Some(oldest) if since_seq < oldest => Some(oldest),
+            Some(oldest) if since_seq + 1 < oldest => Some(oldest),
             _ => None,
         };
 
@@ -212,5 +237,85 @@ mod tests {
         let (events, gap) = buf.replay_since(2).await;
         assert!(gap.is_none());
         assert!(events.is_empty());
+    }
+
+    /// Regression test for an off-by-one in gap detection: sequence numbers
+    /// are 1-based, so a brand-new dashboard client's default cursor
+    /// (`since_seq = 0`, i.e. "I have no cursor yet, replay everything")
+    /// must not be treated as a gap just because nothing has ever been
+    /// evicted. Before this fix, `since_seq < oldest` was `0 < 1` (true) as
+    /// soon as a single durable event existed, so *every* first-time
+    /// connection would receive a spurious `replay_gap` frame even though
+    /// nothing was actually lost.
+    #[tokio::test]
+    async fn since_zero_is_not_a_gap_when_nothing_has_been_evicted() {
+        let buf = ReplayBuffer::new(16);
+
+        buf.push(json!({"kind": "relay_inbound", "body": "first ever event"}))
+            .await
+            .unwrap();
+
+        let (events, gap) = buf.replay_since(0).await;
+        assert!(
+            gap.is_none(),
+            "no eviction ever happened, so since_seq=0 must not be reported as a gap"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    /// Complement to the above: if a client's cursor already points at the
+    /// event immediately before the oldest retained one (i.e. they already
+    /// have everything up to and including that point), there is still no
+    /// gap even though `since_seq < oldest` in the old, looser sense.
+    #[tokio::test]
+    async fn since_seq_immediately_before_oldest_is_not_a_gap() {
+        let buf = ReplayBuffer::new(3);
+
+        for i in 0..5 {
+            buf.push(json!({"kind": format!("event_{}", i)}))
+                .await
+                .unwrap();
+        }
+        // Capacity 3, so entries with seq 3, 4, 5 remain (oldest = 3).
+        let (events, gap) = buf.replay_since(2).await;
+        assert!(
+            gap.is_none(),
+            "client already has everything through seq 2; nothing after that was evicted"
+        );
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].seq, 3);
+    }
+
+    /// `ReplayBuffer` itself has no concept of event "kind" — it is a plain
+    /// capacity-bound FIFO, and every `push` (whatever its `kind`) counts
+    /// against the same shared `capacity`. This test locks in that raw
+    /// eviction contract using realistic kind names: if a caller pushes
+    /// `worker_stream` chunks directly into this buffer alongside a durable
+    /// `relay_inbound` event, the flood *will* evict it once capacity is
+    /// exceeded. That's precisely why callers (see
+    /// `listen_api::broadcast_if_relevant`) must filter high-frequency
+    /// ephemeral kinds out *before* calling `push`, rather than relying on
+    /// this buffer to do it. Regression coverage for that filtering itself
+    /// lives in `listen_api.rs`'s `worker_stream_flood_does_not_evict_earlier_relay_inbound`.
+    #[tokio::test]
+    async fn raw_buffer_is_kind_agnostic_and_will_evict_anything_once_full() {
+        let buf = ReplayBuffer::new(4);
+
+        buf.push(json!({"kind": "relay_inbound", "body": "important"}))
+            .await
+            .unwrap();
+        for i in 0..10 {
+            buf.push(json!({"kind": "worker_stream", "data": format!("chunk-{i}")}))
+                .await
+                .unwrap();
+        }
+
+        let (events, gap) = buf.replay_since(0).await;
+        assert!(gap.is_some(), "oldest entry (relay_inbound) was evicted");
+        assert!(
+            events.iter().all(|e| e.event["kind"] != "relay_inbound"),
+            "the buffer does not distinguish event kinds, so relay_inbound was evicted \
+             along with everything else once capacity was exceeded"
+        );
     }
 }
