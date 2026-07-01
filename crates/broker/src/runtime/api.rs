@@ -1,4 +1,27 @@
 use super::*;
+use relaycast::{CreateObserverTokenRequest, ObserverScope};
+
+/// Default name recorded on observer tokens minted via `/api/observer-token`
+/// when the caller doesn't supply one.
+const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
+
+/// Scopes granted to observer tokens minted via `/api/observer-token`: broad
+/// read access to workspace activity, deliberately excluding anything
+/// write/spawn-capable (unlike the raw `rk_live_...` workspace key this
+/// replaces) and `search:read`/`nodes:read`/`deliveries:read`/
+/// `files:read`/`reactions:read`, which aren't needed by the observer
+/// dashboard use case this unblocks.
+pub(crate) fn default_observer_token_scopes() -> Vec<ObserverScope> {
+    vec![
+        ObserverScope::StreamRead,
+        ObserverScope::MessagesRead,
+        ObserverScope::ThreadsRead,
+        ObserverScope::DmsRead,
+        ObserverScope::ChannelsRead,
+        ObserverScope::ActivityRead,
+        ObserverScope::AgentsRead,
+    ]
+}
 
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
@@ -621,44 +644,13 @@ impl BrokerRuntime {
                 reply,
             } => {
                 let normalized_to = to.trim().to_string();
-                let selected_workspace = if let Some(workspace_id) = workspace_id.as_deref() {
-                    workspace_lookup.get(workspace_id).cloned().ok_or_else(|| {
-                        format!(
-                            "workspace_not_found:workspace '{}' is not attached",
-                            workspace_id
-                        )
-                    })
-                } else if let Some(workspace_alias) = workspace_alias.as_deref() {
-                    workspaces
-                        .iter()
-                        .find(|workspace| {
-                            workspace
-                                .workspace_alias
-                                .as_deref()
-                                .is_some_and(|alias| alias.eq_ignore_ascii_case(workspace_alias))
-                        })
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "workspace_not_found:workspace alias '{}' is not attached",
-                                workspace_alias
-                            )
-                        })
-                } else if workspaces.len() == 1 {
-                    Ok(workspaces[0].clone())
-                } else if let Some(default_workspace_id) = default_workspace_id.as_deref() {
-                    workspace_lookup
-                        .get(default_workspace_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "workspace_not_found: default workspace '{}' not found",
-                                default_workspace_id
-                            )
-                        })
-                } else {
-                    Err("ambiguous_workspace:workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string())
-                };
+                let selected_workspace = resolve_workspace(
+                    workspace_id.as_deref(),
+                    workspace_alias.as_deref(),
+                    workspaces,
+                    workspace_lookup,
+                    default_workspace_id.as_deref(),
+                );
                 let selected_workspace = match selected_workspace {
                     Ok(workspace) => workspace,
                     Err(error) => {
@@ -907,6 +899,95 @@ impl BrokerRuntime {
                 }
                 let threads = build_thread_infos(&messages, self_names);
                 let _ = reply.send(Ok(json!({ "threads": threads })));
+            }
+            ListenApiRequest::CreateObserverToken {
+                workspace_id,
+                workspace_alias,
+                name,
+                reply,
+            } => {
+                let selected_workspace = resolve_workspace(
+                    workspace_id.as_deref(),
+                    workspace_alias.as_deref(),
+                    workspaces,
+                    workspace_lookup,
+                    default_workspace_id.as_deref(),
+                );
+                let selected_workspace = match selected_workspace {
+                    Ok(workspace) => workspace,
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                };
+                let selected_workspace_id = selected_workspace.workspace_id.clone();
+                let selected_workspace_alias = selected_workspace.workspace_alias.clone();
+                let token_name = name
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| DEFAULT_OBSERVER_TOKEN_NAME.to_string());
+
+                // Bounded the same way `Send`'s relaycast publish is: if the
+                // SDK call hangs, this broker task must not block
+                // indefinitely on it (the HTTP layer already gives up after
+                // `LISTEN_API_SEND_TIMEOUT`, but that alone wouldn't free
+                // this runtime task). Uses its own timeout (distinct from
+                // `http_api_relaycast_send_timeout`) so tuning the `/api/send`
+                // path can't unintentionally break token minting.
+                let relaycast_timeout = http_api_observer_token_timeout();
+                match timeout(
+                    relaycast_timeout,
+                    selected_workspace.http_client.create_observer_token(
+                        CreateObserverTokenRequest {
+                            name: token_name,
+                            scopes: default_observer_token_scopes(),
+                            description: None,
+                            filters: None,
+                            expires_at: None,
+                        },
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(observer_token)) => {
+                        tracing::info!(
+                            target = "relay_broker::http_api",
+                            workspace_id = %selected_workspace_id,
+                            observer_token_id = %observer_token.id,
+                            "minted observer token via HTTP API"
+                        );
+                        let _ = reply.send(Ok(json!({
+                            "success": true,
+                            "id": observer_token.id,
+                            "token": observer_token.token,
+                            "name": observer_token.name,
+                            "scopes": observer_token.scopes,
+                            "workspace_id": selected_workspace_id,
+                            "workspace_alias": selected_workspace_alias,
+                        })));
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            target = "relay_broker::http_api",
+                            workspace_id = %selected_workspace_id,
+                            error = %error,
+                            "failed to mint observer token via HTTP API"
+                        );
+                        let _ =
+                            reply.send(Err(format!("Failed to create observer token: {error}")));
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            target = "relay_broker::http_api",
+                            workspace_id = %selected_workspace_id,
+                            timeout_ms = %relaycast_timeout.as_millis(),
+                            "timed out minting observer token via HTTP API"
+                        );
+                        let _ = reply.send(Err(format!(
+                            "Failed to create observer token: timed out after {}ms",
+                            relaycast_timeout.as_millis()
+                        )));
+                    }
+                }
             }
             ListenApiRequest::SendInput { name, data, reply } => {
                 match workers
@@ -1484,6 +1565,61 @@ impl BrokerRuntime {
                 unreachable!("fleet sidecar API requests are handled before runtime borrows")
             }
         }
+    }
+}
+
+/// Resolve which attached workspace an HTTP API request targets. Shared by
+/// every route that accepts optional `workspaceId`/`workspaceAlias` fields
+/// (`/api/send`, `/api/observer-token`, ...): explicit id, explicit alias,
+/// the sole attached workspace, the configured default, or — with more than
+/// one workspace attached and no default — an `ambiguous_workspace:` error
+/// the caller must resolve by supplying one of the two fields. A
+/// `workspace_not_found:` error is returned when an explicit id/alias/default
+/// doesn't match any attached workspace.
+pub(crate) fn resolve_workspace(
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+    workspaces: &[RelayWorkspace],
+    workspace_lookup: &HashMap<WorkspaceId, RelayWorkspace>,
+    default_workspace_id: Option<&str>,
+) -> Result<RelayWorkspace, String> {
+    if let Some(workspace_id) = workspace_id {
+        workspace_lookup.get(workspace_id).cloned().ok_or_else(|| {
+            format!(
+                "workspace_not_found:workspace '{}' is not attached",
+                workspace_id
+            )
+        })
+    } else if let Some(workspace_alias) = workspace_alias {
+        workspaces
+            .iter()
+            .find(|workspace| {
+                workspace
+                    .workspace_alias
+                    .as_deref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(workspace_alias))
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "workspace_not_found:workspace alias '{}' is not attached",
+                    workspace_alias
+                )
+            })
+    } else if workspaces.len() == 1 {
+        Ok(workspaces[0].clone())
+    } else if let Some(default_workspace_id) = default_workspace_id {
+        workspace_lookup
+            .get(default_workspace_id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "workspace_not_found: default workspace '{}' not found",
+                    default_workspace_id
+                )
+            })
+    } else {
+        Err("ambiguous_workspace:workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string())
     }
 }
 
