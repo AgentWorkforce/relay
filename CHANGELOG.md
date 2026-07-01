@@ -105,6 +105,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.2.0] - 2026-07-01
+
+### Added
+
+- Add POST /api/observer-token to mint scoped read-only tokens
+
+### Fixed
+
+- Harden dashboard replay against silent live-channel drops
+
 ## [9.1.10] - 2026-07-01
 
 ### Fixed
