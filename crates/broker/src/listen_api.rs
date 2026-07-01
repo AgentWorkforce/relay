@@ -191,6 +191,17 @@ pub enum ListenApiRequest {
         metadata: Option<Value>,
         reply: tokio::sync::oneshot::Sender<Result<Value, AgentResultRouteError>>,
     },
+    /// `POST /api/observer-token` — mint a scoped, read-only Relaycast
+    /// observer token (`ot_live_...`) for the resolved workspace. Used by
+    /// local dashboard clients (e.g. Pear's "Join as observer" link) so they
+    /// stop embedding the full `rk_live_...` workspace key, which grants
+    /// full read/write/spawn access, in shareable links.
+    CreateObserverToken {
+        workspace_id: Option<WorkspaceId>,
+        workspace_alias: Option<WorkspaceAlias>,
+        name: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     FleetSidecarConnect {
         outbound: mpsc::Sender<ProtocolEnvelope<Value>>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -412,6 +423,10 @@ fn listen_api_router_with_auth(
             routing::post(listen_api_interrupt),
         )
         .route("/api/send", routing::post(listen_api_send))
+        .route(
+            "/api/observer-token",
+            routing::post(listen_api_create_observer_token),
+        )
         .route("/api/input/{name}", routing::post(listen_api_send_input))
         .route(
             "/api/input/{name}/stream",
@@ -1282,6 +1297,85 @@ async fn listen_api_send(
                 })),
             )
         }
+    }
+}
+
+/// `POST /api/observer-token` — mint a scoped, read-only observer token for
+/// the resolved workspace so local dashboard clients (e.g. Pear's "Join as
+/// observer" link) never have to embed the full workspace API key.
+async fn listen_api_create_observer_token(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    body: Option<axum::Json<Value>>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let body = body.map(|axum::Json(value)| value).unwrap_or(Value::Null);
+    let workspace_id = body
+        .get("workspaceId")
+        .or_else(|| body.get("workspace_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let workspace_alias = body
+        .get("workspaceAlias")
+        .or_else(|| body.get("workspace_alias"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::CreateObserverToken {
+            workspace_id: workspace_id.map(WorkspaceId::from),
+            workspace_alias: workspace_alias.map(WorkspaceAlias::from),
+            name,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+
+    match timeout(LISTEN_API_SEND_TIMEOUT, reply_rx).await {
+        Ok(Ok(Ok(val))) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Ok(Err(err))) => {
+            let raw_error = err.to_string();
+            let status = if raw_error.starts_with("ambiguous_workspace:")
+                || raw_error.starts_with("workspace_not_found:")
+            {
+                axum::http::StatusCode::BAD_REQUEST
+            } else {
+                axum::http::StatusCode::BAD_GATEWAY
+            };
+            let error = raw_error
+                .strip_prefix("ambiguous_workspace:")
+                .or_else(|| raw_error.strip_prefix("workspace_not_found:"))
+                .unwrap_or(&raw_error)
+                .to_string();
+            (
+                status,
+                axum::Json(json!({ "success": false, "error": error })),
+            )
+        }
+        Ok(Err(_)) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
+        Err(_) => (
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            axum::Json(json!({ "success": false, "error": "broker request timed out" })),
+        ),
     }
 }
 

@@ -88,6 +88,8 @@ mod tests;
 mod util;
 mod worker_events;
 
+#[cfg(test)]
+pub(crate) use api::{default_observer_token_scopes, resolve_workspace};
 pub(crate) use app_server::*;
 pub(crate) use connection::*;
 pub(crate) use delivery::*;

@@ -5,8 +5,8 @@ use relaycast::{
     agent::DmOptions, format_registration_error,
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    CompleteInvocationRequest, MessageListQuery, RegisterActionRequest, RelayCast,
-    RelayCastOptions, ReleaseAgentRequest,
+    CompleteInvocationRequest, CreateObserverTokenRequest, MessageListQuery, ObserverToken,
+    RegisterActionRequest, RelayCast, RelayCastOptions, ReleaseAgentRequest,
 };
 use serde_json::Value;
 
@@ -187,6 +187,25 @@ impl RelaycastHttpClient {
             .context("SDK relay client not initialized")?;
         relay
             .register_action(request)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Mint a scoped, read-only observer token for this workspace. Used by
+    /// the local HTTP API so callers (e.g. Pear's "Join as observer" link)
+    /// can hand out a narrow `ot_live_...` credential instead of the raw
+    /// `rk_live_...` workspace key, which grants full read/write/spawn
+    /// access. The raw token material is only present on this response (and
+    /// on `rotate_observer_token`'s), never on subsequent reads.
+    pub async fn create_observer_token(
+        &self,
+        request: CreateObserverTokenRequest,
+    ) -> Result<ObserverToken> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        relay
+            .create_observer_token(request)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
