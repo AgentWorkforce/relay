@@ -639,7 +639,9 @@ describe('createAgentRelayMcpServer', () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mocks.agentRelayPlacementSpawnImpl.mockRejectedValueOnce(
       Object.assign(
-        new Error('Placement queued: no live node advertises capability "spawn:claude"; placement TTL expired'),
+        new Error(
+          'Placement queued: no live node advertises capability "spawn:claude"; placement TTL expired'
+        ),
         { code: 'placement_ttl_expired' }
       )
     );
