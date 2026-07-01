@@ -926,18 +926,27 @@ impl BrokerRuntime {
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| DEFAULT_OBSERVER_TOKEN_NAME.to_string());
 
-                match selected_workspace
-                    .http_client
-                    .create_observer_token(CreateObserverTokenRequest {
-                        name: token_name,
-                        scopes: default_observer_token_scopes(),
-                        description: None,
-                        filters: None,
-                        expires_at: None,
-                    })
-                    .await
+                // Bounded the same way `Send`'s relaycast publish is: if the
+                // SDK call hangs, this broker task must not block
+                // indefinitely on it (the HTTP layer already gives up after
+                // `LISTEN_API_SEND_TIMEOUT`, but that alone wouldn't free
+                // this runtime task).
+                let relaycast_timeout = http_api_relaycast_send_timeout();
+                match timeout(
+                    relaycast_timeout,
+                    selected_workspace.http_client.create_observer_token(
+                        CreateObserverTokenRequest {
+                            name: token_name,
+                            scopes: default_observer_token_scopes(),
+                            description: None,
+                            filters: None,
+                            expires_at: None,
+                        },
+                    ),
+                )
+                .await
                 {
-                    Ok(observer_token) => {
+                    Ok(Ok(observer_token)) => {
                         tracing::info!(
                             target = "relay_broker::http_api",
                             workspace_id = %selected_workspace_id,
@@ -954,7 +963,7 @@ impl BrokerRuntime {
                             "workspace_alias": selected_workspace_alias,
                         })));
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         tracing::warn!(
                             target = "relay_broker::http_api",
                             workspace_id = %selected_workspace_id,
@@ -963,6 +972,18 @@ impl BrokerRuntime {
                         );
                         let _ =
                             reply.send(Err(format!("Failed to create observer token: {error}")));
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            target = "relay_broker::http_api",
+                            workspace_id = %selected_workspace_id,
+                            timeout_ms = %relaycast_timeout.as_millis(),
+                            "timed out minting observer token via HTTP API"
+                        );
+                        let _ = reply.send(Err(format!(
+                            "Failed to create observer token: timed out after {}ms",
+                            relaycast_timeout.as_millis()
+                        )));
                     }
                 }
             }

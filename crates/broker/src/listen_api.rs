@@ -1305,29 +1305,68 @@ async fn listen_api_send(
 /// observer" link) never have to embed the full workspace API key.
 async fn listen_api_create_observer_token(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
-    body: Option<axum::Json<Value>>,
+    body: axum::body::Bytes,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let body = body.map(|axum::Json(value)| value).unwrap_or(Value::Null);
-    let workspace_id = body
-        .get("workspaceId")
-        .or_else(|| body.get("workspace_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let workspace_alias = body
-        .get("workspaceAlias")
-        .or_else(|| body.get("workspace_alias"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    // Parse raw bytes instead of using the `Json`/`Option<Json<_>>` extractor:
+    // dashboard clients may send `Content-Type: application/json` with an
+    // empty body (every field here is optional), and axum still attempts to
+    // parse that body and rejects the request before this handler runs.
+    let body: Value = if body.is_empty() {
+        Value::Null
+    } else {
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(json!({
+                        "success": false,
+                        "error": format!("invalid JSON body: {err}"),
+                    })),
+                );
+            }
+        }
+    };
+
+    // Extract an optional string field, rejecting the request with 400 if a
+    // field is present but not a string, rather than silently treating a
+    // malformed selector as absent (which could mint a token for the wrong
+    // workspace on this credential-minting endpoint).
+    let string_field =
+        |keys: &[&str]| -> Result<Option<String>, (axum::http::StatusCode, axum::Json<Value>)> {
+            for key in keys {
+                let Some(raw) = body.get(*key) else {
+                    continue;
+                };
+                if raw.is_null() {
+                    continue;
+                }
+                let Some(value) = raw.as_str() else {
+                    return Err((
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(json!({
+                            "success": false,
+                            "error": format!("field '{key}' must be a string"),
+                        })),
+                    ));
+                };
+                let value = value.trim();
+                return Ok((!value.is_empty()).then(|| value.to_string()));
+            }
+            Ok(None)
+        };
+    let workspace_id = match string_field(&["workspaceId", "workspace_id"]) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let workspace_alias = match string_field(&["workspaceAlias", "workspace_alias"]) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let name = match string_field(&["name"]) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
@@ -3162,6 +3201,156 @@ mod auth_tests {
         assert!(
             rx.try_recv().is_err(),
             "invalid mode should not enqueue request"
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_accepts_empty_body_with_json_content_type() {
+        // Dashboard clients may send `Content-Type: application/json` with an
+        // empty body since every field on this endpoint is optional; it must
+        // not be rejected before the handler runs (regression test for the
+        // `Json`/`Option<Json<_>>` extractor pitfall).
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::CreateObserverToken {
+                    workspace_id,
+                    workspace_alias,
+                    name,
+                    reply,
+                }) => {
+                    assert_eq!(workspace_id, None);
+                    assert_eq!(workspace_alias, None);
+                    assert_eq!(name, None);
+                    let _ = reply.send(Ok(json!({
+                        "success": true,
+                        "id": "ot_1",
+                        "token": "ot_live_abc",
+                        "name": "pear-dashboard-observer",
+                        "scopes": ["stream:read"],
+                        "workspace_id": "ws_1",
+                        "workspace_alias": null,
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_accepts_missing_body_entirely() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::CreateObserverToken { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "success": true, "id": "ot_1" })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_rejects_non_string_workspace_id() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "workspaceId": 123 }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], json!(false));
+        assert!(
+            rx.try_recv().is_err(),
+            "malformed workspaceId should not enqueue a request"
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_rejects_non_string_name() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "name": ["not", "a", "string"] }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            rx.try_recv().is_err(),
+            "malformed name should not enqueue a request"
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_rejects_malformed_json_body() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{not json"))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            rx.try_recv().is_err(),
+            "unparseable body should not enqueue a request"
         );
     }
 
