@@ -31,6 +31,30 @@
             "reasoning": "The pinned RELAY_NODE_TOKEN path must keep using the enrolled machine seed verbatim, while create_node auto-mint needs node IDs unique across workspaces for the same cwd."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1782881292811,
+          "type": "decision",
+          "content": "Route MCP add_agent through fleet placement.spawn: Route MCP add_agent through fleet placement.spawn",
+          "raw": {
+            "question": "Route MCP add_agent through fleet placement.spawn",
+            "chosen": "Route MCP add_agent through fleet placement.spawn",
+            "alternatives": [],
+            "reasoning": "The failure occurs when the MCP add_agent path calls legacy RelayCast agents.spawn and receives no live node for spawn:<cli>. The SDK already exposes capability-aware placement that selects a live eligible node and invokes the spawn action with target_node and cli pinned from the capability."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1782881771217,
+          "type": "decision",
+          "content": "Add local broker fallback for MCP add_agent: Add local broker fallback for MCP add_agent",
+          "raw": {
+            "question": "Add local broker fallback for MCP add_agent",
+            "chosen": "Add local broker fallback for MCP add_agent",
+            "alternatives": [],
+            "reasoning": "Live workspace inspection showed no hosted spawn-capable node, only offline implicit direct nodes. Authenticated MCP add_agent now first uses fail-fast fleet placement for real hosted nodes, then connects to an already-running local broker and spawns through /api/spawn when placement reports no eligible live node."
+          },
+          "significance": "high"
         }
       ]
     }

@@ -13,6 +13,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { RelayCast, SDK_VERSION, WsClient } from '@relaycast/sdk';
 import { AgentRelay } from '@agent-relay/sdk';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { z } from 'zod';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
@@ -49,6 +50,45 @@ const EXIT_AFTER_TASK_INSTRUCTION =
 
 function withExitAfterTaskInstruction(task: string): string {
   return `${task}\n\n${EXIT_AFTER_TASK_INSTRUCTION}`;
+}
+
+function isNoEligiblePlacementError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { code?: unknown; message?: unknown; name?: unknown };
+  const code = typeof record.code === 'string' ? record.code : undefined;
+  const message = typeof record.message === 'string' ? record.message : '';
+  return (
+    code === 'placement_ttl_expired' ||
+    message.includes('no live node advertises capability') ||
+    message.includes('No live node provides')
+  );
+}
+
+async function spawnViaLocalBroker(input: {
+  name: string;
+  cli: string;
+  task: string;
+  channel?: string;
+  model?: string;
+}): Promise<unknown> {
+  const client = HarnessDriverClient.connect({ cwd: process.cwd() });
+  try {
+    const handle = await client.spawnPty({
+      name: input.name,
+      cli: input.cli,
+      task: input.task,
+      channels: input.channel ? [input.channel] : ['general'],
+      ...(input.model ? { model: input.model } : {}),
+    });
+    return {
+      spawned: true,
+      name: input.name,
+      source: 'local_broker',
+      pid: handle.pid,
+    };
+  } finally {
+    await client.shutdown().catch(() => undefined);
+  }
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
@@ -595,29 +635,68 @@ function registerAgentRelayTools(
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) =>
-      jsonContent(
+    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) => {
+      const session = getSession();
+      requireWorkspaceKey(session);
+      const effectiveTask =
+        exit_after_task ||
+        spawn_mode === 'task_exit' ||
+        spawn_mode === 'task-exit' ||
+        spawn_mode === 'single_shot' ||
+        spawn_mode === 'single-shot'
+          ? withExitAfterTaskInstruction(task)
+          : task;
+      const spawnInput = {
+        name,
+        cli,
+        task: effectiveTask,
+        ...(channel ? { channel } : {}),
+        ...(persona ? { persona } : {}),
+        ...(model ? { model, metadata: { model } } : {}),
+      };
+
+      if (session.agentToken) {
+        const relay = new AgentRelay(
+          withRelaycastTelemetry({
+            workspaceKey: session.workspaceKey ?? undefined,
+            agentToken: session.agentToken,
+            baseUrl,
+          })
+        );
+        try {
+          return jsonContent(
+            await relay.messaging.placement.spawn({
+              capability: `spawn:${cli}`,
+              failFast: true,
+              input: spawnInput,
+            })
+          );
+        } catch (error) {
+          if (!isNoEligiblePlacementError(error)) {
+            throw error;
+          }
+          return jsonContent(
+            await spawnViaLocalBroker({
+              name,
+              cli,
+              task: effectiveTask,
+              ...(channel ? { channel } : {}),
+              ...(model ? { model } : {}),
+            })
+          );
+        }
+      }
+
+      return jsonContent(
         await getRelay().agents.spawn({
-          name,
+          ...spawnInput,
           // The broker/gateway support grok and opencode at runtime, but the
           // @relaycast/sdk SpawnAgentRequest type narrows cli to the core five.
           // Cast to keep grok/opencode selectable from the MCP tool enum.
           cli: cli as 'claude' | 'codex' | 'gemini' | 'aider' | 'goose',
-          task:
-            exit_after_task ||
-            spawn_mode === 'task_exit' ||
-            spawn_mode === 'task-exit' ||
-            spawn_mode === 'single_shot' ||
-            spawn_mode === 'single-shot'
-              ? withExitAfterTaskInstruction(task)
-              : task,
-          channel,
-          persona,
-          // SpawnAgentRequest has no top-level model field; pass via metadata
-          // so the broker can extract it and forward --model to the launched CLI.
-          metadata: model ? { model } : undefined,
         })
-      )
+      );
+    }
   );
 
   server.registerTool(

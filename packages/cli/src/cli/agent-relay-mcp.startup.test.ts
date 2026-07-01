@@ -28,6 +28,22 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const telemetryTrack = vi.fn();
   const telemetryInit = vi.fn();
   const telemetryShutdown = vi.fn(async () => undefined);
+  const localSpawnPty = vi.fn(async (input: { name: string; cli: string }) => ({
+    name: input.name,
+    runtime: 'pty',
+    pid: 4321,
+  }));
+  const localShutdown = vi.fn(async () => undefined);
+  const harnessDriverConnect = vi.fn(() => ({
+    spawnPty: localSpawnPty,
+    shutdown: localShutdown,
+  }));
+  const agentRelayPlacementSpawnImpl = vi.fn(async (input: unknown) => ({
+    invocationId: 'inv_placement',
+    actionName: 'spawn',
+    placement: { capability: 'spawn:claude', node: 'node-a', attempts: 1, queued: false },
+    input,
+  }));
   const relayInstances: Array<{
     config: Record<string, unknown>;
     registerOrRotate: ReturnType<typeof vi.fn>;
@@ -36,6 +52,11 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     spawn: ReturnType<typeof vi.fn>;
     release: ReturnType<typeof vi.fn>;
     as: ReturnType<typeof vi.fn>;
+  }> = [];
+  const agentRelayInstances: Array<{
+    config: Record<string, unknown>;
+    nodesList: ReturnType<typeof vi.fn>;
+    placementSpawn: ReturnType<typeof vi.fn>;
   }> = [];
   const behavior: RelayBehavior = {
     createWorkspaceImpl: vi.fn(async () => ({
@@ -214,9 +235,16 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       capabilities: [{ name: 'spawn:codex' }],
     },
   ]);
-  const AgentRelayMock = vi.fn(function (this: unknown) {
+  const AgentRelayMock = vi.fn(function (this: unknown, config: Record<string, unknown>) {
+    const placementSpawn = vi.fn((input: unknown) => agentRelayPlacementSpawnImpl(input));
+    agentRelayInstances.push({ config, nodesList: agentRelayNodesList, placementSpawn });
     return {
       nodes: { list: agentRelayNodesList },
+      messaging: {
+        placement: {
+          spawn: placementSpawn,
+        },
+      },
     };
   }) as any;
 
@@ -238,6 +266,11 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   vi.doMock('@relaycast/sdk', () => ({
     RelayCast,
     SDK_VERSION: 'test-sdk-version',
+  }));
+  vi.doMock('@agent-relay/harness-driver', () => ({
+    HarnessDriverClient: {
+      connect: harnessDriverConnect,
+    },
   }));
   vi.doMock('@agent-relay/sdk', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@agent-relay/sdk');
@@ -264,6 +297,11 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       telemetryInit,
       telemetryShutdown,
       RelayCast,
+      agentRelayInstances,
+      agentRelayPlacementSpawnImpl,
+      harnessDriverConnect,
+      localSpawnPty,
+      localShutdown,
       FakeTransport,
     },
   };
@@ -485,11 +523,12 @@ describe('createAgentRelayMcpServer', () => {
       cli: 'claude',
       task: 'help',
     });
-    const workspaceRelay = mocks.relayInstances.find(
-      (instance) => instance.config.apiKey === 'rk_live_existing'
+    const placementRelay = mocks.agentRelayInstances.find(
+      (instance) => instance.config.workspaceKey === 'rk_live_existing'
     );
-    expect(workspaceRelay?.config).toMatchObject({
-      apiKey: 'rk_live_existing',
+    expect(placementRelay?.config).toMatchObject({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
       baseUrl: 'https://relay.example.com/',
       originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
@@ -555,6 +594,85 @@ describe('createAgentRelayMcpServer', () => {
         duration_ms: expect.any(Number),
       })
     );
+  });
+
+  it('routes authenticated add_agent spawns through fleet placement', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
+      agentName: 'PinnedWorker',
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    const result = await server.tools.get('add_agent')?.handler({
+      name: 'WorkerB',
+      cli: 'claude',
+      task: 'help',
+      channel: 'general',
+      model: 'claude-sonnet-4-6',
+    });
+
+    const placementRelay = mocks.agentRelayInstances.find(
+      (instance) => instance.config.workspaceKey === 'rk_live_existing'
+    );
+    expect(placementRelay?.placementSpawn).toHaveBeenCalledWith({
+      capability: 'spawn:claude',
+      failFast: true,
+      input: {
+        name: 'WorkerB',
+        cli: 'claude',
+        task: 'help',
+        channel: 'general',
+        model: 'claude-sonnet-4-6',
+        metadata: { model: 'claude-sonnet-4-6' },
+      },
+    });
+    expect(result?.structuredContent).toMatchObject({
+      actionName: 'spawn',
+      placement: { capability: 'spawn:claude' },
+    });
+  });
+
+  it('falls back to the local broker when fleet placement has no live node', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.agentRelayPlacementSpawnImpl.mockRejectedValueOnce(
+      Object.assign(
+        new Error('Placement queued: no live node advertises capability "spawn:claude"; placement TTL expired'),
+        { code: 'placement_ttl_expired' }
+      )
+    );
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
+      agentName: 'PinnedWorker',
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    const result = await server.tools.get('add_agent')?.handler({
+      name: 'WorkerB',
+      cli: 'claude',
+      task: 'help',
+      model: 'claude-sonnet-4-6',
+    });
+
+    expect(mocks.harnessDriverConnect).toHaveBeenCalledWith({ cwd: process.cwd() });
+    expect(mocks.localSpawnPty).toHaveBeenCalledWith({
+      name: 'WorkerB',
+      cli: 'claude',
+      task: 'help',
+      channels: ['general'],
+      model: 'claude-sonnet-4-6',
+    });
+    expect(mocks.localShutdown).toHaveBeenCalled();
+    expect(result?.structuredContent).toEqual({
+      spawned: true,
+      name: 'WorkerB',
+      source: 'local_broker',
+      pid: 4321,
+    });
   });
 
   it('adds post-task exit instructions for task-exit add_agent spawns', async () => {
