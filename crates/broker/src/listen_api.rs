@@ -2381,12 +2381,26 @@ fn build_replay_gap_frame(requested_since_seq: u64, oldest_available: u64, seq: 
 ///
 /// Returns the frames to forward to the socket, in order, and the new
 /// high-water `seq` the caller is caught up through.
+///
+/// `cutoff_seq` is derived from the entries `replay_since` actually
+/// returned (the last entry's `seq`), rather than from a separate
+/// `replay_buffer.current_seq()` call taken before it. Reading
+/// `current_seq()` first and `replay_since()` second is a TOCTOU race: a
+/// durable event pushed (or an eviction) in between would make that
+/// earlier snapshot stale relative to what `replay_since` saw, which could
+/// pair a `replay_gap` frame's `seq` with a mismatched `oldestAvailable`, or
+/// cause a `seq <= cutoff_seq` filter to wrongly drop entries `replay_since`
+/// had already committed to returning. Deriving the cutoff from the
+/// snapshot itself keeps everything internally consistent by construction.
 async fn catch_up_after_lag(
     replay_buffer: &ReplayBuffer,
     last_forwarded_seq: u64,
 ) -> (Vec<Value>, u64) {
-    let cutoff_seq = replay_buffer.current_seq();
     let (entries, gap_oldest) = replay_buffer.replay_since(last_forwarded_seq).await;
+    let cutoff_seq = entries
+        .last()
+        .map(|entry| entry.seq)
+        .unwrap_or(last_forwarded_seq);
 
     let mut frames = Vec::with_capacity(entries.len() + 1);
     if let Some(oldest_available) = gap_oldest {
@@ -2396,12 +2410,7 @@ async fn catch_up_after_lag(
             cutoff_seq,
         ));
     }
-    frames.extend(
-        entries
-            .into_iter()
-            .filter(|entry| entry.seq <= cutoff_seq)
-            .map(|entry| entry.event),
-    );
+    frames.extend(entries.into_iter().map(|entry| entry.event));
 
     (frames, cutoff_seq)
 }
@@ -2776,7 +2785,7 @@ mod tests {
 mod replay_gap_tests {
     use super::{build_replay_gap_frame, catch_up_after_lag, dropped_event_count, extract_seq};
     use crate::replay_buffer::ReplayBuffer;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn extract_seq_reads_the_seq_field_without_full_value_parse() {
@@ -2903,6 +2912,55 @@ mod replay_gap_tests {
             "client was already caught up, lag must have been ephemeral-only traffic"
         );
         assert_eq!(new_high_water, 1);
+    }
+
+    /// Regression test for a TOCTOU race flagged in review: `catch_up_after_lag`
+    /// used to snapshot `replay_buffer.current_seq()` *before* calling
+    /// `replay_since()`, so a durable event pushed in between those two calls
+    /// would leave the returned cutoff stale relative to the entries actually
+    /// returned. The fix derives `cutoff_seq` from the entries snapshot
+    /// itself (its last entry's `seq`), so it is always internally
+    /// consistent with what was actually forwarded — even when more durable
+    /// events land after the caller decided `last_forwarded_seq` but before
+    /// recovery runs (exactly the interleaving that made the old
+    /// `current_seq()`-first approach stale).
+    #[tokio::test]
+    async fn catch_up_after_lag_cutoff_is_consistent_with_returned_entries() {
+        let replay_buffer = ReplayBuffer::new(50);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "a"}))
+            .await
+            .unwrap();
+        // These land after the client's last_forwarded_seq was decided (0)
+        // but are still present by the time catch_up_after_lag's single
+        // replay_since call runs — they must be reflected in the cutoff.
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "b"}))
+            .await
+            .unwrap();
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "c"}))
+            .await
+            .unwrap();
+
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+
+        assert_eq!(
+            frames.len(),
+            3,
+            "all three durable events should be forwarded"
+        );
+        assert!(frames.iter().all(|f| f["kind"] != "replay_gap"));
+        let max_forwarded_seq = frames
+            .iter()
+            .filter_map(|frame| frame.get("seq").and_then(Value::as_u64))
+            .max()
+            .expect("forwarded entries carry a seq field");
+        assert_eq!(
+            new_high_water, max_forwarded_seq,
+            "cutoff must exactly match the highest seq actually forwarded, not a stale snapshot"
+        );
+        assert_eq!(new_high_water, 3);
     }
 }
 
