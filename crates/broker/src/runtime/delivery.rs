@@ -940,7 +940,10 @@ mod reply_target_tests {
             "cont_load_1",
             "flush_1",
         ] {
-            assert!(!is_relaycast_reply_target(id), "expected non-target: {id:?}");
+            assert!(
+                !is_relaycast_reply_target(id),
+                "expected non-target: {id:?}"
+            );
         }
     }
 }
