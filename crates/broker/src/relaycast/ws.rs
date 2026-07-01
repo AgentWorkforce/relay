@@ -131,6 +131,19 @@ impl RelaycastHttpClient {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
+    /// Authenticate as `agent_name` rather than this broker's own identity.
+    ///
+    /// **Callers must only pass a name this broker has custodial
+    /// responsibility for** (a worker it spawned, or its own identity) —
+    /// this is not a safe way to relay an arbitrary, caller-supplied sender
+    /// label. Underneath, `AgentRegistrationClient::register_agent_token`
+    /// either registers a brand-new Relaycast agent under `agent_name` if
+    /// none exists, or — if one already does (409) — ROTATES its token,
+    /// invalidating whatever token that agent was already using. Passing an
+    /// unvalidated `agent_name` therefore risks silently disconnecting an
+    /// unrelated, already-registered agent that happens to share the name.
+    /// Validate against known-local names first; fall back to this
+    /// broker's own identity (`registered_agent_client`) for anything else.
     async fn registered_agent_client_as(
         &self,
         agent_name: &str,
@@ -245,12 +258,13 @@ impl RelaycastHttpClient {
 
     /// Send a direct message with explicit injection mode via the Relaycast REST API.
     ///
-    /// `from` is impersonated via [`registered_agent_client_as`] rather than
-    /// always posting as this broker's own registered identity (the same
-    /// impersonation-by-design pattern as [`mark_read_as_agent`]) — a DM
-    /// forwarded from a locally-attached worker must be attributed to that
-    /// worker's own Relaycast identity, not the broker's, or sender identity
-    /// is lost at the relay boundary.
+    /// `from` is authenticated via [`registered_agent_client_as`] rather than
+    /// always posting as this broker's own registered identity, so a DM
+    /// forwarded from a locally-attached worker is attributed to that
+    /// worker's own Relaycast identity instead of losing sender identity at
+    /// the relay boundary. **The caller must validate `from` first** —
+    /// see [`registered_agent_client_as`]'s doc comment for why passing an
+    /// arbitrary, unvalidated sender label here is unsafe.
     pub async fn send_dm_with_mode(
         &self,
         to: &str,
@@ -478,11 +492,15 @@ impl RelaycastHttpClient {
 
     /// Smart send with explicit injection mode.
     ///
-    /// `from` is impersonated via [`registered_agent_client_as`] (see
+    /// `from` is authenticated via [`registered_agent_client_as`] (see
     /// [`send_dm_with_mode`]) so the Relaycast-recorded sender matches the
     /// original request's `from` rather than always this broker's own
-    /// identity — this is the only delivery path now (no local-injection
-    /// bypass), so every send's sender attribution flows through here.
+    /// identity. **The caller must validate `from` first** (a locally-known
+    /// worker name or this broker's own identity) — see
+    /// [`registered_agent_client_as`]'s doc comment for why an arbitrary,
+    /// unvalidated sender label is unsafe to pass here. This is the only
+    /// delivery path now (no local-injection bypass), so every send's
+    /// sender attribution flows through here.
     ///
     /// `thread_id`, when present, is a Relaycast message id to reply to
     /// (channel targets only — Relaycast DMs have no thread concept): posting

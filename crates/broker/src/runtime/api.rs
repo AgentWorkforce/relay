@@ -699,6 +699,23 @@ impl BrokerRuntime {
                 let relaycast_timeout = http_api_relaycast_send_timeout();
                 let event_emit_timeout = http_api_event_emit_timeout();
 
+                // Only impersonate `from` on the Relaycast publish (see
+                // send_with_mode's doc comment) when it's a name this broker
+                // actually has custodial responsibility for: a worker it
+                // spawned, or its own identity. `delivery_from` is otherwise
+                // caller-supplied and unvalidated — impersonating an
+                // arbitrary string would let any HTTP API caller silently
+                // register a brand-new Relaycast agent under that name, or
+                // worse, ROTATE (and thereby invalidate) the live token of
+                // an unrelated, already-registered agent that happens to
+                // share the name. Falling back to the broker's own identity
+                // is always safe; impersonation is not.
+                let publish_from = if workers.has_worker(&delivery_from) {
+                    delivery_from.as_str()
+                } else {
+                    workspace_self_name.as_str()
+                };
+
                 record_thread_history_event(
                     recent_thread_messages,
                     json!({
@@ -733,6 +750,7 @@ impl BrokerRuntime {
                     event_id = %event_id,
                     to = %normalized_to,
                     delivery_from = %delivery_from,
+                    publish_from = %publish_from,
                     ui_from = %ui_from,
                     relaycast_timeout_ms = %relaycast_timeout.as_millis(),
                     "publishing to relaycast"
@@ -744,7 +762,7 @@ impl BrokerRuntime {
                         &normalized_to,
                         &text,
                         mode.clone(),
-                        &delivery_from,
+                        publish_from,
                         thread_id.as_deref(),
                     ),
                 )
