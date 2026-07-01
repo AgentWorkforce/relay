@@ -239,18 +239,26 @@ impl RelaycastHttpClient {
 
     /// Send a direct message to a named agent via the Relaycast REST API.
     pub async fn send_dm(&self, to: &str, text: &str) -> Result<()> {
-        self.send_dm_with_mode(to, text, MessageInjectionMode::Wait)
+        self.send_dm_with_mode(to, text, MessageInjectionMode::Wait, &self.agent_name)
             .await
     }
 
     /// Send a direct message with explicit injection mode via the Relaycast REST API.
+    ///
+    /// `from` is impersonated via [`registered_agent_client_as`] rather than
+    /// always posting as this broker's own registered identity (the same
+    /// impersonation-by-design pattern as [`mark_read_as_agent`]) — a DM
+    /// forwarded from a locally-attached worker must be attributed to that
+    /// worker's own Relaycast identity, not the broker's, or sender identity
+    /// is lost at the relay boundary.
     pub async fn send_dm_with_mode(
         &self,
         to: &str,
         text: &str,
         mode: MessageInjectionMode,
+        from: &str,
     ) -> Result<()> {
-        let agent_client = self.registered_agent_client().await?;
+        let agent_client = self.registered_agent_client_as(from, None).await?;
         let relay_mode = match mode {
             MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
             MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
@@ -464,31 +472,53 @@ impl RelaycastHttpClient {
 
     /// Smart send: routes to channel or DM based on `#` prefix.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
-        self.send_with_mode(to, text, MessageInjectionMode::Wait)
+        self.send_with_mode(to, text, MessageInjectionMode::Wait, &self.agent_name, None)
             .await
     }
 
     /// Smart send with explicit injection mode.
+    ///
+    /// `from` is impersonated via [`registered_agent_client_as`] (see
+    /// [`send_dm_with_mode`]) so the Relaycast-recorded sender matches the
+    /// original request's `from` rather than always this broker's own
+    /// identity — this is the only delivery path now (no local-injection
+    /// bypass), so every send's sender attribution flows through here.
+    ///
+    /// `thread_id`, when present, is a Relaycast message id to reply to
+    /// (channel targets only — Relaycast DMs have no thread concept): posting
+    /// via [`AgentClient::reply`] instead of a plain channel post is what
+    /// actually creates real thread/conversation grouping on the Relaycast
+    /// side, as opposed to passing an opaque value the server doesn't
+    /// interpret as a reply.
     pub async fn send_with_mode(
         &self,
         to: &str,
         text: &str,
         mode: MessageInjectionMode,
+        from: &str,
+        thread_id: Option<&str>,
     ) -> Result<()> {
         if to.starts_with('#') {
-            let agent_client = self.registered_agent_client().await?;
+            let agent_client = self.registered_agent_client_as(from, None).await?;
             let relay_mode = match mode {
                 MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
                 MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
             };
-            agent_client
-                .send_with_mode(to, text, None, None, relay_mode, None)
-                .await
-                .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+            if let Some(thread_id) = thread_id {
+                agent_client
+                    .reply(thread_id, text, None, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("relaycast thread reply failed: {e}"))?;
+            } else {
+                agent_client
+                    .send_with_mode(to, text, None, None, relay_mode, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+            }
             return Ok(());
         }
 
-        self.send_dm_with_mode(to, text, mode).await
+        self.send_dm_with_mode(to, text, mode, from).await
     }
 }
 
@@ -639,7 +669,13 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .send_with_mode("worker-a", "interrupt", MessageInjectionMode::Steer)
+            .send_with_mode(
+                "worker-a",
+                "interrupt",
+                MessageInjectionMode::Steer,
+                "broker",
+                None,
+            )
             .await
             .expect("relaycast DM steer send should succeed");
     }

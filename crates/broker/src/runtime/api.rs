@@ -744,6 +744,8 @@ impl BrokerRuntime {
                         &normalized_to,
                         &text,
                         mode.clone(),
+                        &delivery_from,
+                        thread_id.as_deref(),
                     ),
                 )
                 .await
