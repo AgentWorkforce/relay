@@ -237,6 +237,11 @@ pub(crate) fn delivery_retry_interval() -> Duration {
     Duration::from_millis(ms.max(50))
 }
 
+// No longer called from production code — the HTTP/sidecar send path
+// (runtime/api.rs) no longer attempts direct local delivery, so there's
+// nothing left to bound with a "local delivery" timeout. Kept (with its
+// env-var override still covered by unit tests) rather than deleted.
+#[allow(dead_code)]
 pub(crate) fn http_api_local_delivery_timeout() -> Duration {
     let ms = std::env::var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS")
         .ok()

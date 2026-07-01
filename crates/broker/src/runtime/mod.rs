@@ -61,6 +61,7 @@ use crate::{broker, listen_api, worker_request};
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const THREAD_HISTORY_LIMIT: usize = 1_000;
+#[allow(dead_code)] // only http_api_local_delivery_timeout's default; see its own allow
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;

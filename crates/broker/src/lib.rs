@@ -41,6 +41,12 @@ pub(crate) mod redact;
 #[allow(dead_code)]
 pub(crate) mod relaycast;
 pub(crate) mod replay_buffer;
+// Local-target routing helpers, kept for their unit tests but no longer
+// called from production code: the HTTP/sidecar send path (runtime/api.rs)
+// no longer resolves local targets and injects directly — it always
+// publishes through Relaycast and lets node delivery (runtime/fleet.rs)
+// redeliver, even to workers attached to this same broker.
+#[allow(dead_code)]
 pub(crate) mod routing;
 pub(crate) mod runtime;
 #[allow(dead_code)]
