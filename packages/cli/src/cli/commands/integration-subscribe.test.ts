@@ -1,11 +1,15 @@
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   registerIntegrationCommands,
   type IntegrationCommandDependencies,
   type RelayfileBinding,
 } from './integration.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 interface InboundWebhook {
   webhookId: string;
@@ -84,6 +88,8 @@ function createRelayfileMock(
     resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
     ensureCompatible: vi.fn(async () => undefined),
     resolveWritebackBinding: vi.fn(async () => ({ url: 'https://ingress.example', secret: 's3cr3t' })),
+    createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+    deleteWebhookSubscription: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -96,6 +102,25 @@ function harness(
 ) {
   const relay = opts.relay ?? createRelayMock();
   const relayfile = opts.relayfile ?? createRelayfileMock();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+              secret: 'inbound-secret',
+            },
+          }),
+          {
+            status: 201,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+    )
+  );
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
@@ -139,6 +164,11 @@ describe('integration subscribe', () => {
     expect(relayfile.bind).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'slack', resource: RESOURCE, channel: 'general' })
     );
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith({
+      url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+      pathGlobs: [RESOURCE],
+      secret: 'inbound-secret',
+    });
   });
 
   it('resolves provider-native resources before binding and replacement lookup', async () => {

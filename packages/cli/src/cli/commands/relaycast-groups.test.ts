@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerAgentCommands } from './agent.js';
 import { registerChannelCommands } from './channel.js';
@@ -7,6 +7,32 @@ import { registerMessageCommands } from './message.js';
 import { registerIntegrationCommands, type IntegrationCommandDependencies } from './integration.js';
 import { registerCapabilitiesCommands } from './capabilities.js';
 import type { SdkCommandDeps } from '../lib/sdk-command.js';
+
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+              secret: 'inbound-secret',
+            },
+          }),
+          {
+            status: 201,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+    )
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function createRelayMock() {
   return {
@@ -312,6 +338,8 @@ describe('SDK-backed CLI groups', () => {
           url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
           secret: 'test-secret',
         })),
+        createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+        deleteWebhookSubscription: vi.fn(async () => undefined),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
 
@@ -342,6 +370,8 @@ describe('SDK-backed CLI groups', () => {
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -382,6 +412,11 @@ describe('SDK-backed CLI groups', () => {
       channel: 'slackbot',
       name: expect.stringMatching(/^relayfile:slack:.+-[0-9a-f]{10}:[0-9a-f]{10}$/),
     });
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith({
+      url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+      pathGlobs: ['#acme'],
+      secret: 'inbound-secret',
+    });
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
       event: 'message.created',
       events: ['message.created', 'thread.reply'],
@@ -415,6 +450,8 @@ describe('SDK-backed CLI groups', () => {
         url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
         secret: 'derived-secret-hex',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const program = new Command();
     program.exitOverride();
@@ -464,6 +501,8 @@ describe('SDK-backed CLI groups', () => {
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -533,6 +572,8 @@ describe('SDK-backed CLI groups', () => {
           url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
           secret: 'test-secret',
         })),
+        createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+        deleteWebhookSubscription: vi.fn(async () => undefined),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
 
@@ -569,6 +610,8 @@ describe('SDK-backed CLI groups', () => {
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const log = vi.fn();
     const error = vi.fn();
