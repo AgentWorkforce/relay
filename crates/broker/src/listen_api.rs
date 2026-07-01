@@ -2314,6 +2314,25 @@ async fn send_fleet_sidecar_error(
     .await
 }
 
+/// Minimal shape used to peek the `seq` field of a broadcast message without
+/// paying for a full `serde_json::Value` parse. Broadcast payloads (e.g.
+/// `worker_stream` chunks) can carry large terminal-output strings; parsing
+/// into a `Value` would allocate a full tree for all of that just to read
+/// one field. Deserializing into this struct instead lets serde_json skip
+/// unknown fields (including large string values) without allocating them.
+#[derive(Deserialize)]
+struct MessageSeq {
+    seq: Option<u64>,
+}
+
+/// Extract the optional `seq` field from a broadcast message's JSON text
+/// without materializing the rest of the payload.
+fn extract_seq(msg: &str) -> Option<u64> {
+    serde_json::from_str::<MessageSeq>(msg)
+        .ok()
+        .and_then(|parsed| parsed.seq)
+}
+
 /// Number of durable events that are unrecoverably lost between
 /// `requested_since_seq` (exclusive) and `oldest_available` (inclusive of
 /// everything at/after it being retained). Used to give a `replay_gap`
@@ -2432,9 +2451,7 @@ async fn handle_dashboard_ws(
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        let msg_seq = serde_json::from_str::<Value>(&msg)
-                            .ok()
-                            .and_then(|value| value.get("seq").and_then(Value::as_u64));
+                        let msg_seq = extract_seq(&msg);
                         if msg_seq.is_some_and(|seq| seq <= last_forwarded_seq) {
                             continue;
                         }
@@ -2757,9 +2774,33 @@ mod tests {
 
 #[cfg(test)]
 mod replay_gap_tests {
-    use super::{build_replay_gap_frame, catch_up_after_lag, dropped_event_count};
+    use super::{build_replay_gap_frame, catch_up_after_lag, dropped_event_count, extract_seq};
     use crate::replay_buffer::ReplayBuffer;
     use serde_json::json;
+
+    #[test]
+    fn extract_seq_reads_the_seq_field_without_full_value_parse() {
+        assert_eq!(
+            extract_seq(r#"{"kind":"relay_inbound","seq":42}"#),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn extract_seq_ignores_unrelated_and_large_fields() {
+        // A worker_stream-shaped payload with a large `data` string and no
+        // `seq` at all (ephemeral events never get one from the replay
+        // buffer) should just yield None, not fail to parse.
+        let big_chunk = "x".repeat(64 * 1024);
+        let msg = format!(r#"{{"kind":"worker_stream","name":"Worker","data":"{big_chunk}"}}"#);
+        assert_eq!(extract_seq(&msg), None);
+    }
+
+    #[test]
+    fn extract_seq_returns_none_for_missing_or_invalid_json() {
+        assert_eq!(extract_seq(r#"{"kind":"agent_spawned"}"#), None);
+        assert_eq!(extract_seq("not json"), None);
+    }
 
     #[test]
     fn dropped_event_count_is_zero_when_nothing_was_actually_lost() {

@@ -95,12 +95,19 @@ impl ReplayBuffer {
     /// lost. Using the looser comparison would falsely report a gap on
     /// every first-time connection as soon as a single durable event had
     /// ever been recorded.
+    ///
+    /// `since_seq` is bumped via `saturating_add(1)` rather than a plain
+    /// `+ 1`: it's untrusted, client-supplied input (e.g. a `sinceSeq` query
+    /// param), and `since_seq == u64::MAX` would otherwise overflow —
+    /// panicking in debug/overflow-checked builds and wrapping to 0 in
+    /// release, which would falsely report a gap for a cursor that is
+    /// actually ahead of everything retained.
     pub async fn replay_since(&self, since_seq: u64) -> (Vec<ReplayEntry>, Option<u64>) {
         let inner = self.inner.read().await;
         let oldest_seq = inner.entries.front().map(|e| e.seq);
 
         let gap = match oldest_seq {
-            Some(oldest) if since_seq + 1 < oldest => Some(oldest),
+            Some(oldest) if since_seq.saturating_add(1) < oldest => Some(oldest),
             _ => None,
         };
 
@@ -284,6 +291,28 @@ mod tests {
         );
         assert_eq!(events.len(), 3);
         assert_eq!(events[0].seq, 3);
+    }
+
+    /// Regression test for an integer-overflow bug flagged in review: a
+    /// client-supplied `since_seq` is untrusted input, and `u64::MAX` would
+    /// overflow a plain `since_seq + 1` — panicking in debug/overflow-checked
+    /// builds and wrapping to 0 in release, which would falsely report a gap
+    /// for a cursor that is actually ahead of everything retained. Must not
+    /// panic, and a cursor beyond every retained seq is not a gap.
+    #[tokio::test]
+    async fn since_seq_of_u64_max_does_not_overflow_or_panic() {
+        let buf = ReplayBuffer::new(4);
+
+        buf.push(json!({"kind": "relay_inbound", "body": "only"}))
+            .await
+            .unwrap();
+
+        let (events, gap) = buf.replay_since(u64::MAX).await;
+        assert!(
+            gap.is_none(),
+            "since_seq=u64::MAX is ahead of every retained seq, not a gap"
+        );
+        assert!(events.is_empty());
     }
 
     /// `ReplayBuffer` itself has no concept of event "kind" — it is a plain
