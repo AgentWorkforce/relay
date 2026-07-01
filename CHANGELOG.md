@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay skills add` installs the `/orchestrate` skill (from `agentrelay.com/skill.md`) into your coding harnesses. An interactive TUI asks whether to install for the current project or globally and which harnesses to target (Claude Code, Codex, Cursor, Gemini, OpenCode); `--global`/`--local`, `--harness <ids>`, and `--all` flags drive it non-interactively.
 - `agent-relay up --verbose` now prints step-by-step startup progress (port resolution, broker process spawn, handshake retries, fleet sidecar, node-delivery wait, agent spawns) and streams the broker's own startup-phase logs and stderr live, instead of only surfacing a terse error if startup fails.
+- `agent-relay integration subscribe` now wires a server-side inbound bridge: it provisions a relaycast inbound-target and a relayfile-cloud webhook subscription so real provider messages (Slack/GitHub/Linear) are injected into the target relay channel — and delivered to on-node agents — with no local watcher or client process running.
 
 ### Changed
 
