@@ -2962,6 +2962,103 @@ mod replay_gap_tests {
         );
         assert_eq!(new_high_water, 3);
     }
+
+    /// Directly exercises the TOCTOU hazard the previous test didn't: here a
+    /// durable event is pushed *for real, concurrently, from a separate
+    /// task* strictly between when a `current_seq()`-first cutoff would be
+    /// snapshotted and when `replay_since()` actually runs — using a
+    /// two-phase oneshot handshake so the interleaving is deterministic
+    /// rather than timing-dependent (per review feedback that the earlier
+    /// test never actually raced anything, since all its pushes landed
+    /// before `catch_up_after_lag` was even called).
+    ///
+    /// `catch_up_after_lag`'s fix *removes* the separate `current_seq()`
+    /// step entirely (cutoff is derived from `replay_since`'s own returned
+    /// entries), so there is no longer a window inside it to deterministically
+    /// race against without adding test-only instrumentation to production
+    /// code. Instead, this test reconstructs the pre-fix computation inline
+    /// (snapshot `current_seq()`, race a push in via a real concurrent task,
+    /// then call `replay_since()` and re-apply the old `seq <= cutoff`
+    /// filter) to prove, under genuine concurrency rather than just
+    /// sequential ordering, that the old shape really does produce a
+    /// stale/inconsistent result. It then confirms `catch_up_after_lag`,
+    /// run against the resulting buffer state, does not lose the event that
+    /// raced in.
+    #[tokio::test]
+    async fn a_push_racing_between_cutoff_read_and_replay_since_produces_a_stale_cutoff() {
+        let replay_buffer = ReplayBuffer::new(50);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "a"}))
+            .await
+            .unwrap();
+
+        let (snapshot_taken_tx, snapshot_taken_rx) = tokio::sync::oneshot::channel::<()>();
+        let (push_landed_tx, push_landed_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // "Reader" task: reproduces the pre-fix `catch_up_after_lag` shape
+        // (current_seq() snapshot, *then* replay_since()), but pauses in
+        // between on a handshake so a concurrent push is guaranteed to land
+        // in the window the old code was vulnerable in.
+        let reader_buffer = replay_buffer.clone();
+        let reader = tokio::spawn(async move {
+            let stale_cutoff = reader_buffer.current_seq(); // pre-fix snapshot, == 1
+            snapshot_taken_tx
+                .send(())
+                .expect("test setup: writer must still be waiting");
+            push_landed_rx
+                .await
+                .expect("writer must signal after its push completes");
+            let (entries, _gap) = reader_buffer.replay_since(0).await;
+            (stale_cutoff, entries)
+        });
+
+        // "Writer" task: waits for the reader's snapshot, then pushes a new
+        // durable event — landing exactly between the reader's stale
+        // snapshot and its later `replay_since()` call.
+        let writer_buffer = replay_buffer.clone();
+        let writer = tokio::spawn(async move {
+            snapshot_taken_rx
+                .await
+                .expect("reader must signal after taking its snapshot");
+            writer_buffer
+                .push(json!({"kind": "relay_inbound", "body": "b"}))
+                .await
+                .unwrap();
+            push_landed_tx
+                .send(())
+                .expect("test setup: reader must still be waiting");
+        });
+
+        let (stale_cutoff, entries) = reader.await.expect("reader task panicked");
+        writer.await.expect("writer task panicked");
+
+        assert_eq!(stale_cutoff, 1, "snapshot was taken before the racing push");
+        assert_eq!(
+            entries.len(),
+            2,
+            "replay_since itself correctly sees both events, including the racing one"
+        );
+
+        // This is the actual pre-fix bug: filtering by the now-stale
+        // snapshot wrongly excludes the event that raced in.
+        let old_buggy_filtered_count = entries.iter().filter(|e| e.seq <= stale_cutoff).count();
+        assert_eq!(
+            old_buggy_filtered_count, 1,
+            "a current_seq()-first cutoff wrongly excludes the event that raced in concurrently"
+        );
+
+        // catch_up_after_lag itself, run against the same (now-settled)
+        // buffer state, must not reproduce that inconsistency: its cutoff
+        // comes from replay_since's own returned entries, so it has no
+        // separate stale snapshot to race against in the first place.
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+        assert_eq!(
+            frames.len(),
+            2,
+            "catch_up_after_lag must forward both durable events"
+        );
+        assert_eq!(new_high_water, 2);
+    }
 }
 
 #[cfg(test)]
