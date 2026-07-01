@@ -760,6 +760,24 @@ impl BrokerRuntime {
                     relaycast_timeout_ms = %relaycast_timeout.as_millis(),
                     "publishing to relaycast"
                 );
+                // Only forward `thread_id` to the Relaycast publish when it's a
+                // real message id we can reply to. Broker-minted synthetic ids
+                // (`http_*`) and channel/DM grouping keys (`#general`,
+                // `direct:*`) that a client may echo back from `/api/send` or
+                // `/api/threads` aren't reply targets — Relaycast would reject
+                // the reply and fail the whole send. Fall back to a plain post
+                // (unthreaded) for those, preserving delivery.
+                let reply_thread_id = thread_id
+                    .as_deref()
+                    .filter(|tid| is_relaycast_reply_target(tid));
+                if thread_id.is_some() && reply_thread_id.is_none() {
+                    tracing::debug!(
+                        target = "relay_broker::http_api",
+                        event_id = %event_id,
+                        thread_id = ?thread_id,
+                        "thread_id is not a Relaycast message id; publishing without a thread reply"
+                    );
+                }
                 let relaycast_start = Instant::now();
                 match timeout(
                     relaycast_timeout,
@@ -768,7 +786,7 @@ impl BrokerRuntime {
                         &text,
                         mode.clone(),
                         publish_from,
-                        thread_id.as_deref(),
+                        reply_thread_id,
                     ),
                 )
                 .await

@@ -215,6 +215,20 @@ pub(crate) fn delivery_read_ack_is_relaycast_message(event_id: &EventId) -> bool
     synthetic_delivery_read_ack_reason(event_id).is_none()
 }
 
+/// True when `thread_id` is a real Relaycast message id we can `reply()` to,
+/// as opposed to a broker-minted synthetic event id (`http_`/`init_`/… — see
+/// [`synthetic_delivery_read_ack_reason`]) or a channel/DM grouping key
+/// (`#channel`, `direct:*`) that `/api/threads` can surface. Relaycast rejects
+/// a reply to anything that isn't a real message id, so the publish path must
+/// fall back to a plain post for these rather than fail the whole send.
+pub(crate) fn is_relaycast_reply_target(thread_id: &str) -> bool {
+    let id = thread_id.trim();
+    if id.is_empty() || id.starts_with('#') || id.starts_with("direct:") {
+        return false;
+    }
+    synthetic_delivery_read_ack_reason(&EventId::new(id)).is_none()
+}
+
 pub(crate) fn seed_supplied_agent_token(
     relaycast_http: &RelaycastHttpClient,
     agent_name: &str,
@@ -902,4 +916,31 @@ pub(crate) fn clear_pending_delivery_if_event_matches(
         );
     }
     None
+}
+
+#[cfg(test)]
+mod reply_target_tests {
+    use super::is_relaycast_reply_target;
+
+    #[test]
+    fn real_message_ids_are_reply_targets() {
+        assert!(is_relaycast_reply_target("msg_abc123"));
+        assert!(is_relaycast_reply_target("evt_01hxyz"));
+    }
+
+    #[test]
+    fn synthetic_and_grouping_ids_are_not_reply_targets() {
+        for id in [
+            "",
+            "   ",
+            "#general",
+            "direct:alice",
+            "http_deadbeef",
+            "init_task",
+            "cont_load_1",
+            "flush_1",
+        ] {
+            assert!(!is_relaycast_reply_target(id), "expected non-target: {id:?}");
+        }
+    }
 }
