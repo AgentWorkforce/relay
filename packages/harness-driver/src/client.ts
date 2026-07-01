@@ -386,8 +386,13 @@ export class HarnessDriverClient {
         session = await Promise.race([client.getSession(), brokerExited]);
         break;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const is503 = message.includes('503') || message.includes('Service Unavailable');
+        // The broker's startup-only API returns a structured 503
+        // (`http_503`) while it warms up. Prefer the typed fields over the
+        // formatted message, which the broker is free to customize.
+        const is503 =
+          err instanceof HarnessDriverProtocolError
+            ? err.status === 503 || err.code === 'http_503'
+            : /503|Service Unavailable/.test(err instanceof Error ? err.message : String(err));
         if (!is503 || Date.now() >= handshakeDeadline) throw err;
         onStep?.(`Broker still starting (handshake attempt ${attempt + 1}), retrying in 1s...`);
         await new Promise((resolve) => setTimeout(resolve, 1000));

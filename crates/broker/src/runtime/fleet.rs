@@ -435,6 +435,25 @@ impl BrokerRuntime {
                             msg_id = %deliver.msg_id,
                             "queued node delivery (manual_flush inbound delivery mode)"
                         );
+                        // Surface the hold as a `delivery_queued` event, as the
+                        // now-removed local send path did. `attach --drive`
+                        // counts these to show pending messages; node delivery
+                        // is the only delivery path now, so this is the only
+                        // place the event can originate. The `name` field is
+                        // what scopes it to the worker on the consumer side.
+                        let _ = send_event(
+                            &self.sdk_out_tx,
+                            json!({
+                                "kind": "delivery_queued",
+                                "name": deliver.agent.as_str(),
+                                "event_id": deliver.msg_id.as_str(),
+                                "delivery_id": deliver.delivery_id.as_str(),
+                                "from": fields.from.as_str(),
+                                "target": fields.target.as_str(),
+                                "reason": "inbound_delivery_manual_flush",
+                            }),
+                        )
+                        .await;
                         Ok(())
                     }
                     InboundQueueOutcome::DrainNow(to_drain) => {

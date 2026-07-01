@@ -507,7 +507,9 @@ impl RelaycastHttpClient {
     /// via [`AgentClient::reply`] instead of a plain channel post is what
     /// actually creates real thread/conversation grouping on the Relaycast
     /// side, as opposed to passing an opaque value the server doesn't
-    /// interpret as a reply.
+    /// interpret as a reply. `reply` takes no injection mode, so a threaded
+    /// reply is always delivered with Wait semantics — a `Steer` request with
+    /// a `thread_id` is downgraded to a normal reply (logged, not dropped).
     pub async fn send_with_mode(
         &self,
         to: &str,
@@ -523,6 +525,18 @@ impl RelaycastHttpClient {
                 MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
             };
             if let Some(thread_id) = thread_id {
+                // `AgentClient::reply` has no injection-mode parameter, so a
+                // threaded reply is always delivered with Wait semantics.
+                // `Steer` can't be honored on a reply; downgrade rather than
+                // drop the message, but log it so the loss of steer is visible
+                // instead of silent.
+                if matches!(mode, MessageInjectionMode::Steer) {
+                    tracing::warn!(
+                        target = "relay_broker::relaycast",
+                        thread_id = %thread_id,
+                        "steer injection mode is not supported on threaded replies; delivering as a normal reply"
+                    );
+                }
                 agent_client
                     .reply(thread_id, text, None, None)
                     .await

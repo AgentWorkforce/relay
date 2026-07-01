@@ -209,6 +209,25 @@ impl WorkerRegistry {
         self.workers.contains_key(name)
     }
 
+    /// True when a worker named `name` exists and either has no recorded
+    /// workspace or belongs to `workspace_id`. Gates sender impersonation on
+    /// Relaycast publish: a worker attached to workspace A must not be
+    /// impersonated when publishing into workspace B, which would register or
+    /// rotate that name's token in the wrong workspace.
+    pub(crate) fn has_worker_in_workspace(
+        &self,
+        name: &str,
+        workspace_id: &crate::ids::WorkspaceId,
+    ) -> bool {
+        match self.workers.get(name) {
+            Some(handle) => match &handle.workspace_id {
+                Some(worker_ws) => worker_ws == workspace_id,
+                None => true,
+            },
+            None => false,
+        }
+    }
+
     pub(crate) fn worker_pid(&self, name: &str) -> Option<u32> {
         self.workers.get(name).and_then(|h| h.child.id())
     }
@@ -1566,6 +1585,13 @@ mod tests {
     fn has_worker_returns_false_for_unknown() {
         let reg = make_registry(vec![]);
         assert!(!reg.has_worker("nonexistent"));
+    }
+
+    #[test]
+    fn has_worker_in_workspace_returns_false_for_unknown() {
+        let reg = make_registry(vec![]);
+        let workspace = crate::ids::WorkspaceId::new("ws_1".to_string());
+        assert!(!reg.has_worker_in_workspace("nonexistent", &workspace));
     }
 
     #[test]

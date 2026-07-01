@@ -709,12 +709,17 @@ impl BrokerRuntime {
                 // worse, ROTATE (and thereby invalidate) the live token of
                 // an unrelated, already-registered agent that happens to
                 // share the name. Falling back to the broker's own identity
-                // is always safe; impersonation is not.
-                let publish_from = if workers.has_worker(&delivery_from) {
-                    delivery_from.as_str()
-                } else {
-                    workspace_self_name.as_str()
-                };
+                // is always safe; impersonation is not. The worker must also
+                // belong to the workspace we're publishing into — a worker
+                // attached to another attached workspace is not ours to
+                // impersonate here (it would register/rotate that name in the
+                // wrong Relaycast workspace).
+                let publish_from =
+                    if workers.has_worker_in_workspace(&delivery_from, &selected_workspace_id) {
+                        delivery_from.as_str()
+                    } else {
+                        workspace_self_name.as_str()
+                    };
 
                 record_thread_history_event(
                     recent_thread_messages,
