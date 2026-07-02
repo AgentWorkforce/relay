@@ -20,6 +20,9 @@ pub(crate) fn default_observer_token_scopes() -> Vec<ObserverScope> {
         ObserverScope::ChannelsRead,
         ObserverScope::ActivityRead,
         ObserverScope::AgentsRead,
+        // Reactions surface on the observer stream as `message.reacted`;
+        // without this scope the live stream filters them out for UIs.
+        ObserverScope::ReactionsRead,
     ]
 }
 
