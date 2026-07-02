@@ -934,9 +934,13 @@ impl BrokerRuntime {
                 // `http_api_relaycast_send_timeout`) so tuning the `/api/send`
                 // path can't unintentionally break token minting.
                 let relaycast_timeout = http_api_observer_token_timeout();
+                // `mint_observer_token` (not `create_...`): token names are
+                // unique per workspace, so repeat mints under the default
+                // name would 409 on create — the idempotent mint rotates the
+                // existing active token instead, returning fresh material.
                 match timeout(
                     relaycast_timeout,
-                    selected_workspace.http_client.create_observer_token(
+                    selected_workspace.http_client.mint_observer_token(
                         CreateObserverTokenRequest {
                             name: token_name,
                             scopes: default_observer_token_scopes(),

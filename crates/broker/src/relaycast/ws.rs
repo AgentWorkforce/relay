@@ -191,12 +191,14 @@ impl RelaycastHttpClient {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
-    /// Mint a scoped, read-only observer token for this workspace. Used by
-    /// the local HTTP API so callers (e.g. Pear's "Join as observer" link)
-    /// can hand out a narrow `ot_live_...` credential instead of the raw
-    /// `rk_live_...` workspace key, which grants full read/write/spawn
-    /// access. The raw token material is only present on this response (and
-    /// on `rotate_observer_token`'s), never on subsequent reads.
+    /// Create a scoped, read-only observer token for this workspace so
+    /// callers (e.g. Pear's "Join as observer" link) can hand out a narrow
+    /// `ot_live_...` credential instead of the raw `rk_live_...` workspace
+    /// key, which grants full read/write/spawn access. The raw token material
+    /// is only present on this response (and on `rotate_observer_token`'s),
+    /// never on subsequent reads. Fails with a 409 name conflict if a token
+    /// with the same name already exists — the local HTTP API mints through
+    /// `mint_observer_token`, which rotates the existing token instead.
     pub async fn create_observer_token(
         &self,
         request: CreateObserverTokenRequest,
@@ -208,6 +210,75 @@ impl RelaycastHttpClient {
             .create_observer_token(request)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// List this workspace's observer tokens. Responses carry metadata only —
+    /// raw token material is never returned from list/get reads.
+    pub async fn list_observer_tokens(&self) -> Result<Vec<ObserverToken>> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        relay
+            .list_observer_tokens()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Rotate an existing observer token, invalidating its old secret and
+    /// returning fresh raw token material on the response.
+    pub async fn rotate_observer_token(&self, id: &str) -> Result<ObserverToken> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        relay
+            .rotate_observer_token(id)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Mint an observer token idempotently. Token names are unique per
+    /// workspace, so a blind create fails with `observer_token_name_conflict`
+    /// (409) as soon as a token with the requested name exists — and the raw
+    /// secret can't be re-read after mint time. Instead, reuse the existing
+    /// active token by rotating it (which returns fresh token material), and
+    /// only create when no active token carries the requested name. A failed
+    /// list or rotate falls through to a plain create rather than failing the
+    /// mint outright.
+    ///
+    /// Rotation deliberately preserves the existing token's scopes, filters,
+    /// and expiry rather than re-applying the requested ones — a deliberately
+    /// narrowed token stays narrowed, and the response reflects the actual
+    /// grant.
+    pub async fn mint_observer_token(
+        &self,
+        request: CreateObserverTokenRequest,
+    ) -> Result<ObserverToken> {
+        match self.list_observer_tokens().await {
+            Ok(tokens) => {
+                if let Some(existing) = tokens
+                    .iter()
+                    .find(|token| token.status == "active" && token.name == request.name)
+                {
+                    match self.rotate_observer_token(&existing.id).await {
+                        Ok(rotated) => return Ok(rotated),
+                        Err(error) => {
+                            tracing::warn!(
+                                observer_token_id = %existing.id,
+                                error = %error,
+                                "failed to rotate existing observer token; falling back to create"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to list observer tokens before mint; falling back to create"
+                );
+            }
+        }
+        self.create_observer_token(request).await
     }
 
     /// Fetch a single action invocation, including its `input`. The
@@ -608,13 +679,17 @@ pub async fn retry_agent_registration(
 
 #[cfg(test)]
 mod tests {
-    use httpmock::{Method::POST, MockServer};
-    use relaycast::AgentRegistrationError;
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+    use relaycast::{AgentRegistrationError, ObserverScope};
     use serde_json::json;
 
     use super::{
         format_worker_preregistration_error, registration_is_retryable,
-        registration_retry_after_secs, MessageInjectionMode, RelaycastHttpClient,
+        registration_retry_after_secs, CreateObserverTokenRequest, MessageInjectionMode,
+        RelaycastHttpClient,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -759,5 +834,177 @@ mod tests {
             .send_dm("worker-a", "hello")
             .await
             .expect("relaycast DM wait send should succeed");
+    }
+
+    // -----------------------------------------------------------------------
+    // mint_observer_token — idempotent mint (rotate-if-exists, else create).
+    // Observer token names are unique per workspace, so the mint must reuse
+    // an existing active token via rotate instead of blindly creating (which
+    // 409s with `observer_token_name_conflict` on every mint after the first).
+    // -----------------------------------------------------------------------
+
+    fn observer_token_json(id: &str, name: &str, status: &str) -> serde_json::Value {
+        json!({
+            "id": id,
+            "name": name,
+            "scopes": ["stream:read", "messages:read"],
+            "status": status,
+            "created_at": "2026-06-08T10:00:00.000Z"
+        })
+    }
+
+    fn observer_token_request(name: &str) -> CreateObserverTokenRequest {
+        CreateObserverTokenRequest {
+            name: name.to_string(),
+            scopes: vec![ObserverScope::StreamRead, ObserverScope::MessagesRead],
+            description: None,
+            filters: None,
+            expires_at: None,
+        }
+    }
+
+    fn observer_client(base_url: &str) -> RelaycastHttpClient {
+        RelaycastHttpClient::new(
+            Some(base_url.to_string()),
+            "rk_live_test",
+            "broker",
+            "codex",
+        )
+    }
+
+    #[tokio::test]
+    async fn mint_observer_token_rotates_existing_active_token_instead_of_creating() {
+        let server = MockServer::start();
+        let list_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/observer-tokens");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": [
+                    observer_token_json("ot_other", "another-token", "active"),
+                    observer_token_json("ot_1", "pear-dashboard-observer", "active"),
+                ]
+            }));
+        });
+        let rotate_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/observer-tokens/ot_1/rotate");
+            let mut rotated = observer_token_json("ot_1", "pear-dashboard-observer", "active");
+            rotated["token"] = json!("ot_live_rotated");
+            then.status(200)
+                .json_body(json!({ "ok": true, "data": rotated }));
+        });
+        let create_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/observer-tokens");
+            then.status(500).json_body(json!({ "ok": false }));
+        });
+
+        let minted = observer_client(&server.base_url())
+            .mint_observer_token(observer_token_request("pear-dashboard-observer"))
+            .await
+            .expect("mint should rotate the existing active token");
+
+        assert_eq!(minted.id, "ot_1");
+        assert_eq!(minted.token.as_deref(), Some("ot_live_rotated"));
+        list_mock.assert_hits(1);
+        rotate_mock.assert_hits(1);
+        create_mock.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn mint_observer_token_creates_when_no_active_token_has_the_name() {
+        let server = MockServer::start();
+        let list_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/observer-tokens");
+            // A revoked token with the requested name must not be rotated
+            // (rotate only matches active tokens server-side), and an active
+            // token under a different name must not be reused.
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": [
+                    observer_token_json("ot_revoked", "pear-dashboard-observer", "revoked"),
+                    observer_token_json("ot_other", "another-token", "active"),
+                ]
+            }));
+        });
+        let create_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/observer-tokens")
+                .body_contains("\"name\":\"pear-dashboard-observer\"");
+            let mut created = observer_token_json("ot_new", "pear-dashboard-observer", "active");
+            created["token"] = json!("ot_live_created");
+            then.status(200)
+                .json_body(json!({ "ok": true, "data": created }));
+        });
+
+        let minted = observer_client(&server.base_url())
+            .mint_observer_token(observer_token_request("pear-dashboard-observer"))
+            .await
+            .expect("mint should create when no active token matches");
+
+        assert_eq!(minted.id, "ot_new");
+        assert_eq!(minted.token.as_deref(), Some("ot_live_created"));
+        list_mock.assert_hits(1);
+        create_mock.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn mint_observer_token_falls_back_to_create_when_list_fails() {
+        let server = MockServer::start();
+        let _list_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/observer-tokens");
+            then.status(403).json_body(json!({
+                "ok": false,
+                "error": { "code": "forbidden", "message": "nope" }
+            }));
+        });
+        let create_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/observer-tokens");
+            let mut created = observer_token_json("ot_new", "pear-dashboard-observer", "active");
+            created["token"] = json!("ot_live_created");
+            then.status(200)
+                .json_body(json!({ "ok": true, "data": created }));
+        });
+
+        let minted = observer_client(&server.base_url())
+            .mint_observer_token(observer_token_request("pear-dashboard-observer"))
+            .await
+            .expect("mint should fall back to create when listing fails");
+
+        assert_eq!(minted.token.as_deref(), Some("ot_live_created"));
+        create_mock.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn mint_observer_token_falls_back_to_create_when_rotate_fails() {
+        let server = MockServer::start();
+        let _list_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/observer-tokens");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": [observer_token_json("ot_1", "pear-dashboard-observer", "active")]
+            }));
+        });
+        let rotate_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/observer-tokens/ot_1/rotate");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": { "code": "not_found", "message": "gone" }
+            }));
+        });
+        let create_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/observer-tokens");
+            let mut created = observer_token_json("ot_new", "pear-dashboard-observer", "active");
+            created["token"] = json!("ot_live_created");
+            then.status(200)
+                .json_body(json!({ "ok": true, "data": created }));
+        });
+
+        let minted = observer_client(&server.base_url())
+            .mint_observer_token(observer_token_request("pear-dashboard-observer"))
+            .await
+            .expect("mint should fall back to create when rotate fails");
+
+        assert_eq!(minted.token.as_deref(), Some("ot_live_created"));
+        rotate_mock.assert_hits(1);
+        create_mock.assert_hits(1);
     }
 }
