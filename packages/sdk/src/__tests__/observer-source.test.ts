@@ -58,11 +58,18 @@ function logRow(seq: number, messageId: string): Record<string, unknown> {
   };
 }
 
-function jsonResponse(events: Record<string, unknown>[], latestSeq: number) {
+function jsonResponse(events: Record<string, unknown>[], latestSeq: number, nextSince?: number) {
   return {
     ok: true,
     status: 200,
-    json: async () => ({ ok: true, data: { events, latest_seq: latestSeq } }),
+    json: async () => ({
+      ok: true,
+      data: {
+        events,
+        latest_seq: latestSeq,
+        ...(nextSince !== undefined ? { next_since: nextSince } : {}),
+      },
+    }),
   } as Response;
 }
 
@@ -108,6 +115,35 @@ afterEach(() => {
 });
 
 describe('createObserverEventSource', () => {
+  it('advances the cursor via next_since when a scoped page is fully filtered', async () => {
+    // Server consumed rows 1-3 (hidden for this token) and reports
+    // next_since=3 with an empty page; the visible row 4 arrives on the next
+    // page. Without next_since the loop would stall on zero progress.
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      const since = Number(url.searchParams.get('since') ?? '0');
+      if (since < 3) return jsonResponse([], 4, 3);
+      if (since < 4) return jsonResponse([logRow(4, 'visible')], 4, 4);
+      return jsonResponse([], 4, since);
+    }) as unknown as typeof fetch;
+
+    const cursors: number[] = [];
+    const source = createObserverEventSource({
+      observerToken: 'ot_live_test',
+      baseUrl: 'https://api.example.test',
+      fetch: fetchImpl,
+      createLiveStream: () => createFakeLiveStream().stream,
+      onCursor: (seq) => cursors.push(seq),
+    });
+    const received = collect(source);
+    source.connect();
+    await settle();
+
+    expect(messageIds(received)).toEqual(['visible']);
+    // The cursor advanced through the hidden window (3) and the visible row (4).
+    expect(cursors).toEqual([3, 4]);
+  });
+
   it('backfills from the log, then merges buffered live frames deduped and ordered by seq', async () => {
     const live = createFakeLiveStream();
     let releaseBackfill!: () => void;

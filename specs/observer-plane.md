@@ -104,12 +104,19 @@ Response:
     "events": [
       { "seq": 41, "type": "message.created", "channel_id": "c1", "payload": { ... }, "created_at": "..." }
     ],
-    "latest_seq": 57
+    "latest_seq": 57,
+    "next_since": 45
   }
 }
 ```
 
 - `events` are ordered by `seq` ascending, strictly greater than `since`.
+- `next_since` is the resume cursor: the seq of the last row the server's
+  scan consumed — visible or hidden by the observer token's scopes/filters.
+  Scoped tokens can have entire windows filtered out server-side; advancing
+  by `next_since` (rather than the last visible event) means an all-hidden
+  page never stalls pagination. Hidden events are never delivered to that
+  token on the live stream either, so skipping their seqs is safe.
 - `payload` is the same client-shaped event JSON the WS delivers, so one
   normalization path serves both legs.
 - Auth: observer tokens with `stream:read`. Workspace keys and agent tokens
@@ -133,7 +140,8 @@ The client owns exactly one piece of state: the highest `seq` it has emitted
    incoming frames in memory without emitting.
 2. **Backfill from the cursor.** Page `GET /v1/workspace/events?since=<cursor>`
    until `latest_seq` is reached, emitting each event and advancing the
-   cursor.
+   cursor — including past fully-filtered windows via `next_since` (absent on
+   older engines; stop on a page that makes no progress).
 3. **Merge and go live.** Flush the buffer — drop frames with `seq <=` cursor
    (already emitted via backfill), emit the rest ordered by `seq`, pass
    seq-less frames through — then emit live frames directly, deduping against

@@ -229,7 +229,11 @@ function readSeq(raw: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function parseBackfillEvents(payload: unknown): { events: BackfillEventRow[]; latestSeq: number } {
+function parseBackfillEvents(payload: unknown): {
+  events: BackfillEventRow[];
+  latestSeq: number;
+  nextSince: number | undefined;
+} {
   const record = isRecord(payload) ? payload : {};
   const data = isRecord(record.data) ? record.data : {};
   const rows = Array.isArray(data.events) ? data.events : [];
@@ -242,7 +246,11 @@ function parseBackfillEvents(payload: unknown): { events: BackfillEventRow[]; la
   }
   const latestSeq =
     typeof data.latest_seq === 'number' && Number.isFinite(data.latest_seq) ? data.latest_seq : 0;
-  return { events, latestSeq };
+  // Scoped-token resume cursor: the seq of the last row the server's scan
+  // consumed (visible or filtered). Absent on older engines.
+  const nextSince =
+    typeof data.next_since === 'number' && Number.isFinite(data.next_since) ? data.next_since : undefined;
+  return { events, latestSeq, nextSince };
 }
 
 /**
@@ -360,7 +368,9 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
 
   const backfillPage = async (
     since: number
-  ): Promise<{ events: BackfillEventRow[]; latestSeq: number } | undefined> => {
+  ): Promise<
+    { events: BackfillEventRow[]; latestSeq: number; nextSince: number | undefined } | undefined
+  > => {
     const url = `${baseUrl}/v1/workspace/events?since=${since}&limit=${pageSize}`;
     const response = await fetchImpl(url, {
       headers: { Authorization: `Bearer ${options.observerToken}` },
@@ -378,15 +388,26 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
     const startedEpoch = epoch;
     try {
       for (;;) {
+        const before = cursor;
         const page = await backfillPage(cursor);
         if (epoch !== startedEpoch) return;
-        if (!page || page.events.length === 0) break;
+        if (!page) break;
         for (const event of page.events) {
           if (event.seq <= cursor) continue;
           advanceCursor(event.seq);
           emit(normalizeMessagingEvent(event.payload));
         }
+        // For scoped observer tokens a page can be empty while hidden rows
+        // were consumed server-side; `next_since` advances the cursor past
+        // them (events hidden from this token will never be delivered live
+        // either, so skipping their seqs is safe).
+        if (page.nextSince !== undefined && page.nextSince > cursor) {
+          advanceCursor(page.nextSince);
+        }
         if (cursor >= page.latestSeq) break;
+        // No progress this page (older engine without next_since returning
+        // only hidden rows): stop rather than loop forever.
+        if (cursor <= before) break;
       }
     } catch (error) {
       if (epoch !== startedEpoch) return;
