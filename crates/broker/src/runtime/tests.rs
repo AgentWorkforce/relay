@@ -37,15 +37,15 @@ use super::{
     extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
     http_api_relaycast_send_timeout, is_relaycast_self_control_target,
     is_unknown_worker_error_message, load_pending_deliveries, mark_delivery_read_ack,
-    mark_delivery_read_ack_with_timeout, normalize_channel, normalize_initial_task,
-    normalize_sender, parse_sort_key_from_raw_timestamp, persist_pending_on_shutdown,
-    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token, resolve_workspace,
-    retry_pending_delivery, seed_supplied_agent_token, send_broker_event,
-    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    mark_delivery_read_ack_with_timeout, mint_or_recover_observer_token, normalize_channel,
+    normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
+    persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
+    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
+    relaycast_ws_spawn_token, resolve_workspace, retry_pending_delivery, seed_supplied_agent_token,
+    send_broker_event, sender_is_dashboard_label, should_clear_pending_delivery_for_event,
     synthetic_delivery_read_ack_reason, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
-    InboundQueueOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
-    RelayWorkspace, MAX_DELIVERY_RETRIES,
+    InboundQueueOutcome, ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery,
+    PendingDeliveryStore, ProtocolHeadlessProvider, RelayWorkspace, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -2806,4 +2806,266 @@ fn default_observer_token_scopes_are_read_only_and_exclude_unneeded_scopes() {
         actual, expected,
         "default observer token scopes must be exactly the minimal read-only set"
     );
+}
+
+// ---------------------------------------------------------------------------
+// mint_or_recover_observer_token
+//
+// `/api/observer-token` mints a fixed-name token (`pear-dashboard-observer`
+// by default) per workspace with no way for the caller to know in advance
+// whether a previous mint already claimed that name. relaycast enforces a
+// `(workspace_id, name)` unique index, so a repeat mint fails with
+// `observer_token_name_conflict` (409, relaycast#232). These tests cover
+// the list+rotate fallback that makes repeat minting succeed anyway.
+// ---------------------------------------------------------------------------
+
+fn observer_token_json(id: &str, name: &str, token: Option<&str>) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": name,
+        "description": null,
+        "scopes": ["stream:read"],
+        "filters": {},
+        "status": "active",
+        "expires_at": null,
+        "created_at": "2026-06-08T10:00:00.000Z",
+        "updated_at": null,
+        "revoked_at": null,
+        "last_used_at": null,
+        "token": token,
+    })
+}
+
+fn observer_token_name_conflict_body() -> serde_json::Value {
+    json!({
+        "ok": false,
+        "error": {
+            "code": "observer_token_name_conflict",
+            "message": "an observer token named 'pear-dashboard-observer' already exists",
+        },
+    })
+}
+
+#[tokio::test]
+async fn observer_token_name_conflict_falls_back_to_list_and_rotate() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": [
+                observer_token_json("ot_other", "some-other-observer", None),
+                observer_token_json("ot_existing", "pear-dashboard-observer", None),
+            ],
+        }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let outcome =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await
+            .expect("name conflict should fall back to a recovered token, not fail");
+
+    assert!(
+        outcome.is_recovered_via_rotate(),
+        "conflict fallback should report RecoveredViaRotate, not Created"
+    );
+    let token = outcome.into_token();
+    assert_eq!(token.id, "ot_existing");
+    assert_eq!(token.token.as_deref(), Some("ot_live_rotated"));
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    rotate_mock.assert_hits(1);
+}
+
+#[tokio::test]
+async fn observer_token_non_conflict_error_does_not_trigger_fallback() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(403).json_body(json!({
+            "ok": false,
+            "error": {
+                "code": "forbidden",
+                "message": "workspace key lacks permission to mint observer tokens",
+            },
+        }));
+    });
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200)
+            .json_body(json!({ "ok": true, "data": [] }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let result =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await;
+
+    match result {
+        Err(ObserverTokenMintError::Failed(message)) => {
+            assert!(
+                message.contains("forbidden"),
+                "unexpected error message: {message}"
+            );
+        }
+        Err(ObserverTokenMintError::TimedOut) => {
+            panic!("a 403 should propagate as a failure, not a timeout")
+        }
+        Ok(ObserverTokenMintOutcome::Created(_)) => {
+            panic!("a 403 create failure must not be reported as success")
+        }
+        Ok(ObserverTokenMintOutcome::RecoveredViaRotate(_)) => {
+            panic!("a non-conflict error must not trigger the list+rotate fallback")
+        }
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(0);
+    rotate_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn observer_token_conflict_without_matching_name_propagates_original_error() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    // The list doesn't contain a token under the attempted name -- e.g. a
+    // race with a concurrent revoke between the conflicting create and this
+    // recovery attempt. This must not panic; the original conflict error is
+    // propagated as-is.
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": [observer_token_json("ot_other", "some-other-observer", None)],
+        }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/observer-tokens/ot_other/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_other", "some-other-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let result =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await;
+
+    match result {
+        Err(ObserverTokenMintError::Failed(message)) => {
+            assert!(
+                message.contains("observer_token_name_conflict"),
+                "expected the original conflict error to propagate, got: {message}"
+            );
+        }
+        _ => panic!(
+            "expected the original conflict error to propagate when no matching name is \
+             found, got a different outcome"
+        ),
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    // Nothing matched `token_name`, so rotate must never be called against
+    // an unrelated token.
+    rotate_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn observer_token_fallback_respects_the_supplied_timeout() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    // Slower than the timeout passed below, so the list+rotate fallback
+    // itself must be bounded rather than left to hang indefinitely.
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200)
+            .delay(Duration::from_millis(300))
+            .json_body(json!({
+                "ok": true,
+                "data": [observer_token_json("ot_existing", "pear-dashboard-observer", None)],
+            }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let result = mint_or_recover_observer_token(
+        &client,
+        "pear-dashboard-observer",
+        Duration::from_millis(50),
+    )
+    .await;
+
+    match result {
+        Err(ObserverTokenMintError::TimedOut) => {}
+        Err(ObserverTokenMintError::Failed(message)) => {
+            panic!("expected a timeout, got a non-timeout failure: {message}")
+        }
+        Ok(_) => panic!("a hung list+rotate fallback must not be reported as success"),
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    rotate_mock.assert_hits(0);
 }
