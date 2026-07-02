@@ -5,10 +5,11 @@ import type { RelayMessagingEvent, RelayMessagingEventMap, RelayMessagingEventsS
  */
 export interface EventFanInOptions {
   /**
-   * Window in which identical events arriving from different sources are
-   * collapsed into one emission. Cross-source duplicates of the same server
-   * event arrive within milliseconds of each other; legitimate repeats
-   * (re-reactions, presence flaps) are separated by far more than this.
+   * Window in which the same occurrence arriving from *different* sources is
+   * collapsed into one emission. Cross-source duplicates of one server event
+   * arrive within milliseconds of each other; a repeat from a source that
+   * already delivered the previous occurrence is a new occurrence and always
+   * passes through.
    */
   dedupeWindowMs?: number;
   /** Maximum number of tracked dedupe keys before the oldest are evicted. */
@@ -92,6 +93,12 @@ function dedupeKey(event: RelayMessagingEvent): string | null {
   }
 }
 
+/** One observed occurrence: when it was first seen and which sources delivered it. */
+interface OccurrenceRecord {
+  at: number;
+  sources: Set<RelayMessagingEventsSurface>;
+}
+
 /**
  * Create an events fan-in.
  *
@@ -112,9 +119,11 @@ export function createEventFanIn(
   const handlers = new Map<string, Set<(event: RelayMessagingEvent) => void | Promise<void>>>();
   const sources: RelayMessagingEventsSurface[] = [];
   const seenSources = new Set<RelayMessagingEventsSurface>();
+  /** Active `on('any', ...)` forwarding per source, so disconnect can detach. */
+  const sourceForwarding = new Map<RelayMessagingEventsSurface, () => void>();
   const desiredChannels = new Set<string>();
-  /** Dedupe keys → last-seen timestamp, insertion-ordered for eviction. */
-  const seenEvents = new Map<string, number>();
+  /** Dedupe keys → current occurrence, insertion-ordered for eviction. */
+  const seenEvents = new Map<string, OccurrenceRecord>();
 
   let connectRequested = false;
   let fallbackForwarding: (() => void) | undefined;
@@ -145,14 +154,26 @@ export function createEventFanIn(
     }
   };
 
-  const forward = (event: RelayMessagingEvent): void => {
+  /**
+   * Forward an event from one source, collapsing cross-source duplicates.
+   *
+   * The engine emits one delivery per locally-registered recipient, so N
+   * sources produce N copies of one occurrence — only the first is emitted.
+   * A copy from a source that already delivered the previous occurrence is a
+   * genuine repeat (message edit, re-reaction, presence flap) and starts a
+   * new occurrence, so same-source repeats are never dropped.
+   */
+  const forward = (source: RelayMessagingEventsSurface, event: RelayMessagingEvent): void => {
     const key = dedupeKey(event);
     if (key) {
       const at = now();
-      const prev = seenEvents.get(key);
-      if (prev !== undefined && at - prev < dedupeWindowMs) return;
+      const record = seenEvents.get(key);
+      if (record && at - record.at < dedupeWindowMs && !record.sources.has(source)) {
+        record.sources.add(source);
+        return;
+      }
       seenEvents.delete(key);
-      seenEvents.set(key, at);
+      seenEvents.set(key, { at, sources: new Set([source]) });
       while (seenEvents.size > dedupeCapacity) {
         const oldest = seenEvents.keys().next().value;
         if (oldest === undefined) break;
@@ -187,6 +208,16 @@ export function createEventFanIn(
     (noSourceTimer as { unref?: () => void }).unref?.();
   };
 
+  const attachSourceForwarding = (source: RelayMessagingEventsSurface): void => {
+    if (sourceForwarding.has(source)) return;
+    sourceForwarding.set(source, source.on('any', (event) => forward(source, event)));
+  };
+
+  const detachAllForwarding = (): void => {
+    for (const off of sourceForwarding.values()) off();
+    sourceForwarding.clear();
+  };
+
   const connectSource = (source: RelayMessagingEventsSurface): void => {
     if (typeof source.connect === 'function') {
       try {
@@ -208,7 +239,7 @@ export function createEventFanIn(
     // Injected fakes may carry a partial surface; only a stream that can be
     // observed is worth attaching.
     if (!fallback || fallbackForwarding || typeof fallback.on !== 'function') return;
-    fallbackForwarding = fallback.on('any', forward);
+    fallbackForwarding = fallback.on('any', (event) => forward(fallback, event));
     if (typeof fallback.connect === 'function') {
       try {
         fallback.connect();
@@ -227,10 +258,12 @@ export function createEventFanIn(
     fallbackForwarding = undefined;
     if (fallbackConnected) {
       fallbackConnected = false;
-      try {
-        void fallback?.disconnect().catch(() => {});
-      } catch {
-        // Fallback surfaces without a disconnect are simply left as-is.
+      if (typeof fallback?.disconnect === 'function') {
+        try {
+          void fallback.disconnect().catch(() => {});
+        } catch {
+          // Fallback surfaces whose disconnect misbehaves are left as-is.
+        }
       }
     }
   };
@@ -243,7 +276,7 @@ export function createEventFanIn(
       if (seenSources.has(source)) return;
       seenSources.add(source);
       sources.push(source);
-      source.on('any', forward);
+      attachSourceForwarding(source);
       if (connectRequested) {
         connectSource(source);
         clearNoSourceTimer();
@@ -258,7 +291,11 @@ export function createEventFanIn(
     connect: () => {
       connectRequested = true;
       if (sources.length > 0) {
-        for (const source of sources) connectSource(source);
+        for (const source of sources) {
+          // Re-attach forwarding dropped by a prior disconnect().
+          attachSourceForwarding(source);
+          connectSource(source);
+        }
         return;
       }
       attachFallback();
@@ -269,12 +306,23 @@ export function createEventFanIn(
       connectRequested = false;
       clearNoSourceTimer();
       detachFallback();
-      await Promise.allSettled(sources.map((source) => Promise.resolve().then(() => source.disconnect())));
+      // Stop forwarding first so a source another owner reconnects later
+      // cannot feed listeners that were explicitly disconnected.
+      detachAllForwarding();
+      await Promise.allSettled(
+        sources.map((source) =>
+          Promise.resolve().then(() => {
+            if (typeof source.disconnect === 'function') return source.disconnect();
+            return undefined;
+          })
+        )
+      );
     },
 
     subscribe: (channels) => {
       for (const channel of channels) desiredChannels.add(channel);
       for (const source of sources) {
+        if (typeof source.subscribe !== 'function') continue;
         try {
           source.subscribe(channels);
         } catch (error) {
@@ -286,6 +334,7 @@ export function createEventFanIn(
     unsubscribe: (channels) => {
       for (const channel of channels) desiredChannels.delete(channel);
       for (const source of sources) {
+        if (typeof source.unsubscribe !== 'function') continue;
         try {
           source.unsubscribe(channels);
         } catch (error) {

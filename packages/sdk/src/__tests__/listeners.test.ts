@@ -14,7 +14,7 @@ function createEventBus() {
   const emit = (type: string, event: unknown) => {
     // Mirror RelaycastMessagingClient's emit contract: every event fans out
     // to its own type key AND to 'any' (the events fan-in listens on 'any').
-    for (const key of [type, 'any']) {
+    for (const key of new Set([type, 'any'])) {
       for (const handler of handlers.get(key) ?? []) handler(event);
     }
   };

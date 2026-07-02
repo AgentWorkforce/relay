@@ -17,7 +17,7 @@ function createFakeEventsSurface() {
     return () => set.delete(handler);
   });
   const emit = (event: RelayMessagingEvent) => {
-    for (const key of [event.type, 'any']) {
+    for (const key of new Set([event.type, 'any'])) {
       for (const handler of handlers.get(key) ?? []) handler(event);
     }
   };
@@ -96,6 +96,60 @@ describe('createEventFanIn', () => {
     expect(received).toHaveLength(1);
 
     a.emit(messageCreated('m2'));
+    expect(received).toHaveLength(2);
+  });
+
+  it('passes genuine repeats from the same source while collapsing cross-source copies', () => {
+    const fanIn = createEventFanIn(undefined);
+    const a = createFakeEventsSurface();
+    const b = createFakeEventsSurface();
+    fanIn.addSource(a.surface);
+    fanIn.addSource(b.surface);
+    fanIn.connect();
+
+    const received: RelayMessagingEvent[] = [];
+    fanIn.on('any', (event) => {
+      received.push(event);
+    });
+
+    const updated = (): RelayMessagingEvent =>
+      ({ type: 'messageUpdated', channel: 'general', message: { messageId: 'm1', text: 'edit' } } as never);
+
+    // First edit: A delivers, B's copy collapses.
+    a.emit(updated());
+    b.emit(updated());
+    expect(received).toHaveLength(1);
+
+    // Second edit within the window: A already delivered the previous
+    // occurrence, so this is a new occurrence — it must NOT be dropped.
+    a.emit(updated());
+    expect(received).toHaveLength(2);
+    // ...and B's copy of the second edit collapses again.
+    b.emit(updated());
+    expect(received).toHaveLength(2);
+  });
+
+  it('disconnect() stops forwarding; connect() resumes it', async () => {
+    const fanIn = createEventFanIn(undefined);
+    const { surface, emit } = createFakeEventsSurface();
+    fanIn.addSource(surface);
+    fanIn.connect();
+
+    const received: RelayMessagingEvent[] = [];
+    fanIn.on('any', (event) => {
+      received.push(event);
+    });
+
+    emit(messageCreated('m1'));
+    expect(received).toHaveLength(1);
+
+    await fanIn.disconnect();
+    expect(surface.disconnect).toHaveBeenCalledTimes(1);
+    emit(messageCreated('m2'));
+    expect(received).toHaveLength(1);
+
+    fanIn.connect();
+    emit(messageCreated('m3'));
     expect(received).toHaveLength(2);
   });
 
