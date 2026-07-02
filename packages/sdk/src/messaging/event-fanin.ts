@@ -1,8 +1,4 @@
-import type {
-  RelayMessagingEvent,
-  RelayMessagingEventMap,
-  RelayMessagingEventsSurface,
-} from './types.js';
+import type { RelayMessagingEvent, RelayMessagingEventMap, RelayMessagingEventsSurface } from './types.js';
 
 /**
  * Options for {@link createEventFanIn}.
@@ -181,7 +177,7 @@ export function createEventFanIn(
       report(
         new Error(
           'Listening for relay events, but no registered agent is connected. ' +
-            'Relaycast delivers events over each agent\'s node transport, and the ' +
+            "Relaycast delivers events over each agent's node transport, and the " +
             'workspace-key stream cannot receive them. Register an agent first ' +
             '(`relay.workspace.register(...)` / `workspace.reconnect(...)`) so the ' +
             'listener has a live connection to stream through.'

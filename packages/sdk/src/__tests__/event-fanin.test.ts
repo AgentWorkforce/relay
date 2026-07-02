@@ -2,11 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentRelay, ActionRegistry } from '../index.js';
 import { createEventFanIn } from '../messaging/event-fanin.js';
-import type {
-  RelayMessaging,
-  RelayMessagingEvent,
-  RelayMessagingEventsSurface,
-} from '../messaging/index.js';
+import type { RelayMessaging, RelayMessagingEvent, RelayMessagingEventsSurface } from '../messaging/index.js';
 
 /**
  * Fake events surface mirroring RelaycastMessagingClient's emit semantics:
