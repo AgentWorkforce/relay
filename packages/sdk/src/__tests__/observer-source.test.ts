@@ -359,8 +359,10 @@ describe('AgentRelay observer mode', () => {
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
       close = vi.fn();
-      constructor(url: string) {
+      options: unknown;
+      constructor(url: string, options?: unknown) {
         this.url = url;
+        this.options = options;
         sockets.push(this);
       }
     }
@@ -379,7 +381,10 @@ describe('AgentRelay observer mode', () => {
     await settle();
 
     expect(sockets).toHaveLength(1);
-    expect(sockets[0].url).toBe('wss://api.example.test/v1/ws?token=ot_live_test');
+    // Header auth keeps the token out of the URL; the query downgrade only
+    // fires on runtimes whose WebSocket rejects constructor options.
+    expect(sockets[0].url).toBe('wss://api.example.test/v1/ws');
+    expect(sockets[0].options).toEqual({ headers: { authorization: 'Bearer ot_live_test' } });
     sockets[0].onopen?.();
     sockets[0].onmessage?.({ data: JSON.stringify(liveFrame('m2', 2)) });
 

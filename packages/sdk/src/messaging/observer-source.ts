@@ -3,7 +3,7 @@ import type { RelayMessagingEvent, RelayMessagingEventMap, RelayMessagingEventsS
 
 /**
  * The slice of the live observer stream the source depends on. The default
- * implementation is a raw WebSocket to `/v1/ws?token=<observer token>` that
+ * implementation is a raw WebSocket to `/v1/ws` (bearer-authenticated) that
  * delivers each JSON frame untouched — the frames must arrive raw because the
  * durable-log cursor rides on their top-level `seq` field, which higher-level
  * clients strip during schema parsing.
@@ -19,9 +19,34 @@ export interface ObserverLiveStream {
 }
 
 /**
+ * Build the observer stream URL. The scheme is always `wss:` except for
+ * loopback hosts (local self-hosted engines), and the URL never carries the
+ * token — authentication travels in the `Authorization` header where the
+ * runtime supports it, with an explicit query-token downgrade only when it
+ * does not (see {@link createRawObserverStream}).
+ */
+function observerWsUrl(baseUrl: string, opts: { includeToken?: string } = {}): string {
+  const url = new URL(baseUrl);
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  url.protocol = url.protocol === 'http:' && loopback ? 'ws:' : 'wss:';
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/v1/ws`;
+  if (opts.includeToken !== undefined) {
+    url.searchParams.set('token', opts.includeToken);
+  }
+  return url.toString();
+}
+
+/**
  * Raw observer WebSocket with capped-backoff auto-reconnect. Uses the global
  * `WebSocket` (Node >= 21 and all browsers). Frames are parsed as JSON and
  * handed to `on.any` handlers verbatim, preserving the top-level `seq`.
+ *
+ * Authentication: the token is sent as an `Authorization: Bearer` header via
+ * the Node (undici) constructor options extension, keeping it out of the URL.
+ * Runtimes whose `WebSocket` rejects or ignores constructor options — browsers,
+ * per the WHATWG signature — are detected (constructor throw, or a close
+ * before the first open on the header attempt) and downgraded once to the
+ * server's `?token=` query convention.
  */
 function createRawObserverStream(
   baseUrl: string,
@@ -34,18 +59,36 @@ function createRawObserverStream(
   let closed = false;
   let attempts = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** Whether header auth has been observed working (any successful open). */
+  let everOpened = false;
+  /** Downgrade flag: the runtime cannot send headers, use the query token. */
+  let useQueryToken = false;
 
-  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/v1/ws?token=${encodeURIComponent(token)}`;
-
-  const scheduleReconnect = (): void => {
+  const scheduleReconnect = (delayOverrideMs?: number): void => {
     if (closed || timer !== undefined) return;
     attempts += 1;
-    const delay = Math.min(30_000, 1_000 * 2 ** Math.min(attempts - 1, 5));
+    const delay = delayOverrideMs ?? Math.min(30_000, 1_000 * 2 ** Math.min(attempts - 1, 5));
     timer = setTimeout(() => {
       timer = undefined;
       open();
     }, delay);
     (timer as { unref?: () => void }).unref?.();
+  };
+
+  const construct = (WebSocketImpl: typeof WebSocket): WebSocket => {
+    if (useQueryToken) {
+      return new WebSocketImpl(observerWsUrl(baseUrl, { includeToken: token }));
+    }
+    try {
+      // Node's undici WebSocket accepts { headers } as a non-standard
+      // extension; browsers throw on a non-protocols second argument.
+      return new (WebSocketImpl as new (url: string, options: unknown) => WebSocket)(observerWsUrl(baseUrl), {
+        headers: { authorization: `Bearer ${token}` },
+      });
+    } catch {
+      useQueryToken = true;
+      return new WebSocketImpl(observerWsUrl(baseUrl, { includeToken: token }));
+    }
   };
 
   const open = (): void => {
@@ -61,15 +104,18 @@ function createRawObserverStream(
     }
     let ws: WebSocket;
     try {
-      ws = new WebSocketImpl(wsUrl);
+      ws = construct(WebSocketImpl);
     } catch (error) {
       report(error);
       scheduleReconnect();
       return;
     }
+    let openedHere = false;
     socket = ws;
     ws.onopen = () => {
       attempts = 0;
+      everOpened = true;
+      openedHere = true;
       for (const handler of openHandlers) handler();
     };
     ws.onmessage = (message: MessageEvent) => {
@@ -83,6 +129,15 @@ function createRawObserverStream(
     };
     ws.onclose = () => {
       if (socket === ws) socket = undefined;
+      // A close before the first successful open on a header-auth attempt
+      // means the runtime accepted the options object but ignored the
+      // headers (auth rejected): downgrade to the query token and retry
+      // immediately, once.
+      if (!useQueryToken && !everOpened && !openedHere) {
+        useQueryToken = true;
+        scheduleReconnect(0);
+        return;
+      }
       scheduleReconnect();
     };
     ws.onerror = () => {
