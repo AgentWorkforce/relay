@@ -2793,14 +2793,15 @@ fn default_observer_token_scopes_are_read_only_and_exclude_unneeded_scopes() {
         ObserverScope::ChannelsRead,
         ObserverScope::ActivityRead,
         ObserverScope::AgentsRead,
+        ObserverScope::ReactionsRead,
     ]
     .into_iter()
     .collect();
 
     assert_eq!(
         scopes.len(),
-        7,
-        "expected exactly 7 default observer token scopes, got {scopes:?}"
+        8,
+        "expected exactly 8 default observer token scopes, got {scopes:?}"
     );
     assert_eq!(
         actual, expected,

@@ -349,10 +349,22 @@ describe('AgentRelay observer mode', () => {
   });
 
   it('streams observer events through relay.addListener', async () => {
-    const live = createFakeLiveStream();
-    relaycastMocks.relayCast.mockImplementation(function () {
-      return live.stream;
-    });
+    // The default live leg is a raw WebSocket (it must see the top-level
+    // `seq`, which higher-level clients strip); stub the global constructor.
+    const sockets: FakeWebSocket[] = [];
+    class FakeWebSocket {
+      url: string;
+      onopen: (() => void) | null = null;
+      onmessage: ((message: { data: string }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn();
+      constructor(url: string) {
+        this.url = url;
+        sockets.push(this);
+      }
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('fetch', createBackfillFetch([logRow(1, 'm1')]));
 
     const relay = new AgentRelay({
@@ -365,11 +377,12 @@ describe('AgentRelay observer mode', () => {
       received.push(event);
     });
     await settle();
-    live.emit(liveFrame('m2', 2));
 
-    expect(relaycastMocks.relayCast).toHaveBeenCalledWith(
-      expect.objectContaining({ apiKey: 'ot_live_test', baseUrl: 'https://api.example.test' })
-    );
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].url).toBe('wss://api.example.test/v1/ws?token=ot_live_test');
+    sockets[0].onopen?.();
+    sockets[0].onmessage?.({ data: JSON.stringify(liveFrame('m2', 2)) });
+
     expect(received).toHaveLength(2);
   });
 });

@@ -1,18 +1,122 @@
-import { RelayCast } from '@relaycast/sdk';
-
 import { normalizeMessagingEvent } from './normalize.js';
 import type { RelayMessagingEvent, RelayMessagingEventMap, RelayMessagingEventsSurface } from './types.js';
 
 /**
- * The slice of the live observer stream the source depends on. A `RelayCast`
- * client constructed with an observer token satisfies it: `connect()` opens
- * `/v1/ws?token=<observer token>` and `on.any(...)` delivers the raw server
- * event frames.
+ * The slice of the live observer stream the source depends on. The default
+ * implementation is a raw WebSocket to `/v1/ws?token=<observer token>` that
+ * delivers each JSON frame untouched — the frames must arrive raw because the
+ * durable-log cursor rides on their top-level `seq` field, which higher-level
+ * clients strip during schema parsing.
  */
 export interface ObserverLiveStream {
   connect(): void;
   disconnect(): void;
-  on: { any(handler: (event: unknown) => void): () => void };
+  on: {
+    any(handler: (event: unknown) => void): () => void;
+    /** Fires on every socket (re)open; used to re-backfill after a reconnect. */
+    open?(handler: () => void): () => void;
+  };
+}
+
+/**
+ * Raw observer WebSocket with capped-backoff auto-reconnect. Uses the global
+ * `WebSocket` (Node >= 21 and all browsers). Frames are parsed as JSON and
+ * handed to `on.any` handlers verbatim, preserving the top-level `seq`.
+ */
+function createRawObserverStream(
+  baseUrl: string,
+  token: string,
+  report: (error: unknown) => void
+): ObserverLiveStream {
+  const anyHandlers = new Set<(event: unknown) => void>();
+  const openHandlers = new Set<() => void>();
+  let socket: WebSocket | undefined;
+  let closed = false;
+  let attempts = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/v1/ws?token=${encodeURIComponent(token)}`;
+
+  const scheduleReconnect = (): void => {
+    if (closed || timer !== undefined) return;
+    attempts += 1;
+    const delay = Math.min(30_000, 1_000 * 2 ** Math.min(attempts - 1, 5));
+    timer = setTimeout(() => {
+      timer = undefined;
+      open();
+    }, delay);
+    (timer as { unref?: () => void }).unref?.();
+  };
+
+  const open = (): void => {
+    if (closed || socket) return;
+    const WebSocketImpl = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+    if (!WebSocketImpl) {
+      report(
+        new Error(
+          'No global WebSocket implementation available for the observer stream (Node >= 21 or a browser is required).'
+        )
+      );
+      return;
+    }
+    let ws: WebSocket;
+    try {
+      ws = new WebSocketImpl(wsUrl);
+    } catch (error) {
+      report(error);
+      scheduleReconnect();
+      return;
+    }
+    socket = ws;
+    ws.onopen = () => {
+      attempts = 0;
+      for (const handler of openHandlers) handler();
+    };
+    ws.onmessage = (message: MessageEvent) => {
+      let frame: unknown;
+      try {
+        frame = JSON.parse(String(message.data));
+      } catch {
+        return; // Non-JSON frames carry nothing for us.
+      }
+      for (const handler of anyHandlers) handler(frame);
+    };
+    ws.onclose = () => {
+      if (socket === ws) socket = undefined;
+      scheduleReconnect();
+    };
+    ws.onerror = () => {
+      // The close handler owns reconnection.
+    };
+  };
+
+  return {
+    connect: open,
+    disconnect: () => {
+      closed = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      const ws = socket;
+      socket = undefined;
+      try {
+        ws?.close();
+      } catch {
+        // Already closed.
+      }
+    },
+    on: {
+      any: (handler) => {
+        anyHandlers.add(handler);
+        return () => anyHandlers.delete(handler);
+      },
+      open: (handler) => {
+        openHandlers.add(handler);
+        return () => openHandlers.delete(handler);
+      },
+    },
+  };
 }
 
 /**
@@ -36,7 +140,7 @@ export interface ObserverEventSourceOptions {
   onCursor?: (seq: number) => void;
   /** Receives live-stream and backfill failures. Defaults to console warnings. */
   onError?: (error: unknown) => void;
-  /** Live stream factory override for tests. Defaults to a `RelayCast` client. */
+  /** Live stream factory override for tests. Defaults to a raw observer WebSocket. */
   createLiveStream?: () => ObserverLiveStream;
   /** Fetch override for tests. Defaults to the global `fetch`. */
   fetch?: typeof globalThis.fetch;
@@ -115,8 +219,7 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
   );
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const createLiveStream =
-    options.createLiveStream ??
-    (() => new RelayCast({ apiKey: options.observerToken, baseUrl }) as unknown as ObserverLiveStream);
+    options.createLiveStream ?? (() => createRawObserverStream(baseUrl, options.observerToken, report));
 
   const handlers = new Map<string, Set<(event: RelayMessagingEvent) => void | Promise<void>>>();
 
@@ -248,6 +351,17 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
       try {
         live = createLiveStream();
         offLive = live.on.any(handleLiveFrame);
+        // Frames missed while the socket was down are only in the durable
+        // log: on every reopen after the first, buffer live frames again and
+        // re-backfill from the cursor to close the gap.
+        let hadOpen = false;
+        live.on.open?.(() => {
+          if (hadOpen) {
+            backfillDone = false;
+            void runBackfill();
+          }
+          hadOpen = true;
+        });
         live.connect();
       } catch (error) {
         report(error);

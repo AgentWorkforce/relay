@@ -763,6 +763,17 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
         emoji: readString(record, 'emoji') ?? '',
         agentName: readString(record, 'agentName', 'agent_name') ?? '',
       };
+    // The engine's raw workspace-stream frames (and the durable event log)
+    // carry reactions as one `message.reacted` type with an `action` field;
+    // higher-level clients split it into reaction.added/removed before we see
+    // it, but raw observer frames arrive in the server shape.
+    case 'message.reacted':
+      return {
+        type: readString(record, 'action') === 'removed' ? 'reactionRemoved' : 'reactionAdded',
+        messageId: readString(record, 'messageId', 'message_id') ?? '',
+        emoji: readString(record, 'emoji') ?? '',
+        agentName: readString(record, 'agentName', 'agent_name') ?? '',
+      };
     case 'action.invoked':
       return {
         type: 'actionInvoked',
