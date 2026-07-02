@@ -648,12 +648,17 @@ export function createListenerHub(
   ): (() => void) => {
     // Open the event stream — `events.on(...)` only registers handlers; the
     // socket is opened by `events.connect()` (idempotent). Agent-scoped clients
-    // stream through their own connection; workspace-key clients stream all
-    // workspace-visible events through the workspace stream.
+    // stream through their own connection; the workspace-level hub streams
+    // through registered agent clients via the events fan-in. A connect
+    // failure must be surfaced, not swallowed: a listener attached to a
+    // stream that never opens receives nothing, silently.
     try {
       context.events.connect();
-    } catch {
-      // No stream available (no agent token and no workspace stream).
+    } catch (error) {
+      makeReporter(context, {
+        source: 'listener',
+        selector: typeof selector === 'string' ? selector : 'predicate',
+      })(error);
     }
     if (typeof selector !== 'string') {
       return selector.subscribe(context, handler as ListenerHandler);

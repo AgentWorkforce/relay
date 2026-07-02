@@ -7,8 +7,10 @@ import {
   type RelaycastTelemetryOptions,
 } from './relaycast-telemetry.js';
 import {
+  createEventFanIn,
   RelaycastMessagingClient,
   type RelayAgentRegistration,
+  type RelayEventFanIn,
   type RelayMessaging,
   type RelaycastMessagingOptions,
 } from './messaging/index.js';
@@ -104,6 +106,7 @@ export class AgentRelay implements AgentRelayAgent {
   private readonly messagingOptions: RelaycastMessagingOptions;
   private readonly clientsByToken = new Map<string, RelayMessaging>();
   private readonly createAgentMessaging: (token: string) => RelayMessaging;
+  private readonly eventFanIn: RelayEventFanIn;
   private enrichedMessages?: EnrichedMessages;
   private workspaceFacade?: RelayWorkspace;
   private hub?: ListenerHub;
@@ -119,6 +122,14 @@ export class AgentRelay implements AgentRelayAgent {
     this.createAgentMessaging =
       createAgentMessaging ??
       ((token) => new RelaycastMessagingClient({ ...this.messagingOptions, agentToken: token }));
+    // Relaycast v5 streams events over each agent's node transport; the
+    // workspace-key stream cannot receive them. The fan-in makes
+    // `relay.addListener(...)` stream through every registered agent client
+    // (added in `messagingForToken`), keeping the workspace client only as a
+    // pre-registration fallback.
+    this.eventFanIn = createEventFanIn(this.messaging.events, {
+      onError: (error) => this.reportError(error, { source: 'listener', selector: 'events.connect' }),
+    });
     if (onError) {
       this.errorHooks.add(onError);
     }
@@ -179,7 +190,7 @@ export class AgentRelay implements AgentRelayAgent {
 
   private get listenerHub(): ListenerHub {
     if (!this.hub) {
-      this.hub = createListenerHub(this.messaging.events, this.actions, {
+      this.hub = createListenerHub(this.eventFanIn, this.actions, {
         onError: (error, context) => this.reportError(error, context),
       });
     }
@@ -325,6 +336,9 @@ export class AgentRelay implements AgentRelayAgent {
     if (!client) {
       client = this.createAgentMessaging(token);
       this.clientsByToken.set(token, client);
+      // Every registered agent's connection feeds the workspace-level
+      // listener hub; the fan-in connects it lazily once a listener exists.
+      this.eventFanIn.addSource(client.events);
     }
     return client;
   }
