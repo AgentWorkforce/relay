@@ -113,7 +113,7 @@ describe('createEventFanIn', () => {
     });
 
     const updated = (): RelayMessagingEvent =>
-      ({ type: 'messageUpdated', channel: 'general', message: { messageId: 'm1', text: 'edit' } } as never);
+      ({ type: 'messageUpdated', channel: 'general', message: { messageId: 'm1', text: 'edit' } }) as never;
 
     // First edit: A delivers, B's copy collapses.
     a.emit(updated());

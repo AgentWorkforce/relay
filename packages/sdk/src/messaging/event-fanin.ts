@@ -210,7 +210,10 @@ export function createEventFanIn(
 
   const attachSourceForwarding = (source: RelayMessagingEventsSurface): void => {
     if (sourceForwarding.has(source)) return;
-    sourceForwarding.set(source, source.on('any', (event) => forward(source, event)));
+    sourceForwarding.set(
+      source,
+      source.on('any', (event) => forward(source, event))
+    );
   };
 
   const detachAllForwarding = (): void => {
