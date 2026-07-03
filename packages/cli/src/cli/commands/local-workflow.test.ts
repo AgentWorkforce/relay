@@ -98,8 +98,8 @@ describe('registerLocalWorkflowCommands', () => {
   });
 
   it('prints follow-up hints for the nested `node workflow` group', async () => {
-    const { program, tmpRoot, logs } = createHarness();
-    // Re-register onto a nested `node workflow` subgroup on a fresh root so the
+    const { tmpRoot, logs } = createHarness();
+    // Register onto a nested `node workflow` subgroup on a fresh root so the
     // hint prefix walks the real parent chain (node -> workflow).
     const root = new Command();
     root.exitOverride();
@@ -113,7 +113,6 @@ describe('registerLocalWorkflowCommands', () => {
         logs.push(args.join(' '));
       },
     });
-    void program;
 
     fs.writeFileSync(path.join(tmpRoot, 'workflow.js'), 'console.log("hi");\n', 'utf-8');
     await root.parseAsync(['node', 'workflow', 'run', 'workflow.js'], { from: 'user' });
