@@ -10,8 +10,59 @@
   },
   "status": "active",
   "startedAt": "2026-07-03T15:28:55.489Z",
-  "agents": [],
-  "chapters": [],
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-03T15:41:07.048Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_cj8und0498r9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-03T15:41:07.048Z",
+      "events": [
+        {
+          "ts": 1783093267050,
+          "type": "decision",
+          "content": "Do not re-export @agent-relay/fleet from @agent-relay/sdk; fleet stays the public authoring+runtime surface: Do not re-export @agent-relay/fleet from @agent-relay/sdk; fleet stays the public authoring+runtime surface",
+          "raw": {
+            "question": "Do not re-export @agent-relay/fleet from @agent-relay/sdk; fleet stays the public authoring+runtime surface",
+            "chosen": "Do not re-export @agent-relay/fleet from @agent-relay/sdk; fleet stays the public authoring+runtime surface",
+            "alternatives": [],
+            "reasoning": "sdk->fleet edge closes a hard cycle: fleet depends on harnesses/harness-driver which import values from sdk; build:core order bakes sdk below fleet. RFC open question resolved as option (c), flagged in PR."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1783093268073,
+          "type": "decision",
+          "content": "Persist cloud enroll creds in CLI-owned ~/.agentworkforce/relay/fleet-enrollments.json (0600), injected as RELAY_NODE_TOKEN/RELAY_BASE_URL env at node up: Persist cloud enroll creds in CLI-owned ~/.agentworkforce/relay/fleet-enrollments.json (0600), injected as RELAY_NODE_TOKEN/RELAY_BASE_URL env at node up",
+          "raw": {
+            "question": "Persist cloud enroll creds in CLI-owned ~/.agentworkforce/relay/fleet-enrollments.json (0600), injected as RELAY_NODE_TOKEN/RELAY_BASE_URL env at node up",
+            "chosen": "Persist cloud enroll creds in CLI-owned ~/.agentworkforce/relay/fleet-enrollments.json (0600), injected as RELAY_NODE_TOKEN/RELAY_BASE_URL env at node up",
+            "alternatives": [],
+            "reasoning": "Broker token cache is keyed by internally-derived node_id the CLI cannot compute; RELAY_NODE_TOKEN env override is the documented durable read path; zero Rust changes."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1783093269100,
+          "type": "decision",
+          "content": "local becomes hidden deprecated alias warning once; fleet serve becomes hidden error stub pointing at node up + cloud enroll: local becomes hidden deprecated alias warning once; fleet serve becomes hidden error stub pointing at node up + cloud enroll",
+          "raw": {
+            "question": "local becomes hidden deprecated alias warning once; fleet serve becomes hidden error stub pointing at node up + cloud enroll",
+            "chosen": "local becomes hidden deprecated alias warning once; fleet serve becomes hidden error stub pointing at node up + cloud enroll",
+            "alternatives": [],
+            "reasoning": "local has shipped (back-compat required); fleet serve only exists in [Unreleased] so a guiding error beats an alias."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",
