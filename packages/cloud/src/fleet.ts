@@ -204,7 +204,13 @@ export type FleetNodeEnrollmentStore = {
 };
 
 function normalizeStoreBaseUrl(value: string): string {
-  return value.trim().replace(/\/+$/, '');
+  // Trim trailing slashes with a loop rather than a `/\/+$/` regex — CodeQL
+  // flags that pattern as polynomial on adversarial many-slash inputs.
+  let normalized = value.trim();
+  while (normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
 }
 
 function fleetNodeEnrollmentKey(relaycastUrl: string, relayWorkspaceId: string): string {
