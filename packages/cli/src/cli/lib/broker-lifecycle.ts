@@ -931,6 +931,20 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 
+    // A discovered (or explicit --config) node definition takes over from the
+    // implicit teams.json-derived node. When no config exists the bare/implicit
+    // path is preserved exactly. An explicit --config resolves against the
+    // invocation cwd; implicit discovery scans the project root. Resolve and
+    // load BEFORE the broker starts so a missing/invalid config fails fast
+    // instead of tearing down a broker that just came up.
+    const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
+    const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+    let nodeDefinition: FleetNodeDefinition | undefined;
+    if (configPath) {
+      vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
+      nodeDefinition = await loadNodeDefinition(configPath);
+    }
+
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
@@ -953,17 +967,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     vlog(deps, options.verbose, 'Loading teams.json and starting implicit fleet sidecar (if any)...');
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
-    // A discovered (or explicit --config) node definition takes over from the
-    // implicit teams.json-derived node. When no config exists the bare/implicit
-    // path is preserved exactly. An explicit --config resolves against the
-    // invocation cwd; implicit discovery scans the project root.
-    const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
-    const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
-    let nodeDefinition: FleetNodeDefinition | undefined;
-    if (configPath) {
-      vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
-      nodeDefinition = await loadNodeDefinition(configPath);
-    }
     fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig, nodeDefinition);
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);

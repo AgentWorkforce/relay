@@ -75,7 +75,12 @@ export function registerNodeCommands(
  */
 async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencies): Promise<void> {
   const env = deps.core.env;
-  if (!env.RELAY_NODE_TOKEN) {
+  // An explicit workspace key (flag or env) is a direct workspace choice; the
+  // enrollment store records workspace ids, not keys, so a stored enrollment
+  // cannot be matched against it — skip pickup entirely rather than risk
+  // starting the broker with a token from a different workspace.
+  const explicitWorkspaceKey = Boolean(options.workspaceKey?.trim() || env.RELAY_WORKSPACE_KEY?.trim());
+  if (!env.RELAY_NODE_TOKEN && !explicitWorkspaceKey) {
     let record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined;
     try {
       record = deps.resolveEnrollment({

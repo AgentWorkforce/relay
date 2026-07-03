@@ -34,7 +34,7 @@ export function discoverNodeConfigPath(cwd: string, explicit?: string): string |
   const explicitPath = explicit?.trim();
   if (explicitPath) {
     const resolved = path.resolve(cwd, explicitPath);
-    if (!fs.existsSync(resolved)) {
+    if (!isFile(resolved)) {
       throw new Error(`Node config file not found: ${explicitPath}`);
     }
     return resolved;
@@ -42,11 +42,19 @@ export function discoverNodeConfigPath(cwd: string, explicit?: string): string |
 
   for (const basename of NODE_CONFIG_BASENAMES) {
     const candidate = path.join(cwd, basename);
-    if (fs.existsSync(candidate)) {
+    if (isFile(candidate)) {
       return candidate;
     }
   }
   return undefined;
+}
+
+function isFile(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**

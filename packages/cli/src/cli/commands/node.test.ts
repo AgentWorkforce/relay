@@ -87,12 +87,20 @@ describe('registerNodeCommands', () => {
     expect(up.options.map((option) => option.long)).toContain('--config');
   });
 
-  it('does not carry the deprecated `local` preAction warning', () => {
-    const { program } = createNodeHarness();
-    const node = program.commands.find((command) => command.name() === 'node')!;
-    const hooks = (node as unknown as { _lifeCycleHooks?: { preAction?: unknown[] } })._lifeCycleHooks;
+  it('does not print the deprecated `local` warning when invoked as `node`', async () => {
+    const { program } = createNodeHarness({ env: { RELAY_NODE_TOKEN: 'x' } });
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      await program.parseAsync(['node', 'up'], { from: 'user' });
+    } finally {
+      spy.mockRestore();
+    }
 
-    expect(hooks?.preAction ?? []).toHaveLength(0);
+    expect(writes.join('')).not.toContain('deprecated');
   });
 
   it('picks up a persisted enrollment and wires its creds into the env', async () => {
@@ -160,7 +168,7 @@ describe('registerNodeCommands', () => {
     }) as unknown as NodeCommandDependencies['resolveEnrollment'];
     const { program, error } = createNodeHarness({ env: {}, resolveEnrollment });
 
-    await expect(program.parseAsync(['node', 'up'], { from: 'user' })).rejects.toBeInstanceOf(ExitSignal);
+    await expect(program.parseAsync(['node', 'up'], { from: 'user' })).rejects.toMatchObject({ code: 1 });
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Multiple fleet node enrollments match'));
     expect(brokerMocks.runUpCommand).not.toHaveBeenCalled();

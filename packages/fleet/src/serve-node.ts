@@ -281,12 +281,17 @@ function runNodeConnection(options: ServeNodeOptions): Promise<void> {
 
     const handleInvoke = async (payload: Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']) => {
       const ctx = createActionContext(options, sendRequest, payload.invocation_id);
+      // Only a handler failure may be reported as a handler error; a failure to
+      // SEND the result (e.g. socket closed mid-flight) must propagate to the
+      // caller's catch instead of misreporting a successful invocation.
+      let output: unknown;
+      let invokeError: unknown;
       try {
-        const output = await invokeNodeHandler(options.definition, payload.name, payload.input, ctx);
-        await sendHandlerResult(payload.invocation_id, output);
+        output = await invokeNodeHandler(options.definition, payload.name, payload.input, ctx);
       } catch (error) {
-        await sendHandlerResult(payload.invocation_id, undefined, error);
+        invokeError = error;
       }
+      await sendHandlerResult(payload.invocation_id, output, invokeError);
     };
 
     const close = async () => {
@@ -457,6 +462,14 @@ async function syncTriggers(options: ServeNodeOptions): Promise<void> {
   }
 }
 
+// Key and equality must normalize identically (absent channel/pattern == '',
+// absent mention == false) or reconciliation stops being idempotent: a key
+// mismatch re-creates an existing trigger, an equality mismatch re-updates an
+// unchanged one.
+function normalizeTriggerMention(mention: boolean | string | undefined): boolean | string {
+  return mention ?? false;
+}
+
 function triggerSyncKey(trigger: {
   channel?: string;
   pattern?: string;
@@ -467,7 +480,7 @@ function triggerSyncKey(trigger: {
     trigger.actionName,
     trigger.channel ?? '',
     trigger.pattern ?? '',
-    String(trigger.mention ?? ''),
+    String(normalizeTriggerMention(trigger.mention)),
   ].join('\u001f');
 }
 
@@ -489,10 +502,10 @@ function triggerEquals(
 ): boolean {
   return (
     left.actionName === right.actionName &&
-    left.channel === right.channel &&
-    left.pattern === right.pattern &&
-    left.mention === right.mention &&
-    left.enabled === right.enabled
+    (left.channel ?? '') === (right.channel ?? '') &&
+    (left.pattern ?? '') === (right.pattern ?? '') &&
+    normalizeTriggerMention(left.mention) === normalizeTriggerMention(right.mention) &&
+    Boolean(left.enabled) === right.enabled
   );
 }
 
@@ -588,15 +601,18 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true }
-    );
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    // Detach the abort listener when the timer fires normally — the reconnect
+    // loop calls delay() repeatedly against the same signal, and leaked
+    // listeners would accumulate across reconnects.
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 

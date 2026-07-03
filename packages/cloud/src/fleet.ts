@@ -339,7 +339,7 @@ export function resolveActiveFleetNodeEnrollment(
   const matches = records.filter(
     (record) =>
       (baseUrl === undefined || normalizeStoreBaseUrl(record.relaycastUrl) === baseUrl) &&
-      (workspaceId === undefined || record.relayWorkspaceId === workspaceId)
+      (workspaceId === undefined || record.relayWorkspaceId.trim() === workspaceId)
   );
   if (matches.length === 0) {
     return undefined;
