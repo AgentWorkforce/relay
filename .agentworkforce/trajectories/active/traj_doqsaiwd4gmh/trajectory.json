@@ -59,6 +59,18 @@
             "reasoning": "local has shipped (back-compat required); fleet serve only exists in [Unreleased] so a guiding error beats an alias."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1783093841955,
+          "type": "decision",
+          "content": "Workstream A: promoted fleet WS runtime to serveNode with DI trigger client; added cloud enrollment JSON store: Workstream A: promoted fleet WS runtime to serveNode with DI trigger client; added cloud enrollment JSON store",
+          "raw": {
+            "question": "Workstream A: promoted fleet WS runtime to serveNode with DI trigger client; added cloud enrollment JSON store",
+            "chosen": "Workstream A: promoted fleet WS runtime to serveNode with DI trigger client; added cloud enrollment JSON store",
+            "alternatives": [],
+            "reasoning": "D1/D2/D4: no @agent-relay/sdk in fleet (removed dep), FleetTriggerSyncClient injected, cloud store mirrors worker.ts"
+          },
+          "significance": "high"
         }
       ]
     }

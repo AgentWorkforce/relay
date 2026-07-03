@@ -1,6 +1,9 @@
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 
 import { defaultApiUrl } from './types.js';
+import { cloudHome } from './worker.js';
 
 /**
  * Credentials returned by the Cloud node-enrollment register endpoint
@@ -172,4 +175,195 @@ export async function enrollFleetNode(input: EnrollFleetNodeInput): Promise<Flee
         ? payload.websocketUrl.trim()
         : `${payload.relaycastUrl.replace(/\/+$/, '')}/v1/node/ws`,
   };
+}
+
+// ── Durable node-enrollment persistence ──────────────────────────────────────
+// A CLI-owned JSON store that records enrolled fleet-node credentials, mirroring
+// the cloud-workers.json store in ./worker.ts. Unlike worker registration, an
+// enrolled node has no server-side session to reconcile; the store simply lets
+// the CLI re-serve a previously enrolled node without re-running enrollment.
+
+/**
+ * A persisted fleet-node enrollment: the enrollment credentials plus the local
+ * timestamp at which they were recorded.
+ */
+export type FleetNodeEnrollmentRecord = FleetNodeEnrollment & {
+  /** ISO 8601 timestamp of when the enrollment was persisted locally. */
+  enrolledAt: string;
+};
+
+/**
+ * On-disk shape of the fleet-node enrollment store. `nodes` is keyed by
+ * `${relaycastUrl}#${relayWorkspaceId}`; `active` maps a relaycast base-url key
+ * to the node key most recently enrolled for that base URL.
+ */
+export type FleetNodeEnrollmentStore = {
+  version: 1;
+  active: Record<string, string>;
+  nodes: Record<string, FleetNodeEnrollmentRecord>;
+};
+
+function normalizeStoreBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function fleetNodeEnrollmentKey(relaycastUrl: string, relayWorkspaceId: string): string {
+  return `${normalizeStoreBaseUrl(relaycastUrl)}#${relayWorkspaceId.trim()}`;
+}
+
+function fleetNodeActiveBaseKey(relaycastUrl: string): string {
+  return normalizeStoreBaseUrl(relaycastUrl);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
+}
+
+/**
+ * Structural guard for a persisted enrollment record. Malformed entries are
+ * dropped so a corrupt store reads as empty rather than throwing.
+ */
+function isFleetNodeEnrollmentRecord(value: unknown): value is FleetNodeEnrollmentRecord {
+  if (!ensurePlainObject(value)) return false;
+  return (
+    typeof value.nodeId === 'string' &&
+    typeof value.nodeName === 'string' &&
+    typeof value.nodeToken === 'string' &&
+    typeof value.relayWorkspaceId === 'string' &&
+    typeof value.relaycastUrl === 'string' &&
+    typeof value.websocketUrl === 'string' &&
+    typeof value.enrolledAt === 'string'
+  );
+}
+
+/**
+ * Absolute path to the fleet-node enrollment store.
+ * @param env - Process environment (for `AGENT_RELAY_HOME` override).
+ */
+export function fleetNodeEnrollmentStorePath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(cloudHome(env), 'fleet-enrollments.json');
+}
+
+/**
+ * Read the fleet-node enrollment store. A missing or malformed file reads as an
+ * empty store.
+ * @param env - Process environment (for `AGENT_RELAY_HOME` override).
+ */
+export function readFleetNodeEnrollmentStore(
+  env: NodeJS.ProcessEnv = process.env
+): FleetNodeEnrollmentStore {
+  const file = fleetNodeEnrollmentStorePath(env);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
+    if (!ensurePlainObject(parsed)) {
+      return { version: 1, active: {}, nodes: {} };
+    }
+    const nodes: Record<string, FleetNodeEnrollmentRecord> = {};
+    const rawNodes = ensurePlainObject(parsed.nodes) ? parsed.nodes : {};
+    for (const [key, value] of Object.entries(rawNodes)) {
+      if (isFleetNodeEnrollmentRecord(value)) {
+        nodes[key] = value;
+      }
+    }
+    const active: Record<string, string> = {};
+    const rawActive = ensurePlainObject(parsed.active) ? parsed.active : {};
+    for (const [key, value] of Object.entries(rawActive)) {
+      if (typeof value === 'string') {
+        active[key] = value;
+      }
+    }
+    return { version: 1, active, nodes };
+  } catch (error) {
+    // Missing files and malformed JSON both read as an empty store; only
+    // surface unexpected IO errors (e.g. permission failures).
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return { version: 1, active: {}, nodes: {} };
+    }
+    if (error instanceof SyntaxError) {
+      return { version: 1, active: {}, nodes: {} };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Persist the fleet-node enrollment store with owner-only permissions.
+ * @param store - The store to write.
+ * @param env - Process environment (for `AGENT_RELAY_HOME` override).
+ */
+export function writeFleetNodeEnrollmentStore(
+  store: FleetNodeEnrollmentStore,
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  const file = fleetNodeEnrollmentStorePath(env);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+/**
+ * Insert or replace an enrollment record and mark it active for its base URL.
+ * @param record - The enrollment record to persist.
+ * @param env - Process environment (for `AGENT_RELAY_HOME` override).
+ * @returns The updated store.
+ */
+export function upsertFleetNodeEnrollment(
+  record: FleetNodeEnrollmentRecord,
+  env: NodeJS.ProcessEnv = process.env
+): FleetNodeEnrollmentStore {
+  const store = readFleetNodeEnrollmentStore(env);
+  const key = fleetNodeEnrollmentKey(record.relaycastUrl, record.relayWorkspaceId);
+  store.nodes[key] = record;
+  store.active[fleetNodeActiveBaseKey(record.relaycastUrl)] = key;
+  writeFleetNodeEnrollmentStore(store, env);
+  return store;
+}
+
+/**
+ * Resolve a stored enrollment, optionally narrowed by base URL and/or workspace.
+ *
+ * @param input - Optional `baseUrl`/`workspaceId` selectors and env override.
+ * @returns The matching record, or `undefined` when none match.
+ * @throws When multiple records match and the selectors do not disambiguate.
+ */
+export function resolveActiveFleetNodeEnrollment(
+  input: { baseUrl?: string; workspaceId?: string; env?: NodeJS.ProcessEnv } = {}
+): FleetNodeEnrollmentRecord | undefined {
+  const store = readFleetNodeEnrollmentStore(input.env);
+  const baseUrl = input.baseUrl ? normalizeStoreBaseUrl(input.baseUrl) : undefined;
+  const workspaceId = input.workspaceId?.trim() || undefined;
+
+  if (baseUrl && workspaceId) {
+    return store.nodes[fleetNodeEnrollmentKey(baseUrl, workspaceId)];
+  }
+
+  const records = Object.values(store.nodes);
+  const matches = records.filter(
+    (record) =>
+      (baseUrl === undefined || normalizeStoreBaseUrl(record.relaycastUrl) === baseUrl) &&
+      (workspaceId === undefined || record.relayWorkspaceId === workspaceId)
+  );
+  if (matches.length === 0) {
+    return undefined;
+  }
+  if (matches.length === 1) {
+    return matches[0];
+  }
+
+  // Multiple candidates: fall back to the active pointer when a base URL narrows
+  // the set to a single most-recent enrollment.
+  if (baseUrl) {
+    const activeKey = store.active[fleetNodeActiveBaseKey(baseUrl)];
+    const active = activeKey ? store.nodes[activeKey] : undefined;
+    if (active) {
+      return active;
+    }
+  }
+
+  const candidates = matches
+    .map((record) => `${record.relaycastUrl}#${record.relayWorkspaceId}`)
+    .join(', ');
+  throw new Error(
+    `Multiple fleet node enrollments match; pass baseUrl and workspaceId to disambiguate. Candidates: ${candidates}.`
+  );
 }

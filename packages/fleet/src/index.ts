@@ -439,3 +439,5 @@ function parseWithSchema<T>(schema: ZodLikeSchema<T>, input: unknown): T {
   const message = 'error' in parsed ? parsed.error.message : 'input validation failed';
   throw new Error(message);
 }
+
+export * from './serve-node.js';
