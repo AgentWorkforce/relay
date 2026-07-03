@@ -39,12 +39,33 @@ export default defineNode({
 });
 ```
 
-Serve it:
+Serve it with the CLI:
 
 ```bash
-agent-relay fleet serve ./builder.node.ts
+agent-relay node up --config ./builder.node.ts
+# or drop the file at the project root as agent-relay.ts and run `agent-relay node up` (auto-discovered)
 agent-relay fleet nodes      # list registered nodes
 agent-relay fleet status     # show node + capability health
+```
+
+### Serving a node programmatically
+
+`@agent-relay/fleet` also ships the node runtime, so you can start a node in
+process without the CLI:
+
+```ts
+import { defineNode, serveNode, startServeNode } from '@agent-relay/fleet';
+
+const definition = defineNode({ name: 'builder', capabilities: { /* … */ } });
+const connection = { url: 'http://127.0.0.1:8787' }; // broker HTTP API base URL (apiKey optional)
+
+// startServeNode returns a RunningNode { stop(), done } for supervised use…
+const running = startServeNode({ definition, connection });
+// …await running.done to block until the node stops, or call running.stop().
+await running.stop();
+
+// serveNode runs the node to completion (resolves when it stops / aborts).
+await serveNode({ definition, connection });
 ```
 
 ## Concepts

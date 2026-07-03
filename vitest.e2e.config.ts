@@ -8,7 +8,7 @@ import path from 'node:path';
 //
 // Workspace packages still resolve from `src/` (no build required for the
 // harness itself); the node definition files are loaded out-of-process by
-// `fleet serve` via jiti, not by vitest.
+// `node up` via jiti, not by vitest.
 const workspacePackages = [
   'agent',
   'cloud',

@@ -257,7 +257,7 @@ export async function getNodes(
   return (body.data ?? []) as NodeRosterEntry[];
 }
 
-/** A single `agent-relay fleet serve` process (broker + sidecar), fully
+/** A single `agent-relay node up` process (broker + sidecar), fully
  * isolated under its own project dir + state. */
 export class FleetNode {
   child: ChildProcess | null = null;
@@ -309,15 +309,21 @@ export class FleetNode {
       process.execPath,
       [
         CLI_ENTRY,
-        'fleet',
-        'serve',
+        'node',
+        'up',
+        '--config',
         o.nodeFile,
-        '--name',
+        // `fleet serve --name` → `node up --broker-name` (the served node's name).
+        '--broker-name',
         o.name,
-        '--workspace',
+        // `fleet serve --workspace` → `node up --workspace-key`.
+        '--workspace-key',
         o.workspaceKey,
-        '--base-url',
-        o.engineBaseUrl,
+        // `node up` has no `--base-url`; the engine URL is carried by the
+        // RELAY_BASE_URL / RELAYCAST_BASE_URL env vars set below (as it was for
+        // `fleet serve --base-url`). Serve only — never auto-spawn teams.json
+        // agents (there are none in this hermetic project dir).
+        '--no-spawn',
       ],
       {
         cwd: REPO_ROOT,
@@ -355,7 +361,7 @@ export class FleetNode {
     return this.lastLog;
   }
 
-  /** Kill the whole node host: the `fleet serve` sidecar AND the broker it
+  /** Kill the whole node host: the `node up` sidecar AND the broker it
    * spawned. SIGKILLing only the sidecar orphans the broker (it keeps the node
    * online + holds the state-dir flock), which breaks a later restart. */
   async stop(): Promise<void> {

@@ -1,7 +1,7 @@
 name: Fleet E2E
 
 # Two-node fleet scenario matrix (RFC #1056, Phase 6). Boots a real relaycast
-# engine + two `agent-relay fleet serve` nodes (each a Rust broker + TS sidecar)
+# engine + two `agent-relay node up` nodes (each a Rust broker + TS sidecar)
 # and drives the live control wire. Heavier than the unit suite (builds the Rust
 # broker + the relaycast engine), so it runs on its own workflow, gated to fleet
 # paths. The scenario matrix itself runs in well under a minute (~30s locally);

@@ -3,7 +3,7 @@
 Boots a **real** stack and drives the fleet control wire end-to-end:
 
 - a relaycast engine (node adapter, `relaycast-engine` serve bin),
-- two `agent-relay fleet serve` nodes — each its own **Rust broker + TS sidecar**,
+- two `agent-relay node up` nodes — each its own **Rust broker + TS sidecar**,
   with distinct + shared capability sets (`node-a`: `spawn:claude`, `spawn:pool`,
   `echo`, `work`; `node-b`: `spawn:codex`, `spawn:pool`, `ping`, `work`).
 
@@ -67,7 +67,7 @@ full matrix; the matrix itself is ~30s, the wall-clock is build-dominated.
 
 ## Isolation notes
 
-Each `fleet serve` runs in a hermetic env: all ambient `RELAY_*` / `AGENT_RELAY_*`
+Each `node up` runs in a hermetic env: all ambient `RELAY_*` / `AGENT_RELAY_*`
 vars are stripped (so the broker never rejoins the operator's real workspace), with
 its own `HOME`, project dir, state dir, and broker port. The broker reads its
 node id from `<data_local_dir>/agent-relay/machine-id`, which the harness pre-seeds
