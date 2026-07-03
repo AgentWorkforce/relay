@@ -1,0 +1,23 @@
+{
+  "id": "traj_doqsaiwd4gmh",
+  "version": 1,
+  "task": {
+    "title": "Implement RFC #1204: reframe local/fleet serve as node command group",
+    "source": {
+      "system": "plain",
+      "id": "relay#1204"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-07-03T15:28:55.489Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7a98c6e6dba8d01405701fe055c571453b651200",
+    "endRef": "7a98c6e6dba8d01405701fe055c571453b651200"
+  }
+}
