@@ -8,8 +8,9 @@
       "id": "relay#1204"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-07-03T15:28:55.489Z",
+  "completedAt": "2026-07-03T16:09:38.507Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-07-03T15:41:07.048Z",
+      "endedAt": "2026-07-03T16:09:38.507Z",
       "events": [
         {
           "ts": 1783093267050,
@@ -75,12 +77,35 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Workstream B (CLI): node command group replaces local/fleet serve; cloud enroll added; local hidden alias + fleet serve hidden stub. Build+typecheck+399 CLI tests green.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [
+    "b4edfe9",
+    "a8a0aea",
+    "76c7025"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_doqsaiwd4gmh/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-07/traj_lbmykojlyhtm/summary.md",
+    ".agentworkforce/trajectories/completed/2026-07/traj_lbmykojlyhtm/trajectory.json",
+    "package-lock.json",
+    "packages/cloud/src/fleet.test.ts",
+    "packages/cloud/src/fleet.ts",
+    "packages/cloud/src/index.ts",
+    "packages/cloud/src/worker.ts",
+    "packages/fleet/package.json",
+    "packages/fleet/src/index.ts",
+    "packages/fleet/src/serve-node.test.ts",
+    "packages/fleet/src/serve-node.ts"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "7a98c6e6dba8d01405701fe055c571453b651200",
-    "endRef": "7a98c6e6dba8d01405701fe055c571453b651200"
+    "endRef": "b4edfe972bbd804dde827e7151526cefe5514510",
+    "traceId": "a9c068bc-d4ce-4684-8aad-47edef07f5d6"
   }
 }
