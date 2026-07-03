@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
 
 import type {
   CoreDependencies,
@@ -14,10 +15,10 @@ import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 import {
   createImplicitLocalFleetNode,
+  createTriggerSyncClient,
   fleetStatusPath,
-  startFleetSidecar,
-  type RunningFleetSidecar,
 } from './fleet-sidecar.js';
+import { discoverNodeConfigPath, loadNodeDefinition } from './node-definition-loader.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -26,6 +27,7 @@ type UpOptions = {
   workspaceKey?: string;
   stateDir?: string;
   brokerName?: string;
+  config?: string;
 };
 
 type DownOptions = {
@@ -299,8 +301,9 @@ function startImplicitLocalFleetSidecar(
   relay: CoreRelay,
   options: UpOptions,
   deps: CoreDependencies,
-  teamsConfig: CoreTeamsConfig | null = deps.loadTeamsConfig(paths.projectRoot)
-): RunningFleetSidecar | undefined {
+  teamsConfig: CoreTeamsConfig | null = deps.loadTeamsConfig(paths.projectRoot),
+  nodeDefinition?: FleetNodeDefinition
+): RunningNode | undefined {
   if (deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1') {
     return undefined;
   }
@@ -313,15 +316,22 @@ function startImplicitLocalFleetSidecar(
   // itself as a fleet node, but the broker is already up and usable without it.
   // Never let a sidecar setup failure abort `up`.
   try {
-    const node = createImplicitLocalFleetNode({
-      paths,
-      teamsConfig,
-      name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
-    });
-    return startFleetSidecar({
+    const node =
+      nodeDefinition ??
+      createImplicitLocalFleetNode({
+        paths,
+        teamsConfig,
+        name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
+      });
+    const workspaceKey = relay.workspaceKey;
+    const baseUrl = deps.env.RELAY_BASE_URL;
+    return startServeNode({
       definition: node,
       connection: { url: conn.url, apiKey: conn.api_key },
-      workspaceKey: relay.workspaceKey,
+      // A started relay's workspace key lets a config-defined node reconcile its
+      // declared triggers with the workspace. The implicit local node declares no
+      // triggers, so the adapter is created but never issues a request.
+      ...(workspaceKey ? { triggers: createTriggerSyncClient({ workspaceKey, baseUrl }) } : {}),
       statusPath: fleetStatusPath(paths),
       reconnect: true,
       warn: (message) => deps.warn(message),
@@ -889,7 +899,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   const existingPid = readBrokerPid(paths.dataDir, deps);
 
   let relay: CoreRelay | null = null;
-  let fleetSidecar: RunningFleetSidecar | undefined;
+  let fleetSidecar: RunningNode | undefined;
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
@@ -947,7 +957,18 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     vlog(deps, options.verbose, 'Loading teams.json and starting implicit fleet sidecar (if any)...');
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
-    fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig);
+    // A discovered (or explicit --config) node definition takes over from the
+    // implicit teams.json-derived node. When no config exists the bare/implicit
+    // path is preserved exactly. An explicit --config resolves against the
+    // invocation cwd; implicit discovery scans the project root.
+    const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
+    const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+    let nodeDefinition: FleetNodeDefinition | undefined;
+    if (configPath) {
+      vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
+      nodeDefinition = await loadNodeDefinition(configPath);
+    }
+    fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig, nodeDefinition);
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 

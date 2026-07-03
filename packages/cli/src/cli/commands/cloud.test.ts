@@ -16,6 +16,8 @@ const cloudMocks = vi.hoisted(() => ({
   registerCloudWorker: vi.fn(),
   resolveCloudWorkerRecord: vi.fn(),
   runCloudWorkerLoop: vi.fn(),
+  enrollFleetNode: vi.fn(),
+  upsertFleetNodeEnrollment: vi.fn(),
 }));
 
 vi.mock('@agent-relay/cloud', () => ({
@@ -26,6 +28,8 @@ vi.mock('@agent-relay/cloud', () => ({
   clearStoredAuth: vi.fn(),
   connectProvider: vi.fn(),
   defaultApiUrl: () => 'https://cloud.test',
+  enrollFleetNode: (...args: unknown[]) => cloudMocks.enrollFleetNode(...args),
+  upsertFleetNodeEnrollment: (...args: unknown[]) => cloudMocks.upsertFleetNodeEnrollment(...args),
   ensureAuthenticated: vi.fn(),
   ensureCloudSession: vi.fn(),
   getProviderHelpText: () =>
@@ -60,7 +64,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function createHarness() {
+function createHarness(overrides?: Partial<CloudDependencies>) {
   const exit = vi.fn((code: number) => {
     throw new Error(`exit:${code}`);
   }) as unknown as CloudDependencies['exit'];
@@ -69,6 +73,10 @@ function createHarness() {
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
+    enrollFleetNode: cloudMocks.enrollFleetNode as unknown as CloudDependencies['enrollFleetNode'],
+    upsertFleetNodeEnrollment:
+      cloudMocks.upsertFleetNodeEnrollment as unknown as CloudDependencies['upsertFleetNodeEnrollment'],
+    ...overrides,
   };
 
   const program = new Command();
@@ -109,6 +117,7 @@ describe('registerCloudCommands', () => {
       'session',
       'whoami',
       'connect',
+      'enroll',
       'run',
       'schedule',
       'schedules',
@@ -683,5 +692,117 @@ describe('registerCloudCommands', () => {
 
     expect(deps.log).toHaveBeenCalledWith('Patches:');
     expect(deps.log).toHaveBeenCalledWith('  cloud: patch pending - run still active');
+  });
+
+  it('cloud enroll persists credentials before printing success and never prints the token', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const log = vi.fn();
+    const { program } = createHarness({ log });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'enroll',
+      '--token',
+      'ocl_node_enr_x',
+      '--name',
+      'kjglaptop',
+      '--max-agents',
+      '4',
+    ]);
+
+    expect(cloudMocks.enrollFleetNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enrollmentToken: 'ocl_node_enr_x',
+        name: 'kjglaptop',
+        maxAgents: 4,
+      })
+    );
+    // Persist happens BEFORE the success output (token is one-time).
+    expect(cloudMocks.upsertFleetNodeEnrollment).toHaveBeenCalledTimes(1);
+    expect(cloudMocks.upsertFleetNodeEnrollment.mock.calls[0][0]).toMatchObject({
+      nodeToken: 'nt_secret',
+      enrolledAt: expect.any(String),
+    });
+    expect(cloudMocks.upsertFleetNodeEnrollment.mock.invocationCallOrder[0]).toBeLessThan(
+      log.mock.invocationCallOrder[0]
+    );
+
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain('Enrolled node "kjglaptop" (node_abc) in workspace rw_123');
+    expect(output).toContain("Run 'relay node up'");
+    expect(output).not.toContain('nt_secret');
+  });
+
+  it('cloud enroll --json prints the record without the node token', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const log = vi.fn();
+    const { program } = createHarness({ log });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'enroll',
+      '--token',
+      'ocl_node_enr_x',
+      '--json',
+    ]);
+
+    const printed = JSON.parse(String(log.mock.calls[0][0]));
+    expect(printed).not.toHaveProperty('nodeToken');
+    expect(printed).toMatchObject({
+      nodeName: 'kjglaptop',
+      relayWorkspaceId: 'rw_123',
+      enrolledAt: expect.any(String),
+    });
+  });
+
+  it('cloud enroll surfaces enrollment errors and exits 1 without persisting', async () => {
+    cloudMocks.enrollFleetNode.mockRejectedValueOnce(new Error('Enrollment token is invalid'));
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'bad'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith('Enrollment token is invalid');
+    expect(cloudMocks.upsertFleetNodeEnrollment).not.toHaveBeenCalled();
+  });
+
+  it('cloud enroll rejects a non-positive --max-agents', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'enroll',
+        '--token',
+        'ocl_node_enr_x',
+        '--max-agents',
+        '0',
+      ])
+    ).rejects.toThrow();
+
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
   });
 });

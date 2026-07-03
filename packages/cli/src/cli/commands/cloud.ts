@@ -22,6 +22,8 @@ import {
   connectProvider,
   getProviderHelpText,
   normalizeProvider,
+  enrollFleetNode,
+  upsertFleetNodeEnrollment,
   type WhoAmIResponse,
   type WorkflowFileType,
   type WorkflowSchedule,
@@ -53,6 +55,8 @@ export interface CloudDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  enrollFleetNode: typeof enrollFleetNode;
+  upsertFleetNodeEnrollment: typeof upsertFleetNodeEnrollment;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -62,6 +66,8 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
+    enrollFleetNode,
+    upsertFleetNodeEnrollment,
     ...overrides,
   };
 }
@@ -408,6 +414,56 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
       }
     });
+
+  // ── enroll ─────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('enroll')
+    .description('Enroll this machine as a Cloud-managed fleet node')
+    .requiredOption('--token <token>', 'One-time Cloud enrollment token (ocl_node_enr_...)')
+    .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')
+    .option('--name <name>', 'Override the node name')
+    .option('--max-agents <n>', 'Maximum managed agents for this node', parsePositiveInteger)
+    .option('--json', 'Print the persisted enrollment record as JSON (never the token)', false)
+    .action(
+      async (options: {
+        token: string;
+        enrollmentUrl?: string;
+        name?: string;
+        maxAgents?: number;
+        json?: boolean;
+      }) => {
+        try {
+          const enrollment = await deps.enrollFleetNode({
+            enrollmentToken: options.token,
+            enrollmentUrl: options.enrollmentUrl ?? '',
+            ...(options.name ? { name: options.name } : {}),
+            ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
+          });
+          const record = { ...enrollment, enrolledAt: new Date().toISOString() };
+          // Persist BEFORE printing success: the enrollment token is one-time, so
+          // durable credentials must hit disk before we report success.
+          deps.upsertFleetNodeEnrollment(record);
+
+          if (options.json) {
+            // Never print the node token, even in JSON mode.
+            const { nodeToken: _nodeToken, ...safe } = record;
+            void _nodeToken;
+            deps.log(JSON.stringify(safe, null, 2));
+            return;
+          }
+
+          const nodeIdSuffix = record.nodeId ? ` (${record.nodeId})` : '';
+          deps.log(
+            `Enrolled node "${record.nodeName}"${nodeIdSuffix} in workspace ${record.relayWorkspaceId}. ` +
+              "Run 'relay node up' to serve it."
+          );
+        } catch (err) {
+          deps.error(err instanceof Error ? err.message : String(err));
+          deps.exit(1);
+        }
+      }
+    );
 
   // ── run ────────────────────────────────────────────────────────────────────
 

@@ -23,6 +23,7 @@ import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
+import { registerNodeCommands } from './commands/node.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
@@ -149,7 +150,7 @@ const STDIO_SERVER_COMMANDS = new Set(['mcp']);
 // Commands for which we run the background update-check. Keep this narrow to
 // the interactive / long-lived commands — we don't want short-lived programmatic
 // invocations (spawn, send, etc.) to hit the npm registry on every call.
-const UPDATE_CHECK_COMMANDS = new Set(['local', 'version', '--version', '-V', '--help', '-h']);
+const UPDATE_CHECK_COMMANDS = new Set(['node', 'local', 'version', '--version', '-V', '--help', '-h']);
 
 function detectCi(): boolean {
   const env = process.env;
@@ -207,6 +208,9 @@ interface CommandContext {
 }
 
 let currentCommand: CommandContext | null = null;
+
+/** One-shot guard so the deprecated `local` alias warns at most once per process. */
+let localDeprecationWarned = false;
 
 function installTelemetryHooks(program: Command): void {
   program.hook('preAction', (_thisCommand, actionCommand) => {
@@ -289,10 +293,24 @@ export function createProgram(options: { name?: string } = {}): Command {
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
-  const local = program.command('local').description('Manage the local Agent Relay broker and its agents');
+  registerNodeCommands(program);
+
+  // `local` is a hidden, deprecated alias of `node`. It keeps the pre-rename flat
+  // surface (`local up|run|logs|sync`, `local agent …`) so existing scripts keep
+  // working, and warns once per process on first use.
+  const local = program.command('local', { hidden: true }).description('Deprecated alias of "node"');
   registerCoreCommands(local);
   registerLocalAgentCommands(local);
   registerLocalWorkflowCommands(local);
+  local.hook('preAction', () => {
+    if (localDeprecationWarned) {
+      return;
+    }
+    localDeprecationWarned = true;
+    process.stderr.write(
+      "Warning: 'local' is deprecated and will be removed in a future major; use 'relay node ...' instead.\n"
+    );
+  });
 
   registerCoreMaintenance(program);
   registerFleetCommands(program);
