@@ -237,12 +237,10 @@ describe('bootstrap CLI', () => {
     expect(preAction).toBeTypeOf('function');
 
     const writes: string[] = [];
-    const spy = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(String(chunk));
-        return true;
-      }) as typeof process.stderr.write);
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
     try {
       preAction!();
       preAction!();

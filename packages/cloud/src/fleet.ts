@@ -249,9 +249,7 @@ export function fleetNodeEnrollmentStorePath(env: NodeJS.ProcessEnv = process.en
  * empty store.
  * @param env - Process environment (for `AGENT_RELAY_HOME` override).
  */
-export function readFleetNodeEnrollmentStore(
-  env: NodeJS.ProcessEnv = process.env
-): FleetNodeEnrollmentStore {
+export function readFleetNodeEnrollmentStore(env: NodeJS.ProcessEnv = process.env): FleetNodeEnrollmentStore {
   const file = fleetNodeEnrollmentStorePath(env);
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
@@ -360,9 +358,7 @@ export function resolveActiveFleetNodeEnrollment(
     }
   }
 
-  const candidates = matches
-    .map((record) => `${record.relaycastUrl}#${record.relayWorkspaceId}`)
-    .join(', ');
+  const candidates = matches.map((record) => `${record.relaycastUrl}#${record.relayWorkspaceId}`).join(', ');
   throw new Error(
     `Multiple fleet node enrollments match; pass baseUrl and workspaceId to disambiguate. Candidates: ${candidates}.`
   );

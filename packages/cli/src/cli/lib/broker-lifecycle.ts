@@ -13,11 +13,7 @@ import type {
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
-import {
-  createImplicitLocalFleetNode,
-  createTriggerSyncClient,
-  fleetStatusPath,
-} from './fleet-sidecar.js';
+import { createImplicitLocalFleetNode, createTriggerSyncClient, fleetStatusPath } from './fleet-sidecar.js';
 import { discoverNodeConfigPath, loadNodeDefinition } from './node-definition-loader.js';
 
 type UpOptions = {

@@ -279,9 +279,7 @@ function runNodeConnection(options: ServeNodeOptions): Promise<void> {
       await sendRequest('handler_result', payload);
     };
 
-    const handleInvoke = async (
-      payload: Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']
-    ) => {
+    const handleInvoke = async (payload: Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']) => {
       const ctx = createActionContext(options, sendRequest, payload.invocation_id);
       try {
         const output = await invokeNodeHandler(options.definition, payload.name, payload.input, ctx);
@@ -350,9 +348,9 @@ function runNodeConnection(options: ServeNodeOptions): Promise<void> {
         return;
       }
       if (frame.type === 'invoke_handler') {
-        void handleInvoke(
-          frame.payload as Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']
-        ).catch((error) => options.warn?.(errorMessage(error)));
+        void handleInvoke(frame.payload as Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']).catch(
+          (error) => options.warn?.(errorMessage(error))
+        );
       }
     });
 
@@ -450,9 +448,7 @@ async function syncTriggers(options: ServeNodeOptions): Promise<void> {
           });
         }
         await Promise.all(
-          duplicates
-            .filter((duplicate) => duplicate.id)
-            .map((duplicate) => client.delete(duplicate.id!))
+          duplicates.filter((duplicate) => duplicate.id).map((duplicate) => client.delete(duplicate.id!))
         );
       })
     );
@@ -518,8 +514,7 @@ function readOkResult(payload: unknown): unknown {
 function frameError(payload: unknown): Error {
   if (payload && typeof payload === 'object') {
     const record = payload as { code?: unknown; message?: unknown };
-    const message =
-      typeof record.message === 'string' ? record.message : 'fleet node request failed';
+    const message = typeof record.message === 'string' ? record.message : 'fleet node request failed';
     const error = new Error(message);
     error.name = typeof record.code === 'string' ? record.code : 'FleetNodeError';
     return error;

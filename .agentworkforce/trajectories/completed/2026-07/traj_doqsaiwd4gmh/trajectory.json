@@ -82,11 +82,7 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "b4edfe9",
-    "a8a0aea",
-    "76c7025"
-  ],
+  "commits": ["b4edfe9", "a8a0aea", "76c7025"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_doqsaiwd4gmh/trajectory.json",
     ".agentworkforce/trajectories/completed/2026-07/traj_lbmykojlyhtm/summary.md",

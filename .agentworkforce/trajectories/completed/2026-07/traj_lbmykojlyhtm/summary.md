@@ -18,6 +18,7 @@ Workspace-scoped node delivery fix shipped in PR #1225 (merged as bd5fce0); clos
 ## Key Decisions
 
 ### Workspace-scope auto-derived node IDs only
+
 - **Chose:** Workspace-scope auto-derived node IDs only
 - **Reasoning:** The pinned RELAY_NODE_TOKEN path must keep using the enrolled machine seed verbatim, while create_node auto-mint needs node IDs unique across workspaces for the same cwd.
 
@@ -26,6 +27,7 @@ Workspace-scoped node delivery fix shipped in PR #1225 (merged as bd5fce0); clos
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Workspace-scope auto-derived node IDs only: Workspace-scope auto-derived node IDs only

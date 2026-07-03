@@ -18,9 +18,7 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "921f469"
-  ],
+  "commits": ["921f469"],
   "filesChanged": [
     ".agents/skills/using-agent-relay/SKILL.md",
     ".agentworkforce/trajectories/active/traj_rilsjj9kjlhn/trajectory.json",

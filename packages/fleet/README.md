@@ -56,7 +56,12 @@ process without the CLI:
 ```ts
 import { defineNode, serveNode, startServeNode } from '@agent-relay/fleet';
 
-const definition = defineNode({ name: 'builder', capabilities: { /* … */ } });
+const definition = defineNode({
+  name: 'builder',
+  capabilities: {
+    /* … */
+  },
+});
 const connection = { url: 'http://127.0.0.1:8787' }; // broker HTTP API base URL (apiKey optional)
 
 // startServeNode returns a RunningNode { stop(), done } for supervised use…

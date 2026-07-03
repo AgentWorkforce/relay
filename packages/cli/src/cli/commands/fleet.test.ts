@@ -75,9 +75,11 @@ describe('fleet command support', () => {
     expect(serve).toBeDefined();
     expect((serve as unknown as { _hidden?: boolean })._hidden).toBe(true);
 
-    await program.parseAsync(['fleet', 'serve', 'some-file.ts', '--enrollment-token', 'x'], {
-      from: 'user',
-    }).catch(() => undefined);
+    await program
+      .parseAsync(['fleet', 'serve', 'some-file.ts', '--enrollment-token', 'x'], {
+        from: 'user',
+      })
+      .catch(() => undefined);
 
     expect(exit).toHaveBeenCalledWith(1);
     expect(errors.join('\n')).toMatch(/'fleet serve' has been replaced/);
