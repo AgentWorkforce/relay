@@ -87,22 +87,6 @@ describe('registerNodeCommands', () => {
     expect(up.options.map((option) => option.long)).toContain('--config');
   });
 
-  it('does not print the deprecated `local` warning when invoked as `node`', async () => {
-    const { program } = createNodeHarness({ env: { RELAY_NODE_TOKEN: 'x' } });
-    const writes: string[] = [];
-    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
-      writes.push(String(chunk));
-      return true;
-    }) as typeof process.stderr.write);
-    try {
-      await program.parseAsync(['node', 'up'], { from: 'user' });
-    } finally {
-      spy.mockRestore();
-    }
-
-    expect(writes.join('')).not.toContain('deprecated');
-  });
-
   it('picks up a persisted enrollment and wires its creds into the env', async () => {
     const resolveEnrollment = vi.fn(
       () => enrollmentRecord
@@ -114,9 +98,55 @@ describe('registerNodeCommands', () => {
     expect(resolveEnrollment).toHaveBeenCalledTimes(1);
     expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
     expect(env.RELAY_BASE_URL).toBe('https://relaycast.example.com');
-    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ discoverConfig: true, nodeName: 'kjglaptop' }),
+      expect.anything()
+    );
     expect(log.mock.calls.flat().join('\n')).toContain('kjglaptop');
     expect(log.mock.calls.flat().join('\n')).toContain('rw_123');
+  });
+
+  it('lets --broker-name beat the enrolled node name', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program } = createNodeHarness({ env: {}, resolveEnrollment });
+
+    await program.parseAsync(['node', 'up', '--broker-name', 'edge-1'], { from: 'user' });
+
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeName: 'edge-1' }),
+      expect.anything()
+    );
+  });
+
+  it('skips enrollment pickup when --workspace-key is passed', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env } = createNodeHarness({ env: {}, resolveEnrollment });
+
+    await program.parseAsync(['node', 'up', '--workspace-key', 'rk_other'], { from: 'user' });
+
+    expect(resolveEnrollment).not.toHaveBeenCalled();
+    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips enrollment pickup when RELAY_WORKSPACE_KEY is set in the env', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env } = createNodeHarness({
+      env: { RELAY_WORKSPACE_KEY: 'rk_env' },
+      resolveEnrollment,
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(resolveEnrollment).not.toHaveBeenCalled();
+    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
   });
 
   it('does not clobber an existing RELAY_NODE_TOKEN or query the store', async () => {
@@ -180,7 +210,7 @@ describe('registerNodeCommands', () => {
     await program.parseAsync(['node', 'up', '--config', 'agent-relay.ts'], { from: 'user' });
 
     expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ config: 'agent-relay.ts' }),
+      expect.objectContaining({ config: 'agent-relay.ts', discoverConfig: true }),
       expect.anything()
     );
   });

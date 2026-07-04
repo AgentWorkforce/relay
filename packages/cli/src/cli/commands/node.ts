@@ -80,6 +80,7 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
   // cannot be matched against it — skip pickup entirely rather than risk
   // starting the broker with a token from a different workspace.
   const explicitWorkspaceKey = Boolean(options.workspaceKey?.trim() || env.RELAY_WORKSPACE_KEY?.trim());
+  let enrolledNodeName: string | undefined;
   if (!env.RELAY_NODE_TOKEN && !explicitWorkspaceKey) {
     let record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined;
     try {
@@ -99,11 +100,24 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
       if (!env.RELAY_BASE_URL) {
         env.RELAY_BASE_URL = record.relaycastUrl;
       }
+      // Serve under the enrolled name (mirrors the old
+      // `fleet serve --enrollment-token` behavior where --name beat the
+      // enrollment record's nodeName).
+      enrolledNodeName = record.nodeName?.trim() || undefined;
       deps.log(
         `Using persisted Cloud enrollment for node "${record.nodeName}" (workspace ${record.relayWorkspaceId}).`
       );
     }
   }
 
-  await runUpCommand({ ...options }, deps.core);
+  await runUpCommand(
+    {
+      ...options,
+      discoverConfig: true,
+      ...((options.brokerName ?? enrolledNodeName)
+        ? { nodeName: options.brokerName ?? enrolledNodeName }
+        : {}),
+    },
+    deps.core
+  );
 }

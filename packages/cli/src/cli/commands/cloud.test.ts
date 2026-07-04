@@ -743,6 +743,36 @@ describe('registerCloudCommands', () => {
     expect(output).not.toContain('nt_secret');
   });
 
+  it('cloud enroll dumps the credentials for manual recovery when persistence fails', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied');
+    });
+    const log = vi.fn();
+    const error = vi.fn();
+    const { program } = createHarness({ log, error });
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x'])
+    ).rejects.toThrow('exit:1');
+
+    // The one-time token is burned; the creds (token included) must be dumped
+    // to stderr so the operator can save them by hand.
+    const stderr = error.mock.calls.flat().join('\n');
+    expect(stderr).toContain('persisting credentials failed');
+    expect(stderr).toContain('EACCES');
+    expect(stderr).toContain('nt_secret');
+    expect(stderr).toContain('SAVE THESE CREDENTIALS');
+    expect(log.mock.calls.flat().join('\n')).not.toContain('Enrolled node');
+  });
+
   it('cloud enroll --json prints the record without the node token', async () => {
     cloudMocks.enrollFleetNode.mockResolvedValueOnce({
       nodeId: 'node_abc',

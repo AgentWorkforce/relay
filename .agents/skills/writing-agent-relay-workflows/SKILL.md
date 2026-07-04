@@ -451,9 +451,9 @@ runWorkflow().catch((error) => {
 - Final signoff only happens after post-Codex-fix review and final deterministic gates prove the spec is complete, or a blocker artifact explains why it cannot be completed.
 - Critical TypeScript rules:
 - Check the project's `package.json` for `"type": "module"` — if ESM, use `import`; if CJS, use `require()`. In both cases, wrap execution in an async function instead of raw top-level `await`.
-- `agent-relay local run <file.ts>` executes the file as a standalone subprocess — it does NOT inspect exports. The file MUST call `.run()`.
+- `agent-relay node workflow run <file.ts>` executes the file as a standalone subprocess — it does NOT inspect exports. The file MUST call `.run()`.
 - Use `.run({ cwd: process.cwd() })` — `createWorkflowRenderer` does not exist
-- For dry-run validation, call `.run({ dryRun: true, cwd: process.cwd() })` or `runWorkflow(path, { dryRun: true })` from TypeScript. Use `agent-relay local run <file>` for execution.
+- For dry-run validation, call `.run({ dryRun: true, cwd: process.cwd() })` or `runWorkflow(path, { dryRun: true })` from TypeScript. Use `agent-relay node workflow run <file>` for execution.
 
 ### ⚡ Parallelism — Design for Speed
 
@@ -461,24 +461,24 @@ runWorkflow().catch((error) => {
 
 ```bash
 # BAD — sequential (14 hours for 27 workflows at ~30 min each)
-agent-relay local run workflows/34-sst-wiring.ts
-agent-relay local run workflows/35-env-config.ts
-agent-relay local run workflows/36-loading-states.ts
+agent-relay node workflow run workflows/34-sst-wiring.ts
+agent-relay node workflow run workflows/35-env-config.ts
+agent-relay node workflow run workflows/36-loading-states.ts
 # ... one at a time
 
 # GOOD — parallel waves (3-4 hours for 27 workflows)
 # Wave 1: independent infra (parallel)
-agent-relay local run workflows/34-sst-wiring.ts &
-agent-relay local run workflows/35-env-config.ts &
-agent-relay local run workflows/36-loading-states.ts &
-agent-relay local run workflows/37-responsive.ts &
+agent-relay node workflow run workflows/34-sst-wiring.ts &
+agent-relay node workflow run workflows/35-env-config.ts &
+agent-relay node workflow run workflows/36-loading-states.ts &
+agent-relay node workflow run workflows/37-responsive.ts &
 wait
 git add -A && git commit -m "Wave 1"
 
 # Wave 2: testing (parallel — independent test suites)
-agent-relay local run workflows/40-unit-tests.ts &
-agent-relay local run workflows/41-integration-tests.ts &
-agent-relay local run workflows/42-e2e-tests.ts &
+agent-relay node workflow run workflows/40-unit-tests.ts &
+agent-relay node workflow run workflows/41-integration-tests.ts &
+agent-relay node workflow run workflows/42-e2e-tests.ts &
 wait
 git add -A && git commit -m "Wave 2"
 ```
@@ -1410,7 +1410,7 @@ When you set `.pattern('supervisor')` (or `hub-spoke`, `fan-out`), the runner au
 | `export default workflow(...)...build()`                                                                                           | No `.build()`. Chain ends with `.run()` — the file must call `.run()`, not just export config                                                                                                                                            |
 | Relative import `'../workflows/builder.js'`                                                                                        | Use `import { workflow } from '@relayflows/core'`                                                                                                                                                                                        |
 | Hardcoded model strings (`model: 'opus'`)                                                                                          | Use constants: `import { ClaudeModels } from '@agent-relay/config'` → `model: ClaudeModels.OPUS`                                                                                                                                         |
-| Thinking `agent-relay local run` inspects exports                                                                                  | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
+| Thinking `agent-relay node workflow run` inspects exports                                                                                  | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
 | `pattern('single')` on cloud runner                                                                                                | Not supported — use `dag`                                                                                                                                                                                                                |
 | `pattern('supervisor')` with one agent                                                                                             | Same agent is owner + specialist. Use `dag`                                                                                                                                                                                              |
 | Invalid verification type (`type: 'deterministic'`)                                                                                | Only `exit_code`, `output_contains`, `file_exists`, `custom` are valid                                                                                                                                                                   |

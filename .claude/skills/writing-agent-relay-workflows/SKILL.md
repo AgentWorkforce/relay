@@ -507,9 +507,9 @@ For small doc/spec workflows, a lead + author + the mandatory Claude-then-Codex 
 **Critical TypeScript rules:**
 
 1. Check the project's `package.json` for `"type": "module"` — if ESM, use `import`; if CJS, use `require()`. In both cases, wrap execution in an async function instead of raw top-level `await`.
-2. `agent-relay local run <file.ts>` executes the file as a standalone subprocess — it does NOT inspect exports. The file MUST call `.run()`.
+2. `agent-relay node workflow run <file.ts>` executes the file as a standalone subprocess — it does NOT inspect exports. The file MUST call `.run()`.
 3. Use `.run({ cwd: process.cwd() })` — `createWorkflowRenderer` does not exist
-4. For dry-run validation, call `.run({ dryRun: true, cwd: process.cwd() })` or `runWorkflow(path, { dryRun: true })` from TypeScript. Use `agent-relay local run <file>` for execution.
+4. For dry-run validation, call `.run({ dryRun: true, cwd: process.cwd() })` or `runWorkflow(path, { dryRun: true })` from TypeScript. Use `agent-relay node workflow run <file>` for execution.
 
 ## ⚡ Parallelism — Design for Speed
 
@@ -521,24 +521,24 @@ When a project has multiple workflows, group independent ones into parallel wave
 
 ```bash
 # BAD — sequential (14 hours for 27 workflows at ~30 min each)
-agent-relay local run workflows/34-sst-wiring.ts
-agent-relay local run workflows/35-env-config.ts
-agent-relay local run workflows/36-loading-states.ts
+agent-relay node workflow run workflows/34-sst-wiring.ts
+agent-relay node workflow run workflows/35-env-config.ts
+agent-relay node workflow run workflows/36-loading-states.ts
 # ... one at a time
 
 # GOOD — parallel waves (3-4 hours for 27 workflows)
 # Wave 1: independent infra (parallel)
-agent-relay local run workflows/34-sst-wiring.ts &
-agent-relay local run workflows/35-env-config.ts &
-agent-relay local run workflows/36-loading-states.ts &
-agent-relay local run workflows/37-responsive.ts &
+agent-relay node workflow run workflows/34-sst-wiring.ts &
+agent-relay node workflow run workflows/35-env-config.ts &
+agent-relay node workflow run workflows/36-loading-states.ts &
+agent-relay node workflow run workflows/37-responsive.ts &
 wait
 git add -A && git commit -m "Wave 1"
 
 # Wave 2: testing (parallel — independent test suites)
-agent-relay local run workflows/40-unit-tests.ts &
-agent-relay local run workflows/41-integration-tests.ts &
-agent-relay local run workflows/42-e2e-tests.ts &
+agent-relay node workflow run workflows/40-unit-tests.ts &
+agent-relay node workflow run workflows/41-integration-tests.ts &
+agent-relay node workflow run workflows/42-e2e-tests.ts &
 wait
 git add -A && git commit -m "Wave 2"
 ```
@@ -972,7 +972,7 @@ Current `@relayflows/core` does not provide `createGitHubStep`. Use one of these
 
 | Where the workflow runs         | Current PR surface                                      | What you provide                          |
 | ------------------------------- | ------------------------------------------------------- | ----------------------------------------- |
-| Local (`agent-relay local run`) | Deterministic `git` and `gh` steps                      | `gh auth status` works                    |
+| Local (`agent-relay node workflow run`) | Deterministic `git` and `gh` steps                      | `gh auth status` works                    |
 | Adapter-based script            | `GitHubClient` from `@relayflows/github-primitive`      | Runtime config or environment credentials |
 | Cloud (`agent-relay cloud run`) | Cloud push-back for declared `paths[]`, when configured | Allowlisted repo paths                    |
 
@@ -1980,7 +1980,7 @@ When you set `.pattern('supervisor')` (or `hub-spoke`, `fan-out`), the runner au
 | `export default workflow(...)...build()`                                                                                           | No `.build()`. Chain ends with `.run()` — the file must call `.run()`, not just export config                                                                                                                                            |
 | Relative import `'../workflows/builder.js'`                                                                                        | Use `import { workflow } from '@relayflows/core'`                                                                                                                                                                                        |
 | Hardcoded model strings (`model: 'opus'`)                                                                                          | Use constants: `import { ClaudeModels } from '@agent-relay/config'` → `model: ClaudeModels.OPUS`                                                                                                                                         |
-| Thinking `agent-relay local run` inspects exports                                                                                  | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
+| Thinking `agent-relay node workflow run` inspects exports                                                                                  | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
 | `pattern('single')` on cloud runner                                                                                                | Not supported — use `dag`                                                                                                                                                                                                                |
 | `pattern('supervisor')` with one agent                                                                                             | Same agent is owner + specialist. Use `dag`                                                                                                                                                                                              |
 | Invalid verification type (`type: 'deterministic'`)                                                                                | Only `exit_code`, `output_contains`, `file_exists`, `custom` are valid                                                                                                                                                                   |
@@ -2084,7 +2084,7 @@ workflows:
         failOnError: true
 ```
 
-Run with: `agent-relay local run path/to/workflow.yaml`
+Run with: `agent-relay node workflow run path/to/workflow.yaml`
 
 ## Available Swarm Patterns
 

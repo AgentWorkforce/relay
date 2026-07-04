@@ -24,6 +24,15 @@ type UpOptions = {
   stateDir?: string;
   brokerName?: string;
   config?: string;
+  /**
+   * Opt-in to auto-discovering an `agent-relay.*` node definition in the
+   * project root. Only `node up` sets this — the deprecated `local up` alias
+   * (and any other legacy caller) must keep its pre-`node` behavior of never
+   * touching such files.
+   */
+  discoverConfig?: boolean;
+  /** Registered node name override (e.g. from a persisted Cloud enrollment). */
+  nodeName?: string;
 };
 
 type DownOptions = {
@@ -324,6 +333,7 @@ function startImplicitLocalFleetSidecar(
     return startServeNode({
       definition: node,
       connection: { url: conn.url, apiKey: conn.api_key },
+      ...(options.nodeName ? { nameOverride: options.nodeName } : {}),
       // A started relay's workspace key lets a config-defined node reconcile its
       // declared triggers with the workspace. The implicit local node declares no
       // triggers, so the adapter is created but never issues a request.
@@ -932,17 +942,36 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     // A discovered (or explicit --config) node definition takes over from the
-    // implicit teams.json-derived node. When no config exists the bare/implicit
-    // path is preserved exactly. An explicit --config resolves against the
-    // invocation cwd; implicit discovery scans the project root. Resolve and
-    // load BEFORE the broker starts so a missing/invalid config fails fast
-    // instead of tearing down a broker that just came up.
-    const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
-    const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+    // implicit teams.json-derived node. Discovery is opt-in (`node up` only):
+    // the deprecated `local up` alias never scanned for agent-relay.* files and
+    // must not start importing arbitrary modules from the project root. An
+    // explicit --config resolves against the invocation cwd and fails hard;
+    // implicit discovery scans the project root and merely warns on a file
+    // that doesn't load as defineNode(...) — a stray agent-relay.ts must not
+    // brick startup. Resolve and load BEFORE the broker starts so an explicit
+    // bad --config fails fast instead of tearing down a broker that just came
+    // up. When the implicit fleet node is disabled the sidecar never starts,
+    // so loading a config would be pointless — skip it entirely.
     let nodeDefinition: FleetNodeDefinition | undefined;
-    if (configPath) {
-      vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
-      nodeDefinition = await loadNodeDefinition(configPath);
+    const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
+    if (!fleetNodeDisabled && (options.config || options.discoverConfig === true)) {
+      const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
+      const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+      if (configPath) {
+        vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
+        if (explicitConfig) {
+          nodeDefinition = await loadNodeDefinition(configPath);
+        } else {
+          try {
+            nodeDefinition = await loadNodeDefinition(configPath);
+          } catch (err) {
+            deps.warn(
+              `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
+                'Serving the implicit local node instead; pass --config to fail hard on this file.'
+            );
+          }
+        }
+      }
     }
 
     // Kill any orphaned broker processes for this project that lost their PID

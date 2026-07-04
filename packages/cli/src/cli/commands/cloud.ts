@@ -442,8 +442,25 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           });
           const record = { ...enrollment, enrolledAt: new Date().toISOString() };
           // Persist BEFORE printing success: the enrollment token is one-time, so
-          // durable credentials must hit disk before we report success.
-          deps.upsertFleetNodeEnrollment(record);
+          // durable credentials must hit disk before we report success. If the
+          // write fails the token is already burned, so dump the credentials
+          // (token included) for manual recovery instead of losing them forever.
+          try {
+            deps.upsertFleetNodeEnrollment(record);
+          } catch (persistErr) {
+            deps.error(
+              `Enrollment succeeded but persisting credentials failed: ${
+                persistErr instanceof Error ? persistErr.message : String(persistErr)
+              }`
+            );
+            deps.error('The one-time enrollment token has been consumed. SAVE THESE CREDENTIALS NOW:');
+            deps.error(JSON.stringify(record, null, 2));
+            deps.error(
+              "Fix the store problem and re-add them, or export RELAY_NODE_TOKEN/RELAY_BASE_URL manually before 'relay node up'."
+            );
+            deps.exit(1);
+            return;
+          }
 
           if (options.json) {
             // Never print the node token, even in JSON mode.

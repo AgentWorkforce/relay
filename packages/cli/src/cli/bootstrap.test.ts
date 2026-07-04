@@ -251,5 +251,12 @@ describe('bootstrap CLI', () => {
     const warnings = writes.filter((line) => line.includes("'local' is deprecated"));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("use 'relay node ...' instead");
+
+    // The hook is attached to the deprecated alias only — the `node` group
+    // must never carry it.
+    const nodeCommand = program.commands.find((command) => command.name() === 'node')!;
+    const nodeHooks = (nodeCommand as unknown as { _lifeCycleHooks?: { preAction?: unknown[] } })
+      ._lifeCycleHooks;
+    expect(nodeHooks?.preAction ?? []).toHaveLength(0);
   });
 });

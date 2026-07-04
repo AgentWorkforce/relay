@@ -278,13 +278,18 @@ export function readFleetNodeEnrollmentStore(env: NodeJS.ProcessEnv = process.en
     }
     return { version: 1, active, nodes };
   } catch (error) {
-    // Missing files and malformed JSON both read as an empty store; only
-    // surface unexpected IO errors (e.g. permission failures).
+    // A missing file reads as an empty store. Malformed JSON does NOT: an
+    // upsert over a silently-emptied store would erase every stored
+    // enrollment, so corruption must surface loudly instead (matches the
+    // cloud-workers.json store in ./worker.ts).
     if (isNodeError(error) && error.code === 'ENOENT') {
       return { version: 1, active: {}, nodes: {} };
     }
     if (error instanceof SyntaxError) {
-      return { version: 1, active: {}, nodes: {} };
+      throw new Error(
+        `Fleet enrollment store at ${file} is corrupt (${error.message}). ` +
+          'Repair or remove the file, then re-enroll if records are lost.'
+      );
     }
     throw error;
   }
@@ -301,8 +306,12 @@ export function writeFleetNodeEnrollmentStore(
 ): void {
   const file = fleetNodeEnrollmentStorePath(env);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+  // Write-then-rename so a crash mid-write can never leave a torn (corrupt)
+  // store behind — these records hold one-time-redeemable node credentials.
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, file);
 }
 
 /**

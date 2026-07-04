@@ -278,11 +278,22 @@ describe('fleet node enrollment store', () => {
     expect(() => resolveActiveFleetNodeEnrollment({ env })).toThrow(/Multiple fleet node enrollments/);
   });
 
-  it('reads a malformed store as empty', () => {
+  it('surfaces a corrupt (invalid JSON) store loudly instead of reading it as empty', () => {
     const file = fleetNodeEnrollmentStorePath(env);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '{ not valid json');
-    expect(readFleetNodeEnrollmentStore(env)).toEqual({ version: 1, active: {}, nodes: {} });
+    // A silently-emptied store would let the next upsert erase every stored
+    // enrollment — corruption must be surfaced, not papered over.
+    expect(() => readFleetNodeEnrollmentStore(env)).toThrow(/corrupt/);
+    expect(() => readFleetNodeEnrollmentStore(env)).toThrow(file);
+  });
+
+  it('writes atomically: no tmp file remains and the store parses after upsert', () => {
+    upsertFleetNodeEnrollment(record(), env);
+    const file = fleetNodeEnrollmentStorePath(env);
+    const siblings = fs.readdirSync(path.dirname(file));
+    expect(siblings.filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(readFleetNodeEnrollmentStore(env).nodes).not.toEqual({});
   });
 
   it('drops malformed node entries while keeping valid ones', () => {
