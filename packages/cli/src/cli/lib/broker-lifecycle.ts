@@ -803,6 +803,48 @@ async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: Core
 }
 
 // eslint-disable-next-line complexity
+/**
+ * Resolve the node definition `up` should serve, if any.
+ *
+ * A discovered (or explicit --config) node definition takes over from the
+ * implicit teams.json-derived node. Discovery is opt-in (`node up` only): the
+ * deprecated `local up` alias never scanned for agent-relay.* files and must
+ * not start importing arbitrary modules from the project root. An explicit
+ * --config resolves against the invocation cwd and fails hard; implicit
+ * discovery scans the project root and merely warns on a file that doesn't
+ * load as defineNode(...) — a stray agent-relay.ts must not brick startup.
+ * When the implicit fleet node is disabled the sidecar never starts, so
+ * loading a config would be pointless — skip it entirely.
+ */
+async function resolveNodeDefinitionForUp(
+  paths: CoreProjectPaths,
+  options: UpOptions,
+  deps: CoreDependencies
+): Promise<FleetNodeDefinition | undefined> {
+  const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
+  if (fleetNodeDisabled || (!options.config && options.discoverConfig !== true)) {
+    return undefined;
+  }
+  const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
+  const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+  if (!configPath) {
+    return undefined;
+  }
+  vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
+  if (explicitConfig) {
+    return loadNodeDefinition(configPath);
+  }
+  try {
+    return await loadNodeDefinition(configPath);
+  } catch (err) {
+    deps.warn(
+      `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
+        'Serving the implicit local node instead; pass --config to fail hard on this file.'
+    );
+    return undefined;
+  }
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
 
@@ -941,38 +983,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 
-    // A discovered (or explicit --config) node definition takes over from the
-    // implicit teams.json-derived node. Discovery is opt-in (`node up` only):
-    // the deprecated `local up` alias never scanned for agent-relay.* files and
-    // must not start importing arbitrary modules from the project root. An
-    // explicit --config resolves against the invocation cwd and fails hard;
-    // implicit discovery scans the project root and merely warns on a file
-    // that doesn't load as defineNode(...) — a stray agent-relay.ts must not
-    // brick startup. Resolve and load BEFORE the broker starts so an explicit
-    // bad --config fails fast instead of tearing down a broker that just came
-    // up. When the implicit fleet node is disabled the sidecar never starts,
-    // so loading a config would be pointless — skip it entirely.
-    let nodeDefinition: FleetNodeDefinition | undefined;
-    const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
-    if (!fleetNodeDisabled && (options.config || options.discoverConfig === true)) {
-      const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
-      const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
-      if (configPath) {
-        vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
-        if (explicitConfig) {
-          nodeDefinition = await loadNodeDefinition(configPath);
-        } else {
-          try {
-            nodeDefinition = await loadNodeDefinition(configPath);
-          } catch (err) {
-            deps.warn(
-              `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
-                'Serving the implicit local node instead; pass --config to fail hard on this file.'
-            );
-          }
-        }
-      }
-    }
+    // Resolved BEFORE the broker starts so an explicit bad --config fails
+    // fast instead of tearing down a broker that just came up.
+    const nodeDefinition = await resolveNodeDefinitionForUp(paths, options, deps);
 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
