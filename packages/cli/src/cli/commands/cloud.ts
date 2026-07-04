@@ -57,6 +57,12 @@ export interface CloudDependencies {
   exit: ExitFn;
   enrollFleetNode: typeof enrollFleetNode;
   upsertFleetNodeEnrollment: typeof upsertFleetNodeEnrollment;
+  /**
+   * Persist redeemed-but-unstorable enrollment credentials to a 0600 recovery
+   * file and return its path. Kept injectable so tests can simulate the
+   * "recovery write also failed" last resort.
+   */
+  writeEnrollmentRecoveryFile: (record: unknown) => string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -68,6 +74,17 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
     exit: defaultExit,
     enrollFleetNode,
     upsertFleetNodeEnrollment,
+    writeEnrollmentRecoveryFile: (record: unknown) => {
+      // The tmpdir is a different filesystem/permission domain than the failed
+      // enrollment store, so this write usually succeeds when the store's did not.
+      const file = path.join(
+        os.tmpdir(),
+        `agent-relay-enrollment-recovery-${process.pid}-${Date.now()}.json`
+      );
+      fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      fs.chmodSync(file, 0o600);
+      return file;
+    },
     ...overrides,
   };
 }
@@ -453,11 +470,25 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
                 persistErr instanceof Error ? persistErr.message : String(persistErr)
               }`
             );
-            deps.error('The one-time enrollment token has been consumed. SAVE THESE CREDENTIALS NOW:');
-            deps.error(JSON.stringify(record, null, 2));
-            deps.error(
-              "Fix the store problem and re-add them, or export RELAY_NODE_TOKEN/RELAY_BASE_URL manually before 'relay node up'."
-            );
+            // The one-time token is already consumed, so the credentials must
+            // survive somewhere. Prefer a 0600 recovery file (never print the
+            // token); dump to stderr only if even that write fails — losing
+            // the credentials entirely is the strictly worse outcome.
+            try {
+              const recoveryPath = deps.writeEnrollmentRecoveryFile(record);
+              deps.error(
+                `The one-time enrollment token has been consumed. Credentials were saved to ${recoveryPath} (owner-only permissions).`
+              );
+              deps.error(
+                "Fix the store problem and re-add them from that file, or export RELAY_NODE_TOKEN/RELAY_BASE_URL from it before 'relay node up'. Delete the file afterwards."
+              );
+            } catch {
+              deps.error(
+                'The one-time enrollment token has been consumed and a recovery file could not be written. SAVE THESE CREDENTIALS NOW:'
+              );
+              deps.error(JSON.stringify(record, null, 2));
+              deps.error("Export RELAY_NODE_TOKEN/RELAY_BASE_URL from them before 'relay node up'.");
+            }
             deps.exit(1);
             return;
           }

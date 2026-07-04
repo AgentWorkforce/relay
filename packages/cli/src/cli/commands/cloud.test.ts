@@ -743,7 +743,7 @@ describe('registerCloudCommands', () => {
     expect(output).not.toContain('nt_secret');
   });
 
-  it('cloud enroll dumps the credentials for manual recovery when persistence fails', async () => {
+  it('cloud enroll writes a recovery file (never printing the token) when persistence fails', async () => {
     cloudMocks.enrollFleetNode.mockResolvedValueOnce({
       nodeId: 'node_abc',
       nodeName: 'kjglaptop',
@@ -755,22 +755,54 @@ describe('registerCloudCommands', () => {
     cloudMocks.upsertFleetNodeEnrollment.mockImplementationOnce(() => {
       throw new Error('EACCES: permission denied');
     });
+    const writeEnrollmentRecoveryFile = vi.fn(() => '/tmp/recovery-123.json');
     const log = vi.fn();
     const error = vi.fn();
-    const { program } = createHarness({ log, error });
+    const { program } = createHarness({ log, error, writeEnrollmentRecoveryFile });
 
     await expect(
       program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x'])
     ).rejects.toThrow('exit:1');
 
-    // The one-time token is burned; the creds (token included) must be dumped
-    // to stderr so the operator can save them by hand.
+    // The one-time token is burned; creds go to a 0600 recovery file and the
+    // token must NOT appear on stderr.
+    expect(writeEnrollmentRecoveryFile).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeToken: 'nt_secret' })
+    );
     const stderr = error.mock.calls.flat().join('\n');
     expect(stderr).toContain('persisting credentials failed');
     expect(stderr).toContain('EACCES');
-    expect(stderr).toContain('nt_secret');
-    expect(stderr).toContain('SAVE THESE CREDENTIALS');
+    expect(stderr).toContain('/tmp/recovery-123.json');
+    expect(stderr).not.toContain('nt_secret');
     expect(log.mock.calls.flat().join('\n')).not.toContain('Enrolled node');
+  });
+
+  it('cloud enroll dumps the credentials to stderr only when the recovery file also fails', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockImplementationOnce(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    const writeEnrollmentRecoveryFile = vi.fn(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    const error = vi.fn();
+    const { program } = createHarness({ error, writeEnrollmentRecoveryFile });
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x'])
+    ).rejects.toThrow('exit:1');
+
+    // Last resort: a printed token beats a lost one.
+    const stderr = error.mock.calls.flat().join('\n');
+    expect(stderr).toContain('SAVE THESE CREDENTIALS');
+    expect(stderr).toContain('nt_secret');
   });
 
   it('cloud enroll --json prints the record without the node token', async () => {
