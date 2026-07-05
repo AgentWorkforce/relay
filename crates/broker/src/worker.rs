@@ -42,7 +42,9 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
 const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 
-pub(crate) mod detection;
+// Working/idle activity inference from PTY output comes from the
+// harness-agnostic `relay-pty` crate.
+pub(crate) use relay_pty::detection;
 
 #[derive(Debug)]
 pub(crate) struct WorkerHandle {

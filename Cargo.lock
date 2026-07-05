@@ -24,6 +24,7 @@ dependencies = [
  "portable-pty",
  "rand 0.8.5",
  "regex",
+ "relay-pty",
  "relaycast",
  "reqwest",
  "serde",
@@ -1998,6 +1999,20 @@ name = "regex-syntax"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
+
+[[package]]
+name = "relay-pty"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "libc",
+ "parking_lot",
+ "portable-pty",
+ "regex",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "relaycast"
