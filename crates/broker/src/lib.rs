@@ -62,11 +62,15 @@ pub(crate) mod worker;
 pub(crate) mod worker_request;
 pub(crate) mod wrap;
 
-// PTY kernel modules extracted into the harness-agnostic `relay-pty` crate.
-// Re-exported here so existing `crate::pty` / `crate::snapshot` /
-// `crate::readiness` paths keep working unchanged. (`wait` also moved, but
-// its only in-tree consumer is `relay_pty::readiness`, so no re-export is
-// needed here.)
+// The PTY layer — session management, terminal grid snapshots, and CLI
+// readiness detection — lives in the `relay-pty` crate. That crate is
+// harness-agnostic by design: it understands terminals and agent-CLI
+// behavior (prompts, readiness, activity), never relay messaging,
+// channels, or delivery semantics. The broker layers its delivery and
+// injection logic on top of these primitives, addressed as `crate::pty`,
+// `crate::snapshot`, and `crate::readiness`. (`relay_pty::wait` is used
+// internally by `readiness` and has no direct broker callers, so it is
+// not re-exported.)
 pub(crate) use relay_pty::{pty, readiness, snapshot};
 
 pub async fn run_cli() -> anyhow::Result<()> {
