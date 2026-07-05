@@ -71,14 +71,14 @@ Multi-workspace vars (`RELAY_WORKSPACES_JSON`, `RELAY_DEFAULT_WORKSPACE`) must b
 
 All CLI paths accept `workspaces_json: Option<&str>` and `default_workspace: Option<&str>`:
 
-| Function                                    | Role                                                              |
-| -------------------------------------------- | ----------------------------------------------------------------- |
-| `configure_agent_relay_mcp_with_token()`     | Top-level entry; receives params, passes to each CLI path         |
-| `merge_agent_relay_with_project_mcp()`       | Claude path; threads to `agent_relay_mcp_server_config()`          |
-| `ensure_opencode_config()`                   | OpenCode; inserts into `environment` block                        |
-| `ensure_cursor_mcp_config()`                 | Cursor; chains through `agent_relay_mcp_config_json_with_token()` |
-| `gemini_droid_mcp_add_args()`                | Gemini/Droid; appends as `--env`/`-e` flags                       |
-| `agent_relay_mcp_config_json_with_token()`   | Shared JSON builder; forwards to `agent_relay_mcp_server_config()` |
+| Function                                   | Role                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------ |
+| `configure_agent_relay_mcp_with_token()`   | Top-level entry; receives params, passes to each CLI path          |
+| `merge_agent_relay_with_project_mcp()`     | Claude path; threads to `agent_relay_mcp_server_config()`          |
+| `ensure_opencode_config()`                 | OpenCode; inserts into `environment` block                         |
+| `ensure_cursor_mcp_config()`               | Cursor; chains through `agent_relay_mcp_config_json_with_token()`  |
+| `gemini_droid_mcp_add_args()`              | Gemini/Droid; appends as `--env`/`-e` flags                        |
+| `agent_relay_mcp_config_json_with_token()` | Shared JSON builder; forwards to `agent_relay_mcp_server_config()` |
 
 **Rule:** When adding a new CLI path, always accept and forward these two params. Never fall back to `std::env::var()`.
 
