@@ -38,15 +38,15 @@ In `spawner.rs`, always pass the **original CLI name** (e.g. `"claude"`, `"curso
 
 ## CLI Provider Support Matrix
 
-| CLI                   | MCP Support | Mechanism                                    | Key Function                   |
-| --------------------- | ----------- | -------------------------------------------- | ------------------------------ |
-| **Claude**            | Full        | `--mcp-config '{json}'` flag                 | `configure_agent_relay_mcp()`  |
-| **Codex**             | Full        | Multiple `--config key=value` flags          | `configure_agent_relay_mcp()`  |
-| **Cursor**            | Full        | Writes `.cursor/mcp.json`                    | `ensure_cursor_mcp_config()`   |
-| **Opencode**          | Full        | Writes `opencode.json` + `--agent agent-relay` | `ensure_opencode_config()`   |
-| **Gemini**            | Conditional | Pre-spawn `gemini mcp add` command           | `configure_gemini_droid_mcp()` |
-| **Droid**             | Conditional | Pre-spawn `droid mcp add` command            | `configure_gemini_droid_mcp()` |
-| **Goose/Aider/Other** | None        | No injection — agent has no MCP tools        | —                              |
+| CLI                   | MCP Support | Mechanism                                      | Key Function                   |
+| --------------------- | ----------- | ---------------------------------------------- | ------------------------------ |
+| **Claude**            | Full        | `--mcp-config '{json}'` flag                   | `configure_agent_relay_mcp()`  |
+| **Codex**             | Full        | Multiple `--config key=value` flags            | `configure_agent_relay_mcp()`  |
+| **Cursor**            | Full        | Writes `.cursor/mcp.json`                      | `ensure_cursor_mcp_config()`   |
+| **Opencode**          | Full        | Writes `opencode.json` + `--agent agent-relay` | `ensure_opencode_config()`     |
+| **Gemini**            | Conditional | Pre-spawn `gemini mcp add` command             | `configure_gemini_droid_mcp()` |
+| **Droid**             | Conditional | Pre-spawn `droid mcp add` command              | `configure_gemini_droid_mcp()` |
+| **Goose/Aider/Other** | None        | No injection — agent has no MCP tools          | —                              |
 
 ## Adding a New CLI Provider
 
