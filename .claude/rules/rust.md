@@ -57,4 +57,4 @@ This rule applies to all Rust files in `crates/broker/src/` and `crates/broker/t
 
 - Use `serde` derive macros for JSON serialization
 - Use `#[serde(rename_all = "snake_case")]` for enum variants
-- Protocol types must match the TypeScript SDK definitions in `packages/sdk/src/protocol.ts`
+- Protocol types must match the TypeScript definitions in `packages/harness-driver/src/protocol.ts`
