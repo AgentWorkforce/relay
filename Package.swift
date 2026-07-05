@@ -13,9 +13,21 @@ let package = Package(
         .library(name: "AgentRelaySDK", targets: ["AgentRelaySDK"]),
         .library(name: "AgentRelayBrokerSDK", targets: ["AgentRelayBrokerSDK"])
     ],
+    dependencies: [
+        // Must mirror packages/sdk-swift/Package.swift: AgentRelaySDK imports
+        // Relaycast, and consumers that depend on this repo by git URL resolve
+        // THIS manifest, so the dependency has to be declared here too.
+        .package(
+            url: "https://github.com/AgentWorkforce/relaycast.git",
+            from: "5.0.5"
+        )
+    ],
     targets: [
         .target(
             name: "AgentRelaySDK",
+            dependencies: [
+                .product(name: "Relaycast", package: "relaycast")
+            ],
             path: "packages/sdk-swift/Sources/AgentRelaySDK"
         ),
         .target(
