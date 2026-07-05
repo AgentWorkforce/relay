@@ -131,6 +131,20 @@ struct RelayRestClient: Sendable {
     private static let retryStatuses: Set<Int> = [429, 500, 502, 503, 504]
     private static let maxRetries = 2
     private static let baseBackoff: TimeInterval = 0.25
+    /// Upper bound on a honored `Retry-After` delay so a hostile or misconfigured
+    /// header cannot stall the client for minutes/hours.
+    private static let maxRetryAfter: TimeInterval = 10
+    /// Upper bound on a single `sleep(seconds:)` call. Keeps the UInt64
+    /// nanosecond conversion far from overflow and bounds any one wait; loops
+    /// that need a longer total wait simply iterate.
+    private static let maxSleepSeconds: TimeInterval = 60
+    /// Floor for a per-request `timeoutInterval` derived from a nearly
+    /// exhausted poll budget, so the final poll still gets a usable window.
+    private static let minRequestTimeout: TimeInterval = 1
+    /// Invocation statuses that mean "still in flight — keep polling". Any
+    /// status outside this set and the explicit terminal cases fails fast
+    /// instead of burning the remaining timeout budget.
+    private static let inFlightStatuses: Set<String> = ["invoked", "pending", "dispatched", "running"]
 
     init(baseURL: URL, token: String, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -146,6 +160,12 @@ struct RelayRestClient: Sendable {
     /// elapses. Polling keeps the call deterministic and independent of the
     /// realtime socket; listening for the WS `action.completed` event instead
     /// is a future latency optimization.
+    ///
+    /// The `timeout` budget bounds the whole call: the initial POST and each
+    /// poll GET carry a `timeoutInterval` derived from the remaining budget
+    /// (floored at `minRequestTimeout`), and each poll sleep is clamped to the
+    /// time left. Statuses outside `inFlightStatuses` that are not one of the
+    /// known terminal states fail fast with `action_failed`.
     func invokeAction(_ name: String, input: JSONValue, timeout: TimeInterval, pollInterval: TimeInterval) async throws -> JSONValue {
         let actionName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !actionName.isEmpty else {
@@ -155,14 +175,21 @@ struct RelayRestClient: Sendable {
         let encodedName = Self.encodePathSegment(actionName)
         let ack: ActionInvokeAck = try await post(
             "/v1/actions/\(encodedName)/invoke",
-            body: ActionInvokeRequestBody(input: input)
+            body: ActionInvokeRequestBody(input: input),
+            requestTimeout: max(timeout, Self.minRequestTimeout)
         )
         let encodedInvocation = Self.encodePathSegment(ack.invocationId)
-        let deadline = Date().addingTimeInterval(timeout)
+        // Monotonic deadline: `systemUptime` is immune to wall-clock jumps
+        // (NTP, manual changes) that could otherwise skew the timeout.
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
 
         while true {
+            // Bound the in-flight poll by the remaining budget so a hung
+            // request cannot run past the caller's timeout.
+            let remainingForRequest = deadline - ProcessInfo.processInfo.systemUptime
             let record: ActionInvocationRecord = try await get(
-                "/v1/actions/\(encodedName)/invocations/\(encodedInvocation)"
+                "/v1/actions/\(encodedName)/invocations/\(encodedInvocation)",
+                requestTimeout: max(remainingForRequest, Self.minRequestTimeout)
             )
             switch record.status {
             case "completed":
@@ -171,15 +198,26 @@ struct RelayRestClient: Sendable {
                 throw RelayError.protocolError(code: "action_failed", message: record.error ?? record.status, retryable: false)
             case "denied":
                 throw RelayError.protocolError(code: "action_denied", message: record.error ?? record.status, retryable: false)
-            default:
+            case let status where Self.inFlightStatuses.contains(status):
                 break
+            default:
+                // Unknown status (e.g. a server-side "cancelled"/"expired"
+                // added later): fail fast rather than polling out the budget.
+                throw RelayError.protocolError(
+                    code: "action_failed",
+                    message: record.error ?? "Action ended with unexpected status '\(record.status)'",
+                    retryable: false
+                )
             }
-            if Date() >= deadline {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            if remaining <= 0 {
                 throw RelayError.timeout("Action '\(actionName)' did not complete within \(timeout)s (invocation \(ack.invocationId))")
             }
+            // Sleep is clamped to the remaining budget so a pollInterval larger
+            // than the timeout cannot extend the wait past the deadline.
             // Task.sleep throws CancellationError when the caller is cancelled,
             // which aborts the poll loop promptly.
-            try await Self.sleep(seconds: pollInterval)
+            try await Self.sleep(seconds: min(pollInterval, remaining))
         }
     }
 
@@ -217,7 +255,9 @@ struct RelayRestClient: Sendable {
         let conversations: [DmConversationSummaryRow] = try await get("/v1/dm/conversations")
         let match = conversations.first { conversation in
             conversation.type == "1:1"
-                && (conversation.participants ?? []).contains { $0.agentName == target }
+                && (conversation.participants ?? []).contains {
+                    $0.agentName?.caseInsensitiveCompare(target) == .orderedSame
+                }
         }
         guard let conversation = match else { return [] }
 
@@ -241,28 +281,36 @@ struct RelayRestClient: Sendable {
 
     // MARK: - Generic transport
 
-    func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
-        try await send(method: "GET", path: path, query: query, body: nil)
+    /// `requestTimeout`, when set, becomes the `URLRequest.timeoutInterval` of
+    /// each attempt (it bounds a single in-flight request, not the retries).
+    /// When `nil` the session's default applies.
+    func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], requestTimeout: TimeInterval? = nil) async throws -> T {
+        try await send(method: "GET", path: path, query: query, body: nil, requestTimeout: requestTimeout)
     }
 
-    func post<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
+    func post<T: Decodable>(_ path: String, body: some Encodable, requestTimeout: TimeInterval? = nil) async throws -> T {
         let data: Data
         do {
             data = try JSONEncoder().encode(body)
         } catch {
             throw RelayError.encodingFailed("Failed to encode request body for \(path): \(error)")
         }
-        return try await send(method: "POST", path: path, query: [], body: data)
+        return try await send(method: "POST", path: path, query: [], body: data, requestTimeout: requestTimeout)
     }
 
-    private func send<T: Decodable>(method: String, path: String, query: [URLQueryItem], body: Data?) async throws -> T {
+    private func send<T: Decodable>(method: String, path: String, query: [URLQueryItem], body: Data?, requestTimeout: TimeInterval? = nil) async throws -> T {
         var attempt = 0
         while true {
-            let request = try makeRequest(method: method, path: path, query: query, body: body)
+            let request = try makeRequest(method: method, path: path, query: query, body: body, requestTimeout: requestTimeout)
             let result: (Data, URLResponse)
             do {
                 result = try await session.data(for: request)
             } catch {
+                // Cancellation must propagate immediately: retrying wastes work
+                // and delays teardown when the caller has abandoned the request.
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    throw error
+                }
                 if attempt < Self.maxRetries {
                     attempt += 1
                     try await Self.sleep(seconds: Self.backoffDelay(attempt: attempt))
@@ -289,7 +337,7 @@ struct RelayRestClient: Sendable {
         }
     }
 
-    private func makeRequest(method: String, path: String, query: [URLQueryItem], body: Data?) throws -> URLRequest {
+    private func makeRequest(method: String, path: String, query: [URLQueryItem], body: Data?, requestTimeout: TimeInterval? = nil) throws -> URLRequest {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw RelayError.invalidBaseURL(baseURL.absoluteString)
         }
@@ -298,13 +346,20 @@ struct RelayRestClient: Sendable {
         // `path` arrives with its segments already percent-encoded.
         components.percentEncodedPath = basePath + path
         if !query.isEmpty {
-            components.queryItems = query
+            // Append rather than replace so query parameters already present in
+            // `baseURL` (versioning, routing, gateway keys) are preserved.
+            var mergedItems = components.queryItems ?? []
+            mergedItems.append(contentsOf: query)
+            components.queryItems = mergedItems
         }
         guard let url = components.url else {
             throw RelayError.invalidBaseURL("\(baseURL.absoluteString)\(path)")
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        if let requestTimeout {
+            request.timeoutInterval = requestTimeout
+        }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -373,16 +428,23 @@ struct RelayRestClient: Sendable {
 
     private static func retryAfterSeconds(_ response: HTTPURLResponse) -> TimeInterval? {
         // Only the delta-seconds form is honored; an HTTP-date value falls
-        // back to the computed backoff.
+        // back to the computed backoff. The delay is capped at `maxRetryAfter`.
         guard let header = response.value(forHTTPHeaderField: "Retry-After"),
               let seconds = TimeInterval(header), seconds >= 0 else {
             return nil
         }
-        return seconds
+        return min(seconds, maxRetryAfter)
     }
 
     private static func sleep(seconds: TimeInterval) async throws {
-        try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+        // Non-positive (or NaN) delays only check for cancellation. A single
+        // sleep is capped at `maxSleepSeconds`, which keeps the UInt64
+        // nanosecond conversion from ever trapping on oversized values.
+        guard seconds > 0 else {
+            try Task.checkCancellation()
+            return
+        }
+        try await Task.sleep(nanoseconds: UInt64(min(seconds, maxSleepSeconds) * 1_000_000_000))
     }
 
     // MARK: - Helpers
@@ -408,16 +470,22 @@ struct RelayRestClient: Sendable {
         return items
     }
 
+    // Shared formatters: `ISO8601DateFormatter` is documented thread-safe, so
+    // read-only reuse across rows avoids one or two allocations per message.
+    private static let iso8601 = ISO8601DateFormatter()
+    private static let iso8601Fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     /// Parse an ISO-8601 timestamp, tolerating fractional seconds. Mirrors
     /// `HostedParticipantCore.date(from:)`, falling back to `Date()`.
     private static func date(from timestamp: String?) -> Date {
         guard let timestamp else { return Date() }
-        if let date = ISO8601DateFormatter().date(from: timestamp) {
-            return date
-        }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: timestamp) ?? Date()
+        return iso8601.date(from: timestamp)
+            ?? iso8601Fractional.date(from: timestamp)
+            ?? Date()
     }
 
     /// Stable ascending sort by timestamp. `Swift.sort` does not document

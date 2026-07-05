@@ -277,13 +277,17 @@ public final class AgentClient: @unchecked Sendable {
     ///   - name: Registered action name. May contain dots (e.g.
     ///     `deploy.staging`); dots are preserved in the request path.
     ///   - input: JSON object passed to the action handler.
-    ///   - timeout: Maximum time to wait for completion.
+    ///   - timeout: Maximum time to wait for completion, measured on a
+    ///     monotonic clock. The budget also bounds each underlying HTTP
+    ///     request and clamps the final poll sleep, so a large `pollInterval`
+    ///     cannot extend the wait past the deadline.
     ///   - pollInterval: Delay between invocation-status polls.
     /// - Returns: The action output, or `.null` when the action completed
     ///   without output.
     /// - Throws: `RelayError.protocolError` with code `action_failed` /
-    ///   `action_denied` when the invocation fails or is denied;
-    ///   `RelayError.timeout` when `timeout` elapses first.
+    ///   `action_denied` when the invocation fails, is denied, or reports an
+    ///   unknown terminal status; `RelayError.timeout` when `timeout` elapses
+    ///   first.
     public func invokeAction(_ name: String, input: JSONValue = .object([:]), timeout: TimeInterval = 30, pollInterval: TimeInterval = 0.4) async throws -> JSONValue {
         try await rest.invokeAction(name, input: input, timeout: timeout, pollInterval: pollInterval)
     }

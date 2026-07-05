@@ -84,6 +84,31 @@ final class RelayRestTests: XCTestCase {
         }
     }
 
+    func testRetries429ThenSucceedsWithSecondRequest() async throws {
+        // First attempt is rate limited (Retry-After: 0 keeps the test fast);
+        // the retry succeeds and the caller only observes the success.
+        StubURLProtocol.store.enqueue(StubResponse(
+            statusCode: 429,
+            headers: ["Retry-After": "0"],
+            json: """
+            {"ok":false,"error":{"code":"rate_limited","message":"slow down"}}
+            """
+        ))
+        StubURLProtocol.store.enqueue(StubResponse(json: """
+        {"ok":true,"data":[
+            {"id":"conv_1","type":"1:1","name":null,
+             "participants":[{"agent_id":"agent_1","agent_name":"alice"}],
+             "last_message":null,"unread_count":0,"created_at":"2026-07-01T09:00:00Z"}
+        ]}
+        """))
+
+        let rows: [DmConversationSummaryRow] = try await client.get("/v1/dm/conversations")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].id, "conv_1")
+        // Retry-and-recover really executed: two requests hit the wire.
+        XCTAssertEqual(StubURLProtocol.store.recordedRequests().count, 2)
+    }
+
     // MARK: - invokeAction
 
     func testInvokeActionHappyPathPollsUntilCompleted() async throws {
@@ -203,6 +228,64 @@ final class RelayRestTests: XCTestCase {
         } catch {
             XCTFail("Expected RelayError, got \(error)")
         }
+    }
+
+    func testInvokeActionUnknownTerminalStatusFailsFast() async {
+        StubURLProtocol.store.enqueue(StubResponse(json: """
+        {"ok":true,"data":{"invocation_id":"inv_5","action_name":"demo.echo",
+         "input":{},"status":"invoked","created_at":"2026-07-01T10:00:00Z"}}
+        """))
+        StubURLProtocol.store.enqueue(StubResponse(json: """
+        {"ok":true,"data":{"invocation_id":"inv_5","action_name":"demo.echo",
+         "input":{},"output":null,"status":"cancelled","error":null,
+         "duration_ms":null,"completed_at":null}}
+        """))
+
+        do {
+            _ = try await client.invokeAction("demo.echo", input: .object([:]), timeout: 5, pollInterval: 0.01)
+            XCTFail("Expected RelayError")
+        } catch let error as RelayError {
+            guard case .protocolError(let code, let message, let retryable) = error else {
+                return XCTFail("Expected protocolError, got \(error)")
+            }
+            XCTAssertEqual(code, "action_failed")
+            XCTAssertTrue(message.contains("cancelled"), "message should name the unexpected status: \(message)")
+            XCTAssertFalse(retryable)
+        } catch {
+            XCTFail("Expected RelayError, got \(error)")
+        }
+        // Fails fast: one invoke plus a single poll, no further polling.
+        XCTAssertEqual(StubURLProtocol.store.recordedRequests().count, 2)
+    }
+
+    func testInvokeActionTimeoutNotExtendedByLargePollInterval() async {
+        StubURLProtocol.store.enqueue(StubResponse(json: """
+        {"ok":true,"data":{"invocation_id":"inv_6","action_name":"demo.echo",
+         "input":{},"status":"invoked","created_at":"2026-07-01T10:00:00Z"}}
+        """))
+        // Every poll keeps reporting "invoked".
+        StubURLProtocol.store.setFallback(StubResponse(json: """
+        {"ok":true,"data":{"invocation_id":"inv_6","action_name":"demo.echo",
+         "input":{},"output":null,"status":"invoked","error":null,
+         "duration_ms":null,"completed_at":null}}
+        """))
+
+        let start = ProcessInfo.processInfo.systemUptime
+        do {
+            _ = try await client.invokeAction("demo.echo", input: .object([:]), timeout: 0.2, pollInterval: 60)
+            XCTFail("Expected RelayError.timeout")
+        } catch let error as RelayError {
+            guard case .timeout = error else {
+                return XCTFail("Expected timeout, got \(error)")
+            }
+        } catch {
+            XCTFail("Expected RelayError, got \(error)")
+        }
+        // The poll sleep is clamped to the remaining budget, so the call must
+        // finish near the 0.2s timeout rather than after the 60s pollInterval.
+        // The bound is generous to absorb CI scheduling noise.
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        XCTAssertLessThan(elapsed, 5)
     }
 
     // MARK: - channelHistory
@@ -485,9 +568,9 @@ final class StubResponseStore: @unchecked Sendable {
 final class StubURLProtocol: URLProtocol {
     static let store = StubResponseStore()
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
+    static override func canInit(with request: URLRequest) -> Bool { true }
 
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    static override func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         Self.store.record(
