@@ -5,6 +5,8 @@ import Relaycast
 /// engine SDK (`Relaycast`): registration, reconnect, workspace lookup, channel
 /// posting, DMs, action handling, and the realtime event stream are all served
 /// by `Relaycast.RelayCast` / `Relaycast.AgentClient` / `Relaycast.WsClient`.
+/// Outbound action invocation and message history are served directly over the
+/// hosted REST API by the internal `RelayRestClient`.
 ///
 /// The public surface (types, method signatures, AsyncStream APIs) is preserved
 /// so existing callers keep working; only the transport implementation changed.
@@ -209,6 +211,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
 
 public final class AgentClient: @unchecked Sendable {
     private let core: HostedParticipantCore
+    private let rest: RelayRestClient
     public let id: String
     public let name: String
     public let token: String
@@ -217,6 +220,10 @@ public final class AgentClient: @unchecked Sendable {
 
     init(core: HostedParticipantCore, id: String, name: String, token: String) {
         self.core = core
+        // Outbound action invocation and message history are served directly
+        // over the hosted REST API (agent-token auth), independent of the
+        // realtime engine held by `core`.
+        self.rest = RelayRestClient(baseURL: core.baseURL, token: token)
         self.id = id
         self.name = name
         self.token = token
@@ -254,6 +261,67 @@ public final class AgentClient: @unchecked Sendable {
             inputSchemaJSON: inputSchemaJSON,
             handler: handler
         )
+    }
+
+    /// Invoke a relay action registered by another agent and wait for its
+    /// output.
+    ///
+    /// Two-phase async RPC: `POST /v1/actions/{name}/invoke` returns an ack
+    /// (without the output), then the invocation record is polled until it
+    /// reaches a terminal status. Polling keeps the call deterministic and
+    /// does not require the realtime socket to be connected; listening for
+    /// the WS `action.completed` event instead is a future latency
+    /// optimization.
+    ///
+    /// - Parameters:
+    ///   - name: Registered action name. May contain dots (e.g.
+    ///     `deploy.staging`); dots are preserved in the request path.
+    ///   - input: JSON object passed to the action handler.
+    ///   - timeout: Maximum time to wait for completion, measured on a
+    ///     monotonic clock. The budget also bounds each underlying HTTP
+    ///     request and clamps the final poll sleep, so a large `pollInterval`
+    ///     cannot extend the wait past the deadline.
+    ///   - pollInterval: Delay between invocation-status polls.
+    /// - Returns: The action output, or `.null` when the action completed
+    ///   without output.
+    /// - Throws: `RelayError.protocolError` with code `action_failed` /
+    ///   `action_denied` when the invocation fails, is denied, or reports an
+    ///   unknown terminal status; `RelayError.timeout` when `timeout` elapses
+    ///   first.
+    public func invokeAction(_ name: String, input: JSONValue = .object([:]), timeout: TimeInterval = 30, pollInterval: TimeInterval = 0.4) async throws -> JSONValue {
+        try await rest.invokeAction(name, input: input, timeout: timeout, pollInterval: pollInterval)
+    }
+
+    /// Fetch recent messages for a channel, oldest-first.
+    ///
+    /// A leading `#` is accepted and stripped (`"#general"` and `"general"`
+    /// are equivalent). The wire does not guarantee ordering, so results are
+    /// stably sorted ascending by timestamp.
+    ///
+    /// - Parameters:
+    ///   - channel: Channel name, with or without a leading `#`.
+    ///   - limit: Maximum number of messages to fetch.
+    ///   - before: Only fetch messages older than this message id.
+    /// - Returns: Channel messages as `RelayChannelEvent`s (`channel` is the
+    ///   normalized channel name; `rawEvent` is `nil` for history rows).
+    public func channelHistory(_ channel: String, limit: Int = 50, before: String? = nil) async throws -> [RelayChannelEvent] {
+        try await rest.channelHistory(channel: channel, limit: limit, before: before)
+    }
+
+    /// Fetch the 1:1 DM history with a named agent, oldest-first.
+    ///
+    /// The conversation is resolved via `GET /v1/dm/conversations` first
+    /// (there is no single-shot endpoint); when no 1:1 conversation with the
+    /// agent exists yet, an empty array is returned rather than an error.
+    ///
+    /// - Parameters:
+    ///   - agent: Agent name, with or without a leading `@`.
+    ///   - limit: Maximum number of messages to fetch.
+    ///   - before: Only fetch messages older than this message id.
+    /// - Returns: DM messages as `RelayChannelEvent`s (`channel` and
+    ///   `threadId` are `nil`; `rawEvent` is `nil` for history rows).
+    public func dmHistory(with agent: String, limit: Int = 50, before: String? = nil) async throws -> [RelayChannelEvent] {
+        try await rest.dmHistory(with: agent, limit: limit, before: before)
     }
 
     public var events: AsyncStream<RelayEvent> {
@@ -771,14 +839,16 @@ actor HostedParticipantCore {
         }
     }
 
-    private static func stripSigil(_ value: String) -> String {
+    // Internal (not private): `RelayRestClient` reuses the same channel/agent
+    // name normalization for the history endpoints.
+    static func stripSigil(_ value: String) -> String {
         if value.hasPrefix("@") || value.hasPrefix("#") {
             return String(value.dropFirst())
         }
         return value
     }
 
-    private static func normalizeChannel(_ value: String) -> String {
+    static func normalizeChannel(_ value: String) -> String {
         stripSigil(value).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
