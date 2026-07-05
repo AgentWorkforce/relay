@@ -1,6 +1,6 @@
 # Rust Conventions
 
-This rule applies to all Rust files in `relay-pty/src/` and `tests/`.
+This rule applies to all Rust files in `crates/broker/src/` and `crates/broker/tests/`.
 
 ## Binary
 
@@ -39,7 +39,7 @@ This rule applies to all Rust files in `relay-pty/src/` and `tests/`.
 
 - `lib.rs` re-exports public modules
 - `main.rs` contains CLI entry point and runtime orchestration
-- One concern per module (e.g., `inject.rs`, `parser.rs`, `queue.rs`)
+- One concern per module (e.g., `inject.rs`, `pty.rs`, `queue.rs`)
 
 ## Dependencies
 
