@@ -30,12 +30,9 @@ pub(crate) mod listen_api;
 pub(crate) mod metrics;
 pub(crate) mod node_control;
 pub(crate) mod priorities;
-#[allow(dead_code)]
-pub(crate) mod pty;
 pub(crate) mod pty_worker;
 #[allow(dead_code)]
 pub(crate) mod queue;
-pub(crate) mod readiness;
 #[allow(dead_code)]
 pub(crate) mod redact;
 #[allow(dead_code)]
@@ -51,7 +48,6 @@ pub(crate) mod routing;
 pub(crate) mod runtime;
 #[allow(dead_code)]
 pub(crate) mod scheduler;
-pub(crate) mod snapshot;
 pub(crate) mod spawner;
 #[allow(dead_code)]
 pub(crate) mod supervisor;
@@ -62,10 +58,16 @@ pub(crate) mod telemetry;
 #[allow(dead_code)]
 pub(crate) mod types;
 pub(crate) mod util;
-pub(crate) mod wait;
 pub(crate) mod worker;
 pub(crate) mod worker_request;
 pub(crate) mod wrap;
+
+// PTY kernel modules extracted into the harness-agnostic `relay-pty` crate.
+// Re-exported here so existing `crate::pty` / `crate::snapshot` /
+// `crate::readiness` paths keep working unchanged. (`wait` also moved, but
+// its only in-tree consumer is `relay_pty::readiness`, so no re-export is
+// needed here.)
+pub(crate) use relay_pty::{pty, readiness, snapshot};
 
 pub async fn run_cli() -> anyhow::Result<()> {
     cli::run().await

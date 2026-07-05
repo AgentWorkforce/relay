@@ -1,0 +1,21 @@
+[package]
+name = "relay-pty"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "relay_pty"
+path = "src/lib.rs"
+
+[dependencies]
+alacritty_terminal = "0.26"
+anyhow = "1.0"
+parking_lot = "0.12"
+portable-pty = "0.8"
+regex = "1.11"
+tokio = { version = "1.44", features = ["sync", "time", "rt", "macros"] }
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

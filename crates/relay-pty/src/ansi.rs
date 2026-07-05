@@ -1,5 +1,5 @@
 /// Find the nearest character boundary at or before the given byte index.
-pub(crate) fn floor_char_boundary(s: &str, index: usize) -> usize {
+pub fn floor_char_boundary(s: &str, index: usize) -> usize {
     if index >= s.len() {
         return s.len();
     }
@@ -15,7 +15,7 @@ pub(crate) fn floor_char_boundary(s: &str, index: usize) -> usize {
 /// Cursor-forward (`ESC[<n>C`) sequences are replaced with spaces so that
 /// CLIs which render injected text using cursor movement (e.g. Claude Code
 /// v2.1.49+) still produce readable output for echo detection.
-pub(crate) fn strip_ansi(text: &str) -> String {
+pub fn strip_ansi(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

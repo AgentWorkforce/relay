@@ -1,8 +1,8 @@
-use crate::util::ansi::{floor_char_boundary, strip_ansi};
+use crate::ansi::{floor_char_boundary, strip_ansi};
 
 /// Detect Claude Code --dangerously-skip-permissions confirmation prompt.
 /// Returns (has_bypass_ref, has_confirmation).
-pub(crate) fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
+pub fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
     let has_bypass_ref =
         (lower.contains("bypass") && lower.contains("permission")) || lower.contains("dangerously");
@@ -15,7 +15,7 @@ pub(crate) fn detect_bypass_permissions_prompt(clean_output: &str) -> (bool, boo
 }
 
 /// Check if the bypass permissions prompt is in selection menu format.
-pub(crate) fn is_bypass_selection_menu(clean_output: &str) -> bool {
+pub fn is_bypass_selection_menu(clean_output: &str) -> bool {
     let lower = clean_output.to_lowercase();
     let has_accept = lower.contains("accept");
     let has_exit_option = lower.contains("exit");
@@ -25,7 +25,7 @@ pub(crate) fn is_bypass_selection_menu(clean_output: &str) -> bool {
 
 /// Detect if the agent is in an editor mode (vim INSERT, nano, etc.).
 /// When in editor mode, auto-Enter should be suppressed.
-pub(crate) fn is_in_editor_mode(recent_output: &str) -> bool {
+pub fn is_in_editor_mode(recent_output: &str) -> bool {
     let clean = strip_ansi(recent_output);
     let last_output = if clean.len() > 500 {
         let start = floor_char_boundary(&clean, clean.len() - 500);
@@ -77,7 +77,7 @@ pub(crate) fn is_in_editor_mode(recent_output: &str) -> bool {
 }
 
 /// Detect Codex model upgrade/selection prompt in output.
-pub(crate) fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
+pub fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
     let has_upgrade_ref = (lower.contains("codex") && lower.contains("upgrade"))
         || (lower.contains("codex") && lower.contains("new") && lower.contains("model"))
@@ -95,7 +95,7 @@ pub(crate) fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
 ///   Yes, and always allow medium impact commands (all commands that are reversible)
 ///   No, cancel
 /// ```
-pub(crate) fn detect_opencode_permission_prompt(clean_output: &str) -> (bool, bool) {
+pub fn detect_opencode_permission_prompt(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("EXECUTE") && clean_output.contains("impact:");
     let has_allow_option =
         clean_output.contains("Yes, allow") || clean_output.contains("Yes, and always allow");
@@ -103,7 +103,7 @@ pub(crate) fn detect_opencode_permission_prompt(clean_output: &str) -> (bool, bo
 }
 
 /// Detect Gemini "Action Required" permission prompt in output.
-pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
+pub fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("Action Required");
     let has_allow_option =
         clean_output.contains("Allow once") || clean_output.contains("Allow for this session");
@@ -112,13 +112,13 @@ pub(crate) fn detect_gemini_action_required(clean_output: &str) -> (bool, bool) 
 
 /// Detect Gemini "untrusted folder" informational banner in output.
 /// Returns true when the banner is present (not an interactive menu — requires `/permissions`).
-pub(crate) fn detect_gemini_untrusted_banner(clean_output: &str) -> bool {
+pub fn detect_gemini_untrusted_banner(clean_output: &str) -> bool {
     clean_output.contains("folder is untrusted") && clean_output.contains("/permissions")
 }
 
 /// Detect Gemini "Modify Trust Level" folder trust prompt in output.
 /// Returns (has_header, has_trust_option).
-pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
+pub fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
     let has_header = clean_output.contains("Modify Trust Level");
     let has_trust_option =
         clean_output.contains("Trust this folder") || clean_output.contains("Trust parent folder");
@@ -127,7 +127,7 @@ pub(crate) fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
 
 /// Detect Claude Code folder trust prompt in output.
 /// Returns (has_trust_ref, has_confirmation).
-pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
+pub fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
     let has_trust_ref = lower.contains("trust") && lower.contains("folder");
     let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
@@ -137,7 +137,7 @@ pub(crate) fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
 }
 
 /// Detect Claude Code auto-suggestion ghost text.
-pub(crate) fn is_auto_suggestion(output: &str) -> bool {
+pub fn is_auto_suggestion(output: &str) -> bool {
     let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
     let has_send_hint = output.contains("↵ send");
     has_cursor_ghost || has_send_hint

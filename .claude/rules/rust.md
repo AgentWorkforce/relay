@@ -1,11 +1,12 @@
 # Rust Conventions
 
-This rule applies to all Rust files in `crates/broker/src/` and `crates/broker/tests/`.
+This rule applies to all Rust files in `crates/broker/` and `crates/relay-pty/`.
 
 ## Binary
 
 - The Rust binary is `agent-relay-broker` (internal broker engine)
 - NEVER confuse with `agent-relay` (the TypeScript CLI)
+- `relay-pty` is the internal harness-agnostic PTY library crate (no binary)
 
 ## Error Handling
 

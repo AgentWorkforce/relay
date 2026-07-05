@@ -1,4 +1,4 @@
 [workspace]
-members = ["crates/broker"]
+members = ["crates/broker", "crates/relay-pty"]
 default-members = ["crates/broker"]
 resolver = "2"
