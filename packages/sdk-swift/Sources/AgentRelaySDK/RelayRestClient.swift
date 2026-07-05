@@ -134,10 +134,15 @@ struct RelayRestClient: Sendable {
     /// Upper bound on a honored `Retry-After` delay so a hostile or misconfigured
     /// header cannot stall the client for minutes/hours.
     private static let maxRetryAfter: TimeInterval = 10
-    /// Upper bound on a single `sleep(seconds:)` call. Keeps the UInt64
-    /// nanosecond conversion far from overflow and bounds any one wait; loops
-    /// that need a longer total wait simply iterate.
+    /// Upper bound on a single `Task.sleep` chunk inside `sleep(seconds:)`.
+    /// Longer waits iterate in chunks of this size, so the requested total is
+    /// preserved while each UInt64 nanosecond conversion stays far from
+    /// overflow.
     private static let maxSleepSeconds: TimeInterval = 60
+    /// Ceiling on the total wait a single `sleep(seconds:)` call honors
+    /// (24 hours). Guards against pathological inputs so the chunked loop
+    /// always terminates.
+    private static let maxTotalSleepSeconds: TimeInterval = 86_400
     /// Floor for a per-request `timeoutInterval` derived from a nearly
     /// exhausted poll budget, so the final poll still gets a usable window.
     private static let minRequestTimeout: TimeInterval = 1
@@ -437,14 +442,24 @@ struct RelayRestClient: Sendable {
     }
 
     private static func sleep(seconds: TimeInterval) async throws {
-        // Non-positive (or NaN) delays only check for cancellation. A single
-        // sleep is capped at `maxSleepSeconds`, which keeps the UInt64
-        // nanosecond conversion from ever trapping on oversized values.
+        // Non-positive (or NaN) delays only check for cancellation. Longer
+        // waits sleep in `maxSleepSeconds` chunks so the requested total is
+        // honored while each UInt64 nanosecond conversion stays far from
+        // overflow. The total is clamped to `maxTotalSleepSeconds` (also
+        // covering non-finite input, and values so large that floating-point
+        // subtraction of a chunk would stop making progress). Task.sleep
+        // throws CancellationError between chunks when the caller is
+        // cancelled.
         guard seconds > 0 else {
             try Task.checkCancellation()
             return
         }
-        try await Task.sleep(nanoseconds: UInt64(min(seconds, maxSleepSeconds) * 1_000_000_000))
+        var remaining = seconds.isFinite ? min(seconds, maxTotalSleepSeconds) : maxSleepSeconds
+        while remaining > 0 {
+            let chunk = min(remaining, maxSleepSeconds)
+            try await Task.sleep(nanoseconds: UInt64(chunk * 1_000_000_000))
+            remaining -= chunk
+        }
     }
 
     // MARK: - Helpers
