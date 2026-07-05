@@ -10,12 +10,12 @@
 /// Streaming UTF-8 decoder that preserves codepoints split across byte
 /// chunks.
 #[derive(Debug, Default)]
-pub(crate) struct Utf8StreamDecoder {
+pub struct Utf8StreamDecoder {
     pending: Vec<u8>,
 }
 
 impl Utf8StreamDecoder {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             pending: Vec::new(),
         }
@@ -24,7 +24,7 @@ impl Utf8StreamDecoder {
     /// Decode an incoming byte chunk, returning all complete UTF-8 text
     /// available. Any trailing bytes that form an incomplete codepoint are
     /// retained for the next call.
-    pub(crate) fn decode(&mut self, bytes: &[u8]) -> String {
+    pub fn decode(&mut self, bytes: &[u8]) -> String {
         if bytes.is_empty() && self.pending.is_empty() {
             return String::new();
         }
@@ -71,7 +71,7 @@ impl Utf8StreamDecoder {
 
     /// Drain any remaining buffered bytes, emitting `U+FFFD` for each
     /// incomplete sequence. Call once no more bytes will arrive.
-    pub(crate) fn flush(&mut self) -> String {
+    pub fn flush(&mut self) -> String {
         if self.pending.is_empty() {
             return String::new();
         }

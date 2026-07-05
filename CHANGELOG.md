@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud enroll --token <ocl_node_enr_…>` redeems a one-time Cloud enrollment token and persists node credentials to `~/.agentworkforce/relay/fleet-enrollments.json` (0600); a later plain `agent-relay node up` then runs as the Cloud-managed node. The token is never printed.
 - `agent-relay node up|down|status|metrics|tail`, `node agent …`, and `node workflow run|logs|sync` unify `local up` and `fleet serve` under one command group. `node up [--config <file>]` auto-discovers and serves a `defineNode(...)` file (`agent-relay.{ts,tsx,mts,cts,js,mjs,cjs}`) in the project root and picks up persisted Cloud enrollment credentials; with no config it runs the implicit local node from teams.json.
 - `@agent-relay/fleet` now publishes the node runtime — `serveNode(options)` / `startServeNode(options)` returning `RunningNode { stop(), done }`, plus `FleetTriggerSyncClient`, `buildNodeSupervision`, and `readFleetSidecarStatus` — so one package both authors and serves a node. Fleet no longer depends on `@agent-relay/sdk`.
+- Swift SDK (`AgentRelaySDK`, `packages/sdk-swift`): `AgentClient` gains `invokeAction(_:input:timeout:pollInterval:)` — invoke a relay action and await its output — plus `channelHistory(_:limit:before:)` and `dmHistory(with:limit:before:)` for reading channel and 1:1 DM message history as oldest-first `RelayChannelEvent`s.
 
 ### Changed
 
@@ -26,11 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `agent-relay fleet serve` is removed. Run `agent-relay node up` (optionally `--config <file>`); for a Cloud-managed node run `agent-relay cloud enroll --token <token>` first.
+- Removed the orphaned `@agent-relay/utils` `relay-pty-path` resolver, its `./relay-pty-path` subpath export, and other stale references to the pre-broker `relay-pty` standalone binary (rules docs, `.gitignore`, an unrunnable benchmark script).
 - Removed all `gateway.relaycast.dev` / `api.relaycast.dev` references; clients target `cast.agentrelay.com` only.
 - **Breaking (SDKs):** relay's Swift `AgentRelay` client and Python `communicate` client no longer default the base URL — callers must pass `baseURL`/`base_url` or set `RELAY_BASE_URL`.
 
 ### Fixed
 
+- Swift SDK: depending on this repository by git URL no longer fails with `no such module 'Relaycast'` — the root `Package.swift` now declares the `relaycast` dependency `AgentRelaySDK` imports.
 - `HarnessDriverClient.spawn()` now polls the broker's startup handshake for the full `startupTimeoutMs` budget (default 45s) instead of a fixed ~10s, so a slow-but-healthy Relaycast handshake that keeps answering `503` while warming up is no longer misreported as a spawn failure.
 - `agent-relay integration subscribe` now resolves provider-native `--resource` values through relayfile before binding, so Slack channel names, GitHub repos, Linear team keys, and Telegram chats bind to matching relayfile VFS globs while explicit `/`-prefixed globs still work.
 - `agent-relay integration subscribe` is now idempotent and supports multiple resources/channels per provider. Each inbound webhook is scoped to its `(provider, resource)` binding (not one-per-provider), so subscribing a second Slack channel — or two sources into the same relay channel — no longer collides on the unique `(workspace, webhook name)` index or clobbers the other binding's webhook. Re-subscribing creates the replacement webhook/subscription before retiring the old one, so a transient failure can't leave you with no working binding; a failed cleanup now warns instead of being silently swallowed. The relay channel id is normalized (`#general` → `general`) consistently across the webhook, subscription filter, relayfile bind, and writeback-secret lookup, and `listBindings` now maps relayfile's `pathGlob` field so unsubscribe/replace match correctly.

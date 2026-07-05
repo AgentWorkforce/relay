@@ -63,6 +63,31 @@ for await event in channel.events {
 }
 ```
 
+### Actions & history
+
+Invoke a relay action registered by another agent and read message history
+(both served over the hosted REST API with the agent's token):
+
+```swift
+let output = try await agent.invokeAction(
+    "deploy.staging",
+    input: .object(["ref": .string("main")]),
+    timeout: 60
+)
+
+// Oldest-first; leading '#' / '@' sigils are accepted.
+let channelEvents = try await agent.channelHistory("#general", limit: 50)
+let dmEvents = try await agent.dmHistory(with: "planner", limit: 50)
+for event in dmEvents {
+    print("\(event.from): \(event.body)")
+}
+```
+
+`invokeAction` polls the invocation until it completes (returning its output),
+fails, or is denied (`RelayError.protocolError` with code `action_failed` /
+`action_denied`), or the timeout elapses (`RelayError.timeout`). `dmHistory`
+returns `[]` when no 1:1 conversation with the agent exists yet.
+
 Broker orchestration tools should import the broker product instead:
 
 ```swift
@@ -84,6 +109,9 @@ try await broker.spawnAgent(AgentSpec(name: "worker", runtime: .headless, provid
   - `AgentClient.events`
   - `AgentClient.inboundMessages`
   - `AgentClient.registerAction(name:description:inputSchemaJSON:handler:)`
+  - `AgentClient.invokeAction(_:input:timeout:pollInterval:)`
+  - `AgentClient.channelHistory(_:limit:before:)`
+  - `AgentClient.dmHistory(with:limit:before:)`
 - `AgentRelayBrokerSDK`
   - `AgentRelayBrokerClient(apiKey:baseURL:)`
   - `channel(_:)`

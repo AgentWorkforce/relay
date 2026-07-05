@@ -11,8 +11,6 @@ ui-dist/
 
 # Bundled binaries (downloaded/built at install time)
 bin/tmux
-bin/relay-pty
-bin/relay-pty-*
 bin/agent-relay-test
 
 # Rust build artifacts

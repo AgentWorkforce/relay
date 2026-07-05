@@ -22,6 +22,7 @@ hostname = "0.4"
 parking_lot = "0.12"
 portable-pty = "0.8"
 rand = "0.8"
+relay-pty = { path = "../relay-pty" }
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
