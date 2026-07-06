@@ -71,7 +71,9 @@ pub(crate) mod wrap;
 // `readiness` and has no direct broker callers, so it is not re-exported;
 // `relay_pty::supervisor` is adapted through `crate::supervisor`, which
 // pins its payload type.)
-pub(crate) use relay_pty::{codex_session, crash_insights, inject, pty, queue, readiness, snapshot};
+pub(crate) use relay_pty::{
+    codex_session, crash_insights, inject, pty, queue, readiness, snapshot,
+};
 
 pub async fn run_cli() -> anyhow::Result<()> {
     cli::run().await
