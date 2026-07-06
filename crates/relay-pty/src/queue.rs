@@ -72,7 +72,11 @@ where
             return Ok(None);
         }
 
-        if let Some(dropped) = self.drop_overflow_candidate() {
+        // Never evict an item more urgent than the incoming one: eviction
+        // candidates start at the incoming item's own level (oldest first)
+        // or FIRST_DROPPABLE, whichever is less urgent.
+        let min_idx = T::Priority::FIRST_DROPPABLE.max(item.priority().index());
+        if let Some(dropped) = self.drop_overflow_candidate(min_idx) {
             self.enqueue(item);
             return Ok(Some(dropped));
         }
@@ -96,8 +100,8 @@ where
         self.len += 1;
     }
 
-    fn drop_overflow_candidate(&mut self) -> Option<T> {
-        for idx in (T::Priority::FIRST_DROPPABLE..T::Priority::LEVELS).rev() {
+    fn drop_overflow_candidate(&mut self, min_idx: usize) -> Option<T> {
+        for idx in (min_idx..T::Priority::LEVELS).rev() {
             if let Some(item) = self.buckets[idx].pop_front() {
                 self.len -= 1;
                 return Some(item);
@@ -227,6 +231,43 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(err, QueueError::Full);
+    }
+
+    #[test]
+    fn overflow_never_evicts_more_urgent_than_incoming() {
+        let mut q = BoundedPriorityQueue::new(1);
+        q.push(Msg {
+            id: "p2",
+            p: TestPriority::P2,
+        })
+        .unwrap();
+        let err = q
+            .push_with_overflow_policy(Msg {
+                id: "p4",
+                p: TestPriority::P4,
+            })
+            .unwrap_err();
+        assert_eq!(err, QueueError::Full);
+        assert_eq!(q.pop().unwrap().id, "p2");
+    }
+
+    #[test]
+    fn overflow_evicts_oldest_at_same_priority() {
+        let mut q = BoundedPriorityQueue::new(1);
+        q.push(Msg {
+            id: "old",
+            p: TestPriority::P4,
+        })
+        .unwrap();
+        let dropped = q
+            .push_with_overflow_policy(Msg {
+                id: "new",
+                p: TestPriority::P4,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(dropped.id, "old");
+        assert_eq!(q.pop().unwrap().id, "new");
     }
 
     #[test]

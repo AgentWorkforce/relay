@@ -21,27 +21,27 @@ delivery and injection policy on top; nothing in relay-pty may depend on it.
 
 **PTY kernel** — the terminal-facing core:
 
-| Module        | Responsibility                                                        |
-| ------------- | --------------------------------------------------------------------- |
-| `pty`         | child spawn via portable-pty, alacritty grid, serialized write drain  |
-| `snapshot`    | render the grid to plain text or replayable ANSI                      |
-| `wait`        | composable await-conditions (text, idle, cursor, exit)                |
-| `readiness`   | per-CLI "prompt is ready" detection                                   |
-| `terminal`    | per-CLI trust/permission/menu prompt detectors                        |
-| `detection`   | working/idle activity inference from output                           |
-| `ansi`, `utf8_stream` | ANSI stripping, chunk-safe UTF-8 decoding                     |
-| `codex_session` | pre-create a resumable Codex thread via `codex app-server`          |
+| Module                | Responsibility                                                       |
+| --------------------- | -------------------------------------------------------------------- |
+| `pty`                 | child spawn via portable-pty, alacritty grid, serialized write drain |
+| `snapshot`            | render the grid to plain text or replayable ANSI                     |
+| `wait`                | composable await-conditions (text, idle, cursor, exit)               |
+| `readiness`           | per-CLI "prompt is ready" detection                                  |
+| `terminal`            | per-CLI trust/permission/menu prompt detectors                       |
+| `detection`           | working/idle activity inference from output                          |
+| `ansi`, `utf8_stream` | ANSI stripping, chunk-safe UTF-8 decoding                            |
+| `codex_session`       | pre-create a resumable Codex thread via `codex app-server`           |
 
 **Session primitives** — runtime-agnostic building blocks, generic over
 caller-supplied types so they serve any agent runtime (terminal-backed or
 headless):
 
-| Module           | Responsibility                                                | Seam                                              |
-| ---------------- | ------------------------------------------------------------- | ------------------------------------------------- |
-| `queue`          | bounded multi-level priority queue for pending work           | `PriorityScheme` / `Prioritized` traits            |
-| `inject`         | delivery retry loop with per-attempt status + final result    | `RequestId` trait, observer callback for results   |
-| `supervisor`     | restart-policy state machine for crashed agents               | generic over an opaque respawn payload             |
-| `crash_insights` | exit-code/signal classification, bounded history, health score | none needed — fully neutral                        |
+| Module           | Responsibility                                                 | Seam                                             |
+| ---------------- | -------------------------------------------------------------- | ------------------------------------------------ |
+| `queue`          | bounded multi-level priority queue for pending work            | `PriorityScheme` / `Prioritized` traits          |
+| `inject`         | delivery retry loop with per-attempt status + final result     | `RequestId` trait, observer callback for results |
+| `supervisor`     | restart-policy state machine for crashed agents                | generic over an opaque respawn payload           |
+| `crash_insights` | exit-code/signal classification, bounded history, health score | none needed — fully neutral                      |
 
 The broker pins these to its own types in thin adapter modules:
 `priorities.rs` (RelayPriority as the queue's scheme, InjectRequest as a

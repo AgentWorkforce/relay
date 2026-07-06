@@ -150,10 +150,13 @@ impl<T> Supervisor<T> {
     }
 
     /// Called after a successful restart to reset consecutive failure count.
+    /// Clears the recorded exit so the agent is no longer considered pending:
+    /// it only becomes restartable again after another `on_exit`.
     pub fn on_restarted(&mut self, name: &str) {
         if let Some(state) = self.states.get_mut(name) {
             state.total_restarts += 1;
             state.consecutive_failures = 0;
+            state.last_exit = None;
         }
     }
 
@@ -177,7 +180,7 @@ impl<T: Clone> Supervisor<T> {
             .filter_map(|(name, state)| {
                 let last_exit = state.last_exit?;
                 let cooldown = Duration::from_millis(state.policy.cooldown_ms);
-                if now.duration_since(last_exit) >= cooldown
+                if now.saturating_duration_since(last_exit) >= cooldown
                     && state.total_restarts < state.policy.max_restarts
                     && state.consecutive_failures <= state.policy.max_consecutive_failures
                     && state.policy.enabled
@@ -332,6 +335,22 @@ mod tests {
         // Crash 3 -> consecutive=3, exceeds max_consecutive_failures=2
         let decision = sup.on_exit("w1", Some(1), None).unwrap();
         assert!(matches!(decision, RestartDecision::PermanentlyDead { .. }));
+    }
+
+    #[test]
+    fn restarted_agent_is_not_pending_until_next_exit() {
+        let mut sup = Supervisor::new();
+        let policy = RestartPolicy {
+            cooldown_ms: 0,
+            ..Default::default()
+        };
+        sup.register("w1", test_payload("w1"), policy);
+
+        sup.on_exit("w1", Some(1), None);
+        assert_eq!(sup.pending_restarts().len(), 1);
+
+        sup.on_restarted("w1");
+        assert!(sup.pending_restarts().is_empty());
     }
 
     #[test]

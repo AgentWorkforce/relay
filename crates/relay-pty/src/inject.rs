@@ -77,7 +77,7 @@ impl Injector {
                 }
                 Err(error) => {
                     if attempts > self.max_retries {
-                        tracing::warn!(target = "relay_pty::inject", request_id = %req.id(), error = %error, "injection failed after retries");
+                        tracing::warn!(request_id = %req.id(), error = %error, "injection failed after retries");
                         statuses.push(InjectStatus::Failed);
                         let result = InjectResult {
                             id: req.id().to_string(),
