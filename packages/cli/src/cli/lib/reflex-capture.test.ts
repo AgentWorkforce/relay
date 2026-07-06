@@ -41,6 +41,48 @@ describe('startReflexCapture', () => {
     await capture.stop();
   });
 
+  it('stops pushing when Reflex is disabled mid-run', async () => {
+    let enabled = true;
+    const push = vi.fn(async () => ({ sent: 1, accepted: 1 }));
+    const capture = startReflexCapture({
+      isEnabled: () => enabled,
+      push,
+      log: () => undefined,
+      initialDelayMs: 10,
+      intervalMs: 100,
+    });
+
+    await vi.advanceTimersByTimeAsync(10); // kickoff push
+    expect(push).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100); // one interval push
+    expect(push).toHaveBeenCalledTimes(2);
+
+    enabled = false; // `agent-relay reflex off` while `up` keeps running
+    await vi.advanceTimersByTimeAsync(500); // several intervals, all gated off
+    expect(push).toHaveBeenCalledTimes(2);
+
+    await capture.stop(); // final flush is also gated off
+    expect(push).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not push before the initial delay even when the interval is shorter', async () => {
+    const push = vi.fn(async () => ({ sent: 0, accepted: 0 }));
+    const capture = startReflexCapture({
+      isEnabled: () => true,
+      push,
+      log: () => undefined,
+      initialDelayMs: 1000,
+      intervalMs: 50,
+    });
+
+    await vi.advanceTimersByTimeAsync(900);
+    expect(push).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100); // reach the initial delay
+    expect(push).toHaveBeenCalledTimes(1);
+
+    await capture.stop();
+  });
+
   it('stop() flushes a final batch when idle', async () => {
     const push = vi.fn(async () => ({ sent: 1, accepted: 1 }));
     const capture = startReflexCapture({

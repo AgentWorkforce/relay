@@ -9,7 +9,10 @@
  *
  * `ai-hist/cloud` is imported lazily (dynamic, non-analyzable spec) so the
  * bundled CLI does not statically depend on it — it resolves from node_modules
- * at runtime and is a silent no-op if unavailable or unauthenticated.
+ * at runtime and is a silent no-op if unavailable or unauthenticated. It is an
+ * optional runtime dependency (a peer of the `ai-hist` SDK); once
+ * `ai-hist@>=0.4.0` — which ships `pushToCloud` — is published it can be
+ * declared as a dependency so real installs pick it up.
  */
 import { isReflexEnabled } from '@agent-relay/config';
 
@@ -75,16 +78,18 @@ function withDefaults(overrides: Partial<ReflexCaptureDeps>): ReflexCaptureDeps 
 export function startReflexCapture(overrides: Partial<ReflexCaptureDeps> = {}): RunningReflexCapture {
   const deps = withDefaults(overrides);
 
-  if (!deps.isEnabled()) {
-    return { stop: async () => undefined };
-  }
-
   let stopped = false;
   // Dedup concurrent ticks: a slow push must not overlap the next interval.
   let inFlight: Promise<void> | null = null;
+  // The recurring interval starts only after the first (delayed) push.
+  let timer: ReturnType<typeof setInterval> | null = null;
 
   const tick = (): Promise<void> => {
     if (inFlight) return inFlight;
+    // Re-check enablement every tick so `agent-relay reflex off` (or `on`)
+    // takes effect immediately in an already-running `agent-relay up`, without
+    // restarting the host.
+    if (!deps.isEnabled()) return Promise.resolve();
     inFlight = (async () => {
       try {
         const result = await deps.push();
@@ -101,21 +106,25 @@ export function startReflexCapture(overrides: Partial<ReflexCaptureDeps> = {}): 
   };
 
   const kickoff = setTimeout(() => {
-    if (!stopped) void tick();
+    if (stopped) return;
+    void tick();
+    // Start the interval only now, so the first push can never fire before
+    // initialDelayMs regardless of how small intervalMs is.
+    timer = setInterval(() => {
+      if (!stopped) void tick();
+    }, deps.intervalMs);
+    // Don't keep the process alive just for the capture timer.
+    timer.unref?.();
   }, deps.initialDelayMs);
-  const timer = setInterval(() => {
-    if (!stopped) void tick();
-  }, deps.intervalMs);
-  // Don't keep the process alive just for the capture timer.
   kickoff.unref?.();
-  timer.unref?.();
 
   return {
     stop: async () => {
       stopped = true;
       clearTimeout(kickoff);
-      clearInterval(timer);
-      // Let an in-flight push finish, then flush one final batch.
+      if (timer) clearInterval(timer);
+      // Let an in-flight push finish, then flush one final batch (a no-op if
+      // Reflex was disabled in the meantime — tick() re-checks).
       if (inFlight) {
         await inFlight;
       } else {

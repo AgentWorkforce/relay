@@ -165,6 +165,10 @@ describe('registerReflexCommands', () => {
       'Not logged in to Agent Relay. Run `agent-relay login` first to sync Reflex history to the cloud.'
     );
     expect(outputLines(deps)).toContain('Reflex is on.');
+    // No cloud auth → don't claim automatic sync is happening.
+    expect(outputLines(deps)).not.toContain(
+      'History syncs to relayhistory-cloud automatically while `agent-relay up` is running.'
+    );
   });
 
   it('reflex on when cloud login fails warns instead of treating it as complete', async () => {
@@ -184,5 +188,9 @@ describe('registerReflexCommands', () => {
       'Reflex is enabled locally, but cloud login did not complete: Login failed (HTTP 401): Unauthorized'
     );
     expect(outputLines(deps)).toContain('Reflex is on.');
+    // Cloud login failed → don't claim automatic sync is happening.
+    expect(outputLines(deps)).not.toContain(
+      'History syncs to relayhistory-cloud automatically while `agent-relay up` is running.'
+    );
   });
 });

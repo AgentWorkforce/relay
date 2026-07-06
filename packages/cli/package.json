@@ -54,7 +54,6 @@
     "@relayfile/client": "^0.10.19",
     "@relayflows/cli": "^1.0.1",
     "@xterm/headless": "^6.0.0",
-    "ai-hist": "^0.4.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "jiti": "^2.6.1",

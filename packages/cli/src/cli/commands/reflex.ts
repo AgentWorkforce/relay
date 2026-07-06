@@ -157,19 +157,26 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
       );
 
       const relayAuth = await deps.readRelayAuth();
+      let cloudSyncActive = false;
       if (!relayAuth) {
         deps.log(
           'Not logged in to Agent Relay. Run `agent-relay login` first to sync Reflex history to the cloud.'
         );
       } else {
         const result = await deps.loginToCloud(relayAuth.accessToken);
-        if (!result.ok) {
+        if (result.ok) {
+          cloudSyncActive = true;
+        } else {
           deps.log(`Reflex is enabled locally, but cloud login did not complete: ${result.error}`);
         }
       }
 
       deps.log('Reflex is on.');
-      deps.log('History syncs to relayhistory-cloud automatically while `agent-relay up` is running.');
+      // Only promise automatic cloud sync when cloud auth actually succeeded —
+      // otherwise the message would contradict the login warning above.
+      if (cloudSyncActive) {
+        deps.log('History syncs to relayhistory-cloud automatically while `agent-relay up` is running.');
+      }
       deps.log('State file: ~/.agentworkforce/reflex.json');
     });
 
