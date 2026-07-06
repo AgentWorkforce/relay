@@ -1,8 +1,10 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { promisify } from 'node:util';
 
 import { Command } from 'commander';
 
@@ -12,6 +14,7 @@ interface ReflexState {
 }
 
 export type LoginCloudResult = { ok: true } | { ok: false; error: string };
+export type ServiceResult = { ok: true } | { ok: false; error: string };
 
 export interface ReflexDependencies {
   fs: typeof fs;
@@ -20,6 +23,12 @@ export interface ReflexDependencies {
   loginToCloud: (relayAccessToken: string) => Promise<LoginCloudResult>;
   prompt: (question: string) => Promise<boolean>;
   log: (...args: unknown[]) => void;
+  /** Schedule automatic local sync + cloud push (ai-hist background services). */
+  installCloudSync: () => Promise<ServiceResult>;
+  /** Remove the automatic cloud push service. */
+  uninstallCloudSync: () => Promise<ServiceResult>;
+  /** Whether the automatic cloud push service is currently scheduled. */
+  cloudSyncInstalled: () => boolean;
 }
 
 const ALLOWED_RELAYHISTORY_HOSTS = new Set(['history.agentrelay.com']);
@@ -126,16 +135,75 @@ async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloud
   return { ok: true };
 }
 
+const execFileAsync = promisify(execFile);
+
+// Enabling Reflex schedules the full pipeline: `sync` keeps the local history
+// database fresh, `push` uploads it to relayhistory-cloud. Both are idempotent
+// ai-hist background services (launchd on macOS, cron on Linux).
+const CLOUD_SYNC_STAGES: readonly string[][] = [
+  ['sync', '--install-service'],
+  ['push', '--install-service'],
+];
+
+function aiHistFailure(err: unknown, args: string[]): string {
+  if (err && typeof err === 'object' && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+    return 'ai-hist was not found on your PATH. Install it (https://history.agentrelay.com) and re-run `agent-relay reflex on`.';
+  }
+  const detail = err instanceof Error ? err.message : String(err);
+  return `\`ai-hist ${args.join(' ')}\` failed: ${detail}`;
+}
+
+async function defaultInstallCloudSync(): Promise<ServiceResult> {
+  for (const args of CLOUD_SYNC_STAGES) {
+    try {
+      await execFileAsync('ai-hist', args);
+    } catch (err) {
+      return { ok: false, error: aiHistFailure(err, args) };
+    }
+  }
+  return { ok: true };
+}
+
+async function defaultUninstallCloudSync(): Promise<ServiceResult> {
+  // Only remove cloud upload; leave local `sync` capture in place.
+  const args = ['push', '--uninstall-service'];
+  try {
+    await execFileAsync('ai-hist', args);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: aiHistFailure(err, args) };
+  }
+}
+
+function defaultCloudSyncInstalled(fsImpl: typeof fs, homedir: () => string): boolean {
+  if (process.platform !== 'darwin') {
+    // On Linux the push job lives in crontab; we don't shell out just to report
+    // status, so report unknown (false) rather than guess.
+    return false;
+  }
+  return fsImpl.existsSync(
+    path.join(homedir(), 'Library', 'LaunchAgents', 'com.ai-hist.push.plist')
+  );
+}
+
 function withDefaults(overrides: Partial<ReflexDependencies> = {}): ReflexDependencies {
-  return {
+  const deps: ReflexDependencies = {
     fs,
     homedir: os.homedir,
     readRelayAuth: defaultReadRelayAuth,
     loginToCloud: defaultLoginToCloud,
     prompt: promptYesNo,
     log: (...args: unknown[]) => console.log(...args),
+    installCloudSync: defaultInstallCloudSync,
+    uninstallCloudSync: defaultUninstallCloudSync,
+    cloudSyncInstalled: () => false,
     ...overrides,
   };
+  if (!overrides.cloudSyncInstalled) {
+    // Probe the launchd plist using the same homedir the rest of the deps use.
+    deps.cloudSyncInstalled = () => defaultCloudSyncInstalled(deps.fs, deps.homedir);
+  }
+  return deps;
 }
 
 function getReflexDir(deps: ReflexDependencies): string {
@@ -197,6 +265,13 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
         }
       }
 
+      const cloudSync = await deps.installCloudSync();
+      if (cloudSync.ok) {
+        deps.log('Scheduled automatic history sync + cloud push.');
+      } else {
+        deps.log(`Reflex is enabled, but automatic sync could not be scheduled: ${cloudSync.error}`);
+      }
+
       deps.log('Reflex is on.');
       deps.log('State file: ~/.agentworkforce/reflex.json');
     });
@@ -204,8 +279,12 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
   reflex
     .command('off')
     .description('Disable Reflex history sync')
-    .action(() => {
+    .action(async () => {
       writeReflexState(deps, { enabled: false });
+      const removal = await deps.uninstallCloudSync();
+      if (!removal.ok) {
+        deps.log(`Reflex is off, but the cloud push service could not be removed: ${removal.error}`);
+      }
       deps.log('Reflex is off.');
     });
 
@@ -224,6 +303,11 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
         if (state.enabledAt) {
           deps.log(`Enabled at: ${state.enabledAt}`);
         }
+        deps.log(
+          deps.cloudSyncInstalled()
+            ? 'Cloud push service: scheduled.'
+            : 'Cloud push service: not scheduled — run `agent-relay reflex on`.'
+        );
         return;
       }
 
