@@ -181,9 +181,7 @@ function defaultCloudSyncInstalled(fsImpl: typeof fs, homedir: () => string): bo
     // status, so report unknown (false) rather than guess.
     return false;
   }
-  return fsImpl.existsSync(
-    path.join(homedir(), 'Library', 'LaunchAgents', 'com.ai-hist.push.plist')
-  );
+  return fsImpl.existsSync(path.join(homedir(), 'Library', 'LaunchAgents', 'com.ai-hist.push.plist'));
 }
 
 function withDefaults(overrides: Partial<ReflexDependencies> = {}): ReflexDependencies {

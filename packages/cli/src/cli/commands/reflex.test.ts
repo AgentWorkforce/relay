@@ -147,11 +147,7 @@ describe('registerReflexCommands', () => {
     const cloudSyncInstalled = vi.fn(() => true);
     const { program, deps } = createHarness({ cloudSyncInstalled });
     fs.mkdirSync(path.dirname(statePath()), { recursive: true });
-    fs.writeFileSync(
-      statePath(),
-      JSON.stringify({ enabled: true, enabledAt: ENABLED_AT }, null, 2),
-      'utf-8'
-    );
+    fs.writeFileSync(statePath(), JSON.stringify({ enabled: true, enabledAt: ENABLED_AT }, null, 2), 'utf-8');
 
     await program.parseAsync(['node', 'agent-relay', 'reflex', 'status']);
 
