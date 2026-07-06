@@ -17,6 +17,20 @@
 //! - [`detection`] — working/idle activity inference from output.
 //! - [`ansi`], [`utf8_stream`] — ANSI stripping and chunk-safe UTF-8
 //!   decoding for raw PTY output.
+//! - [`codex_session`] — pre-create a resumable Codex thread via
+//!   `codex app-server` so a spawned CLI can resume it across restarts.
+//!
+//! Alongside the PTY kernel, the crate carries runtime-agnostic session
+//! primitives — generic over caller-supplied types so they serve any agent
+//! runtime, terminal-backed or headless:
+//! - [`queue`] — bounded multi-level priority queue for pending work,
+//!   generic over the caller's priority scheme.
+//! - [`inject`] — retry loop for delivering a payload into a session,
+//!   reporting per-attempt status and a final result to an observer.
+//! - [`supervisor`] — restart-policy state machine for crashed agents,
+//!   generic over an opaque respawn payload.
+//! - [`crash_insights`] — exit-code/signal crash classification, bounded
+//!   history, and health scoring.
 //!
 //! This crate deliberately knows about terminals and agent-CLI behavior
 //! only — never about relay messaging, channels, or delivery semantics.
@@ -24,10 +38,15 @@
 //! of these primitives; nothing here may depend on them.
 
 pub mod ansi;
+pub mod codex_session;
+pub mod crash_insights;
 pub mod detection;
+pub mod inject;
 pub mod pty;
+pub mod queue;
 pub mod readiness;
 pub mod snapshot;
+pub mod supervisor;
 pub mod terminal;
 pub mod utf8_stream;
 pub mod wait;
