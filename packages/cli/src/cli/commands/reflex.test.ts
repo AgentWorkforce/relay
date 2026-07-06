@@ -35,15 +35,11 @@ function createHarness(overrides?: Partial<ReflexDependencies>) {
   }
 
   const deps: ReflexDependencies = {
-    fs,
-    homedir: vi.fn(() => tmpHome),
+    homedir: vi.fn(() => tmpHome as string),
     readRelayAuth: vi.fn(async () => ({ accessToken: FAKE_RELAY_TOKEN })),
     loginToCloud: vi.fn(async () => ({ ok: true as const })),
     prompt: vi.fn(async () => true),
     log: vi.fn(() => undefined),
-    installCloudSync: vi.fn(async () => ({ ok: true as const })),
-    uninstallCloudSync: vi.fn(async () => ({ ok: true as const })),
-    cloudSyncInstalled: vi.fn(() => false),
     ...overrides,
   };
 
@@ -81,40 +77,22 @@ describe('registerReflexCommands', () => {
     expect(deps.prompt).toHaveBeenCalledWith('Enable Reflex? (y/N) ');
     expect(deps.readRelayAuth).toHaveBeenCalled();
     expect(deps.loginToCloud).toHaveBeenCalledWith(FAKE_RELAY_TOKEN);
-    expect(deps.installCloudSync).toHaveBeenCalled();
     expect(outputLines(deps)).toEqual(
       expect.arrayContaining([
         'Reflex will capture your agent sessions and sync to history.agentrelay.com',
-        'Scheduled automatic history sync + cloud push.',
         'Reflex is on.',
+        'History syncs to relayhistory-cloud automatically while `agent-relay up` is running.',
         'State file: ~/.agentworkforce/reflex.json',
       ])
     );
   });
 
-  it('reflex on still enables when scheduling the sync service fails', async () => {
-    const installCloudSync = vi.fn(async () => ({
-      ok: false as const,
-      error: 'ai-hist was not found on your PATH.',
-    }));
-    const { program, deps } = createHarness({ installCloudSync });
-
-    await program.parseAsync(['node', 'agent-relay', 'reflex', 'on']);
-
-    expect(readState()).toEqual({ enabled: true, enabledAt: ENABLED_AT });
-    expect(outputLines(deps)).toContain(
-      'Reflex is enabled, but automatic sync could not be scheduled: ai-hist was not found on your PATH.'
-    );
-    expect(outputLines(deps)).toContain('Reflex is on.');
-  });
-
-  it('reflex off writes disabled state, removes the push service, and prints confirmation', async () => {
+  it('reflex off writes disabled state and prints confirmation', async () => {
     const { program, deps } = createHarness();
 
     await program.parseAsync(['node', 'agent-relay', 'reflex', 'off']);
 
     expect(readState()).toEqual({ enabled: false });
-    expect(deps.uninstallCloudSync).toHaveBeenCalled();
     expect(outputLines(deps)).toContain('Reflex is off.');
   });
 
@@ -136,22 +114,7 @@ describe('registerReflexCommands', () => {
 
     await program.parseAsync(['node', 'agent-relay', 'reflex', 'status']);
 
-    expect(outputLines(deps)).toEqual([
-      'Reflex is on.',
-      `Enabled at: ${ENABLED_AT}`,
-      'Cloud push service: not scheduled — run `agent-relay reflex on`.',
-    ]);
-  });
-
-  it('reflex status reports the cloud push service as scheduled when installed', async () => {
-    const cloudSyncInstalled = vi.fn(() => true);
-    const { program, deps } = createHarness({ cloudSyncInstalled });
-    fs.mkdirSync(path.dirname(statePath()), { recursive: true });
-    fs.writeFileSync(statePath(), JSON.stringify({ enabled: true, enabledAt: ENABLED_AT }, null, 2), 'utf-8');
-
-    await program.parseAsync(['node', 'agent-relay', 'reflex', 'status']);
-
-    expect(outputLines(deps)).toContain('Cloud push service: scheduled.');
+    expect(outputLines(deps)).toEqual(['Reflex is on.', `Enabled at: ${ENABLED_AT}`]);
   });
 
   it('reflex status with malformed JSON treats the state as absent', async () => {

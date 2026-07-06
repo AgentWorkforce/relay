@@ -14,8 +14,10 @@ await build({
   bundle: true,
   target: 'node18',
   logLevel: 'info',
-  // Exclude native dependencies from bundle - they're loaded dynamically at runtime.
-  external: ['better-sqlite3'],
+  // Exclude native/WASM dependencies from bundle - they're loaded dynamically
+  // at runtime. `ai-hist` (Reflex cloud push) pulls in the sql.js WASM runtime,
+  // which must resolve its .wasm from node_modules rather than the bundle.
+  external: ['better-sqlite3', 'ai-hist', 'sql.js'],
   banner: {
     js: "const import_meta_url = require('node:url').pathToFileURL(__filename).href;",
   },
