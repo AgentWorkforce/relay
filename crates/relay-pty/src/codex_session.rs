@@ -1,3 +1,10 @@
+//! Pre-creation of resumable Codex sessions.
+//!
+//! Codex can resume an existing thread by id. Spawning `codex app-server`
+//! briefly and driving its JSON-RPC interface yields a persisted thread id
+//! that a later PTY spawn can `codex resume` into, so the session survives
+//! agent restarts.
+
 use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{bail, Context, Result};
@@ -10,15 +17,21 @@ use tokio::{
 
 const CODEX_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(15);
 
-pub(crate) async fn create_resumable_codex_thread(
+/// Create a resumable Codex thread and return its id.
+///
+/// `client_version` is the version string reported to the app-server in the
+/// `initialize` handshake (alongside the `agent-relay` client name), so the
+/// pre-created thread is attributed to the same release as the caller.
+pub async fn create_resumable_codex_thread(
     codex_bin: &str,
     cwd: &Path,
     env: &[(String, String)],
     cli_args: &[String],
+    client_version: &str,
 ) -> Result<String> {
     timeout(
         CODEX_BOOTSTRAP_TIMEOUT,
-        create_resumable_codex_thread_inner(codex_bin, cwd, env, cli_args),
+        create_resumable_codex_thread_inner(codex_bin, cwd, env, cli_args, client_version),
     )
     .await
     .with_context(|| {
@@ -31,6 +44,7 @@ async fn create_resumable_codex_thread_inner(
     cwd: &Path,
     env: &[(String, String)],
     cli_args: &[String],
+    client_version: &str,
 ) -> Result<String> {
     let thread_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let mut command = Command::new(codex_bin);
@@ -65,7 +79,7 @@ async fn create_resumable_codex_thread_inner(
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(target: "broker::codex_session", stderr = %line, "codex app-server stderr");
+                tracing::debug!(target: "relay_pty::codex_session", stderr = %line, "codex app-server stderr");
             }
         });
     }
@@ -80,7 +94,7 @@ async fn create_resumable_codex_thread_inner(
             json!({
                 "clientInfo": {
                     "name": "agent-relay",
-                    "version": crate::util::version::broker_version(),
+                    "version": client_version,
                 },
                 "capabilities": {
                     "experimentalApi": true,
@@ -231,7 +245,7 @@ async fn json_rpc_request(
             Ok(value) => value,
             Err(error) => {
                 tracing::debug!(
-                    target: "broker::codex_session",
+                    target: "relay_pty::codex_session",
                     method = %method,
                     error = %error,
                     line = %line,
@@ -291,6 +305,7 @@ while read line; do :; done
             dir.path(),
             &[],
             &[],
+            "0.0.0-test",
         )
         .await
         .expect("thread id");

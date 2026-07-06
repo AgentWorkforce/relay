@@ -334,6 +334,7 @@ impl WorkerRegistry {
                                         cwd,
                                         &self.worker_env,
                                         &effective_args,
+                                        crate::util::version::broker_version(),
                                     )
                                     .await
                                     {
@@ -538,6 +539,7 @@ impl WorkerRegistry {
                                             cwd,
                                             &self.worker_env,
                                             &effective_args,
+                                            crate::util::version::broker_version(),
                                         )
                                         .await
                                         {
