@@ -100,17 +100,20 @@ async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloud
     return { ok: false, error: 'Login response missing accessToken' };
   }
 
-  // Persist rth_at_ tokens so the in-process cloud push can authenticate on
-  // subsequent runs. This is the same path the ai-hist SDK reads.
+  // Persist the rth_at_ session where the `ai-hist` Rust binary reads it, so the
+  // in-process cloud push (which drives `ai-hist push`) authenticates on later
+  // runs. The binary reads $RELAYHISTORY_HOME/auth.json (default
+  // ~/.agentworkforce/relayhistory/auth.json) in snake_case.
   try {
-    const configDir = process.env.AI_HIST_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'ai-hist');
-    const authPath = path.join(configDir, 'auth.json');
+    const authDir =
+      process.env.RELAYHISTORY_HOME ?? path.join(os.homedir(), '.agentworkforce', 'relayhistory');
+    const authPath = path.join(authDir, 'auth.json');
     const auth = {
-      baseUrl: rawBase.replace(/\/$/, ''),
-      accessToken: payload.accessToken,
-      ...(typeof payload.refreshToken === 'string' ? { refreshToken: payload.refreshToken } : {}),
+      base_url: rawBase.replace(/\/$/, ''),
+      access_token: payload.accessToken,
+      ...(typeof payload.refreshToken === 'string' ? { refresh_token: payload.refreshToken } : {}),
     };
-    await mkdir(configDir, { recursive: true });
+    await mkdir(authDir, { recursive: true });
     await writeFile(authPath, JSON.stringify(auth, null, 2));
     // Explicitly tighten perms — writeFile mode only applies to newly created files.
     await chmod(authPath, 0o600);

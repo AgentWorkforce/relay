@@ -47,20 +47,20 @@ async function defaultPush(): Promise<ReflexPushResult | null> {
   // Non-literal spec keeps this out of the esbuild bundle; resolves at runtime.
   const spec = 'ai-hist/cloud';
   let mod: {
-    loadStoredRelayhistoryAuth?: () => Promise<unknown | null>;
-    pushToCloud?: (opts: { auth: unknown }) => Promise<{ sent?: number; accepted?: number }>;
+    pushToCloud?: () => Promise<{ sent?: number; accepted?: number } | null>;
   };
   try {
     mod = (await import(spec)) as typeof mod;
   } catch {
     return null; // ai-hist not installed
   }
-  if (typeof mod.loadStoredRelayhistoryAuth !== 'function' || typeof mod.pushToCloud !== 'function') {
+  if (typeof mod.pushToCloud !== 'function') {
     return null;
   }
-  const auth = await mod.loadStoredRelayhistoryAuth();
-  if (!auth) return null; // not authenticated yet
-  const report = await mod.pushToCloud({ auth });
+  // pushToCloud drives the `ai-hist push` binary, which handles auth itself and
+  // resolves to null when the binary is missing or the user isn't logged in.
+  const report = await mod.pushToCloud();
+  if (!report) return null;
   return { sent: report.sent ?? 0, accepted: report.accepted ?? 0 };
 }
 
