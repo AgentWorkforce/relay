@@ -13,7 +13,7 @@ behind a private protocol.
 
 Today, `relay node up` produces this topology:
 
-```
+```text
 CLI process (TS)
  ├─ spawns → agent-relay-broker (Rust)
  │            └─ WS client → cast.agentrelay.com /v1/node/ws   [fleet-wire]
@@ -65,9 +65,11 @@ separates them.
 
 Rules:
 
-- Node identity is unchanged: machine id + cwd hash, minted at enrollment.
-  A project is a node; an app that hosts capabilities enrolls as its own node.
-  There is no "default node" and no machine-scoped capability.
+- Node identity is unchanged: derived from machine id, cwd, and workspace id,
+  exactly as `derive_node_id` computes it today (the workspace component keeps
+  the same directory distinct across workspaces). A project is a node; an app
+  that hosts capabilities enrolls as its own node. There is no "default node"
+  and no machine-scoped capability.
 - All providers on a node share the node's `nt_live_` token (0600 enrollment
   file — filesystem permissions are the local trust boundary). Each provider
   declares an identity at connect: `{ name, instance_id }`.
@@ -84,7 +86,7 @@ Rules:
 
 Target topology:
 
-```
+```text
 engine (cast.agentrelay.com)
  ├─ /v1/node/ws ← broker provider (Rust)     — spawn:*, release, agent delivery
  ├─ /v1/node/ws ← capability provider (TS)   — project agent-relay.ts actions
@@ -103,9 +105,16 @@ client-side dispatch bookkeeping (`HandlerDispatchState`) move server-side.
 
 - `node.register` becomes provider-scoped: gains
   `provider: { name, instance_id }` and carries only that provider's
-  capabilities. The engine merges per node, keyed by provider name.
-  Registration response carries per-capability acceptance; a name conflict
-  with another provider's invokable capability is a rejection.
+  capabilities. `name` is the provider's stable identity — persistence,
+  capability-conflict checks, and routing key on it. `instance_id` is the
+  connection epoch: re-registering with the same name and a new `instance_id`
+  replaces the previous attachment (reconnect/restart); registering a name
+  whose current instance is still connected and heartbeating is rejected
+  (duplicate process). Registration response carries per-capability
+  acceptance; a name conflict with another provider's invokable capability is
+  a rejection.
+- `node.deregister` carries the provider identity and removes that provider's
+  attachment and persisted capability set.
 - `node.heartbeat` is implicitly provider-scoped by connection;
   `handlers_live` refers to the sending provider's capabilities. Load fields
   (`active_agents`, `max_agents`) are provider-level.
@@ -120,7 +129,10 @@ client-side dispatch bookkeeping (`HandlerDispatchState`) move server-side.
   in-flight invocations) lives with the node socket owner — in
   relaycast-cloud, the per-node Durable Object holds N provider sockets
   instead of 1. Registered capabilities persist keyed by provider name so
-  offline nodes still display their full manifest.
+  offline nodes still display their full manifest. A provider's registration
+  fully replaces its previously persisted set; renamed or retired providers
+  are removed by provider-scoped `node.deregister` or via the nodes REST API
+  (`DELETE /v1/nodes/:node/providers/:name`).
 
 ### 3.3 Actions and invocation
 
@@ -132,7 +144,11 @@ client-side dispatch bookkeeping (`HandlerDispatchState`) move server-side.
   Dispatch resolves capability → provider → socket.
 - A capability may opt into a workspace-global alias
   (`global: true` at definition); the alias claims the workspace-global name
-  and collides loudly, like any other registration conflict.
+  and collides loudly, like any other registration conflict. Aliases are
+  invoked through the existing workspace-scoped
+  `POST /v1/actions/:name/invoke`, which resolves to the owning node and
+  provider; the node-addressed route works for the same capability
+  regardless.
 - Invoke targeting a capability whose provider is offline **fails fast** by
   default; a capability may opt into queueing (`queue: true`), reusing the
   existing offline-queue path keyed per provider.
@@ -227,11 +243,14 @@ provider fields from §3.1.
 ### 5.2 CLI
 
 - `node up` brings the current context's node online: starts the broker
-  provider and serves the project's capability definition
-  (`agent-relay.{ts,…}` via `@agent-relay/fleet`, or the implicit default
-  node) as a second provider — both connecting directly to the engine with
-  the enrolled node token. Enrollment pickup (`cloud enroll` →
-  `fleet-enrollments.json` → env) is unchanged.
+  provider and serves the project's capability definition as a second
+  provider — both connecting directly to the engine with the enrolled node
+  token. The definition comes from `agent-relay.{ts,…}` via
+  `@agent-relay/fleet`, or, when no config file exists, from the implicit
+  definition derived from teams.json (a default definition for this context's
+  node — not a machine-level node, which does not exist in this model).
+  Enrollment pickup (`cloud enroll` → `fleet-enrollments.json` → env) is
+  unchanged.
 - `fleet status` reads provider attachment from the engine instead of a local
   sidecar status file; `fleet nodes` gains machine grouping and per-provider
   liveness.
@@ -250,8 +269,8 @@ invocation rows are shared; only the hosting connection differs.
 ## 6. What does not change
 
 - Enrollment flow and tokens: `cloud enroll` / `ocl_node_enr_` / `nt_live_`.
-- Node identity derivation (machine id + cwd hash); multiple nodes per
-  machine.
+- Node identity derivation (machine id, cwd, workspace id); multiple nodes
+  per machine.
 - fleet-wire framing, heartbeat cadence, delivery dedup/ack semantics.
 - The broker's PTY/injection/supervision kernel (`relay-pty`) and agent
   delivery path.
@@ -265,8 +284,10 @@ Upstream-first, per the release-train choreography:
 
 1. **relaycast**: fleet-wire provider fields; engine provider attachment,
    node-scoped actions, node-addressed invoke; NodeDO multi-socket in
-   relaycast-cloud. Additive — a single registration with no `provider` field
-   is treated as one anonymous provider, so the current broker keeps working
+   relaycast-cloud. Additive — a registration with no `provider` field is
+   keyed as the reserved synthetic provider
+   `{ name: "default", instance_id: <connection id> }`, used uniformly for
+   heartbeats, routing, and persistence, so the current broker keeps working
    during the transition.
 2. **relaycast SDKs**: node provider client in TS, Python, Swift (Rust client
    is the broker's, updated in step 3). Run the parity audit.
