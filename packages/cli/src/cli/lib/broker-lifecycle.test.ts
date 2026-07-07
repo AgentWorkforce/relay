@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   classifyBrokerStartError,
@@ -148,5 +148,177 @@ describe('waitForNodeDelivery', () => {
       },
     });
     expect(calls).toBe(3);
+  });
+});
+
+// ── runUpCommand node-config gating ──────────────────────────────────────────
+// These use a real temp project dir (config discovery/loading touch the real
+// fs) with everything broker-shaped mocked out through CoreDependencies.
+
+vi.mock('../telemetry/index.js', () => ({ track: vi.fn() }));
+vi.mock('@agent-relay/fleet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/fleet')>();
+  return {
+    ...actual,
+    startServeNode: vi.fn(() => ({ stop: vi.fn(async () => undefined), done: Promise.resolve() })),
+  };
+});
+
+import fsReal from 'node:fs';
+import os from 'node:os';
+import pathReal from 'node:path';
+import { startServeNode } from '@agent-relay/fleet';
+import { runUpCommand } from './broker-lifecycle.js';
+import type { CoreDependencies } from '../commands/core.js';
+
+class ExitSignal extends Error {
+  constructor(public readonly code: number) {
+    super(`exit:${code}`);
+  }
+}
+
+const upTmpRoots: string[] = [];
+
+function createUpHarness() {
+  const projectRoot = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-up-'));
+  upTmpRoots.push(projectRoot);
+  const dataDir = pathReal.join(projectRoot, '.agentworkforce', 'relay');
+  fsReal.mkdirSync(dataDir, { recursive: true });
+
+  const connection = JSON.stringify({
+    url: 'http://127.0.0.1:4999',
+    port: 4999,
+    api_key: 'test',
+    pid: 999999,
+  });
+  const createRelay = vi.fn(async () => ({
+    spawn: vi.fn(async () => undefined),
+    getStatus: vi.fn(async () => ({})),
+    shutdown: vi.fn(async () => undefined),
+    workspaceKey: 'rk_test',
+  }));
+  const exit = vi.fn((code: number) => {
+    throw new ExitSignal(code);
+  });
+  const log = vi.fn();
+  const warn = vi.fn();
+  const error = vi.fn();
+
+  const deps = {
+    getProjectPaths: () => ({ projectRoot, dataDir, teamDir: projectRoot }),
+    loadTeamsConfig: () => null,
+    createRelay,
+    spawnProcess: vi.fn(),
+    execCommand: vi.fn(async () => ({ stdout: '', stderr: '' })),
+    killProcess: vi.fn(() => {
+      throw new Error('not running');
+    }),
+    fs: {
+      existsSync: fsReal.existsSync,
+      // The connection file is "written by the broker" — our mock relay writes
+      // nothing, so serve it from memory for any connection.json read.
+      readFileSync: (file: string, encoding: BufferEncoding) =>
+        file.endsWith('connection.json') ? connection : fsReal.readFileSync(file, encoding),
+      writeFileSync: fsReal.writeFileSync,
+      unlinkSync: fsReal.unlinkSync,
+      readdirSync: fsReal.readdirSync,
+      mkdirSync: fsReal.mkdirSync,
+      rmSync: fsReal.rmSync,
+      accessSync: fsReal.accessSync,
+    },
+    generateAgentName: () => 'agent',
+    checkForUpdates: vi.fn(async () => ({ updateAvailable: false })),
+    getVersion: () => 'test',
+    env: {} as NodeJS.ProcessEnv,
+    argv: ['node', 'agent-relay', 'node', 'up'],
+    execPath: process.execPath,
+    cliScript: 'cli.js',
+    pid: process.pid,
+    isPortInUse: vi.fn(async () => false),
+    now: () => 0,
+    sleep: async () => undefined,
+    onSignal: vi.fn(),
+    holdOpen: async () => undefined,
+    log,
+    warn,
+    error,
+    exit,
+  } as unknown as CoreDependencies;
+
+  return { deps, projectRoot, createRelay, log, warn, error, exit };
+}
+
+afterEach(() => {
+  vi.mocked(startServeNode).mockClear();
+  for (const dir of upTmpRoots.splice(0)) {
+    fsReal.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe('runUpCommand node-config gating', () => {
+  it('fails fast on a missing explicit --config BEFORE the broker starts', async () => {
+    const { deps, createRelay, error } = createUpHarness();
+
+    await expect(
+      runUpCommand({ config: './does-not-exist.ts', discoverConfig: true }, deps)
+    ).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('Node config file not found');
+    expect(createRelay).not.toHaveBeenCalled();
+    expect(startServeNode).not.toHaveBeenCalled();
+  });
+
+  it('warns and serves the implicit node when a DISCOVERED config fails to load', async () => {
+    const { deps, projectRoot, createRelay, warn } = createUpHarness();
+    fsReal.writeFileSync(pathReal.join(projectRoot, 'agent-relay.js'), 'export default 42;\n');
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(warn.mock.calls.flat().join('\n')).toContain('Ignoring discovered node config');
+    expect(createRelay).toHaveBeenCalledTimes(1);
+    expect(startServeNode).toHaveBeenCalledTimes(1);
+    const served = vi.mocked(startServeNode).mock.calls[0]![0];
+    expect(served.definition.name).toBe(pathReal.basename(projectRoot));
+  });
+
+  it('never touches agent-relay.* files without the discoverConfig opt-in (legacy local up)', async () => {
+    const { deps, projectRoot, createRelay, warn } = createUpHarness();
+    // A module with a top-level throw: if the legacy path ever imported it,
+    // the discovered-load warning (or a startup failure) would appear.
+    fsReal.writeFileSync(pathReal.join(projectRoot, 'agent-relay.js'), 'throw new Error("BOOM");\n');
+
+    await runUpCommand({}, deps);
+
+    expect(warn.mock.calls.flat().join('\n')).not.toContain('Ignoring discovered node config');
+    expect(createRelay).toHaveBeenCalledTimes(1);
+    expect(startServeNode).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips config discovery entirely when the implicit fleet node is disabled', async () => {
+    const { deps, projectRoot, warn } = createUpHarness();
+    (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE = '1';
+    fsReal.writeFileSync(pathReal.join(projectRoot, 'agent-relay.js'), 'throw new Error("BOOM");\n');
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(warn.mock.calls.flat().join('\n')).not.toContain('Ignoring discovered node config');
+    expect(startServeNode).not.toHaveBeenCalled();
+  });
+
+  it('serves a valid discovered config in place of the implicit node and honors nodeName', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      // Self-contained defineNode-shaped module: a bare `@agent-relay/fleet`
+      // import would not resolve from the temp dir, and the loader validates
+      // via the __agentRelayFleetNode marker.
+      "export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [] };\n"
+    );
+
+    await runUpCommand({ discoverConfig: true, nodeName: 'enrolled-name' }, deps);
+
+    const served = vi.mocked(startServeNode).mock.calls[0]![0];
+    expect(served.definition.name).toBe('from-config');
+    expect(served.nameOverride).toBe('enrolled-name');
   });
 });

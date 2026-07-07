@@ -53,7 +53,7 @@ cleanup() {
       AGENT_RELAY_SKIP_UPDATE_CHECK=1 \
       AGENT_RELAY_STARTUP_DEBUG=1 \
       AGENT_RELAY_TELEMETRY_DISABLED=1 \
-      "$CLI_BIN" local down --force --timeout 5000 >/dev/null 2>&1 || true
+      "$CLI_BIN" node down --force --timeout 5000 >/dev/null 2>&1 || true
   )
   rm -rf "$TMP_ROOT"
 }
@@ -111,22 +111,22 @@ assert_exact_count() {
 }
 
 echo "=== Smoke: standalone status ==="
-STATUS_OUTPUT="$(run_cli local status 2>&1 || true)"
+STATUS_OUTPUT="$(run_cli node status 2>&1 || true)"
 assert_exact_count "$STATUS_OUTPUT" '^Status: STOPPED$' 1 'status line'
 
 echo "=== Smoke: standalone down --force ==="
-DOWN_OUTPUT="$(run_cli local down --force 2>&1 || true)"
+DOWN_OUTPUT="$(run_cli node down --force 2>&1 || true)"
 assert_exact_count "$DOWN_OUTPUT" '^Cleaned up \(was not running\)$' 1 'down cleanup line'
 
 echo "=== Smoke: standalone up ==="
 UP_LOG="$TMP_ROOT/up.log"
-run_cli local up >"$UP_LOG" 2>&1 &
+run_cli node up >"$UP_LOG" 2>&1 &
 UP_PID=$!
 
 sleep 8
 UP_EXIT=""
 if kill -0 "$UP_PID" 2>/dev/null; then
-  run_cli local down --force --timeout 5000 >/dev/null 2>&1 || true
+  run_cli node down --force --timeout 5000 >/dev/null 2>&1 || true
   # Hard-kill after 15s if down --force didn't terminate the process (e.g. macOS 26 hang)
   ( sleep 15 && kill -9 "$UP_PID" 2>/dev/null || true ) &
   KILLER_PID=$!

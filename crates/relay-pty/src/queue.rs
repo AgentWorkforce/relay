@@ -1,9 +1,24 @@
 use std::collections::VecDeque;
 
-use crate::types::RelayPriority;
+/// A fixed, indexed set of priority levels. Index 0 is the most urgent
+/// level and higher indices are progressively less urgent. Callers define
+/// their own scheme (an enum, typically) and describe it through this
+/// trait; the queue itself never interprets levels beyond their index.
+pub trait PriorityScheme: Copy {
+    /// Number of distinct levels in the scheme (one queue bucket each).
+    const LEVELS: usize;
+    /// Most urgent bucket index the overflow policy may evict from.
+    /// Items at indices below this are never dropped to admit new work.
+    const FIRST_DROPPABLE: usize;
+    /// Bucket index for this level: `0` is most urgent,
+    /// `LEVELS - 1` least urgent.
+    fn index(self) -> usize;
+}
 
+/// An item carrying a priority from some [`PriorityScheme`].
 pub trait Prioritized {
-    fn priority(&self) -> RelayPriority;
+    type Priority: PriorityScheme;
+    fn priority(&self) -> Self::Priority;
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -24,8 +39,8 @@ where
     T: Prioritized,
 {
     pub fn new(max: usize) -> Self {
-        let mut buckets = Vec::with_capacity(5);
-        for _ in 0..5 {
+        let mut buckets = Vec::with_capacity(T::Priority::LEVELS);
+        for _ in 0..T::Priority::LEVELS {
             buckets.push(VecDeque::new());
         }
         Self {
@@ -57,7 +72,11 @@ where
             return Ok(None);
         }
 
-        if let Some(dropped) = self.drop_overflow_candidate() {
+        // Never evict an item more urgent than the incoming one: eviction
+        // candidates start at the incoming item's own level (oldest first)
+        // or FIRST_DROPPABLE, whichever is less urgent.
+        let min_idx = T::Priority::FIRST_DROPPABLE.max(item.priority().index());
+        if let Some(dropped) = self.drop_overflow_candidate(min_idx) {
             self.enqueue(item);
             return Ok(Some(dropped));
         }
@@ -66,7 +85,7 @@ where
     }
 
     pub fn pop(&mut self) -> Option<T> {
-        for idx in 0..=4 {
+        for idx in 0..T::Priority::LEVELS {
             if let Some(item) = self.buckets[idx].pop_front() {
                 self.len -= 1;
                 return Some(item);
@@ -76,16 +95,13 @@ where
     }
 
     fn enqueue(&mut self, item: T) {
-        let idx = item.priority().as_u8() as usize;
+        let idx = item.priority().index();
         self.buckets[idx].push_back(item);
         self.len += 1;
     }
 
-    fn drop_overflow_candidate(&mut self) -> Option<T> {
-        for idx in [RelayPriority::P4, RelayPriority::P3, RelayPriority::P2]
-            .iter()
-            .map(|p| p.as_u8() as usize)
-        {
+    fn drop_overflow_candidate(&mut self, min_idx: usize) -> Option<T> {
+        for idx in (min_idx..T::Priority::LEVELS).rev() {
             if let Some(item) = self.buckets[idx].pop_front() {
                 self.len -= 1;
                 return Some(item);
@@ -97,17 +113,44 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{BoundedPriorityQueue, Prioritized, QueueError};
-    use crate::types::RelayPriority;
+    use super::{BoundedPriorityQueue, Prioritized, PriorityScheme, QueueError};
+
+    /// Five-level scheme matching the relay P0–P4 convention: P0 most
+    /// urgent, P2 and below evictable under overflow.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TestPriority {
+        P0,
+        P1,
+        P2,
+        P3,
+        P4,
+    }
+
+    impl PriorityScheme for TestPriority {
+        const LEVELS: usize = 5;
+        const FIRST_DROPPABLE: usize = 2;
+
+        fn index(self) -> usize {
+            match self {
+                TestPriority::P0 => 0,
+                TestPriority::P1 => 1,
+                TestPriority::P2 => 2,
+                TestPriority::P3 => 3,
+                TestPriority::P4 => 4,
+            }
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Msg {
         id: &'static str,
-        p: RelayPriority,
+        p: TestPriority,
     }
 
     impl Prioritized for Msg {
-        fn priority(&self) -> RelayPriority {
+        type Priority = TestPriority;
+
+        fn priority(&self) -> TestPriority {
             self.p
         }
     }
@@ -117,12 +160,12 @@ mod tests {
         let mut q = BoundedPriorityQueue::new(10);
         q.push(Msg {
             id: "p3",
-            p: RelayPriority::P3,
+            p: TestPriority::P3,
         })
         .unwrap();
         q.push(Msg {
             id: "p2",
-            p: RelayPriority::P2,
+            p: TestPriority::P2,
         })
         .unwrap();
 
@@ -135,13 +178,13 @@ mod tests {
         let mut q = BoundedPriorityQueue::new(1);
         q.push(Msg {
             id: "a",
-            p: RelayPriority::P3,
+            p: TestPriority::P3,
         })
         .unwrap();
         let err = q
             .push(Msg {
                 id: "b",
-                p: RelayPriority::P3,
+                p: TestPriority::P3,
             })
             .unwrap_err();
         assert_eq!(err, QueueError::Full);
@@ -152,19 +195,19 @@ mod tests {
         let mut q = BoundedPriorityQueue::new(2);
         q.push(Msg {
             id: "p1",
-            p: RelayPriority::P1,
+            p: TestPriority::P1,
         })
         .unwrap();
         q.push(Msg {
             id: "p4",
-            p: RelayPriority::P4,
+            p: TestPriority::P4,
         })
         .unwrap();
 
         let dropped = q
             .push_with_overflow_policy(Msg {
                 id: "incoming",
-                p: RelayPriority::P2,
+                p: TestPriority::P2,
             })
             .unwrap()
             .unwrap();
@@ -178,16 +221,53 @@ mod tests {
         let mut q = BoundedPriorityQueue::new(1);
         q.push(Msg {
             id: "p1",
-            p: RelayPriority::P1,
+            p: TestPriority::P1,
         })
         .unwrap();
         let err = q
             .push_with_overflow_policy(Msg {
                 id: "p2",
-                p: RelayPriority::P2,
+                p: TestPriority::P2,
             })
             .unwrap_err();
         assert_eq!(err, QueueError::Full);
+    }
+
+    #[test]
+    fn overflow_never_evicts_more_urgent_than_incoming() {
+        let mut q = BoundedPriorityQueue::new(1);
+        q.push(Msg {
+            id: "p2",
+            p: TestPriority::P2,
+        })
+        .unwrap();
+        let err = q
+            .push_with_overflow_policy(Msg {
+                id: "p4",
+                p: TestPriority::P4,
+            })
+            .unwrap_err();
+        assert_eq!(err, QueueError::Full);
+        assert_eq!(q.pop().unwrap().id, "p2");
+    }
+
+    #[test]
+    fn overflow_evicts_oldest_at_same_priority() {
+        let mut q = BoundedPriorityQueue::new(1);
+        q.push(Msg {
+            id: "old",
+            p: TestPriority::P4,
+        })
+        .unwrap();
+        let dropped = q
+            .push_with_overflow_policy(Msg {
+                id: "new",
+                p: TestPriority::P4,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(dropped.id, "old");
+        assert_eq!(q.pop().unwrap().id, "new");
     }
 
     #[test]
@@ -195,12 +275,12 @@ mod tests {
         let mut q = BoundedPriorityQueue::new(10);
         q.push(Msg {
             id: "a",
-            p: RelayPriority::P3,
+            p: TestPriority::P3,
         })
         .unwrap();
         q.push(Msg {
             id: "b",
-            p: RelayPriority::P3,
+            p: TestPriority::P3,
         })
         .unwrap();
         assert_eq!(q.pop().unwrap().id, "a");
@@ -212,18 +292,18 @@ mod tests {
         let mut q = BoundedPriorityQueue::new(2);
         q.push(Msg {
             id: "p0",
-            p: RelayPriority::P0,
+            p: TestPriority::P0,
         })
         .unwrap();
         q.push(Msg {
             id: "p1",
-            p: RelayPriority::P1,
+            p: TestPriority::P1,
         })
         .unwrap();
         let err = q
             .push_with_overflow_policy(Msg {
                 id: "p2",
-                p: RelayPriority::P2,
+                p: TestPriority::P2,
             })
             .unwrap_err();
         assert_eq!(err, QueueError::Full);
@@ -240,17 +320,17 @@ mod tests {
         let mut q = BoundedPriorityQueue::new(10);
         q.push(Msg {
             id: "a",
-            p: RelayPriority::P3,
+            p: TestPriority::P3,
         })
         .unwrap();
         q.push(Msg {
             id: "b",
-            p: RelayPriority::P2,
+            p: TestPriority::P2,
         })
         .unwrap();
         q.push(Msg {
             id: "c",
-            p: RelayPriority::P4,
+            p: TestPriority::P4,
         })
         .unwrap();
         assert_eq!(q.len(), 3);

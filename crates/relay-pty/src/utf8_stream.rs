@@ -24,6 +24,7 @@ impl Utf8StreamDecoder {
     /// Decode an incoming byte chunk, returning all complete UTF-8 text
     /// available. Any trailing bytes that form an incomplete codepoint are
     /// retained for the next call.
+    #[must_use]
     pub fn decode(&mut self, bytes: &[u8]) -> String {
         if bytes.is_empty() && self.pending.is_empty() {
             return String::new();
@@ -71,6 +72,7 @@ impl Utf8StreamDecoder {
 
     /// Drain any remaining buffered bytes, emitting `U+FFFD` for each
     /// incomplete sequence. Call once no more bytes will arrive.
+    #[must_use]
     pub fn flush(&mut self) -> String {
         if self.pending.is_empty() {
             return String::new();
