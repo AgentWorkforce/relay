@@ -46,18 +46,26 @@ export interface NativeAiHist {
   syncAndPush: () => Promise<{ sent: number; accepted: number; authenticated: boolean }>;
 }
 
-/** Lazily load the `ai-hist-native` napi addon; null if unavailable. */
+/** Lazily load the `ai-hist-native` napi addon; null when it isn't installed. */
 async function loadNative(): Promise<NativeAiHist | null> {
   // Non-literal spec keeps the native addon out of the esbuild bundle; it
   // resolves from node_modules (the per-platform optional dep) at runtime.
   const spec = 'ai-hist-native';
+  let mod: Partial<NativeAiHist> & { default?: Partial<NativeAiHist> };
   try {
-    const mod = (await import(spec)) as Partial<NativeAiHist> & { default?: Partial<NativeAiHist> };
-    const fn = mod.syncAndPush ?? mod.default?.syncAndPush;
-    return typeof fn === 'function' ? { syncAndPush: fn } : null;
-  } catch {
-    return null; // addon not installed for this platform
+    mod = (await import(spec)) as typeof mod;
+  } catch (err) {
+    // Not installed for this platform → a clean no-op. Anything else (ABI
+    // mismatch, missing system lib, addon init failure) is a real problem —
+    // rethrow so the caller logs it instead of silently doing nothing.
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+      return null;
+    }
+    throw err;
   }
+  const fn = mod.syncAndPush ?? mod.default?.syncAndPush;
+  return typeof fn === 'function' ? { syncAndPush: fn } : null;
 }
 
 export interface ReflexPushOptions {
