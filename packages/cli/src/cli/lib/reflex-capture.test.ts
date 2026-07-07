@@ -184,9 +184,7 @@ describe('reflexSyncAndPush', () => {
   });
 
   it('rejects on other push failures', async () => {
-    const { spawnFn } = fakeSpawn((args) =>
-      args[0] === 'sync' ? { code: 0 } : { code: 2, stderr: 'boom' }
-    );
+    const { spawnFn } = fakeSpawn((args) => (args[0] === 'sync' ? { code: 0 } : { code: 2, stderr: 'boom' }));
     await expect(reflexSyncAndPush({ binPath: '/bin/echo', spawnFn })).rejects.toThrow(/exit 2.*boom/);
   });
 });
