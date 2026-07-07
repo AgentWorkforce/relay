@@ -4,19 +4,16 @@
  * When Reflex is enabled (`agent-relay reflex on`), the long-running
  * `agent-relay up` host periodically syncs local agent history into the ai-hist
  * DB and pushes new records to relayhistory-cloud — no launchd/cron, no CLI the
- * user runs by hand. Mirrors the telemetry client: an unref'd timer that never
- * blocks the event loop, plus a best-effort final flush on shutdown.
+ * user runs by hand, and **no subprocess**. Mirrors the telemetry client: an
+ * unref'd timer that never blocks the event loop, plus a best-effort final
+ * flush on shutdown.
  *
- * It drives the `ai-hist` Rust binary, which ships as a per-platform
- * optional-dependency package (resolved via `getAiHistBinaryPath`) so a plain
- * `agent-relay` install works with no extra setup. Everything is a silent no-op
- * when the binary is unavailable or the user isn't authenticated.
+ * The work runs in-process through the `ai-hist-native` napi addon
+ * (`syncAndPush()`), which ships as a per-platform optional-dependency package
+ * so a plain `agent-relay` install works with no extra setup. Everything is a
+ * silent no-op when the addon is unavailable or the user isn't authenticated.
  */
-import { spawn } from 'node:child_process';
-
 import { isReflexEnabled } from '@agent-relay/config';
-
-import { getAiHistBinaryPath } from './ai-hist-path.js';
 
 export interface ReflexPushResult {
   sent: number;
@@ -26,7 +23,7 @@ export interface ReflexPushResult {
 export interface ReflexCaptureDeps {
   /** Whether Reflex is enabled (checked once at start). */
   isEnabled: () => boolean;
-  /** Perform one push; resolves `null` when not authed / SDK unavailable. */
+  /** Perform one push; resolves `null` when not authed / addon unavailable. */
   push: () => Promise<ReflexPushResult | null>;
   /** Diagnostic logger. */
   log: (message: string) => void;
@@ -44,78 +41,42 @@ export interface RunningReflexCapture {
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_INITIAL_DELAY_MS = 30_000;
 
-interface RunResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
+/** The native addon surface we depend on. */
+export interface NativeAiHist {
+  syncAndPush: () => Promise<{ sent: number; accepted: number; authenticated: boolean }>;
 }
 
-/** Spawn the ai-hist binary; resolves null when it's unavailable. */
-function runAiHist(bin: string, args: string[], spawnFn: typeof spawn): Promise<RunResult | null> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawnFn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (c) => {
-      stdout += String(c);
-    });
-    child.stderr?.on('data', (c) => {
-      stderr += String(c);
-    });
-    child.on('error', (err: NodeJS.ErrnoException) => {
-      // Binary missing / not executable / a directory → nothing to do.
-      if (['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR', 'EISDIR'].includes(err.code ?? '')) {
-        resolvePromise(null);
-        return;
-      }
-      reject(err);
-    });
-    child.on('close', (code) => resolvePromise({ code, stdout, stderr }));
-  });
+/** Lazily load the `ai-hist-native` napi addon; null if unavailable. */
+async function loadNative(): Promise<NativeAiHist | null> {
+  // Non-literal spec keeps the native addon out of the esbuild bundle; it
+  // resolves from node_modules (the per-platform optional dep) at runtime.
+  const spec = 'ai-hist-native';
+  try {
+    const mod = (await import(spec)) as Partial<NativeAiHist> & { default?: Partial<NativeAiHist> };
+    const fn = mod.syncAndPush ?? mod.default?.syncAndPush;
+    return typeof fn === 'function' ? { syncAndPush: fn } : null;
+  } catch {
+    return null; // addon not installed for this platform
+  }
 }
 
 export interface ReflexPushOptions {
-  binPath?: string;
-  spawnFn?: typeof spawn;
+  /** Injectable native addon (tests); defaults to lazy-loading `ai-hist-native`. */
+  native?: NativeAiHist | null;
 }
 
 /**
- * Sync local agent history into the ai-hist DB, then push new records to
- * relayhistory-cloud — both by driving the bundled `ai-hist` binary. This is
- * what makes `reflex on` "just work": no separate ai-hist install, no CLI the
- * user runs by hand. Resolves null when the binary is unavailable or the user
- * isn't authenticated.
+ * Sync local agent history into the ai-hist DB and push new records to
+ * relayhistory-cloud, **in-process** via the native addon — no subprocess. This
+ * is what makes `reflex on` "just work": no separate ai-hist install, no CLI.
+ * Resolves null when the addon is unavailable or the user isn't authenticated.
  */
 export async function reflexSyncAndPush(opts: ReflexPushOptions = {}): Promise<ReflexPushResult | null> {
-  const bin = opts.binPath ?? getAiHistBinaryPath();
-  const spawnFn = opts.spawnFn ?? spawn;
-
-  // 1. Populate the local DB from the user's agent history. If this can't run
-  //    (binary unavailable) there's nothing to push.
-  const synced = await runAiHist(bin, ['sync'], spawnFn);
-  if (synced === null) return null;
-
-  // 2. Upload new records.
-  const pushed = await runAiHist(bin, ['push', '--json'], spawnFn);
-  if (pushed === null) return null;
-  if (pushed.code !== 0) {
-    // Not logged in yet is expected before `reflex on` completes.
-    if (/not authenticated|no relayhistory auth|run `?ai-hist login/i.test(pushed.stderr)) {
-      return null;
-    }
-    throw new Error(`ai-hist push failed (exit ${pushed.code}): ${pushed.stderr.trim().slice(0, 300)}`);
-  }
-  try {
-    const parsed = (pushed.stdout.trim() ? JSON.parse(pushed.stdout) : {}) as {
-      sent?: number;
-      accepted?: number;
-    };
-    return { sent: parsed.sent ?? 0, accepted: parsed.accepted ?? 0 };
-  } catch (err) {
-    throw new Error(
-      `could not parse ai-hist push output: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
+  const native = opts.native !== undefined ? opts.native : await loadNative();
+  if (!native) return null;
+  const result = await native.syncAndPush();
+  if (!result.authenticated) return null; // not logged in yet
+  return { sent: result.sent, accepted: result.accepted };
 }
 
 function withDefaults(overrides: Partial<ReflexCaptureDeps>): ReflexCaptureDeps {
