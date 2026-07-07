@@ -2,19 +2,21 @@
  * Reflex in-process cloud capture.
  *
  * When Reflex is enabled (`agent-relay reflex on`), the long-running
- * `agent-relay up` host periodically pushes new local session history to
- * relayhistory-cloud via the `ai-hist` SDK — no CLI shell-out, no launchd/cron.
- * Mirrors the telemetry client: an unref'd timer that never blocks the event
- * loop, plus a best-effort final flush on shutdown.
+ * `agent-relay up` host periodically syncs local agent history into the ai-hist
+ * DB and pushes new records to relayhistory-cloud — no launchd/cron, no CLI the
+ * user runs by hand. Mirrors the telemetry client: an unref'd timer that never
+ * blocks the event loop, plus a best-effort final flush on shutdown.
  *
- * `ai-hist/cloud` is imported lazily (dynamic, non-analyzable spec) so the
- * bundled CLI does not statically depend on it — it resolves from node_modules
- * at runtime and is a silent no-op if unavailable or unauthenticated. It is an
- * optional runtime dependency (a peer of the `ai-hist` SDK); once
- * `ai-hist@>=0.4.0` — which ships `pushToCloud` — is published it can be
- * declared as a dependency so real installs pick it up.
+ * It drives the `ai-hist` Rust binary, which ships as a per-platform
+ * optional-dependency package (resolved via `getAiHistBinaryPath`) so a plain
+ * `agent-relay` install works with no extra setup. Everything is a silent no-op
+ * when the binary is unavailable or the user isn't authenticated.
  */
+import { spawn } from 'node:child_process';
+
 import { isReflexEnabled } from '@agent-relay/config';
+
+import { getAiHistBinaryPath } from './ai-hist-path.js';
 
 export interface ReflexPushResult {
   sent: number;
@@ -42,32 +44,84 @@ export interface RunningReflexCapture {
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_INITIAL_DELAY_MS = 30_000;
 
-/** Load the ai-hist cloud SDK lazily; returns a push result or null. */
-async function defaultPush(): Promise<ReflexPushResult | null> {
-  // Non-literal spec keeps this out of the esbuild bundle; resolves at runtime.
-  const spec = 'ai-hist/cloud';
-  let mod: {
-    pushToCloud?: () => Promise<{ sent?: number; accepted?: number } | null>;
-  };
+interface RunResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Spawn the ai-hist binary; resolves null when it's unavailable. */
+function runAiHist(bin: string, args: string[], spawnFn: typeof spawn): Promise<RunResult | null> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawnFn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (c) => {
+      stdout += String(c);
+    });
+    child.stderr?.on('data', (c) => {
+      stderr += String(c);
+    });
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      // Binary missing / not executable / a directory → nothing to do.
+      if (['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR', 'EISDIR'].includes(err.code ?? '')) {
+        resolvePromise(null);
+        return;
+      }
+      reject(err);
+    });
+    child.on('close', (code) => resolvePromise({ code, stdout, stderr }));
+  });
+}
+
+export interface ReflexPushOptions {
+  binPath?: string;
+  spawnFn?: typeof spawn;
+}
+
+/**
+ * Sync local agent history into the ai-hist DB, then push new records to
+ * relayhistory-cloud — both by driving the bundled `ai-hist` binary. This is
+ * what makes `reflex on` "just work": no separate ai-hist install, no CLI the
+ * user runs by hand. Resolves null when the binary is unavailable or the user
+ * isn't authenticated.
+ */
+export async function reflexSyncAndPush(opts: ReflexPushOptions = {}): Promise<ReflexPushResult | null> {
+  const bin = opts.binPath ?? getAiHistBinaryPath();
+  const spawnFn = opts.spawnFn ?? spawn;
+
+  // 1. Populate the local DB from the user's agent history. If this can't run
+  //    (binary unavailable) there's nothing to push.
+  const synced = await runAiHist(bin, ['sync'], spawnFn);
+  if (synced === null) return null;
+
+  // 2. Upload new records.
+  const pushed = await runAiHist(bin, ['push', '--json'], spawnFn);
+  if (pushed === null) return null;
+  if (pushed.code !== 0) {
+    // Not logged in yet is expected before `reflex on` completes.
+    if (/not authenticated|no relayhistory auth|run `?ai-hist login/i.test(pushed.stderr)) {
+      return null;
+    }
+    throw new Error(`ai-hist push failed (exit ${pushed.code}): ${pushed.stderr.trim().slice(0, 300)}`);
+  }
   try {
-    mod = (await import(spec)) as typeof mod;
-  } catch {
-    return null; // ai-hist not installed
+    const parsed = (pushed.stdout.trim() ? JSON.parse(pushed.stdout) : {}) as {
+      sent?: number;
+      accepted?: number;
+    };
+    return { sent: parsed.sent ?? 0, accepted: parsed.accepted ?? 0 };
+  } catch (err) {
+    throw new Error(
+      `could not parse ai-hist push output: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
-  if (typeof mod.pushToCloud !== 'function') {
-    return null;
-  }
-  // pushToCloud drives the `ai-hist push` binary, which handles auth itself and
-  // resolves to null when the binary is missing or the user isn't logged in.
-  const report = await mod.pushToCloud();
-  if (!report) return null;
-  return { sent: report.sent ?? 0, accepted: report.accepted ?? 0 };
 }
 
 function withDefaults(overrides: Partial<ReflexCaptureDeps>): ReflexCaptureDeps {
   return {
     isEnabled: isReflexEnabled,
-    push: defaultPush,
+    push: () => reflexSyncAndPush(),
     log: (message: string) => console.error(message),
     intervalMs: DEFAULT_INTERVAL_MS,
     initialDelayMs: DEFAULT_INITIAL_DELAY_MS,

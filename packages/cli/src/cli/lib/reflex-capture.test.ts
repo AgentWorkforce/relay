@@ -1,6 +1,36 @@
+import { EventEmitter } from 'node:events';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { startReflexCapture } from './reflex-capture.js';
+import { reflexSyncAndPush, startReflexCapture } from './reflex-capture.js';
+
+/** Fake child process that scripts one run's stdout/stderr/exit (or an error). */
+function makeChild(script: { stdout?: string; stderr?: string; code?: number; errorCode?: string }) {
+  const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  setImmediate(() => {
+    if (script.errorCode) {
+      const err = new Error('spawn failed') as NodeJS.ErrnoException;
+      err.code = script.errorCode;
+      child.emit('error', err);
+      return;
+    }
+    if (script.stdout) child.stdout.emit('data', script.stdout);
+    if (script.stderr) child.stderr.emit('data', script.stderr);
+    child.emit('close', script.code ?? 0);
+  });
+  return child;
+}
+
+function fakeSpawn(byArgs: (args: string[]) => Parameters<typeof makeChild>[0]) {
+  const calls: string[][] = [];
+  const spawnFn = ((_bin: string, args: string[]) => {
+    calls.push(args);
+    return makeChild(byArgs(args));
+  }) as unknown as typeof import('node:child_process').spawn;
+  return { spawnFn, calls };
+}
 
 describe('startReflexCapture', () => {
   beforeEach(() => {
@@ -121,5 +151,42 @@ describe('startReflexCapture', () => {
     expect(push).toHaveBeenCalledTimes(2);
 
     await capture.stop();
+  });
+});
+
+describe('reflexSyncAndPush', () => {
+  // Real timers here: the fake child emits via setImmediate.
+  it('syncs then pushes and parses the report', async () => {
+    const { spawnFn, calls } = fakeSpawn((args) =>
+      args[0] === 'sync'
+        ? { code: 0 }
+        : { code: 0, stdout: JSON.stringify({ sent: 2, accepted: 2, batchId: 'b', cursor: {} }) }
+    );
+
+    const result = await reflexSyncAndPush({ binPath: '/bin/echo', spawnFn });
+
+    expect(result).toEqual({ sent: 2, accepted: 2 });
+    expect(calls).toEqual([['sync'], ['push', '--json']]);
+  });
+
+  it('returns null and skips push when the binary is unavailable', async () => {
+    const { spawnFn, calls } = fakeSpawn(() => ({ errorCode: 'ENOENT' }));
+    const result = await reflexSyncAndPush({ binPath: '/bin/echo', spawnFn });
+    expect(result).toBeNull();
+    expect(calls).toEqual([['sync']]); // push never attempted
+  });
+
+  it('returns null when not authenticated', async () => {
+    const { spawnFn } = fakeSpawn((args) =>
+      args[0] === 'sync' ? { code: 0 } : { code: 1, stderr: 'error: not authenticated' }
+    );
+    expect(await reflexSyncAndPush({ binPath: '/bin/echo', spawnFn })).toBeNull();
+  });
+
+  it('rejects on other push failures', async () => {
+    const { spawnFn } = fakeSpawn((args) =>
+      args[0] === 'sync' ? { code: 0 } : { code: 2, stderr: 'boom' }
+    );
+    await expect(reflexSyncAndPush({ binPath: '/bin/echo', spawnFn })).rejects.toThrow(/exit 2.*boom/);
   });
 });
