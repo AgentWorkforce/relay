@@ -56,12 +56,12 @@ separates them.
 
 ## 2. Model
 
-| Term | Definition |
-| --- | --- |
-| **Node** | An enrolled context in a workspace — usually a project root, sometimes an application. The unit others target: "invoke `run-etl` on `data-pipeline`". Multiple nodes per machine. |
-| **Provider** | A process attached to a node. Connects directly to the engine, registers a subset of the node's capabilities, executes their invokes. The broker is one provider among several. |
-| **Capability** | An action with a handler hosted by a provider. Node-scoped, always. |
-| **Machine** | An attribute on the node record (grouping in fleet views, physical-co-location input to placement). Never a capability scope. |
+| Term           | Definition                                                                                                                                                                        |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Node**       | An enrolled context in a workspace — usually a project root, sometimes an application. The unit others target: "invoke `run-etl` on `data-pipeline`". Multiple nodes per machine. |
+| **Provider**   | A process attached to a node. Connects directly to the engine, registers a subset of the node's capabilities, executes their invokes. The broker is one provider among several.   |
+| **Capability** | An action with a handler hosted by a provider. Node-scoped, always.                                                                                                               |
+| **Machine**    | An attribute on the node record (grouping in fleet views, physical-co-location input to placement). Never a capability scope.                                                     |
 
 Rules:
 
