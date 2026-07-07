@@ -192,7 +192,7 @@ jobs:
           BROKER_PORT=3899
           API_PORT=$((BROKER_PORT + 1))
           # Start the broker in background
-          AGENT_RELAY_BROKER_PORT="$BROKER_PORT" node packages/cli/dist/cli/index.js local up &
+          AGENT_RELAY_BROKER_PORT="$BROKER_PORT" node packages/cli/dist/cli/index.js node up &
           DAEMON_PID=$!
 
           # Wait for health endpoint (broker API is the base port + 1)
@@ -206,14 +206,14 @@ jobs:
           # Verify broker is reachable
           if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
             echo "✓ Broker health endpoint responding"
-            AGENT_RELAY_SKIP_TMUX=1 node packages/cli/dist/cli/index.js local status || true
+            AGENT_RELAY_SKIP_TMUX=1 node packages/cli/dist/cli/index.js node status || true
           else
             echo "✗ Broker health endpoint did not become ready"
             exit 1
           fi
 
           # Cleanup through CLI down first, then hard-kill fallback
-          node packages/cli/dist/cli/index.js local down --force --timeout 5000 || true
+          node packages/cli/dist/cli/index.js node down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
 
       # Keep tarball validation after runtime smoke tests. The tarball

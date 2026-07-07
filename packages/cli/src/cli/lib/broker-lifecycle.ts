@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
 
 import type {
   CoreDependencies,
@@ -12,12 +13,8 @@ import type {
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
-import {
-  createImplicitLocalFleetNode,
-  fleetStatusPath,
-  startFleetSidecar,
-  type RunningFleetSidecar,
-} from './fleet-sidecar.js';
+import { createImplicitLocalFleetNode, createTriggerSyncClient, fleetStatusPath } from './fleet-sidecar.js';
+import { discoverNodeConfigPath, loadNodeDefinition } from './node-definition-loader.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -26,6 +23,16 @@ type UpOptions = {
   workspaceKey?: string;
   stateDir?: string;
   brokerName?: string;
+  config?: string;
+  /**
+   * Opt-in to auto-discovering an `agent-relay.*` node definition in the
+   * project root. Only `node up` sets this — the deprecated `local up` alias
+   * (and any other legacy caller) must keep its pre-`node` behavior of never
+   * touching such files.
+   */
+  discoverConfig?: boolean;
+  /** Registered node name override (e.g. from a persisted Cloud enrollment). */
+  nodeName?: string;
 };
 
 type DownOptions = {
@@ -299,8 +306,9 @@ function startImplicitLocalFleetSidecar(
   relay: CoreRelay,
   options: UpOptions,
   deps: CoreDependencies,
-  teamsConfig: CoreTeamsConfig | null = deps.loadTeamsConfig(paths.projectRoot)
-): RunningFleetSidecar | undefined {
+  teamsConfig: CoreTeamsConfig | null = deps.loadTeamsConfig(paths.projectRoot),
+  nodeDefinition?: FleetNodeDefinition
+): RunningNode | undefined {
   if (deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1') {
     return undefined;
   }
@@ -313,15 +321,23 @@ function startImplicitLocalFleetSidecar(
   // itself as a fleet node, but the broker is already up and usable without it.
   // Never let a sidecar setup failure abort `up`.
   try {
-    const node = createImplicitLocalFleetNode({
-      paths,
-      teamsConfig,
-      name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
-    });
-    return startFleetSidecar({
+    const node =
+      nodeDefinition ??
+      createImplicitLocalFleetNode({
+        paths,
+        teamsConfig,
+        name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
+      });
+    const workspaceKey = relay.workspaceKey;
+    const baseUrl = deps.env.RELAY_BASE_URL;
+    return startServeNode({
       definition: node,
       connection: { url: conn.url, apiKey: conn.api_key },
-      workspaceKey: relay.workspaceKey,
+      ...(options.nodeName ? { nameOverride: options.nodeName } : {}),
+      // A started relay's workspace key lets a config-defined node reconcile its
+      // declared triggers with the workspace. The implicit local node declares no
+      // triggers, so the adapter is created but never issues a request.
+      ...(workspaceKey ? { triggers: createTriggerSyncClient({ workspaceKey, baseUrl }) } : {}),
       statusPath: fleetStatusPath(paths),
       reconnect: true,
       warn: (message) => deps.warn(message),
@@ -787,6 +803,48 @@ async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: Core
 }
 
 // eslint-disable-next-line complexity
+/**
+ * Resolve the node definition `up` should serve, if any.
+ *
+ * A discovered (or explicit --config) node definition takes over from the
+ * implicit teams.json-derived node. Discovery is opt-in (`node up` only): the
+ * deprecated `local up` alias never scanned for agent-relay.* files and must
+ * not start importing arbitrary modules from the project root. An explicit
+ * --config resolves against the invocation cwd and fails hard; implicit
+ * discovery scans the project root and merely warns on a file that doesn't
+ * load as defineNode(...) — a stray agent-relay.ts must not brick startup.
+ * When the implicit fleet node is disabled the sidecar never starts, so
+ * loading a config would be pointless — skip it entirely.
+ */
+async function resolveNodeDefinitionForUp(
+  paths: CoreProjectPaths,
+  options: UpOptions,
+  deps: CoreDependencies
+): Promise<FleetNodeDefinition | undefined> {
+  const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
+  if (fleetNodeDisabled || (!options.config && options.discoverConfig !== true)) {
+    return undefined;
+  }
+  const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
+  const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+  if (!configPath) {
+    return undefined;
+  }
+  vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
+  if (explicitConfig) {
+    return loadNodeDefinition(configPath);
+  }
+  try {
+    return await loadNodeDefinition(configPath);
+  } catch (err) {
+    deps.warn(
+      `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
+        'Serving the implicit local node instead; pass --config to fail hard on this file.'
+    );
+    return undefined;
+  }
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
 
@@ -889,7 +947,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   const existingPid = readBrokerPid(paths.dataDir, deps);
 
   let relay: CoreRelay | null = null;
-  let fleetSidecar: RunningFleetSidecar | undefined;
+  let fleetSidecar: RunningNode | undefined;
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
@@ -925,6 +983,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 
+    // Resolved BEFORE the broker starts so an explicit bad --config fails
+    // fast instead of tearing down a broker that just came up.
+    const nodeDefinition = await resolveNodeDefinitionForUp(paths, options, deps);
+
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
@@ -947,7 +1009,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     vlog(deps, options.verbose, 'Loading teams.json and starting implicit fleet sidecar (if any)...');
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
-    fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig);
+    fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig, nodeDefinition);
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 

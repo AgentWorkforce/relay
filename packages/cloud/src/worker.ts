@@ -152,7 +152,7 @@ function normalizeWorkerName(value: string): string {
   return name;
 }
 
-function cloudHome(env: NodeJS.ProcessEnv = process.env): string {
+export function cloudHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.AGENT_RELAY_HOME ?? path.join(os.homedir(), '.agentworkforce/relay');
 }
 

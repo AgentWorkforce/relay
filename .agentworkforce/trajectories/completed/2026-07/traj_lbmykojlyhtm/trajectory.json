@@ -4,8 +4,9 @@
   "task": {
     "title": "Implement workspace-scoped node delivery fix"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-06-30T15:37:17.052Z",
+  "completedAt": "2026-07-03T15:28:54.303Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-30T15:39:47.866Z",
+      "endedAt": "2026-07-03T15:28:54.303Z",
       "events": [
         {
           "ts": 1782833987867,
@@ -35,6 +37,11 @@
       ]
     }
   ],
+  "retrospective": {
+    "summary": "Workspace-scoped node delivery fix shipped in PR #1225 (merged as bd5fce0); closing stale trajectory from prior session",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",

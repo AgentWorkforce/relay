@@ -1,3 +1,6 @@
+// Serve this node with: `agent-relay node up --config examples/relay-node.ts`
+// (or drop it at the project root as `agent-relay.ts` and run `agent-relay node up`
+// to have it auto-discovered).
 import { z } from 'zod';
 import { claude, codex, gemini } from '@agent-relay/harnesses';
 import { action, defineNode, onMessage, spawn } from '@agent-relay/fleet';
