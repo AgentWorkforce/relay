@@ -445,11 +445,29 @@ async function createRelayfileInboundTarget(
         : `relaycast returned ${response.status}`;
     throw new Error(`Could not create relayfile inbound target: ${message}`);
   }
+  return parseRelayfileInboundTargetResponse(body);
+}
+
+function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secret: string } {
   const data = isRecord(body) && isRecord(body.data) ? body.data : body;
   if (!isRecord(data) || typeof data.url !== 'string' || typeof data.secret !== 'string') {
     throw new Error('relaycast returned an invalid relayfile inbound target response');
   }
-  return { url: data.url.trim(), secret: data.secret.trim() };
+  const url = data.url.trim();
+  const secret = data.secret.trim();
+  if (!url || !secret) {
+    throw new Error('relaycast returned an invalid relayfile inbound target response');
+  }
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new Error('relaycast returned an invalid relayfile inbound target URL');
+  }
+  if (parsedUrl.protocol !== 'https:') {
+    throw new Error('relaycast returned a non-https relayfile inbound target URL');
+  }
+  return { url: parsedUrl.toString(), secret };
 }
 
 function resolveInboundTargetBaseUrl(options: SdkClientOptions): string {

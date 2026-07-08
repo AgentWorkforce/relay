@@ -225,6 +225,31 @@ describe('integration subscribe', () => {
     );
   });
 
+  it.each([
+    ['blank URL', { url: '   ', secret: 'inbound-secret' }, 'invalid relayfile inbound target response'],
+    [
+      'blank secret',
+      { url: 'https://cast.test/inbound', secret: '   ' },
+      'invalid relayfile inbound target response',
+    ],
+    ['non-HTTPS URL', { url: 'http://cast.test/inbound', secret: 'inbound-secret' }, 'non-https'],
+  ])('rejects %s in inbound-target responses before creating webhooks', async (_case, data, message) => {
+    const { program, relay, relayfile, error, exit } = harness();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, data }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining(message));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
   it('retires an orphaned, unbound legacy webhook after the new binding is live', async () => {
     const relay = createRelayMock({
       inboundWebhooks: [
