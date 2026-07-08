@@ -245,30 +245,10 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       }
     },
     async createWebhookSubscription(input) {
-      const extendedClient = client as RelayfileControlPlaneClient & {
-        createWebhookSubscription?: (input: {
-          url: string;
-          pathGlobs: string[];
-          secret: string;
-        }) => Promise<RelayfileWebhookSubscription>;
-      };
-      if (!extendedClient.createWebhookSubscription) {
-        throw new Error(
-          'relayfile control-plane does not support webhook subscriptions yet. Update relayfile and re-run `agent-relay integration subscribe`.'
-        );
-      }
-      return extendedClient.createWebhookSubscription(input);
+      return client.createWebhookSubscription(input);
     },
     async deleteWebhookSubscription(subscriptionId) {
-      const extendedClient = client as RelayfileControlPlaneClient & {
-        deleteWebhookSubscription?: (subscriptionId: string) => Promise<void>;
-      };
-      if (!extendedClient.deleteWebhookSubscription) {
-        throw new Error(
-          'relayfile control-plane does not support deleting webhook subscriptions yet. Update relayfile and retry cleanup.'
-        );
-      }
-      await extendedClient.deleteWebhookSubscription(subscriptionId);
+      await client.deleteWebhookSubscription(subscriptionId);
     },
   };
 }
