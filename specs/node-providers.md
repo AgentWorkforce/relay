@@ -76,13 +76,19 @@ Rules:
 - A node is online when ≥1 provider is connected. A capability is live iff its
   owning provider's connection is up and the provider's heartbeat still lists
   it in `handlers_live`.
-- Duplicate **invokable** capability name within a node → registration
-  rejected with an error frame; the provider fails loudly at startup. The same
-  provider re-registering (reconnect) is an idempotent replace.
-- `spawn:*` capabilities are **placement capacity, not invokable actions**
-  (engine already skips materializing them). Multiple providers advertising
-  `spawn:claude` is capacity, not a conflict. `max_agents` and load are
-  enforced per provider; the node-level figure is the aggregate.
+- Registrations come in two kinds. **`action`** — an invokable handler: the
+  engine materializes it and dispatches invokes to the registering provider.
+  **`capacity`** — what the node can run: `spawn:<harness>` and `release`,
+  registered by the broker provider, used for placement and delegation, never
+  materialized as actions. Providers with `action` registrations define what
+  a node can *do*; the broker's `capacity` registrations define what it can
+  *run*.
+- Duplicate **action** name within a node → registration rejected with an
+  error frame; the provider fails loudly at startup. The same provider
+  re-registering (reconnect) is an idempotent replace. Multiple providers
+  advertising `spawn:claude` capacity is not a conflict — it is more
+  capacity. `max_agents` and load are enforced per provider; the node-level
+  figure is the aggregate.
 
 Target topology:
 
@@ -115,6 +121,9 @@ client-side dispatch bookkeeping (`HandlerDispatchState`) move server-side.
   a rejection.
 - `node.deregister` carries the provider identity and removes that provider's
   attachment and persisted capability set.
+- `FleetCapability.kind` distinguishes `action` from `capacity` (§2). The
+  engine materializes actions only from `action`-kind entries; `capacity`
+  entries feed placement and `ctx.spawnAgent` delegation.
 - `node.heartbeat` is implicitly provider-scoped by connection;
   `handlers_live` refers to the sending provider's capabilities. Load fields
   (`active_agents`, `max_agents`) are provider-level.
@@ -152,6 +161,21 @@ client-side dispatch bookkeeping (`HandlerDispatchState`) move server-side.
 - Invoke targeting a capability whose provider is offline **fails fast** by
   default; a capability may opt into queueing (`queue: true`), reusing the
   existing offline-queue path keyed per provider.
+- **Spawn shadowing.** A provider may register an `action` named
+  `spawn:<harness>`; it shadows the node's native capacity for dispatch:
+  inbound spawn invokes for that harness go to the handler, which transforms
+  the spawn spec (CLI, env, cwd) and delegates via `ctx.spawnAgent`. This is
+  how before/after policy around spawn works — before-logic ahead of the
+  delegation call, after-logic behind it.
+- **No recursion.** `ctx.spawnAgent` is a distinct engine surface addressed
+  to the node's `capacity` executor (the broker provider); it bypasses action
+  dispatch, so a shadow handler calling it cannot re-enter itself.
+- **No silent bypass.** While a `spawn:<harness>` shadow action is
+  registered, native capacity for that harness is unreachable from dispatch —
+  even when the shadow's provider is offline. A shadow may enforce policy;
+  falling back to the unwrapped spawn on failure would bypass it. The invoke
+  fails fast or queues until the shadow is live again or explicitly
+  deregistered.
 
 ### 3.4 Auth
 
@@ -214,6 +238,19 @@ REST/WS calls made with the node token. They carry no local-broker dependency:
 a Python capability that spawns an agent does so through the engine's spawn
 placement, which lands on a broker provider like any other spawn.
 
+Spawn shadowing (§3.3) makes before/after policy a plain handler in any
+language — here mutating the CLI command before the broker executes it:
+
+```python
+@node.capability("spawn:claude")  # shadows the node's native spawn:claude
+async def spawn_claude(input, ctx):
+    agent = input["agent"]
+    agent["cli"] = f"claude --permission-mode plan {agent.get('args', '')}"
+    result = await ctx.spawn_agent(agent)  # delegates to broker capacity
+    await ctx.relay.send_message(to="ops", text=f"spawned {result['name']}")
+    return result
+```
+
 ---
 
 ## 5. Relay changes
@@ -243,14 +280,18 @@ provider fields from §3.1.
 ### 5.2 CLI
 
 - `node up` brings the current context's node online: starts the broker
-  provider and serves the project's capability definition as a second
-  provider — both connecting directly to the engine with the enrolled node
-  token. The definition comes from `agent-relay.{ts,…}` via
-  `@agent-relay/fleet`, or, when no config file exists, from the implicit
-  definition derived from teams.json (a default definition for this context's
-  node — not a machine-level node, which does not exist in this model).
-  Enrollment pickup (`cloud enroll` → `fleet-enrollments.json` → env) is
-  unchanged.
+  provider and serves the project's capability definitions as further
+  providers — all connecting directly to the engine with the enrolled node
+  token. Discovery is per language: `agent-relay.{ts,…}` is served via
+  `@agent-relay/fleet`; `agent-relay.py` is spawned as a `python` child
+  process with the node token in its env, supervised (and restarted) by the
+  CLI. When no definition file exists, the implicit definition derived from
+  teams.json applies (a default definition for this context's node — not a
+  machine-level node, which does not exist in this model). Standalone
+  providers (launchd/systemd, long-running apps) connect on their own via
+  `NodeProvider.from_enrollment()` and need no `node up` at all — providers
+  have no start-order dependency on the broker or each other. Enrollment
+  pickup (`cloud enroll` → `fleet-enrollments.json` → env) is unchanged.
 - `fleet status` reads provider attachment from the engine instead of a local
   sidecar status file; `fleet nodes` gains machine grouping and per-provider
   liveness.
@@ -266,7 +307,53 @@ invocation rows are shared; only the hosting connection differs.
 
 ---
 
-## 6. What does not change
+## 6. Documentation (agentrelay.com)
+
+The public docs at `../agentrelay.com/web/content/docs/` describe the end
+state when step 3 of the sequencing ships. A new `nodes-and-providers.mdx`
+page carries the newcomer overview; `actions.mdx`,
+`orchestrating-with-actions.mdx`, `cli-broker-lifecycle.mdx`,
+`harness-driver.mdx`, and `reference-cli.mdx` are updated to match. The
+overview, written for someone new to the system:
+
+> A workspace contains agents — the participants that converse — and
+> **nodes** — the places that do work. A node is an enrolled context on a
+> machine: usually a project directory, sometimes an application. One
+> machine can host several nodes, and the machine itself is just an
+> attribute used for grouping and placement.
+>
+> Processes called **providers** attach to a node and give it abilities.
+> Every provider connects directly to the engine with the node's token and
+> registers what it offers. The broker provider (Rust) runs agents — it
+> registers *capacity*: which harnesses it can spawn (`spawn:claude`) and
+> how many. Capability providers — written in TypeScript, Python, or Swift
+> — register *actions*: named handlers like `run-etl` or `screenshot` that
+> anything in the workspace can invoke.
+>
+> An invoke is addressed to a node:
+> `POST /v1/nodes/:node/actions/:name/invoke`. The engine routes it down
+> the socket of the provider that registered the action, the handler runs
+> on that machine, and the result returns to the caller. Liveness is
+> per provider — if the Python process is down, its actions are
+> unavailable while agents keep running, and vice versa.
+>
+> Spawning composes with actions: registering an action named
+> `spawn:<harness>` wraps the node's native spawn, so a handler in any
+> language can mutate the command, environment, or working directory
+> before delegating to the broker — and audit or announce after.
+>
+> Getting a machine into the fleet is two commands: `relay cloud enroll`
+> once per context (redeems a one-time token, persists the node
+> credential), then `relay node up` in the project to bring its node
+> online. Long-running apps skip `node up` and serve their own node
+> directly through an SDK.
+
+Docs follow the repo's declarative style: they describe this model as what
+the system is, with no reference to the sidecar architecture it replaces.
+
+---
+
+## 7. What does not change
 
 - Enrollment flow and tokens: `cloud enroll` / `ocl_node_enr_` / `nt_live_`.
 - Node identity derivation (machine id, cwd, workspace id); multiple nodes
@@ -278,7 +365,7 @@ invocation rows are shared; only the hosting connection differs.
 
 ---
 
-## 7. Sequencing
+## 8. Sequencing
 
 Upstream-first, per the release-train choreography:
 
@@ -294,6 +381,7 @@ Upstream-first, per the release-train choreography:
 3. **relay**: retarget `@agent-relay/fleet` serveNode to the engine; CLI
    `node up` wiring; broker demotion and protocol deletions.
 4. **Downstream** (pear, workforce): adopt node-addressed invocation.
+5. **Docs** (agentrelay.com): publish §6 alongside step 3.
 
 Pre-launch stance applies: the sidecar protocol and workspace-global action
 addressing are removed without compatibility shims. Node-scoped action rows
@@ -301,7 +389,7 @@ replace workspace-global ones; existing invocation URLs change.
 
 ---
 
-## 8. Open questions
+## 9. Open questions
 
 - Derived per-provider tokens: worth minting at attach time for audit
   attribution even before revocation is needed?
