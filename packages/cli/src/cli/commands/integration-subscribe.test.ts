@@ -1,4 +1,7 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -223,6 +226,28 @@ describe('integration subscribe', () => {
       new URL('/v1/integrations/relayfile/inbound-target', 'https://relaycast.example'),
       expect.any(Object)
     );
+  });
+
+  it('fails loudly before provisioning when no workspace key is available', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-workspace-'));
+    vi.stubEnv('AGENT_RELAY_HOME', home);
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    const { program, relay, relayfile, error, exit } = harness({
+      resolveLocalRelayOptions: async () => undefined,
+    });
+
+    try {
+      await program.parseAsync(ARGS(), { from: 'user' });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('No workspace key found'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
   });
 
   it.each([
