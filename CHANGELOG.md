@@ -113,6 +113,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.2.2] - 2026-07-08
+
+### Added
+
+- Reflex syncs to relayhistory-cloud in-process via ai-hist SDK
+
+### Changed
+
+- Reframe `local` / `fleet serve` as `node`; add `cloud enroll` and publish `serveNode`
+- Move injection, queue, supervision, and crash-insight primitives to relay-pty
+- Extract harness-agnostic PTY kernel into relay-pty crate
+- Declare relaycast dependency in root Package.swift
+- Remove stale relay-pty references (pre-broker legacy)
+- Swift SDK: outbound action invocation and message history on AgentClient
+
+### Fixed
+
+- Run relay-pty in default cargo commands; trim broker deps
+
 ## [9.2.1] - 2026-07-02
 
 ### Fixed
