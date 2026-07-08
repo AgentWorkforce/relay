@@ -74,8 +74,9 @@ Rules:
   file — filesystem permissions are the local trust boundary). Each provider
   declares an identity at connect: `{ name, instance_id }`.
 - A node is online when ≥1 provider is connected. A capability is live iff its
-  owning provider's connection is up and the provider's heartbeat still lists
-  it in `handlers_live`.
+  owning provider's connection is up and the provider's heartbeat reports
+  `handlers_live` (a provider-level boolean, as on the shipped wire — a live
+  provider's registered capabilities are all live).
 - Registrations come in two kinds. **`action`** — an invokable handler: the
   engine materializes it and dispatches invokes to the registering provider.
   **`capacity`** — what the node can run: `spawn:<harness>` and `release`,
@@ -125,7 +126,7 @@ client-side dispatch bookkeeping (`HandlerDispatchState`) move server-side.
   engine materializes actions only from `action`-kind entries; `capacity`
   entries feed placement and `ctx.spawnAgent` delegation.
 - `node.heartbeat` is implicitly provider-scoped by connection;
-  `handlers_live` refers to the sending provider's capabilities. Load fields
+  `handlers_live` (boolean) refers to the sending provider. Load fields
   (`active_agents`, `max_agents`) are provider-level.
 - `action.invoke` / `action.result` shapes unchanged; routing changes (§3.3).
 - `deliver` frames route to the provider whose connection registered the
