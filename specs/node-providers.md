@@ -233,9 +233,18 @@ try await node.serve()
 ```
 
 Handler context (`ctx`) helpers — `sendMessage`, `spawnAgent` — are engine
-REST/WS calls made with the node token. They carry no local-broker dependency:
-a Python capability that spawns an agent does so through the engine's spawn
-placement, which lands on a broker provider like any other spawn.
+calls made with the node token. They carry no local-broker dependency, and
+neither introduces a parallel surface:
+
+- `ctx.spawnAgent` is the `node.spawn` frame on the provider's own socket —
+  capacity-direct, pinned to the connection's node (the frame carries no
+  target), bypassing action dispatch so a shadow handler cannot re-enter
+  itself.
+- `ctx.sendMessage` is an HTTP call to the canonical message-posting route,
+  which accepts node-token auth with a required `from` — an agent resolved
+  strictly within the node's workspace (and rejected on agent tokens, which
+  post as themselves). Delivery routing, observer events, webhooks, triggers,
+  and idempotency apply because it is the one posting path.
 
 Spawn shadowing (§3.3) makes before/after policy a plain handler in any
 language — here mutating the CLI command before the broker executes it:
