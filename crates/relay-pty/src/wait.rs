@@ -248,7 +248,7 @@ impl<'a> WaitState<'a> {
         if chunk.is_empty() {
             return;
         }
-        self.feed(&crate::util::ansi::strip_ansi(chunk));
+        self.feed(&crate::ansi::strip_ansi(chunk));
     }
 
     pub fn mark_exited(&mut self) {
@@ -343,7 +343,7 @@ fn preferred_trigger(conds: &[WaitCondition]) -> Trigger {
 /// Pre-built text-only `WaitSet`s expressing each CLI's "screen looks
 /// ready" rule.
 #[allow(dead_code)]
-pub(crate) mod for_cli {
+pub mod for_cli {
     use std::time::Duration;
 
     use super::{WaitSet, IDLE_SETTLE};

@@ -374,15 +374,27 @@ export class HarnessDriverClient {
 
     onStep?.('Waiting for broker session handshake...');
     let session: SessionInfo | undefined;
-    for (let attempt = 0; attempt < 10; attempt++) {
+    // The Relaycast handshake can take many seconds on a cold or slow network,
+    // during which the startup-only API answers 503. Poll for the full startup
+    // budget (`timeoutMs`) rather than a fixed attempt count so a slow-but-
+    // healthy handshake isn't misreported as a spawn failure. The `brokerExited`
+    // race still surfaces a dead broker immediately, so this only extends how
+    // long we wait on a broker that is alive and warming up.
+    const handshakeDeadline = Date.now() + timeoutMs;
+    for (let attempt = 0; ; attempt++) {
       try {
         session = await Promise.race([client.getSession(), brokerExited]);
         break;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const is503 = message.includes('503') || message.includes('Service Unavailable');
-        if (!is503 || attempt >= 9) throw err;
-        onStep?.(`Broker still starting (handshake attempt ${attempt + 1}/10), retrying in 1s...`);
+        // The broker's startup-only API returns a structured 503
+        // (`http_503`) while it warms up. Prefer the typed fields over the
+        // formatted message, which the broker is free to customize.
+        const is503 =
+          err instanceof HarnessDriverProtocolError
+            ? err.status === 503 || err.code === 'http_503'
+            : /503|Service Unavailable/.test(err instanceof Error ? err.message : String(err));
+        if (!is503 || Date.now() >= handshakeDeadline) throw err;
+        onStep?.(`Broker still starting (handshake attempt ${attempt + 1}), retrying in 1s...`);
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }

@@ -98,6 +98,7 @@ function harness(
   opts: {
     relay?: ReturnType<typeof createRelayMock>;
     relayfile?: ReturnType<typeof createRelayfileMock>;
+    resolveLocalRelayOptions?: IntegrationCommandDependencies['resolveLocalRelayOptions'];
   } = {}
 ) {
   const relay = opts.relay ?? createRelayMock();
@@ -129,7 +130,7 @@ function harness(
   registerIntegrationCommands(program, {
     createAgentRelay: () => relay as never,
     relayfile: relayfile as never,
-    resolveLocalRelayOptions: async () => undefined,
+    resolveLocalRelayOptions: opts.resolveLocalRelayOptions ?? (async () => undefined),
     isInteractive: () => false,
     log,
     error,
@@ -192,6 +193,35 @@ describe('integration subscribe', () => {
         /^relayfile:slack:slack-channels-c123-watchdog-test-[0-9a-f]{10}:[0-9a-f]{10}$/
       ),
     });
+  });
+
+  it('does not send inbound-target provisioning to the locally stored broker base URL', async () => {
+    const { program } = harness({
+      resolveLocalRelayOptions: async () => ({
+        workspaceKey: 'rk_live_local',
+        baseUrl: 'https://local-broker-session.example',
+      }),
+    });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://cast.agentrelay.com'),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer rk_live_local' }),
+      })
+    );
+  });
+
+  it('allows an explicit Relaycast base URL for inbound-target provisioning', async () => {
+    const { program } = harness();
+
+    await program.parseAsync(ARGS(['--base-url', 'https://relaycast.example']), { from: 'user' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://relaycast.example'),
+      expect.any(Object)
+    );
   });
 
   it('retires an orphaned, unbound legacy webhook after the new binding is live', async () => {

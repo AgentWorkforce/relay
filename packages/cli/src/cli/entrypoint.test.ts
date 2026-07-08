@@ -87,7 +87,7 @@ describe('CLI entrypoints', () => {
     await import('./bootstrap.js');
 
     expect(parseSpy).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it('index invokes runCli exactly once when used as the entrypoint', async () => {
     const runCli = vi.fn().mockResolvedValue(undefined);

@@ -14,13 +14,11 @@ pub mod snippets;
 pub(crate) mod broker;
 pub(crate) mod cli;
 pub(crate) mod cli_mcp_args;
-pub(crate) mod codex_session;
 #[allow(dead_code)]
 pub(crate) mod config;
 pub(crate) mod control;
 #[allow(dead_code)]
 pub(crate) mod conversation_log;
-pub(crate) mod crash_insights;
 #[allow(dead_code)]
 pub(crate) mod dedup;
 #[allow(dead_code)]
@@ -30,12 +28,7 @@ pub(crate) mod listen_api;
 pub(crate) mod metrics;
 pub(crate) mod node_control;
 pub(crate) mod priorities;
-#[allow(dead_code)]
-pub(crate) mod pty;
 pub(crate) mod pty_worker;
-#[allow(dead_code)]
-pub(crate) mod queue;
-pub(crate) mod readiness;
 #[allow(dead_code)]
 pub(crate) mod redact;
 #[allow(dead_code)]
@@ -51,7 +44,6 @@ pub(crate) mod routing;
 pub(crate) mod runtime;
 #[allow(dead_code)]
 pub(crate) mod scheduler;
-pub(crate) mod snapshot;
 pub(crate) mod spawner;
 #[allow(dead_code)]
 pub(crate) mod supervisor;
@@ -62,10 +54,26 @@ pub(crate) mod telemetry;
 #[allow(dead_code)]
 pub(crate) mod types;
 pub(crate) mod util;
-pub(crate) mod wait;
 pub(crate) mod worker;
 pub(crate) mod worker_request;
 pub(crate) mod wrap;
+
+// The PTY layer — session management, terminal grid snapshots, and CLI
+// readiness detection — lives in the `relay-pty` crate, along with the
+// runtime-agnostic session primitives the broker parameterizes with its
+// own types (priority queue, injection retry loop, restart supervisor,
+// crash classification, Codex session pre-creation). That crate is
+// harness-agnostic by design: it understands terminals and agent-CLI
+// behavior (prompts, readiness, activity), never relay messaging,
+// channels, or delivery semantics. The broker layers its delivery and
+// injection logic on top of these primitives, addressed as `crate::pty`,
+// `crate::queue`, and so on. (`relay_pty::wait` is used internally by
+// `readiness` and has no direct broker callers, so it is not re-exported;
+// `relay_pty::supervisor` is adapted through `crate::supervisor`, which
+// pins its payload type.)
+pub(crate) use relay_pty::{
+    codex_session, crash_insights, inject, pty, queue, readiness, snapshot,
+};
 
 pub async fn run_cli() -> anyhow::Result<()> {
     cli::run().await

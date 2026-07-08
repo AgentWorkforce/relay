@@ -1,27 +1,27 @@
 import { Command } from 'commander';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createProgram } from './bootstrap.js';
 
 const expectedLeafCommands = [
-  // local broker + agent group
-  'local up',
-  'local down',
-  'local status',
-  'local metrics',
-  'local run',
-  'local logs',
-  'local sync',
-  'local tail',
-  'local agent list',
-  'local agent spawn',
-  'local agent new',
-  'local agent release',
-  'local agent set-model',
-  'local agent attach',
-  'local agent message flush',
-  'local agent message hold',
-  'local agent message auto',
+  // node broker + agent group (local is a hidden alias, filtered out below)
+  'node up',
+  'node down',
+  'node status',
+  'node metrics',
+  'node tail',
+  'node agent list',
+  'node agent spawn',
+  'node agent new',
+  'node agent release',
+  'node agent set-model',
+  'node agent attach',
+  'node agent message flush',
+  'node agent message hold',
+  'node agent message auto',
+  'node workflow run',
+  'node workflow logs',
+  'node workflow sync',
   // top-level composite status + maintenance + telemetry + mcp
   'status',
   'version',
@@ -33,12 +33,11 @@ const expectedLeafCommands = [
   'reflex on',
   'reflex off',
   'reflex status',
-  // fleet
+  // fleet (serve is a hidden error stub, filtered out below)
   'fleet config',
   'fleet disable',
   'fleet enable',
   'fleet inherit',
-  'fleet serve',
   'fleet nodes',
   'fleet status',
   // cloud
@@ -46,6 +45,7 @@ const expectedLeafCommands = [
   'cloud logout',
   'cloud whoami',
   'cloud connect',
+  'cloud enroll',
   'cloud run',
   'cloud schedule',
   'cloud schedules',
@@ -115,11 +115,20 @@ const expectedLeafCommands = [
   'skills add',
 ];
 
+function isHidden(command: Command): boolean {
+  return (command as unknown as { _hidden?: boolean })._hidden === true;
+}
+
 function collectLeafCommandPaths(program: Command): string[] {
   const paths: string[] = [];
 
   const visit = (command: Command, parents: string[]): void => {
     for (const subcommand of command.commands) {
+      // Hidden commands (deprecated `local` alias, `fleet serve` stub) are still
+      // routable but excluded from the visible surface assertions.
+      if (isHidden(subcommand)) {
+        continue;
+      }
       const currentPath = [...parents, subcommand.name()];
       if (subcommand.commands.length === 0) {
         paths.push(currentPath.join(' '));
@@ -145,6 +154,7 @@ describe('bootstrap CLI', () => {
 
     expect(topLevelCommands).toEqual(
       expect.arrayContaining([
+        'node',
         'local',
         'cloud',
         'workspace',
@@ -192,5 +202,61 @@ describe('bootstrap CLI', () => {
     const leafCommandPaths = collectLeafCommandPaths(program);
 
     expect([...leafCommandPaths].sort()).toEqual([...expectedLeafCommands].sort());
+  });
+
+  it('keeps `local` as a hidden, routable alias of `node`', () => {
+    const program = createProgram();
+    const local = program.commands.find((command) => command.name() === 'local');
+
+    expect(local).toBeDefined();
+    expect(isHidden(local as Command)).toBe(true);
+    // Hidden from the rendered help output.
+    expect(program.helpInformation()).not.toContain('Deprecated alias');
+    // Still routable: the flat `local run|logs|sync` + agent surface is intact.
+    expect(local?.commands.map((command) => command.name())).toEqual(
+      expect.arrayContaining(['up', 'down', 'status', 'metrics', 'run', 'logs', 'sync', 'agent', 'tail'])
+    );
+  });
+
+  it('keeps `fleet serve` as a hidden error stub', () => {
+    const program = createProgram();
+    const fleet = program.commands.find((command) => command.name() === 'fleet');
+    const serve = fleet?.commands.find((command) => command.name() === 'serve');
+
+    expect(serve).toBeDefined();
+    expect(isHidden(serve as Command)).toBe(true);
+  });
+
+  it("warns once when the deprecated 'local' alias is used", () => {
+    const program = createProgram();
+    const local = program.commands.find((command) => command.name() === 'local')!;
+    const hooks = (
+      local as unknown as { _lifeCycleHooks?: { preAction?: Array<(...args: unknown[]) => void> } }
+    )._lifeCycleHooks;
+    const preAction = hooks?.preAction?.[0];
+    expect(preAction).toBeTypeOf('function');
+
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      preAction!();
+      preAction!();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const warnings = writes.filter((line) => line.includes("'local' is deprecated"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("use 'relay node ...' instead");
+
+    // The hook is attached to the deprecated alias only — the `node` group
+    // must never carry it.
+    const nodeCommand = program.commands.find((command) => command.name() === 'node')!;
+    const nodeHooks = (nodeCommand as unknown as { _lifeCycleHooks?: { preAction?: unknown[] } })
+      ._lifeCycleHooks;
+    expect(nodeHooks?.preAction ?? []).toHaveLength(0);
   });
 });

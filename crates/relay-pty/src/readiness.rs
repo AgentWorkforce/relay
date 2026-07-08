@@ -1,11 +1,11 @@
 use crate::{
-    util::ansi::{floor_char_boundary, strip_ansi},
+    ansi::{floor_char_boundary, strip_ansi},
     wait::{for_cli, WaitSnapshot},
 };
 
 /// Rendered terminal state used by readiness checks.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GridReadinessSnapshot<'a> {
+pub struct GridReadinessSnapshot<'a> {
     /// Plain text rendered from the visible VT grid.
     pub screen: &'a str,
     /// Current 1-indexed cursor position, if known.
@@ -16,7 +16,7 @@ pub(crate) struct GridReadinessSnapshot<'a> {
 ///
 /// The raw output buffer is used for protocol-level ready/auth markers
 /// and the byte-count startup guard.
-pub(crate) fn detect_cli_ready(
+pub fn detect_cli_ready(
     cli: &str,
     output: &str,
     total_bytes: usize,
@@ -57,7 +57,7 @@ pub(crate) fn detect_cli_ready(
 }
 
 /// Detect prompt visibility from the rendered grid.
-pub(crate) fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
+pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
     let lower_cli = cli.to_lowercase();
     let grid_snapshot = snapshot_for_grid(grid);
 

@@ -258,6 +258,18 @@ pub(crate) fn http_api_relaycast_send_timeout() -> Duration {
     Duration::from_millis(ms.max(500))
 }
 
+// Deliberately separate from `http_api_relaycast_send_timeout`: observer-token
+// minting is a distinct Relaycast SDK call from the `/api/send` publish path,
+// with its own latency characteristics, so it gets its own tunable timeout
+// rather than being coupled to send-path tuning.
+pub(crate) fn http_api_observer_token_timeout() -> Duration {
+    let ms = std::env::var("AGENT_RELAY_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS);
+    Duration::from_millis(ms.max(500))
+}
+
 pub(crate) fn http_api_event_emit_timeout() -> Duration {
     let ms = std::env::var("AGENT_RELAY_HTTP_API_EVENT_EMIT_TIMEOUT_MS")
         .ok()

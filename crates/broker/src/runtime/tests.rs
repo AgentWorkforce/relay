@@ -7,7 +7,8 @@ use std::{
 };
 
 use crate::ids::{
-    ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias, WorkspaceId,
+    AgentId, ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias,
+    WorkspaceId,
 };
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
@@ -30,7 +31,7 @@ use tokio::sync::mpsc;
 use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
     build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
-    clear_pending_delivery_if_event_matches, continuity_dir,
+    clear_pending_delivery_if_event_matches, continuity_dir, default_observer_token_scopes,
     delivery_read_ack_is_relaycast_message, delivery_retry_interval, drop_pending_for_worker,
     emit_delivery_attempt_outcome, emit_dropped_delivery_failures, ensure_ephemeral_paths,
     extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
@@ -39,18 +40,19 @@ use super::{
     mark_delivery_read_ack_with_timeout, normalize_channel, normalize_initial_task,
     normalize_sender, parse_sort_key_from_raw_timestamp, persist_pending_on_shutdown,
     queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
+    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token, resolve_workspace,
     retry_pending_delivery, seed_supplied_agent_token, send_broker_event,
     sender_is_dashboard_label, should_clear_pending_delivery_for_event,
     synthetic_delivery_read_ack_reason, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
     InboundQueueOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
-    MAX_DELIVERY_RETRIES,
+    RelayWorkspace, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
-    format_worker_preregistration_error, RelaycastHttpClient, RelaycastRegistrationError,
+    format_worker_preregistration_error, RelaycastHttpClient, RelaycastRegistrationError, WsControl,
 };
 use crate::types::{InboundDeliveryMode, InboundDeliveryState};
+use relaycast::ObserverScope;
 
 fn env_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2643,5 +2645,165 @@ fn model_flag_injected_with_other_args() {
         compute_model_flag(Some("gpt-4o"), &args),
         Some("gpt-4o".to_string()),
         "model should be injected when other unrelated args exist"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// resolve_workspace / observer-token scope selection
+//
+// Exercises the workspace-resolution precedence shared by `/api/send` and
+// `/api/observer-token` (see `resolve_workspace` in `runtime/api.rs`), and
+// the fixed read-only scope set minted for `/api/observer-token` — the
+// endpoint that lets Pear's "Join as observer" link stop embedding the raw
+// `rk_live_...` workspace key (see `default_observer_token_scopes`).
+// ---------------------------------------------------------------------------
+
+fn test_relay_workspace(workspace_id: &str, workspace_alias: Option<&str>) -> RelayWorkspace {
+    let (ws_control_tx, _ws_control_rx) = mpsc::channel::<WsControl>(1);
+    RelayWorkspace {
+        workspace_id: WorkspaceId::from(workspace_id.to_string()),
+        workspace_alias: workspace_alias.map(|alias| WorkspaceAlias::from(alias.to_string())),
+        relay_workspace_key: "rk_live_test".to_string(),
+        self_name: "broker".to_string(),
+        self_agent_id: AgentId::from("agent_broker".to_string()),
+        self_names: HashSet::from(["broker".to_string()]),
+        self_agent_ids: HashSet::from([AgentId::from("agent_broker".to_string())]),
+        http_client: RelaycastHttpClient::new(None, "rk_live_test", "broker", "codex"),
+        ws_control_tx,
+    }
+}
+
+fn test_workspace_lookup(workspaces: &[RelayWorkspace]) -> HashMap<WorkspaceId, RelayWorkspace> {
+    workspaces
+        .iter()
+        .map(|workspace| (workspace.workspace_id.clone(), workspace.clone()))
+        .collect()
+}
+
+#[test]
+fn resolve_workspace_picks_the_sole_attached_workspace_by_default() {
+    let workspaces = vec![test_relay_workspace("ws_1", Some("main"))];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(None, None, &workspaces, &lookup, None)
+        .expect("single attached workspace should resolve without a selector");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_1".to_string()));
+}
+
+#[test]
+fn resolve_workspace_matches_explicit_workspace_id() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("main")),
+        test_relay_workspace("ws_2", Some("secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(Some("ws_2"), None, &workspaces, &lookup, None)
+        .expect("explicit workspace_id should resolve");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_2".to_string()));
+}
+
+#[test]
+fn resolve_workspace_matches_alias_case_insensitively() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("Main")),
+        test_relay_workspace("ws_2", Some("Secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(None, Some("secondary"), &workspaces, &lookup, None)
+        .expect("workspace_alias lookup should be case-insensitive");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_2".to_string()));
+}
+
+#[test]
+fn resolve_workspace_falls_back_to_configured_default() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("main")),
+        test_relay_workspace("ws_2", Some("secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(None, None, &workspaces, &lookup, Some("ws_2"))
+        .expect("default_workspace_id should resolve when no explicit selector is given");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_2".to_string()));
+}
+
+#[test]
+fn resolve_workspace_is_ambiguous_with_multiple_workspaces_and_no_default() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("main")),
+        test_relay_workspace("ws_2", Some("secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    // `RelayWorkspace` doesn't implement `Debug` (it embeds SDK client
+    // handles), so assert via `match` instead of `expect_err`/`unwrap_err`.
+    match resolve_workspace(None, None, &workspaces, &lookup, None) {
+        Err(error) => assert!(
+            error.starts_with("ambiguous_workspace:"),
+            "unexpected error: {error}"
+        ),
+        Ok(_) => panic!("multiple attached workspaces with no selector should be ambiguous"),
+    }
+}
+
+#[test]
+fn resolve_workspace_reports_not_found_for_unknown_id() {
+    let workspaces = vec![test_relay_workspace("ws_1", Some("main"))];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    match resolve_workspace(Some("ws_missing"), None, &workspaces, &lookup, None) {
+        Err(error) => assert!(
+            error.starts_with("workspace_not_found:"),
+            "unexpected error: {error}"
+        ),
+        Ok(_) => panic!("unknown workspace_id should not resolve"),
+    }
+}
+
+#[test]
+fn resolve_workspace_reports_not_found_for_unknown_alias() {
+    let workspaces = vec![test_relay_workspace("ws_1", Some("main"))];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    match resolve_workspace(None, Some("nope"), &workspaces, &lookup, None) {
+        Err(error) => assert!(
+            error.starts_with("workspace_not_found:"),
+            "unexpected error: {error}"
+        ),
+        Ok(_) => panic!("unknown workspace_alias should not resolve"),
+    }
+}
+
+#[test]
+fn default_observer_token_scopes_are_read_only_and_exclude_unneeded_scopes() {
+    let scopes = default_observer_token_scopes();
+
+    // Assert the *exact* set (not just "contains these 7"), so an
+    // accidentally-added extra scope -- including a write scope -- fails this
+    // test instead of silently widening the grant on a credential-minting
+    // endpoint.
+    let actual: HashSet<ObserverScope> = scopes.iter().copied().collect();
+    let expected: HashSet<ObserverScope> = [
+        ObserverScope::StreamRead,
+        ObserverScope::MessagesRead,
+        ObserverScope::ThreadsRead,
+        ObserverScope::DmsRead,
+        ObserverScope::ChannelsRead,
+        ObserverScope::ActivityRead,
+        ObserverScope::AgentsRead,
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        scopes.len(),
+        7,
+        "expected exactly 7 default observer token scopes, got {scopes:?}"
+    );
+    assert_eq!(
+        actual, expected,
+        "default observer token scopes must be exactly the minimal read-only set"
     );
 }

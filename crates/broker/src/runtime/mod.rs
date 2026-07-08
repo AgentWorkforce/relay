@@ -64,6 +64,7 @@ const THREAD_HISTORY_LIMIT: usize = 1_000;
 #[allow(dead_code)] // only http_api_local_delivery_timeout's default; see its own allow
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
+const DEFAULT_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
 static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
@@ -88,6 +89,8 @@ mod tests;
 mod util;
 mod worker_events;
 
+#[cfg(test)]
+pub(crate) use api::{default_observer_token_scopes, resolve_workspace};
 pub(crate) use app_server::*;
 pub(crate) use connection::*;
 pub(crate) use delivery::*;

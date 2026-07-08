@@ -294,11 +294,11 @@ impl BrokerRuntime {
                     continue;
                 }
 
-                let worker_relay_key = if rst.skip_relay_prompt {
+                let worker_relay_key = if rst.payload.skip_relay_prompt {
                     None
                 } else {
                     match relaycast_http
-                        .register_agent_token(&name, rst.spec.cli.as_deref())
+                        .register_agent_token(&name, rst.payload.spec.cli.as_deref())
                         .await
                     {
                         Ok(token) => Some(token),
@@ -327,13 +327,13 @@ impl BrokerRuntime {
 
                 match workers
                     .spawn(
-                        rst.spec.clone(),
-                        rst.parent.clone(),
+                        rst.payload.spec.clone(),
+                        rst.payload.parent.clone(),
                         None,
                         worker_relay_key,
-                        rst.skip_relay_prompt,
+                        rst.payload.skip_relay_prompt,
                         None,
-                        rst.agent_result.clone(),
+                        rst.payload.agent_result.clone(),
                     )
                     .await
                 {
@@ -341,7 +341,7 @@ impl BrokerRuntime {
                         fleet_load_changed = true;
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
-                        let initial_task = rst.initial_task.clone();
+                        let initial_task = rst.payload.initial_task.clone();
                         if let Some(task) = initial_task.clone() {
                             workers.initial_tasks.insert(name.clone(), task);
                         }
@@ -356,7 +356,7 @@ impl BrokerRuntime {
                             .entry(name.clone())
                             .and_modify(|agent| {
                                 agent.runtime = effective_spec.runtime.clone();
-                                agent.parent = rst.parent.clone();
+                                agent.parent = rst.payload.parent.clone();
                                 agent.channels = effective_spec.channels.clone();
                                 agent.pid = pid;
                                 agent.started_at = Some(unix_timestamp_secs());
@@ -366,7 +366,7 @@ impl BrokerRuntime {
                             })
                             .or_insert_with(|| broker::PersistedAgent {
                                 runtime: effective_spec.runtime.clone(),
-                                parent: rst.parent.clone(),
+                                parent: rst.payload.parent.clone(),
                                 channels: effective_spec.channels.clone(),
                                 pid,
                                 started_at: Some(unix_timestamp_secs()),

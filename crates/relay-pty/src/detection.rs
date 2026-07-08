@@ -1,12 +1,12 @@
-use crate::util::ansi::strip_ansi;
+use crate::ansi::strip_ansi;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ActivityDetector {
+pub struct ActivityDetector {
     patterns: Vec<&'static str>,
 }
 
 impl ActivityDetector {
-    pub(crate) fn for_cli(cli: &str) -> Self {
+    pub fn for_cli(cli: &str) -> Self {
         let lower = cli.to_lowercase();
         let patterns = if lower.contains("claude") {
             vec!["⠋", "⠙", "⠹", "Tool:", "Read(", "Write(", "Edit("]
@@ -21,7 +21,7 @@ impl ActivityDetector {
         Self { patterns }
     }
 
-    pub(crate) fn detect_activity(&self, output: &str, expected_echo: &str) -> Option<String> {
+    pub fn detect_activity(&self, output: &str, expected_echo: &str) -> Option<String> {
         let clean_output = strip_ansi(output);
         let relevant_output = if expected_echo.is_empty() {
             clean_output

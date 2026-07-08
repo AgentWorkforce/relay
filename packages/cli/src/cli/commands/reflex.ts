@@ -1,20 +1,14 @@
-import fs from 'node:fs';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import { readReflexState, writeReflexState } from '@agent-relay/config';
 import { Command } from 'commander';
-
-interface ReflexState {
-  enabled: boolean;
-  enabledAt?: string;
-}
 
 export type LoginCloudResult = { ok: true } | { ok: false; error: string };
 
 export interface ReflexDependencies {
-  fs: typeof fs;
   homedir: () => string;
   readRelayAuth: () => Promise<{ accessToken: string } | null>;
   loginToCloud: (relayAccessToken: string) => Promise<LoginCloudResult>;
@@ -106,16 +100,20 @@ async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloud
     return { ok: false, error: 'Login response missing accessToken' };
   }
 
-  // Persist rth_at_ tokens so ai-hist sync/push can authenticate on subsequent runs.
+  // Persist the rth_at_ session where the `ai-hist` Rust binary reads it, so the
+  // in-process cloud push (which drives `ai-hist push`) authenticates on later
+  // runs. The binary reads $RELAYHISTORY_HOME/auth.json (default
+  // ~/.agentworkforce/relayhistory/auth.json) in snake_case.
   try {
-    const configDir = process.env.AI_HIST_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'ai-hist');
-    const authPath = path.join(configDir, 'auth.json');
+    const authDir =
+      process.env.RELAYHISTORY_HOME ?? path.join(os.homedir(), '.agentworkforce', 'relayhistory');
+    const authPath = path.join(authDir, 'auth.json');
     const auth = {
-      baseUrl: rawBase.replace(/\/$/, ''),
-      accessToken: payload.accessToken,
-      ...(typeof payload.refreshToken === 'string' ? { refreshToken: payload.refreshToken } : {}),
+      base_url: rawBase.replace(/\/$/, ''),
+      access_token: payload.accessToken,
+      ...(typeof payload.refreshToken === 'string' ? { refresh_token: payload.refreshToken } : {}),
     };
-    await mkdir(configDir, { recursive: true });
+    await mkdir(authDir, { recursive: true });
     await writeFile(authPath, JSON.stringify(auth, null, 2));
     // Explicitly tighten perms — writeFile mode only applies to newly created files.
     await chmod(authPath, 0o600);
@@ -128,7 +126,6 @@ async function defaultLoginToCloud(relayAccessToken: string): Promise<LoginCloud
 
 function withDefaults(overrides: Partial<ReflexDependencies> = {}): ReflexDependencies {
   return {
-    fs,
     homedir: os.homedir,
     readRelayAuth: defaultReadRelayAuth,
     loginToCloud: defaultLoginToCloud,
@@ -136,32 +133,6 @@ function withDefaults(overrides: Partial<ReflexDependencies> = {}): ReflexDepend
     log: (...args: unknown[]) => console.log(...args),
     ...overrides,
   };
-}
-
-function getReflexDir(deps: ReflexDependencies): string {
-  return path.join(deps.homedir(), '.agentworkforce');
-}
-
-function getReflexStateFile(deps: ReflexDependencies): string {
-  return path.join(getReflexDir(deps), 'reflex.json');
-}
-
-function writeReflexState(deps: ReflexDependencies, state: ReflexState): void {
-  deps.fs.mkdirSync(getReflexDir(deps), { recursive: true });
-  deps.fs.writeFileSync(getReflexStateFile(deps), JSON.stringify(state, null, 2), 'utf-8');
-}
-
-function readReflexState(deps: ReflexDependencies): ReflexState | null {
-  const stateFile = getReflexStateFile(deps);
-  if (!deps.fs.existsSync(stateFile)) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(deps.fs.readFileSync(stateFile, 'utf-8')) as ReflexState;
-  } catch {
-    return null;
-  }
 }
 
 export function registerReflexCommands(program: Command, overrides: Partial<ReflexDependencies> = {}): void {
@@ -180,24 +151,35 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
         return;
       }
 
-      writeReflexState(deps, {
-        enabled: true,
-        enabledAt: new Date().toISOString(),
-      });
+      writeReflexState(
+        {
+          enabled: true,
+          enabledAt: new Date().toISOString(),
+        },
+        deps.homedir()
+      );
 
       const relayAuth = await deps.readRelayAuth();
+      let cloudSyncActive = false;
       if (!relayAuth) {
         deps.log(
           'Not logged in to Agent Relay. Run `agent-relay login` first to sync Reflex history to the cloud.'
         );
       } else {
         const result = await deps.loginToCloud(relayAuth.accessToken);
-        if (!result.ok) {
+        if (result.ok) {
+          cloudSyncActive = true;
+        } else {
           deps.log(`Reflex is enabled locally, but cloud login did not complete: ${result.error}`);
         }
       }
 
       deps.log('Reflex is on.');
+      // Only promise automatic cloud sync when cloud auth actually succeeded —
+      // otherwise the message would contradict the login warning above.
+      if (cloudSyncActive) {
+        deps.log('History syncs to relayhistory-cloud automatically while `agent-relay up` is running.');
+      }
       deps.log('State file: ~/.agentworkforce/reflex.json');
     });
 
@@ -205,7 +187,7 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
     .command('off')
     .description('Disable Reflex history sync')
     .action(() => {
-      writeReflexState(deps, { enabled: false });
+      writeReflexState({ enabled: false }, deps.homedir());
       deps.log('Reflex is off.');
     });
 
@@ -213,7 +195,7 @@ export function registerReflexCommands(program: Command, overrides: Partial<Refl
     .command('status')
     .description('Show Reflex status')
     .action(() => {
-      const state = readReflexState(deps);
+      const state = readReflexState(deps.homedir());
       if (!state) {
         deps.log('Reflex is off (never enabled).');
         return;

@@ -31,7 +31,7 @@ import {
 
 /**
  * Two-node fleet E2E (Phase 6). Boots a REAL stack — a relaycast engine (node
- * adapter), two `agent-relay fleet serve` nodes each with their own Rust broker
+ * adapter), two `agent-relay node up` nodes each with their own Rust broker
  * + TS sidecar — and drives the scenario matrix over the live control wire.
  *
  * Skips cleanly (never fails) when prerequisites are absent.

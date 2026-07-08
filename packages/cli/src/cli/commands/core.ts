@@ -261,12 +261,23 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
   };
 }
 
-export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
-  const deps = withDefaults(overrides);
+/** Options accepted by the `up` command action (shared by `local`/`node`). */
+export interface UpCommandOptions {
+  spawn?: boolean;
+  background?: boolean;
+  verbose?: boolean;
+  workspaceKey?: string;
+  stateDir?: string;
+  brokerName?: string;
+  config?: string;
+}
 
-  program
-    .command('up')
-    .description('Start the local broker')
+/**
+ * Attach the shared `up` broker options to a command. `node up` adds `--config`
+ * on top of these; `local up` uses them as-is.
+ */
+export function addUpCommandOptions(command: Command): Command {
+  return command
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
@@ -276,19 +287,23 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
       '--state-dir <path>',
       'Directory for broker state and connection files (default: .agentworkforce/relay/)'
     )
-    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
-    .action(
-      async (options: {
-        spawn?: boolean;
-        background?: boolean;
-        verbose?: boolean;
-        workspaceKey?: string;
-        stateDir?: string;
-        brokerName?: string;
-      }) => {
+    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)');
+}
+
+export function registerCoreCommands(
+  program: Command,
+  overrides: Partial<CoreDependencies> = {},
+  opts: { includeUp?: boolean } = {}
+): void {
+  const deps = withDefaults(overrides);
+
+  if (opts.includeUp !== false) {
+    addUpCommandOptions(program.command('up').description('Start the local broker')).action(
+      async (options: UpCommandOptions) => {
         await runUpCommand(options, deps);
       }
     );
+  }
 
   program
     .command('down')

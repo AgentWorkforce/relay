@@ -416,9 +416,10 @@ async function createRelayfileInboundTarget(
   input: { channel: string; provider: string; pathGlob: string }
 ): Promise<{ url: string; secret: string }> {
   const options = sdkOptionsFromOpts(commandOpts);
-  const resolved = local && !explicitWorkspaceKey(commandOpts) ? localRetryOptions(options, local) : options;
-  const workspaceKey = resolveWorkspaceKey(resolved);
-  const baseUrl = resolveBaseUrl(resolved) ?? 'https://cast.agentrelay.com';
+  const authOptions =
+    local && !explicitWorkspaceKey(commandOpts) ? localRetryOptions(options, local) : options;
+  const workspaceKey = resolveWorkspaceKey(authOptions);
+  const baseUrl = resolveInboundTargetBaseUrl(options);
   const response = await fetch(new URL('/v1/integrations/relayfile/inbound-target', baseUrl), {
     method: 'POST',
     headers: {
@@ -449,6 +450,15 @@ async function createRelayfileInboundTarget(
     throw new Error('relaycast returned an invalid relayfile inbound target response');
   }
   return { url: data.url.trim(), secret: data.secret.trim() };
+}
+
+function resolveInboundTargetBaseUrl(options: SdkClientOptions): string {
+  const baseUrl = resolveBaseUrl(options) ?? 'https://cast.agentrelay.com';
+  const parsed = new URL(baseUrl);
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Inbound relayfile target provisioning requires an https Relaycast base URL.');
+  }
+  return parsed.toString();
 }
 
 function targetChannel(target: string): string {
