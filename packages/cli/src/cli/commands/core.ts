@@ -270,6 +270,9 @@ export interface UpCommandOptions {
   stateDir?: string;
   brokerName?: string;
   config?: string;
+  logFile?: string;
+  logLevel?: string;
+  logJson?: boolean;
 }
 
 /**
@@ -287,7 +290,13 @@ export function addUpCommandOptions(command: Command): Command {
       '--state-dir <path>',
       'Directory for broker state and connection files (default: .agentworkforce/relay/)'
     )
-    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)');
+    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
+    .option(
+      '--log-file <path>',
+      'Write structured node logs (capabilities registered, actions invoked/completed) to a file'
+    )
+    .option('--log-level <level>', 'Node log verbosity: debug | info | warn | error (default: info)')
+    .option('--log-json', 'Emit node logs as JSON lines instead of text');
 }
 
 export function registerCoreCommands(

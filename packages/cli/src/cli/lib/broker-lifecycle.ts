@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
+import { createLogger } from '@agent-relay/utils';
 
 import type {
   CoreDependencies,
@@ -34,6 +35,12 @@ type UpOptions = {
   discoverConfig?: boolean;
   /** Registered node name override (e.g. from a persisted Cloud enrollment). */
   nodeName?: string;
+  /** Write structured node logs (capabilities, action invocations) to this file. */
+  logFile?: string;
+  /** Log verbosity floor: debug | info | warn | error. Defaults to info. */
+  logLevel?: string;
+  /** Emit logs as JSON lines instead of human-readable text. */
+  logJson?: boolean;
 };
 
 type DownOptions = {
@@ -135,6 +142,30 @@ function toErrorMessage(err: unknown): string {
 function vlog(deps: CoreDependencies, verbose: boolean | undefined, message: string): void {
   if (verbose) {
     deps.log(`[verbose] ${message}`);
+  }
+}
+
+/** True when any log flag (or `--verbose`) opts the node into structured logging. */
+function nodeLoggingEnabled(options: UpOptions): boolean {
+  return Boolean(options.logFile || options.logLevel || options.logJson || options.verbose);
+}
+
+/**
+ * Translate the `--log-*` (and `--verbose`) flags into the `AGENT_RELAY_LOG_*`
+ * environment the shared `createLogger` reads. `--verbose` alone raises the
+ * floor to DEBUG so per-capability registration lines surface; an explicit
+ * `--log-level` always wins. Called before the fleet sidecar starts.
+ */
+function applyNodeLogEnv(options: UpOptions, deps: CoreDependencies): void {
+  if (options.logFile) {
+    deps.env.AGENT_RELAY_LOG_FILE = options.logFile;
+  }
+  const level = options.logLevel ?? (options.verbose ? 'debug' : undefined);
+  if (level) {
+    deps.env.AGENT_RELAY_LOG_LEVEL = level.toUpperCase();
+  }
+  if (options.logJson) {
+    deps.env.AGENT_RELAY_LOG_JSON = '1';
   }
 }
 
@@ -341,7 +372,13 @@ function startImplicitLocalFleetSidecar(
       ...(workspaceKey ? { triggers: createTriggerSyncClient({ workspaceKey, baseUrl }) } : {}),
       statusPath: fleetStatusPath(paths),
       reconnect: true,
-      warn: (message) => deps.warn(message),
+      // With any --log-* flag (or --verbose), surface the node's full lifecycle
+      // — capabilities registered, every action invoked/completed — through the
+      // shared logger, which honors AGENT_RELAY_LOG_FILE/_LEVEL/_JSON. Without a
+      // flag, stay quiet: only warnings reach the console, as before.
+      ...(nodeLoggingEnabled(options)
+        ? { logger: createLogger('fleet') }
+        : { warn: (message) => deps.warn(message) }),
     });
   } catch (err) {
     deps.warn(`Fleet local node skipped: ${toErrorMessage(err)}`);
@@ -985,6 +1022,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
+
+    // Point the shared logger at a file / level / format before the fleet
+    // sidecar (which reads this env when it builds its logger) starts.
+    applyNodeLogEnv(options, deps);
 
     // Resolved BEFORE the broker starts so an explicit bad --config fails
     // fast instead of tearing down a broker that just came up.

@@ -91,6 +91,23 @@ export interface FleetTriggerSyncClient {
 }
 
 /**
+ * Structured logger the serve runtime writes to. The shape matches
+ * `@agent-relay/utils`' `createLogger` so the CLI can inject that logger
+ * directly, but fleet depends on nothing to keep the seam a plain interface:
+ * a host may supply any sink (stdout, a file, a JSON collector).
+ *
+ * Each method takes a human message plus an optional structured `extra` bag —
+ * `{ capability, action, invocationId, ms, ... }` — so file/JSON adapters can
+ * key on the fields rather than parse the message.
+ */
+export interface FleetLogger {
+  debug(message: string, extra?: Record<string, unknown>): void;
+  info(message: string, extra?: Record<string, unknown>): void;
+  warn(message: string, extra?: Record<string, unknown>): void;
+  error(message: string, extra?: Record<string, unknown>): void;
+}
+
+/**
  * Options for {@link serveNode} / {@link startServeNode}.
  */
 export interface ServeNodeOptions {
@@ -107,9 +124,36 @@ export interface ServeNodeOptions {
   statusPath?: string;
   reconnect?: boolean;
   signal?: AbortSignal;
+  /**
+   * Structured sink for lifecycle and per-invocation events. Preferred over
+   * `log`/`warn`: capability registration and every action hitting the node are
+   * emitted here with structured `extra` fields. When omitted, `log`/`warn`
+   * receive the same events as plain messages.
+   */
+  logger?: FleetLogger;
   log?: (message: string) => void;
   warn?: (message: string) => void;
   onRegistered?: (manifest: ReturnType<typeof nodeManifest>) => void;
+}
+
+/**
+ * Resolve a {@link FleetLogger} from the serve options. An injected `logger`
+ * wins; otherwise the legacy `log`/`warn` callbacks are adapted (info/debug →
+ * `log`, warn/error → `warn`), with a no-op fallback so callers can pass
+ * neither.
+ */
+function resolveLogger(options: ServeNodeOptions): FleetLogger {
+  if (options.logger) {
+    return options.logger;
+  }
+  const info = options.log ?? (() => undefined);
+  const warn = options.warn ?? (() => undefined);
+  return {
+    debug: (message) => info(message),
+    info: (message) => info(message),
+    warn: (message) => warn(message),
+    error: (message) => warn(message),
+  };
 }
 
 /**
@@ -175,10 +219,11 @@ export function startServeNode(options: ServeNodeOptions): RunningNode {
  */
 export async function serveNode(options: ServeNodeOptions): Promise<void> {
   const reconnect = options.reconnect ?? true;
+  const logger = resolveLogger(options);
   let attempt = 0;
   while (!options.signal?.aborted) {
     try {
-      await runNodeConnection(options);
+      await runNodeConnection(options, logger);
       attempt = 0;
       if (!reconnect) {
         return;
@@ -188,7 +233,10 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
       if (!reconnect || options.signal?.aborted) {
         throw error;
       }
-      options.warn?.(`Fleet node disconnected: ${errorMessage(error)}; reconnecting`);
+      logger.warn(`Fleet node disconnected: ${errorMessage(error)}; reconnecting`, {
+        node: options.nameOverride ?? options.definition.name,
+        error: errorMessage(error),
+      });
     }
 
     attempt += 1;
@@ -217,7 +265,7 @@ export function buildNodeSupervision(input: {
   };
 }
 
-function runNodeConnection(options: ServeNodeOptions): Promise<void> {
+function runNodeConnection(options: ServeNodeOptions, logger: FleetLogger): Promise<void> {
   return new Promise((resolve, reject) => {
     const url = fleetWsUrl(options.connection.url);
     const headers: Record<string, string> = {};
@@ -281,6 +329,11 @@ function runNodeConnection(options: ServeNodeOptions): Promise<void> {
 
     const handleInvoke = async (payload: Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']) => {
       const ctx = createActionContext(options, sendRequest, payload.invocation_id);
+      logger.info(`Action "${payload.name}" invoked`, {
+        action: payload.name,
+        invocationId: payload.invocation_id,
+      });
+      const startedAt = Date.now();
       // Only a handler failure may be reported as a handler error; a failure to
       // SEND the result (e.g. socket closed mid-flight) must propagate to the
       // caller's catch instead of misreporting a successful invocation.
@@ -290,6 +343,21 @@ function runNodeConnection(options: ServeNodeOptions): Promise<void> {
         output = await invokeNodeHandler(options.definition, payload.name, payload.input, ctx);
       } catch (error) {
         invokeError = error;
+      }
+      const ms = Date.now() - startedAt;
+      if (invokeError) {
+        logger.warn(`Action "${payload.name}" failed`, {
+          action: payload.name,
+          invocationId: payload.invocation_id,
+          ms,
+          error: errorMessage(invokeError),
+        });
+      } else {
+        logger.info(`Action "${payload.name}" completed`, {
+          action: payload.name,
+          invocationId: payload.invocation_id,
+          ms,
+        });
       }
       await sendHandlerResult(payload.invocation_id, output, invokeError);
     };
@@ -329,9 +397,17 @@ function runNodeConnection(options: ServeNodeOptions): Promise<void> {
         });
         writeStatus(options, true);
         options.onRegistered?.(manifest);
-        await syncTriggers(options);
-        options.log?.(
-          `Fleet node "${manifest.name}" registered with ${manifest.capabilities.length} capabilities.`
+        for (const capability of Object.values(options.definition.capabilities)) {
+          logger.debug(`Capability "${capability.name}" registered`, {
+            node: manifest.name,
+            capability: capability.name,
+            kind: capability.kind,
+          });
+        }
+        await syncTriggers(options, logger);
+        logger.info(
+          `Fleet node "${manifest.name}" registered with ${manifest.capabilities.length} capabilities.`,
+          { node: manifest.name, capabilities: manifest.capabilities.length }
         );
       })().catch((error) => {
         close().finally(() => settle(reject, error));
@@ -354,7 +430,7 @@ function runNodeConnection(options: ServeNodeOptions): Promise<void> {
       }
       if (frame.type === 'invoke_handler') {
         void handleInvoke(frame.payload as Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']).catch(
-          (error) => options.warn?.(errorMessage(error))
+          (error) => logger.warn(errorMessage(error))
         );
       }
     });
@@ -411,7 +487,7 @@ function createActionContext(
   };
 }
 
-async function syncTriggers(options: ServeNodeOptions): Promise<void> {
+async function syncTriggers(options: ServeNodeOptions, logger: FleetLogger): Promise<void> {
   const triggers = triggerSyncInputs(options.definition);
   if (triggers.length === 0 || !options.triggers) {
     return;
@@ -458,7 +534,10 @@ async function syncTriggers(options: ServeNodeOptions): Promise<void> {
       })
     );
   } catch (error) {
-    options.warn?.(`Fleet trigger sync skipped: ${errorMessage(error)}`);
+    logger.warn(`Fleet trigger sync skipped: ${errorMessage(error)}`, {
+      node: options.nameOverride ?? options.definition.name,
+      error: errorMessage(error),
+    });
   }
 }
 

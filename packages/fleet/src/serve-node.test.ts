@@ -13,6 +13,7 @@ import {
   readFleetSidecarStatus,
   serveNode,
   startServeNode,
+  type FleetLogger,
   type FleetTriggerSyncClient,
   type FleetTriggerSyncTrigger,
 } from './serve-node.js';
@@ -231,6 +232,111 @@ describe('serveNode invoke dispatch', () => {
     await waitFor(() => broker.framesOfType('handler_result').length > 0);
     const result = broker.framesOfType('handler_result')[0];
     expect(result?.payload).toMatchObject({ invocation_id: 'inv-2', error: 'boom' });
+
+    controller.abort();
+    await done;
+  });
+});
+
+describe('serveNode logging', () => {
+  function recordingLogger() {
+    const entries: Array<{ level: string; message: string; extra?: Record<string, unknown> }> = [];
+    const record = (level: string) => (message: string, extra?: Record<string, unknown>) => {
+      entries.push({ level, message, ...(extra ? { extra } : {}) });
+    };
+    const logger: FleetLogger = {
+      debug: record('debug'),
+      info: record('info'),
+      warn: record('warn'),
+      error: record('error'),
+    };
+    return { logger, entries };
+  }
+
+  it('logs each registered capability and a registration summary', async () => {
+    const { logger, entries } = recordingLogger();
+    const controller = new AbortController();
+    const registered = new Promise<void>((resolve) => {
+      void serveNode({
+        definition: buildNode(),
+        connection: { url: broker.url },
+        reconnect: false,
+        signal: controller.signal,
+        logger,
+        onRegistered: () => resolve(),
+      });
+    });
+
+    await registered;
+    await waitFor(() => entries.some((entry) => entry.message.includes('registered with')));
+
+    const capabilities = entries.filter((entry) => entry.message.startsWith('Capability'));
+    expect(capabilities.map((entry) => entry.extra?.capability)).toEqual(['echo', 'explode']);
+    expect(capabilities.every((entry) => entry.level === 'debug')).toBe(true);
+    expect(capabilities[0]?.extra).toMatchObject({ capability: 'echo', kind: 'action' });
+
+    const summary = entries.find((entry) => entry.message.includes('registered with 2 capabilities'));
+    expect(summary?.level).toBe('info');
+    expect(summary?.extra).toMatchObject({ node: 'test-node', capabilities: 2 });
+
+    controller.abort();
+  });
+
+  it('logs an action invocation and its completion with a duration', async () => {
+    const { logger, entries } = recordingLogger();
+    const controller = new AbortController();
+    let socket: WebSocket | undefined;
+    broker.onConnection((s) => {
+      socket = s;
+    });
+
+    const done = serveNode({
+      definition: buildNode(),
+      connection: { url: broker.url },
+      reconnect: false,
+      signal: controller.signal,
+      logger,
+      onRegistered: () => {
+        broker.sendInvoke(socket!, { invocation_id: 'inv-1', name: 'echo', input: { value: 'hi' } });
+      },
+    });
+
+    await waitFor(() => entries.some((entry) => entry.message.includes('completed')));
+    const invoked = entries.find((entry) => entry.message === 'Action "echo" invoked');
+    expect(invoked?.level).toBe('info');
+    expect(invoked?.extra).toMatchObject({ action: 'echo', invocationId: 'inv-1' });
+    const completed = entries.find((entry) => entry.message === 'Action "echo" completed');
+    expect(completed?.level).toBe('info');
+    expect(completed?.extra).toMatchObject({ action: 'echo', invocationId: 'inv-1' });
+    expect(typeof completed?.extra?.ms).toBe('number');
+
+    controller.abort();
+    await done;
+  });
+
+  it('logs a failed action as a warning carrying the error', async () => {
+    const { logger, entries } = recordingLogger();
+    const controller = new AbortController();
+    let socket: WebSocket | undefined;
+    broker.onConnection((s) => {
+      socket = s;
+    });
+
+    const done = serveNode({
+      definition: buildNode(),
+      connection: { url: broker.url },
+      reconnect: false,
+      signal: controller.signal,
+      logger,
+      onRegistered: () => {
+        broker.sendInvoke(socket!, { invocation_id: 'inv-2', name: 'explode', input: {} });
+      },
+    });
+
+    await waitFor(() => entries.some((entry) => entry.message.includes('failed')));
+    const failed = entries.find((entry) => entry.message === 'Action "explode" failed');
+    expect(failed?.level).toBe('warn');
+    expect(failed?.extra).toMatchObject({ action: 'explode', invocationId: 'inv-2', error: 'boom' });
 
     controller.abort();
     await done;

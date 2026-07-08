@@ -73,6 +73,32 @@ await running.stop();
 await serveNode({ definition, connection });
 ```
 
+### Logging
+
+The node runtime emits structured events — each capability it registers and every
+action that hits it (invoked / completed / failed, with a duration) — through a
+`logger` you inject. The shape matches `@agent-relay/utils`' `createLogger`, and
+every event carries a structured `extra` bag (`{ capability, action, invocationId,
+ms, … }`) so file and JSON sinks can key on the fields:
+
+```ts
+import { createLogger } from '@agent-relay/utils';
+
+await serveNode({ definition, connection, logger: createLogger('fleet') });
+```
+
+Via the CLI, `agent-relay node up` surfaces this without code:
+
+```bash
+agent-relay node up --config ./builder.node.ts --log-file ./node.log
+agent-relay node up --config ./builder.node.ts --log-level debug   # include per-capability lines
+agent-relay node up --config ./builder.node.ts --log-json          # one JSON object per line
+```
+
+Capability registration logs at `debug`; action invocations at `info`; failures at
+`warn`. When no logger (and no `--log-*` flag) is set, the node stays quiet and only
+surfaces warnings.
+
 ## Concepts
 
 - **Node** — a named host registered with the workspace. `defineNode` validates the manifest
