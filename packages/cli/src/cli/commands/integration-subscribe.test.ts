@@ -11,6 +11,7 @@ import {
 } from './integration.js';
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
