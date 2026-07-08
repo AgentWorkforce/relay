@@ -15,6 +15,7 @@ import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 import { createImplicitLocalFleetNode, createTriggerSyncClient, fleetStatusPath } from './fleet-sidecar.js';
 import { discoverNodeConfigPath, loadNodeDefinition } from './node-definition-loader.js';
+import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -948,6 +949,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
   let relay: CoreRelay | null = null;
   let fleetSidecar: RunningNode | undefined;
+  let reflexCapture: RunningReflexCapture | undefined;
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
@@ -958,6 +960,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         shutdownPromise = Promise.resolve();
       } else {
         shutdownPromise = (async () => {
+          await reflexCapture?.stop();
           await fleetSidecar?.stop();
           await shutdownUpResources(relay, paths.dataDir, deps);
         })();
@@ -1010,6 +1013,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     vlog(deps, options.verbose, 'Loading teams.json and starting implicit fleet sidecar (if any)...');
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
     fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig, nodeDefinition);
+    // When Reflex is enabled, periodically sync + push local session history to
+    // relayhistory-cloud in-process via the ai-hist-native addon (no subprocess).
+    // No-op when disabled or the addon isn't available.
+    reflexCapture = startReflexCapture({ log: (message) => deps.log(message) });
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
