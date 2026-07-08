@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/fleet",
-  "version": "9.2.2",
+  "version": "9.2.3",
   "description": "Fleet node SDK for Agent Relay.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,8 +23,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "9.2.2",
-    "@agent-relay/harnesses": "9.2.2",
+    "@agent-relay/harness-driver": "9.2.3",
+    "@agent-relay/harnesses": "9.2.3",
     "ws": "^8.18.3",
     "zod": "^3.23.8"
   },
