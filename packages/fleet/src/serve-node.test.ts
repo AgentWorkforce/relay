@@ -304,10 +304,15 @@ describe('serveNode logging', () => {
     await waitFor(() => entries.some((entry) => entry.message.includes('completed')));
     const invoked = entries.find((entry) => entry.message === 'Action "echo" invoked');
     expect(invoked?.level).toBe('info');
-    expect(invoked?.extra).toMatchObject({ action: 'echo', invocationId: 'inv-1' });
+    expect(invoked?.extra).toMatchObject({
+      node: 'test-node',
+      action: 'echo',
+      kind: 'action',
+      invocationId: 'inv-1',
+    });
     const completed = entries.find((entry) => entry.message === 'Action "echo" completed');
     expect(completed?.level).toBe('info');
-    expect(completed?.extra).toMatchObject({ action: 'echo', invocationId: 'inv-1' });
+    expect(completed?.extra).toMatchObject({ node: 'test-node', action: 'echo', invocationId: 'inv-1' });
     expect(typeof completed?.extra?.ms).toBe('number');
 
     controller.abort();

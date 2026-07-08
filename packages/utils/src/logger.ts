@@ -28,7 +28,10 @@ function getLogFile(): string | undefined {
 }
 
 function getLogLevel(): LogLevel {
-  return (process.env.AGENT_RELAY_LOG_LEVEL ?? 'INFO').toUpperCase() as LogLevel;
+  const level = (process.env.AGENT_RELAY_LOG_LEVEL ?? 'INFO').toUpperCase();
+  // An unrecognized level would make LEVEL_PRIORITY[level] undefined and every
+  // shouldLog() comparison false — silently dropping all logs. Fall back to INFO.
+  return (level in LEVEL_PRIORITY ? level : 'INFO') as LogLevel;
 }
 
 function isLogJson(): boolean {

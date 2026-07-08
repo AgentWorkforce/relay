@@ -96,8 +96,9 @@ agent-relay node up --config ./builder.node.ts --log-json          # one JSON ob
 ```
 
 Capability registration logs at `debug`; action invocations at `info`; failures at
-`warn`. When no logger (and no `--log-*` flag) is set, the node stays quiet and only
-surfaces warnings.
+`warn`. With no `logger` the node is silent — pass a `logger` (or the older `log`/`warn`
+callbacks) to receive events. The CLI wires a `warn`-only sink when no `--log-*` flag is
+given, so `agent-relay node up` stays quiet apart from warnings until you opt in.
 
 ## Concepts
 

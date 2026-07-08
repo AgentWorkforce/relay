@@ -329,10 +329,17 @@ function runNodeConnection(options: ServeNodeOptions, logger: FleetLogger): Prom
 
     const handleInvoke = async (payload: Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']) => {
       const ctx = createActionContext(options, sendRequest, payload.invocation_id);
-      logger.info(`Action "${payload.name}" invoked`, {
+      // Carry node + kind on every invocation line so a file/JSON sink can group
+      // a node's activity by node and by capability kind (spawn vs action).
+      const node = options.nameOverride ?? options.definition.name;
+      const kind = options.definition.capabilities[payload.name]?.kind;
+      const base = {
+        node,
         action: payload.name,
+        ...(kind ? { kind } : {}),
         invocationId: payload.invocation_id,
-      });
+      };
+      logger.info(`Action "${payload.name}" invoked`, base);
       const startedAt = Date.now();
       // Only a handler failure may be reported as a handler error; a failure to
       // SEND the result (e.g. socket closed mid-flight) must propagate to the
@@ -346,18 +353,9 @@ function runNodeConnection(options: ServeNodeOptions, logger: FleetLogger): Prom
       }
       const ms = Date.now() - startedAt;
       if (invokeError) {
-        logger.warn(`Action "${payload.name}" failed`, {
-          action: payload.name,
-          invocationId: payload.invocation_id,
-          ms,
-          error: errorMessage(invokeError),
-        });
+        logger.warn(`Action "${payload.name}" failed`, { ...base, ms, error: errorMessage(invokeError) });
       } else {
-        logger.info(`Action "${payload.name}" completed`, {
-          action: payload.name,
-          invocationId: payload.invocation_id,
-          ms,
-        });
+        logger.info(`Action "${payload.name}" completed`, { ...base, ms });
       }
       await sendHandlerResult(payload.invocation_id, output, invokeError);
     };
