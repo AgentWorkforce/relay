@@ -198,14 +198,14 @@ TypeScript (authoring API is today's `@agent-relay/fleet`, retargeted):
 
 ```ts
 import { defineNode, action } from '@agent-relay/fleet';
+import { z } from 'zod';
 
 export default defineNode({
   name: 'data-pipeline',
   capabilities: {
-    'run-etl': action({
-      description: 'Run the ETL job',
-      handler: async (input, ctx) => runEtl(input),
-    }),
+    'run-etl': action({ input: z.object({ date: z.string() }) }, async (input, ctx) =>
+      runEtl(input.date)
+    ),
   },
 });
 ```
@@ -247,7 +247,7 @@ async def spawn_claude(input, ctx):
     agent = input["agent"]
     agent["cli"] = f"claude --permission-mode plan {agent.get('args', '')}"
     result = await ctx.spawn_agent(agent)  # delegates to broker capacity
-    await ctx.relay.send_message(to="ops", text=f"spawned {result['name']}")
+    await ctx.send_message(to="ops", text=f"spawned {result['name']}")
     return result
 ```
 
