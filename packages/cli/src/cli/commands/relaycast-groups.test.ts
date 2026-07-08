@@ -460,7 +460,7 @@ describe('SDK-backed CLI groups', () => {
       log: vi.fn(),
       error: vi.fn(),
       exit: vi.fn() as never,
-      resolveLocalRelayOptions: vi.fn(async () => undefined),
+      resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       isInteractive: () => false,
       relayfile,
     } satisfies Partial<IntegrationCommandDependencies>);

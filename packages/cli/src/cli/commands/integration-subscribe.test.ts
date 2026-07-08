@@ -130,7 +130,8 @@ function harness(
   registerIntegrationCommands(program, {
     createAgentRelay: () => relay as never,
     relayfile: relayfile as never,
-    resolveLocalRelayOptions: opts.resolveLocalRelayOptions ?? (async () => undefined),
+    resolveLocalRelayOptions:
+      opts.resolveLocalRelayOptions ?? (async () => ({ workspaceKey: 'rk_live_test' })),
     isInteractive: () => false,
     log,
     error,
