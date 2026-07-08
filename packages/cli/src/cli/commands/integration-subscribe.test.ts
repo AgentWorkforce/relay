@@ -1,11 +1,19 @@
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   registerIntegrationCommands,
   type IntegrationCommandDependencies,
   type RelayfileBinding,
 } from './integration.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 interface InboundWebhook {
   webhookId: string;
@@ -84,6 +92,8 @@ function createRelayfileMock(
     resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
     ensureCompatible: vi.fn(async () => undefined),
     resolveWritebackBinding: vi.fn(async () => ({ url: 'https://ingress.example', secret: 's3cr3t' })),
+    createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+    deleteWebhookSubscription: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -92,10 +102,30 @@ function harness(
   opts: {
     relay?: ReturnType<typeof createRelayMock>;
     relayfile?: ReturnType<typeof createRelayfileMock>;
+    resolveLocalRelayOptions?: IntegrationCommandDependencies['resolveLocalRelayOptions'];
   } = {}
 ) {
   const relay = opts.relay ?? createRelayMock();
   const relayfile = opts.relayfile ?? createRelayfileMock();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+              secret: 'inbound-secret',
+            },
+          }),
+          {
+            status: 201,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+    )
+  );
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
@@ -104,7 +134,8 @@ function harness(
   registerIntegrationCommands(program, {
     createAgentRelay: () => relay as never,
     relayfile: relayfile as never,
-    resolveLocalRelayOptions: async () => undefined,
+    resolveLocalRelayOptions:
+      opts.resolveLocalRelayOptions ?? (async () => ({ workspaceKey: 'rk_live_test' })),
     isInteractive: () => false,
     log,
     error,
@@ -139,6 +170,11 @@ describe('integration subscribe', () => {
     expect(relayfile.bind).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'slack', resource: RESOURCE, channel: 'general' })
     );
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith({
+      url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+      pathGlobs: [RESOURCE],
+      secret: 'inbound-secret',
+    });
   });
 
   it('resolves provider-native resources before binding and replacement lookup', async () => {
@@ -162,6 +198,82 @@ describe('integration subscribe', () => {
         /^relayfile:slack:slack-channels-c123-watchdog-test-[0-9a-f]{10}:[0-9a-f]{10}$/
       ),
     });
+  });
+
+  it('does not send inbound-target provisioning to the locally stored broker base URL', async () => {
+    const { program } = harness({
+      resolveLocalRelayOptions: async () => ({
+        workspaceKey: 'rk_live_local',
+        baseUrl: 'https://local-broker-session.example',
+      }),
+    });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://cast.agentrelay.com'),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer rk_live_local' }),
+      })
+    );
+  });
+
+  it('allows an explicit Relaycast base URL for inbound-target provisioning', async () => {
+    const { program } = harness();
+
+    await program.parseAsync(ARGS(['--base-url', 'https://relaycast.example']), { from: 'user' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://relaycast.example'),
+      expect.any(Object)
+    );
+  });
+
+  it('fails loudly before provisioning when no workspace key is available', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-workspace-'));
+    vi.stubEnv('AGENT_RELAY_HOME', home);
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    const { program, relay, relayfile, error, exit } = harness({
+      resolveLocalRelayOptions: async () => undefined,
+    });
+
+    try {
+      await program.parseAsync(ARGS(), { from: 'user' });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('No workspace key found'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['blank URL', { url: '   ', secret: 'inbound-secret' }, 'invalid relayfile inbound target response'],
+    [
+      'blank secret',
+      { url: 'https://cast.test/inbound', secret: '   ' },
+      'invalid relayfile inbound target response',
+    ],
+    ['non-HTTPS URL', { url: 'http://cast.test/inbound', secret: 'inbound-secret' }, 'non-https'],
+  ])('rejects %s in inbound-target responses before creating webhooks', async (_case, data, message) => {
+    const { program, relay, relayfile, error, exit } = harness();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, data }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining(message));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
   });
 
   it('retires an orphaned, unbound legacy webhook after the new binding is live', async () => {

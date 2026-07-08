@@ -20,6 +20,7 @@ import {
   assertRelayfileVersion,
   type RelayfileClientOptions,
 } from '@relayfile/client';
+import { resolveBaseUrl, resolveWorkspaceKey } from '../lib/sdk-client.js';
 
 // Re-export the version gate so existing tests importing it from this module
 // (and any callers) keep working after it moved to the published client package.
@@ -50,6 +51,11 @@ export interface RelayfileWritebackBinding {
   url: string;
   /** Per-channel HMAC secret the subscription signs deliveries with. */
   secret: string;
+}
+
+export interface RelayfileWebhookSubscription {
+  subscriptionId: string;
+  secret?: string;
 }
 
 export interface RelayfileBridge {
@@ -88,6 +94,12 @@ export interface RelayfileBridge {
    * subscription and the ingress agree on it without any static shared secret.
    */
   resolveWritebackBinding(channel: string): Promise<RelayfileWritebackBinding | undefined>;
+  createWebhookSubscription(input: {
+    url: string;
+    pathGlobs: string[];
+    secret: string;
+  }): Promise<RelayfileWebhookSubscription>;
+  deleteWebhookSubscription(subscriptionId: string): Promise<void>;
 }
 
 export type IntegrationCommandDependencies = SdkCommandDeps & {
@@ -232,6 +244,12 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
         return undefined;
       }
     },
+    async createWebhookSubscription(input) {
+      return client.createWebhookSubscription(input);
+    },
+    async deleteWebhookSubscription(subscriptionId) {
+      await client.deleteWebhookSubscription(subscriptionId);
+    },
   };
 }
 
@@ -287,6 +305,10 @@ function withIntegrationDefaults(
 
 function explicitWorkspaceKey(opts: Record<string, unknown>): boolean {
   return typeof opts.workspaceKey === 'string' && opts.workspaceKey.trim() !== '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function shouldRetryWithLocalWorkspaceKey(error: unknown): boolean {
@@ -366,6 +388,75 @@ async function resolveWriteback(
     );
   }
   return { url: binding.url, secret: binding.secret };
+}
+
+async function createRelayfileInboundTarget(
+  commandOpts: Record<string, unknown>,
+  local: LocalRelayOptions | undefined,
+  input: { channel: string; provider: string; pathGlob: string }
+): Promise<{ url: string; secret: string }> {
+  const options = sdkOptionsFromOpts(commandOpts);
+  const authOptions =
+    local && !explicitWorkspaceKey(commandOpts) ? localRetryOptions(options, local) : options;
+  const workspaceKey = resolveWorkspaceKey(authOptions);
+  const baseUrl = resolveInboundTargetBaseUrl(options);
+  const response = await fetch(new URL('/v1/integrations/relayfile/inbound-target', baseUrl), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${workspaceKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      channel: input.channel,
+      provider: input.provider,
+      pathGlob: input.pathGlob,
+    }),
+  });
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  if (!response.ok) {
+    const message =
+      isRecord(body) && typeof body.message === 'string'
+        ? body.message
+        : `relaycast returned ${response.status}`;
+    throw new Error(`Could not create relayfile inbound target: ${message}`);
+  }
+  return parseRelayfileInboundTargetResponse(body);
+}
+
+function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secret: string } {
+  const data = isRecord(body) && isRecord(body.data) ? body.data : body;
+  if (!isRecord(data) || typeof data.url !== 'string' || typeof data.secret !== 'string') {
+    throw new Error('relaycast returned an invalid relayfile inbound target response');
+  }
+  const url = data.url.trim();
+  const secret = data.secret.trim();
+  if (!url || !secret) {
+    throw new Error('relaycast returned an invalid relayfile inbound target response');
+  }
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new Error('relaycast returned an invalid relayfile inbound target URL');
+  }
+  if (parsedUrl.protocol !== 'https:') {
+    throw new Error('relaycast returned a non-https relayfile inbound target URL');
+  }
+  return { url: parsedUrl.toString(), secret };
+}
+
+function resolveInboundTargetBaseUrl(options: SdkClientOptions): string {
+  const baseUrl = resolveBaseUrl(options) ?? 'https://cast.agentrelay.com';
+  const parsed = new URL(baseUrl);
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Inbound relayfile target provisioning requires an https Relaycast base URL.');
+  }
+  return parsed.toString();
 }
 
 function targetChannel(target: string): string {
@@ -629,6 +720,11 @@ async function runSubscribe(
   const channel = targetChannel(to);
   const events = commaList(opts.events);
   const writeback = await resolveWriteback(deps, opts, channel);
+  const inboundTarget = await createRelayfileInboundTarget(opts, local, {
+    channel,
+    provider,
+    pathGlob,
+  });
   const prefix = webhookNamePrefix(provider, pathGlob);
   const name = inboundWebhookName(prefix);
 
@@ -640,8 +736,14 @@ async function runSubscribe(
 
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
+  let relayfileWebhook: RelayfileWebhookSubscription | undefined;
   try {
     webhook = await relay.webhooks.createInbound({ channel, name });
+    relayfileWebhook = await deps.relayfile.createWebhookSubscription({
+      url: inboundTarget.url,
+      pathGlobs: [pathGlob],
+      secret: inboundTarget.secret,
+    });
     subscription = await relay.integrations.subscriptions.create({
       event: events.length === 1 ? events[0]! : 'message.created',
       events: events.length ? events : ['message.created', 'thread.reply'],
@@ -670,6 +772,13 @@ async function runSubscribe(
         .delete(webhook.webhookId)
         .catch((cleanupErr) => warnCleanup(deps, 'webhook', webhook!.webhookId, cleanupErr));
     }
+    if (relayfileWebhook) {
+      await deps.relayfile
+        .deleteWebhookSubscription(relayfileWebhook.subscriptionId)
+        .catch((cleanupErr) =>
+          warnCleanup(deps, 'relayfile webhook subscription', relayfileWebhook!.subscriptionId, cleanupErr)
+        );
+    }
     throw err;
   }
 
@@ -685,6 +794,7 @@ async function runSubscribe(
   // Show the native resource the user typed, plus the resolved glob when they differ.
   const boundLabel = pathGlob === resource ? resource : `${resource} (${pathGlob})`;
   deps.log(`✓ ${provider} ${boundLabel} bound -> ${to}`);
+  deps.log(`✓ Server-side inbound webhook subscription: ${relayfileWebhook!.subscriptionId}`);
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
 
