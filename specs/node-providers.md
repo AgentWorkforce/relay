@@ -203,9 +203,7 @@ import { z } from 'zod';
 export default defineNode({
   name: 'data-pipeline',
   capabilities: {
-    'run-etl': action({ input: z.object({ date: z.string() }) }, async (input, ctx) =>
-      runEtl(input.date)
-    ),
+    'run-etl': action({ input: z.object({ date: z.string() }) }, async (input, ctx) => runEtl(input.date)),
   },
 });
 ```
