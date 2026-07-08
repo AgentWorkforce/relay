@@ -81,8 +81,8 @@ Rules:
   **`capacity`** — what the node can run: `spawn:<harness>` and `release`,
   registered by the broker provider, used for placement and delegation, never
   materialized as actions. Providers with `action` registrations define what
-  a node can *do*; the broker's `capacity` registrations define what it can
-  *run*.
+  a node can _do_; the broker's `capacity` registrations define what it can
+  _run_.
 - Duplicate **action** name within a node → registration rejected with an
   error frame; the provider fails loudly at startup. The same provider
   re-registering (reconnect) is an idempotent replace. Multiple providers
@@ -325,9 +325,9 @@ overview, written for someone new to the system:
 > Processes called **providers** attach to a node and give it abilities.
 > Every provider connects directly to the engine with the node's token and
 > registers what it offers. The broker provider (Rust) runs agents — it
-> registers *capacity*: which harnesses it can spawn (`spawn:claude`) and
+> registers _capacity_: which harnesses it can spawn (`spawn:claude`) and
 > how many. Capability providers — written in TypeScript, Python, or Swift
-> — register *actions*: named handlers like `run-etl` or `screenshot` that
+> — register _actions_: named handlers like `run-etl` or `screenshot` that
 > anything in the workspace can invoke.
 >
 > An invoke is addressed to a node:
