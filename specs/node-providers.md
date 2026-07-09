@@ -266,9 +266,15 @@ async def spawn_claude(input, ctx):
 ### 5.1 Broker demotion
 
 The broker keeps exactly what needs Rust: the PTY runtime and its existing
-`/v1/node/ws` connection, now as one provider. It registers `spawn:*`,
-`release`, and the agent roster; it receives `deliver` frames for its agents;
-it heartbeats its own load. Deleted from the broker:
+`/v1/node/ws` connection, now as one provider (registered as provider
+`broker`). It self-advertises its spawn capacity — `spawn:<harness>` for each
+harness it can actually run (a default set, extended by CLI-supplied config
+from teams.json and any explicit definition's `spawn()` harnesses, filtered
+by binaries present on PATH) — plus `release` and the agent roster; it
+receives `deliver` frames for its agents; it heartbeats its own load. The
+broker's resolved node identity (`node_id`, name) is exposed on its HTTP
+session endpoint so companion providers register against the same node
+without re-deriving it. Deleted from the broker:
 
 - `/api/fleet/ws` route and all sidecar session handling
   (`listen_api.rs`, `runtime/fleet.rs` sidecar connect/frame/supervision).
@@ -288,18 +294,20 @@ provider fields from §3.1.
 ### 5.2 CLI
 
 - `node up` brings the current context's node online: starts the broker
-  provider and serves the project's capability definitions as further
-  providers — all connecting directly to the engine with the enrolled node
-  token. Discovery is per language: `agent-relay.{ts,…}` is served via
-  `@agent-relay/fleet`; `agent-relay.py` is spawned as a `python` child
-  process with the node token in its env, supervised (and restarted) by the
-  CLI. When no definition file exists, the implicit definition derived from
-  teams.json applies (a default definition for this context's node — not a
-  machine-level node, which does not exist in this model). Standalone
-  providers (launchd/systemd, long-running apps) connect on their own via
-  `NodeProvider.from_enrollment()` and need no `node up` at all — providers
-  have no start-order dependency on the broker or each other. Enrollment
-  pickup (`cloud enroll` → `fleet-enrollments.json` → env) is unchanged.
+  provider and, when the project has an explicit capability definition,
+  serves it as a further provider — all connecting directly to the engine
+  with the enrolled node token. Discovery is per language:
+  `agent-relay.{ts,…}` is served via `@agent-relay/fleet`; `agent-relay.py`
+  is spawned as a `python` child process with the node token in its env,
+  supervised (and restarted) by the CLI. With no definition file, no
+  companion provider runs — under the kind split the implicit teams.json
+  definition carried only `spawn:*` entries, which are broker capacity now;
+  teams.json instead informs the broker's advertised harness set (§5.1).
+  Standalone providers (launchd/systemd, long-running apps) connect on their
+  own via `NodeProvider.from_enrollment()` and need no `node up` at all —
+  providers have no start-order dependency on the broker or each other.
+  Enrollment pickup (`cloud enroll` → `fleet-enrollments.json` → env) is
+  unchanged.
 - `fleet status` reads provider attachment from the engine instead of a local
   sidecar status file; `fleet nodes` gains machine grouping and per-provider
   liveness.
