@@ -534,6 +534,24 @@ describe('fileCleanupJournal', () => {
     expect(fs.readFileSync(journalPath, 'utf8')).toBe('["original"]\n');
   });
 
+  it('releases the lock when serialization fails; the next update succeeds', async () => {
+    const dir = tmpJournalDir();
+    const journalPath = path.join(dir, 'pending-cleanups.json');
+    fs.writeFileSync(journalPath, '[]\n');
+    const journal = fileCleanupJournal(dir);
+
+    // JSON.stringify throws on BigInt — the serialization failure must run
+    // inside the abort-protected block, releasing the helper's lock.
+    await expect(
+      journal.update((entries) => [...entries, { bad: 1n } as unknown as PendingCleanupEntry])
+    ).rejects.toThrow(/BigInt/);
+    expect(fs.readFileSync(journalPath, 'utf8')).toBe('[]\n');
+
+    // If the lock had leaked, this second update would time out.
+    await journal.update(() => [CONCRETE]);
+    await expect(journal.list()).resolves.toEqual([CONCRETE]);
+  });
+
   it('releases without writing when the mutator throws (empty-payload abort)', async () => {
     const dir = tmpJournalDir();
     const journalPath = path.join(dir, 'pending-cleanups.json');

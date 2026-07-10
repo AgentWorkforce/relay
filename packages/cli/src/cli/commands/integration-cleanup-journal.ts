@@ -50,6 +50,13 @@ export interface PendingCleanupOwner {
   host: string;
   /** Unique per transaction, so a run only ever clears ITS OWN entries. */
   attemptId: string;
+  /**
+   * Epoch-ms lease heartbeat, stamped when the owner takes (or re-takes) the
+   * lease. Liveness requires BOTH a passing pid probe AND a fresh heartbeat:
+   * PID reuse (or an unprobeable foreign host) can therefore wedge later
+   * lifecycles for at most the bounded lease window, never permanently.
+   */
+  heartbeatAt: number;
 }
 
 export interface PendingCleanupEntry {
@@ -169,7 +176,10 @@ function isValidOwner(owner: unknown): boolean {
     Number.isInteger(candidate.pid) &&
     candidate.pid > 0 &&
     isNonEmptyString(candidate.host) &&
-    isNonEmptyString(candidate.attemptId)
+    isNonEmptyString(candidate.attemptId) &&
+    typeof candidate.heartbeatAt === 'number' &&
+    Number.isFinite(candidate.heartbeatAt) &&
+    candidate.heartbeatAt > 0
   );
 }
 
@@ -422,10 +432,21 @@ async function beginJournalTransaction(lockFile: string, journalFile: string): P
       // Framed envelope: magic/version + declared byte length + SHA-256 of
       // the payload. The helper commits ONLY after both validate exactly, so
       // a parent dying mid-write (partial bytes + clean EOF) can never
-      // replace good journal contents with a truncated payload.
-      const body = Buffer.from(payload, 'utf8');
-      const digest = createHash('sha256').update(body).digest('hex');
-      const framed = Buffer.concat([Buffer.from(`ARJL1\n${body.byteLength}\n${digest}\n`, 'utf8'), body]);
+      // replace good journal contents with a truncated payload. Frame
+      // construction failures release the lock (abort) instead of leaving
+      // the helper's stdin open.
+      let framed: Buffer;
+      try {
+        const body = Buffer.from(payload, 'utf8');
+        const digest = createHash('sha256').update(body).digest('hex');
+        framed = Buffer.concat([Buffer.from(`ARJL1\n${body.byteLength}\n${digest}\n`, 'utf8'), body]);
+      } catch (err) {
+        await finish(undefined, '');
+        throw new CleanupJournalError(
+          'io',
+          `Could not frame the pending-cleanup journal payload: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
       await finish(
         framed,
         `The journal-lock helper was lost before the pending-cleanup journal at ${journalFile} could be committed; the journal was left unmodified.`
@@ -461,16 +482,21 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
       const file = journalFile();
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const transaction = await beginJournalTransaction(`${file}.lock`, file);
-      let next: PendingCleanupEntry[];
+      // EVERYTHING that can throw before the commit — the read, the mutator,
+      // and the serialization itself — runs inside the abort-protected block,
+      // or a failure would leave the helper's stdin open and the lock held
+      // until this process exits.
+      let payload: string;
       try {
-        next = await mutate(read(file));
+        const next = await mutate(read(file));
+        payload = `${JSON.stringify(next)}\n`;
       } catch (err) {
         await transaction.abort();
         throw err;
       }
       // The helper performs the durable replacement (temp + fsync + atomic
       // rename + dir fsync) while it still holds the kernel lock.
-      await transaction.commit(`${JSON.stringify(next)}\n`);
+      await transaction.commit(payload);
     },
   };
 }

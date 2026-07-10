@@ -749,13 +749,26 @@ function relayfileCleanupScope(): string {
   return 'relayfile:project-daemon';
 }
 
-/** A journal entry lease-owner is only bypassable when provably dead on this
- * host; a live owner or a foreign host fails closed. PID reuse can make a
- * dead owner look alive — that defers recovery/new lifecycles until the
- * reusing process exits (availability only, never incorrect deletion). */
+/**
+ * Bounded lease window for entry owners, set safely ABOVE every remote
+ * request timeout any lifecycle or recovery performs (each spans seconds; a
+ * reconciliation at most a few request timeouts). Explicit bounded-lease
+ * tradeoff: a process paused (e.g. SIGSTOP) past this window loses its
+ * lease and a rival may proceed — accepted deliberately, because the
+ * alternative (pure pid probing) lets PID reuse wedge lifecycles FOREVER.
+ */
+const OWNER_LEASE_MS = 15 * 60_000;
+
+/** A journal entry lease-owner is live ONLY while its bounded lease is
+ * fresh AND (same host) its pid probes alive. The heartbeat bound is what
+ * makes PID reuse — which can make a dead owner's pid probe pass forever —
+ * and unprobeable foreign-host owners an availability delay of at most
+ * OWNER_LEASE_MS, never a permanent wedge. Within the window, an alive
+ * probe or a foreign host still fails closed. */
 function isOwnerLive(owner: PendingCleanupOwner | undefined): boolean {
   if (!owner) return false;
-  if (owner.host !== hostname()) return true; // cannot prove death — fail closed
+  if (Date.now() - owner.heartbeatAt > OWNER_LEASE_MS) return false; // lease expired
+  if (owner.host !== hostname()) return true; // cannot prove death — fail closed within the lease
   try {
     process.kill(owner.pid, 0);
     return true;
@@ -765,7 +778,12 @@ function isOwnerLive(owner: PendingCleanupOwner | undefined): boolean {
 }
 
 function newCleanupOwner(): PendingCleanupOwner {
-  return { pid: process.pid, host: hostname(), attemptId: randomBytes(8).toString('hex') };
+  return {
+    pid: process.pid,
+    host: hostname(),
+    attemptId: randomBytes(8).toString('hex'),
+    heartbeatAt: Date.now(),
+  };
 }
 
 function sameGlobSet(a: string[] | undefined, b: string[] | undefined): boolean {

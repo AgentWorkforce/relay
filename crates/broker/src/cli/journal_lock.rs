@@ -171,47 +171,96 @@ fn parse_frame(input: &[u8]) -> std::result::Result<Option<&[u8]>, String> {
     Ok(Some(payload))
 }
 
-/// Durable atomic replacement performed UNDER the held lock: temp file
-/// (0600) + fsync + rename over the journal + parent-directory fsync, so a
-/// committed update survives host/power crashes and a failed one leaves the
-/// journal byte-for-byte unmodified.
+/// Durable atomic replacement performed UNDER the held lock: exclusively
+/// created temp file (0600) + fsync + rename over the journal +
+/// parent-directory fsync, so a committed update survives host/power crashes
+/// and a failed one leaves the journal byte-for-byte unmodified (any temp
+/// residue from a failure path is cleaned up before returning).
 fn replace_journal(journal: &Path, payload: &[u8]) -> Result<()> {
     let dir = journal
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let tmp = journal.with_file_name(format!(
-        "{}.tmp-{}",
-        journal
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("pending-cleanups.json"),
-        std::process::id()
-    ));
+    let (tmp, mut temp) = create_exclusive_temp(journal)?;
 
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    let result = (|| -> Result<()> {
+        temp.write_all(payload).context("write journal payload")?;
+        temp.sync_all().context("fsync journal temp file")?;
+        drop(temp);
+        std::fs::rename(&tmp, journal)
+            .with_context(|| format!("rename journal into place at {}", journal.display()))?;
+        sync_dir(&dir)
+    })();
+    if result.is_err() {
+        // Failure-path hygiene: never leave a temp file behind.
+        let _ = std::fs::remove_file(&tmp);
     }
-    let mut temp = options
-        .open(&tmp)
-        .with_context(|| format!("open journal temp file {}", tmp.display()))?;
-    temp.write_all(payload).context("write journal payload")?;
-    temp.sync_all().context("fsync journal temp file")?;
-    drop(temp);
-    std::fs::rename(&tmp, journal)
-        .with_context(|| format!("rename journal into place at {}", journal.display()))?;
+    result
+}
 
-    // Directory fsync makes the rename itself durable. Unsupported on some
-    // platforms (e.g. Windows) — the data fsync above already ran.
-    if let Ok(dir_handle) = std::fs::File::open(&dir) {
-        let _ = dir_handle.sync_all();
+/// Directory fsync makes the rename itself durable. The OPEN always
+/// propagates — a missing directory is a real failure on every platform.
+/// Only a SYNC failure on a successfully opened directory handle is
+/// tolerated, and only on Windows (its known inability to fsync directory
+/// handles surfaces as a permission/handle error); the payload fsync has
+/// already run there. Every other I/O error propagates.
+fn sync_dir(dir: &Path) -> Result<()> {
+    let handle = std::fs::File::open(dir)
+        .with_context(|| format!("open journal directory {}", dir.display()))?;
+    match handle.sync_all() {
+        Ok(()) => Ok(()),
+        Err(err)
+            if cfg!(windows)
+                && matches!(
+                    err.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput
+                ) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(err).with_context(|| format!("fsync journal directory {}", dir.display())),
     }
-    Ok(())
+}
+
+/// Collision-resistant EXCLUSIVE temp creation: `create_new` refuses to
+/// follow symlinks or truncate an existing file, and an EEXIST collision
+/// retries with a different unpredictable suffix (pid + monotonic-ish nanos
+/// + counter) instead of reusing a guessable name.
+fn create_exclusive_temp(journal: &Path) -> Result<(PathBuf, std::fs::File)> {
+    let base = journal
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("pending-cleanups.json");
+    for attempt in 0..16u32 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let candidate = journal.with_file_name(format!(
+            "{base}.tmp-{}-{nanos:08x}-{attempt}",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("open journal temp file {}", candidate.display()));
+            }
+        }
+    }
+    anyhow::bail!(
+        "could not create an exclusive journal temp file next to {}",
+        journal.display()
+    )
 }
 
 fn acquire(file: &mut std::fs::File, timeout: Duration) -> Result<LockOutcome> {
@@ -345,6 +394,84 @@ mod tests {
         assert!(parse_frame(&corrupted).is_err());
         // Wrong magic: rejected.
         assert!(parse_frame(b"NOPE\n1\nabc\nz").is_err());
+    }
+
+    #[test]
+    fn sync_dir_propagates_missing_directory_errors_on_every_platform() {
+        let missing =
+            std::env::temp_dir().join(format!("journal-lock-no-such-dir-{}", std::process::id()));
+        assert!(
+            sync_dir(&missing).is_err(),
+            "a missing directory must error everywhere; only a sync failure on \
+             an OPENED Windows directory handle is tolerated"
+        );
+        // And a real, existing directory syncs cleanly (or is tolerated on
+        // Windows).
+        assert!(sync_dir(&temp_dir("syncdir-ok")).is_ok());
+    }
+
+    #[test]
+    fn exclusive_temp_creation_yields_fresh_unique_restricted_files() {
+        let dir = temp_dir("excltemp");
+        let journal = dir.join("pending-cleanups.json");
+        // create_new(true) neither follows symlinks nor truncates an existing
+        // file — an occupied candidate errors with AlreadyExists and a new
+        // unpredictable suffix is tried. Two consecutive creations therefore
+        // yield distinct, freshly created, empty files.
+        let (first_path, first) = create_exclusive_temp(&journal).unwrap();
+        let (second_path, second) = create_exclusive_temp(&journal).unwrap();
+        assert_ne!(first_path, second_path);
+        assert_eq!(first.metadata().unwrap().len(), 0);
+        assert_eq!(second.metadata().unwrap().len(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                first.metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_file(first_path);
+        let _ = std::fs::remove_file(second_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_temp_creation_refuses_to_follow_a_symlink_at_the_candidate() {
+        let dir = temp_dir("excl-symlink");
+        let journal = dir.join("pending-cleanups.json");
+        let target = dir.join("victim");
+        std::fs::write(&target, b"precious").unwrap();
+        // Occupy EVERY name create_exclusive_temp could pick this instant is
+        // impossible (unpredictable suffixes), so validate the exact open
+        // semantics instead: create_new on a path holding a symlink fails
+        // rather than following/truncating the target.
+        let link = dir.join("occupied");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let err = options.open(&link).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&target).unwrap(), b"precious");
+    }
+
+    #[test]
+    fn replace_journal_cleans_temp_files_when_the_swap_fails() {
+        let dir = temp_dir("swapfail");
+        // Renaming a file over an existing DIRECTORY fails on every platform.
+        let journal = dir.join("pending-cleanups.json");
+        std::fs::create_dir_all(&journal).unwrap();
+
+        assert!(replace_journal(&journal, b"[]\n").is_err());
+        let residue: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(residue.is_empty(), "temp residue: {residue:?}");
     }
 
     #[test]

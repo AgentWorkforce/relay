@@ -503,11 +503,38 @@ describe('integration subscribe', () => {
     expect(journal.entries()).toEqual([attemptEntry()]);
   });
 
+  it('recovers a lease whose pid is ALIVE but whose bounded lease expired (PID-reuse bound)', async () => {
+    // The pid probe passes (it is THIS live process — exactly what PID reuse
+    // looks like), but the heartbeat is far beyond OWNER_LEASE_MS: the owner
+    // must be treated as dead, so the stale attempt is reconciled and the
+    // new subscribe proceeds instead of wedging forever.
+    const reusedPidAttempt = attemptEntry({
+      relayfileWorkspaceId: 'rw_1',
+      owner: {
+        pid: process.pid,
+        host: os.hostname(),
+        attemptId: 'reused-pid',
+        heartbeatAt: Date.now() - 16 * 60_000,
+      },
+    });
+    const journal = memoryJournal([reusedPidAttempt]);
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: 'rw_1', subscriptions: [] })),
+    });
+    const { program, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalled();
+    expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
   it('aborts before any create while a live concurrent subscribe holds the reservation (P1)', async () => {
     // The lease-owner is this very process, which is provably alive — exactly
     // what a second CLI racing the same resource would observe.
     const liveAttempt = attemptEntry({
-      owner: { pid: process.pid, host: os.hostname(), attemptId: 'other-attempt' },
+      owner: { pid: process.pid, host: os.hostname(), attemptId: 'other-attempt', heartbeatAt: Date.now() },
     });
     const journal = memoryJournal([liveAttempt]);
     const relayfile = createRelayfileMock([], {
@@ -570,7 +597,7 @@ describe('integration subscribe', () => {
     // before its create); it must survive.
     const liveAttempt = attemptEntry({
       webhookName: 'relayfile:slack:slack-channels-c0-0123456789:bbbbbbbbbb',
-      owner: { pid: process.pid, host: os.hostname(), attemptId: 'concurrent-live' },
+      owner: { pid: process.pid, host: os.hostname(), attemptId: 'concurrent-live', heartbeatAt: Date.now() },
     });
     const relay = createRelayMock({
       inboundWebhooks: [
@@ -603,7 +630,12 @@ describe('integration subscribe', () => {
       resource: '/slack/channels/C9/**',
       pathGlobs: ['/slack/channels/C9/**'],
       webhookName: 'relayfile:slack:slack-channels-c0-0123456789:cccccccccc',
-      owner: { pid: process.pid, host: os.hostname(), attemptId: 'other-resource-live' },
+      owner: {
+        pid: process.pid,
+        host: os.hostname(),
+        attemptId: 'other-resource-live',
+        heartbeatAt: Date.now(),
+      },
     });
     const relay = createRelayMock({
       inboundWebhooks: [
@@ -1162,7 +1194,12 @@ describe('integration unsubscribe', () => {
       scope: RELAYFILE_SCOPE,
       provider: 'slack',
       resource: RESOURCE,
-      owner: { pid: process.pid, host: os.hostname(), attemptId: 'live-unsubscribe' },
+      owner: {
+        pid: process.pid,
+        host: os.hostname(),
+        attemptId: 'live-unsubscribe',
+        heartbeatAt: Date.now(),
+      },
     };
     const journal = memoryJournal([liveUnsubscribe]);
     const relayfile = createRelayfileMock();
