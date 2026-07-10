@@ -11,6 +11,7 @@ import {
   getInvocation,
   getNodes,
   invokeAction,
+  invokeNodeAction,
   joinChannel,
   listDeliveries,
   listMessages,
@@ -184,7 +185,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       nodeId: 'node_c',
       nodeFile: NODE_B_FILE,
       nodeToken: 'nt_live_bogustoken0000000000000000',
-      workspaceKey,
+      // No workspace key: with one, the broker would re-mint a valid node token on
+      // the 401 (self-heal) and come online. Withholding it makes the bogus token
+      // fatal, which is what this test guards.
+      workspaceKey: '',
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
@@ -220,8 +224,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
   });
 
   it('cross-node dispatch: a node-native action runs on its owning node and acks the result', async () => {
-    const echo = await invokeAction(engine, driverToken, 'echo', { text: 'hello-a' });
+    // Fleet-provider actions are node-scoped, so they are invoked on their owning node.
+    const echo = await invokeNodeAction(engine, driverToken, 'node-a', 'echo', { text: 'hello-a' });
     expect(echo.status).toBe(201);
+    expect(echo.body.data.handler_node_id).toBe('node_a');
     const echoDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'echo', echo.invocationId!);
@@ -231,7 +237,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     );
     expect(echoDone.output).toMatchObject({ echoed: 'hello-a', node: 'node-a' });
 
-    const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'xyz' });
+    const ping = await invokeNodeAction(engine, driverToken, 'node-b', 'ping', { nonce: 'xyz' });
+    expect(ping.status).toBe(201);
     const pingDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);

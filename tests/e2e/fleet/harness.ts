@@ -438,6 +438,26 @@ export async function invokeAction(
   return { status, invocationId: body?.data?.invocation_id, body };
 }
 
+/** Invoke a node-scoped provider action on its owning node. Fleet-provider actions
+ * materialize node-scoped (not workspace-global), so they are addressed by node. */
+export async function invokeNodeAction(
+  engine: EngineHandle,
+  agentToken: string,
+  nodeName: string,
+  action: string,
+  input: Record<string, unknown>
+): Promise<{ status: number; invocationId?: string; body: any }> {
+  const { status, body } = await engine.fetchJson(
+    `/v1/nodes/${nodeName}/actions/${action}/invoke`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ input }),
+    }
+  );
+  return { status, invocationId: body?.data?.invocation_id, body };
+}
+
 export async function getInvocation(
   engine: EngineHandle,
   agentToken: string,
