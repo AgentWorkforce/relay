@@ -464,7 +464,9 @@ describe('integration unsubscribe', () => {
     const relayfile = createRelayfileMock([binding]);
     const { program, relay } = harness({ relayfile });
 
-    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], { from: 'user' });
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
 
     expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
     expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('sub_1');
