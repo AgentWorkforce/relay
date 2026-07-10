@@ -172,6 +172,44 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it('sendMessage strips a leading # so a #channel address posts to the bare channel name', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { id: 'msg_1' } }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const node = defineNode({
+      name: 'p',
+      capabilities: {
+        announce: action({}, async (_input, ctx) => {
+          await ctx.relay.sendMessage({ to: '#general', text: 'shipped', from: 'reporter' });
+          return 'ok';
+        }),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+
+    sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'inv_msg', action: 'announce', input: {} });
+    await flush();
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0]!;
+    // `#general` normalizes to the bare channel name — not the literal `%23general`
+    // that would 404 as channel_not_found.
+    expect(url).toBe('https://engine.test/v1/channels/general/messages');
+
+    const [result] = sock.sentOfType('action.result');
+    expect(result).toMatchObject({ invocation_id: 'inv_msg', output: 'ok' });
+    await running.stop();
+  });
+
   it('delegates a spawn shadow to node.spawn with the harness flattened to top-level cli', async () => {
     const node = defineNode({
       name: 'p',
@@ -199,9 +237,44 @@ describe('serveNode', () => {
 
     const [nodeSpawn] = sock.sentOfType('node.spawn');
     expect(nodeSpawn).toBeTruthy();
-    expect(nodeSpawn.input).toMatchObject({ name: 'worker-a', cli: 'codex' });
+    // The delegation carries `capability: 'codex'` (from the shadow name) so the
+    // engine keys node capacity on `spawn:codex`, plus the executable `cli`.
+    expect(nodeSpawn.input).toMatchObject({ name: 'worker-a', cli: 'codex', capability: 'codex' });
     // Reply so the delegating handler resolves and the invocation completes.
     sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'worker-a' } });
+    await flush();
+    await running.stop();
+  });
+
+  it('delegates with the shadow harness as capability even when the executable differs', async () => {
+    // A `spawn:claude` shadow whose harness command is an arbitrary executable
+    // (here `node`, as the E2E stub uses) must still delegate to `spawn:claude`
+    // capacity — the capacity key comes from the shadow name, not the command.
+    const node = defineNode({
+      name: 'p',
+      capabilities: {
+        'spawn:claude': spawn({ runtime: 'pty', command: 'node', args: ['stub.cjs'] }),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+
+    sock.emit({
+      v: 1,
+      type: 'action.invoke',
+      invocation_id: 'inv_shadow',
+      action: 'spawn:claude',
+      input: { name: 'worker-c' },
+    });
+    await flush();
+
+    const [nodeSpawn] = sock.sentOfType('node.spawn');
+    expect(nodeSpawn).toBeTruthy();
+    expect(nodeSpawn.input).toMatchObject({ name: 'worker-c', cli: 'node', capability: 'claude' });
+    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'worker-c' } });
     await flush();
     await running.stop();
   });

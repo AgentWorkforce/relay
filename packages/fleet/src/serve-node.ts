@@ -211,7 +211,7 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
  */
 function adaptHandler(options: ServeNodeOptions, name: string): NodeCapabilityHandler {
   return (input, nodeCtx) =>
-    invokeNodeHandler(options.definition, name, input, makeContext(options, nodeCtx));
+    invokeNodeHandler(options.definition, name, input, makeContext(options, nodeCtx, name));
 }
 
 // The engine handler context takes wire-JSON shapes; the fleet authoring API
@@ -220,9 +220,20 @@ function adaptHandler(options: ServeNodeOptions, name: string): NodeCapabilityHa
 type NodeMessageInput = Parameters<NodeHandlerContext['sendMessage']>[0];
 type NodeSpawnInput = Parameters<NodeHandlerContext['spawnAgent']>[0];
 
-function makeContext(options: ServeNodeOptions, nodeCtx: NodeHandlerContext): FleetActionContext {
+function makeContext(
+  options: ServeNodeOptions,
+  nodeCtx: NodeHandlerContext,
+  capabilityName: string
+): FleetActionContext {
   const info = nodeInfo(options.definition);
   const fromDefault = options.nameOverride ?? options.definition.name;
+  // A `spawn:<harness>` shadow delegates to that harness's native capacity. The
+  // harness identity lives in the capability name, not the handler's transformed
+  // `cli` (which is the executable to run — for a stub, an arbitrary command), so
+  // carry it as the delegated spawn's capacity key.
+  const shadowedHarness = capabilityName.startsWith('spawn:')
+    ? capabilityName.slice('spawn:'.length)
+    : undefined;
   return {
     node: {
       ...info,
@@ -233,7 +244,7 @@ function makeContext(options: ServeNodeOptions, nodeCtx: NodeHandlerContext): Fl
     relay: {
       sendMessage: (message: FleetRelaySendMessageInput) =>
         nodeCtx.sendMessage({
-          to: message.to,
+          to: channelName(message.to),
           from: message.from ?? fromDefault,
           text: message.text,
           ...(message.mode ? { mode: message.mode } : {}),
@@ -241,16 +252,22 @@ function makeContext(options: ServeNodeOptions, nodeCtx: NodeHandlerContext): Fl
         }),
     },
     spawnAgent: (spawn: FleetSpawnAgentInput) =>
-      nodeCtx.spawnAgent(buildSpawnInput(spawn, nodeCtx.invocationId)),
+      nodeCtx.spawnAgent(buildSpawnInput(spawn, nodeCtx.invocationId, shadowedHarness)),
   };
 }
 
 /**
  * Shape a fleet spawn request as the engine `node.spawn` input. Spawn fields are
- * flattened to the top level so the engine's capacity placement reads `cli`
- * (the harness) and the broker's spawn executor reads `name`/`cli`/`task`.
+ * flattened to the top level so the broker's spawn executor reads `name`/`cli`/
+ * `task`. The engine's capacity placement keys on `capability` — the harness a
+ * `spawn:<harness>` shadow delegates to — which is distinct from the executable
+ * `cli` when the shadow's harness command isn't itself the harness name.
  */
-function buildSpawnInput(spawn: FleetSpawnAgentInput, fallbackInvocationId?: string): NodeSpawnInput {
+function buildSpawnInput(
+  spawn: FleetSpawnAgentInput,
+  fallbackInvocationId?: string,
+  shadowedHarness?: string
+): NodeSpawnInput {
   // Fall back to the handler's own invocation id so a custom handler that calls
   // ctx.spawnAgent without an explicit id keeps the tracing/reply correlation.
   const invocationId = spawn.invocationId ?? fallbackInvocationId;
@@ -259,6 +276,7 @@ function buildSpawnInput(spawn: FleetSpawnAgentInput, fallbackInvocationId?: str
     ...(spawn.initialTask !== undefined ? { task: spawn.initialTask } : {}),
     skip_relay_prompt: spawn.skipRelayPrompt ?? false,
     ...(invocationId ? { invocation_id: invocationId } : {}),
+    ...(shadowedHarness ? { capability: shadowedHarness } : {}),
   } as unknown as NodeSpawnInput;
 }
 
@@ -374,6 +392,14 @@ function anySignal(signals: AbortSignal[]): AbortSignal {
     signal.addEventListener('abort', abort, { once: true });
   }
   return controller.signal;
+}
+
+// The node-provider message route posts to a channel by its bare name; the fleet
+// authoring convention addresses channels with a leading `#` (e.g. `#general`),
+// matching how the broker addresses channels workspace-wide. Strip the prefix so
+// `sendMessage({ to: '#general' })` reaches channel `general`.
+function channelName(to: string): string {
+  return to.startsWith('#') ? to.slice(1) : to;
 }
 
 function errorMessage(error: unknown): string {
