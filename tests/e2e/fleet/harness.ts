@@ -447,14 +447,11 @@ export async function invokeNodeAction(
   action: string,
   input: Record<string, unknown>
 ): Promise<{ status: number; invocationId?: string; body: any }> {
-  const { status, body } = await engine.fetchJson(
-    `/v1/nodes/${nodeName}/actions/${action}/invoke`,
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${agentToken}` },
-      body: JSON.stringify({ input }),
-    }
-  );
+  const { status, body } = await engine.fetchJson(`/v1/nodes/${nodeName}/actions/${action}/invoke`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ input }),
+  });
   return { status, invocationId: body?.data?.invocation_id, body };
 }
 
