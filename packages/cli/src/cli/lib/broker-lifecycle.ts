@@ -311,12 +311,16 @@ export interface RunningNodeProviders {
  */
 async function readBrokerNodeIdentity(
   conn: BrokerConnection
-): Promise<{ nodeId: string; nodeName: string } | null> {
+): Promise<{ nodeId: string; nodeName: string; nodeToken?: string } | null> {
   const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
   try {
     const session = await client.getSession();
     if (!session.node_id) return null;
-    return { nodeId: session.node_id, nodeName: session.node_name ?? session.node_id };
+    return {
+      nodeId: session.node_id,
+      nodeName: session.node_name ?? session.node_id,
+      ...(session.node_token ? { nodeToken: session.node_token } : {}),
+    };
   } catch {
     return null;
   } finally {
@@ -351,15 +355,18 @@ async function startNodeCapabilityProviders(
     deps.warn('Capability providers skipped: broker connection file was not available.');
     return undefined;
   }
-  const nodeToken = deps.env.RELAY_NODE_TOKEN?.trim();
   const baseUrl = deps.env.RELAY_BASE_URL?.trim();
-  if (!nodeToken) {
-    deps.warn('Capability providers skipped: RELAY_NODE_TOKEN is not set (run `relay cloud enroll`).');
-    return undefined;
-  }
   const identity = await readBrokerNodeIdentity(conn);
   if (!identity) {
     deps.warn('Capability providers skipped: the broker did not report its node id yet.');
+    return undefined;
+  }
+  // The broker mints its own node token when RELAY_NODE_TOKEN is unset (local,
+  // un-enrolled); all providers on the node share that token, so fall back to
+  // the one it reports on its session rather than requiring pre-enrollment.
+  const nodeToken = deps.env.RELAY_NODE_TOKEN?.trim() || identity.nodeToken;
+  if (!nodeToken) {
+    deps.warn('Capability providers skipped: no node token available from the broker or environment.');
     return undefined;
   }
 
@@ -395,7 +402,14 @@ async function startNodeCapabilityProviders(
   if (pythonConfig) {
     pythonChild = startPythonNodeProvider(
       pythonConfig,
-      { nodeToken, baseUrl, nodeId: identity.nodeId, nodeName: identity.nodeName },
+      {
+        nodeToken,
+        baseUrl,
+        nodeId: identity.nodeId,
+        // Prefer the enrolled/override name so a Cloud-enrolled py provider
+        // registers under the same name as the TS provider, not the broker default.
+        nodeName: options.nodeName ?? identity.nodeName,
+      },
       deps
     );
   }

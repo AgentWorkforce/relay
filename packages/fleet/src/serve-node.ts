@@ -177,6 +177,9 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     if (options.signal?.aborted) {
       return;
     }
+    // A non-abort registration failure leaves serve()'s promise pending and the
+    // socket open; stop the client before surfacing the error.
+    await client.stop();
     throw error;
   }
 
@@ -237,7 +240,8 @@ function makeContext(options: ServeNodeOptions, nodeCtx: NodeHandlerContext): Fl
           ...(message.data ? { data: message.data as NodeMessageInput['data'] } : {}),
         }),
     },
-    spawnAgent: (spawn: FleetSpawnAgentInput) => nodeCtx.spawnAgent(buildSpawnInput(spawn)),
+    spawnAgent: (spawn: FleetSpawnAgentInput) =>
+      nodeCtx.spawnAgent(buildSpawnInput(spawn, nodeCtx.invocationId)),
   };
 }
 
@@ -246,8 +250,10 @@ function makeContext(options: ServeNodeOptions, nodeCtx: NodeHandlerContext): Fl
  * flattened to the top level so the engine's capacity placement reads `cli`
  * (the harness) and the broker's spawn executor reads `name`/`cli`/`task`.
  */
-function buildSpawnInput(spawn: FleetSpawnAgentInput): NodeSpawnInput {
-  const invocationId = spawn.invocationId;
+function buildSpawnInput(spawn: FleetSpawnAgentInput, fallbackInvocationId?: string): NodeSpawnInput {
+  // Fall back to the handler's own invocation id so a custom handler that calls
+  // ctx.spawnAgent without an explicit id keeps the tracing/reply correlation.
+  const invocationId = spawn.invocationId ?? fallbackInvocationId;
   return {
     ...spawn.agent,
     ...(spawn.initialTask !== undefined ? { task: spawn.initialTask } : {}),

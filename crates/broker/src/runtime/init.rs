@@ -299,6 +299,12 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // attach to this same node id.
     let session_node_id = node_id.clone();
     let session_node_name = node_name.clone();
+    // The node token is shared by every provider on this node (spec §2). Expose
+    // the broker's resolved token on the api-key-gated session so the CLI can
+    // serve local config providers without a pre-enrolled RELAY_NODE_TOKEN (the
+    // broker mints its own in that case). Alongside the workspace key already
+    // returned there, this stays within the local trust boundary.
+    let session_node_token = node_token.clone();
     // Wire a re-mint facility so a node-control 401 (stale/wrong-scoped token)
     // discards the cached token and mints a fresh one, instead of looping
     // forever on the rejected token. Mirrors the initial mint above. Absent when
@@ -379,6 +385,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         default_workspace_id: default_workspace_id.clone(),
         node_id: session_node_id,
         node_name: session_node_name,
+        node_token: session_node_token,
         persist: cmd.persist,
     });
     {

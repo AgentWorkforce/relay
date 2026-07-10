@@ -145,6 +145,7 @@ async function runFleetStatus(
         pid: conn.pid,
         workspaceKey: session.workspace_key,
         brokerVersion: session.broker_version,
+        protocolVersion: session.protocol_version,
         nodeId: session.node_id,
         nodeName: session.node_name,
       };

@@ -304,6 +304,9 @@ struct ListenApiState {
     node_id: String,
     /// The node's name (the target others address).
     node_name: String,
+    /// The node's shared `nt_live_` token, returned so local providers can attach
+    /// to this node without a pre-enrolled token (the broker mints its own).
+    node_token: Option<String>,
     /// Whether the broker is in persist mode
     persist: bool,
     /// When the broker started
@@ -339,6 +342,7 @@ pub struct ListenApiConfig {
     pub default_workspace_id: Option<WorkspaceId>,
     pub node_id: String,
     pub node_name: String,
+    pub node_token: Option<String>,
     pub persist: bool,
 }
 
@@ -379,6 +383,7 @@ fn listen_api_router_with_auth(
         broker_version: crate::util::version::broker_version().to_string(),
         node_id: config.node_id,
         node_name: config.node_name,
+        node_token: config.node_token,
         persist: config.persist,
         started_at: std::time::Instant::now(),
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -574,6 +579,7 @@ async fn listen_api_session(
         "default_workspace_id": state.default_workspace_id,
         "node_id": state.node_id,
         "node_name": state.node_name,
+        "node_token": state.node_token,
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
     }))
@@ -3068,6 +3074,7 @@ mod auth_tests {
                     default_workspace_id: None,
                     node_id: "node_test".to_string(),
                     node_name: "test-node".to_string(),
+                    node_token: None,
                     persist: false,
                 },
                 broker_api_key.map(ToString::to_string),

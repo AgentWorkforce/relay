@@ -119,6 +119,8 @@ export interface SessionInfo {
   node_id?: string;
   /** The node's name (the target others address). */
   node_name?: string;
+  /** The node's shared token, so local providers attach without pre-enrollment. */
+  node_token?: string;
   mode: string;
   uptime_secs: number;
 }

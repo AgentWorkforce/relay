@@ -83,6 +83,18 @@ class NodeProvider(_NodeProvider):
                 "No node id found. Set RELAY_NODE_ID or serve this provider under `relay node up`."
             )
 
+        # Drop any keys this method already supplies so a caller's stray
+        # `**dict` can't trigger "multiple values for keyword argument".
+        handled = {
+            "base_url",
+            "node_token",
+            "node_id",
+            "node_name",
+            "provider",
+            "capabilities",
+            "max_agents",
+        }
+        extra = {key: value for key, value in kwargs.items() if key not in handled}
         return cls(
             **({"base_url": resolved_base} if resolved_base else {}),
             node_token=token,
@@ -91,7 +103,7 @@ class NodeProvider(_NodeProvider):
             provider={"name": provider_name or f"{node_name}-python"},
             capabilities=capabilities,
             max_agents=max_agents,
-            **kwargs,
+            **extra,
         )
 
 
