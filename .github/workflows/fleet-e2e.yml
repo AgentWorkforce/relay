@@ -56,14 +56,14 @@ jobs:
       # node-provider model (broker registers as the `broker` provider carrying a
       # `provider` identity + capacity `kind`), so it REQUIRES the node-provider
       # engine (relaycast#243/#244, released as 6.0.0) — a pre-provider engine
-      # rejects the `provider` field and no node comes online. Pinned to a SHA on
-      # relaycast main for reproducibility; the roster-snapshot/Bearer-auth compat
-      # this E2E surfaced earlier is included.
+      # rejects the `provider` field and no node comes online. Pinned to the
+      # v6.0.0 release tag's commit so CI runs the same engine the published
+      # packages came from (the roster-snapshot/Bearer-auth compat is included).
       - name: Checkout relaycast engine (node-provider model)
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: e905f3acfb790279ee2eb964cf711f29de87f718 # relaycast main (node-provider engine, 6.0.0+)
+          ref: e994671c1ea5cae1ee8b6e2f233ba44b3be8098e # relaycast v6.0.0 (node-provider engine)
           path: relaycast-engine
 
       - name: Setup Node.js
