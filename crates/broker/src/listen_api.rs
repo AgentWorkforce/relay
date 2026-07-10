@@ -305,8 +305,9 @@ struct ListenApiState {
     /// The node's name (the target others address).
     node_name: String,
     /// The node's shared `nt_live_` token, returned so local providers can attach
-    /// to this node without a pre-enrolled token (the broker mints its own).
-    node_token: Option<String>,
+    /// to this node without a pre-enrolled token (the broker mints its own). Held
+    /// behind a shared handle so a re-mint is reflected in later session reads.
+    node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Whether the broker is in persist mode
     persist: bool,
     /// When the broker started
@@ -342,7 +343,7 @@ pub struct ListenApiConfig {
     pub default_workspace_id: Option<WorkspaceId>,
     pub node_id: String,
     pub node_name: String,
-    pub node_token: Option<String>,
+    pub node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     pub persist: bool,
 }
 
@@ -579,7 +580,7 @@ async fn listen_api_session(
         "default_workspace_id": state.default_workspace_id,
         "node_id": state.node_id,
         "node_name": state.node_name,
-        "node_token": state.node_token,
+        "node_token": state.node_token.read().ok().and_then(|token| token.clone()),
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
     }))
@@ -3074,7 +3075,7 @@ mod auth_tests {
                     default_workspace_id: None,
                     node_id: "node_test".to_string(),
                     node_name: "test-node".to_string(),
-                    node_token: None,
+                    node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     persist: false,
                 },
                 broker_api_key.map(ToString::to_string),

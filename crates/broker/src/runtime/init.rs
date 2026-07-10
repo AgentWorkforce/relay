@@ -303,8 +303,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // the broker's resolved token on the api-key-gated session so the CLI can
     // serve local config providers without a pre-enrolled RELAY_NODE_TOKEN (the
     // broker mints its own in that case). Alongside the workspace key already
-    // returned there, this stays within the local trust boundary.
-    let session_node_token = node_token.clone();
+    // returned there, this stays within the local trust boundary. A shared handle
+    // (updated by the node-control re-mint path) keeps the session token current.
+    let session_node_token = std::sync::Arc::new(std::sync::RwLock::new(node_token.clone()));
     // Wire a re-mint facility so a node-control 401 (stale/wrong-scoped token)
     // discards the cached token and mints a fresh one, instead of looping
     // forever on the rejected token. Mirrors the initial mint above. Absent when
@@ -330,6 +331,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             node_name,
             broker_version,
             token_minter,
+            session_token: Some(session_node_token.clone()),
         },
         fleet_control_rx,
         fleet_event_tx,

@@ -55,6 +55,10 @@ pub(crate) struct FleetControlConfig {
     /// current one with HTTP 401 on the `/v1/node/ws` handshake. Absent in tests
     /// and when no workspace key is available.
     pub(crate) token_minter: Option<NodeTokenMinter>,
+    /// Shared handle for the current node token, mirrored to the HTTP session so
+    /// providers reading it after a re-mint get the fresh token, not the startup
+    /// snapshot. Absent in tests.
+    pub(crate) session_token: Option<std::sync::Arc<std::sync::RwLock<Option<String>>>>,
 }
 
 /// Re-mints a fresh node token via `POST /v1/nodes` and rewrites the
@@ -1013,6 +1017,13 @@ pub(crate) async fn run_node_control_client(
                         // above), so repeated 401s still accumulate toward the cap
                         // even when each mint succeeds.
                         config.node_token = Some(fresh);
+                        // Mirror the fresh token to the HTTP session so a provider
+                        // reading it after this re-mint gets the valid token.
+                        if let Some(shared) = &config.session_token {
+                            if let Ok(mut guard) = shared.write() {
+                                guard.clone_from(&config.node_token);
+                            }
+                        }
                     }
                 } else {
                     tracing::error!(
@@ -2019,6 +2030,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,
@@ -2130,6 +2142,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,
@@ -2255,6 +2268,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,
@@ -2361,6 +2375,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,

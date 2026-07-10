@@ -3,6 +3,7 @@ import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import { withDefaults, type CoreDependencies } from './core.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
+import { redactSecrets } from '../lib/redact.js';
 import {
   addSdkOptions,
   printJson,
@@ -178,5 +179,7 @@ async function runFleetStatus(
     node = { available: false, reason: 'broker did not report a node name' };
   }
 
-  deps.log(JSON.stringify({ broker, node }, null, 2));
+  // Redact the node token / workspace key structurally so status output (which a
+  // user may paste into a bug report) never carries a live credential.
+  deps.log(JSON.stringify(redactSecrets({ broker, node }), null, 2));
 }
