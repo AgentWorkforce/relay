@@ -66,9 +66,7 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "948ad813"
-  ],
+  "commits": ["948ad813"],
   "filesChanged": [
     "CHANGELOG.md",
     "crates/broker/src/fleet_wire.rs",

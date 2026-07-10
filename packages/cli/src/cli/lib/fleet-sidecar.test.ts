@@ -43,12 +43,7 @@ describe('nodeCapacityHarnesses', () => {
       name: 'p',
       capabilities: { 'spawn:opencode': spawn({ runtime: 'pty', command: 'opencode' }) },
     });
-    expect(nodeCapacityHarnesses(null, definition)).toEqual([
-      'claude',
-      'codex',
-      'gemini',
-      'opencode',
-    ]);
+    expect(nodeCapacityHarnesses(null, definition)).toEqual(['claude', 'codex', 'gemini', 'opencode']);
   });
 });
 

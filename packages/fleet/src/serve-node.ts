@@ -1,8 +1,4 @@
-import {
-  NodeProviderClient,
-  type NodeCapabilityHandler,
-  type NodeHandlerContext,
-} from '@relaycast/sdk';
+import { NodeProviderClient, type NodeCapabilityHandler, type NodeHandlerContext } from '@relaycast/sdk';
 
 import {
   invokeNodeHandler,
@@ -200,7 +196,8 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
  * and expose the fleet action context built from the engine handler context.
  */
 function adaptHandler(options: ServeNodeOptions, name: string): NodeCapabilityHandler {
-  return (input, nodeCtx) => invokeNodeHandler(options.definition, name, input, makeContext(options, nodeCtx));
+  return (input, nodeCtx) =>
+    invokeNodeHandler(options.definition, name, input, makeContext(options, nodeCtx));
 }
 
 // The engine handler context takes wire-JSON shapes; the fleet authoring API

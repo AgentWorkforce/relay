@@ -3,12 +3,7 @@ import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
 
-import type {
-  CoreDependencies,
-  CoreProjectPaths,
-  CoreRelay,
-  SpawnedProcess,
-} from '../commands/core.js';
+import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
@@ -345,9 +340,8 @@ async function startNodeCapabilityProviders(
   nodeDefinition: FleetNodeDefinition | undefined
 ): Promise<RunningNodeProviders | undefined> {
   // Definition discovery is opt-in (`node up` only), matching the TS config scan.
-  const pythonConfig = options.discoverConfig === true
-    ? discoverPythonNodeConfigPath(paths.projectRoot)
-    : undefined;
+  const pythonConfig =
+    options.discoverConfig === true ? discoverPythonNodeConfigPath(paths.projectRoot) : undefined;
   if (!nodeDefinition && !pythonConfig) {
     return undefined;
   }
@@ -444,7 +438,9 @@ function startPythonNodeProvider(
   };
   try {
     const child = deps.spawnProcess(python, [configPath], { stdio: 'inherit', env });
-    deps.log(`Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`);
+    deps.log(
+      `Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
+    );
     return child;
   } catch (err) {
     deps.warn(`Python node provider skipped: ${toErrorMessage(err)}`);

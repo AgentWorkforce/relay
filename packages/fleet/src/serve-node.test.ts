@@ -135,7 +135,13 @@ describe('serveNode', () => {
     sock.emit(acceptAll(sock.lastRegister()));
     await flush();
 
-    sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'inv_1', action: 'run-etl', input: { date: '2026-07-09' } });
+    sock.emit({
+      v: 1,
+      type: 'action.invoke',
+      invocation_id: 'inv_1',
+      action: 'run-etl',
+      input: { date: '2026-07-09' },
+    });
     await flush();
 
     const [result] = sock.sentOfType('action.result');
@@ -182,7 +188,13 @@ describe('serveNode', () => {
     sock.emit(acceptAll(register));
     await flush();
 
-    sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'inv_3', action: 'spawn:codex', input: { name: 'worker-a' } });
+    sock.emit({
+      v: 1,
+      type: 'action.invoke',
+      invocation_id: 'inv_3',
+      action: 'spawn:codex',
+      input: { name: 'worker-a' },
+    });
     await flush();
 
     const [nodeSpawn] = sock.sentOfType('node.spawn');

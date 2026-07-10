@@ -18,10 +18,12 @@ Node providers step 3 (relay): broker demoted to the 'broker' capacity provider 
 ## Key Decisions
 
 ### Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider
+
 - **Chose:** Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider
 - **Reasoning:** Engine placement matches exact capability names and capacityProviderName needs the broker to own the harness; §3.3 no-silent-bypass means an implicit spawn shadow would fail-fast when its TS provider is offline
 
 ### Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node
+
 - **Chose:** Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node
 - **Reasoning:** Engine rejects node.register on node_id mismatch; the broker is the authoritative resolver (pinned to machine seed)
 
@@ -30,7 +32,8 @@ Node providers step 3 (relay): broker demoted to the 'broker' capacity provider 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider: Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider
 - Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node: Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node
