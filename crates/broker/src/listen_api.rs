@@ -1988,10 +1988,10 @@ async fn listen_api_get_pending(
 
 /// `POST /api/spawned/{name}/flush` → `{ "flushed": N }`.
 ///
-/// Drains the queue and injects each message into the worker in order
-/// using the existing fire-and-forget inject path. The inbound delivery mode is
-/// *not* changed — a caller still in `manual_flush` delivery mode will continue
-/// to queue newly-arriving messages.
+/// Injects queued messages into the worker in FIFO order and stops at the first
+/// failure, retaining that message and its suffix for a later attempt. The
+/// inbound delivery mode is *not* changed — a caller still in `manual_flush`
+/// delivery mode will continue to queue newly-arriving messages.
 async fn listen_api_flush_pending(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -4763,6 +4763,7 @@ mod auth_tests {
                             mode: MessageInjectionMode::Steer,
                             queued_at_ms: 100,
                             event_id: Some(EventId::new("evt_1")),
+                            relaycast_receipt: None,
                         },
                         PendingRelayMessage {
                             from: "Bob".to_string(),
@@ -4775,6 +4776,7 @@ mod auth_tests {
                             mode: MessageInjectionMode::Wait,
                             queued_at_ms: 200,
                             event_id: None,
+                            relaycast_receipt: None,
                         },
                     ]));
                 }

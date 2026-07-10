@@ -6,10 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::fleet_wire::{BrokerToRelaycast, Deliver, DeliveryMode, FLEET_WIRE_VERSION};
 use crate::ids::{
     AgentId, ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias,
     WorkspaceId,
 };
+use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
     HeadlessHarnessDriver, MessageInjectionMode, RelayDelivery, ResolvedHarnessConfig,
@@ -51,7 +53,9 @@ use crate::dedup::DedupCache;
 use crate::relaycast::{
     format_worker_preregistration_error, RelaycastHttpClient, RelaycastRegistrationError, WsControl,
 };
-use crate::types::{InboundDeliveryMode, InboundDeliveryState};
+use crate::types::{
+    InboundDeliveryMode, InboundDeliveryState, PendingRelayMessage, RelaycastDeliveryReceipt,
+};
 use relaycast::ObserverScope;
 
 fn env_test_lock() -> &'static Mutex<()> {
@@ -126,6 +130,42 @@ fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {
         priority: 1,
         mode: MessageInjectionMode::Steer,
         event_id: Some(event_id),
+        relaycast_receipt: None,
+    }
+}
+
+fn fleet_deliver(seq: u64) -> Deliver {
+    Deliver {
+        v: FLEET_WIRE_VERSION,
+        agent: "worker-a".to_string(),
+        agent_id: "agent-worker-a".to_string(),
+        delivery_id: format!("delivery-{seq}"),
+        msg_id: format!("message-{seq}"),
+        seq,
+        mode: DeliveryMode::Wait,
+        payload: json!({"type": "message.created", "text": format!("message {seq}")}),
+    }
+}
+
+fn held_fleet_message(deliver: &Deliver) -> PendingRelayMessage {
+    PendingRelayMessage {
+        from: "Alice".to_string(),
+        body: format!("message {}", deliver.seq),
+        target: MessageTarget::new("worker-a"),
+        thread_id: None,
+        workspace_id: Some(WorkspaceId::new("ws_demo")),
+        workspace_alias: Some(WorkspaceAlias::new("Demo")),
+        priority: 2,
+        mode: MessageInjectionMode::Wait,
+        queued_at_ms: super::unix_timestamp_millis(),
+        event_id: Some(EventId::from(&deliver.msg_id)),
+        relaycast_receipt: Some(RelaycastDeliveryReceipt {
+            agent: WorkerName::from(&deliver.agent),
+            agent_id: AgentId::from(&deliver.agent_id),
+            delivery_id: DeliveryId::from(&deliver.delivery_id),
+            msg_id: EventId::from(&deliver.msg_id),
+            seq: deliver.seq,
+        }),
     }
 }
 
@@ -246,7 +286,7 @@ async fn inbound_queue_worker_missing_does_not_create_state() {
 }
 
 #[tokio::test]
-async fn inbound_queue_eviction_surfaces_dropped_message() {
+async fn inbound_queue_rejects_overflow_without_evicting_held_message() {
     let worker_name = "worker-a";
     let workers = make_worker_registry_with_worker(worker_name).await;
     let mut delivery_states = HashMap::from([(
@@ -264,30 +304,118 @@ async fn inbound_queue_eviction_surfaces_dropped_message() {
         assert_eq!(result.evicted_from, None);
     }
 
-    let result = queue_inbound_for_delivery_mode(
-        &mut delivery_states,
-        &workers,
-        worker_name,
-        inbound_ctx("evt_overflow"),
-    );
+    let before = delivery_states
+        .get(worker_name)
+        .expect("state should exist")
+        .pending_snapshot();
+    let rejected_deliver = fleet_deliver(1);
+    let mut rejected_ctx = inbound_ctx("message-1");
+    rejected_ctx.relaycast_receipt = held_fleet_message(&rejected_deliver).relaycast_receipt;
+    let result =
+        queue_inbound_for_delivery_mode(&mut delivery_states, &workers, worker_name, rejected_ctx);
 
-    assert_eq!(result.outcome, InboundQueueOutcome::Queued);
-    assert_eq!(
-        result.evicted_from.as_deref(),
-        Some("Alice"),
-        "hitting the per-worker cap must surface the evicted sender so callers can emit delivery_dropped"
-    );
+    assert_eq!(result.outcome, InboundQueueOutcome::RejectedFull);
+    assert_eq!(result.evicted_from, None);
     assert_eq!(
         delivery_states
             .get(worker_name)
             .expect("state should exist")
-            .pending_snapshot()
-            .len(),
-        crate::types::MAX_PENDING_PER_WORKER,
-        "queue stays at the cap after eviction"
+            .pending_snapshot(),
+        before,
+        "a full queue must remain byte-for-byte unchanged"
     );
+    let delivery_book = FleetDeliveryBook::default();
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 0);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 0);
 
     cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let first_message = held_fleet_message(&first);
+    let second_message = held_fleet_message(&second);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(first_message);
+    state.accept_inbound(second_message);
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 2);
+    assert_eq!(result.failure, None);
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 2);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 2);
+    for expected_seq in [1, 2] {
+        match fleet_control_rx.recv().await {
+            Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack))) => {
+                assert_eq!(ack.agent, worker_name);
+                assert_eq!(ack.up_to_seq, expected_seq);
+            }
+            other => panic!("expected delivery ACK {expected_seq}, got {other:?}"),
+        }
+    }
+    assert!(fleet_control_rx.try_recv().is_err());
+
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn manual_flush_failure_retains_failed_message_and_suffix_without_ack() {
+    let worker_name = WorkerName::from("worker-a");
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+    let mut workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let expected = vec![held_fleet_message(&first), held_fleet_message(&second)];
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    for message in expected.iter().cloned() {
+        state.accept_inbound(message);
+    }
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &worker_name,
+        Duration::from_millis(50),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 0);
+    assert!(result.failure.is_some());
+    assert_eq!(delivery_states[&worker_name].pending_snapshot(), expected);
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 2);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 0);
+    assert!(fleet_control_rx.try_recv().is_err());
 }
 
 fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {

@@ -1429,52 +1429,68 @@ impl BrokerRuntime {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
-                    let entry = delivery_states.entry(name.clone()).or_default();
-                    let previous = entry.mode;
-                    entry.mode = mode;
-                    let to_flush: Vec<PendingRelayMessage> = if previous
-                        == InboundDeliveryMode::ManualFlush
-                        && mode == InboundDeliveryMode::AutoInject
-                    {
-                        entry.drain_pending()
+                    let previous = delivery_states.entry(name.clone()).or_default().mode;
+                    let transition_requires_flush = previous == InboundDeliveryMode::ManualFlush
+                        && mode == InboundDeliveryMode::AutoInject;
+                    let flush_result = if transition_requires_flush {
+                        tracing::info!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            "draining pending queue on manual_flush → auto_inject transition"
+                        );
+                        super::fleet::flush_pending_relay_messages(
+                            delivery_states,
+                            workers,
+                            fleet_delivery_book,
+                            fleet_control_tx,
+                            &name,
+                            delivery_retry_interval,
+                        )
+                        .await
                     } else {
-                        Vec::new()
+                        super::fleet::FlushPendingRelayResult::default()
                     };
-                    let flushed = to_flush.len();
-                    if !to_flush.is_empty() {
+                    let flushed = flush_result.flushed;
+                    if let Some(error) = flush_result.failure.as_deref() {
+                        tracing::warn!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            flushed,
+                            error,
+                            "stopped delivery-mode transition at failed pending message"
+                        );
+                    }
+                    let actual_mode = if transition_requires_flush && flush_result.failure.is_some()
+                    {
+                        InboundDeliveryMode::ManualFlush
+                    } else {
+                        delivery_states.entry(name.clone()).or_default().mode = mode;
+                        mode
+                    };
+                    if flushed > 0 {
                         tracing::info!(
                             target = "agent_relay::broker",
                             worker = %name,
                             drained = flushed,
-                            "draining pending queue on manual_flush → auto_inject transition"
+                            "drained pending queue on delivery-mode transition"
                         );
-                    }
-                    for queued in to_flush {
-                        inject_pending_relay_message(
-                            workers,
-                            pending_deliveries,
-                            &name,
-                            &queued,
-                            delivery_retry_interval,
-                        )
-                        .await;
                     }
                     tracing::info!(
                         target = "agent_relay::broker",
                         worker = %name,
                         previous_mode = previous.as_wire_str(),
-                        mode = mode.as_wire_str(),
+                        mode = actual_mode.as_wire_str(),
                         flushed,
                         "inbound delivery mode updated"
                     );
-                    if previous != mode {
+                    if previous != actual_mode {
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind":"agent_inbound_delivery_mode_changed",
                                 "name":&name,
                                 "previous_mode":previous.as_wire_str(),
-                                "mode":mode.as_wire_str(),
+                                "mode":actual_mode.as_wire_str(),
                             }),
                         )
                         .await;
@@ -1491,7 +1507,10 @@ impl BrokerRuntime {
                         )
                         .await;
                     }
-                    let _ = reply.send(Ok(SetInboundDeliveryModeOk { mode, flushed }));
+                    let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                        mode: actual_mode,
+                        flushed,
+                    }));
                 }
             }
             ListenApiRequest::GetPending { name, reply } => {
@@ -1509,11 +1528,16 @@ impl BrokerRuntime {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
-                    let to_flush: Vec<PendingRelayMessage> = delivery_states
-                        .get_mut(&name)
-                        .map(|state| state.drain_pending())
-                        .unwrap_or_default();
-                    let flushed = to_flush.len();
+                    let flush_result = super::fleet::flush_pending_relay_messages(
+                        delivery_states,
+                        workers,
+                        fleet_delivery_book,
+                        fleet_control_tx,
+                        &name,
+                        delivery_retry_interval,
+                    )
+                    .await;
+                    let flushed = flush_result.flushed;
                     if flushed > 0 {
                         tracing::info!(
                             target = "agent_relay::broker",
@@ -1522,15 +1546,14 @@ impl BrokerRuntime {
                             "flushing pending queue on explicit /flush"
                         );
                     }
-                    for queued in to_flush {
-                        inject_pending_relay_message(
-                            workers,
-                            pending_deliveries,
-                            &name,
-                            &queued,
-                            delivery_retry_interval,
-                        )
-                        .await;
+                    if let Some(error) = flush_result.failure.as_deref() {
+                        tracing::warn!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            flushed,
+                            error,
+                            "stopped explicit flush at failed pending message"
+                        );
                     }
                     if flushed > 0 {
                         let _ = send_event(

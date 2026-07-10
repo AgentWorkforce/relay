@@ -400,6 +400,7 @@ fn emit_delivery_read_ack_telemetry(
 pub(crate) enum InboundQueueOutcome {
     Queued,
     DrainNow(Vec<PendingRelayMessage>),
+    RejectedFull,
     WorkerMissing,
 }
 
@@ -446,6 +447,7 @@ pub(crate) struct InboundContext<'a> {
     pub(super) priority: u8,
     pub(super) mode: MessageInjectionMode,
     pub(super) event_id: Option<&'a str>,
+    pub(super) relaycast_receipt: Option<crate::types::RelaycastDeliveryReceipt>,
 }
 
 /// Queue an inbound relay message through the per-worker [`InboundDeliveryMode`].
@@ -475,6 +477,21 @@ pub(crate) fn queue_inbound_for_delivery_mode(
     let state = delivery_states
         .entry(WorkerName::from(worker_name))
         .or_default();
+    if state.pending.len() >= crate::types::MAX_PENDING_PER_WORKER {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            from = %ctx.from,
+            mode = state.mode.as_wire_str(),
+            queue_len = state.pending.len(),
+            max_pending = crate::types::MAX_PENDING_PER_WORKER,
+            "pending queue full - rejecting newest message"
+        );
+        return InboundQueueResult {
+            outcome: InboundQueueOutcome::RejectedFull,
+            evicted_from: None,
+        };
+    }
     let should_drain = state.should_drain_immediately();
     let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
     let msg = PendingRelayMessage {
@@ -488,6 +505,7 @@ pub(crate) fn queue_inbound_for_delivery_mode(
         mode: ctx.mode,
         queued_at_ms,
         event_id: ctx.event_id.map(EventId::from),
+        relaycast_receipt: ctx.relaycast_receipt,
     };
     let evicted_from = match state.accept_inbound(msg) {
         InboundDeliveryDispatch::Queued { queue_len } => {
@@ -579,38 +597,46 @@ pub(crate) async fn try_inject_pending_relay_message(
     }
 }
 
-/// Inject a previously-queued pending relay message into the worker via
-/// the existing `queue_and_try_delivery_raw` path. Used by the
-/// `/api/spawned/{name}/flush` handler and by the auto-drain on a
-/// `manual_flush → auto_inject` transition. Failures are logged but not
-/// propagated — the broker treats `flush` as best-effort fire-and-forget
-/// the same way `/api/send` does for individual targets.
-pub(crate) async fn inject_pending_relay_message(
+/// Attempt one PTY injection without transferring ownership to the broker's
+/// retry queue. Manual-flush callers keep the original message at the head of
+/// their FIFO on failure, along with its Relaycast receipt, so retrying cannot
+/// race a second broker-owned copy of the same delivery.
+pub(crate) async fn try_inject_pending_relay_message_once(
     workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
     msg: &PendingRelayMessage,
     retry_interval: Duration,
-) {
-    let event_id = msg.event_id.as_deref().unwrap_or("");
-    if let Err(error) = try_inject_pending_relay_message(
-        workers,
-        pending_deliveries,
-        worker_name,
-        msg,
-        retry_interval,
-    )
-    .await
-    {
-        tracing::warn!(
-            target = "agent_relay::broker",
-            worker = %worker_name,
-            from = %msg.from,
-            event_id = %event_id,
-            error = %error,
-            "failed to inject pending relay message during flush"
-        );
-    }
+) -> Result<()> {
+    let event_id = msg
+        .event_id
+        .clone()
+        .unwrap_or_else(|| EventId::new(format!("flush_{}", Uuid::new_v4().simple())));
+    let delivery_id = msg
+        .relaycast_receipt
+        .as_ref()
+        .map(|receipt| receipt.delivery_id.clone())
+        .unwrap_or_else(|| DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())));
+    let delivery = RelayDelivery {
+        delivery_id,
+        event_id,
+        workspace_id: msg.workspace_id.clone(),
+        workspace_alias: msg.workspace_alias.clone(),
+        from: msg.from.clone(),
+        target: msg.target.clone(),
+        body: msg.body.clone(),
+        thread_id: msg.thread_id.clone(),
+        priority: Some(msg.priority),
+        injection_mode: msg.mode.clone(),
+    };
+
+    timeout(retry_interval, workers.deliver(worker_name, delivery))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "pending relay delivery timed out after {}ms",
+                retry_interval.as_millis()
+            )
+        })?
 }
 
 #[allow(clippy::too_many_arguments)]
