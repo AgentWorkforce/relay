@@ -53,14 +53,18 @@ describe('redactSecrets', () => {
     expect(redacted.self).toBe('[circular]');
   });
 
-  it('redacts a shared (non-cyclic) reference at every occurrence', () => {
+  it('redacts a shared (non-cyclic) reference at every occurrence without mutating the input', () => {
     const creds = { apiKey: 'rk_live_shared' };
-    const redacted = redactSecrets({ a: creds, b: creds }) as {
+    const input = { a: creds, b: creds };
+    const redacted = redactSecrets(input) as {
       a: { apiKey: string };
       b: { apiKey: string };
     };
     // A DAG-shared object is a real value, not a cycle: redact both, never [circular].
     expect(redacted.a.apiKey).toBe('[redacted]');
     expect(redacted.b.apiKey).toBe('[redacted]');
+    // Redaction is a deep copy: the caller's original object is untouched.
+    expect(creds.apiKey).toBe('rk_live_shared');
+    expect(input.a).toBe(creds);
   });
 });
