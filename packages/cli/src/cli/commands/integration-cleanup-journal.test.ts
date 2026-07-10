@@ -42,14 +42,78 @@ const builtHelper = ['debug', 'release']
   .find((candidate) => fs.existsSync(candidate));
 const brokerBinary = builtHelper;
 const itWithBroker = brokerBinary ? it : it.skip;
-if (brokerBinary) {
-  // The journal resolves through the standard broker resolver; pin BOTH of
-  // its env overrides (BROKER_BINARY_PATH outranks AGENT_RELAY_BIN) to the
-  // fresh build so an ambient developer/CI setting can never redirect these
-  // tests to an older release binary.
-  process.env.BROKER_BINARY_PATH = brokerBinary;
-  process.env.AGENT_RELAY_BIN = brokerBinary;
+
+/**
+ * Suite-default helper. With a checkout-local cargo build we pin BOTH
+ * resolver env overrides (BROKER_BINARY_PATH outranks AGENT_RELAY_BIN) to it
+ * so an ambient developer/CI setting — or the published optional broker
+ * package, which predates `journal-lock --journal-file` — can never be
+ * substituted. WITHOUT a build (plain `npm test` CI jobs have no cargo), the
+ * non-kernel tests run against a faithful scripted fake implementing the
+ * same protocol: mkdir-mutex exclusion, v2 marker/sentinel rules, `locked`
+ * handshake, empty-payload abort, and payload commit via temp+rename. The
+ * real kernel semantics (contention, SIGKILL release) stay gated behind
+ * itWithBroker.
+ */
+const FAKE_HELPER_BODY = `const fs = require('fs');
+const args = process.argv;
+const lock = args[args.indexOf('--file') + 1];
+const journal = args[args.indexOf('--journal-file') + 1];
+const timeoutMs = Number(args[args.indexOf('--timeout-ms') + 1] || 5000);
+const mutex = lock + '.fake-mutex';
+const deadline = Date.now() + timeoutMs;
+(function spin() {
+  try {
+    fs.mkdirSync(mutex);
+  } catch {
+    if (Date.now() >= deadline) {
+      console.error('timeout');
+      process.exit(4);
+    }
+    return setTimeout(spin, 25);
+  }
+  process.on('exit', () => {
+    try {
+      fs.rmdirSync(mutex);
+    } catch {}
+  });
+  const MARKER = 'agent-relay-cleanup-lock v2\\n';
+  try {
+    const content = fs.existsSync(lock) ? fs.readFileSync(lock, 'utf8') : '';
+    if (content === '') fs.writeFileSync(lock, MARKER, { mode: 0o600 });
+    else if (content !== MARKER && !MARKER.startsWith(content)) {
+      console.error('sentinel');
+      process.exit(3);
+    } else if (content !== MARKER) fs.writeFileSync(lock, MARKER);
+  } catch (err) {
+    console.error(String(err));
+    process.exit(1);
+  }
+  process.stdout.write('locked\\n');
+  const chunks = [];
+  process.stdin.on('data', (c) => chunks.push(c));
+  process.stdin.on('end', () => {
+    const payload = Buffer.concat(chunks);
+    if (payload.length > 0) {
+      const tmp = journal + '.tmp-' + process.pid;
+      fs.writeFileSync(tmp, payload, { mode: 0o600 });
+      fs.renameSync(tmp, journal);
+    }
+    process.exit(0);
+  });
+})();
+`;
+
+function writeSuiteFakeHelper(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-fake-helper-'));
+  const script = path.join(dir, 'fake-broker.cjs');
+  fs.writeFileSync(script, `#!/usr/bin/env node\n${FAKE_HELPER_BODY}`, { mode: 0o755 });
+  return script;
 }
+
+const suiteHelper = brokerBinary ?? writeSuiteFakeHelper();
+process.env.BROKER_BINARY_PATH = suiteHelper;
+process.env.AGENT_RELAY_BIN = suiteHelper;
 
 /** Spawn the real helper as an external holder; resolves once it holds. */
 function spawnHolder(lockFile: string): Promise<import('node:child_process').ChildProcess> {
@@ -291,13 +355,12 @@ describe('fileCleanupJournal', () => {
     };
     process.env.BROKER_BINARY_PATH = script;
     process.env.AGENT_RELAY_BIN = script;
+    void previous;
     return () => {
-      process.env.BROKER_BINARY_PATH = previous.broker;
-      process.env.AGENT_RELAY_BIN = previous.bin;
-      if (brokerBinary) {
-        process.env.BROKER_BINARY_PATH = brokerBinary;
-        process.env.AGENT_RELAY_BIN = brokerBinary;
-      }
+      // Restore the suite default (real build when present, else the
+      // faithful suite fake) — never an ambient/published binary.
+      process.env.BROKER_BINARY_PATH = suiteHelper;
+      process.env.AGENT_RELAY_BIN = suiteHelper;
     };
   }
 
