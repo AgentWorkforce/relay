@@ -4774,5 +4774,4 @@ mod auth_tests {
             );
         }
     }
-
 }

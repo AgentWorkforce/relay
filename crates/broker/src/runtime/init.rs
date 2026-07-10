@@ -808,12 +808,18 @@ fn node_capacity_harnesses() -> Vec<String> {
         })
         .unwrap_or_default();
     let source: Vec<String> = if configured.is_empty() {
-        DEFAULT_NODE_HARNESSES.iter().map(|h| (*h).to_string()).collect()
+        DEFAULT_NODE_HARNESSES
+            .iter()
+            .map(|h| (*h).to_string())
+            .collect()
     } else {
         configured
     };
     let mut seen = std::collections::HashSet::new();
-    source.into_iter().filter(|h| seen.insert(h.clone())).collect()
+    source
+        .into_iter()
+        .filter(|h| seen.insert(h.clone()))
+        .collect()
 }
 
 /// Provider-level agent capacity, from `AGENT_RELAY_NODE_MAX_AGENTS`. Absent
@@ -841,7 +847,10 @@ mod tests {
             "broker manifest must advertise its capacity"
         );
         assert!(
-            manifest.capabilities.iter().all(|cap| cap.kind.as_deref() == Some("capacity")),
+            manifest
+                .capabilities
+                .iter()
+                .all(|cap| cap.kind.as_deref() == Some("capacity")),
             "every advertised capability must be kind capacity, got {:?}",
             manifest.capabilities
         );
@@ -850,7 +859,10 @@ mod tests {
             "manifest must not advertise a bare spawn capability"
         );
         assert!(
-            manifest.capabilities.iter().any(|cap| cap.name == "release"),
+            manifest
+                .capabilities
+                .iter()
+                .any(|cap| cap.name == "release"),
             "manifest must advertise release capacity"
         );
         assert!(

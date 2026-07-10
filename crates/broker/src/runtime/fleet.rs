@@ -487,7 +487,6 @@ impl BrokerRuntime {
         )
         .await;
     }
-
 }
 
 /// Bind an agent to this node by sending node-control `agent.register` and

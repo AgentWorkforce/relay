@@ -583,7 +583,7 @@ mod tests {
         assert_eq!(decoded.request_id.as_deref(), Some("req_1"));
     }
 
-                        #[test]
+    #[test]
     fn broker_to_worker_delivery_round_trip() {
         let msg = BrokerToWorker::DeliverRelay(RelayDelivery {
             delivery_id: "del_1".into(),
@@ -909,7 +909,7 @@ mod tests {
         assert_eq!(raw["payload"]["cols"], 120);
     }
 
-            #[test]
+    #[test]
     fn broker_event_channel_subscribed_round_trip() {
         let event = BrokerEvent::ChannelSubscribed {
             name: "Worker1".into(),

@@ -29,9 +29,7 @@ use crate::{
         AgentId, ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
         WorkspaceAlias, WorkspaceId,
     },
-    node_control::{
-        FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot,
-    },
+    node_control::{FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot},
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
         HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, NodeManifest,
