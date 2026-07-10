@@ -136,7 +136,8 @@ mod tests {
     use super::*;
 
     fn temp_lock_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("journal-lock-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("journal-lock-{}-{}", name, std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("pending-cleanups.json.lock")
     }
