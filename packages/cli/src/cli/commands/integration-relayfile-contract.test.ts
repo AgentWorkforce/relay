@@ -114,6 +114,7 @@ describeContract('relayfile bridge contract (real control-plane daemon)', () => 
       webhookToken: 'tok_contract',
       subscriptionId: 'sub_contract',
       webhookSubscriptionId: 'whsub_contract',
+      pendingWebhookSubscriptionIds: ['whsub_old_contract'],
     });
 
     const afterBind = await bridge.listBindings();
@@ -125,6 +126,7 @@ describeContract('relayfile bridge contract (real control-plane daemon)', () => 
     expect(binding!.webhookId).toBe('wh_contract');
     expect(binding!.subscriptionId).toBe('sub_contract');
     expect(binding!.webhookSubscriptionId).toBe('whsub_contract');
+    expect(binding!.pendingWebhookSubscriptionIds).toEqual(['whsub_old_contract']);
 
     await bridge.unbind('github', pathGlob);
     const afterUnbind = await bridge.listBindings();

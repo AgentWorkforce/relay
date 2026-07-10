@@ -39,6 +39,8 @@ export interface RelayfileBinding {
   subscriptionId: string;
   /** relayfile-cloud subscription that forwards provider records to the inbound webhook. */
   webhookSubscriptionId?: string;
+  /** Superseded relayfile-cloud subscriptions still awaiting a successful delete. */
+  pendingWebhookSubscriptionIds?: string[];
 }
 
 export interface RelayfileResolvedResource {
@@ -71,6 +73,7 @@ export interface RelayfileBridge {
     webhookToken: string;
     subscriptionId: string;
     webhookSubscriptionId: string;
+    pendingWebhookSubscriptionIds: string[];
   }): Promise<void>;
   listBindings(): Promise<RelayfileBinding[]>;
   unbind(provider: string, resource: string): Promise<void>;
@@ -104,6 +107,8 @@ export interface RelayfileBridge {
   }): Promise<RelayfileWebhookSubscription>;
   deleteWebhookSubscription(subscriptionId: string): Promise<void>;
 }
+
+type RelayfileBindingInput = Parameters<RelayfileBridge['bind']>[0];
 
 export type IntegrationCommandDependencies = SdkCommandDeps & {
   resolveLocalRelayOptions: () => Promise<LocalRelayOptions | undefined>;
@@ -189,9 +194,6 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       if (output?.trim()) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
     },
     async bind(input) {
-      // @relayfile/client v0.10.20 forwards this object unchanged at runtime,
-      // but its published BindRequest type predates control-plane API v3. Keep
-      // the cast local until the v3 client package is released.
       await client.bind({
         provider: input.provider,
         resource: input.resource,
@@ -200,7 +202,8 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
         webhookToken: input.webhookToken,
         subscriptionId: input.subscriptionId,
         webhookSubscriptionId: input.webhookSubscriptionId,
-      } as Parameters<typeof client.bind>[0]);
+        pendingWebhookSubscriptionIds: input.pendingWebhookSubscriptionIds,
+      });
     },
     async listBindings() {
       const bindings = await client.listBindings();
@@ -214,6 +217,7 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
           webhookId: b.webhookId ?? '',
           subscriptionId: b.subscriptionId ?? '',
           webhookSubscriptionId: b.webhookSubscriptionId,
+          pendingWebhookSubscriptionIds: b.pendingWebhookSubscriptionIds,
         })
       );
     },
@@ -618,6 +622,38 @@ function warnCleanup(deps: IntegrationCommandDependencies, kind: string, id: str
   );
 }
 
+function uniqueWebhookSubscriptionIds(ids: Array<string | undefined>): string[] {
+  const unique = new Set<string>();
+  for (const id of ids) {
+    const trimmed = id?.trim();
+    if (trimmed) unique.add(trimmed);
+  }
+  return [...unique];
+}
+
+function isAlreadyDeletedWebhookSubscription(err: unknown): boolean {
+  return err instanceof RelayfileControlPlaneError && err.status === 404;
+}
+
+async function deleteWebhookSubscriptions(
+  deps: IntegrationCommandDependencies,
+  subscriptionIds: string[]
+): Promise<string[]> {
+  const remaining: string[] = [];
+  for (const subscriptionId of subscriptionIds) {
+    try {
+      await deps.relayfile.deleteWebhookSubscription(subscriptionId);
+    } catch (err) {
+      // A prior partial attempt may have deleted this ID before losing the
+      // subsequent binding update. A 404 therefore confirms the desired state.
+      if (isAlreadyDeletedWebhookSubscription(err)) continue;
+      warnCleanup(deps, 'relayfile webhook subscription', subscriptionId, err);
+      remaining.push(subscriptionId);
+    }
+  }
+  return remaining;
+}
+
 /**
  * The relayfile binding currently backing this (provider, pathGlob), if any.
  * `pathGlob` MUST be the resolved VFS glob (see resolveResourcePath) — `listBindings`
@@ -654,27 +690,15 @@ async function retireSupersededWebhooks(
     provider: string;
     prefix: string;
     keepWebhookId: string;
-    keepWebhookSubscriptionId: string;
     priorBinding: RelayfileBinding | undefined;
   }
 ): Promise<void> {
-  const { provider, prefix, keepWebhookId, keepWebhookSubscriptionId, priorBinding } = options;
+  const { provider, prefix, keepWebhookId, priorBinding } = options;
 
   if (priorBinding && priorBinding.subscriptionId) {
     await relay.webhooks
       .unsubscribe(priorBinding.subscriptionId)
       .catch((err) => warnCleanup(deps, 'subscription', priorBinding.subscriptionId, err));
-  }
-
-  if (
-    priorBinding?.webhookSubscriptionId &&
-    priorBinding.webhookSubscriptionId !== keepWebhookSubscriptionId
-  ) {
-    await deps.relayfile
-      .deleteWebhookSubscription(priorBinding.webhookSubscriptionId)
-      .catch((err) =>
-        warnCleanup(deps, 'relayfile webhook subscription', priorBinding.webhookSubscriptionId!, err)
-      );
   }
 
   let webhooks: Awaited<ReturnType<typeof relay.webhooks.list>>;
@@ -765,13 +789,15 @@ async function runSubscribe(
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
   let relayfileWebhook: RelayfileWebhookSubscription | undefined;
+  let bindingInput: RelayfileBindingInput | undefined;
   try {
     webhook = await relay.webhooks.createInbound({ channel, name });
-    relayfileWebhook = await deps.relayfile.createWebhookSubscription({
+    const createdRelayfileWebhook = await deps.relayfile.createWebhookSubscription({
       url: inboundTarget.url,
       pathGlobs: [pathGlob],
       secret: inboundTarget.secret,
     });
+    relayfileWebhook = createdRelayfileWebhook;
     subscription = await relay.integrations.subscriptions.create({
       event: events.length === 1 ? events[0]! : 'message.created',
       events: events.length ? events : ['message.created', 'thread.reply'],
@@ -779,36 +805,49 @@ async function runSubscribe(
       url: writeback.url,
       secret: writeback.secret,
     });
-    await deps.relayfile.bind({
+    const pendingWebhookSubscriptionIds = uniqueWebhookSubscriptionIds([
+      priorBinding?.webhookSubscriptionId,
+      ...(priorBinding?.pendingWebhookSubscriptionIds ?? []),
+    ]).filter((id) => id !== createdRelayfileWebhook.subscriptionId);
+    bindingInput = {
       provider,
       resource: pathGlob,
       channel,
       webhookId: webhook.webhookId,
       webhookToken: webhook.token,
       subscriptionId: subscription.id,
-      webhookSubscriptionId: relayfileWebhook.subscriptionId,
-    });
+      webhookSubscriptionId: createdRelayfileWebhook.subscriptionId,
+      pendingWebhookSubscriptionIds,
+    };
+    await deps.relayfile.bind(bindingInput);
   } catch (err) {
     // The new binding never fully landed: roll back only what we just created
     // and leave any prior working binding untouched.
     if (subscription) {
+      const subscriptionId = subscription.id;
       await relay.integrations.subscriptions
-        .delete(subscription.id)
-        .catch((cleanupErr) => warnCleanup(deps, 'subscription', subscription!.id, cleanupErr));
+        .delete(subscriptionId)
+        .catch((cleanupErr) => warnCleanup(deps, 'subscription', subscriptionId, cleanupErr));
     }
     if (webhook) {
+      const webhookId = webhook.webhookId;
       await relay.webhooks
-        .delete(webhook.webhookId)
-        .catch((cleanupErr) => warnCleanup(deps, 'webhook', webhook!.webhookId, cleanupErr));
+        .delete(webhookId)
+        .catch((cleanupErr) => warnCleanup(deps, 'webhook', webhookId, cleanupErr));
     }
     if (relayfileWebhook) {
+      const webhookSubscriptionId = relayfileWebhook.subscriptionId;
       await deps.relayfile
-        .deleteWebhookSubscription(relayfileWebhook.subscriptionId)
+        .deleteWebhookSubscription(webhookSubscriptionId)
         .catch((cleanupErr) =>
-          warnCleanup(deps, 'relayfile webhook subscription', relayfileWebhook!.subscriptionId, cleanupErr)
+          warnCleanup(deps, 'relayfile webhook subscription', webhookSubscriptionId, cleanupErr)
         );
     }
     throw err;
+  }
+
+  if (!bindingInput || !webhook) {
+    throw new Error('Integration subscribe did not create a complete inbound binding.');
   }
 
   // New binding is live (relayfile.bind upserts on (provider, pathGlob)). Now
@@ -817,14 +856,26 @@ async function runSubscribe(
     provider,
     prefix,
     keepWebhookId: webhook.webhookId,
-    keepWebhookSubscriptionId: relayfileWebhook.subscriptionId,
     priorBinding,
   });
+
+  // Persist the pre-retirement IDs before deleting them. If a delete fails,
+  // the newly live binding retains exactly those IDs for a later retry. When
+  // deletion succeeds, explicitly clear the completed IDs from the binding.
+  const remainingWebhookSubscriptionIds = await deleteWebhookSubscriptions(
+    deps,
+    bindingInput.pendingWebhookSubscriptionIds
+  );
+  if (remainingWebhookSubscriptionIds.length !== bindingInput.pendingWebhookSubscriptionIds.length) {
+    await deps.relayfile
+      .bind({ ...bindingInput, pendingWebhookSubscriptionIds: remainingWebhookSubscriptionIds })
+      .catch((err) => warnCleanup(deps, 'relayfile webhook cleanup state', `${provider}:${pathGlob}`, err));
+  }
 
   // Show the native resource the user typed, plus the resolved glob when they differ.
   const boundLabel = pathGlob === resource ? resource : `${resource} (${pathGlob})`;
   deps.log(`✓ ${provider} ${boundLabel} bound -> ${to}`);
-  deps.log(`✓ Server-side inbound webhook subscription: ${relayfileWebhook!.subscriptionId}`);
+  deps.log(`✓ Server-side inbound webhook subscription: ${bindingInput.webhookSubscriptionId}`);
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
 
@@ -846,6 +897,16 @@ async function runUnsubscribe(
   if (!binding) {
     throw new Error(`No binding found for ${provider} ${resource}.`);
   }
+  const webhookSubscriptionIds = uniqueWebhookSubscriptionIds([
+    binding.webhookSubscriptionId,
+    ...(binding.pendingWebhookSubscriptionIds ?? []),
+  ]);
+  const remainingWebhookSubscriptionIds = await deleteWebhookSubscriptions(deps, webhookSubscriptionIds);
+  if (remainingWebhookSubscriptionIds.length > 0) {
+    throw new Error(
+      `Failed to remove relayfile webhook subscription cleanup; binding retained so you can retry unsubscribe for ${provider} ${resource}.`
+    );
+  }
   const local = await deps.resolveLocalRelayOptions();
   const relayOptions = sdkOptionsFromOpts(opts);
   const relay = deps.createAgentRelay(
@@ -864,17 +925,6 @@ async function runUnsubscribe(
     deps.log(
       `Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`
     );
-  }
-  if (binding.webhookSubscriptionId) {
-    try {
-      await deps.relayfile.deleteWebhookSubscription(binding.webhookSubscriptionId);
-    } catch (err) {
-      deps.log(
-        `Warning: failed to remove relayfile webhook subscription ${binding.webhookSubscriptionId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
-    }
   }
   await deps.relayfile.unbind(provider, pathGlob);
   deps.log(`Unsubscribed ${provider} ${resource}.`);

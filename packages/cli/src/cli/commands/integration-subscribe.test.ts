@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RelayfileControlPlaneError } from '@relayfile/client';
 
 import {
   registerIntegrationCommands,
@@ -61,7 +62,10 @@ function createRelayfileMock(
   initialBindings: RelayfileBinding[] = [],
   overrides: Partial<RelayfileBridge> = {}
 ) {
-  const bindings: RelayfileBinding[] = initialBindings.map((b) => ({ ...b }));
+  const bindings: RelayfileBinding[] = initialBindings.map((b) => ({
+    ...b,
+    pendingWebhookSubscriptionIds: [...(b.pendingWebhookSubscriptionIds ?? [])],
+  }));
   return {
     isConnected: vi.fn(async () => true),
     connect: vi.fn(async () => undefined),
@@ -73,6 +77,7 @@ function createRelayfileMock(
         webhookId: string;
         subscriptionId: string;
         webhookSubscriptionId: string;
+        pendingWebhookSubscriptionIds: string[];
       }) => {
         const record: RelayfileBinding = {
           provider: input.provider,
@@ -81,13 +86,20 @@ function createRelayfileMock(
           webhookId: input.webhookId,
           subscriptionId: input.subscriptionId,
           webhookSubscriptionId: input.webhookSubscriptionId,
+          pendingWebhookSubscriptionIds: [...input.pendingWebhookSubscriptionIds],
         };
         const idx = bindings.findIndex((b) => b.provider === input.provider && b.resource === input.resource);
         if (idx >= 0) bindings[idx] = record;
         else bindings.push(record);
       }
     ),
-    listBindings: vi.fn(async (): Promise<RelayfileBinding[]> => bindings.map((b) => ({ ...b }))),
+    listBindings: vi.fn(
+      async (): Promise<RelayfileBinding[]> =>
+        bindings.map((b) => ({
+          ...b,
+          pendingWebhookSubscriptionIds: [...(b.pendingWebhookSubscriptionIds ?? [])],
+        }))
+    ),
     unbind: vi.fn(async () => undefined),
     // Identity resolve: tests pass an already-resolved glob as --resource, mirroring
     // relayfile's idempotent resolve-path (a glob resolves to itself).
@@ -340,6 +352,36 @@ describe('integration subscribe', () => {
     expect(relayfile.bind.mock.invocationCallOrder[0]!).toBeLessThan(
       relayfile.deleteWebhookSubscription.mock.invocationCallOrder[0]!
     );
+    await expect(relayfile.listBindings()).resolves.toEqual([
+      expect.objectContaining({ webhookSubscriptionId: 'whsub_1', pendingWebhookSubscriptionIds: [] }),
+    ]);
+  });
+
+  it('keeps a failed superseded cloud subscription on the new binding for retry', async () => {
+    const prior: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'old_wh',
+      subscriptionId: 'old_sub',
+      webhookSubscriptionId: 'old_whsub',
+    };
+    const relayfile = createRelayfileMock([prior], {
+      deleteWebhookSubscription: vi.fn(async (id: string) => {
+        if (id === 'old_whsub') throw new Error('temporary relayfile-cloud outage');
+      }),
+    });
+    const { program, error } = harness({ relayfile });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('old_whsub'));
+    await expect(relayfile.listBindings()).resolves.toEqual([
+      expect.objectContaining({
+        webhookSubscriptionId: 'whsub_1',
+        pendingWebhookSubscriptionIds: ['old_whsub'],
+      }),
+    ]);
   });
 
   it('does NOT delete another resource’s webhook routed to the same channel (P2)', async () => {
@@ -474,5 +516,60 @@ describe('integration unsubscribe', () => {
     expect(relayfile.deleteWebhookSubscription.mock.invocationCallOrder[0]!).toBeLessThan(
       relayfile.unbind.mock.invocationCallOrder[0]!
     );
+  });
+
+  it('retains the binding and skips Relay-side deletion when cloud cleanup fails', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+      webhookSubscriptionId: 'whsub_current',
+      pendingWebhookSubscriptionIds: ['whsub_old'],
+    };
+    const relayfile = createRelayfileMock([binding], {
+      deleteWebhookSubscription: vi.fn(async (id: string) => {
+        if (id === 'whsub_old') throw new Error('temporary relayfile-cloud outage');
+      }),
+    });
+    const { program, relay, error, exit } = harness({ relayfile });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_current');
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_old');
+    expect(relayfile.unbind).not.toHaveBeenCalled();
+    expect(relay.webhooks.delete).not.toHaveBeenCalled();
+    expect(relay.webhooks.unsubscribe).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('binding retained'));
+    expect(exit).toHaveBeenCalledWith(1);
+    await expect(relayfile.listBindings()).resolves.toEqual([binding]);
+  });
+
+  it('treats an already-deleted cloud subscription as successful retry cleanup', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+      webhookSubscriptionId: 'whsub_1',
+    };
+    const relayfile = createRelayfileMock([binding], {
+      deleteWebhookSubscription: vi.fn(async () => {
+        throw new RelayfileControlPlaneError('NOT_FOUND', 'already deleted', 404);
+      }),
+    });
+    const { program, relay } = harness({ relayfile });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
+    expect(relayfile.unbind).toHaveBeenCalledWith('slack', RESOURCE);
   });
 });
