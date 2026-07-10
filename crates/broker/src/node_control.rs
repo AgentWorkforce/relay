@@ -471,6 +471,7 @@ pub(crate) struct AgentRegistrationToken {
     pub(crate) name: String,
     pub(crate) agent_id: String,
     pub(crate) token: String,
+    pub(crate) delivery_ack_seq: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -548,6 +549,7 @@ impl SeenMsgIds {
 
 #[derive(Debug, Default, Clone)]
 struct AgentDeliveryCursor {
+    agent_name: String,
     up_to_seq: u64,
     seen_msg_ids: SeenMsgIds,
 }
@@ -558,9 +560,26 @@ pub(crate) struct FleetDeliveryBook {
 }
 
 impl FleetDeliveryBook {
-    #[cfg(test)]
-    pub(crate) fn seed_ack(&mut self, agent: impl Into<String>, up_to_seq: u64) {
-        self.agents.entry(agent.into()).or_default().up_to_seq = up_to_seq;
+    /// Seed a cursor returned by Relaycast for this exact agent identity.
+    ///
+    /// The immutable `agent_id` is the key: a later agent reusing the same name
+    /// must not inherit the old identity's cumulative ACK position.
+    pub(crate) fn seed_authoritative_cursor(
+        &mut self,
+        agent: impl Into<String>,
+        agent_id: impl Into<String>,
+        up_to_seq: u64,
+    ) {
+        let agent = agent.into();
+        self.remove_agent(&agent);
+        self.agents.insert(
+            agent_id.into(),
+            AgentDeliveryCursor {
+                agent_name: agent,
+                up_to_seq,
+                seen_msg_ids: SeenMsgIds::default(),
+            },
+        );
     }
 
     pub(crate) fn observe(&self, deliver: &Deliver) -> DeliveryDecision {
@@ -571,17 +590,20 @@ impl FleetDeliveryBook {
         // suppression. The cumulative ack reports the current cursor (the engine
         // ack is monotonic, so re-acking up_to_seq for a seq-0 frame is a no-op).
         if deliver.seq == 0 {
-            let up_to_seq = self.agents.get(&deliver.agent).map_or(0, |c| c.up_to_seq);
+            let up_to_seq = self
+                .agents
+                .get(&deliver.agent_id)
+                .map_or(0, |c| c.up_to_seq);
             if self
                 .agents
-                .get(&deliver.agent)
+                .get(&deliver.agent_id)
                 .is_some_and(|c| c.seen_msg_ids.contains(&deliver.msg_id))
             {
                 return DeliveryDecision::Duplicate { up_to_seq };
             }
             return DeliveryDecision::Deliver { up_to_seq };
         }
-        let Some(cursor) = self.agents.get(&deliver.agent) else {
+        let Some(cursor) = self.agents.get(&deliver.agent_id) else {
             return if deliver.seq == 1 {
                 DeliveryDecision::Deliver { up_to_seq: 1 }
             } else {
@@ -612,7 +634,14 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
-        let cursor = self.agents.entry(deliver.agent.clone()).or_default();
+        let cursor = self
+            .agents
+            .entry(deliver.agent_id.clone())
+            .or_insert_with(|| AgentDeliveryCursor {
+                agent_name: deliver.agent.clone(),
+                ..AgentDeliveryCursor::default()
+            });
+        cursor.agent_name.clone_from(&deliver.agent);
         // seq:0 fan-out frames never advance the sequence cursor; they are
         // deduped purely by msg_id.
         if deliver.seq == 0 {
@@ -627,7 +656,7 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn remove_agent(&mut self, agent: &str) {
-        self.agents.remove(agent);
+        self.agents.retain(|_, cursor| cursor.agent_name != agent);
     }
 }
 
@@ -775,6 +804,27 @@ pub(crate) fn build_node_register(
     default_version: &str,
     resume_cursor: Option<String>,
 ) -> NodeRegister {
+    let mut capabilities = manifest
+        .capabilities
+        .iter()
+        .filter(|capability| capability.name != crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY)
+        .map(|capability| FleetCapability {
+            name: capability.name.clone(),
+            kind: capability.kind.clone(),
+            metadata: capability.metadata.as_ref().map(|metadata| {
+                metadata
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            }),
+        })
+        .collect::<Vec<_>>();
+    capabilities.push(FleetCapability {
+        name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
+        kind: Some("capacity".to_string()),
+        metadata: None,
+    });
+
     NodeRegister {
         v: FLEET_WIRE_VERSION,
         id: None,
@@ -787,20 +837,7 @@ pub(crate) fn build_node_register(
             .and_then(non_empty)
             .unwrap_or(default_node_id)
             .to_string(),
-        capabilities: manifest
-            .capabilities
-            .iter()
-            .map(|capability| FleetCapability {
-                name: capability.name.clone(),
-                kind: capability.kind.clone(),
-                metadata: capability.metadata.as_ref().map(|metadata| {
-                    metadata
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect::<BTreeMap<_, _>>()
-                }),
-            })
-            .collect(),
+        capabilities,
         max_agents: manifest.max_agents.unwrap_or(0),
         tags: manifest.tags.clone().unwrap_or_default(),
         version: manifest
@@ -1484,6 +1521,7 @@ where
         name: data.name.unwrap_or_else(|| pending.name.clone()),
         agent_id: data.agent_id,
         token: data.token,
+        delivery_ack_seq: data.delivery_ack_seq,
     };
     match pending.reply.send(Ok(token.clone())) {
         Ok(()) => true,
@@ -1828,7 +1866,7 @@ mod tests {
     #[test]
     fn delivery_book_allows_seeded_resume_cursor() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_ack("agent-a", 42);
+        book.seed_authoritative_cursor("agent-a", "agent-a-id", 42);
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
@@ -1845,6 +1883,52 @@ mod tests {
             DeliveryDecision::Deliver { up_to_seq: 43 }
         );
         assert_eq!(book.commit_delivered(&deliver), 43);
+    }
+
+    #[test]
+    fn delivery_book_scopes_authoritative_cursors_to_agent_identity() {
+        let mut book = FleetDeliveryBook::default();
+        book.seed_authoritative_cursor("shared-name", "agent-old", 42);
+        book.seed_authoritative_cursor("other", "agent-other", 7);
+
+        let resumed = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "shared-name".to_string(),
+            agent_id: "agent-old".to_string(),
+            delivery_id: "delivery-43".to_string(),
+            msg_id: "msg-43".to_string(),
+            seq: 43,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "resumed"}),
+        };
+        assert_eq!(
+            book.observe(&resumed),
+            DeliveryDecision::Deliver { up_to_seq: 43 }
+        );
+
+        let reused_name = Deliver {
+            agent_id: "agent-new".to_string(),
+            ..resumed.clone()
+        };
+        assert_eq!(
+            book.observe(&reused_name),
+            DeliveryDecision::Gap { up_to_seq: 0 },
+            "a new identity must not inherit the previous agent's cursor"
+        );
+
+        let other = Deliver {
+            agent: "other".to_string(),
+            agent_id: "agent-other".to_string(),
+            delivery_id: "delivery-8".to_string(),
+            msg_id: "msg-8".to_string(),
+            seq: 8,
+            ..resumed
+        };
+        assert_eq!(
+            book.observe(&other),
+            DeliveryDecision::Deliver { up_to_seq: 8 },
+            "resumed agents recover independently"
+        );
     }
 
     #[test]
@@ -1906,7 +1990,7 @@ mod tests {
     #[test]
     fn delivery_book_surfaces_seq_zero_fanout_without_advancing_cursor() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_ack("agent-a", 5);
+        book.seed_authoritative_cursor("agent-a", "agent-a-id", 5);
 
         // A seq:0 fan-out frame (e.g. action.completed) is always surfaced,
         // bypassing the monotonic-sequence gate, and acks the current cursor.
@@ -2069,6 +2153,7 @@ mod tests {
                 name: "agent-a".to_string(),
                 agent_id: "agt-1".to_string(),
                 token: "at_test".to_string(),
+                delivery_ack_seq: None,
             }
         );
     }
@@ -2324,6 +2409,14 @@ mod tests {
                 Value::String("codex".to_string())
             )]))
         );
+        assert_eq!(
+            register.capabilities.last(),
+            Some(&FleetCapability {
+                name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
+                kind: Some("capacity".to_string()),
+                metadata: None,
+            })
+        );
     }
 
     #[tokio::test]
@@ -2487,7 +2580,8 @@ mod tests {
                     data: json!({
                         "name": "agent-a",
                         "agent_id": "agt-1",
-                        "token": "at_test"
+                        "token": "at_test",
+                        "delivery_ack_seq": 42
                     }),
                 }))
                 .unwrap(),
@@ -2542,6 +2636,7 @@ mod tests {
                 name: "agent-a".to_string(),
                 agent_id: "agt-1".to_string(),
                 token: "at_test".to_string(),
+                delivery_ack_seq: Some(42),
             }
         );
         command_tx

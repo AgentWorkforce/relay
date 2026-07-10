@@ -7,6 +7,10 @@ use serde::{
 use serde_json::Value;
 
 pub const FLEET_WIRE_VERSION: FleetWireVersion = FleetWireVersion;
+/// Node capability that negotiates `delivery_ack_seq` in `agent.register`
+/// replies. It is declared as capacity so older engines never materialize it
+/// as an invokable action.
+pub const DELIVERY_CURSOR_CAPABILITY: &str = "relay:delivery-cursor-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FleetWireVersion;
@@ -453,6 +457,15 @@ pub struct AgentRegisterReplyData {
         skip_serializing_if = "Option::is_none"
     )]
     pub name: Option<String>,
+    /// Relaycast's authoritative cumulative delivery cursor for this agent.
+    /// Present only when the node advertised the cursor-handshake capability;
+    /// absent keeps replies compatible with older engines.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub delivery_ack_seq: Option<u64>,
 }
 
 pub fn validate_agent_register_reply_data(
@@ -850,7 +863,8 @@ mod tests {
             "data": {
                 "agent_id": "agt_1",
                 "token": "at_live_1",
-                "name": "codex-builder-1"
+                "name": "codex-builder-1",
+                "delivery_ack_seq": 42
             }
         }))
         .unwrap();
@@ -859,6 +873,7 @@ mod tests {
         assert_eq!(data.agent_id, "agt_1");
         assert_eq!(data.token, "at_live_1");
         assert_eq!(data.name.as_deref(), Some("codex-builder-1"));
+        assert_eq!(data.delivery_ack_seq, Some(42));
 
         let without_name = validate_agent_register_reply_data(&json!({
             "agent_id": "agt_1",
@@ -866,6 +881,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(without_name.name, None);
+        assert_eq!(without_name.delivery_ack_seq, None);
 
         let missing_token = json!({
             "agent_id": "agt_1",
