@@ -524,10 +524,7 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
     const recipient = await registerAgent(engine, workspaceKey, 'ttl-recipient');
     // A workspace observer stream carries the realtime delivery.failed: `stream:read`
     // opens the socket, `deliveries:read` admits the `delivery.*` events.
-    const observerToken = await mintObserverToken(engine, workspaceKey, [
-      'stream:read',
-      'deliveries:read',
-    ]);
+    const observerToken = await mintObserverToken(engine, workspaceKey, ['stream:read', 'deliveries:read']);
     const senderWs = new ObserverStream(engine.baseUrl.replace(/^http/, 'ws'), observerToken);
     await senderWs.ready();
 
