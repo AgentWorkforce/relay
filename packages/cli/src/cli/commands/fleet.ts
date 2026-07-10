@@ -1,10 +1,8 @@
 import type { Command } from 'commander';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import { readFleetSidecarStatus } from '@agent-relay/fleet';
 
 import { withDefaults, type CoreDependencies } from './core.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
-import { fleetStatusPath } from '../lib/fleet-sidecar.js';
 import {
   addSdkOptions,
   printJson,
@@ -115,77 +113,65 @@ export function registerFleetCommands(
     });
   });
 
-  group
-    .command('status')
-    .description('Show local fleet broker and node status')
-    .action(async () => {
-      try {
-        await runFleetStatus(deps);
-      } catch (error) {
-        deps.error(error instanceof Error ? error.message : String(error));
-        deps.exit(1);
-      }
-    });
+  addSdkOptions(
+    group.command('status').description('Show local broker status and this node’s provider attachment')
+  ).action(async (options: Record<string, unknown>) => {
+    try {
+      await runFleetStatus(deps, options);
+    } catch (error) {
+      deps.error(error instanceof Error ? error.message : String(error));
+      deps.exit(1);
+    }
+  });
 }
 
-async function runFleetStatus(deps: FleetCommandDependencies): Promise<void> {
+async function runFleetStatus(
+  deps: FleetCommandDependencies,
+  options: Record<string, unknown>
+): Promise<void> {
   const paths = deps.core.getProjectPaths();
   const conn = readBrokerConnection(paths.dataDir);
-  const statusPath = fleetStatusPath(paths);
-  const sidecar = readFleetSidecarStatus(statusPath);
 
-  if (!conn) {
-    deps.log(
-      JSON.stringify(
-        {
-          broker: { running: false },
-          sidecar: sidecar ? { ...sidecar, alive: isPidAlive(sidecar.pid) } : null,
-        },
-        null,
-        2
-      )
-    );
-    return;
+  let broker: Record<string, unknown> = { running: false };
+  let nodeName: string | undefined;
+  if (conn) {
+    const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+    try {
+      const session = await client.getSession();
+      nodeName = session.node_name;
+      broker = {
+        running: true,
+        url: conn.url,
+        pid: conn.pid,
+        workspaceKey: session.workspace_key,
+        brokerVersion: session.broker_version,
+        nodeId: session.node_id,
+        nodeName: session.node_name,
+      };
+    } catch (error) {
+      broker = {
+        running: false,
+        url: conn.url,
+        pid: conn.pid,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      client.disconnect();
+    }
   }
 
-  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
-  let broker: Record<string, unknown>;
-  try {
-    const session = await client.getSession();
-    broker = {
-      running: true,
-      url: conn.url,
-      pid: conn.pid,
-      workspaceKey: session.workspace_key,
-      brokerVersion: session.broker_version,
-      protocolVersion: session.protocol_version,
-    };
-  } catch (error) {
-    broker = {
-      running: false,
-      url: conn.url,
-      pid: conn.pid,
-      error: error instanceof Error ? error.message : String(error),
-    };
+  // Provider attachment (per-provider liveness) is owned by the engine now, not a
+  // local status file; read this node's record from the nodes API.
+  let node: unknown = null;
+  if (nodeName) {
+    try {
+      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+      const nodes = await relay.nodes.list({ name: nodeName });
+      node = nodes[0] ?? null;
+    } catch (error) {
+      node = { error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
-  deps.log(
-    JSON.stringify(
-      {
-        broker,
-        sidecar: sidecar ? { ...sidecar, alive: isPidAlive(sidecar.pid) } : null,
-      },
-      null,
-      2
-    )
-  );
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  deps.log(JSON.stringify({ broker, node }, null, 2));
 }

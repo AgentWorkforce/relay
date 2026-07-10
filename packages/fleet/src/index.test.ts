@@ -6,14 +6,13 @@ import {
   defineDefaultLocalNode,
   defineNode,
   invokeNodeHandler,
-  nodeManifest,
   onMessage,
   spawn,
   triggerSyncInputs,
 } from './index.js';
 
 describe('@agent-relay/fleet', () => {
-  it('validates node definitions and creates a manifest', () => {
+  it('validates node definitions and normalizes capabilities', () => {
     const handler = vi.fn(async () => ({ ok: true }));
     const node = defineNode({
       name: 'builder-1',
@@ -23,11 +22,9 @@ describe('@agent-relay/fleet', () => {
       },
     });
 
-    expect(nodeManifest(node)).toEqual({
-      name: 'builder-1',
-      max_agents: 3,
-      capabilities: [{ name: 'run:build', kind: 'action' }],
-    });
+    expect(node.name).toBe('builder-1');
+    expect(node.maxAgents).toBe(3);
+    expect(node.capabilities['run:build']).toMatchObject({ name: 'run:build', kind: 'action' });
   });
 
   it('accepts a plain async handler as an escape hatch', async () => {

@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::listen_api::{
-    broadcast_if_relevant, listen_api_router, DeliveryRouteError, FleetSidecarFrameResponse,
-    ListenApiConfig, ListenApiRequest, SetInboundDeliveryModeOk,
+    broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
+    ListenApiRequest, SetInboundDeliveryModeOk,
 };
 use crate::util::ansi::floor_char_boundary;
 
@@ -31,12 +31,11 @@ use crate::{
     },
     node_control::{
         FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot,
-        HandlerDispatchState,
     },
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
         HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, NodeManifest,
-        NodeSupervision, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
+        ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
         format_worker_preregistration_error, registration_retry_after_secs,
@@ -44,7 +43,6 @@ use crate::{
         RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
-    supervisor::{RestartDecision, RestartPolicy},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
         AgentResultMcpConfig, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,

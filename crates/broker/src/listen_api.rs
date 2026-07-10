@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     ids::{ChannelName, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId},
-    protocol::{MessageInjectionMode, ProtocolEnvelope, ResolvedHarnessConfig},
+    protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
     types::{InboundDeliveryMode, PendingRelayMessage},
@@ -202,37 +202,6 @@ pub enum ListenApiRequest {
         name: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
-    FleetSidecarConnect {
-        outbound: mpsc::Sender<ProtocolEnvelope<Value>>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    FleetSidecarDisconnect,
-    FleetSidecarFrame {
-        frame: ProtocolEnvelope<Value>,
-        reply: tokio::sync::oneshot::Sender<Result<FleetSidecarFrameResponse, String>>,
-    },
-}
-
-#[derive(Debug)]
-pub struct FleetSidecarFrameResponse {
-    pub frame: Option<ProtocolEnvelope<Value>>,
-    pub close_socket: bool,
-}
-
-impl FleetSidecarFrameResponse {
-    pub fn frame(frame: ProtocolEnvelope<Value>) -> Self {
-        Self {
-            frame: Some(frame),
-            close_socket: false,
-        }
-    }
-
-    pub fn close_after(frame: ProtocolEnvelope<Value>) -> Self {
-        Self {
-            frame: Some(frame),
-            close_socket: true,
-        }
-    }
 }
 
 /// Typed errors for the inbound-delivery-mode HTTP routes. Keeps the broker arm's
@@ -330,6 +299,11 @@ struct ListenApiState {
     default_workspace_id: Option<WorkspaceId>,
     /// Broker version string (from Cargo.toml)
     broker_version: String,
+    /// The node id this broker registered as the `broker` provider. Capability
+    /// providers (served by the CLI) attach to the same node with this id.
+    node_id: String,
+    /// The node's name (the target others address).
+    node_name: String,
     /// Whether the broker is in persist mode
     persist: bool,
     /// When the broker started
@@ -363,6 +337,8 @@ pub struct ListenApiConfig {
     pub relay_base_url: Option<String>,
     pub memberships: Vec<WorkspaceMembershipSummary>,
     pub default_workspace_id: Option<WorkspaceId>,
+    pub node_id: String,
+    pub node_name: String,
     pub persist: bool,
 }
 
@@ -401,6 +377,8 @@ fn listen_api_router_with_auth(
         memberships: config.memberships,
         default_workspace_id: config.default_workspace_id,
         broker_version: crate::util::version::broker_version().to_string(),
+        node_id: config.node_id,
+        node_name: config.node_name,
         persist: config.persist,
         started_at: std::time::Instant::now(),
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -468,7 +446,6 @@ fn listen_api_router_with_auth(
         )
         .route("/api/history/stats", routing::get(listen_api_history_stats))
         .route("/api/config", routing::get(listen_api_config))
-        .route("/api/fleet/ws", routing::get(listen_api_fleet_ws))
         .route("/ws", routing::get(listen_api_ws))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
@@ -595,6 +572,8 @@ async fn listen_api_session(
         "workspace_key": state.workspace_key,
         "relay_base_url": state.relay_base_url,
         "default_workspace_id": state.default_workspace_id,
+        "node_id": state.node_id,
+        "node_name": state.node_name,
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
     }))
@@ -2304,149 +2283,6 @@ async fn listen_api_ws(
     })
 }
 
-async fn listen_api_fleet_ws(
-    ws: axum::extract::WebSocketUpgrade,
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-) -> impl axum::response::IntoResponse {
-    ws.on_upgrade(move |socket| handle_fleet_sidecar_ws(socket, state.tx))
-}
-
-async fn handle_fleet_sidecar_ws(
-    mut socket: axum::extract::ws::WebSocket,
-    tx: mpsc::Sender<ListenApiRequest>,
-) {
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(128);
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let mut clean_close = false;
-    if tx
-        .send(ListenApiRequest::FleetSidecarConnect {
-            outbound: outbound_tx,
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        return;
-    }
-    match reply_rx.await {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            let _ = send_fleet_sidecar_error(&mut socket, None, "connect_failed", error).await;
-            return;
-        }
-        Err(_) => return,
-    }
-
-    loop {
-        tokio::select! {
-            incoming = socket.recv() => {
-                let Some(Ok(message)) = incoming else {
-                    break;
-                };
-                match message {
-                    axum::extract::ws::Message::Text(text) => {
-                        let frame = match serde_json::from_str::<ProtocolEnvelope<Value>>(text.as_str()) {
-                            Ok(frame) => frame,
-                            Err(error) => {
-                                if !send_fleet_sidecar_error(&mut socket, None, "invalid_frame", error.to_string()).await {
-                                    break;
-                                }
-                                continue;
-                            }
-                        };
-                        let request_id = frame.request_id.clone();
-                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                        if tx
-                            .send(ListenApiRequest::FleetSidecarFrame {
-                                frame,
-                                reply: reply_tx,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                        match reply_rx.await {
-                            Ok(Ok(response)) => {
-                                if let Some(frame) = response.frame {
-                                    if !send_fleet_sidecar_frame(&mut socket, frame).await {
-                                        break;
-                                    }
-                                }
-                                if response.close_socket {
-                                    clean_close = true;
-                                    let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
-                                    break;
-                                }
-                            }
-                            Ok(Err(error)) => {
-                                if !send_fleet_sidecar_error(&mut socket, request_id, "frame_failed", error).await {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    axum::extract::ws::Message::Ping(payload) => {
-                        if socket.send(axum::extract::ws::Message::Pong(payload)).await.is_err() {
-                            break;
-                        }
-                    }
-                    axum::extract::ws::Message::Close(_) => break,
-                    axum::extract::ws::Message::Binary(_) | axum::extract::ws::Message::Pong(_) => {}
-                }
-            }
-            outbound = outbound_rx.recv() => {
-                let Some(frame) = outbound else {
-                    break;
-                };
-                if !send_fleet_sidecar_frame(&mut socket, frame).await {
-                    break;
-                }
-            }
-        }
-    }
-
-    if !clean_close {
-        let _ = tx.send(ListenApiRequest::FleetSidecarDisconnect).await;
-    }
-}
-
-async fn send_fleet_sidecar_frame(
-    socket: &mut axum::extract::ws::WebSocket,
-    frame: ProtocolEnvelope<Value>,
-) -> bool {
-    match serde_json::to_string(&frame) {
-        Ok(text) => socket
-            .send(axum::extract::ws::Message::Text(text.into()))
-            .await
-            .is_ok(),
-        Err(_) => false,
-    }
-}
-
-async fn send_fleet_sidecar_error(
-    socket: &mut axum::extract::ws::WebSocket,
-    request_id: Option<crate::ids::RequestId>,
-    code: &str,
-    message: impl Into<String>,
-) -> bool {
-    send_fleet_sidecar_frame(
-        socket,
-        ProtocolEnvelope {
-            v: crate::protocol::PROTOCOL_VERSION,
-            msg_type: "error".to_string(),
-            request_id,
-            payload: json!({
-                "code": code,
-                "message": message.into(),
-                "retryable": false,
-            }),
-        },
-    )
-    .await
-}
-
 /// Minimal shape used to peek the `seq` field of a broadcast message without
 /// paying for a full `serde_json::Value` parse. Broadcast payloads (e.g.
 /// `worker_stream` chunks) can carry large terminal-output strings; parsing
@@ -3206,11 +3042,11 @@ mod auth_tests {
     use tower::ServiceExt;
 
     use super::{
-        listen_api_router_with_auth, DeliveryRouteError, FleetSidecarFrameResponse,
-        ListenApiConfig, ListenApiRequest, PtyInputFrame, SetInboundDeliveryModeOk,
+        listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
+        PtyInputFrame, SetInboundDeliveryModeOk,
     };
     use crate::ids::{EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
-    use crate::protocol::{MessageInjectionMode, ProtocolEnvelope};
+    use crate::protocol::MessageInjectionMode;
     use crate::types::{InboundDeliveryMode, PendingRelayMessage};
     use crate::worker_request::RequestWorkerError;
 
@@ -3230,6 +3066,8 @@ mod auth_tests {
                     relay_base_url: Some("https://relay.test".to_string()),
                     memberships: vec![],
                     default_workspace_id: None,
+                    node_id: "node_test".to_string(),
+                    node_name: "test-node".to_string(),
                     persist: false,
                 },
                 broker_api_key.map(ToString::to_string),
@@ -4937,16 +4775,4 @@ mod auth_tests {
         }
     }
 
-    #[test]
-    fn fleet_sidecar_close_response_marks_socket_for_close() {
-        let response = FleetSidecarFrameResponse::close_after(ProtocolEnvelope {
-            v: crate::protocol::PROTOCOL_VERSION,
-            msg_type: "ok".to_string(),
-            request_id: None,
-            payload: json!({"result": {"deregistered": true}}),
-        });
-
-        assert!(response.close_socket);
-        assert!(response.frame.is_some());
-    }
 }

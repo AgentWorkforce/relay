@@ -9,7 +9,6 @@ use std::{
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
@@ -17,12 +16,12 @@ use uuid::Uuid;
 
 use crate::{
     fleet_wire::{
-        ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
-        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryAck, FleetCapability,
-        InventoryAgent, InventorySync, NodeDeregister, NodeHeartbeat, NodeRegister,
-        RelaycastToBroker, FLEET_WIRE_VERSION,
+        ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, AgentRegister,
+        BrokerToRelaycast, Deliver, DeliveryAck, FleetCapability, FleetProviderIdentity,
+        InventoryAgent, InventorySync, NodeHeartbeat, NodeRegister, RelaycastToBroker,
+        FLEET_WIRE_VERSION,
     },
-    protocol::{HandlerResult, HandlerResultPayload, NodeManifest},
+    protocol::NodeManifest,
 };
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
@@ -454,6 +453,7 @@ impl FleetLoadSnapshot {
         NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            provider: node.provider.clone(),
             name: node.name.clone(),
             node_id: node.node_id.clone(),
             capabilities: node.capabilities.clone(),
@@ -489,7 +489,6 @@ pub(crate) enum FleetControlCommand {
     UpdateInventory(Vec<InventoryAgent>),
     UpdateLoad(FleetLoadSnapshot),
     HeartbeatNow,
-    DeregisterNode,
     Send(BrokerToRelaycast),
     RegisterAgent {
         request: AgentRegister,
@@ -631,132 +630,6 @@ impl FleetDeliveryBook {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum HandlerDispatchDecision {
-    Dispatch {
-        invocation_id: String,
-        name: String,
-        input: Value,
-    },
-    AlreadyInFlight,
-    Completed(ActionResult),
-    Unavailable(ActionResult),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct InFlightHandler {
-    name: String,
-    input: Value,
-}
-
-#[derive(Debug, Default, Clone)]
-pub(crate) struct HandlerDispatchState {
-    sidecar_connected: bool,
-    handlers: HashSet<String>,
-    in_flight: HashMap<String, InFlightHandler>,
-    completed: HashMap<String, ActionResultPayload>,
-}
-
-impl HandlerDispatchState {
-    pub(crate) fn connect_sidecar(&mut self) {
-        self.sidecar_connected = true;
-        self.handlers.clear();
-    }
-
-    pub(crate) fn disconnect_sidecar(&mut self) {
-        self.sidecar_connected = false;
-        self.handlers.clear();
-    }
-
-    pub(crate) fn register_handlers(&mut self, names: Vec<String>) {
-        self.handlers = names
-            .into_iter()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .collect();
-    }
-
-    pub(crate) fn handlers_live(&self) -> bool {
-        self.sidecar_connected && !self.handlers.is_empty()
-    }
-
-    /// Whether the connected sidecar registered a handler for `action`. Used to
-    /// decide whether a `spawn:<harness>` node action should be dispatched to the
-    /// sidecar (which owns the declared harness) rather than run directly with the
-    /// raw `cli` from the action input.
-    pub(crate) fn has_handler(&self, action: &str) -> bool {
-        self.sidecar_connected && self.handlers.contains(action)
-    }
-
-    pub(crate) fn has_in_flight(&self) -> bool {
-        !self.in_flight.is_empty()
-    }
-
-    pub(crate) fn drain_in_flight_unavailable(&mut self) -> Vec<ActionResult> {
-        self.in_flight
-            .drain()
-            .map(|(invocation_id, _)| handler_unavailable_result(&invocation_id))
-            .collect()
-    }
-
-    pub(crate) fn fail_unavailable(&mut self, invocation_id: &str) -> ActionResult {
-        self.in_flight.remove(invocation_id);
-        handler_unavailable_result(invocation_id)
-    }
-
-    pub(crate) fn handle_invoke(&mut self, invoke: &ActionInvoke) -> HandlerDispatchDecision {
-        if let Some(result) = self.completed.get(&invoke.invocation_id).cloned() {
-            return HandlerDispatchDecision::Completed(ActionResult {
-                v: FLEET_WIRE_VERSION,
-                id: None,
-                invocation_id: invoke.invocation_id.clone(),
-                result,
-            });
-        }
-        if self.in_flight.contains_key(&invoke.invocation_id) {
-            return HandlerDispatchDecision::AlreadyInFlight;
-        }
-        if !self.sidecar_connected || !self.handlers.contains(&invoke.action) {
-            return HandlerDispatchDecision::Unavailable(handler_unavailable_result(
-                &invoke.invocation_id,
-            ));
-        }
-
-        self.in_flight.insert(
-            invoke.invocation_id.clone(),
-            InFlightHandler {
-                name: invoke.action.clone(),
-                input: invoke.input.clone(),
-            },
-        );
-        HandlerDispatchDecision::Dispatch {
-            invocation_id: invoke.invocation_id.clone(),
-            name: invoke.action.clone(),
-            input: invoke.input.clone(),
-        }
-    }
-
-    pub(crate) fn complete(&mut self, result: HandlerResult) -> Option<ActionResult> {
-        let invocation_id = result.invocation_id;
-        self.in_flight.remove(&invocation_id)?;
-        let result = match result.result {
-            HandlerResultPayload::Output { output } => {
-                ActionResultPayload::Output(ActionResultOutput { output })
-            }
-            HandlerResultPayload::Error { error } => {
-                ActionResultPayload::Error(ActionResultError { error })
-            }
-        };
-        self.completed.insert(invocation_id.clone(), result.clone());
-        Some(ActionResult {
-            v: FLEET_WIRE_VERSION,
-            id: None,
-            invocation_id,
-            result,
-        })
-    }
-}
-
 pub(crate) fn handler_unavailable_result(invocation_id: &str) -> ActionResult {
     ActionResult {
         v: FLEET_WIRE_VERSION,
@@ -787,12 +660,15 @@ pub(crate) fn build_node_register(
             .and_then(non_empty)
             .unwrap_or(default_node_id)
             .to_string(),
+        provider: None,
         capabilities: manifest
             .capabilities
             .iter()
             .map(|capability| FleetCapability {
                 name: capability.name.clone(),
                 kind: capability.kind.clone(),
+                global: None,
+                queue: None,
                 metadata: capability.metadata.as_ref().map(|metadata| {
                     metadata
                         .iter()
@@ -809,9 +685,16 @@ pub(crate) fn build_node_register(
             .and_then(non_empty)
             .unwrap_or(default_version)
             .to_string(),
+        machine_id: None,
         resume_cursor,
     }
 }
+
+/// The broker's stable provider name. The broker attaches to its node as one
+/// provider among several, registering `spawn:<harness>` / `release` capacity
+/// under this name; each connection uses a fresh `instance_id` so a reconnect
+/// replaces the prior attachment.
+pub(crate) const BROKER_PROVIDER_NAME: &str = "broker";
 
 fn non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();
@@ -1057,10 +940,6 @@ pub(crate) async fn run_node_control_client(
                 Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
                     let _ = reply.send(Err("node_not_registered".to_string()));
                 }
-                Some(FleetControlCommand::DeregisterNode) => {
-                    inventory.clear();
-                    load.handlers_live = false;
-                }
                 Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
             }
         }
@@ -1092,11 +971,6 @@ pub(crate) async fn run_node_control_client(
                 Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
                     let _ = reply.send(Err("node_token_missing".to_string()));
                 }
-                Some(FleetControlCommand::DeregisterNode) => {
-                    registration = None;
-                    inventory.clear();
-                    load.handlers_live = false;
-                }
                 Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
             }
             continue;
@@ -1113,11 +987,6 @@ pub(crate) async fn run_node_control_client(
         .await;
         if matches!(result, ControlRunResult::Shutdown) {
             return;
-        }
-        if matches!(result, ControlRunResult::Deregistered) {
-            reconnect_delay = INITIAL_RECONNECT_DELAY;
-            consecutive_unauthorized = 0;
-            continue;
         }
         if matches!(result, ControlRunResult::Disconnected) {
             // A real connection was established and then dropped, so the current
@@ -1176,7 +1045,6 @@ enum ControlRunResult {
     /// i.e. the current node token is stale or scoped to a different
     /// workspace/engine and must be re-minted before retrying.
     Unauthorized,
-    Deregistered,
     Shutdown,
 }
 
@@ -1205,6 +1073,17 @@ async fn run_connected_once(
     let Some(node_token) = config.node_token.as_deref() else {
         return ControlRunResult::Disconnected;
     };
+
+    // A fresh provider instance per connection: reconnecting with a new
+    // instance_id replaces the previous attachment (the engine's
+    // reconnect-vs-duplicate arbitration). The broker attaches as the "broker"
+    // provider, distinct from any capability providers on the same node.
+    let provider = FleetProviderIdentity {
+        name: BROKER_PROVIDER_NAME.to_string(),
+        instance_id: format!("broker_{}", Uuid::new_v4().simple()),
+    };
+    node_register.provider = Some(provider.clone());
+    *registration = Some(node_register.clone());
 
     let mut request = match config.ws_url.as_str().into_client_request() {
         Ok(request) => request,
@@ -1280,7 +1159,8 @@ async fn run_connected_once(
                 match command {
                     Some(FleetControlCommand::RegisterNode { manifest, resume_cursor }) => {
                         load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                        let next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
+                        let mut next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
+                        next.provider = Some(provider.clone());
                         node_register = next.clone();
                         *registration = Some(next.clone());
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(next)).await.is_err() {
@@ -1314,24 +1194,6 @@ async fn run_connected_once(
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
                             return ControlRunResult::Disconnected;
                         }
-                    }
-                    Some(FleetControlCommand::DeregisterNode) => {
-                        let _ = send_wire(
-                            &mut sink,
-                            &BrokerToRelaycast::NodeDeregister(NodeDeregister {
-                                v: FLEET_WIRE_VERSION,
-                                id: None,
-                            }),
-                        )
-                        .await;
-                        *registration = None;
-                        inventory.clear();
-                        load.handlers_live = false;
-                        drain_agent_registrations(
-                            &mut pending_agent_registrations,
-                            "node_deregistered",
-                        );
-                        return ControlRunResult::Deregistered;
                     }
                     Some(FleetControlCommand::Send(message)) => {
                         if send_wire(&mut sink, &message).await.is_err() {
@@ -1584,13 +1446,13 @@ mod tests {
     };
 
     use httpmock::{Method::POST, MockServer};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
 
     use super::*;
-    use crate::fleet_wire::DeliveryMode;
+    use crate::fleet_wire::{ActionInvoke, ActionResultOutput, DeliveryMode};
 
     #[test]
     fn derive_node_id_is_stable_for_same_seed_and_cwd() {
@@ -2110,190 +1972,6 @@ mod tests {
             "the pending registration must remain in flight"
         );
     }
-
-    #[test]
-    fn handler_dispatch_requires_live_registered_handler() {
-        let mut state = HandlerDispatchState::default();
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({"suite": "unit"}),
-            agent_id: None,
-            agent_name: None,
-        };
-
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Unavailable(_)
-        ));
-
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch {
-                invocation_id: "inv-1".to_string(),
-                name: "run:test".to_string(),
-                input: json!({"suite": "unit"}),
-            }
-        );
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::AlreadyInFlight
-        );
-    }
-
-    #[test]
-    fn has_handler_gates_spawn_dispatch_on_sidecar_registration() {
-        // `has_handler` is the predicate that decides whether a `spawn:<harness>`
-        // node action is dispatched to the sidecar (which owns the declared
-        // harness) instead of being run directly with the raw `cli` from the
-        // action input. It is true only when the sidecar is connected AND
-        // registered a handler for that exact capability name.
-        let mut state = HandlerDispatchState::default();
-        // No sidecar connected: a spawn:* action has no declared harness, so the
-        // broker must take the direct raw-`cli` path.
-        assert!(!state.has_handler("spawn:claude"));
-
-        state.connect_sidecar();
-        state.register_handlers(vec!["spawn:claude".to_string(), "echo".to_string()]);
-        // The sidecar declared `spawn:claude` → dispatch to it so its
-        // `spawn(<harness>)` handler resolves the DECLARED harness.
-        assert!(state.has_handler("spawn:claude"));
-        // A capability the sidecar did not register stays on the direct path.
-        assert!(!state.has_handler("spawn:codex"));
-
-        // A dropped sidecar clears handlers, so spawn falls back to direct.
-        state.disconnect_sidecar();
-        assert!(!state.has_handler("spawn:claude"));
-    }
-
-    #[test]
-    fn handler_unavailable_failure_clears_inflight_invocation() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({"suite": "unit"}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        assert_eq!(
-            state.fail_unavailable("inv-1"),
-            handler_unavailable_result("inv-1")
-        );
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch {
-                invocation_id: "inv-1".to_string(),
-                name: "run:test".to_string(),
-                input: json!({"suite": "unit"}),
-            }
-        );
-    }
-
-    #[test]
-    fn handler_result_completes_once_and_duplicate_invoke_replays_result() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        let completed = state
-            .complete(HandlerResult {
-                invocation_id: "inv-1".to_string(),
-                result: HandlerResultPayload::Output {
-                    output: json!({"ok": true}),
-                },
-            })
-            .expect("in-flight result should complete");
-        assert_eq!(completed.invocation_id, "inv-1");
-
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Completed(completed)
-        );
-    }
-
-    #[test]
-    fn handler_error_maps_verbatim_to_action_error() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-err".to_string(),
-            action: "run:test".to_string(),
-            input: json!({}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        let completed = state
-            .complete(HandlerResult {
-                invocation_id: "inv-err".to_string(),
-                result: HandlerResultPayload::Error {
-                    error: "sidecar_failed".to_string(),
-                },
-            })
-            .expect("in-flight result should complete");
-        assert_eq!(
-            completed.result,
-            ActionResultPayload::Error(ActionResultError {
-                error: "sidecar_failed".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn sidecar_disconnect_drains_inflight_as_unavailable() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        state.disconnect_sidecar();
-        let drained = state.drain_in_flight_unavailable();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0], handler_unavailable_result("inv-1"));
-        assert!(!state.handlers_live());
-    }
-
     #[test]
     fn build_node_register_prefers_manifest_identity() {
         let manifest = NodeManifest {
@@ -2668,66 +2346,6 @@ mod tests {
             .unwrap();
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
-
-    #[tokio::test]
-    async fn node_control_deregister_sends_node_deregister() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
-        let (command_tx, command_rx) = mpsc::channel(32);
-        let (event_tx, mut event_rx) = mpsc::channel(32);
-
-        tokio::spawn(run_node_control_client(
-            FleetControlConfig {
-                ws_url,
-                node_token: Some("nt_test".to_string()),
-                node_id: "node-test".to_string(),
-                node_name: "host-test".to_string(),
-                broker_version: "broker/test".to_string(),
-                token_minter: None,
-            },
-            command_rx,
-            event_tx,
-        ));
-
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = accept_async(stream).await.unwrap();
-            assert!(matches!(
-                next_node_to_server(&mut ws).await,
-                BrokerToRelaycast::NodeRegister(_)
-            ));
-            assert!(matches!(
-                next_node_to_server(&mut ws).await,
-                BrokerToRelaycast::NodeHeartbeat(_)
-            ));
-            assert_eq!(
-                next_non_heartbeat_node_to_server(&mut ws).await,
-                BrokerToRelaycast::NodeDeregister(NodeDeregister {
-                    v: FLEET_WIRE_VERSION,
-                    id: None
-                })
-            );
-        });
-
-        command_tx
-            .send(FleetControlCommand::RegisterNode {
-                manifest: test_manifest(),
-                resume_cursor: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
-        command_tx
-            .send(FleetControlCommand::DeregisterNode)
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), server)
-            .await
-            .unwrap()
-            .unwrap();
-        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
-    }
-
     #[tokio::test]
     async fn node_control_reconnect_sends_inventory_sync() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

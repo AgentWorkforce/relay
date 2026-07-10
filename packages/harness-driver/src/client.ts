@@ -115,6 +115,10 @@ export interface SessionInfo {
   workspace_key?: string;
   relay_base_url?: string;
   default_workspace_id?: string;
+  /** The node id the broker registered as; capability providers attach here. */
+  node_id?: string;
+  /** The node's name (the target others address). */
+  node_name?: string;
   mode: string;
   uptime_secs: number;
 }

@@ -4,8 +4,6 @@ import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@ag
 import type {
   AgentSpec,
   MessageInjectionMode,
-  NodeCapabilityManifest,
-  NodeManifest,
   RestartPolicy,
   JsonValue,
 } from '@agent-relay/harness-driver/protocol';
@@ -305,26 +303,6 @@ export function nodeInfo(definition: FleetNodeDefinition): FleetNodeInfo {
     name: definition.name,
     ...(definition.maxAgents !== undefined ? { maxAgents: definition.maxAgents } : {}),
     capabilities: Object.keys(definition.capabilities),
-  };
-}
-
-export function nodeManifest(
-  definition: FleetNodeDefinition,
-  overrides: { name?: string; maxAgents?: number } = {}
-): NodeManifest {
-  const name = overrides.name ? nonEmpty(overrides.name, 'node name') : definition.name;
-  const maxAgents = overrides.maxAgents ?? definition.maxAgents;
-  const capabilities: NodeCapabilityManifest[] = Object.values(definition.capabilities).map((capability) => ({
-    name: capability.name,
-    kind: capability.kind,
-    ...(capability.metadata ? { metadata: capability.metadata } : {}),
-  }));
-  return {
-    name,
-    capabilities,
-    ...(maxAgents !== undefined ? { max_agents: maxAgents } : {}),
-    ...(definition.tags ? { tags: [...definition.tags] } : {}),
-    ...(definition.version ? { version: definition.version } : {}),
   };
 }
 

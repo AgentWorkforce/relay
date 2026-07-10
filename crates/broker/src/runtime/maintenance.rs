@@ -2,8 +2,6 @@ use super::*;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
-        self.handle_fleet_sidecar_supervision_tick().await;
-
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
@@ -14,7 +12,9 @@ impl BrokerRuntime {
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
-        let fleet_handlers_live = self.fleet_handlers.handlers_live();
+        // The broker provider's capacity handlers are live whenever it is
+        // connected, so node heartbeats always report handlers_live.
+        let fleet_handlers_live = true;
         let telemetry = &self.telemetry;
         let crash_insights = &mut self.crash_insights;
         let pending_deliveries = &mut self.pending_deliveries;

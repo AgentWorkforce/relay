@@ -1,451 +1,225 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import type { AddressInfo } from 'node:net';
-
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { WebSocket, WebSocketServer, type RawData } from 'ws';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { action, defineNode, onMessage } from './index.js';
-import {
-  buildNodeSupervision,
-  readFleetSidecarStatus,
-  serveNode,
-  startServeNode,
-  type FleetTriggerSyncClient,
-  type FleetTriggerSyncTrigger,
-} from './serve-node.js';
-
-type ReceivedFrame = {
-  v: number;
-  type: string;
-  request_id?: string;
-  payload: unknown;
-};
+import { action, defineNode, spawn } from './index.js';
+import { startServeNode, type FleetTriggerSyncClient } from './serve-node.js';
 
 /**
- * A minimal in-process broker used to exercise the fleet node WS runtime.
- * Auto-acknowledges every request with an `ok` frame and records the frames it
- * receives so tests can assert on the registration handshake and handler results.
+ * A fake node-ws server: captures frames the client sends and lets the test
+ * drive replies/invokes, mirroring the engine's node-socket contract without any
+ * network. Modeled on the relaycast NodeProviderClient conformance fake.
  */
-class TestBroker {
-  readonly server: WebSocketServer;
-  readonly connections: WebSocket[] = [];
-  readonly frames: ReceivedFrame[] = [];
-  private onFrameListeners: Array<(frame: ReceivedFrame, socket: WebSocket) => void> = [];
-  private onConnectionListeners: Array<(socket: WebSocket) => void> = [];
+class MockWebSocket {
+  static readonly OPEN = 1;
+  static readonly CLOSED = 3;
+  static instances: MockWebSocket[] = [];
 
-  private constructor(server: WebSocketServer) {
-    this.server = server;
-    server.on('connection', (socket) => {
-      this.connections.push(socket);
-      for (const listener of this.onConnectionListeners) listener(socket);
-      socket.on('message', (data: RawData) => {
-        const frame = parseFrame(data);
-        if (!frame) return;
-        this.frames.push(frame);
-        for (const listener of this.onFrameListeners) listener(frame, socket);
-        if (frame.request_id) {
-          this.reply(socket, frame.request_id, resultFor(frame));
-        }
-      });
-    });
+  url: string;
+  readyState = MockWebSocket.OPEN;
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  sent: Record<string, unknown>[] = [];
+
+  constructor(url: string) {
+    this.url = url;
+    MockWebSocket.instances.push(this);
   }
 
-  static async start(): Promise<TestBroker> {
-    const server = new WebSocketServer({ port: 0 });
-    await new Promise<void>((resolve) => server.once('listening', resolve));
-    return new TestBroker(server);
+  send(data: string): void {
+    this.sent.push(JSON.parse(data) as Record<string, unknown>);
   }
 
-  get url(): string {
-    const { port } = this.server.address() as AddressInfo;
-    return `http://127.0.0.1:${port}`;
+  close(): void {
+    this.readyState = MockWebSocket.CLOSED;
   }
 
-  onFrame(listener: (frame: ReceivedFrame, socket: WebSocket) => void): void {
-    this.onFrameListeners.push(listener);
+  open(): void {
+    this.readyState = MockWebSocket.OPEN;
+    this.onopen?.();
   }
 
-  onConnection(listener: (socket: WebSocket) => void): void {
-    this.onConnectionListeners.push(listener);
+  emit(data: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(data) });
   }
 
-  reply(socket: WebSocket, requestId: string, result: unknown): void {
-    socket.send(JSON.stringify({ v: 2, type: 'ok', request_id: requestId, payload: { result } }));
+  sentOfType(type: string): Record<string, unknown>[] {
+    return this.sent.filter((frame) => frame.type === type);
   }
 
-  sendInvoke(socket: WebSocket, input: { invocation_id: string; name: string; input: unknown }): void {
-    socket.send(
-      JSON.stringify({
-        v: 2,
-        type: 'invoke_handler',
-        request_id: `broker_${input.invocation_id}`,
-        payload: input,
-      })
-    );
-  }
-
-  framesOfType(type: string): ReceivedFrame[] {
-    return this.frames.filter((frame) => frame.type === type);
-  }
-
-  async close(): Promise<void> {
-    for (const socket of this.connections) {
-      try {
-        socket.terminate();
-      } catch {
-        // ignore
-      }
-    }
-    await new Promise<void>((resolve) => this.server.close(() => resolve()));
+  lastRegister(): Record<string, unknown> {
+    return this.sentOfType('node.register').at(-1)!;
   }
 }
 
-function parseFrame(data: RawData): ReceivedFrame | null {
-  try {
-    const text = Array.isArray(data) ? Buffer.concat(data).toString('utf8') : data.toString();
-    return JSON.parse(text) as ReceivedFrame;
-  } catch {
-    return null;
-  }
-}
-
-function resultFor(frame: ReceivedFrame): unknown {
-  if (frame.type === 'hello') {
-    return { broker_version: 'test', protocol_version: 2 };
-  }
-  return { ok: true };
-}
-
-function buildNode() {
-  return defineNode({
-    name: 'test-node',
-    maxAgents: 2,
-    capabilities: {
-      echo: action({ input: z.object({ value: z.string() }) }, async (input: { value: string }) => ({
-        echoed: input.value,
+function acceptAll(register: Record<string, unknown>): Record<string, unknown> {
+  const caps = (register.capabilities as { name: string; kind?: string }[]) ?? [];
+  const provider = register.provider as { name: string; instance_id: string };
+  return {
+    v: 1,
+    id: register.id,
+    type: 'reply',
+    ok: true,
+    data: {
+      provider,
+      accepted_capabilities: caps.map((cap) => ({
+        name: cap.name,
+        kind: cap.kind ?? 'action',
+        accepted: true,
       })),
-      explode: action({}, async () => {
-        throw new Error('boom');
-      }),
+      name: register.name,
     },
-  });
+  };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
-  const start = Date.now();
-  while (!predicate()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error('waitFor timed out');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+const connection = { baseUrl: 'https://engine.test', nodeToken: 'nt_live_test', nodeId: 'node_a' };
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    await Promise.resolve();
   }
 }
 
-let broker: TestBroker;
-
-beforeEach(async () => {
-  broker = await TestBroker.start();
-});
-
-afterEach(async () => {
-  await broker.close();
-});
-
-describe('serveNode registration', () => {
-  it('performs the hello/register_node/register_handlers handshake', async () => {
-    const node = buildNode();
-    const registered = new Promise<void>((resolve) => {
-      const running = startServeNode({
-        definition: node,
-        connection: { url: broker.url },
-        reconnect: false,
-        onRegistered: () => resolve(),
-      });
-      void running.done;
-    });
-
-    await registered;
-    await waitFor(() => broker.framesOfType('register_handlers').length > 0);
-
-    const hello = broker.framesOfType('hello')[0];
-    expect(hello?.payload).toMatchObject({ client_name: '@agent-relay/fleet' });
-
-    const registerNode = broker.framesOfType('register_node')[0];
-    expect(registerNode?.payload).toMatchObject({
-      manifest: { name: 'test-node', max_agents: 2 },
-    });
-
-    const registerHandlers = broker.framesOfType('register_handlers')[0];
-    expect(registerHandlers?.payload).toMatchObject({ names: ['echo', 'explode'] });
+describe('serveNode', () => {
+  beforeEach(() => {
+    MockWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', MockWebSocket);
   });
-});
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
-describe('serveNode invoke dispatch', () => {
-  it('returns a handler_result with output on success', async () => {
-    const node = buildNode();
-    const controller = new AbortController();
-    let socket: WebSocket | undefined;
-    broker.onConnection((s) => {
-      socket = s;
-    });
+  function socket(): MockWebSocket {
+    return MockWebSocket.instances.at(-1)!;
+  }
 
-    const done = serveNode({
-      definition: node,
-      connection: { url: broker.url },
-      reconnect: false,
-      signal: controller.signal,
-      onRegistered: () => {
-        broker.sendInvoke(socket!, { invocation_id: 'inv-1', name: 'echo', input: { value: 'hi' } });
+  it('registers the definition as a provider with action-kind capabilities', async () => {
+    const node = defineNode({
+      name: 'data-pipeline',
+      capabilities: {
+        'run-etl': action({ input: z.object({ date: z.string() }) }, async () => 'done'),
       },
     });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
 
-    await waitFor(() => broker.framesOfType('handler_result').length > 0);
-    const result = broker.framesOfType('handler_result')[0];
-    expect(result?.payload).toEqual({ invocation_id: 'inv-1', output: { echoed: 'hi' } });
+    const sock = socket();
+    const url = new URL(sock.url);
+    expect(url.pathname).toBe('/v1/node/ws');
+    expect(url.searchParams.get('token')).toBe('nt_live_test');
 
-    controller.abort();
-    await done;
-  });
+    sock.open();
+    const register = sock.lastRegister();
+    expect(register).toMatchObject({ type: 'node.register', name: 'data-pipeline', node_id: 'node_a' });
+    expect(register.provider).toMatchObject({ name: 'data-pipeline' });
+    expect(register.capabilities).toEqual([{ name: 'run-etl', kind: 'action' }]);
 
-  it('returns a handler_result with error when the handler throws', async () => {
-    const node = buildNode();
-    const controller = new AbortController();
-    let socket: WebSocket | undefined;
-    broker.onConnection((s) => {
-      socket = s;
-    });
-
-    const done = serveNode({
-      definition: node,
-      connection: { url: broker.url },
-      reconnect: false,
-      signal: controller.signal,
-      onRegistered: () => {
-        broker.sendInvoke(socket!, { invocation_id: 'inv-2', name: 'explode', input: {} });
-      },
-    });
-
-    await waitFor(() => broker.framesOfType('handler_result').length > 0);
-    const result = broker.framesOfType('handler_result')[0];
-    expect(result?.payload).toMatchObject({ invocation_id: 'inv-2', error: 'boom' });
-
-    controller.abort();
-    await done;
-  });
-});
-
-describe('serveNode status file', () => {
-  it('writes connected status on registration and disconnected status on stop', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-status-'));
-    const statusPath = path.join(dir, 'fleet-node.json');
-    try {
-      const node = buildNode();
-      let registeredStop: (() => Promise<void>) | undefined;
-      const registered = new Promise<void>((resolve) => {
-        const running = startServeNode({
-          definition: node,
-          connection: { url: broker.url },
-          reconnect: false,
-          statusPath,
-          onRegistered: () => resolve(),
-        });
-        void running.done;
-        registeredStop = running.stop;
-      });
-
-      await registered;
-      const connectedStatus = readFleetSidecarStatus(statusPath);
-      expect(connectedStatus).toMatchObject({ node: 'test-node', connected: true });
-      expect(connectedStatus?.handlers).toEqual(['echo', 'explode']);
-
-      await registeredStop?.();
-      const disconnectedStatus = readFleetSidecarStatus(statusPath);
-      expect(disconnectedStatus).toMatchObject({ connected: false });
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('serveNode reconnect', () => {
-  it('reconnects after the broker drops the connection', async () => {
-    const node = buildNode();
-    let connectionCount = 0;
-    broker.onConnection((socket) => {
-      connectionCount += 1;
-      if (connectionCount === 1) {
-        // Drop the first connection once it is established to force a reconnect.
-        setTimeout(() => socket.terminate(), 20);
-      }
-    });
-
-    const running = startServeNode({
-      definition: node,
-      connection: { url: broker.url },
-      reconnect: true,
-    });
-
-    await waitFor(() => connectionCount >= 2, 8_000);
-    expect(connectionCount).toBeGreaterThanOrEqual(2);
-
+    sock.emit(acceptAll(register));
+    await flush();
     await running.stop();
   });
-});
 
-describe('buildNodeSupervision', () => {
-  it('filters the environment to the allowlist', () => {
-    const supervision = buildNodeSupervision({
-      argv: ['node', 'serve'],
-      cwd: '/tmp/project',
-      env: {
-        PATH: '/usr/bin',
-        HOME: '/home/user',
-        RELAY_WORKSPACE_KEY: 'wk_123',
-        SECRET_TOKEN: 'nope',
-        RANDOM_VAR: 'nope',
-      },
-    });
-
-    expect(supervision.argv).toEqual(['node', 'serve']);
-    expect(supervision.cwd).toBe('/tmp/project');
-    expect(supervision.env).toEqual({
-      PATH: '/usr/bin',
-      HOME: '/home/user',
-      RELAY_WORKSPACE_KEY: 'wk_123',
-    });
-    expect(supervision.env).not.toHaveProperty('SECRET_TOKEN');
-    expect(supervision.env).not.toHaveProperty('RANDOM_VAR');
-  });
-});
-
-describe('serveNode trigger sync', () => {
-  function triggeredNode() {
-    return defineNode({
-      name: 'triggered-node',
+  it('runs a handler and replies action.result with its output', async () => {
+    const node = defineNode({
+      name: 'p',
       capabilities: {
-        deploy: action({ input: z.object({}) }, async () => ({ ok: true })),
+        'run-etl': action({ input: z.object({ date: z.string() }) }, async (input) => ({
+          ran: (input as { date: string }).date,
+        })),
       },
-      triggers: [onMessage({ channel: '#deploys', match: /[Ss]hip/, mention: true }, 'deploy')],
     });
-  }
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
 
-  function fakeClient(existing: FleetTriggerSyncTrigger[]) {
-    const calls = {
-      create: [] as unknown[],
-      update: [] as Array<{ id: string; input: unknown }>,
-      delete: [] as string[],
-      listed: 0,
-    };
-    const client: FleetTriggerSyncClient = {
-      list: async () => {
-        calls.listed += 1;
-        return existing;
+    sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'inv_1', action: 'run-etl', input: { date: '2026-07-09' } });
+    await flush();
+
+    const [result] = sock.sentOfType('action.result');
+    expect(result).toMatchObject({ invocation_id: 'inv_1', output: { ran: '2026-07-09' } });
+    await running.stop();
+  });
+
+  it('replies action.result with an error when the handler throws', async () => {
+    const node = defineNode({
+      name: 'p',
+      capabilities: {
+        'run-etl': action({}, async () => {
+          throw new Error('boom');
+        }),
       },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+
+    sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'inv_2', action: 'run-etl', input: {} });
+    await flush();
+
+    const [result] = sock.sentOfType('action.result');
+    expect(result).toMatchObject({ invocation_id: 'inv_2', error: 'boom' });
+    await running.stop();
+  });
+
+  it('delegates a spawn shadow to node.spawn with the harness flattened to top-level cli', async () => {
+    const node = defineNode({
+      name: 'p',
+      capabilities: {
+        'spawn:codex': spawn({ runtime: 'pty', command: 'codex' }),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    const register = sock.lastRegister();
+    // The spawn definition registers as an invokable (shadow) action.
+    expect(register.capabilities).toEqual([{ name: 'spawn:codex', kind: 'action' }]);
+    sock.emit(acceptAll(register));
+    await flush();
+
+    sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'inv_3', action: 'spawn:codex', input: { name: 'worker-a' } });
+    await flush();
+
+    const [nodeSpawn] = sock.sentOfType('node.spawn');
+    expect(nodeSpawn).toBeTruthy();
+    expect(nodeSpawn.input).toMatchObject({ name: 'worker-a', cli: 'codex' });
+    // Reply so the delegating handler resolves and the invocation completes.
+    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'worker-a' } });
+    await flush();
+    await running.stop();
+  });
+
+  it('reconciles declared triggers with the injected client on registration', async () => {
+    const node = defineNode({
+      name: 'p',
+      capabilities: {
+        deploy: action({}, async () => 'ok'),
+      },
+      triggers: [{ type: 'message', channel: '#deploys', actionName: 'deploy' }],
+    });
+    const created: unknown[] = [];
+    const triggers: FleetTriggerSyncClient = {
+      list: async () => [],
       create: async (input) => {
-        calls.create.push(input);
-        return {};
+        created.push(input);
       },
-      update: async (id, input) => {
-        calls.update.push({ id, input });
-        return {};
-      },
-      delete: async (id) => {
-        calls.delete.push(id);
-        return {};
-      },
+      update: async () => undefined,
+      delete: async () => undefined,
     };
-    return { client, calls };
-  }
+    const running = startServeNode({ definition: node, connection, reconnect: false, triggers });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
 
-  async function runWithClient(node: ReturnType<typeof triggeredNode>, triggers?: FleetTriggerSyncClient) {
-    const controller = new AbortController();
-    const synced = new Promise<void>((resolve) => {
-      void serveNode({
-        definition: node,
-        connection: { url: broker.url },
-        reconnect: false,
-        signal: controller.signal,
-        ...(triggers ? { triggers } : {}),
-        // log fires after syncTriggers completes.
-        log: () => resolve(),
-      });
-    });
-    await synced;
-    controller.abort();
-  }
-
-  it('creates a trigger that does not yet exist', async () => {
-    const { client, calls } = fakeClient([]);
-    await runWithClient(triggeredNode(), client);
-    expect(calls.listed).toBe(1);
-    expect(calls.create).toEqual([
-      { channel: '#deploys', pattern: '[Ss]hip', mention: true, actionName: 'deploy', enabled: true },
+    expect(created).toEqual([
+      { channel: '#deploys', pattern: undefined, mention: undefined, actionName: 'deploy', enabled: true },
     ]);
-    expect(calls.update).toEqual([]);
-    expect(calls.delete).toEqual([]);
-  });
-
-  it('updates a matching trigger whose fields differ', async () => {
-    const { client, calls } = fakeClient([
-      {
-        id: 'trg_1',
-        channel: '#deploys',
-        pattern: '[Ss]hip',
-        mention: true,
-        actionName: 'deploy',
-        enabled: false,
-      },
-    ]);
-    await runWithClient(triggeredNode(), client);
-    expect(calls.create).toEqual([]);
-    expect(calls.update).toEqual([
-      {
-        id: 'trg_1',
-        input: {
-          channel: '#deploys',
-          pattern: '[Ss]hip',
-          mention: true,
-          actionName: 'deploy',
-          enabled: true,
-        },
-      },
-    ]);
-    expect(calls.delete).toEqual([]);
-  });
-
-  it('deletes duplicate triggers and keeps a single canonical one', async () => {
-    const { client, calls } = fakeClient([
-      {
-        id: 'trg_primary',
-        channel: '#deploys',
-        pattern: '[Ss]hip',
-        mention: true,
-        actionName: 'deploy',
-        enabled: true,
-      },
-      {
-        id: 'trg_dupe',
-        channel: '#deploys',
-        pattern: '[Ss]hip',
-        mention: true,
-        actionName: 'deploy',
-        enabled: true,
-      },
-    ]);
-    await runWithClient(triggeredNode(), client);
-    expect(calls.create).toEqual([]);
-    // Primary already matches → no update.
-    expect(calls.update).toEqual([]);
-    expect(calls.delete).toEqual(['trg_dupe']);
-  });
-
-  it('skips sync entirely when no trigger client is injected', async () => {
-    // No triggers client passed; sync must be a no-op and registration completes.
-    await runWithClient(triggeredNode(), undefined);
-    // Nothing to assert beyond completing without error; reaching here is success.
-    expect(true).toBe(true);
+    await running.stop();
   });
 });

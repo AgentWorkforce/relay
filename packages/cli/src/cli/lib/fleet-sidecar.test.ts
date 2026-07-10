@@ -17,35 +17,38 @@ vi.mock('@agent-relay/sdk', () => ({
   }),
 }));
 
-import type { CoreProjectPaths } from '../commands/core.js';
-import { createImplicitLocalFleetNode, createTriggerSyncClient, fleetStatusPath } from './fleet-sidecar.js';
+import { defineNode, spawn } from '@agent-relay/fleet';
 
-const paths: CoreProjectPaths = {
-  projectRoot: '/tmp/my-project',
-  dataDir: '/tmp/my-project/.agentworkforce/relay',
-  teamDir: '/tmp/my-project/.agentworkforce/relay/teams',
-};
+import type { CoreTeamsConfig } from '../commands/core.js';
+import { createTriggerSyncClient, nodeCapacityHarnesses } from './fleet-sidecar.js';
 
-describe('fleetStatusPath', () => {
-  it('resolves the diagnostic status file inside the data dir', () => {
-    expect(fleetStatusPath(paths)).toBe('/tmp/my-project/.agentworkforce/relay/fleet-node.json');
-  });
-});
-
-describe('createImplicitLocalFleetNode', () => {
-  it('derives the node name from the project root basename by default', () => {
-    const node = createImplicitLocalFleetNode({ paths, teamsConfig: null });
-
-    expect(node.name).toBe('my-project');
-    expect(Object.keys(node.capabilities)).toEqual(
-      expect.arrayContaining(['spawn:claude', 'spawn:codex', 'spawn:gemini'])
-    );
+describe('nodeCapacityHarnesses', () => {
+  it('advertises the default harness set when there is no config', () => {
+    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini']);
   });
 
-  it('honors an explicit name override', () => {
-    const node = createImplicitLocalFleetNode({ paths, teamsConfig: null, name: 'custom-node' });
+  it('adds teams.json clis, de-duplicated and order-preserving', () => {
+    const teams: CoreTeamsConfig = {
+      team: 't',
+      agents: [
+        { name: 'a', cli: 'aider' },
+        { name: 'b', cli: 'claude' },
+      ],
+    };
+    expect(nodeCapacityHarnesses(teams)).toEqual(['claude', 'codex', 'gemini', 'aider']);
+  });
 
-    expect(node.name).toBe('custom-node');
+  it('adds spawn:<harness> definitions from a discovered node config', () => {
+    const definition = defineNode({
+      name: 'p',
+      capabilities: { 'spawn:opencode': spawn({ runtime: 'pty', command: 'opencode' }) },
+    });
+    expect(nodeCapacityHarnesses(null, definition)).toEqual([
+      'claude',
+      'codex',
+      'gemini',
+      'opencode',
+    ]);
   });
 });
 
