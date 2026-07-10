@@ -4,11 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import {
-  CleanupJournalError,
-  fileCleanupJournal,
-  type PendingCleanupEntry,
-} from './integration-cleanup-journal.js';
+import { fileCleanupJournal, type PendingCleanupEntry } from './integration-cleanup-journal.js';
 
 const CONCRETE: PendingCleanupEntry = {
   kind: 'relayfile-webhook-subscription',
@@ -117,19 +113,21 @@ describe('fileCleanupJournal', () => {
     }
   });
 
-  it('takes over a stale lock only for a proven-dead same-host owner', async () => {
+  it('never breaks an abandoned lock automatically — even a dead same-host owner fails closed', async () => {
+    // Automatic stale takeover was removed: a stat->read->unlink dance is a
+    // TOCTOU that can break a LIVE lock. Manual remediation is the contract.
     const dir = tmpJournalDir();
     const lock = path.join(dir, 'pending-cleanups.json.lock');
-    // A real pid that is guaranteed dead: a spawned child that already exited.
     const deadPid = spawnSync(process.execPath, ['-e', ''], { stdio: 'ignore' }).pid;
     fs.writeFileSync(lock, JSON.stringify({ pid: deadPid, host: os.hostname() }));
     const past = new Date(Date.now() - 60_000);
     fs.utimesSync(lock, past, past);
 
     const journal = fileCleanupJournal(dir);
-    await journal.update(() => [CONCRETE]);
-    await expect(journal.list()).resolves.toEqual([CONCRETE]);
-  });
+    await expect(journal.update(() => [CONCRETE])).rejects.toMatchObject({ code: 'locked' });
+    // The abandoned lock is preserved for the operator to inspect/remove.
+    expect(fs.existsSync(lock)).toBe(true);
+  }, 15_000);
 
   it('fails closed on a stale lock held by a live owner', async () => {
     const dir = tmpJournalDir();

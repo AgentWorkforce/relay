@@ -381,6 +381,7 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
+        workspaceId: 'rw_test',
       })),
       createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
       deleteWebhookSubscription: vi.fn(async () => undefined),
@@ -429,6 +430,7 @@ describe('SDK-backed CLI groups', () => {
       url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
       pathGlobs: ['#acme'],
       secret: 'inbound-secret',
+      workspace: 'rw_test',
     });
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
       event: 'message.created',
@@ -447,6 +449,7 @@ describe('SDK-backed CLI groups', () => {
       webhookToken: 'tok_once',
       subscriptionId: 'sub1',
       webhookSubscriptionId: 'whsub_1',
+      webhookSubscriptionWorkspaceId: 'rw_test',
     });
     expect(error).not.toHaveBeenCalled();
   });
@@ -465,6 +468,7 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
         secret: 'derived-secret-hex',
+        workspaceId: 'rw_7ccfea89',
       })),
       createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
       deleteWebhookSubscription: vi.fn(async () => undefined),
@@ -519,6 +523,7 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
+        workspaceId: 'rw_test',
       })),
       createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
       deleteWebhookSubscription: vi.fn(async () => undefined),
@@ -630,6 +635,7 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
+        workspaceId: 'rw_test',
       })),
       createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
       deleteWebhookSubscription: vi.fn(async () => undefined),

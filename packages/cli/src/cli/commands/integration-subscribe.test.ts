@@ -98,7 +98,11 @@ function createRelayfileMock(
     // relayfile's idempotent resolve-path (a glob resolves to itself).
     resolveResourcePath: vi.fn(async (_provider: string, resource: string) => ({ pathGlob: resource })),
     ensureCompatible: vi.fn(async () => undefined),
-    resolveWritebackBinding: vi.fn(async () => ({ url: 'https://ingress.example', secret: 's3cr3t' })),
+    resolveWritebackBinding: vi.fn(async () => ({
+      url: 'https://ingress.example',
+      secret: 's3cr3t',
+      workspaceId: 'rw_test',
+    })),
     createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
     deleteWebhookSubscription: vi.fn(async () => undefined),
     ...overrides,
@@ -233,6 +237,7 @@ describe('integration subscribe', () => {
       url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
       pathGlobs: [RESOURCE],
       secret: 'inbound-secret',
+      workspace: 'rw_test',
     });
   });
 
@@ -841,6 +846,7 @@ describe('integration subscribe', () => {
 
   it('pins the workspace before the cloud create and aborts when it cannot (fail closed)', async () => {
     const relayfile = createRelayfileMock([], {
+      resolveWritebackBinding: vi.fn(async () => ({ url: WRITEBACK_URL, secret: 's3cr3t' })),
       listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: undefined, subscriptions: [] })),
     });
     const { program, relay, error, exit } = harness({ relayfile });
@@ -851,6 +857,57 @@ describe('integration subscribe', () => {
     expect(exit).toHaveBeenCalledWith(1);
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
     expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('with --bridge-url overrides, consults the control plane for the workspace pin only (P1)', async () => {
+    const resolveMock = vi.fn(async () => ({
+      url: 'https://daemon-writeback.example',
+      secret: 'daemon-secret',
+      workspaceId: 'rw_bridge_pin',
+    }));
+    const relayfile = createRelayfileMock([], { resolveWritebackBinding: resolveMock });
+    const { program, relay, exit } = harness({ relayfile });
+
+    await program.parseAsync(ARGS(['--bridge-url', 'https://override.example', '--bridge-secret', 'shh']), {
+      from: 'user',
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    // The daemon was consulted for identity, but the OVERRIDE url/secret won:
+    // the relay event subscription targets the override url (with the
+    // per-attempt marker), never the daemon's writeback url.
+    expect(resolveMock).toHaveBeenCalled();
+    expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: expect.stringMatching(/^https:\/\/override\.example\?relaySubscribeAttempt=[0-9a-f]{16}$/),
+        secret: 'shh',
+      })
+    );
+    // ...and the pin flowed into the cloud create + binding.
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({ workspace: 'rw_bridge_pin' })
+    );
+    await expect(relayfile.listBindings()).resolves.toEqual([
+      expect.objectContaining({ webhookSubscriptionWorkspaceId: 'rw_bridge_pin' }),
+    ]);
+  });
+
+  it('with --bridge-url overrides, aborts before any create when no pin is obtainable (P1)', async () => {
+    const relayfile = createRelayfileMock([], {
+      resolveWritebackBinding: vi.fn(async () => undefined),
+    });
+    expect(relayfile.listWebhookSubscriptions).toBeUndefined();
+    const { program, relay, error, exit } = harness({ relayfile });
+
+    await program.parseAsync(ARGS(['--bridge-url', 'https://override.example', '--bridge-secret', 'shh']), {
+      from: 'user',
+    });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('active relayfile workspace'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    expect(relay.integrations.subscriptions.create).not.toHaveBeenCalled();
   });
 
   it('pins recorded cloud entries to their workspace and converges 404 only when pinned', async () => {
@@ -1065,7 +1122,7 @@ describe('integration subscribe', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('bind failed'));
     expect(exit).toHaveBeenCalledWith(1);
     expect(error.mock.calls.some((c) => String(c[0]).includes('relay inbound webhook'))).toBe(true);
-    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1', undefined);
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1', 'rw_test');
   });
 });
 

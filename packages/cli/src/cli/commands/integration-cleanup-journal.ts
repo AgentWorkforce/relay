@@ -144,7 +144,6 @@ export function cleanupEntryKey(entry: PendingCleanupEntry): string {
 
 const LOCK_RETRY_MS = 100;
 const LOCK_TIMEOUT_MS = 5_000;
-const LOCK_STALE_MS = 10_000;
 
 const CONCRETE_KINDS: ReadonlySet<string> = new Set([
   'relayfile-webhook-subscription',
@@ -234,9 +233,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Take the exclusive journal lock. O_CREAT|O_EXCL ('wx') is atomic on every
- * platform Node supports. A stale lock is broken ONLY when it is old enough
- * AND was taken on this host by a provably dead pid — an alive owner, a
- * foreign host, or an unreadable lockfile all fail closed.
+ * platform Node supports. There is NO automatic stale-lock takeover: any
+ * stat->read->unlink "proven dead owner" dance is a TOCTOU (the owner can be
+ * replaced between the check and the unlink, silently breaking a live lock).
+ * A lock abandoned by a crashed process therefore fails closed — the timeout
+ * error names the file for explicit manual remediation. The lock is held only
+ * for the milliseconds of one read-modify-write, so an abandoned lockfile is
+ * rare and strictly an availability (never a correctness) issue.
  */
 async function acquireLock(lockFile: string): Promise<() => void> {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
@@ -260,31 +263,10 @@ async function acquireLock(lockFile: string): Promise<() => void> {
         );
       }
     }
-    try {
-      const stat = fs.statSync(lockFile);
-      if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-        const owner = JSON.parse(fs.readFileSync(lockFile, 'utf8')) as { pid?: number; host?: string };
-        let ownerDead = false;
-        if (owner.host === hostname() && typeof owner.pid === 'number') {
-          try {
-            process.kill(owner.pid, 0);
-          } catch (killErr) {
-            ownerDead = (killErr as NodeJS.ErrnoException).code === 'ESRCH';
-          }
-        }
-        if (ownerDead) {
-          fs.unlinkSync(lockFile);
-          continue; // retry the exclusive create; another process may still win
-        }
-      }
-    } catch {
-      // lockfile vanished (owner released) or is unreadable — retry below;
-      // never remove a lock we cannot attribute to a dead local owner.
-    }
     if (Date.now() >= deadline) {
       throw new CleanupJournalError(
         'locked',
-        `Timed out waiting for the pending-cleanup journal lock at ${lockFile}. Another agent-relay process may be running; retry, or remove the lockfile if you are sure none is.`
+        `Timed out waiting for the pending-cleanup journal lock at ${lockFile}. Another agent-relay process may be running; if none is (e.g. a previous run crashed while holding it), remove the lockfile manually and retry.`
       );
     }
     await sleep(LOCK_RETRY_MS);

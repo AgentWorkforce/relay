@@ -750,7 +750,9 @@ function relayfileCleanupScope(): string {
 }
 
 /** A journal entry lease-owner is only bypassable when provably dead on this
- * host; a live owner or a foreign host fails closed. */
+ * host; a live owner or a foreign host fails closed. PID reuse can make a
+ * dead owner look alive — that defers recovery/new lifecycles until the
+ * reusing process exits (availability only, never incorrect deletion). */
 function isOwnerLive(owner: PendingCleanupOwner | undefined): boolean {
   if (!owner) return false;
   if (owner.host !== hostname()) return true; // cannot prove death — fail closed
@@ -968,7 +970,7 @@ async function sweepPendingCleanups(
               }
             }
             // Relay side: recover by concrete id or deterministic key.
-            let relayResolved = Boolean(relay) && entry.relayScope === options.relayScope;
+            const relayResolved = Boolean(relay) && entry.relayScope === options.relayScope;
             if (relay && entry.relayScope === options.relayScope) {
               const webhookIds = new Set<string>();
               if (entry.webhookId) {
@@ -1236,6 +1238,7 @@ async function prepareSubscribeAttempt(
   deps: IntegrationCommandDependencies,
   relay: AgentRelayAgent,
   attempt: PendingCleanupEntry,
+  channel: string,
   scopes: { relayScope: string; relayfileScope: string }
 ): Promise<void> {
   // Ownership conflicts match on the durable binding identity ONLY — a
@@ -1253,21 +1256,28 @@ async function prepareSubscribeAttempt(
   // Pin the exact relayfile workspace BEFORE any cloud create: a crash after
   // the create reaches the server but before its response would otherwise
   // leave the attempt unpinned, and an unpinned list/delete after an
-  // active-workspace switch could falsely settle it. The writeback-secret
-  // resolution (daemons >= relayfile#346) provides the pin on every daemon
-  // path — including the published v0.10.20 client, whose runtime preserves
-  // the extra JSON field; the v3 list is only a fallback. A list-capable
-  // bridge with NO obtainable pin fails closed; without list capability an
-  // unpinned attempt cannot false-settle (its recovery is fail-closed
-  // retained), so it may proceed.
+  // active-workspace switch could falsely settle it. The pin is MANDATORY on
+  // every path — no pin, no create. writeback-secret resolution (daemons >=
+  // relayfile#346) provides it normally (the published v0.10.20 client
+  // runtime preserves the extra JSON field); with --bridge-url/--bridge-secret
+  // overrides the control plane is still consulted for the workspace alone,
+  // then the v3 list, and a run that cannot obtain a pin aborts here.
+  if (!attempt.relayfileWorkspaceId) {
+    // Even with explicit --bridge-url/--bridge-secret overrides, the control
+    // plane is still consulted for the workspace identity alone.
+    const resolved = await deps.relayfile.resolveWritebackBinding(channel).catch(() => undefined);
+    if (resolved?.workspaceId) attempt.relayfileWorkspaceId = resolved.workspaceId;
+  }
   if (!attempt.relayfileWorkspaceId && deps.relayfile.listWebhookSubscriptions) {
     const { workspaceId } = await deps.relayfile.listWebhookSubscriptions();
-    if (!workspaceId) {
-      throw new Error(
-        `Could not determine the active relayfile workspace before subscribing ${attempt.provider} ${attempt.resource}; upgrade the relayfile daemon and re-run.`
-      );
-    }
-    attempt.relayfileWorkspaceId = workspaceId;
+    if (workspaceId) attempt.relayfileWorkspaceId = workspaceId;
+  }
+  if (!attempt.relayfileWorkspaceId) {
+    // No pin, no create: an unpinned cloud subscription would be unretryable
+    // across an active-workspace switch.
+    throw new Error(
+      `Could not determine the active relayfile workspace before subscribing ${attempt.provider} ${attempt.resource}; upgrade the relayfile daemon (>= control-plane API v3 with workspace identity) and re-run.`
+    );
   }
 
   // Check-and-reserve happens INSIDE one journal update, under its exclusive
@@ -1401,7 +1411,7 @@ async function runSubscribe(
         )
       );
   };
-  await prepareSubscribeAttempt(deps, relay, attempt, { relayScope, relayfileScope });
+  await prepareSubscribeAttempt(deps, relay, attempt, channel, { relayScope, relayfileScope });
 
   // With the lease held, capture the binding we're about to replace
   // (create-first: the per-attempt nonce in `name` means createInbound never
@@ -1532,20 +1542,18 @@ async function runSubscribe(
       }
     }
     if (relayfileWebhook) {
+      const rollbackWorkspaceId = relayfileWebhook.workspaceId ?? attempt.relayfileWorkspaceId;
       try {
-        await deps.relayfile.deleteWebhookSubscription(
-          relayfileWebhook.subscriptionId,
-          relayfileWebhook.workspaceId
-        );
+        await deps.relayfile.deleteWebhookSubscription(relayfileWebhook.subscriptionId, rollbackWorkspaceId);
       } catch (cleanupErr) {
-        if (!isAlreadyDeletedWebhookSubscription(cleanupErr) || !relayfileWebhook.workspaceId) {
+        if (!isAlreadyDeletedWebhookSubscription(cleanupErr) || !rollbackWorkspaceId) {
           const recorded = await tryRecordCleanup(
             deps,
             {
               kind: 'relayfile-webhook-subscription',
               scope: relayfileScope,
               id: relayfileWebhook.subscriptionId,
-              ...(relayfileWebhook.workspaceId ? { relayfileWorkspaceId: relayfileWebhook.workspaceId } : {}),
+              ...(rollbackWorkspaceId ? { relayfileWorkspaceId: rollbackWorkspaceId } : {}),
             },
             `${provider} ${pathGlob}`
           );
