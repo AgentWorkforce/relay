@@ -38,6 +38,24 @@ export function nodeCapacityHarnesses(
 }
 
 /**
+ * Resolve the `AGENT_RELAY_NODE_HARNESSES` CSV the broker registers its capacity
+ * from. A pre-set value is the operator's authoritative declaration of the node's
+ * real capacity and is returned verbatim; otherwise it is computed from the project
+ * via {@link nodeCapacityHarnesses}.
+ */
+export function resolveNodeCapacityHarnesses(
+  preset: string | undefined,
+  teamsConfig: CoreTeamsConfig | null,
+  definition?: FleetNodeDefinition
+): string {
+  const trimmed = preset?.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+  return nodeCapacityHarnesses(teamsConfig, definition).join(',');
+}
+
+/**
  * Adapt the relay SDK triggers API to the fleet {@link FleetTriggerSyncClient}
  * contract so a served node can reconcile its declared triggers. The fleet
  * package never constructs a relay client itself (avoids a circular dependency),

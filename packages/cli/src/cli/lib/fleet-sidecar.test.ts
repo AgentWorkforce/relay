@@ -20,7 +20,11 @@ vi.mock('@agent-relay/sdk', () => ({
 import { defineNode, spawn } from '@agent-relay/fleet';
 
 import type { CoreTeamsConfig } from '../commands/core.js';
-import { createTriggerSyncClient, nodeCapacityHarnesses } from './fleet-sidecar.js';
+import {
+  createTriggerSyncClient,
+  nodeCapacityHarnesses,
+  resolveNodeCapacityHarnesses,
+} from './fleet-sidecar.js';
 
 describe('nodeCapacityHarnesses', () => {
   it('advertises the default harness set (matching the broker default) when there is no config', () => {
@@ -50,6 +54,27 @@ describe('nodeCapacityHarnesses', () => {
       'opencode',
       'aider',
     ]);
+  });
+});
+
+describe('resolveNodeCapacityHarnesses', () => {
+  it('uses a pre-set AGENT_RELAY_NODE_HARNESSES value verbatim (operator authority)', () => {
+    const teams: CoreTeamsConfig = { team: 't', agents: [{ name: 'a', cli: 'aider' }] };
+    // A pinned value wins over the computed default+config set.
+    expect(resolveNodeCapacityHarnesses('  claude  ', teams)).toBe('claude');
+    expect(resolveNodeCapacityHarnesses('claude,codex', null)).toBe('claude,codex');
+  });
+
+  it('computes defaults ∪ config when no value is pre-set', () => {
+    const definition = defineNode({
+      name: 'p',
+      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+    });
+    expect(resolveNodeCapacityHarnesses(undefined, null, definition)).toBe(
+      'claude,codex,gemini,opencode,aider'
+    );
+    // A blank/whitespace value is treated as unset.
+    expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,gemini,opencode');
   });
 });
 

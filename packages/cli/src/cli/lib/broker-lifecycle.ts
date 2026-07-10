@@ -7,7 +7,7 @@ import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } fr
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
-import { createTriggerSyncClient, nodeCapacityHarnesses } from './fleet-sidecar.js';
+import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-sidecar.js';
 import {
   discoverNodeConfigPath,
   discoverPythonNodeConfigPath,
@@ -1104,10 +1104,16 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     const nodeDefinition = await resolveNodeDefinitionForUp(paths, options, deps);
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
 
-    // The broker advertises spawn:<harness> capacity for this set; the CLI is the
-    // single source of the project's runnable harnesses (teams.json clis plus any
-    // spawn definitions), so it passes them to the broker before it registers.
-    deps.env.AGENT_RELAY_NODE_HARNESSES = nodeCapacityHarnesses(teamsConfig, nodeDefinition).join(',');
+    // The broker advertises spawn:<harness> capacity for this set. A pre-set
+    // AGENT_RELAY_NODE_HARNESSES is the operator's authoritative declaration of the
+    // node's real capacity and is used verbatim; otherwise the CLI computes it from
+    // the project's runnable harnesses (built-in defaults plus teams.json clis and
+    // any spawn:<harness> definitions) and passes it to the broker before it registers.
+    deps.env.AGENT_RELAY_NODE_HARNESSES = resolveNodeCapacityHarnesses(
+      deps.env.AGENT_RELAY_NODE_HARNESSES,
+      teamsConfig,
+      nodeDefinition
+    );
 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
