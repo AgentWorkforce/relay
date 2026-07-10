@@ -679,6 +679,105 @@ describe('integration subscribe', () => {
     expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
   });
 
+  it('claims a stale attempt as a live recovery lease before any remote recovery call (P1)', async () => {
+    const deadAttempt = attemptEntry({ relayfileWorkspaceId: 'rw_1' });
+    const journal = memoryJournal([deadAttempt]);
+    const listMock = vi.fn(async () => {
+      // At the moment recovery reaches out remotely, the stale attempt must
+      // already be re-owned by a LIVE lease — a concurrent prepare would now
+      // abort instead of interleaving a same-key create.
+      const held = journal
+        .entries()
+        .find((e) => e.kind === 'subscribe-attempt' && e.owner?.host === os.hostname());
+      expect(held).toBeDefined();
+      expect(() => process.kill(held!.owner!.pid, 0)).not.toThrow();
+      return { workspaceId: 'rw_1', subscriptions: [] };
+    });
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: listMock,
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: WRITEBACK_URL,
+        secret: 's3cr3t',
+        workspaceId: 'rw_1',
+      })),
+    });
+    const { program, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(listMock).toHaveBeenCalled();
+    // Fully reconciled: the claimed record is removed.
+    expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
+  it('blocks a same-resource subscribe while a recovery claim is held, mid-reconcile (P1)', async () => {
+    const deadAttempt = attemptEntry({ relayfileWorkspaceId: 'rw_1' });
+    const journal = memoryJournal([deadAttempt]);
+
+    // Recovery's remote list stalls until we release it, holding the claim.
+    let releaseRecovery!: () => void;
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    let raceChecked = false;
+    const recoveringRelayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => {
+        if (!raceChecked) {
+          raceChecked = true;
+          // While the claim is held, a concurrent same-resource subscribe
+          // sharing the journal must abort BEFORE any create.
+          const rival = harness({ relayfile: createRelayfileMock(), journal });
+          await rival.program.parseAsync(ARGS(), { from: 'user' });
+          expect(rival.error).toHaveBeenCalledWith(expect.stringContaining('in progress'));
+          expect(rival.exit).toHaveBeenCalledWith(1);
+          expect(rival.relay.webhooks.createInbound).not.toHaveBeenCalled();
+          expect(rival.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+          await recoveryGate;
+        }
+        return { workspaceId: 'rw_1', subscriptions: [] };
+      }),
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: WRITEBACK_URL,
+        secret: 's3cr3t',
+        workspaceId: 'rw_1',
+      })),
+    });
+    const { program, exit } = harness({ relayfile: recoveringRelayfile, journal });
+
+    const run = program.parseAsync(ARGS(), { from: 'user' });
+    // Let the recovery reach its stalled list call, then release it.
+    await vi.waitFor(() => expect(raceChecked).toBe(true));
+    releaseRecovery();
+    await run;
+
+    expect(exit).not.toHaveBeenCalled();
+    // Once the claim released (reconcile completed), the original run's own
+    // subscribe proceeded normally.
+    expect(recoveringRelayfile.createWebhookSubscription).toHaveBeenCalled();
+    expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
+  it('releases a partial recovery claim back to a reclaimable state', async () => {
+    // Cloud reconciliation cannot complete (no list capability), so recovery
+    // must hand the lease back — a live-held claim would block every later
+    // lifecycle until this pid exits.
+    const deadAttempt = attemptEntry({ relayfileWorkspaceId: 'rw_1' });
+    const journal = memoryJournal([deadAttempt]);
+    const relayfile = createRelayfileMock();
+    expect(relayfile.listWebhookSubscriptions).toBeUndefined();
+    const { program, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    // Same-key subscribe aborted (unreconciled attempt) — and the retained
+    // record is NOT live-owned by this process.
+    expect(exit).toHaveBeenCalledWith(1);
+    const retained = journal.entries().find((e) => e.kind === 'subscribe-attempt');
+    expect(retained).toBeDefined();
+    expect(retained!.owner).toEqual(deadAttempt.owner);
+  });
+
   it('retains an unpinned attempt instead of list-matching the wrong workspace', async () => {
     // Crash landed the create but not its response: no workspace pin. After a
     // workspace switch, listing the NOW-active workspace must not settle it.

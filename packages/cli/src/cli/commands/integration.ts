@@ -902,94 +902,140 @@ async function sweepPendingCleanups(
             await removeCleanupEntry(deps, entry);
             break;
           }
-          let cloudResolved = false;
-          // Cloud side: a concrete id beats list-matching; both are pinned to
-          // the attempt's recorded workspace when known.
-          if (entry.webhookSubscriptionId && !activeWebhookSubscriptionIds.has(entry.webhookSubscriptionId)) {
-            cloudResolved =
-              (await deleteCloudSubscription(entry.webhookSubscriptionId, entry.relayfileWorkspaceId)) ===
-              'deleted';
-          } else if (entry.webhookSubscriptionId) {
-            cloudResolved = true; // bound and active — nothing to clean
-          } else if (deps.relayfile.listWebhookSubscriptions && entry.relayfileWorkspaceId) {
-            // Only a workspace-pinned attempt may list-reconcile: an unpinned
-            // list would query whatever workspace is active NOW and could
-            // falsely settle an attempt whose create landed elsewhere.
-            const listed = await deps.relayfile.listWebhookSubscriptions(entry.relayfileWorkspaceId);
-            if (listed.workspaceId !== entry.relayfileWorkspaceId) {
-              // Fail closed unless the daemon EXPLICITLY confirms it answered
-              // for the pinned workspace — a missing echo is not good enough.
-              cloudResolved = false;
-            } else {
-              const orphans = listed.subscriptions.filter(
-                (subscription) =>
-                  subscription.url === entry.url &&
-                  sameGlobSet(subscription.pathGlobs, entry.pathGlobs) &&
-                  !activeWebhookSubscriptionIds.has(subscription.subscriptionId)
-              );
-              for (const orphan of orphans) {
-                await deleteCloudSubscription(orphan.subscriptionId, entry.relayfileWorkspaceId);
+          // CLAIM the stale attempt as this process's live recovery lease
+          // BEFORE any remote list/delete. Recovery then holds the same
+          // per-resource lease new lifecycles reserve under (prepare aborts
+          // on a live owner), so a new subscribe can never create a same-key
+          // pre-bind resource while this reconciliation is mid-flight — and
+          // if the entry vanished or was claimed meanwhile, recovery skips.
+          const recoveryOwner = newCleanupOwner();
+          let claimed = false;
+          await deps.cleanupJournal.update((fresh) => {
+            const index = fresh.findIndex(
+              (candidate) => cleanupEntryKey(candidate) === cleanupEntryKey(entry)
+            );
+            if (index < 0 || isOwnerLive(fresh[index]!.owner)) return fresh;
+            claimed = true;
+            const next = [...fresh];
+            next[index] = { ...next[index]!, owner: recoveryOwner };
+            return next;
+          });
+          if (!claimed) break;
+          const claimedEntry: PendingCleanupEntry = { ...entry, owner: recoveryOwner };
+          const releaseClaim = () =>
+            deps.cleanupJournal
+              .update((fresh) =>
+                fresh.map((candidate) =>
+                  cleanupEntryKey(candidate) === cleanupEntryKey(claimedEntry)
+                    ? { ...candidate, owner: entry.owner }
+                    : candidate
+                )
+              )
+              .catch(() => undefined);
+          try {
+            let cloudResolved = false;
+            // Cloud side: a concrete id beats list-matching; both are pinned to
+            // the attempt's recorded workspace when known.
+            if (
+              entry.webhookSubscriptionId &&
+              !activeWebhookSubscriptionIds.has(entry.webhookSubscriptionId)
+            ) {
+              cloudResolved =
+                (await deleteCloudSubscription(entry.webhookSubscriptionId, entry.relayfileWorkspaceId)) ===
+                'deleted';
+            } else if (entry.webhookSubscriptionId) {
+              cloudResolved = true; // bound and active — nothing to clean
+            } else if (deps.relayfile.listWebhookSubscriptions && entry.relayfileWorkspaceId) {
+              // Only a workspace-pinned attempt may list-reconcile: an unpinned
+              // list would query whatever workspace is active NOW and could
+              // falsely settle an attempt whose create landed elsewhere.
+              const listed = await deps.relayfile.listWebhookSubscriptions(entry.relayfileWorkspaceId);
+              if (listed.workspaceId !== entry.relayfileWorkspaceId) {
+                // Fail closed unless the daemon EXPLICITLY confirms it answered
+                // for the pinned workspace — a missing echo is not good enough.
+                cloudResolved = false;
+              } else {
+                const orphans = listed.subscriptions.filter(
+                  (subscription) =>
+                    subscription.url === entry.url &&
+                    sameGlobSet(subscription.pathGlobs, entry.pathGlobs) &&
+                    !activeWebhookSubscriptionIds.has(subscription.subscriptionId)
+                );
+                for (const orphan of orphans) {
+                  await deleteCloudSubscription(orphan.subscriptionId, entry.relayfileWorkspaceId);
+                }
+                cloudResolved = true;
               }
-              cloudResolved = true;
             }
-          }
-          // Relay side: recover by concrete id or deterministic key.
-          let relayResolved = Boolean(relay) && entry.relayScope === options.relayScope;
-          if (relay && entry.relayScope === options.relayScope) {
-            const webhookIds = new Set<string>();
-            if (entry.webhookId) {
-              webhookIds.add(entry.webhookId);
-            } else if (entry.webhookName) {
-              // Exact-name match only: a prefix match could hit a DIFFERENT
-              // attempt's pre-bind webhook for the same resource.
-              const hooks = await relay.webhooks.list();
-              for (const hook of hooks) {
-                if (hook.name === entry.webhookName && !activeWebhookIds.has(hook.webhookId)) {
-                  webhookIds.add(hook.webhookId);
+            // Relay side: recover by concrete id or deterministic key.
+            let relayResolved = Boolean(relay) && entry.relayScope === options.relayScope;
+            if (relay && entry.relayScope === options.relayScope) {
+              const webhookIds = new Set<string>();
+              if (entry.webhookId) {
+                webhookIds.add(entry.webhookId);
+              } else if (entry.webhookName) {
+                // Exact-name match only: a prefix match could hit a DIFFERENT
+                // attempt's pre-bind webhook for the same resource.
+                const hooks = await relay.webhooks.list();
+                for (const hook of hooks) {
+                  if (hook.name === entry.webhookName && !activeWebhookIds.has(hook.webhookId)) {
+                    webhookIds.add(hook.webhookId);
+                  }
                 }
               }
-            }
-            for (const webhookId of webhookIds) {
-              if (activeWebhookIds.has(webhookId)) continue;
-              try {
-                await relay.webhooks.delete(webhookId);
-              } catch (err) {
-                if (!isNotFoundRelayError(err)) throw err;
-              }
-            }
-            if (entry.subscriptionId) {
-              if (!activeSubscriptionIds.has(entry.subscriptionId)) {
+              for (const webhookId of webhookIds) {
+                if (activeWebhookIds.has(webhookId)) continue;
                 try {
-                  await relay.webhooks.unsubscribe(entry.subscriptionId);
+                  await relay.webhooks.delete(webhookId);
                 } catch (err) {
                   if (!isNotFoundRelayError(err)) throw err;
                 }
               }
-            } else if (entry.writebackUrl) {
-              // The attempt's subscription targeted the writeback url with a
-              // per-attempt marker appended, so an exact-url match can only be
-              // THIS dead attempt's subscription — never another attempt's on
-              // the same channel. The active-id guard stays as belt.
-              const subscriptions = await relay.webhooks.subscriptions();
-              for (const subscription of subscriptions) {
-                if (subscription.url === entry.writebackUrl && !activeSubscriptionIds.has(subscription.id)) {
+              if (entry.subscriptionId) {
+                if (!activeSubscriptionIds.has(entry.subscriptionId)) {
                   try {
-                    await relay.webhooks.unsubscribe(subscription.id);
+                    await relay.webhooks.unsubscribe(entry.subscriptionId);
                   } catch (err) {
                     if (!isNotFoundRelayError(err)) throw err;
                   }
                 }
+              } else if (entry.writebackUrl) {
+                // The attempt's subscription targeted the writeback url with a
+                // per-attempt marker appended, so an exact-url match can only be
+                // THIS dead attempt's subscription — never another attempt's on
+                // the same channel. The active-id guard stays as belt.
+                const subscriptions = await relay.webhooks.subscriptions();
+                for (const subscription of subscriptions) {
+                  if (
+                    subscription.url === entry.writebackUrl &&
+                    !activeSubscriptionIds.has(subscription.id)
+                  ) {
+                    try {
+                      await relay.webhooks.unsubscribe(subscription.id);
+                    } catch (err) {
+                      if (!isNotFoundRelayError(err)) throw err;
+                    }
+                  }
+                }
               }
             }
-          }
-          if (cloudResolved && relayResolved) {
-            await removeCleanupEntry(deps, entry);
-            deps.log(
-              `Reconciled resources left by an interrupted subscribe of ${entry.provider ?? 'unknown'} ${entry.resource ?? ''}.`
-            );
+            if (cloudResolved && relayResolved) {
+              await removeCleanupEntry(deps, claimedEntry);
+              deps.log(
+                `Reconciled resources left by an interrupted subscribe of ${entry.provider ?? 'unknown'} ${entry.resource ?? ''}.`
+              );
+            } else {
+              // Partial: hand the lease back to its (dead) owner so a later
+              // sweep — including one in this same process — can reclaim it.
+              await releaseClaim();
+            }
+          } catch (err) {
+            await releaseClaim();
+            throw err;
           }
           break;
         }
+
         case 'relay-webhook': {
           if (!relay || entry.scope !== options.relayScope || !entry.id) continue;
           if (activeWebhookIds.has(entry.id)) continue;

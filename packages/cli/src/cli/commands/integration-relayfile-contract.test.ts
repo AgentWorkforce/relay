@@ -114,6 +114,7 @@ describeContract('relayfile bridge contract (real control-plane daemon)', () => 
       webhookToken: 'tok_contract',
       subscriptionId: 'sub_contract',
       webhookSubscriptionId: 'whsub_contract',
+      webhookSubscriptionWorkspaceId: 'rw_contract_pin',
     });
 
     const afterBind = await bridge.listBindings();
@@ -125,6 +126,9 @@ describeContract('relayfile bridge contract (real control-plane daemon)', () => 
     expect(binding!.webhookId).toBe('wh_contract');
     expect(binding!.subscriptionId).toBe('sub_contract');
     expect(binding!.webhookSubscriptionId).toBe('whsub_contract');
+    // The (id, workspace) pair round-trips through the published v0.10.20
+    // client's runtime (the daemon enforces them as an atomic pair).
+    expect(binding!.webhookSubscriptionWorkspaceId).toBe('rw_contract_pin');
 
     await bridge.unbind('github', pathGlob);
     const afterUnbind = await bridge.listBindings();
