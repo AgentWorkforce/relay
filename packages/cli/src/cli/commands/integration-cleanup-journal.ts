@@ -251,7 +251,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function acquireLock(lockFile: string): Promise<() => void> {
   let fd: number;
   try {
-    fd = fs.openSync(lockFile, 'a+', 0o600);
+    // O_RDWR|O_CREAT, deliberately NOT 'a+': O_APPEND would make positioned
+    // writes append on Linux (pwrite honors O_APPEND there), corrupting the
+    // marker heal below.
+    fd = fs.openSync(lockFile, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o600);
   } catch (err) {
     throw new CleanupJournalError(
       'io',
@@ -322,7 +325,8 @@ async function acquireLock(lockFile: string): Promise<() => void> {
       }
       if (content !== LOCK_MARKER) {
         // Heal a crash-truncated v2 marker (strict prefix); anything else
-        // already failed closed above.
+        // already failed closed above. Truncate first so the rewrite is exact.
+        fs.ftruncateSync(fd, 0);
         fs.writeSync(fd, LOCK_MARKER, 0);
         fs.fsyncSync(fd);
       }

@@ -165,9 +165,27 @@ describe('fileCleanupJournal', () => {
       { env: { ...process.env, ADDON: addon, LOCK: lock }, stdio: ['ignore', 'pipe', 'inherit'] }
     );
     await new Promise<void>((resolve, reject) => {
-      child.stdout!.on('data', (d) => String(d).includes('held') && resolve());
-      child.on('exit', (code) => reject(new Error(`child exited early: ${code}`)));
-      setTimeout(() => reject(new Error('child never took the lock')), 5_000);
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('child never took the lock'));
+      }, 5_000);
+      const onData = (d: Buffer) => {
+        if (String(d).includes('held')) {
+          cleanup();
+          resolve();
+        }
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        reject(new Error(`child exited early: ${code}`));
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        child.stdout!.off('data', onData);
+        child.off('exit', onExit);
+      };
+      child.stdout!.on('data', onData);
+      child.on('exit', onExit);
     });
 
     const journal = fileCleanupJournal(dir);
