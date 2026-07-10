@@ -29,7 +29,7 @@ const ORCHESTRATOR_HARNESS_ENV: &str = "AGENT_RELAY_ORCHESTRATOR_HARNESS";
 /// treated the same as "unset" so an accidentally-blank secret doesn't trip
 /// us into trying to talk to PostHog with an invalid key.
 fn posthog_api_key() -> Option<&'static str> {
-    POSTHOG_API_KEY.and_then(|k| if k.is_empty() { None } else { Some(k) })
+    POSTHOG_API_KEY.filter(|k| !k.is_empty())
 }
 
 const FIRST_RUN_NOTICE: &str = "\
