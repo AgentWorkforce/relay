@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AgentClient, HttpClient } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -205,13 +206,24 @@ export async function createWorkspace(engine: EngineHandle, name: string): Promi
   return body.data.api_key as string;
 }
 
-export async function enableFleet(engine: EngineHandle, workspaceKey: string): Promise<void> {
-  const { status } = await engine.fetchJson('/v1/workspace/fleet-nodes', {
-    method: 'PUT',
+/**
+ * Mint an observer token for the workspace event stream. `stream:read` authorizes
+ * the `/v1/ws` upgrade; per-event scopes (e.g. `deliveries:read`) gate which events
+ * the socket receives. The node-provider engine no longer streams agent events over
+ * an agent-token WS, so workspace observation goes through an observer token.
+ */
+export async function mintObserverToken(
+  engine: EngineHandle,
+  workspaceKey: string,
+  scopes: string[]
+): Promise<string> {
+  const { status, body } = await engine.fetchJson('/v1/observer-tokens', {
+    method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${workspaceKey}` },
-    body: JSON.stringify({ enabled: true }),
+    body: JSON.stringify({ name: `obs-${Math.random().toString(36).slice(2, 10)}`, scopes }),
   });
-  if (status >= 300) throw new Error(`enableFleet ${status}`);
+  if (status >= 300) throw new Error(`mintObserverToken ${status}: ${JSON.stringify(body)}`);
+  return body.data.token as string;
 }
 
 export async function enrollNode(
@@ -534,13 +546,17 @@ export async function listDeliveries(
   }>;
 }
 
-/** A live agent WS connection that records the typed events it receives — the
- * only way a sender observes the realtime `delivery.failed` notification. */
-export class AgentEventListener {
+/** A workspace observer stream (`/v1/ws`, observer token) that records the typed
+ * events it receives — how a workspace-level watcher observes realtime events such
+ * as `delivery.failed`. Authenticate the token with the scopes the events require
+ * (see {@link mintObserverToken}). */
+export class ObserverStream {
   private readonly ws: WebSocket;
   readonly events: Array<Record<string, unknown>> = [];
-  constructor(wsBaseUrl: string, agentToken: string) {
-    this.ws = new WebSocket(`${wsBaseUrl}/v1/ws`, { headers: { authorization: `Bearer ${agentToken}` } });
+  constructor(wsBaseUrl: string, observerToken: string) {
+    this.ws = new WebSocket(`${wsBaseUrl}/v1/ws`, {
+      headers: { authorization: `Bearer ${observerToken}` },
+    });
     this.ws.on('message', (data) => {
       try {
         this.events.push(JSON.parse(data.toString()));
@@ -560,24 +576,60 @@ export class AgentEventListener {
   ofType(type: string): Array<Record<string, unknown>> {
     return this.events.filter((e) => e.type === type);
   }
-  /** Strictly-increasing per-agent sequence numbers across all received events. */
-  seqs(): number[] {
-    return this.events.map((e) => e.agent_seq).filter((s): s is number => typeof s === 'number');
-  }
-  send(frame: Record<string, unknown>): void {
-    this.ws.send(JSON.stringify(frame));
-  }
-  /** Ask the engine to replay everything after `lastSeenSeq` (the resync cursor
-   * the node-restart reconcile relies on for exactly-once redelivery). */
-  resync(lastSeenSeq: number): void {
-    this.send({ type: 'resync', last_seen_seq: lastSeenSeq });
-  }
   close(): void {
     try {
       this.ws.close();
     } catch {
       /* already closed */
     }
+  }
+}
+
+/**
+ * A recipient agent driven through the public `@relaycast/sdk` {@link AgentClient} —
+ * the node-provider engine delivers agent events over the node transport (the agent
+ * mints a direct node token itself), so a real consumer observes its DMs this way
+ * rather than over a raw agent WS. Reconnecting creates a fresh underlying client so
+ * the per-agent delivery queue redelivers anything sent while it was offline.
+ */
+export class AgentStream {
+  private client: AgentClient | null = null;
+  private connected = false;
+  readonly received: Array<{ text: string; conversationId: string }> = [];
+
+  constructor(
+    private readonly baseUrl: string,
+    private readonly agentToken: string
+  ) {}
+
+  async connect(): Promise<void> {
+    this.connected = false;
+    const client = new AgentClient(new HttpClient({ baseUrl: this.baseUrl, apiKey: this.agentToken }), {
+      ws: { reconnectJitter: false },
+    });
+    // The SDK attaches event handlers to the live socket, so connect() first.
+    client.connect();
+    client.on.connected(() => {
+      this.connected = true;
+    });
+    client.on.dmReceived((event) => {
+      this.received.push({ text: event.message.text, conversationId: event.conversationId });
+    });
+    this.client = client;
+    await waitFor(async () => this.connected, {
+      timeoutMs: 15_000,
+      label: 'agent stream connected',
+    });
+  }
+
+  async disconnect(): Promise<void> {
+    await this.client?.disconnect();
+    this.client = null;
+  }
+
+  /** Text of every DM received across all (re)connections, in arrival order. */
+  texts(): string[] {
+    return this.received.map((entry) => entry.text);
   }
 }
 
