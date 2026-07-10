@@ -245,8 +245,14 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         }
         None => format!("node_{}", Uuid::new_v4().simple()),
     };
+    // The node registers under its resolved instance name (--instance-name, the
+    // legacy --name/--broker-name alias, or AGENT_RELAY_BROKER_NAME), falling back
+    // to the machine hostname only when none is set. Deriving this from the raw
+    // `cmd.name` (the empty legacy flag) instead would register every node under its
+    // hostname, colliding whenever two nodes share a host.
+    let resolved_node_name = cmd.resolved_instance_name(None);
     let node_name = crate::node_control::default_node_name(
-        (!cmd.name.trim().is_empty()).then_some(cmd.name.as_str()),
+        (!resolved_node_name.trim().is_empty()).then_some(resolved_node_name.as_str()),
     );
     let fleet_ws_url = relaycast::node_control_ws_url(configured_base.as_deref());
     let broker_version = format!("relay-broker/{}", crate::util::version::broker_version());

@@ -1280,6 +1280,17 @@ where
                 complete_agent_registration(reply, pending_agent_registrations, sink).await
             }
             Ok(RelaycastToBroker::Error(error)) => {
+                // Surface every engine rejection at error level. A node.register or
+                // heartbeat rejection (e.g. node_name_conflict) matches no pending
+                // agent registration below, so without this it vanishes silently —
+                // leaving the node half-registered with dead heartbeats and no signal.
+                tracing::error!(
+                    target = "relay_broker::fleet",
+                    code = %error.code,
+                    message = %error.message,
+                    id = %error.id,
+                    "engine rejected a node control frame"
+                );
                 fail_agent_registration(
                     &error.id,
                     format!("{}: {}", error.code, error.message),
