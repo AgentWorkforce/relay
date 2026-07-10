@@ -10,6 +10,7 @@ import {
   type IntegrationCommandDependencies,
   type RelayfileBinding,
 } from './integration.js';
+import type { PendingCleanupEntry } from './integration-cleanup-journal.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -62,10 +63,7 @@ function createRelayfileMock(
   initialBindings: RelayfileBinding[] = [],
   overrides: Partial<RelayfileBridge> = {}
 ) {
-  const bindings: RelayfileBinding[] = initialBindings.map((b) => ({
-    ...b,
-    pendingWebhookSubscriptionIds: [...(b.pendingWebhookSubscriptionIds ?? [])],
-  }));
+  const bindings: RelayfileBinding[] = initialBindings.map((b) => ({ ...b }));
   return {
     isConnected: vi.fn(async () => true),
     connect: vi.fn(async () => undefined),
@@ -77,7 +75,6 @@ function createRelayfileMock(
         webhookId: string;
         subscriptionId: string;
         webhookSubscriptionId: string;
-        pendingWebhookSubscriptionIds: string[];
       }) => {
         const record: RelayfileBinding = {
           provider: input.provider,
@@ -86,20 +83,13 @@ function createRelayfileMock(
           webhookId: input.webhookId,
           subscriptionId: input.subscriptionId,
           webhookSubscriptionId: input.webhookSubscriptionId,
-          pendingWebhookSubscriptionIds: [...input.pendingWebhookSubscriptionIds],
         };
         const idx = bindings.findIndex((b) => b.provider === input.provider && b.resource === input.resource);
         if (idx >= 0) bindings[idx] = record;
         else bindings.push(record);
       }
     ),
-    listBindings: vi.fn(
-      async (): Promise<RelayfileBinding[]> =>
-        bindings.map((b) => ({
-          ...b,
-          pendingWebhookSubscriptionIds: [...(b.pendingWebhookSubscriptionIds ?? [])],
-        }))
-    ),
+    listBindings: vi.fn(async (): Promise<RelayfileBinding[]> => bindings.map((b) => ({ ...b }))),
     unbind: vi.fn(async () => undefined),
     // Identity resolve: tests pass an already-resolved glob as --resource, mirroring
     // relayfile's idempotent resolve-path (a glob resolves to itself).
@@ -112,15 +102,45 @@ function createRelayfileMock(
   };
 }
 
+// In-memory CleanupJournal: tests must never touch the default file-backed
+// journal under the project data dir.
+function memoryJournal(initial: PendingCleanupEntry[] = []) {
+  let entries = [...initial];
+  return {
+    entries: () => [...entries],
+    list: vi.fn(async () => [...entries]),
+    update: vi.fn(async (mutate: (e: PendingCleanupEntry[]) => PendingCleanupEntry[]) => {
+      entries = mutate([...entries]);
+    }),
+  };
+}
+
+const INBOUND_URL = 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch';
+const RELAYFILE_SCOPE = 'relayfile:project-daemon';
+
+function intentEntry(overrides: Partial<PendingCleanupEntry> = {}): PendingCleanupEntry {
+  return {
+    kind: 'relayfile-webhook-subscription-intent',
+    scope: RELAYFILE_SCOPE,
+    provider: 'slack',
+    resource: RESOURCE,
+    url: INBOUND_URL,
+    pathGlobs: [RESOURCE],
+    ...overrides,
+  };
+}
+
 function harness(
   opts: {
     relay?: ReturnType<typeof createRelayMock>;
     relayfile?: ReturnType<typeof createRelayfileMock>;
+    journal?: ReturnType<typeof memoryJournal>;
     resolveLocalRelayOptions?: IntegrationCommandDependencies['resolveLocalRelayOptions'];
   } = {}
 ) {
   const relay = opts.relay ?? createRelayMock();
   const relayfile = opts.relayfile ?? createRelayfileMock();
+  const journal = opts.journal ?? memoryJournal();
   vi.stubGlobal(
     'fetch',
     vi.fn(
@@ -148,6 +168,7 @@ function harness(
   registerIntegrationCommands(program, {
     createAgentRelay: () => relay as never,
     relayfile: relayfile as never,
+    cleanupJournal: journal,
     resolveLocalRelayOptions:
       opts.resolveLocalRelayOptions ?? (async () => ({ workspaceKey: 'rk_live_test' })),
     isInteractive: () => false,
@@ -155,7 +176,7 @@ function harness(
     error,
     exit: exit as never,
   } satisfies Partial<IntegrationCommandDependencies>);
-  return { program, relay, relayfile, log, error, exit };
+  return { program, relay, relayfile, journal, log, error, exit };
 }
 
 const RESOURCE = '/slack/channels/C0/**';
@@ -353,11 +374,11 @@ describe('integration subscribe', () => {
       relayfile.deleteWebhookSubscription.mock.invocationCallOrder[0]!
     );
     await expect(relayfile.listBindings()).resolves.toEqual([
-      expect.objectContaining({ webhookSubscriptionId: 'whsub_1', pendingWebhookSubscriptionIds: [] }),
+      expect.objectContaining({ webhookSubscriptionId: 'whsub_1' }),
     ]);
   });
 
-  it('keeps a failed superseded cloud subscription on the new binding for retry', async () => {
+  it('journals a failed superseded cloud-subscription delete for retry (P2)', async () => {
     const prior: RelayfileBinding = {
       provider: 'slack',
       resource: RESOURCE,
@@ -371,17 +392,164 @@ describe('integration subscribe', () => {
         if (id === 'old_whsub') throw new Error('temporary relayfile-cloud outage');
       }),
     });
-    const { program, error } = harness({ relayfile });
+    const { program, journal, log, error, exit } = harness({ relayfile });
 
     await program.parseAsync(ARGS(), { from: 'user' });
 
-    expect(error).toHaveBeenCalledWith(expect.stringContaining('old_whsub'));
-    await expect(relayfile.listBindings()).resolves.toEqual([
-      expect.objectContaining({
-        webhookSubscriptionId: 'whsub_1',
-        pendingWebhookSubscriptionIds: ['old_whsub'],
-      }),
+    // The replacement still lands, the superseded id is durably recorded, and
+    // neither the id nor the inbound url is ever logged.
+    expect(exit).not.toHaveBeenCalled();
+    expect(journal.entries()).toEqual([
+      { kind: 'relayfile-webhook-subscription', scope: RELAYFILE_SCOPE, id: 'old_whsub' },
     ]);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('stays recorded'));
+    for (const call of [...error.mock.calls, ...log.mock.calls]) {
+      expect(String(call[0])).not.toContain('old_whsub');
+      expect(String(call[0])).not.toContain(INBOUND_URL);
+    }
+  });
+
+  it('retries a journaled cloud-subscription cleanup on the next run, sparing keep/active ids', async () => {
+    const journal = memoryJournal([
+      { kind: 'relayfile-webhook-subscription', scope: RELAYFILE_SCOPE, id: 'whsub_stale' },
+    ]);
+    const relayfile = createRelayfileMock();
+    const { program, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_stale');
+    // The subscription backing the binding just created is never swept.
+    expect(relayfile.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_1');
+    expect(journal.entries()).toEqual([]);
+  });
+
+  it('keeps a journaled cleanup whose retry still fails', async () => {
+    const journal = memoryJournal([
+      { kind: 'relayfile-webhook-subscription', scope: RELAYFILE_SCOPE, id: 'whsub_stale' },
+    ]);
+    const relayfile = createRelayfileMock([], {
+      deleteWebhookSubscription: vi.fn(async (id: string) => {
+        if (id === 'whsub_stale') throw new Error('still down');
+      }),
+    });
+    const { program, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(journal.entries()).toEqual([
+      { kind: 'relayfile-webhook-subscription', scope: RELAYFILE_SCOPE, id: 'whsub_stale' },
+    ]);
+  });
+
+  it('journals the subscribe intent before any create and clears it on success', async () => {
+    const relayfile = createRelayfileMock();
+    const { program, relay, journal, exit } = harness({ relayfile });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    // The first journal write (the intent) precedes every external create.
+    const intentWriteOrder = journal.update.mock.invocationCallOrder[0]!;
+    expect(intentWriteOrder).toBeLessThan(relay.webhooks.createInbound.mock.invocationCallOrder[0]!);
+    expect(intentWriteOrder).toBeLessThan(relayfile.createWebhookSubscription.mock.invocationCallOrder[0]!);
+    // Clean completion leaves no retained intent.
+    expect(journal.entries()).toEqual([]);
+  });
+
+  it('aborts before any create on a retained matching intent when the client cannot list (P1)', async () => {
+    // v3-compatible daemon (ensureCompatible passes) but the installed
+    // 0.10.20 client has no runtime list method — the bridge omits it.
+    const journal = memoryJournal([intentEntry()]);
+    const relayfile = createRelayfileMock();
+    expect(relayfile.listWebhookSubscriptions).toBeUndefined();
+    const { program, relay, error, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('interrupted'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    expect(relay.integrations.subscriptions.create).not.toHaveBeenCalled();
+    // The intent stays retained for a later reconciling run.
+    expect(journal.entries()).toEqual([intentEntry()]);
+  });
+
+  it('recovers a crash-after-create orphan via list-match, sparing active-binding ids', async () => {
+    // A prior run crashed after creating whsub_orphan but before persisting it;
+    // whsub_active backs another live binding on the same inbound url.
+    const activeBinding: RelayfileBinding = {
+      provider: 'slack',
+      resource: '/slack/channels/C9/**',
+      channel: 'general',
+      webhookId: 'wh_other',
+      subscriptionId: 'sub_other',
+      webhookSubscriptionId: 'whsub_active',
+    };
+    const journal = memoryJournal([intentEntry()]);
+    const relayfile = createRelayfileMock([activeBinding], {
+      listWebhookSubscriptions: vi.fn(async () => [
+        { subscriptionId: 'whsub_orphan', url: INBOUND_URL, pathGlobs: [RESOURCE] },
+        { subscriptionId: 'whsub_active', url: INBOUND_URL, pathGlobs: [RESOURCE] },
+        { subscriptionId: 'whsub_other_url', url: 'https://cast.test/other', pathGlobs: [RESOURCE] },
+      ]),
+    });
+    const { program, relayfile: bridge, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    // Only the unreferenced, key-matching orphan is deleted...
+    expect(bridge.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_orphan');
+    expect(bridge.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_active');
+    expect(bridge.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_other_url');
+    // ...the intent is cleared, and the new subscribe proceeded normally.
+    expect(journal.entries()).toEqual([]);
+    expect(bridge.createWebhookSubscription).toHaveBeenCalled();
+  });
+
+  it('aborts before any create when the journal cannot record the intent', async () => {
+    const journal = memoryJournal();
+    journal.update.mockRejectedValue(new Error('journal is corrupt'));
+    const relayfile = createRelayfileMock();
+    const { program, relay, error, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('journal is corrupt'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('journals rollback losses when a failed subscribe cannot delete what it created', async () => {
+    const relayfile = createRelayfileMock([], {
+      bind: vi.fn(async () => {
+        throw new Error('bind failed');
+      }),
+      deleteWebhookSubscription: vi.fn(async () => {
+        throw new Error('cloud unreachable');
+      }),
+    });
+    const relay = createRelayMock();
+    relay.webhooks.delete.mockRejectedValue(new Error('relay unreachable'));
+    relay.integrations.subscriptions.delete.mockRejectedValue(new Error('relay unreachable'));
+    const { program, journal, error, exit } = harness({ relay, relayfile });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('bind failed'));
+    expect(exit).toHaveBeenCalledWith(1);
+    const kinds = journal
+      .entries()
+      .map((e) => e.kind)
+      .sort();
+    // Every orphaned id is durably recorded; the concrete cloud id entry
+    // supersedes the intent.
+    expect(kinds).toEqual(['relay-subscription', 'relay-webhook', 'relayfile-webhook-subscription']);
   });
 
   it('does NOT delete another resource’s webhook routed to the same channel (P2)', async () => {
@@ -488,7 +656,7 @@ describe('integration subscribe', () => {
     await program.parseAsync(ARGS(), { from: 'user' });
     expect(error).toHaveBeenCalledWith(expect.stringContaining('bind failed'));
     expect(exit).toHaveBeenCalledWith(1);
-    expect(error.mock.calls.some((c) => String(c[0]).includes('failed to clean up webhook'))).toBe(true);
+    expect(error.mock.calls.some((c) => String(c[0]).includes('relay inbound webhook'))).toBe(true);
     expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1');
   });
 });
@@ -518,7 +686,7 @@ describe('integration unsubscribe', () => {
     );
   });
 
-  it('retains the binding and skips Relay-side deletion when cloud cleanup fails', async () => {
+  it('journals a failed cloud delete and still completes the unsubscribe', async () => {
     const binding: RelayfileBinding = {
       provider: 'slack',
       resource: RESOURCE,
@@ -526,27 +694,148 @@ describe('integration unsubscribe', () => {
       webhookId: 'wh_1',
       subscriptionId: 'sub_1',
       webhookSubscriptionId: 'whsub_current',
-      pendingWebhookSubscriptionIds: ['whsub_old'],
     };
     const relayfile = createRelayfileMock([binding], {
-      deleteWebhookSubscription: vi.fn(async (id: string) => {
-        if (id === 'whsub_old') throw new Error('temporary relayfile-cloud outage');
+      deleteWebhookSubscription: vi.fn(async () => {
+        throw new Error('temporary relayfile-cloud outage');
       }),
     });
-    const { program, relay, error, exit } = harness({ relayfile });
+    const { program, relay, journal, error, exit } = harness({ relayfile });
 
     await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
       from: 'user',
     });
 
-    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_current');
-    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_old');
-    expect(relayfile.unbind).not.toHaveBeenCalled();
-    expect(relay.webhooks.delete).not.toHaveBeenCalled();
-    expect(relay.webhooks.unsubscribe).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith(expect.stringContaining('binding retained'));
+    // The id is durably recorded, so the user's unsubscribe completes.
+    expect(exit).not.toHaveBeenCalled();
+    expect(journal.entries()).toEqual([
+      { kind: 'relayfile-webhook-subscription', scope: RELAYFILE_SCOPE, id: 'whsub_current' },
+    ]);
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
+    expect(relayfile.unbind).toHaveBeenCalledWith('slack', RESOURCE);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('recorded for retry'));
+    for (const call of error.mock.calls) {
+      expect(String(call[0])).not.toContain('whsub_current');
+    }
+  });
+
+  it('aborts before unbind when a failed cloud delete cannot be journaled', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+      webhookSubscriptionId: 'whsub_current',
+    };
+    const journal = memoryJournal();
+    journal.update.mockRejectedValue(new Error('disk full'));
+    const relayfile = createRelayfileMock([binding], {
+      deleteWebhookSubscription: vi.fn(async () => {
+        throw new Error('temporary relayfile-cloud outage');
+      }),
+    });
+    const { program, error, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    // Losing the id AND its record would orphan the cloud subscription
+    // forever — the binding (its only persisted home) must survive.
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('binding was left in place'));
     expect(exit).toHaveBeenCalledWith(1);
+    expect(relayfile.unbind).not.toHaveBeenCalled();
     await expect(relayfile.listBindings()).resolves.toEqual([binding]);
+  });
+
+  it('aborts before unbind when a failed relay-side delete cannot be journaled', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+    };
+    const journal = memoryJournal();
+    journal.update.mockRejectedValue(new Error('disk full'));
+    const relay = createRelayMock();
+    relay.webhooks.delete.mockRejectedValue(new Error('relay unreachable'));
+    const relayfile = createRelayfileMock([binding]);
+    const { program, error, exit } = harness({ relay, relayfile, journal });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('binding was left in place'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relayfile.unbind).not.toHaveBeenCalled();
+  });
+
+  it('treats a relay-side 404 during unsubscribe as already-clean and completes', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+    };
+    const relay = createRelayMock();
+    relay.webhooks.delete.mockRejectedValue(Object.assign(new Error('not found'), { statusCode: 404 }));
+    relay.webhooks.unsubscribe.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }));
+    const relayfile = createRelayfileMock([binding]);
+    const { program, journal, exit } = harness({ relay, relayfile });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.unbind).toHaveBeenCalledWith('slack', RESOURCE);
+    expect(journal.entries()).toEqual([]);
+  });
+
+  it('converges a journaled relay-side cleanup whose resource is already gone (404)', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+    };
+    // First run: relay-side deletes fail hard, so both ids get journaled with
+    // the run's real relay scope.
+    const failingRelay = createRelayMock();
+    failingRelay.webhooks.delete.mockRejectedValue(new Error('down'));
+    failingRelay.webhooks.unsubscribe.mockRejectedValue(new Error('down'));
+    const seedJournal = memoryJournal();
+    const first = harness({
+      relay: failingRelay,
+      relayfile: createRelayfileMock([binding]),
+      journal: seedJournal,
+    });
+    await first.program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+    const recorded = seedJournal.entries();
+    expect(recorded.map((e) => e.kind).sort()).toEqual(['relay-subscription', 'relay-webhook']);
+
+    // Later run: the resources are already gone (404) — the sweep must clear
+    // the entries instead of retaining them forever.
+    const relay404 = createRelayMock();
+    relay404.webhooks.delete.mockImplementation(async (id: string) => {
+      if (id === 'wh_1') throw Object.assign(new Error('gone'), { statusCode: 404 });
+    });
+    relay404.webhooks.unsubscribe.mockImplementation(async (id: string) => {
+      if (id === 'sub_1') throw Object.assign(new Error('gone'), { status: 404 });
+    });
+    const followupJournal = memoryJournal(recorded);
+    const second = harness({ relay: relay404, relayfile: createRelayfileMock(), journal: followupJournal });
+    await second.program.parseAsync(ARGS(), { from: 'user' });
+    expect(
+      followupJournal.entries().filter((e) => e.kind === 'relay-webhook' || e.kind === 'relay-subscription')
+    ).toEqual([]);
   });
 
   it('treats an already-deleted cloud subscription as successful retry cleanup', async () => {

@@ -4,6 +4,13 @@ import { getProjectPaths } from '@agent-relay/config';
 import type { AgentRelayAgent } from '@agent-relay/sdk';
 
 import {
+  cleanupEntryKey,
+  fileCleanupJournal,
+  type CleanupJournal,
+  type PendingCleanupEntry,
+} from './integration-cleanup-journal.js';
+
+import {
   addSdkOptions,
   printJson,
   runSdk,
@@ -39,8 +46,6 @@ export interface RelayfileBinding {
   subscriptionId: string;
   /** relayfile-cloud subscription that forwards provider records to the inbound webhook. */
   webhookSubscriptionId?: string;
-  /** Superseded relayfile-cloud subscriptions still awaiting a successful delete. */
-  pendingWebhookSubscriptionIds?: string[];
 }
 
 export interface RelayfileResolvedResource {
@@ -73,7 +78,6 @@ export interface RelayfileBridge {
     webhookToken: string;
     subscriptionId: string;
     webhookSubscriptionId: string;
-    pendingWebhookSubscriptionIds: string[];
   }): Promise<void>;
   listBindings(): Promise<RelayfileBinding[]>;
   unbind(provider: string, resource: string): Promise<void>;
@@ -106,6 +110,17 @@ export interface RelayfileBridge {
     secret: string;
   }): Promise<RelayfileWebhookSubscription>;
   deleteWebhookSubscription(subscriptionId: string): Promise<void>;
+  /**
+   * Lists the workspace's inbound webhook subscriptions so crash-recovery can
+   * find subscriptions whose server-assigned id was never persisted. Optional:
+   * the published @relayfile/client v0.10.20 does not ship it, so the default
+   * bridge exposes it only when the installed client does (see
+   * defaultRelayfileBridge). Absent list capability, recovery falls back to
+   * retaining intent records and refusing same-key re-subscribes.
+   */
+  listWebhookSubscriptions?: () => Promise<
+    Array<{ subscriptionId: string; url: string; pathGlobs: string[] }>
+  >;
 }
 
 type RelayfileBindingInput = Parameters<RelayfileBridge['bind']>[0];
@@ -113,6 +128,7 @@ type RelayfileBindingInput = Parameters<RelayfileBridge['bind']>[0];
 export type IntegrationCommandDependencies = SdkCommandDeps & {
   resolveLocalRelayOptions: () => Promise<LocalRelayOptions | undefined>;
   relayfile: RelayfileBridge;
+  cleanupJournal: CleanupJournal;
   isInteractive: () => boolean;
   prompt: (question: string) => Promise<string>;
 };
@@ -194,6 +210,11 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       if (output?.trim()) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
     },
     async bind(input) {
+      // TEMPORARY compatibility cast: registry @relayfile/client v0.10.20
+      // forwards this object unchanged at runtime, but its published
+      // BindRequest type predates control-plane API v3 and omits
+      // webhookSubscriptionId. Remove once the v3 client (relayfile#346) is
+      // published and pinned.
       await client.bind({
         provider: input.provider,
         resource: input.resource,
@@ -202,24 +223,26 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
         webhookToken: input.webhookToken,
         subscriptionId: input.subscriptionId,
         webhookSubscriptionId: input.webhookSubscriptionId,
-        pendingWebhookSubscriptionIds: input.pendingWebhookSubscriptionIds,
-      });
+      } as Parameters<typeof client.bind>[0]);
     },
     async listBindings() {
       const bindings = await client.listBindings();
       // relayfile keys bindings on `pathGlob`; surface it as `resource` so callers
       // (find/unbind) match on the canonical glob.
-      return bindings.map(
-        (b): RelayfileBinding => ({
+      return bindings.map((b): RelayfileBinding => {
+        // TEMPORARY compatibility cast (see bind() above): the published
+        // Binding type omits the v3 field the daemon already returns. Remove
+        // once the v3 client (relayfile#346) is published and pinned.
+        const { webhookSubscriptionId } = b as typeof b & { webhookSubscriptionId?: string };
+        return {
           provider: b.provider ?? '',
           resource: b.pathGlob ?? '',
           channel: b.channel ?? '',
           webhookId: b.webhookId ?? '',
           subscriptionId: b.subscriptionId ?? '',
-          webhookSubscriptionId: b.webhookSubscriptionId,
-          pendingWebhookSubscriptionIds: b.pendingWebhookSubscriptionIds,
-        })
-      );
+          webhookSubscriptionId,
+        };
+      });
     },
     async unbind(provider, resource) {
       await client.unbind(provider, resource);
@@ -270,6 +293,32 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
     async deleteWebhookSubscription(subscriptionId) {
       await client.deleteWebhookSubscription(subscriptionId);
     },
+    // TEMPORARY runtime feature-detection: published @relayfile/client v0.10.20
+    // has no listWebhookSubscriptions (a cast cannot conjure a missing runtime
+    // method). Expose it only when the installed client ships it; collapse to
+    // a plain method once the v3 client (relayfile#346) is published and pinned.
+    ...(typeof (client as { listWebhookSubscriptions?: unknown }).listWebhookSubscriptions === 'function'
+      ? {
+          listWebhookSubscriptions: async () => {
+            const result = await (
+              client as unknown as {
+                listWebhookSubscriptions: () => Promise<{
+                  subscriptions?: Array<{
+                    subscriptionId?: string;
+                    url?: string;
+                    pathGlobs?: string[];
+                  }>;
+                }>;
+              }
+            ).listWebhookSubscriptions();
+            return (result.subscriptions ?? []).map((s) => ({
+              subscriptionId: s.subscriptionId ?? '',
+              url: s.url ?? '',
+              pathGlobs: s.pathGlobs ?? [],
+            }));
+          },
+        }
+      : {}),
   };
 }
 
@@ -317,6 +366,7 @@ function withIntegrationDefaults(
     ...withSdkDefaults(overrides),
     resolveLocalRelayOptions: resolveLocalBrokerRelayOptions,
     relayfile: defaultRelayfileBridge(),
+    cleanupJournal: fileCleanupJournal(),
     isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
     prompt: promptLine,
     ...overrides,
@@ -614,44 +664,205 @@ function inboundWebhookName(prefix: string): string {
   return `${prefix}:${randomBytes(5).toString('hex')}`;
 }
 
-/** Surface a best-effort cleanup failure instead of swallowing it — a silently
- * failed cleanup is exactly what leaves orphaned webhooks behind. */
-function warnCleanup(deps: IntegrationCommandDependencies, kind: string, id: string, err: unknown): void {
-  deps.error(
-    `Warning: failed to clean up ${kind} ${id}: ${err instanceof Error ? err.message : String(err)}`
-  );
-}
-
-function uniqueWebhookSubscriptionIds(ids: Array<string | undefined>): string[] {
-  const unique = new Set<string>();
-  for (const id of ids) {
-    const trimmed = id?.trim();
-    if (trimmed) unique.add(trimmed);
-  }
-  return [...unique];
-}
-
 function isAlreadyDeletedWebhookSubscription(err: unknown): boolean {
   return err instanceof RelayfileControlPlaneError && err.status === 404;
 }
 
-async function deleteWebhookSubscriptions(
+/** Relaycast SDK errors expose statusCode/status; a not-found delete means the
+ * resource is already gone — the retry must converge, not persist forever. */
+function isNotFoundRelayError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const { statusCode, status } = err as { statusCode?: unknown; status?: unknown };
+  return statusCode === 404 || status === 404;
+}
+
+/** Non-secret identity of the relay connection a journal entry may retry through. */
+function relayCleanupScope(options: SdkClientOptions): string {
+  let workspaceKey = '';
+  try {
+    workspaceKey = resolveWorkspaceKey(options);
+  } catch {
+    // No resolvable key: scope on the base URL alone. Entries recorded this
+    // way still never leak the key (only a digest is stored).
+  }
+  const digest = createHash('sha256')
+    .update(`${resolveBaseUrl(options) ?? ''}|${workspaceKey}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `relay:${digest}`;
+}
+
+/** The default bridge always talks to the project-local relayfile daemon, so
+ * the project data dir holding the journal IS the connection identity. */
+function relayfileCleanupScope(): string {
+  return 'relayfile:project-daemon';
+}
+
+function sameGlobSet(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = [...(a ?? [])].sort();
+  const right = [...(b ?? [])].sort();
+  return left.length === right.length && left.every((glob, i) => glob === right[i]);
+}
+
+/**
+ * Record cleanup work that already exists remotely (the mutation happened; a
+ * journal failure here can only be surfaced, not used to abort). Returns
+ * whether the entry is durably recorded. Never logs entry urls or ids — the
+ * journal file is their only home.
+ */
+async function tryRecordCleanup(
   deps: IntegrationCommandDependencies,
-  subscriptionIds: string[]
-): Promise<string[]> {
-  const remaining: string[] = [];
-  for (const subscriptionId of subscriptionIds) {
+  entry: PendingCleanupEntry,
+  context: string
+): Promise<boolean> {
+  try {
+    await deps.cleanupJournal.update((entries) =>
+      entries.some((existing) => cleanupEntryKey(existing) === cleanupEntryKey(entry))
+        ? entries
+        : [...entries, entry]
+    );
+    deps.error(
+      `Warning: could not clean up a ${describeCleanupKind(entry.kind)} for ${context}; recorded for retry on a later run.`
+    );
+    return true;
+  } catch (journalErr) {
+    deps.error(
+      `Warning: could not clean up a ${describeCleanupKind(entry.kind)} for ${context} AND could not record it for retry (${
+        journalErr instanceof Error ? journalErr.message : String(journalErr)
+      }).`
+    );
+    return false;
+  }
+}
+
+function describeCleanupKind(kind: PendingCleanupEntry['kind']): string {
+  switch (kind) {
+    case 'relayfile-webhook-subscription':
+    case 'relayfile-webhook-subscription-intent':
+      return 'relayfile webhook subscription';
+    case 'relay-webhook':
+      return 'relay inbound webhook';
+    case 'relay-subscription':
+      return 'relay event subscription';
+  }
+}
+
+async function removeCleanupEntry(
+  deps: IntegrationCommandDependencies,
+  entry: PendingCleanupEntry
+): Promise<void> {
+  await deps.cleanupJournal.update((entries) =>
+    entries.filter((existing) => cleanupEntryKey(existing) !== cleanupEntryKey(entry))
+  );
+}
+
+/**
+ * Retry every journal entry the current run's connections can act on. Runs on
+ * each subscribe/unsubscribe. Guards: entries from other scopes are untouched;
+ * ids referenced by an active binding or the caller's keep-set are never
+ * deleted; intent recovery needs the (optional) list capability and excludes
+ * the same active/keep ids. Failures keep the entry (idempotent delete-404 in
+ * relayfile#346 makes retries converge). Never logs entry urls or ids.
+ */
+async function sweepPendingCleanups(
+  deps: IntegrationCommandDependencies,
+  relay: AgentRelayAgent | undefined,
+  options: {
+    relayScope?: string;
+    relayfileScope: string;
+    keepWebhookSubscriptionId?: string;
+    keepWebhookId?: string;
+  }
+): Promise<void> {
+  let entries: PendingCleanupEntry[];
+  let bindings: RelayfileBinding[];
+  try {
+    [entries, bindings] = await Promise.all([deps.cleanupJournal.list(), deps.relayfile.listBindings()]);
+  } catch {
+    return; // fail closed: unknown journal or binding state sweeps nothing
+  }
+  if (entries.length === 0) return;
+
+  const activeWebhookSubscriptionIds = new Set(
+    bindings.map((b) => b.webhookSubscriptionId).filter((id): id is string => Boolean(id))
+  );
+  if (options.keepWebhookSubscriptionId) activeWebhookSubscriptionIds.add(options.keepWebhookSubscriptionId);
+  const activeWebhookIds = new Set(bindings.map((b) => b.webhookId).filter(Boolean));
+  if (options.keepWebhookId) activeWebhookIds.add(options.keepWebhookId);
+  const activeSubscriptionIds = new Set(bindings.map((b) => b.subscriptionId).filter(Boolean));
+
+  for (const entry of entries) {
     try {
-      await deps.relayfile.deleteWebhookSubscription(subscriptionId);
-    } catch (err) {
-      // A prior partial attempt may have deleted this ID before losing the
-      // subsequent binding update. A 404 therefore confirms the desired state.
-      if (isAlreadyDeletedWebhookSubscription(err)) continue;
-      warnCleanup(deps, 'relayfile webhook subscription', subscriptionId, err);
-      remaining.push(subscriptionId);
+      switch (entry.kind) {
+        case 'relayfile-webhook-subscription': {
+          if (entry.scope !== options.relayfileScope || !entry.id) continue;
+          if (activeWebhookSubscriptionIds.has(entry.id)) continue;
+          try {
+            await deps.relayfile.deleteWebhookSubscription(entry.id);
+          } catch (err) {
+            if (!isAlreadyDeletedWebhookSubscription(err)) throw err;
+          }
+          await removeCleanupEntry(deps, entry);
+          deps.log('Retired a relayfile webhook subscription from an earlier failed cleanup.');
+          break;
+        }
+        case 'relayfile-webhook-subscription-intent': {
+          if (entry.scope !== options.relayfileScope) continue;
+          const listSubscriptions = deps.relayfile.listWebhookSubscriptions;
+          if (!listSubscriptions) continue; // recover once the v3 client is pinned
+          const subscriptions = await listSubscriptions();
+          const orphans = subscriptions.filter(
+            (subscription) =>
+              subscription.url === entry.url &&
+              sameGlobSet(subscription.pathGlobs, entry.pathGlobs) &&
+              !activeWebhookSubscriptionIds.has(subscription.subscriptionId)
+          );
+          for (const orphan of orphans) {
+            try {
+              await deps.relayfile.deleteWebhookSubscription(orphan.subscriptionId);
+            } catch (err) {
+              if (!isAlreadyDeletedWebhookSubscription(err)) throw err;
+            }
+          }
+          await removeCleanupEntry(deps, entry);
+          deps.log(
+            `Reconciled ${orphans.length} relayfile webhook subscription(s) left by an interrupted subscribe of ${entry.provider ?? 'unknown'} ${entry.resource ?? ''}.`
+          );
+          break;
+        }
+        case 'relay-webhook': {
+          if (!relay || entry.scope !== options.relayScope || !entry.id) continue;
+          if (activeWebhookIds.has(entry.id)) continue;
+          try {
+            await relay.webhooks.delete(entry.id);
+          } catch (err) {
+            // 404: an earlier delete succeeded remotely but its response was
+            // lost — the entry has converged and must not be retained forever.
+            if (!isNotFoundRelayError(err)) throw err;
+          }
+          await removeCleanupEntry(deps, entry);
+          deps.log('Retired a relay inbound webhook from an earlier failed cleanup.');
+          break;
+        }
+        case 'relay-subscription': {
+          if (!relay || entry.scope !== options.relayScope || !entry.id) continue;
+          if (activeSubscriptionIds.has(entry.id)) continue;
+          try {
+            await relay.webhooks.unsubscribe(entry.id);
+          } catch (err) {
+            if (!isNotFoundRelayError(err)) throw err;
+          }
+          await removeCleanupEntry(deps, entry);
+          deps.log('Retired a relay event subscription from an earlier failed cleanup.');
+          break;
+        }
+      }
+    } catch {
+      deps.error(
+        `Warning: a recorded ${describeCleanupKind(entry.kind)} cleanup still failed; it stays recorded for the next run.`
+      );
     }
   }
-  return remaining;
 }
 
 /**
@@ -688,18 +899,70 @@ async function retireSupersededWebhooks(
   relay: AgentRelayAgent,
   options: {
     provider: string;
+    resource: string;
     prefix: string;
     keepWebhookId: string;
+    keepWebhookSubscriptionId: string;
     priorBinding: RelayfileBinding | undefined;
+    relayScope: string;
+    relayfileScope: string;
   }
 ): Promise<void> {
-  const { provider, prefix, keepWebhookId, priorBinding } = options;
+  const { provider, resource, prefix, keepWebhookId, keepWebhookSubscriptionId, priorBinding } = options;
 
+  // The prior binding's ids were pre-recorded in the journal BEFORE bind()
+  // overwrote their only other persisted home (see prepareSubscribeIntent), so
+  // a failed delete here needs no recording — the entry simply stays; a
+  // successful delete clears it.
   if (priorBinding && priorBinding.subscriptionId) {
-    await relay.webhooks
-      .unsubscribe(priorBinding.subscriptionId)
-      .catch((err) => warnCleanup(deps, 'subscription', priorBinding.subscriptionId, err));
+    const entry: PendingCleanupEntry = {
+      kind: 'relay-subscription',
+      scope: options.relayScope,
+      id: priorBinding.subscriptionId,
+    };
+    try {
+      await relay.webhooks.unsubscribe(priorBinding.subscriptionId);
+      // A failed remove only leaves a lingering entry; the 404-tolerant sweep
+      // self-heals it, so it must not fail the already-successful subscribe.
+      await removeCleanupEntry(deps, entry).catch(() => undefined);
+    } catch (err) {
+      if (isNotFoundRelayError(err)) {
+        await removeCleanupEntry(deps, entry).catch(() => undefined);
+      } else {
+        deps.error(
+          `Warning: could not retire the prior relay event subscription for ${provider} ${resource}; it stays recorded for a later run.`
+        );
+      }
+    }
   }
+
+  const priorWebhookSubId = priorBinding?.webhookSubscriptionId;
+  if (priorWebhookSubId && priorWebhookSubId !== keepWebhookSubscriptionId) {
+    const entry: PendingCleanupEntry = {
+      kind: 'relayfile-webhook-subscription',
+      scope: options.relayfileScope,
+      id: priorWebhookSubId,
+    };
+    try {
+      await deps.relayfile.deleteWebhookSubscription(priorWebhookSubId);
+      await removeCleanupEntry(deps, entry).catch(() => undefined);
+    } catch (err) {
+      if (isAlreadyDeletedWebhookSubscription(err)) {
+        await removeCleanupEntry(deps, entry).catch(() => undefined);
+      } else {
+        deps.error(
+          `Warning: could not retire the prior relayfile webhook subscription for ${provider} ${resource}; it stays recorded for a later run.`
+        );
+      }
+    }
+  }
+
+  await sweepPendingCleanups(deps, relay, {
+    relayScope: options.relayScope,
+    relayfileScope: options.relayfileScope,
+    keepWebhookSubscriptionId,
+    keepWebhookId,
+  });
 
   let webhooks: Awaited<ReturnType<typeof relay.webhooks.list>>;
   let activeWebhookIds: Set<string>;
@@ -721,11 +984,85 @@ async function retireSupersededWebhooks(
     const isSameResourceOrphan = hook.name?.startsWith(`${prefix}:`) ?? false;
     const isUnboundLegacy = hook.name === legacyName;
     if (!isPrior && !isSameResourceOrphan && !isUnboundLegacy) continue;
+    // A failed delete here needs no journal entry: this same sweep re-discovers
+    // the webhook by name/binding on the next run. Logs stay id-free — the
+    // human-meaningful webhook NAME identifies it for operators.
     await relay.webhooks
       .delete(hook.webhookId)
-      .then(() => deps.log(`Retired superseded webhook ${hook.webhookId} (${hook.name ?? 'unnamed'}).`))
-      .catch((err) => warnCleanup(deps, 'webhook', hook.webhookId, err));
+      .then(() => deps.log(`Retired superseded webhook ${hook.name ?? 'unnamed'}.`))
+      .catch(() =>
+        deps.error(
+          `Warning: failed to retire superseded webhook ${hook.name ?? 'unnamed'}; the next subscribe run retries it.`
+        )
+      );
   }
+}
+
+/**
+ * Enforce the crash-window contract before ANY external create.
+ *
+ * 1. Retry all recorded cleanup work first (every subscribe run sweeps).
+ * 2. A retained intent with the same (scope, provider, resource, url, glob
+ *    set) after the sweep means an earlier subscribe may have created a cloud
+ *    subscription whose id was never persisted and it could not be
+ *    reconciled — without list capability (published v0.10.20 client), or with
+ *    it but unreachable. Abort: creating another subscription would double
+ *    provider deliveries.
+ * 3. Journal, in ONE atomic write, the new intent AND the prior binding's
+ *    non-rediscoverable ids — bind() is about to overwrite their only other
+ *    persisted home. Until then the sweep's active-binding guard keeps the
+ *    pre-recorded ids untouchable. Any journal failure aborts the run
+ *    (nothing external has been created yet).
+ */
+async function prepareSubscribeIntent(
+  deps: IntegrationCommandDependencies,
+  relay: AgentRelayAgent,
+  intent: PendingCleanupEntry,
+  priorBinding: RelayfileBinding | undefined,
+  scopes: { relayScope: string; relayfileScope: string }
+): Promise<void> {
+  const hasRetainedIntent = (entries: PendingCleanupEntry[]): boolean =>
+    entries.some(
+      (entry) =>
+        entry.kind === 'relayfile-webhook-subscription-intent' &&
+        entry.scope === intent.scope &&
+        entry.provider === intent.provider &&
+        entry.resource === intent.resource &&
+        entry.url === intent.url &&
+        sameGlobSet(entry.pathGlobs, intent.pathGlobs)
+    );
+
+  await sweepPendingCleanups(deps, relay, scopes);
+  if (hasRetainedIntent(await deps.cleanupJournal.list())) {
+    if (!deps.relayfile.listWebhookSubscriptions) {
+      throw new Error(
+        `A previous subscribe of ${intent.provider} ${intent.resource} was interrupted before its relayfile webhook subscription could be recorded, and the installed @relayfile/client cannot list subscriptions to reconcile it. Aborting before creating another one (it would duplicate provider deliveries). Upgrade @relayfile/client to v3 and re-run.`
+      );
+    }
+    throw new Error(
+      `Could not reconcile the relayfile webhook subscription left by an interrupted subscribe of ${intent.provider} ${intent.resource}. Aborting before creating another one; re-run once relayfile-cloud is reachable.`
+    );
+  }
+
+  const preRecorded: PendingCleanupEntry[] = [intent];
+  if (priorBinding?.subscriptionId) {
+    preRecorded.push({
+      kind: 'relay-subscription',
+      scope: scopes.relayScope,
+      id: priorBinding.subscriptionId,
+    });
+  }
+  if (priorBinding?.webhookSubscriptionId) {
+    preRecorded.push({
+      kind: 'relayfile-webhook-subscription',
+      scope: scopes.relayfileScope,
+      id: priorBinding.webhookSubscriptionId,
+    });
+  }
+  await deps.cleanupJournal.update((entries) => {
+    const keys = new Set(entries.map(cleanupEntryKey));
+    return [...entries, ...preRecorded.filter((entry) => !keys.has(cleanupEntryKey(entry)))];
+  });
 }
 
 async function runSubscribe(
@@ -765,9 +1102,9 @@ async function runSubscribe(
   }
 
   const relayOptions = sdkOptionsFromOpts(opts);
-  const relay = deps.createAgentRelay(
-    local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions
-  );
+  const effectiveRelayOptions =
+    local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
+  const relay = deps.createAgentRelay(effectiveRelayOptions);
   await ensureRecipient(relay, provider, to, opts);
   const channel = targetChannel(to);
   const events = commaList(opts.events);
@@ -786,10 +1123,27 @@ async function runSubscribe(
   // (workspace, name) index, so the replacement can exist alongside the old one.
   const priorBinding = await findExistingBinding(deps, provider, pathGlob);
 
+  // The cloud create returns a server-assigned id, so a crash between the
+  // create and persisting that id would otherwise orphan the subscription.
+  // Journal the intent — keyed by the deterministic (url, glob set) recovery
+  // key — BEFORE any external create; a journal failure aborts the whole run.
+  const relayScope = relayCleanupScope(effectiveRelayOptions);
+  const relayfileScope = relayfileCleanupScope();
+  const intent: PendingCleanupEntry = {
+    kind: 'relayfile-webhook-subscription-intent',
+    scope: relayfileScope,
+    provider,
+    resource: pathGlob,
+    url: inboundTarget.url,
+    pathGlobs: [pathGlob],
+  };
+  await prepareSubscribeIntent(deps, relay, intent, priorBinding, { relayScope, relayfileScope });
+
   let webhook: { webhookId: string; token: string } | undefined;
   let subscription: { id: string } | undefined;
   let relayfileWebhook: RelayfileWebhookSubscription | undefined;
-  let bindingInput: RelayfileBindingInput | undefined;
+  let subscriptionRecorded = false;
+  let bindingInput: RelayfileBindingInput;
   try {
     webhook = await relay.webhooks.createInbound({ channel, name });
     const createdRelayfileWebhook = await deps.relayfile.createWebhookSubscription({
@@ -798,6 +1152,26 @@ async function runSubscribe(
       secret: inboundTarget.secret,
     });
     relayfileWebhook = createdRelayfileWebhook;
+    // Upgrade the intent to the concrete server-assigned id. Best-effort: if
+    // the write fails the retained intent stays the durable record for this
+    // create (list-based recovery), so the run may continue.
+    await deps.cleanupJournal
+      .update((entries) => {
+        const withoutIntent = entries.filter((entry) => cleanupEntryKey(entry) !== cleanupEntryKey(intent));
+        const concrete: PendingCleanupEntry = {
+          kind: 'relayfile-webhook-subscription',
+          scope: relayfileScope,
+          id: createdRelayfileWebhook.subscriptionId,
+        };
+        return withoutIntent.some((entry) => cleanupEntryKey(entry) === cleanupEntryKey(concrete))
+          ? withoutIntent
+          : [...withoutIntent, concrete];
+      })
+      .catch(() =>
+        deps.error(
+          'Warning: could not upgrade the recorded subscribe intent to its created subscription; the retained intent still covers recovery.'
+        )
+      );
     subscription = await relay.integrations.subscriptions.create({
       event: events.length === 1 ? events[0]! : 'message.created',
       events: events.length ? events : ['message.created', 'thread.reply'],
@@ -805,10 +1179,21 @@ async function runSubscribe(
       url: writeback.url,
       secret: writeback.secret,
     });
-    const pendingWebhookSubscriptionIds = uniqueWebhookSubscriptionIds([
-      priorBinding?.webhookSubscriptionId,
-      ...(priorBinding?.pendingWebhookSubscriptionIds ?? []),
-    ]).filter((id) => id !== createdRelayfileWebhook.subscriptionId);
+    // The relay event subscription is not re-discoverable after a crash, so
+    // it must be durably recorded BEFORE bind. A journal failure here aborts
+    // into the rollback below while the id is still in memory — nothing is
+    // silently lost.
+    await deps.cleanupJournal.update((entries) => {
+      const entry: PendingCleanupEntry = {
+        kind: 'relay-subscription',
+        scope: relayScope,
+        id: subscription!.id,
+      };
+      return entries.some((existing) => cleanupEntryKey(existing) === cleanupEntryKey(entry))
+        ? entries
+        : [...entries, entry];
+    });
+    subscriptionRecorded = true;
     bindingInput = {
       provider,
       resource: pathGlob,
@@ -817,65 +1202,117 @@ async function runSubscribe(
       webhookToken: webhook.token,
       subscriptionId: subscription.id,
       webhookSubscriptionId: createdRelayfileWebhook.subscriptionId,
-      pendingWebhookSubscriptionIds,
     };
     await deps.relayfile.bind(bindingInput);
   } catch (err) {
-    // The new binding never fully landed: roll back only what we just created
-    // and leave any prior working binding untouched.
+    // The new binding never fully landed: roll back only what we just created,
+    // leave any prior working binding untouched, and keep/record a journal
+    // entry for every id whose rollback delete fails — none of them has
+    // another durable home. Successful deletes clear their entries.
     if (subscription) {
-      const subscriptionId = subscription.id;
-      await relay.integrations.subscriptions
-        .delete(subscriptionId)
-        .catch((cleanupErr) => warnCleanup(deps, 'subscription', subscriptionId, cleanupErr));
+      const entry: PendingCleanupEntry = {
+        kind: 'relay-subscription',
+        scope: relayScope,
+        id: subscription.id,
+      };
+      try {
+        await relay.integrations.subscriptions.delete(subscription.id);
+        await removeCleanupEntry(deps, entry).catch(() => undefined);
+      } catch (cleanupErr) {
+        if (isNotFoundRelayError(cleanupErr)) {
+          await removeCleanupEntry(deps, entry).catch(() => undefined);
+        } else if (!subscriptionRecorded) {
+          await tryRecordCleanup(deps, entry, `${provider} ${pathGlob}`);
+        } else {
+          deps.error(
+            `Warning: could not roll back the relay event subscription for ${provider} ${pathGlob}; it stays recorded for a later run.`
+          );
+        }
+      }
     }
     if (webhook) {
       const webhookId = webhook.webhookId;
-      await relay.webhooks
-        .delete(webhookId)
-        .catch((cleanupErr) => warnCleanup(deps, 'webhook', webhookId, cleanupErr));
+      try {
+        await relay.webhooks.delete(webhookId);
+      } catch (cleanupErr) {
+        if (!isNotFoundRelayError(cleanupErr)) {
+          await tryRecordCleanup(
+            deps,
+            { kind: 'relay-webhook', scope: relayScope, id: webhookId },
+            `${provider} ${pathGlob}`
+          );
+        }
+      }
     }
     if (relayfileWebhook) {
-      const webhookSubscriptionId = relayfileWebhook.subscriptionId;
-      await deps.relayfile
-        .deleteWebhookSubscription(webhookSubscriptionId)
-        .catch((cleanupErr) =>
-          warnCleanup(deps, 'relayfile webhook subscription', webhookSubscriptionId, cleanupErr)
-        );
+      const entry: PendingCleanupEntry = {
+        kind: 'relayfile-webhook-subscription',
+        scope: relayfileScope,
+        id: relayfileWebhook.subscriptionId,
+      };
+      try {
+        await deps.relayfile.deleteWebhookSubscription(relayfileWebhook.subscriptionId);
+        // Cloud state settled: clear both the concrete entry and (if the
+        // upgrade write failed) the retained intent.
+        await removeCleanupEntry(deps, entry).catch(() => undefined);
+        await removeCleanupEntry(deps, intent).catch(() => undefined);
+      } catch (cleanupErr) {
+        if (isAlreadyDeletedWebhookSubscription(cleanupErr)) {
+          await removeCleanupEntry(deps, entry).catch(() => undefined);
+          await removeCleanupEntry(deps, intent).catch(() => undefined);
+        } else {
+          // Keep whichever durable record exists (concrete entry and/or
+          // intent); if neither write ever landed the journal itself is
+          // broken and the next subscribe fails closed on it.
+          await tryRecordCleanup(deps, entry, `${provider} ${pathGlob}`);
+        }
+      }
+    } else {
+      // The cloud create never happened — the intent has served its purpose.
+      await removeCleanupEntry(deps, intent).catch(() => undefined);
     }
     throw err;
   }
 
-  if (!bindingInput || !webhook) {
-    throw new Error('Integration subscribe did not create a complete inbound binding.');
-  }
-
-  // New binding is live (relayfile.bind upserts on (provider, pathGlob)). Now
-  // retire what it superseded — old/orphaned webhooks and the prior subscription.
+  // New binding is live (relayfile.bind upserts on (provider, pathGlob)); its
+  // record now persists both the cloud subscription id and the relay event
+  // subscription id, so the pre-recorded entries for them (and the intent)
+  // are resolved. Then retire what the binding superseded and sweep.
+  await deps.cleanupJournal
+    .update((entries) => {
+      const resolved = new Set(
+        [
+          intent,
+          {
+            kind: 'relayfile-webhook-subscription' as const,
+            scope: relayfileScope,
+            id: bindingInput.webhookSubscriptionId,
+          },
+          { kind: 'relay-subscription' as const, scope: relayScope, id: bindingInput.subscriptionId },
+        ].map(cleanupEntryKey)
+      );
+      return entries.filter((entry) => !resolved.has(cleanupEntryKey(entry)));
+    })
+    .catch(() =>
+      deps.error(
+        'Warning: could not clear resolved cleanup records; a later run will reconcile them (guarded by the active binding).'
+      )
+    );
   await retireSupersededWebhooks(deps, relay, {
     provider,
+    resource: pathGlob,
     prefix,
     keepWebhookId: webhook.webhookId,
+    keepWebhookSubscriptionId: bindingInput.webhookSubscriptionId,
     priorBinding,
+    relayScope,
+    relayfileScope,
   });
-
-  // Persist the pre-retirement IDs before deleting them. If a delete fails,
-  // the newly live binding retains exactly those IDs for a later retry. When
-  // deletion succeeds, explicitly clear the completed IDs from the binding.
-  const remainingWebhookSubscriptionIds = await deleteWebhookSubscriptions(
-    deps,
-    bindingInput.pendingWebhookSubscriptionIds
-  );
-  if (remainingWebhookSubscriptionIds.length !== bindingInput.pendingWebhookSubscriptionIds.length) {
-    await deps.relayfile
-      .bind({ ...bindingInput, pendingWebhookSubscriptionIds: remainingWebhookSubscriptionIds })
-      .catch((err) => warnCleanup(deps, 'relayfile webhook cleanup state', `${provider}:${pathGlob}`, err));
-  }
 
   // Show the native resource the user typed, plus the resolved glob when they differ.
   const boundLabel = pathGlob === resource ? resource : `${resource} (${pathGlob})`;
   deps.log(`✓ ${provider} ${boundLabel} bound -> ${to}`);
-  deps.log(`✓ Server-side inbound webhook subscription: ${bindingInput.webhookSubscriptionId}`);
+  deps.log('✓ Server-side inbound webhook subscription created.');
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
 
@@ -897,34 +1334,64 @@ async function runUnsubscribe(
   if (!binding) {
     throw new Error(`No binding found for ${provider} ${resource}.`);
   }
-  const webhookSubscriptionIds = uniqueWebhookSubscriptionIds([
-    binding.webhookSubscriptionId,
-    ...(binding.pendingWebhookSubscriptionIds ?? []),
-  ]);
-  const remainingWebhookSubscriptionIds = await deleteWebhookSubscriptions(deps, webhookSubscriptionIds);
-  if (remainingWebhookSubscriptionIds.length > 0) {
-    throw new Error(
-      `Failed to remove relayfile webhook subscription cleanup; binding retained so you can retry unsubscribe for ${provider} ${resource}.`
-    );
-  }
   const local = await deps.resolveLocalRelayOptions();
   const relayOptions = sdkOptionsFromOpts(opts);
-  const relay = deps.createAgentRelay(
-    local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions
-  );
+  const effectiveRelayOptions =
+    local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
+  const relay = deps.createAgentRelay(effectiveRelayOptions);
+  const relayScope = relayCleanupScope(effectiveRelayOptions);
+  const relayfileScope = relayfileCleanupScope();
+
+  // Retry recorded cleanup work before this run's own lifecycle mutations.
+  await sweepPendingCleanups(deps, relay, { relayScope, relayfileScope });
+
+  // The binding record about to be unbound holds the only persisted copy of
+  // these ids. Any delete failure below must be durably journaled BEFORE
+  // unbind, or the run aborts with the binding (and its ids) intact.
+  const abortRetainingBinding = (what: string): never => {
+    throw new Error(
+      `Failed to remove the ${what} for ${provider} ${resource} and could not record it for retry. The binding was left in place — re-run \`integration unsubscribe\`.`
+    );
+  };
+
+  const webhookSubId = binding.webhookSubscriptionId;
+  if (webhookSubId) {
+    try {
+      await deps.relayfile.deleteWebhookSubscription(webhookSubId);
+    } catch (err) {
+      if (!isAlreadyDeletedWebhookSubscription(err)) {
+        const recorded = await tryRecordCleanup(
+          deps,
+          { kind: 'relayfile-webhook-subscription', scope: relayfileScope, id: webhookSubId },
+          `${provider} ${resource}`
+        );
+        if (!recorded) abortRetainingBinding('relayfile webhook subscription');
+      }
+    }
+  }
   try {
     await relay.webhooks.delete(binding.webhookId);
   } catch (err) {
-    deps.log(
-      `Warning: failed to delete webhook ${binding.webhookId}: ${err instanceof Error ? err.message : String(err)}`
-    );
+    if (!isNotFoundRelayError(err)) {
+      const recorded = await tryRecordCleanup(
+        deps,
+        { kind: 'relay-webhook', scope: relayScope, id: binding.webhookId },
+        `${provider} ${resource}`
+      );
+      if (!recorded) abortRetainingBinding('relay inbound webhook');
+    }
   }
   try {
     await relay.webhooks.unsubscribe(binding.subscriptionId);
   } catch (err) {
-    deps.log(
-      `Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`
-    );
+    if (!isNotFoundRelayError(err)) {
+      const recorded = await tryRecordCleanup(
+        deps,
+        { kind: 'relay-subscription', scope: relayScope, id: binding.subscriptionId },
+        `${provider} ${resource}`
+      );
+      if (!recorded) abortRetainingBinding('relay event subscription');
+    }
   }
   await deps.relayfile.unbind(provider, pathGlob);
   deps.log(`Unsubscribed ${provider} ${resource}.`);

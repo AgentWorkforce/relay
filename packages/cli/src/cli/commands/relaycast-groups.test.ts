@@ -93,6 +93,17 @@ function createRelayMock() {
   };
 }
 
+// Keep integration-command tests off the default file-backed cleanup journal.
+function memoryJournal() {
+  let entries: unknown[] = [];
+  return {
+    list: async () => [...entries],
+    update: async (mutate: (e: never[]) => unknown[]) => {
+      entries = mutate([...entries] as never[]);
+    },
+  };
+}
+
 function harness(register: (p: Command, o: Partial<SdkCommandDeps>) => void) {
   const relay = createRelayMock();
   const log = vi.fn();
@@ -326,6 +337,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       isInteractive: () => false,
+      cleanupJournal: memoryJournal(),
       relayfile: {
         isConnected: vi.fn(async () => false),
         connect: vi.fn(async () => undefined),
@@ -389,6 +401,7 @@ describe('SDK-backed CLI groups', () => {
       })),
       isInteractive: () => false,
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(
@@ -431,6 +444,7 @@ describe('SDK-backed CLI groups', () => {
       webhookId: 'in1',
       webhookToken: 'tok_once',
       subscriptionId: 'sub1',
+      webhookSubscriptionId: 'whsub_1',
     });
     expect(error).not.toHaveBeenCalled();
   });
@@ -463,6 +477,7 @@ describe('SDK-backed CLI groups', () => {
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       isInteractive: () => false,
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(
@@ -516,6 +531,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
@@ -560,6 +576,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       isInteractive: () => false,
+      cleanupJournal: memoryJournal(),
       relayfile: {
         isConnected: vi.fn(async () => true),
         connect: vi.fn(async () => undefined),
@@ -625,6 +642,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', '#acme'], {
