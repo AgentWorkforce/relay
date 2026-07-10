@@ -622,7 +622,10 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         fleet_event_rx,
         fleet_control_open: true,
         fleet_delivery_book: FleetDeliveryBook::default(),
-        fleet_max_agents: 0,
+        // Seed the live capacity with the configured max so heartbeats/load
+        // updates keep reporting it (they overwrite load.max_agents from this
+        // field); 0 means unlimited, matching the register manifest.
+        fleet_max_agents: node_max_agents().unwrap_or(0),
         fleet_inventory: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,

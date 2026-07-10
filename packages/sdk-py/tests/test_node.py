@@ -102,6 +102,35 @@ def test_from_enrollment_prefers_the_environment_over_the_store(monkeypatch, tmp
     assert node._node_id == "node_env"
 
 
+def test_from_enrollment_picks_the_store_record_matching_relay_base_url(monkeypatch, tmp_path):
+    def record(node, url):
+        return {
+            "nodeId": f"node_{node}",
+            "nodeName": node,
+            "nodeToken": f"nt_{node}",
+            "relayWorkspaceId": "ws",
+            "relaycastUrl": url,
+            "websocketUrl": url.replace("https", "wss"),
+            "enrolledAt": "2026-07-09T00:00:00Z",
+        }
+
+    store = {
+        "version": 1,
+        "active": {"ws": "a"},
+        "nodes": {"a": record("a", "https://a.test"), "b": record("b", "https://b.test")},
+    }
+    (tmp_path / "fleet-enrollments.json").write_text(json.dumps(store))
+    monkeypatch.setenv("AGENT_RELAY_HOME", str(tmp_path))
+    monkeypatch.setenv("RELAY_BASE_URL", "https://b.test")
+
+    node = NodeProvider.from_enrollment()
+
+    # Not the "active" record (a) — the one whose engine matches RELAY_BASE_URL.
+    assert node._node_id == "node_b"
+    assert node._node_token == "nt_b"
+    assert node._http_base_url == "https://b.test"
+
+
 def test_from_enrollment_raises_without_a_token(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_RELAY_HOME", str(tmp_path))
 

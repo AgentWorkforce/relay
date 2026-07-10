@@ -20,9 +20,6 @@ export interface FleetRelaySendMessageInput {
   to: string;
   text: string;
   from?: string;
-  threadId?: string;
-  workspaceId?: string;
-  workspaceAlias?: string;
   mode?: MessageInjectionMode;
   data?: Record<string, unknown>;
 }

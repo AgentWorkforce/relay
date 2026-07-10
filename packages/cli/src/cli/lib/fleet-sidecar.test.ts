@@ -23,8 +23,8 @@ import type { CoreTeamsConfig } from '../commands/core.js';
 import { createTriggerSyncClient, nodeCapacityHarnesses } from './fleet-sidecar.js';
 
 describe('nodeCapacityHarnesses', () => {
-  it('advertises the default harness set when there is no config', () => {
-    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini']);
+  it('advertises the default harness set (matching the broker default) when there is no config', () => {
+    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini', 'opencode']);
   });
 
   it('adds teams.json clis, de-duplicated and order-preserving', () => {
@@ -35,15 +35,21 @@ describe('nodeCapacityHarnesses', () => {
         { name: 'b', cli: 'claude' },
       ],
     };
-    expect(nodeCapacityHarnesses(teams)).toEqual(['claude', 'codex', 'gemini', 'aider']);
+    expect(nodeCapacityHarnesses(teams)).toEqual(['claude', 'codex', 'gemini', 'opencode', 'aider']);
   });
 
   it('adds spawn:<harness> definitions from a discovered node config', () => {
     const definition = defineNode({
       name: 'p',
-      capabilities: { 'spawn:opencode': spawn({ runtime: 'pty', command: 'opencode' }) },
+      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
     });
-    expect(nodeCapacityHarnesses(null, definition)).toEqual(['claude', 'codex', 'gemini', 'opencode']);
+    expect(nodeCapacityHarnesses(null, definition)).toEqual([
+      'claude',
+      'codex',
+      'gemini',
+      'opencode',
+      'aider',
+    ]);
   });
 });
 

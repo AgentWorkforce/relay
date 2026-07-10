@@ -180,7 +180,13 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     throw error;
   }
 
-  options.onRegistered?.(nodeInfo(options.definition));
+  // Report the effective identity the provider registered with, not the raw
+  // definition — name/maxAgents overrides change what actually attached.
+  options.onRegistered?.({
+    ...nodeInfo(options.definition),
+    name: nodeName,
+    ...(maxAgents !== undefined ? { maxAgents } : {}),
+  });
   await syncTriggers(options);
   options.log?.(
     `Fleet node "${nodeName}" registered provider "${providerName}" with ${

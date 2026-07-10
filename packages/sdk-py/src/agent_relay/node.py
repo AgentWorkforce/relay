@@ -63,13 +63,16 @@ class NodeProvider(_NodeProvider):
         :param provider_name: This provider's identity name, distinct from the
             broker ("broker") on the same node. Defaults to ``<node>-python``.
         """
-        enrollment = _resolve_enrollment()
+        # Resolve the target engine first so a multi-node store picks the record
+        # for THIS engine rather than mixing another node's token with it.
+        base_pref = base_url or os.environ.get("RELAY_BASE_URL")
+        enrollment = _resolve_enrollment(base_pref)
         token = os.environ.get("RELAY_NODE_TOKEN") or enrollment.get("node_token")
         node_id = os.environ.get("RELAY_NODE_ID") or enrollment.get("node_id")
         node_name = (
             os.environ.get("RELAY_NODE_NAME") or enrollment.get("node_name") or node_id
         )
-        resolved_base = base_url or os.environ.get("RELAY_BASE_URL") or enrollment.get("base_url")
+        resolved_base = base_pref or enrollment.get("base_url")
 
         if not token:
             raise NodeProviderEnrollmentError(
@@ -99,10 +102,11 @@ def _enrollment_store_path() -> Path:
     return Path(home) / "fleet-enrollments.json"
 
 
-def _resolve_enrollment() -> dict[str, str]:
-    """Best-effort read of the fleet-node enrollment store, returning the active
-    (or sole) record's node_token/node_id/node_name/base_url. A missing or
-    malformed store resolves to empty so the environment path still applies.
+def _resolve_enrollment(base_url: str | None = None) -> dict[str, str]:
+    """Best-effort read of the fleet-node enrollment store, returning one record's
+    node_token/node_id/node_name/base_url. When ``base_url`` is given, the record
+    whose engine matches it wins; otherwise the active (or sole) record is used. A
+    missing or malformed store resolves to empty so the environment path applies.
     """
     try:
         data = json.loads(_enrollment_store_path().read_text())
@@ -115,12 +119,20 @@ def _resolve_enrollment() -> dict[str, str]:
         return {}
 
     record: Any = None
-    active = data.get("active")
-    if isinstance(active, dict):
-        for key in active.values():
-            if key in nodes:
-                record = nodes[key]
+    # Prefer a record for the requested engine, so credentials never cross engines.
+    if base_url:
+        wanted = base_url.rstrip("/")
+        for value in nodes.values():
+            if isinstance(value, dict) and str(value.get("relaycastUrl") or "").rstrip("/") == wanted:
+                record = value
                 break
+    if record is None:
+        active = data.get("active")
+        if isinstance(active, dict):
+            for key in active.values():
+                if isinstance(key, str) and key in nodes:
+                    record = nodes[key]
+                    break
     if record is None and len(nodes) == 1:
         record = next(iter(nodes.values()))
     if not isinstance(record, dict):

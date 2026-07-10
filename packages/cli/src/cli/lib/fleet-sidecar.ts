@@ -10,7 +10,10 @@ import type { CoreTeamsConfig } from '../commands/core.js';
  * `AGENT_RELAY_NODE_HARNESSES` so its capacity manifest covers everything the
  * project can spawn.
  */
-const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini'] as const;
+// Mirrors the broker's built-in default (crates/broker init `DEFAULT_NODE_HARNESSES`);
+// the CLI overrides `AGENT_RELAY_NODE_HARNESSES`, so omitting one would drop the
+// broker's default capacity for it.
+const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'opencode'] as const;
 
 export function nodeCapacityHarnesses(
   teamsConfig: CoreTeamsConfig | null,
