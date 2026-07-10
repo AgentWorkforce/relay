@@ -108,9 +108,12 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
       brokerPort: await getFreePort(),
-      // Pin distinct capacity so the two nodes advertise different spawn:<harness>
-      // capabilities (both run on one host, sharing the default set otherwise).
-      capacityHarnesses: 'claude',
+      // Pin capacity so the node advertises a distinct harness (`claude`) plus the
+      // shared `pool`. A `spawn:<harness>` shadow delegates to the broker's native
+      // capacity for that harness, so every shadow the node defines (spawn:claude,
+      // spawn:pool) needs matching broker capacity — otherwise the delegation has
+      // nothing to run.
+      capacityHarnesses: 'claude,pool',
     });
     nodeB = new FleetNode({
       name: 'node-b',
@@ -122,7 +125,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
       brokerPort: await getFreePort(),
-      capacityHarnesses: 'codex',
+      // Distinct `codex` plus the shared `pool` (see node-a's note).
+      capacityHarnesses: 'codex,pool',
     });
     nodeA.start();
     nodeB.start();
@@ -422,10 +426,14 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
   });
 
   it('reschedule on death + restart reconcile: an in-flight invocation reruns elsewhere; the node rejoins and dispatch stays idempotent', async () => {
-    // `work` lives on BOTH nodes but binds to whichever registered it first, so
-    // discover where it dispatches, then kill THAT node mid-flight.
-    const work = await invokeAction(engine, driverToken, 'work', { nonce: 'resched-1', delayMs: 6_000 });
-    const homeId = work.body.data.handler_node_id as string; // 'node_a' | 'node_b'
+    // `work` is a node-scoped action on BOTH nodes, so it is node-addressed. Send
+    // it to node-a, then kill node-a mid-flight; the engine reschedules the SAME
+    // invocation onto the other node that also advertises `work`.
+    const work = await invokeNodeAction(engine, driverToken, 'node-a', 'work', {
+      nonce: 'resched-1',
+      delayMs: 6_000,
+    });
+    const homeId = work.body.data.handler_node_id as string; // 'node_a'
     const homeName = homeId === 'node_a' ? 'node-a' : 'node-b';
     const otherName = homeName === 'node-a' ? 'node-b' : 'node-a';
     const homeNode = homeName === 'node-a' ? nodeA : nodeB;
@@ -474,8 +482,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       await delay(500);
     }
 
-    // (e) dispatch works again on the restored node.
-    const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'after-restart' });
+    // (e) dispatch works again on the restored node. `ping` is node-scoped to
+    // node-b, so it is node-addressed.
+    const ping = await invokeNodeAction(engine, driverToken, 'node-b', 'ping', { nonce: 'after-restart' });
     const pingDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
