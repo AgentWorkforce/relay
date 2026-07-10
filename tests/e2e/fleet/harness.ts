@@ -290,6 +290,9 @@ export class FleetNode {
       brokerBinary: string;
       tmpRoot: string;
       brokerPort: number;
+      /** Pins the broker's `spawn:<harness>` capacity set (AGENT_RELAY_NODE_HARNESSES)
+       * so two nodes on one host advertise distinct capabilities. */
+      capacityHarnesses?: string;
     }
   ) {
     this.projectDir = path.join(opts.tmpRoot, `node-${opts.name}`);
@@ -350,6 +353,9 @@ export class FleetNode {
           AGENT_RELAY_PROJECT: this.projectDir,
           AGENT_RELAY_STATE_DIR: stateDir,
           AGENT_RELAY_BROKER_PORT: String(o.brokerPort),
+          ...(o.capacityHarnesses
+            ? { AGENT_RELAY_NODE_HARNESSES: o.capacityHarnesses }
+            : {}),
         }),
         stdio: ['ignore', 'pipe', 'pipe'],
       }

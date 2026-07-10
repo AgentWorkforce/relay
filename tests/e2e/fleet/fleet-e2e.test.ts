@@ -107,6 +107,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
       brokerPort: await getFreePort(),
+      // Pin distinct capacity so the two nodes advertise different spawn:<harness>
+      // capabilities (both run on one host, sharing the default set otherwise).
+      capacityHarnesses: 'claude',
     });
     nodeB = new FleetNode({
       name: 'node-b',
@@ -118,6 +121,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
       brokerPort: await getFreePort(),
+      capacityHarnesses: 'codex',
     });
     nodeA.start();
     nodeB.start();
@@ -150,8 +154,22 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(a.live).toBe(true);
     expect(a.handlers_live).toBe(true);
     expect(b.handlers_live).toBe(true);
-    expect(a.capabilities.map((c) => c.name).sort()).toEqual(['echo', 'spawn:claude', 'spawn:pool', 'work']);
-    expect(b.capabilities.map((c) => c.name).sort()).toEqual(['ping', 'spawn:codex', 'spawn:pool', 'work']);
+    // The aggregate is the union of the broker provider's capacity (its pinned
+    // spawn:<harness> + release) and the fleet provider's action capabilities.
+    expect(a.capabilities.map((c) => c.name).sort()).toEqual([
+      'echo',
+      'release',
+      'spawn:claude',
+      'spawn:pool',
+      'work',
+    ]);
+    expect(b.capabilities.map((c) => c.name).sort()).toEqual([
+      'ping',
+      'release',
+      'spawn:codex',
+      'spawn:pool',
+      'work',
+    ]);
   });
 
   it('negative auth: a node whose broker presents a bogus token never comes online', async () => {
