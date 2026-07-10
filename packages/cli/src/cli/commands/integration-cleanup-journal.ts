@@ -230,44 +230,103 @@ function parseEntries(raw: string, file: string): PendingCleanupEntry[] {
 }
 
 /**
- * Take the exclusive journal lock by spawning the already-required Rust
- * broker binary's hidden `journal-lock` helper, which holds a KERNEL
+ * One locked journal transaction, delegated to the already-required Rust
+ * broker binary's hidden `journal-lock` helper. The helper holds a KERNEL
  * advisory lock (flock(2) on Unix, LockFileEx on Windows via std
- * File::try_lock) on a stable lock file: created 0600 once, NEVER unlinked
- * or renamed. The kernel releases the lock when the helper exits or dies;
- * the helper exits when our stdin pipe reaches EOF, so a crash of EITHER
- * process releases the lock. No native addon is imported anywhere — this
- * works identically under Node and the Bun standalone, which already ships
- * and spawns the broker binary for its core commands.
+ * File::try_lock) on a stable lock file — created 0600 once, NEVER unlinked
+ * or renamed — and ALSO performs the journal's durable replacement while the
+ * lock is held: the parent never writes the journal itself, so lock
+ * ownership provably spans read → mutate → atomic commit. The kernel
+ * releases the lock when the helper exits or dies; the helper commits (or,
+ * on an empty payload, releases untouched) when our stdin pipe reaches EOF.
+ * No native addon is imported anywhere — this works identically under Node
+ * and the Bun standalone, which already ships and spawns the broker binary
+ * for its core commands.
  *
- * The helper owns the marker rules: it stamps/fsyncs the v2 marker, heals a
- * crash-truncated marker (strict prefix), and FAILS CLOSED (exit 3) on an
- * unrecognized pre-release sentinel, preserving the file untouched. Exit 2
- * means a live holder out-waited our timeout.
+ * The helper owns the lock-marker rules (fsync'd v2 marker, strict-prefix
+ * heal, unrecognized pre-release sentinel fails closed) and the commit
+ * (temp + fsync + atomic rename + directory fsync). Exit 4 = a live holder
+ * out-waited our timeout; exit 3 = sentinel; exit 2 = clap usage, i.e. an
+ * older broker without the subcommand (version skew).
  */
-async function acquireLock(lockFile: string): Promise<() => Promise<void>> {
+interface JournalTransaction {
+  /** Abort: release the lock with the journal untouched. Idempotent. */
+  abort(): Promise<void>;
+  /** Commit: hand the complete serialized journal to the helper and await
+   * its durable replacement + exit. Throws with the journal untouched if the
+   * helper died first or the commit fails. */
+  commit(payload: string): Promise<void>;
+}
+
+async function beginJournalTransaction(lockFile: string, journalFile: string): Promise<JournalTransaction> {
   const binary = getBrokerBinaryPath();
   if (!binary) {
     throw new CleanupJournalError('io', formatBrokerNotFoundError());
   }
-  const child = spawn(binary, ['journal-lock', '--file', lockFile, '--timeout-ms', String(LOCK_TIMEOUT_MS)], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    binary,
+    [
+      'journal-lock',
+      '--file',
+      lockFile,
+      '--journal-file',
+      journalFile,
+      '--timeout-ms',
+      String(LOCK_TIMEOUT_MS),
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] }
+  );
 
   const exit = new Promise<number | null>((resolve) => {
     child.on('exit', (code) => resolve(code));
     child.on('error', () => resolve(null));
   });
+  let exited = false;
+  void exit.then(() => {
+    exited = true;
+  });
 
+  // Exact framed handshake: buffer stdout until the first newline and demand
+  // the line be precisely `locked` — no substring matching, and a hard
+  // startup deadline that kills a wedged helper.
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    let buffer = '';
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       fn();
     };
+    const deadline = setTimeout(() => {
+      settle(() => {
+        child.kill('SIGKILL');
+        reject(
+          new CleanupJournalError(
+            'io',
+            `The journal-lock helper did not complete its handshake for ${lockFile} in time and was killed.`
+          )
+        );
+      });
+    }, LOCK_TIMEOUT_MS + 2_000);
     child.stdout!.on('data', (chunk: Buffer) => {
-      if (String(chunk).includes('locked')) settle(resolve);
+      buffer += chunk.toString('utf8');
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      const line = buffer.slice(0, newline);
+      if (line === 'locked') {
+        settle(resolve);
+      } else {
+        settle(() => {
+          child.kill('SIGKILL');
+          reject(
+            new CleanupJournalError(
+              'io',
+              `The journal-lock helper sent an unexpected handshake for ${lockFile}.`
+            )
+          );
+        });
+      }
     });
     child.on('error', (err) =>
       settle(() =>
@@ -285,6 +344,13 @@ async function acquireLock(lockFile: string): Promise<() => Promise<void>> {
               `Timed out waiting for the pending-cleanup journal lock at ${lockFile}: another agent-relay process holds it. The kernel releases it automatically when that process exits; retry afterwards.`
             )
           );
+        } else if (code === 3) {
+          reject(
+            new CleanupJournalError(
+              'locked',
+              `The pending-cleanup journal lock at ${lockFile} contains an unrecognized sentinel from an older format. Nothing was swept or overwritten; inspect and remove the file to continue.`
+            )
+          );
         } else if (code === 2) {
           // clap usage error: this broker binary predates the journal-lock
           // helper (version skew), or the invocation is malformed.
@@ -292,13 +358,6 @@ async function acquireLock(lockFile: string): Promise<() => Promise<void>> {
             new CleanupJournalError(
               'io',
               `The resolved agent-relay-broker binary (${binary}) does not support the journal-lock helper; upgrade the broker (or set AGENT_RELAY_BIN to a current build) and retry.`
-            )
-          );
-        } else if (code === 3) {
-          reject(
-            new CleanupJournalError(
-              'locked',
-              `The pending-cleanup journal lock at ${lockFile} contains an unrecognized sentinel from an older format. Nothing was swept or overwritten; inspect and remove the file to continue.`
             )
           );
         } else {
@@ -313,15 +372,57 @@ async function acquireLock(lockFile: string): Promise<() => Promise<void>> {
     });
   });
 
-  // Release = close the helper's stdin (it exits on EOF) and AWAIT its exit
-  // so the kernel lock is provably gone before update() returns.
-  return async () => {
-    try {
-      child.stdin!.end();
-    } catch {
-      // The helper already died; its kernel lock died with it.
+  const finish = async (payload: string | undefined, failure: string): Promise<void> => {
+    const committing = payload !== undefined;
+    if (exited) {
+      if (committing) {
+        // The lock (and with it transactional isolation) is already gone; the
+        // journal is untouched — surface instead of committing blind.
+        throw new CleanupJournalError('io', failure);
+      }
+      return; // abort: nothing left to release
     }
-    await exit;
+    // The helper can die between the `exited` check and (or during) the
+    // stdin write: swallow the stream error (EPIPE would otherwise be an
+    // unhandled 'error' event) and never hang on an end-callback that will
+    // no longer fire — the authoritative verdict is the exit code below.
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      const stdin = child.stdin!;
+      stdin.once('error', settle);
+      void exit.then(settle);
+      try {
+        if (committing) {
+          stdin.end(payload, settle);
+        } else {
+          stdin.end(settle);
+        }
+      } catch {
+        settle();
+      }
+    });
+    const code = await exit;
+    if (committing && code !== 0) {
+      throw new CleanupJournalError('io', failure);
+    }
+  };
+
+  return {
+    async abort() {
+      if (exited) return;
+      await finish(undefined, '');
+    },
+    async commit(payload: string) {
+      await finish(
+        payload,
+        `The journal-lock helper was lost before the pending-cleanup journal at ${journalFile} could be committed; the journal was left unmodified.`
+      );
+    },
   };
 }
 
@@ -344,32 +445,6 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
     return parseEntries(raw, file);
   };
 
-  /** Crash-durable replace: write+fsync temp, atomic rename, fsync parent dir
-   * so the rename itself survives a host/power crash. */
-  const write = (file: string, entries: PendingCleanupEntry[]): void => {
-    const dir = path.dirname(file);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${file}.tmp-${process.pid}`;
-    const fd = fs.openSync(tmp, 'w', 0o600);
-    try {
-      fs.writeSync(fd, `${JSON.stringify(entries)}\n`);
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmp, file);
-    let dirFd: number | undefined;
-    try {
-      dirFd = fs.openSync(dir, 'r');
-      fs.fsyncSync(dirFd);
-    } catch {
-      // Directory fsync is unsupported on some platforms (e.g. Windows);
-      // the data fsync above already ran, so proceed.
-    } finally {
-      if (dirFd !== undefined) fs.closeSync(dirFd);
-    }
-  };
-
   return {
     async list() {
       return read(journalFile());
@@ -377,12 +452,17 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
     async update(mutate) {
       const file = journalFile();
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      const release = await acquireLock(`${file}.lock`);
+      const transaction = await beginJournalTransaction(`${file}.lock`, file);
+      let next: PendingCleanupEntry[];
       try {
-        write(file, await mutate(read(file)));
-      } finally {
-        await release();
+        next = await mutate(read(file));
+      } catch (err) {
+        await transaction.abort();
+        throw err;
       }
+      // The helper performs the durable replacement (temp + fsync + atomic
+      // rename + dir fsync) while it still holds the kernel lock.
+      await transaction.commit(`${JSON.stringify(next)}\n`);
     },
   };
 }

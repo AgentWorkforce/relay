@@ -1,5 +1,6 @@
 //! Hidden helper: hold an exclusive kernel advisory lock on a stable lock
-//! file for the CLI's pending-cleanup journal.
+//! file for the CLI's pending-cleanup journal, and perform the journal's
+//! durable replacement WHILE the lock is held.
 //!
 //! Why this exists: the Node CLI needs a cross-process mutex whose release is
 //! guaranteed by the KERNEL on process death (flock(2) on Unix, LockFileEx on
@@ -7,13 +8,23 @@
 //! and a native addon crashes the Bun standalone build, so the CLI spawns
 //! this already-required broker binary instead.
 //!
-//! Contract (line-oriented, spawned by the CLI's cleanup journal):
-//!   agent-relay-broker journal-lock --file <path> --timeout-ms <n>
+//! The COMMIT also lives here: the parent never writes the journal itself,
+//! so lock ownership provably spans the read-modify-write through the atomic
+//! replacement.
+//!
+//! Contract (spawned by the CLI's cleanup journal):
+//!   agent-relay-broker journal-lock --file <lock> --journal-file <journal> --timeout-ms <n>
 //! - The lock file is a STABLE inode: created 0600 once, never unlinked or
 //!   renamed. Its content is a version marker only.
-//! - On acquisition the helper prints `locked\n` to stdout, then blocks until
-//!   stdin reaches EOF (parent closed it, or parent died) and exits 0 — the
-//!   kernel releases the lock with the process either way.
+//! - On acquisition the helper prints the exact framed line `locked\n` to
+//!   stdout, then reads stdin to EOF (errors propagated):
+//!     - EMPTY payload: the parent aborted — release without touching the
+//!       journal, exit 0.
+//!     - NONEMPTY payload: the complete serialized journal contents; the
+//!       helper writes them durably — temp file (0600) + fsync + atomic
+//!       rename over the journal + parent-directory fsync — then exits 0.
+//!   A failed run therefore always leaves the journal byte-for-byte
+//!   unmodified.
 //! - Exit 4 (+ `timeout` on stderr): another live holder out-waited us.
 //! - Exit 3 (+ `sentinel` on stderr): the file holds unrecognized content
 //!   from an older format; it is preserved untouched (fail closed).
@@ -24,7 +35,7 @@
 
 use std::fs::TryLockError;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -45,6 +56,11 @@ pub(crate) struct JournalLockCommand {
     /// Stable lock file to hold the exclusive kernel lock on.
     #[arg(long)]
     pub(crate) file: PathBuf,
+
+    /// Journal file to atomically replace with the stdin payload (if any)
+    /// while the lock is held.
+    #[arg(long)]
+    pub(crate) journal_file: PathBuf,
 
     /// How long to wait for a live holder before giving up (exit code 4).
     #[arg(long, default_value_t = 5_000)]
@@ -84,12 +100,61 @@ pub(crate) fn run_journal_lock(cmd: JournalLockCommand) -> Result<()> {
     println!("locked");
     std::io::stdout().flush().context("flush lock handshake")?;
 
-    // Hold until the parent releases (stdin EOF) or dies (stdin EOF too). Any
-    // interim bytes are consumed and ignored. The kernel drops the lock with
-    // this process regardless of HOW it exits.
-    let mut sink = Vec::new();
-    let _ = std::io::stdin().lock().read_to_end(&mut sink);
+    // The parent reads/mutates under OUR held lock, then hands back the
+    // complete serialized journal on stdin. EOF with no bytes = abort. Any
+    // read error is propagated — a torn payload must never be committed.
+    let mut payload = Vec::new();
+    std::io::stdin()
+        .lock()
+        .read_to_end(&mut payload)
+        .context("read journal payload from parent")?;
+    if !payload.is_empty() {
+        replace_journal(&cmd.journal_file, &payload)?;
+    }
     drop(file); // explicit unlock+close before a clean exit
+    Ok(())
+}
+
+/// Durable atomic replacement performed UNDER the held lock: temp file
+/// (0600) + fsync + rename over the journal + parent-directory fsync, so a
+/// committed update survives host/power crashes and a failed one leaves the
+/// journal byte-for-byte unmodified.
+fn replace_journal(journal: &Path, payload: &[u8]) -> Result<()> {
+    let dir = journal
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let tmp = journal.with_file_name(format!(
+        "{}.tmp-{}",
+        journal
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("pending-cleanups.json"),
+        std::process::id()
+    ));
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut temp = options
+        .open(&tmp)
+        .with_context(|| format!("open journal temp file {}", tmp.display()))?;
+    temp.write_all(payload).context("write journal payload")?;
+    temp.sync_all().context("fsync journal temp file")?;
+    drop(temp);
+    std::fs::rename(&tmp, journal)
+        .with_context(|| format!("rename journal into place at {}", journal.display()))?;
+
+    // Directory fsync makes the rename itself durable. Unsupported on some
+    // platforms (e.g. Windows) — the data fsync above already ran.
+    if let Ok(dir_handle) = std::fs::File::open(&dir) {
+        let _ = dir_handle.sync_all();
+    }
     Ok(())
 }
 
@@ -135,11 +200,15 @@ fn acquire(file: &mut std::fs::File, timeout: Duration) -> Result<LockOutcome> {
 mod tests {
     use super::*;
 
-    fn temp_lock_path(name: &str) -> PathBuf {
+    fn temp_dir(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("journal-lock-{}-{}", name, std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        dir.join("pending-cleanups.json.lock")
+        dir
+    }
+
+    fn temp_lock_path(name: &str) -> PathBuf {
+        temp_dir(name).join("pending-cleanups.json.lock")
     }
 
     fn open(path: &PathBuf) -> std::fs::File {
@@ -192,5 +261,24 @@ mod tests {
             std::fs::read(&path).unwrap(),
             b"{\"pid\":123,\"host\":\"old\"}"
         );
+    }
+    #[test]
+    fn replace_journal_is_atomic_and_leaves_no_temp_residue() {
+        let dir = temp_dir("replace");
+        let journal = dir.join("pending-cleanups.json");
+        std::fs::write(&journal, b"[]\n").unwrap();
+
+        replace_journal(&journal, b"[{\"kind\":\"relay-webhook\"}]\n").unwrap();
+        assert_eq!(
+            std::fs::read(&journal).unwrap(),
+            b"[{\"kind\":\"relay-webhook\"}]\n"
+        );
+        let residue: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(residue.is_empty(), "temp residue: {residue:?}");
     }
 }

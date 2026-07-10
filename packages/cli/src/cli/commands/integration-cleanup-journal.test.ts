@@ -53,9 +53,19 @@ if (brokerBinary) {
 
 /** Spawn the real helper as an external holder; resolves once it holds. */
 function spawnHolder(lockFile: string): Promise<import('node:child_process').ChildProcess> {
-  const child = spawn(brokerBinary!, ['journal-lock', '--file', lockFile, '--timeout-ms', '5000'], {
-    stdio: ['pipe', 'pipe', 'inherit'],
-  });
+  const child = spawn(
+    brokerBinary!,
+    [
+      'journal-lock',
+      '--file',
+      lockFile,
+      '--journal-file',
+      `${lockFile}.journal-scratch`,
+      '--timeout-ms',
+      '5000',
+    ],
+    { stdio: ['pipe', 'pipe', 'inherit'] }
+  );
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('holder never took the lock')), 10_000);
     child.stdout!.on('data', (d) => {
@@ -269,5 +279,149 @@ describe('fileCleanupJournal', () => {
     await journal.update(() => [CONCRETE]);
     await expect(journal.list()).resolves.toEqual([CONCRETE]);
     expect(fs.readFileSync(lock, 'utf8')).toBe('agent-relay-cleanup-lock v2\n');
+  });
+  /** Write an executable fake helper script and pin the resolver to it for
+   * one test; returns a restore function. */
+  function installFakeHelper(dir: string, body: string): () => void {
+    const script = path.join(dir, 'fake-broker.cjs');
+    fs.writeFileSync(script, `#!/usr/bin/env node\n${body}`, { mode: 0o755 });
+    const previous = {
+      broker: process.env.BROKER_BINARY_PATH,
+      bin: process.env.AGENT_RELAY_BIN,
+    };
+    process.env.BROKER_BINARY_PATH = script;
+    process.env.AGENT_RELAY_BIN = script;
+    return () => {
+      process.env.BROKER_BINARY_PATH = previous.broker;
+      process.env.AGENT_RELAY_BIN = previous.bin;
+      if (brokerBinary) {
+        process.env.BROKER_BINARY_PATH = brokerBinary;
+        process.env.AGENT_RELAY_BIN = brokerBinary;
+      }
+    };
+  }
+
+  it('accepts a SPLIT locked handshake via exact buffered line parsing', async () => {
+    const dir = tmpJournalDir();
+    // Emits 'loc' and 'ked\n' as separate chunks, then commits stdin to the
+    // journal file like the real helper.
+    const restore = installFakeHelper(
+      dir,
+      `const fs = require('fs');
+       const journal = process.argv[process.argv.indexOf('--journal-file') + 1];
+       process.stdout.write('loc');
+       setTimeout(() => {
+         process.stdout.write('ked\\n');
+         const chunks = [];
+         process.stdin.on('data', (c) => chunks.push(c));
+         process.stdin.on('end', () => {
+           const payload = Buffer.concat(chunks);
+           if (payload.length > 0) fs.writeFileSync(journal, payload);
+           process.exit(0);
+         });
+       }, 50);`
+    );
+    try {
+      const journal = fileCleanupJournal(dir);
+      await journal.update(() => [CONCRETE]);
+      await expect(journal.list()).resolves.toEqual([CONCRETE]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('kills and rejects on an INVALID handshake line, leaving the journal unmodified', async () => {
+    const dir = tmpJournalDir();
+    const journalPath = path.join(dir, 'pending-cleanups.json');
+    fs.writeFileSync(journalPath, '[]\n');
+    const restore = installFakeHelper(
+      dir,
+      `process.stdout.write('imposter\\n');
+       setTimeout(() => process.exit(0), 5000);`
+    );
+    try {
+      const journal = fileCleanupJournal(dir);
+      await expect(journal.update(() => [CONCRETE])).rejects.toMatchObject({ code: 'io' });
+      expect(fs.readFileSync(journalPath, 'utf8')).toBe('[]\n');
+    } finally {
+      restore();
+    }
+  });
+
+  it('aborts without committing when the helper dies during an async mutator', async () => {
+    const dir = tmpJournalDir();
+    const journalPath = path.join(dir, 'pending-cleanups.json');
+    fs.writeFileSync(journalPath, '[]\n');
+    // Handshakes correctly, then dies shortly after — while the parent's
+    // async mutator is still running.
+    const restore = installFakeHelper(
+      dir,
+      `process.stdout.write('locked\\n');
+       setTimeout(() => process.exit(1), 100);`
+    );
+    try {
+      const journal = fileCleanupJournal(dir);
+      await expect(
+        journal.update(async (entries) => {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          return [...entries, CONCRETE];
+        })
+      ).rejects.toMatchObject({ code: 'io' });
+      // The lock (and isolation) died with the helper — the journal must be
+      // byte-for-byte unmodified.
+      expect(fs.readFileSync(journalPath, 'utf8')).toBe('[]\n');
+    } finally {
+      restore();
+    }
+  });
+
+  it('fails the commit cleanly when the helper dies mid-write (EPIPE race), journal intact', async () => {
+    const dir = tmpJournalDir();
+    const journalPath = path.join(dir, 'pending-cleanups.json');
+    fs.writeFileSync(journalPath, '[]\n');
+    // Handshakes, then destroys its stdin and dies — the parent's
+    // end(payload) races the exit and must surface a commit failure without
+    // an unhandled EPIPE or a hung end callback.
+    const restore = installFakeHelper(
+      dir,
+      `process.stdout.write('locked\\n');
+       process.stdin.destroy();
+       setTimeout(() => process.exit(1), 50);`
+    );
+    try {
+      const journal = fileCleanupJournal(dir);
+      await expect(journal.update((entries) => [...entries, CONCRETE])).rejects.toMatchObject({
+        code: 'io',
+      });
+      expect(fs.readFileSync(journalPath, 'utf8')).toBe('[]\n');
+    } finally {
+      restore();
+    }
+  });
+
+  it('releases without writing when the mutator throws (empty-payload abort)', async () => {
+    const dir = tmpJournalDir();
+    const journalPath = path.join(dir, 'pending-cleanups.json');
+    fs.writeFileSync(journalPath, '[]\n');
+    const restore = brokerBinary
+      ? () => undefined
+      : installFakeHelper(
+          dir,
+          `process.stdout.write('locked\\n');
+       const chunks = [];
+       process.stdin.on('data', (c) => chunks.push(c));
+       process.stdin.on('end', () => process.exit(0));`
+        );
+    try {
+      const journal = fileCleanupJournal(dir);
+      await expect(
+        journal.update(() => {
+          throw new Error('mutator exploded');
+        })
+      ).rejects.toThrow('mutator exploded');
+      expect(fs.readFileSync(journalPath, 'utf8')).toBe('[]\n');
+    } finally {
+      restore();
+    }
   });
 });
