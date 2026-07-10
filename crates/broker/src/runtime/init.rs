@@ -828,6 +828,9 @@ fn node_max_agents() -> Option<u32> {
     std::env::var("AGENT_RELAY_NODE_MAX_AGENTS")
         .ok()
         .and_then(|raw| raw.trim().parse::<u32>().ok())
+        // 0 means unlimited, same as absent; normalize it away so the doc
+        // comment holds and `Some(0)` never reads as an explicit zero-capacity.
+        .filter(|&max| max > 0)
 }
 
 #[cfg(test)]

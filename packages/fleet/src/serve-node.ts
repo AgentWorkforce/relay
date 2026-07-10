@@ -129,6 +129,11 @@ export function startServeNode(options: ServeNodeOptions): RunningNode {
  * @param options - Node serving options.
  */
 export async function serveNode(options: ServeNodeOptions): Promise<void> {
+  // An already-aborted signal never fires an 'abort' event, so the stop hook
+  // below would not run — return before allocating/connecting the client.
+  if (options.signal?.aborted) {
+    return;
+  }
   const nodeName = options.nameOverride ?? options.definition.name;
   const providerName = options.providerName ?? options.definition.name;
   const maxAgents = options.maxAgentsOverride ?? options.definition.maxAgents;
@@ -315,7 +320,7 @@ function triggerSyncKey(trigger: {
     trigger.channel ?? '',
     trigger.pattern ?? '',
     String(normalizeTriggerMention(trigger.mention)),
-  ].join('');
+  ].join('\u001f');
 }
 
 function triggerEquals(
