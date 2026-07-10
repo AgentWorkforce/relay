@@ -1,7 +1,8 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { flockSync } from 'fs-ext-extra-prebuilt';
 import { getProjectPaths } from '@agent-relay/config';
+import { formatBrokerNotFoundError, getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
 
 /**
  * Durable, project-local journal of external cleanup work that failed or may
@@ -142,11 +143,7 @@ export function cleanupEntryKey(entry: PendingCleanupEntry): string {
   ].join('\u0000');
 }
 
-const LOCK_RETRY_MS = 100;
 const LOCK_TIMEOUT_MS = 5_000;
-/** Contents of a v2 stable lock file. Anything else is an unrecognized
- * (pre-release) sentinel and fails closed. */
-const LOCK_MARKER = 'agent-relay-cleanup-lock v2\n';
 
 const CONCRETE_KINDS: ReadonlySet<string> = new Set([
   'relayfile-webhook-subscription',
@@ -232,115 +229,100 @@ function parseEntries(raw: string, file: string): PendingCleanupEntry[] {
   return parsed;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
- * Take the exclusive journal lock via a KERNEL advisory lock on a stable lock
- * file: flock(2) on Unix, LockFileEx on Windows (through the
- * fs-ext-extra-prebuilt addon). The lock file is created once and NEVER
- * unlinked or renamed — mutual exclusion lives on the open file description,
- * and the OS releases it automatically when the holding process exits or
- * dies. That eliminates every failure mode of path-based locking at once: no
- * pid/liveness probes, no mtime/age heuristics, no takeover races, and a
- * crash mid-update can never wedge unattended recovery.
+ * Take the exclusive journal lock by spawning the already-required Rust
+ * broker binary's hidden `journal-lock` helper, which holds a KERNEL
+ * advisory lock (flock(2) on Unix, LockFileEx on Windows via std
+ * File::try_lock) on a stable lock file: created 0600 once, NEVER unlinked
+ * or renamed. The kernel releases the lock when the helper exits or dies;
+ * the helper exits when our stdin pipe reaches EOF, so a crash of EITHER
+ * process releases the lock. No native addon is imported anywhere — this
+ * works identically under Node and the Bun standalone, which already ships
+ * and spawns the broker binary for its core commands.
  *
- * The file's CONTENT is a version marker only. A leftover file whose content
- * is not the v2 marker is an unrecognized (pre-release) sentinel and fails
- * closed rather than being treated as a v2 lock.
+ * The helper owns the marker rules: it stamps/fsyncs the v2 marker, heals a
+ * crash-truncated marker (strict prefix), and FAILS CLOSED (exit 3) on an
+ * unrecognized pre-release sentinel, preserving the file untouched. Exit 2
+ * means a live holder out-waited our timeout.
  */
-async function acquireLock(lockFile: string): Promise<() => void> {
-  let fd: number;
-  try {
-    // O_RDWR|O_CREAT, deliberately NOT 'a+': O_APPEND would make positioned
-    // writes append on Linux (pwrite honors O_APPEND there), corrupting the
-    // marker heal below.
-    fd = fs.openSync(lockFile, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o600);
-  } catch (err) {
-    throw new CleanupJournalError(
-      'io',
-      `Could not open the pending-cleanup journal lock at ${lockFile}: ${err instanceof Error ? err.message : String(err)}`
+async function acquireLock(lockFile: string): Promise<() => Promise<void>> {
+  const binary = getBrokerBinaryPath();
+  if (!binary) {
+    throw new CleanupJournalError('io', formatBrokerNotFoundError());
+  }
+  const child = spawn(binary, ['journal-lock', '--file', lockFile, '--timeout-ms', String(LOCK_TIMEOUT_MS)], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  const exit = new Promise<number | null>((resolve) => {
+    child.on('exit', (code) => resolve(code));
+    child.on('error', () => resolve(null));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    child.stdout!.on('data', (chunk: Buffer) => {
+      if (String(chunk).includes('locked')) settle(resolve);
+    });
+    child.on('error', (err) =>
+      settle(() =>
+        reject(
+          new CleanupJournalError('io', `Could not spawn the journal-lock helper (${binary}): ${err.message}`)
+        )
+      )
     );
-  }
-  const close = () => {
+    void exit.then((code) => {
+      settle(() => {
+        if (code === 4) {
+          reject(
+            new CleanupJournalError(
+              'locked',
+              `Timed out waiting for the pending-cleanup journal lock at ${lockFile}: another agent-relay process holds it. The kernel releases it automatically when that process exits; retry afterwards.`
+            )
+          );
+        } else if (code === 2) {
+          // clap usage error: this broker binary predates the journal-lock
+          // helper (version skew), or the invocation is malformed.
+          reject(
+            new CleanupJournalError(
+              'io',
+              `The resolved agent-relay-broker binary (${binary}) does not support the journal-lock helper; upgrade the broker (or set AGENT_RELAY_BIN to a current build) and retry.`
+            )
+          );
+        } else if (code === 3) {
+          reject(
+            new CleanupJournalError(
+              'locked',
+              `The pending-cleanup journal lock at ${lockFile} contains an unrecognized sentinel from an older format. Nothing was swept or overwritten; inspect and remove the file to continue.`
+            )
+          );
+        } else {
+          reject(
+            new CleanupJournalError(
+              'io',
+              `The journal-lock helper exited unexpectedly (code ${code ?? 'unknown'}) before acquiring ${lockFile}.`
+            )
+          );
+        }
+      });
+    });
+  });
+
+  // Release = close the helper's stdin (it exits on EOF) and AWAIT its exit
+  // so the kernel lock is provably gone before update() returns.
+  return async () => {
     try {
-      fs.closeSync(fd);
+      child.stdin!.end();
     } catch {
-      // already closed
+      // The helper already died; its kernel lock died with it.
     }
+    await exit;
   };
-
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  for (;;) {
-    try {
-      flockSync(fd, 'exnb');
-      break;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'EAGAIN' && code !== 'EWOULDBLOCK' && code !== 'EBUSY') {
-        close();
-        throw new CleanupJournalError(
-          'io',
-          `Could not lock the pending-cleanup journal at ${lockFile}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-      if (Date.now() >= deadline) {
-        close();
-        throw new CleanupJournalError(
-          'locked',
-          `Timed out waiting for the pending-cleanup journal lock at ${lockFile}: another agent-relay process holds it. The kernel releases it automatically when that process exits; retry afterwards.`
-        );
-      }
-      await sleep(LOCK_RETRY_MS);
-    }
-  }
-
-  const release = () => {
-    try {
-      flockSync(fd, 'un');
-    } catch {
-      // closing the descriptor below releases the kernel lock regardless
-    }
-    close();
-  };
-
-  // Under the lock: stamp a fresh file with the v2 marker; fail closed on any
-  // unrecognized content (e.g. a pre-release JSON sentinel) instead of
-  // silently adopting it as a v2 lock.
-  try {
-    const size = fs.fstatSync(fd).size;
-    if (size === 0) {
-      fs.writeSync(fd, LOCK_MARKER, 0);
-      fs.fsyncSync(fd); // durable format marker
-    } else {
-      const buffer = Buffer.alloc(Math.min(size, 256));
-      fs.readSync(fd, buffer, 0, buffer.length, 0);
-      const content = buffer.toString('utf8');
-      const recognized = LOCK_MARKER.startsWith(content) || content === LOCK_MARKER;
-      if (!recognized) {
-        release();
-        throw new CleanupJournalError(
-          'locked',
-          `The pending-cleanup journal lock at ${lockFile} contains an unrecognized sentinel from an older format. Nothing was swept or overwritten; inspect and remove the file to continue.`
-        );
-      }
-      if (content !== LOCK_MARKER) {
-        // Heal a crash-truncated v2 marker (strict prefix); anything else
-        // already failed closed above. Truncate first so the rewrite is exact.
-        fs.ftruncateSync(fd, 0);
-        fs.writeSync(fd, LOCK_MARKER, 0);
-        fs.fsyncSync(fd);
-      }
-    }
-  } catch (err) {
-    if (err instanceof CleanupJournalError) throw err;
-    release();
-    throw new CleanupJournalError(
-      'io',
-      `Could not validate the pending-cleanup journal lock at ${lockFile}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  return release;
 }
 
 /** File-backed CleanupJournal in the project data dir. Paths resolve per call.
@@ -399,7 +381,7 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
       try {
         write(file, await mutate(read(file)));
       } finally {
-        release();
+        await release();
       }
     },
   };

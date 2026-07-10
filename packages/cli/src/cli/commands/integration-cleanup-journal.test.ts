@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,7 +24,52 @@ const INTENT: PendingCleanupEntry = {
   relayScope: 'relay:abcd',
 };
 
-const require = createRequire(import.meta.url);
+// The kernel-lock tests exercise the REAL broker `journal-lock` helper from
+// THIS checkout's cargo build (never an older installed release, which lacks
+// the subcommand); they are skipped when it hasn't been built. Locally:
+// `cargo build -p agent-relay-broker` first. Rust-side unit coverage lives in
+// crates/broker/src/cli/journal_lock.rs.
+const repoRoot = path.resolve(__dirname, '../../../../..');
+const builtHelper = ['debug', 'release']
+  .map((profile) =>
+    path.join(
+      repoRoot,
+      'target',
+      profile,
+      process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker'
+    )
+  )
+  .find((candidate) => fs.existsSync(candidate));
+const brokerBinary = builtHelper;
+const itWithBroker = brokerBinary ? it : it.skip;
+if (brokerBinary) {
+  // The journal resolves through the standard broker resolver; pin BOTH of
+  // its env overrides (BROKER_BINARY_PATH outranks AGENT_RELAY_BIN) to the
+  // fresh build so an ambient developer/CI setting can never redirect these
+  // tests to an older release binary.
+  process.env.BROKER_BINARY_PATH = brokerBinary;
+  process.env.AGENT_RELAY_BIN = brokerBinary;
+}
+
+/** Spawn the real helper as an external holder; resolves once it holds. */
+function spawnHolder(lockFile: string): Promise<import('node:child_process').ChildProcess> {
+  const child = spawn(brokerBinary!, ['journal-lock', '--file', lockFile, '--timeout-ms', '5000'], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('holder never took the lock')), 10_000);
+    child.stdout!.on('data', (d) => {
+      if (String(d).includes('locked')) {
+        clearTimeout(timer);
+        resolve(child);
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`holder exited early: ${code}`));
+    });
+  });
+}
 
 function tmpJournalDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-journal-'));
@@ -145,86 +189,64 @@ describe('fileCleanupJournal', () => {
     await expect(journal.list()).resolves.toHaveLength(6);
   });
 
-  it('waits for a lock held by ANOTHER PROCESS, then proceeds (kernel contention)', async () => {
-    const dir = tmpJournalDir();
-    const lock = path.join(dir, 'pending-cleanups.json.lock');
-    const addon = require.resolve('fs-ext-extra-prebuilt');
-    // The child takes the exclusive kernel lock, signals, holds ~700ms, then
-    // releases by exiting normally.
-    const child = spawn(
-      process.execPath,
-      [
-        '-e',
-        `const { flockSync } = require(process.env.ADDON); const fs = require('fs');
-         const fd = fs.openSync(process.env.LOCK, 'a+');
-         fs.writeSync(fd, 'agent-relay-cleanup-lock v2\\n', 0);
-         flockSync(fd, 'ex');
-         console.log('held');
-         setTimeout(() => process.exit(0), 700);`,
-      ],
-      { env: { ...process.env, ADDON: addon, LOCK: lock }, stdio: ['ignore', 'pipe', 'inherit'] }
-    );
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error('child never took the lock'));
-      }, 5_000);
-      const onData = (d: Buffer) => {
-        if (String(d).includes('held')) {
-          cleanup();
-          resolve();
-        }
-      };
-      const onExit = (code: number | null) => {
-        cleanup();
-        reject(new Error(`child exited early: ${code}`));
-      };
-      const cleanup = () => {
-        clearTimeout(timer);
-        child.stdout!.off('data', onData);
-        child.off('exit', onExit);
-      };
-      child.stdout!.on('data', onData);
-      child.on('exit', onExit);
-    });
+  itWithBroker(
+    'waits for a lock held by ANOTHER PROCESS, then proceeds (kernel contention)',
+    async () => {
+      const dir = tmpJournalDir();
+      const lock = path.join(dir, 'pending-cleanups.json.lock');
+      const holder = await spawnHolder(lock);
+      // Release the holder (stdin EOF) after ~700ms of exclusive hold.
+      setTimeout(() => holder.stdin!.end(), 700);
 
-    const journal = fileCleanupJournal(dir);
-    const started = Date.now();
-    await journal.update(() => [CONCRETE]);
-    // The update had to out-wait the live holder.
-    expect(Date.now() - started).toBeGreaterThanOrEqual(400);
-    await expect(journal.list()).resolves.toEqual([CONCRETE]);
-  }, 20_000);
+      const journal = fileCleanupJournal(dir);
+      const started = Date.now();
+      await journal.update(() => [CONCRETE]);
+      // The update had to out-wait the live holder.
+      expect(Date.now() - started).toBeGreaterThanOrEqual(400);
+      await expect(journal.list()).resolves.toEqual([CONCRETE]);
+    },
+    20_000
+  );
 
-  it('recovers immediately when the holding process DIES without unlocking (crash release)', async () => {
-    const dir = tmpJournalDir();
-    const lock = path.join(dir, 'pending-cleanups.json.lock');
-    const addon = require.resolve('fs-ext-extra-prebuilt');
-    // The child takes the lock and hard-aborts WITHOUT flock('un') — the
-    // kernel must release the lock with the process, unattended.
-    const child = spawn(
-      process.execPath,
-      [
-        '-e',
-        `const { flockSync } = require(process.env.ADDON); const fs = require('fs');
-         const fd = fs.openSync(process.env.LOCK, 'a+');
-         fs.writeSync(fd, 'agent-relay-cleanup-lock v2\\n', 0);
-         flockSync(fd, 'ex');
-         console.log('held');
-         process.abort();`,
-      ],
-      { env: { ...process.env, ADDON: addon, LOCK: lock }, stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-    await new Promise<void>((resolve) => {
-      child.stdout!.on('data', (d) => String(d).includes('held') && resolve());
-    });
-    await new Promise<void>((resolve) => child.on('exit', () => resolve()));
+  itWithBroker(
+    'recovers immediately when the holding process is SIGKILLed (crash release)',
+    async () => {
+      const dir = tmpJournalDir();
+      const lock = path.join(dir, 'pending-cleanups.json.lock');
+      const holder = await spawnHolder(lock);
+      // Hard-kill WITHOUT any release protocol — the kernel must drop the lock
+      // with the process, unattended.
+      holder.kill('SIGKILL');
+      await new Promise<void>((resolve) => holder.on('exit', () => resolve()));
 
-    const journal = fileCleanupJournal(dir);
-    await journal.update(() => [CONCRETE]);
-    await expect(journal.list()).resolves.toEqual([CONCRETE]);
-    expect(fs.existsSync(lock)).toBe(true); // stable file, never removed
-  }, 20_000);
+      const journal = fileCleanupJournal(dir);
+      await journal.update(() => [CONCRETE]);
+      await expect(journal.list()).resolves.toEqual([CONCRETE]);
+      expect(fs.existsSync(lock)).toBe(true); // stable file, never removed
+    },
+    20_000
+  );
+
+  it('runs the CLI under Bun without loading any native addon (--version smoke)', async () => {
+    // Release-style regression: the Bun standalone externalizes native
+    // addons, so ANY static native import crashes it. Running the built CLI
+    // entry under bun proves the journal (and its import graph) is
+    // addon-free. Skipped when bun or the built dist is unavailable.
+    let bun = '';
+    try {
+      bun = execFileSync(process.platform === 'win32' ? 'where' : 'which', ['bun'], {
+        encoding: 'utf8',
+      })
+        .split(/\r?\n/)[0]!
+        .trim();
+    } catch {
+      return; // no bun on this machine — covered by the Standalone Smoke CI job
+    }
+    const entry = path.resolve(__dirname, '../../../dist/cli/index.js');
+    if (!bun || !fs.existsSync(entry)) return;
+    const output = execFileSync(bun, [entry, '--version'], { encoding: 'utf8', timeout: 30_000 });
+    expect(output.trim().length).toBeGreaterThan(0);
+  }, 40_000);
 
   it('fails closed on an unrecognized pre-release lock sentinel', async () => {
     const dir = tmpJournalDir();

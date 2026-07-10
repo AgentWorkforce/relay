@@ -56,7 +56,6 @@
     "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
-    "fs-ext-extra-prebuilt": "2.2.9",
     "jiti": "^2.6.1",
     "posthog-node": "^5.29.2",
     "ws": "^8.18.3",
