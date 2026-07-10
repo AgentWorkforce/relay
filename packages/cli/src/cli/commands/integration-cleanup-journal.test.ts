@@ -17,12 +17,15 @@ const CONCRETE: PendingCleanupEntry = {
 };
 
 const INTENT: PendingCleanupEntry = {
-  kind: 'relayfile-webhook-subscription-intent',
+  kind: 'subscribe-attempt',
   scope: 'relayfile:project-daemon',
   provider: 'slack',
   resource: '/slack/channels/C0/**',
   url: 'https://cast.test/inbound',
   pathGlobs: ['/slack/channels/C0/**'],
+  webhookName: 'relayfile:slack:slack-channels-c0-0123456789:abcdef0123',
+  writebackUrl: 'https://ingress.example',
+  relayScope: 'relay:abcd',
 };
 
 function tmpJournalDir(): string {
@@ -46,6 +49,18 @@ describe('fileCleanupJournal', () => {
 
     await journal.update((entries) => entries.filter((e) => e.kind !== 'relayfile-webhook-subscription'));
     await expect(journal.list()).resolves.toEqual([INTENT]);
+  });
+
+  it('supports async mutators, persisting the awaited result under the lock', async () => {
+    const dir = tmpJournalDir();
+    const journal = fileCleanupJournal(dir);
+
+    await journal.update(async (entries) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return [...entries, CONCRETE];
+    });
+
+    await expect(journal.list()).resolves.toEqual([CONCRETE]);
   });
 
   it('does not lose entries under concurrent updates', async () => {
@@ -76,17 +91,21 @@ describe('fileCleanupJournal', () => {
       [{ kind: 'mystery-kind', scope: 's', id: 'x' }],
       [{ kind: 'relay-webhook', scope: 's' }], // concrete without id
       [{ kind: 'relayfile-webhook-subscription', scope: '', id: 'x' }], // empty scope
-      [{ kind: 'relayfile-webhook-subscription-intent', scope: 's', url: 'u' }], // intent missing keys
+      [{ kind: 'subscribe-attempt', scope: 's', url: 'u' }], // attempt missing keys
       [
         {
-          kind: 'relayfile-webhook-subscription-intent',
+          kind: 'subscribe-attempt',
           scope: 's',
           url: 'u',
           provider: 'p',
           resource: 'r',
+          webhookName: 'w',
+          writebackUrl: 'wb',
+          relayScope: 'rs',
           pathGlobs: [],
         },
       ],
+      [{ kind: 'relay-webhook', scope: 's', id: 'x', owner: { pid: -1, host: 'h', attemptId: 'a' } }], // invalid owner
       ['just-a-string'],
       { not: 'an array' },
     ];

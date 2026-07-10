@@ -98,8 +98,8 @@ function memoryJournal() {
   let entries: unknown[] = [];
   return {
     list: async () => [...entries],
-    update: async (mutate: (e: never[]) => unknown[]) => {
-      entries = mutate([...entries] as never[]);
+    update: async (mutate: (e: never[]) => unknown[] | Promise<unknown[]>) => {
+      entries = await mutate([...entries] as never[]);
     },
   };
 }
@@ -434,7 +434,9 @@ describe('SDK-backed CLI groups', () => {
       event: 'message.created',
       events: ['message.created', 'thread.reply'],
       filter: { channel: 'slackbot' },
-      url: 'https://bridge.test/writeback',
+      // The per-attempt marker uniquely identifies this subscription for
+      // crash recovery without changing delivery (query is ignored).
+      url: expect.stringMatching(/^https:\/\/bridge\.test\/writeback\?relaySubscribeAttempt=[0-9a-f]{16}$/),
       secret: 'secret',
     });
     expect(relayfile.bind).toHaveBeenCalledWith({
@@ -488,7 +490,9 @@ describe('SDK-backed CLI groups', () => {
     expect(relayfile.resolveWritebackBinding).toHaveBeenCalledWith('slackbot');
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
+        url: expect.stringMatching(
+          /^https:\/\/file\.agentrelay\.com\/v1\/workspaces\/rw_7ccfea89\/integrations\/relay\/writeback\?relaySubscribeAttempt=[0-9a-f]{16}$/
+        ),
         secret: 'derived-secret-hex',
       })
     );

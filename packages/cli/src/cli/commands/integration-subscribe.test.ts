@@ -7,6 +7,7 @@ import { RelayfileControlPlaneError } from '@relayfile/client';
 
 import {
   registerIntegrationCommands,
+  relayCleanupScope,
   type IntegrationCommandDependencies,
   type RelayfileBinding,
 } from './integration.js';
@@ -75,6 +76,7 @@ function createRelayfileMock(
         webhookId: string;
         subscriptionId: string;
         webhookSubscriptionId: string;
+        webhookSubscriptionWorkspaceId?: string;
       }) => {
         const record: RelayfileBinding = {
           provider: input.provider,
@@ -83,6 +85,7 @@ function createRelayfileMock(
           webhookId: input.webhookId,
           subscriptionId: input.subscriptionId,
           webhookSubscriptionId: input.webhookSubscriptionId,
+          webhookSubscriptionWorkspaceId: input.webhookSubscriptionWorkspaceId,
         };
         const idx = bindings.findIndex((b) => b.provider === input.provider && b.resource === input.resource);
         if (idx >= 0) bindings[idx] = record;
@@ -106,26 +109,42 @@ function createRelayfileMock(
 // journal under the project data dir.
 function memoryJournal(initial: PendingCleanupEntry[] = []) {
   let entries = [...initial];
+  const apply = async (
+    mutate: (e: PendingCleanupEntry[]) => PendingCleanupEntry[] | Promise<PendingCleanupEntry[]>
+  ) => {
+    entries = await mutate([...entries]);
+  };
   return {
     entries: () => [...entries],
+    apply,
     list: vi.fn(async () => [...entries]),
-    update: vi.fn(async (mutate: (e: PendingCleanupEntry[]) => PendingCleanupEntry[]) => {
-      entries = mutate([...entries]);
-    }),
+    update: vi.fn(apply),
   };
 }
 
+/** Apply a mutate against a memoryJournal from inside a custom update mock. */
+async function memoryJournalApply(
+  journal: ReturnType<typeof memoryJournal>,
+  mutate: (e: PendingCleanupEntry[]) => PendingCleanupEntry[] | Promise<PendingCleanupEntry[]>
+) {
+  await journal.apply(mutate);
+}
+
 const INBOUND_URL = 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch';
+const WRITEBACK_URL = 'https://ingress.example';
 const RELAYFILE_SCOPE = 'relayfile:project-daemon';
 
-function intentEntry(overrides: Partial<PendingCleanupEntry> = {}): PendingCleanupEntry {
+function attemptEntry(overrides: Partial<PendingCleanupEntry> = {}): PendingCleanupEntry {
   return {
-    kind: 'relayfile-webhook-subscription-intent',
+    kind: 'subscribe-attempt',
     scope: RELAYFILE_SCOPE,
     provider: 'slack',
     resource: RESOURCE,
     url: INBOUND_URL,
     pathGlobs: [RESOURCE],
+    webhookName: 'relayfile:slack:stale-name:0000000000',
+    writebackUrl: WRITEBACK_URL,
+    relayScope: relayCleanupScope({ workspaceKey: 'rk_live_test' }),
     ...overrides,
   };
 }
@@ -369,7 +388,7 @@ describe('integration subscribe', () => {
 
     expect(relay.webhooks.delete).toHaveBeenCalledWith('old_wh');
     expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('old_sub');
-    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('old_whsub');
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('old_whsub', undefined);
     expect(relayfile.bind.mock.invocationCallOrder[0]!).toBeLessThan(
       relayfile.deleteWebhookSubscription.mock.invocationCallOrder[0]!
     );
@@ -419,7 +438,7 @@ describe('integration subscribe', () => {
     await program.parseAsync(ARGS(), { from: 'user' });
 
     expect(exit).not.toHaveBeenCalled();
-    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_stale');
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_stale', undefined);
     // The subscription backing the binding just created is never swept.
     expect(relayfile.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_1');
     expect(journal.entries()).toEqual([]);
@@ -451,18 +470,19 @@ describe('integration subscribe', () => {
     await program.parseAsync(ARGS(), { from: 'user' });
 
     expect(exit).not.toHaveBeenCalled();
-    // The first journal write (the intent) precedes every external create.
-    const intentWriteOrder = journal.update.mock.invocationCallOrder[0]!;
-    expect(intentWriteOrder).toBeLessThan(relay.webhooks.createInbound.mock.invocationCallOrder[0]!);
-    expect(intentWriteOrder).toBeLessThan(relayfile.createWebhookSubscription.mock.invocationCallOrder[0]!);
-    // Clean completion leaves no retained intent.
+    // The first journal write (the attempt reservation) precedes every
+    // external create.
+    const reservationOrder = journal.update.mock.invocationCallOrder[0]!;
+    expect(reservationOrder).toBeLessThan(relay.webhooks.createInbound.mock.invocationCallOrder[0]!);
+    expect(reservationOrder).toBeLessThan(relayfile.createWebhookSubscription.mock.invocationCallOrder[0]!);
+    // Clean completion leaves no retained attempt.
     expect(journal.entries()).toEqual([]);
   });
 
-  it('aborts before any create on a retained matching intent when the client cannot list (P1)', async () => {
+  it('aborts before any create on a retained matching attempt when the client cannot list (P1)', async () => {
     // v3-compatible daemon (ensureCompatible passes) but the installed
     // 0.10.20 client has no runtime list method — the bridge omits it.
-    const journal = memoryJournal([intentEntry()]);
+    const journal = memoryJournal([attemptEntry()]);
     const relayfile = createRelayfileMock();
     expect(relayfile.listWebhookSubscriptions).toBeUndefined();
     const { program, relay, error, exit } = harness({ relayfile, journal });
@@ -474,8 +494,294 @@ describe('integration subscribe', () => {
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
     expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
     expect(relay.integrations.subscriptions.create).not.toHaveBeenCalled();
-    // The intent stays retained for a later reconciling run.
-    expect(journal.entries()).toEqual([intentEntry()]);
+    // The attempt stays retained for a later reconciling run.
+    expect(journal.entries()).toEqual([attemptEntry()]);
+  });
+
+  it('aborts before any create while a live concurrent subscribe holds the reservation (P1)', async () => {
+    // The lease-owner is this very process, which is provably alive — exactly
+    // what a second CLI racing the same resource would observe.
+    const liveAttempt = attemptEntry({
+      owner: { pid: process.pid, host: os.hostname(), attemptId: 'other-attempt' },
+    });
+    const journal = memoryJournal([liveAttempt]);
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: 'rw_1', subscriptions: [] })),
+    });
+    const { program, relay, error, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('in progress'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    // The live attempt's reservation is never swept or cleared.
+    expect(journal.entries()).toEqual([liveAttempt]);
+    expect(relayfile.deleteWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('recovers a crash-after-webhook-create attempt by exact name, sparing other names (P1)', async () => {
+    const deadAttempt = attemptEntry({
+      webhookName: 'relayfile:slack:slack-channels-c0-0123456789:deadbeef00',
+      relayfileWorkspaceId: 'rw_1',
+    });
+    const relay = createRelayMock({
+      inboundWebhooks: [
+        {
+          webhookId: 'wh_orphan',
+          url: 'u',
+          token: '',
+          channel: 'general',
+          name: 'relayfile:slack:slack-channels-c0-0123456789:deadbeef00',
+        },
+        {
+          // Same resource prefix, different attempt nonce — must survive.
+          webhookId: 'wh_other_attempt',
+          url: 'u',
+          token: '',
+          channel: 'general',
+          name: 'relayfile:slack:slack-channels-c0-0123456789:aaaaaaaaaa',
+        },
+      ],
+    });
+    const journal = memoryJournal([deadAttempt]);
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: 'rw_1', subscriptions: [] })),
+    });
+    const { program, exit } = harness({ relay, relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_orphan');
+    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('wh_other_attempt');
+    expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
+  it('spares a live concurrent attempt pre-bind webhook from prefix hygiene (P1)', async () => {
+    // A completed run's hygiene sweep sees a same-prefix, not-yet-bound
+    // webhook created by a LIVE different attempt (reservation journaled
+    // before its create); it must survive.
+    const liveAttempt = attemptEntry({
+      webhookName: 'relayfile:slack:slack-channels-c0-0123456789:bbbbbbbbbb',
+      owner: { pid: process.pid, host: os.hostname(), attemptId: 'concurrent-live' },
+    });
+    const relay = createRelayMock({
+      inboundWebhooks: [
+        {
+          webhookId: 'wh_live_prebind',
+          url: 'u',
+          token: '',
+          channel: 'general',
+          name: 'relayfile:slack:slack-channels-c0-0123456789:bbbbbbbbbb',
+        },
+      ],
+    });
+    const journal = memoryJournal([liveAttempt]);
+    const relayfile = createRelayfileMock();
+    const { program, error, exit } = harness({ relay, relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    // The live same-key reservation aborts this run before creating anything
+    // AND nothing it does may touch the live attempt's webhook.
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('in progress'));
+    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('wh_live_prebind');
+  });
+
+  it('prefix hygiene spares a live different-resource attempt webhook after a successful bind', async () => {
+    // Different resource, same provider — the run completes normally, and its
+    // hygiene loop must still exclude the live attempt's pre-bind webhook.
+    const liveAttempt = attemptEntry({
+      resource: '/slack/channels/C9/**',
+      pathGlobs: ['/slack/channels/C9/**'],
+      webhookName: 'relayfile:slack:slack-channels-c0-0123456789:cccccccccc',
+      owner: { pid: process.pid, host: os.hostname(), attemptId: 'other-resource-live' },
+    });
+    const relay = createRelayMock({
+      inboundWebhooks: [
+        {
+          webhookId: 'wh_live_prebind',
+          url: 'u',
+          token: '',
+          channel: 'general',
+          // Same prefix as THIS run's resource — prefix-hygiene bait.
+          name: 'relayfile:slack:slack-channels-c0-0123456789:cccccccccc',
+        },
+      ],
+    });
+    const journal = memoryJournal([liveAttempt]);
+    const relayfile = createRelayfileMock();
+    const { program, exit } = harness({ relay, relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relay.webhooks.delete).not.toHaveBeenCalledWith('wh_live_prebind');
+  });
+
+  it('recovers a dead attempt subscription by its exact per-attempt url on a shared channel (P1)', async () => {
+    const deadAttempt = attemptEntry({
+      writebackUrl: `${WRITEBACK_URL}?relaySubscribeAttempt=deadbeef`,
+      relayfileWorkspaceId: 'rw_1',
+    });
+    const relay = createRelayMock();
+    relay.webhooks.subscriptions.mockResolvedValue([
+      { id: 'sub_dead', url: `${WRITEBACK_URL}?relaySubscribeAttempt=deadbeef` },
+      // Another attempt's pre-bind subscription on the SAME channel base url.
+      { id: 'sub_other_attempt', url: `${WRITEBACK_URL}?relaySubscribeAttempt=aaaaaaaa` },
+      { id: 'sub_bare', url: WRITEBACK_URL },
+    ]);
+    const journal = memoryJournal([deadAttempt]);
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: 'rw_1', subscriptions: [] })),
+    });
+    const { program, exit } = harness({ relay, relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('sub_dead');
+    expect(relay.webhooks.unsubscribe).not.toHaveBeenCalledWith('sub_other_attempt');
+    expect(relay.webhooks.unsubscribe).not.toHaveBeenCalledWith('sub_bare');
+    expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
+  it('recovers a crash-after-subscription-create attempt via writeback url, sparing active ids (P1)', async () => {
+    const activeBinding: RelayfileBinding = {
+      provider: 'slack',
+      resource: '/slack/channels/C9/**',
+      channel: 'general',
+      webhookId: 'wh_other',
+      subscriptionId: 'sub_active',
+    };
+    const deadAttempt = attemptEntry({ relayfileWorkspaceId: 'rw_1' });
+    const relay = createRelayMock();
+    relay.webhooks.subscriptions.mockResolvedValue([
+      { id: 'sub_orphan', url: WRITEBACK_URL },
+      { id: 'sub_active', url: WRITEBACK_URL },
+      { id: 'sub_elsewhere', url: 'https://elsewhere.example' },
+    ]);
+    const journal = memoryJournal([deadAttempt]);
+    const relayfile = createRelayfileMock([activeBinding], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: 'rw_1', subscriptions: [] })),
+    });
+    const { program, exit } = harness({ relay, relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('sub_orphan');
+    expect(relay.webhooks.unsubscribe).not.toHaveBeenCalledWith('sub_active');
+    expect(relay.webhooks.unsubscribe).not.toHaveBeenCalledWith('sub_elsewhere');
+    expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
+  it('retains an unpinned attempt instead of list-matching the wrong workspace', async () => {
+    // Crash landed the create but not its response: no workspace pin. After a
+    // workspace switch, listing the NOW-active workspace must not settle it.
+    const deadAttempt = attemptEntry(); // no relayfileWorkspaceId
+    const journal = memoryJournal([deadAttempt]);
+    const listMock = vi.fn(async () => ({ workspaceId: 'rw_2', subscriptions: [] }));
+    const relayfile = createRelayfileMock([], { listWebhookSubscriptions: listMock });
+    const { program } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    // The sweep never list-matched the unpinned attempt (the only list calls
+    // are the pre-pin lookups), and the record is retained.
+    expect(journal.entries().some((e) => e.kind === 'subscribe-attempt' && e.owner === undefined)).toBe(true);
+  });
+
+  it('passes the journaled workspace pin into the cloud create itself', async () => {
+    const relayfile = createRelayfileMock([], {
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: WRITEBACK_URL,
+        secret: 's3cr3t',
+        workspaceId: 'rw_pinned',
+      })),
+    });
+    const { program, exit } = harness({ relayfile });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    // The create is pinned to the SAME workspace journaled in the attempt, so
+    // a workspace switch between writeback resolution and the POST cannot
+    // strand the subscription outside the recorded pin.
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({ workspace: 'rw_pinned' })
+    );
+    // The live binding persists the pin for later pinned cleanup.
+    await expect(relayfile.listBindings()).resolves.toEqual([
+      expect.objectContaining({ webhookSubscriptionWorkspaceId: 'rw_pinned' }),
+    ]);
+  });
+
+  it('retains an attempt when the list echo does not exactly match its pin', async () => {
+    const deadAttempt = attemptEntry({ relayfileWorkspaceId: 'rw_pin' });
+    const journal = memoryJournal([deadAttempt]);
+    // Daemon answers without echoing the workspace — fail closed, retain.
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: undefined, subscriptions: [] })),
+      resolveWritebackBinding: vi.fn(async () => ({
+        url: WRITEBACK_URL,
+        secret: 's3cr3t',
+        workspaceId: 'rw_pin',
+      })),
+    });
+    const { program } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' }).catch(() => undefined);
+
+    expect(journal.entries().some((e) => e.kind === 'subscribe-attempt' && e.owner === undefined)).toBe(true);
+    expect(relayfile.deleteWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('pins the workspace before the cloud create and aborts when it cannot (fail closed)', async () => {
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: undefined, subscriptions: [] })),
+    });
+    const { program, relay, error, exit } = harness({ relayfile });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('active relayfile workspace'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('pins recorded cloud entries to their workspace and converges 404 only when pinned', async () => {
+    const pinned: PendingCleanupEntry = {
+      kind: 'relayfile-webhook-subscription',
+      scope: RELAYFILE_SCOPE,
+      id: 'whsub_pinned',
+      relayfileWorkspaceId: 'rw_old',
+    };
+    const unpinned: PendingCleanupEntry = {
+      kind: 'relayfile-webhook-subscription',
+      scope: RELAYFILE_SCOPE,
+      id: 'whsub_unpinned',
+    };
+    const journal = memoryJournal([pinned, unpinned]);
+    const relayfile = createRelayfileMock([], {
+      deleteWebhookSubscription: vi.fn(async () => {
+        throw new RelayfileControlPlaneError('BINDING_NOT_FOUND', 'gone', 404);
+      }),
+    });
+    const { program, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    // The pinned delete carried its workspace and its 404 converged...
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_pinned', 'rw_old');
+    expect(journal.entries().some((e) => e.id === 'whsub_pinned')).toBe(false);
+    // ...the unpinned 404 might just be the wrong active workspace: retained.
+    expect(journal.entries().some((e) => e.id === 'whsub_unpinned')).toBe(true);
   });
 
   it('recovers a crash-after-create orphan via list-match, sparing active-binding ids', async () => {
@@ -489,24 +795,27 @@ describe('integration subscribe', () => {
       subscriptionId: 'sub_other',
       webhookSubscriptionId: 'whsub_active',
     };
-    const journal = memoryJournal([intentEntry()]);
+    const journal = memoryJournal([attemptEntry({ relayfileWorkspaceId: 'rw_1' })]);
     const relayfile = createRelayfileMock([activeBinding], {
-      listWebhookSubscriptions: vi.fn(async () => [
-        { subscriptionId: 'whsub_orphan', url: INBOUND_URL, pathGlobs: [RESOURCE] },
-        { subscriptionId: 'whsub_active', url: INBOUND_URL, pathGlobs: [RESOURCE] },
-        { subscriptionId: 'whsub_other_url', url: 'https://cast.test/other', pathGlobs: [RESOURCE] },
-      ]),
+      listWebhookSubscriptions: vi.fn(async () => ({
+        workspaceId: 'rw_1',
+        subscriptions: [
+          { subscriptionId: 'whsub_orphan', url: INBOUND_URL, pathGlobs: [RESOURCE] },
+          { subscriptionId: 'whsub_active', url: INBOUND_URL, pathGlobs: [RESOURCE] },
+          { subscriptionId: 'whsub_other_url', url: 'https://cast.test/other', pathGlobs: [RESOURCE] },
+        ],
+      })),
     });
     const { program, relayfile: bridge, exit } = harness({ relayfile, journal });
 
     await program.parseAsync(ARGS(), { from: 'user' });
 
     expect(exit).not.toHaveBeenCalled();
-    // Only the unreferenced, key-matching orphan is deleted...
-    expect(bridge.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_orphan');
-    expect(bridge.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_active');
-    expect(bridge.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_other_url');
-    // ...the intent is cleared, and the new subscribe proceeded normally.
+    // Only the unreferenced, key-matching orphan is deleted (pinned to rw_1)...
+    expect(bridge.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_orphan', 'rw_1');
+    expect(bridge.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_active', 'rw_1');
+    expect(bridge.deleteWebhookSubscription).not.toHaveBeenCalledWith('whsub_other_url', 'rw_1');
+    // ...the attempt is cleared, and the new subscribe proceeded normally.
     expect(journal.entries()).toEqual([]);
     expect(bridge.createWebhookSubscription).toHaveBeenCalled();
   });
@@ -657,11 +966,98 @@ describe('integration subscribe', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('bind failed'));
     expect(exit).toHaveBeenCalledWith(1);
     expect(error.mock.calls.some((c) => String(c[0]).includes('relay inbound webhook'))).toBe(true);
-    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1');
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1', undefined);
   });
 });
 
 describe('integration unsubscribe', () => {
+  it('aborts unsubscribe before deletes/unbind while a live subscribe holds the lease (P1)', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+    };
+    const liveSubscribe = attemptEntry({
+      owner: { pid: process.pid, host: os.hostname(), attemptId: 'live-subscribe' },
+    });
+    const journal = memoryJournal([liveSubscribe]);
+    const relayfile = createRelayfileMock([binding]);
+    const { program, relay, error, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('in progress'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.delete).not.toHaveBeenCalled();
+    expect(relayfile.deleteWebhookSubscription).not.toHaveBeenCalled();
+    expect(relayfile.unbind).not.toHaveBeenCalled();
+    // The live subscribe's lease is untouched.
+    expect(journal.entries()).toEqual([liveSubscribe]);
+  });
+
+  it('aborts subscribe before creates while a live unsubscribe holds the lease (P1)', async () => {
+    const liveUnsubscribe: PendingCleanupEntry = {
+      kind: 'subscribe-attempt',
+      operation: 'unsubscribe',
+      scope: RELAYFILE_SCOPE,
+      provider: 'slack',
+      resource: RESOURCE,
+      owner: { pid: process.pid, host: os.hostname(), attemptId: 'live-unsubscribe' },
+    };
+    const journal = memoryJournal([liveUnsubscribe]);
+    const relayfile = createRelayfileMock();
+    const { program, relay, error, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('in progress'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    expect(journal.entries()).toEqual([liveUnsubscribe]);
+  });
+
+  it('releases the unsubscribe reservation when aborting on a record failure, keeping the binding', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+      webhookSubscriptionId: 'whsub_1',
+    };
+    const journal = memoryJournal();
+    let updates = 0;
+    journal.update.mockImplementation(async (mutate) => {
+      updates += 1;
+      // 1st write = reservation, 2nd = failure record (fails), later =
+      // release (succeeds).
+      if (updates === 2) throw new Error('disk full');
+      await memoryJournalApply(journal, mutate);
+    });
+    const relayfile = createRelayfileMock([binding], {
+      deleteWebhookSubscription: vi.fn(async () => {
+        throw new Error('cloud outage');
+      }),
+    });
+    const { program, error, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('binding was left in place'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(relayfile.unbind).not.toHaveBeenCalled();
+    // The reservation is released even on the abort path — a wedged lease
+    // would block every later lifecycle until this pid exits.
+    expect(journal.entries()).toEqual([]);
+  });
+
   it('removes the persisted relayfile-cloud subscription before unbinding', async () => {
     const binding: RelayfileBinding = {
       provider: 'slack',
@@ -680,7 +1076,7 @@ describe('integration unsubscribe', () => {
 
     expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
     expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('sub_1');
-    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1');
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1', undefined);
     expect(relayfile.deleteWebhookSubscription.mock.invocationCallOrder[0]!).toBeLessThan(
       relayfile.unbind.mock.invocationCallOrder[0]!
     );
@@ -729,7 +1125,14 @@ describe('integration unsubscribe', () => {
       webhookSubscriptionId: 'whsub_current',
     };
     const journal = memoryJournal();
-    journal.update.mockRejectedValue(new Error('disk full'));
+    // The lifecycle reservation (first write) lands; the failure-record write
+    // later is what fails.
+    let updates = 0;
+    journal.update.mockImplementation(async (mutate) => {
+      updates += 1;
+      if (updates > 1) throw new Error('disk full');
+      await memoryJournalApply(journal, mutate);
+    });
     const relayfile = createRelayfileMock([binding], {
       deleteWebhookSubscription: vi.fn(async () => {
         throw new Error('temporary relayfile-cloud outage');
@@ -758,7 +1161,12 @@ describe('integration unsubscribe', () => {
       subscriptionId: 'sub_1',
     };
     const journal = memoryJournal();
-    journal.update.mockRejectedValue(new Error('disk full'));
+    let updates = 0;
+    journal.update.mockImplementation(async (mutate) => {
+      updates += 1;
+      if (updates > 1) throw new Error('disk full');
+      await memoryJournalApply(journal, mutate);
+    });
     const relay = createRelayMock();
     relay.webhooks.delete.mockRejectedValue(new Error('relay unreachable'));
     const relayfile = createRelayfileMock([binding]);
@@ -771,6 +1179,65 @@ describe('integration unsubscribe', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('binding was left in place'));
     expect(exit).toHaveBeenCalledWith(1);
     expect(relayfile.unbind).not.toHaveBeenCalled();
+  });
+
+  it('pins the unsubscribe delete to the binding workspace across a workspace switch', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+      webhookSubscriptionId: 'whsub_old_ws',
+      webhookSubscriptionWorkspaceId: 'rw_old',
+    };
+    const relayfile = createRelayfileMock([binding], {
+      deleteWebhookSubscription: vi.fn(async (_id: string, workspace?: string) => {
+        // The daemon's ACTIVE workspace has switched to rw_new; only a
+        // pinned delete reaches the right workspace.
+        if (workspace !== 'rw_old') {
+          throw new RelayfileControlPlaneError('BINDING_NOT_FOUND', 'not found', 404);
+        }
+      }),
+    });
+    const { program, exit } = harness({ relayfile });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_old_ws', 'rw_old');
+    expect(relayfile.unbind).toHaveBeenCalledWith('slack', RESOURCE);
+  });
+
+  it('records an unpinned 404 unsubscribe delete instead of discarding it', async () => {
+    // Legacy binding without a workspace pin: a 404 might just be the wrong
+    // active workspace, so the id must be recorded before unbind discards it.
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+      webhookSubscriptionId: 'whsub_legacy',
+    };
+    const relayfile = createRelayfileMock([binding], {
+      deleteWebhookSubscription: vi.fn(async () => {
+        throw new RelayfileControlPlaneError('BINDING_NOT_FOUND', 'not found', 404);
+      }),
+    });
+    const { program, journal, exit } = harness({ relayfile });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], {
+      from: 'user',
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.unbind).toHaveBeenCalled();
+    expect(journal.entries()).toEqual([
+      { kind: 'relayfile-webhook-subscription', scope: RELAYFILE_SCOPE, id: 'whsub_legacy' },
+    ]);
   });
 
   it('treats a relay-side 404 during unsubscribe as already-clean and completes', async () => {
