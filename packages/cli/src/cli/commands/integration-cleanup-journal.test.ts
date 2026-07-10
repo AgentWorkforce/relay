@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,6 +25,8 @@ const INTENT: PendingCleanupEntry = {
   relayScope: 'relay:abcd',
 };
 
+const require = createRequire(import.meta.url);
+
 function tmpJournalDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-journal-'));
 }
@@ -40,8 +43,15 @@ describe('fileCleanupJournal', () => {
     if (process.platform !== 'win32') {
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     }
-    // No temp/lock residue after a completed update.
-    expect(fs.readdirSync(dir)).toEqual(['pending-cleanups.json']);
+    // No temp residue after a completed update; the STABLE lock file remains
+    // by design (never unlinked or renamed) with restrictive mode and the v2
+    // format marker.
+    const lock = path.join(dir, 'pending-cleanups.json.lock');
+    expect(fs.readdirSync(dir).sort()).toEqual(['pending-cleanups.json', 'pending-cleanups.json.lock']);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(lock).mode & 0o777).toBe(0o600);
+    }
+    expect(fs.readFileSync(lock, 'utf8')).toBe('agent-relay-cleanup-lock v2\n');
 
     await journal.update((entries) => entries.filter((e) => e.kind !== 'relayfile-webhook-subscription'));
     await expect(journal.list()).resolves.toEqual([INTENT]);
@@ -113,52 +123,111 @@ describe('fileCleanupJournal', () => {
     }
   });
 
-  it('never breaks an abandoned lock automatically — even a dead same-host owner fails closed', async () => {
-    // Automatic stale takeover was removed: a stat->read->unlink dance is a
-    // TOCTOU that can break a LIVE lock. Manual remediation is the contract.
+  it('serializes same-process contenders on separate descriptors', async () => {
+    const dir = tmpJournalDir();
+    const journal = fileCleanupJournal(dir);
+    // flock excludes between open file descriptions, so concurrent in-process
+    // updates on separate fds must serialize, not interleave.
+    let inside = 0;
+    let maxInside = 0;
+    await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        journal.update((entries) => {
+          inside += 1;
+          maxInside = Math.max(maxInside, inside);
+          const next = [...entries, { ...CONCRETE, id: `whsub_serial_${i}` }];
+          inside -= 1;
+          return next;
+        })
+      )
+    );
+    expect(maxInside).toBe(1);
+    await expect(journal.list()).resolves.toHaveLength(6);
+  });
+
+  it('waits for a lock held by ANOTHER PROCESS, then proceeds (kernel contention)', async () => {
     const dir = tmpJournalDir();
     const lock = path.join(dir, 'pending-cleanups.json.lock');
-    const deadPid = spawnSync(process.execPath, ['-e', ''], { stdio: 'ignore' }).pid;
-    fs.writeFileSync(lock, JSON.stringify({ pid: deadPid, host: os.hostname() }));
-    const past = new Date(Date.now() - 60_000);
-    fs.utimesSync(lock, past, past);
+    const addon = require.resolve('fs-ext-extra-prebuilt');
+    // The child takes the exclusive kernel lock, signals, holds ~700ms, then
+    // releases by exiting normally.
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const { flockSync } = require(process.env.ADDON); const fs = require('fs');
+         const fd = fs.openSync(process.env.LOCK, 'a+');
+         fs.writeSync(fd, 'agent-relay-cleanup-lock v2\\n', 0);
+         flockSync(fd, 'ex');
+         console.log('held');
+         setTimeout(() => process.exit(0), 700);`,
+      ],
+      { env: { ...process.env, ADDON: addon, LOCK: lock }, stdio: ['ignore', 'pipe', 'inherit'] }
+    );
+    await new Promise<void>((resolve, reject) => {
+      child.stdout!.on('data', (d) => String(d).includes('held') && resolve());
+      child.on('exit', (code) => reject(new Error(`child exited early: ${code}`)));
+      setTimeout(() => reject(new Error('child never took the lock')), 5_000);
+    });
+
+    const journal = fileCleanupJournal(dir);
+    const started = Date.now();
+    await journal.update(() => [CONCRETE]);
+    // The update had to out-wait the live holder.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(400);
+    await expect(journal.list()).resolves.toEqual([CONCRETE]);
+  }, 20_000);
+
+  it('recovers immediately when the holding process DIES without unlocking (crash release)', async () => {
+    const dir = tmpJournalDir();
+    const lock = path.join(dir, 'pending-cleanups.json.lock');
+    const addon = require.resolve('fs-ext-extra-prebuilt');
+    // The child takes the lock and hard-aborts WITHOUT flock('un') — the
+    // kernel must release the lock with the process, unattended.
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const { flockSync } = require(process.env.ADDON); const fs = require('fs');
+         const fd = fs.openSync(process.env.LOCK, 'a+');
+         fs.writeSync(fd, 'agent-relay-cleanup-lock v2\\n', 0);
+         flockSync(fd, 'ex');
+         console.log('held');
+         process.abort();`,
+      ],
+      { env: { ...process.env, ADDON: addon, LOCK: lock }, stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+    await new Promise<void>((resolve) => {
+      child.stdout!.on('data', (d) => String(d).includes('held') && resolve());
+    });
+    await new Promise<void>((resolve) => child.on('exit', () => resolve()));
+
+    const journal = fileCleanupJournal(dir);
+    await journal.update(() => [CONCRETE]);
+    await expect(journal.list()).resolves.toEqual([CONCRETE]);
+    expect(fs.existsSync(lock)).toBe(true); // stable file, never removed
+  }, 20_000);
+
+  it('fails closed on an unrecognized pre-release lock sentinel', async () => {
+    const dir = tmpJournalDir();
+    const lock = path.join(dir, 'pending-cleanups.json.lock');
+    const sentinel = JSON.stringify({ pid: 1234, host: 'old-host' });
+    fs.writeFileSync(lock, sentinel);
 
     const journal = fileCleanupJournal(dir);
     await expect(journal.update(() => [CONCRETE])).rejects.toMatchObject({ code: 'locked' });
-    // The abandoned lock is preserved for the operator to inspect/remove.
-    expect(fs.existsSync(lock)).toBe(true);
-  }, 15_000);
+    // The sentinel is preserved for inspection, not adopted or overwritten.
+    expect(fs.readFileSync(lock, 'utf8')).toBe(sentinel);
+  });
 
-  it('fails closed on a stale lock held by a live owner', async () => {
+  it('heals a crash-truncated v2 marker (strict prefix) and proceeds', async () => {
     const dir = tmpJournalDir();
     const lock = path.join(dir, 'pending-cleanups.json.lock');
-    // This test process itself is the provably-alive owner.
-    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname() }));
-    const past = new Date(Date.now() - 60_000);
-    fs.utimesSync(lock, past, past);
+    fs.writeFileSync(lock, 'agent-relay-cleanup');
 
     const journal = fileCleanupJournal(dir);
-    await expect(journal.update(() => [CONCRETE])).rejects.toMatchObject({ code: 'locked' });
-    // The foreign lock is never removed.
-    expect(fs.existsSync(lock)).toBe(true);
-  }, 15_000);
-
-  it('fails closed on a stale lock from another host or with unreadable contents', async () => {
-    for (const contents of [JSON.stringify({ pid: 1, host: 'some-other-host' }), 'garbage']) {
-      const dir = tmpJournalDir();
-      const lock = path.join(dir, 'pending-cleanups.json.lock');
-      fs.writeFileSync(lock, contents);
-      const past = new Date(Date.now() - 60_000);
-      fs.utimesSync(lock, past, past);
-
-      const journal = fileCleanupJournal(dir);
-      await expect(
-        journal.update(() => [CONCRETE]),
-        contents
-      ).rejects.toMatchObject({
-        code: 'locked',
-      });
-      expect(fs.existsSync(lock)).toBe(true);
-    }
-  }, 30_000);
+    await journal.update(() => [CONCRETE]);
+    await expect(journal.list()).resolves.toEqual([CONCRETE]);
+    expect(fs.readFileSync(lock, 'utf8')).toBe('agent-relay-cleanup-lock v2\n');
+  });
 });

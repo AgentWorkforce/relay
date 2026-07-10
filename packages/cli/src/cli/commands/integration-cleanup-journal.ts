@@ -1,6 +1,6 @@
-import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { flockSync } from 'fs-ext-extra-prebuilt';
 import { getProjectPaths } from '@agent-relay/config';
 
 /**
@@ -144,6 +144,9 @@ export function cleanupEntryKey(entry: PendingCleanupEntry): string {
 
 const LOCK_RETRY_MS = 100;
 const LOCK_TIMEOUT_MS = 5_000;
+/** Contents of a v2 stable lock file. Anything else is an unrecognized
+ * (pre-release) sentinel and fails closed. */
+const LOCK_MARKER = 'agent-relay-cleanup-lock v2\n';
 
 const CONCRETE_KINDS: ReadonlySet<string> = new Set([
   'relayfile-webhook-subscription',
@@ -232,45 +235,108 @@ function parseEntries(raw: string, file: string): PendingCleanupEntry[] {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Take the exclusive journal lock. O_CREAT|O_EXCL ('wx') is atomic on every
- * platform Node supports. There is NO automatic stale-lock takeover: any
- * stat->read->unlink "proven dead owner" dance is a TOCTOU (the owner can be
- * replaced between the check and the unlink, silently breaking a live lock).
- * A lock abandoned by a crashed process therefore fails closed — the timeout
- * error names the file for explicit manual remediation. The lock is held only
- * for the milliseconds of one read-modify-write, so an abandoned lockfile is
- * rare and strictly an availability (never a correctness) issue.
+ * Take the exclusive journal lock via a KERNEL advisory lock on a stable lock
+ * file: flock(2) on Unix, LockFileEx on Windows (through the
+ * fs-ext-extra-prebuilt addon). The lock file is created once and NEVER
+ * unlinked or renamed — mutual exclusion lives on the open file description,
+ * and the OS releases it automatically when the holding process exits or
+ * dies. That eliminates every failure mode of path-based locking at once: no
+ * pid/liveness probes, no mtime/age heuristics, no takeover races, and a
+ * crash mid-update can never wedge unattended recovery.
+ *
+ * The file's CONTENT is a version marker only. A leftover file whose content
+ * is not the v2 marker is an unrecognized (pre-release) sentinel and fails
+ * closed rather than being treated as a v2 lock.
  */
 async function acquireLock(lockFile: string): Promise<() => void> {
+  let fd: number;
+  try {
+    fd = fs.openSync(lockFile, 'a+', 0o600);
+  } catch (err) {
+    throw new CleanupJournalError(
+      'io',
+      `Could not open the pending-cleanup journal lock at ${lockFile}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  const close = () => {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // already closed
+    }
+  };
+
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
     try {
-      const fd = fs.openSync(lockFile, 'wx', 0o600);
-      fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname() }));
-      fs.closeSync(fd);
-      return () => {
-        try {
-          fs.unlinkSync(lockFile);
-        } catch {
-          // already gone — nothing to release
-        }
-      };
+      flockSync(fd, 'exnb');
+      break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EAGAIN' && code !== 'EWOULDBLOCK' && code !== 'EBUSY') {
+        close();
         throw new CleanupJournalError(
           'io',
-          `Could not create the pending-cleanup journal lock at ${lockFile}: ${err instanceof Error ? err.message : String(err)}`
+          `Could not lock the pending-cleanup journal at ${lockFile}: ${err instanceof Error ? err.message : String(err)}`
         );
       }
+      if (Date.now() >= deadline) {
+        close();
+        throw new CleanupJournalError(
+          'locked',
+          `Timed out waiting for the pending-cleanup journal lock at ${lockFile}: another agent-relay process holds it. The kernel releases it automatically when that process exits; retry afterwards.`
+        );
+      }
+      await sleep(LOCK_RETRY_MS);
     }
-    if (Date.now() >= deadline) {
-      throw new CleanupJournalError(
-        'locked',
-        `Timed out waiting for the pending-cleanup journal lock at ${lockFile}. Another agent-relay process may be running; if none is (e.g. a previous run crashed while holding it), remove the lockfile manually and retry.`
-      );
-    }
-    await sleep(LOCK_RETRY_MS);
   }
+
+  const release = () => {
+    try {
+      flockSync(fd, 'un');
+    } catch {
+      // closing the descriptor below releases the kernel lock regardless
+    }
+    close();
+  };
+
+  // Under the lock: stamp a fresh file with the v2 marker; fail closed on any
+  // unrecognized content (e.g. a pre-release JSON sentinel) instead of
+  // silently adopting it as a v2 lock.
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) {
+      fs.writeSync(fd, LOCK_MARKER, 0);
+      fs.fsyncSync(fd); // durable format marker
+    } else {
+      const buffer = Buffer.alloc(Math.min(size, 256));
+      fs.readSync(fd, buffer, 0, buffer.length, 0);
+      const content = buffer.toString('utf8');
+      const recognized = LOCK_MARKER.startsWith(content) || content === LOCK_MARKER;
+      if (!recognized) {
+        release();
+        throw new CleanupJournalError(
+          'locked',
+          `The pending-cleanup journal lock at ${lockFile} contains an unrecognized sentinel from an older format. Nothing was swept or overwritten; inspect and remove the file to continue.`
+        );
+      }
+      if (content !== LOCK_MARKER) {
+        // Heal a crash-truncated v2 marker (strict prefix); anything else
+        // already failed closed above.
+        fs.writeSync(fd, LOCK_MARKER, 0);
+        fs.fsyncSync(fd);
+      }
+    }
+  } catch (err) {
+    if (err instanceof CleanupJournalError) throw err;
+    release();
+    throw new CleanupJournalError(
+      'io',
+      `Could not validate the pending-cleanup journal lock at ${lockFile}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  return release;
 }
 
 /** File-backed CleanupJournal in the project data dir. Paths resolve per call.
