@@ -90,15 +90,34 @@ const deadline = Date.now() + timeoutMs;
     process.exit(1);
   }
   process.stdout.write('locked\\n');
+  const crypto = require('crypto');
   const chunks = [];
   process.stdin.on('data', (c) => chunks.push(c));
   process.stdin.on('end', () => {
-    const payload = Buffer.concat(chunks);
-    if (payload.length > 0) {
-      const tmp = journal + '.tmp-' + process.pid;
-      fs.writeFileSync(tmp, payload, { mode: 0o600 });
-      fs.renameSync(tmp, journal);
+    const input = Buffer.concat(chunks);
+    if (input.length === 0) process.exit(0);
+    const MAGIC = Buffer.from('ARJL1\\n');
+    if (!input.subarray(0, MAGIC.length).equals(MAGIC)) {
+      console.error('frame');
+      process.exit(5);
     }
+    const rest = input.subarray(MAGIC.length);
+    const lengthEnd = rest.indexOf(10);
+    const declared = parseInt(rest.subarray(0, lengthEnd).toString('utf8'), 10);
+    const afterLength = rest.subarray(lengthEnd + 1);
+    const digestEnd = afterLength.indexOf(10);
+    const declaredDigest = afterLength.subarray(0, digestEnd).toString('utf8');
+    const payload = afterLength.subarray(digestEnd + 1);
+    if (
+      payload.length !== declared ||
+      crypto.createHash('sha256').update(payload).digest('hex') !== declaredDigest
+    ) {
+      console.error('frame');
+      process.exit(5);
+    }
+    const tmp = journal + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    fs.renameSync(tmp, journal);
     process.exit(0);
   });
 })();
@@ -375,13 +394,36 @@ describe('fileCleanupJournal', () => {
        process.stdout.write('loc');
        setTimeout(() => {
          process.stdout.write('ked\\n');
-         const chunks = [];
-         process.stdin.on('data', (c) => chunks.push(c));
-         process.stdin.on('end', () => {
-           const payload = Buffer.concat(chunks);
-           if (payload.length > 0) fs.writeFileSync(journal, payload);
-           process.exit(0);
-         });
+         const crypto = require('crypto');
+  const chunks = [];
+  process.stdin.on('data', (c) => chunks.push(c));
+  process.stdin.on('end', () => {
+    const input = Buffer.concat(chunks);
+    if (input.length === 0) process.exit(0);
+    const MAGIC = Buffer.from('ARJL1\\n');
+    if (!input.subarray(0, MAGIC.length).equals(MAGIC)) {
+      console.error('frame');
+      process.exit(5);
+    }
+    const rest = input.subarray(MAGIC.length);
+    const lengthEnd = rest.indexOf(10);
+    const declared = parseInt(rest.subarray(0, lengthEnd).toString('utf8'), 10);
+    const afterLength = rest.subarray(lengthEnd + 1);
+    const digestEnd = afterLength.indexOf(10);
+    const declaredDigest = afterLength.subarray(0, digestEnd).toString('utf8');
+    const payload = afterLength.subarray(digestEnd + 1);
+    if (
+      payload.length !== declared ||
+      crypto.createHash('sha256').update(payload).digest('hex') !== declaredDigest
+    ) {
+      console.error('frame');
+      process.exit(5);
+    }
+    const tmp = journal + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    fs.renameSync(tmp, journal);
+    process.exit(0);
+  });
        }, 50);`
     );
     try {
@@ -460,6 +502,36 @@ describe('fileCleanupJournal', () => {
     } finally {
       restore();
     }
+  });
+
+  it('rejects a partial frame at EOF, keeping the journal intact (fake-helper path)', async () => {
+    // Broad Node CI runs against the scripted fake, which must mirror the
+    // framed validation exactly or it would mask the truncation P0 that the
+    // Rust integration test (journal_lock_cli.rs) proves against the real
+    // helper in the mandatory Rust job.
+    const dir = tmpJournalDir();
+    const journalPath = path.join(dir, 'pending-cleanups.json');
+    fs.writeFileSync(journalPath, '["original"]\n');
+    const lockPath = path.join(dir, 'pending-cleanups.json.lock');
+    const helper = process.env.BROKER_BINARY_PATH!;
+    const { spawn: spawnChild } = await import('node:child_process');
+    const { createHash } = await import('node:crypto');
+    const body = Buffer.from('["replacement"]\n', 'utf8');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const framed = Buffer.concat([Buffer.from(`ARJL1\n${body.byteLength}\n${digest}\n`, 'utf8'), body]);
+    const child = spawnChild(
+      helper,
+      ['journal-lock', '--file', lockPath, '--journal-file', journalPath, '--timeout-ms', '5000'],
+      { stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    await new Promise<void>((resolve) => {
+      child.stdout!.on('data', (d) => String(d).includes('locked') && resolve());
+    });
+    // Proper frame prefix, only part of the declared body, then EOF.
+    child.stdin!.end(framed.subarray(0, framed.length - 8));
+    const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
+    expect(code).not.toBe(0);
+    expect(fs.readFileSync(journalPath, 'utf8')).toBe('["original"]\n');
   });
 
   it('releases without writing when the mutator throws (empty-payload abort)', async () => {

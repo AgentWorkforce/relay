@@ -18,13 +18,17 @@
 //!   renamed. Its content is a version marker only.
 //! - On acquisition the helper prints the exact framed line `locked\n` to
 //!   stdout, then reads stdin to EOF (errors propagated):
-//!     - EMPTY payload: the parent aborted — release without touching the
+//!     - EMPTY input: the parent aborted — release without touching the
 //!       journal, exit 0.
-//!     - NONEMPTY payload: the complete serialized journal contents; the
-//!       helper writes them durably — temp file (0600) + fsync + atomic
-//!       rename over the journal + parent-directory fsync — then exits 0.
-//!   A failed run therefore always leaves the journal byte-for-byte
-//!   unmodified.
+//!     - Otherwise the input must be ONE complete framed envelope:
+//!       `ARJL1\n<payload-byte-length>\n<sha256-hex-of-payload>\n<payload>`
+//!       with no trailing bytes. Only after the exact length AND digest
+//!       validate is the payload committed — temp file (0600) + fsync +
+//!       atomic rename over the journal + parent-directory fsync — then
+//!       exit 0. A parent dying mid-write yields a partial frame + clean
+//!       EOF; that (or any malformed/trailing frame) exits 5 with the
+//!       journal byte-for-byte untouched, so a truncated payload can
+//!       NEVER replace good contents.
 //! - Exit 4 (+ `timeout` on stderr): another live holder out-waited us.
 //! - Exit 3 (+ `sentinel` on stderr): the file holds unrecognized content
 //!   from an older format; it is preserved untouched (fail closed).
@@ -50,6 +54,10 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 // the CLI can detect version skew distinctly).
 pub(crate) const EXIT_SENTINEL: i32 = 3;
 pub(crate) const EXIT_TIMEOUT: i32 = 4;
+pub(crate) const EXIT_FRAME: i32 = 5;
+
+/// Frame magic + version. Bump on any envelope change.
+const FRAME_MAGIC: &[u8] = b"ARJL1\n";
 
 #[derive(Debug, clap::Args, Clone)]
 pub(crate) struct JournalLockCommand {
@@ -101,18 +109,66 @@ pub(crate) fn run_journal_lock(cmd: JournalLockCommand) -> Result<()> {
     std::io::stdout().flush().context("flush lock handshake")?;
 
     // The parent reads/mutates under OUR held lock, then hands back the
-    // complete serialized journal on stdin. EOF with no bytes = abort. Any
-    // read error is propagated — a torn payload must never be committed.
-    let mut payload = Vec::new();
+    // complete serialized journal as a framed envelope on stdin. EOF with no
+    // bytes = abort. Any read error is propagated, and a frame that fails
+    // validation (torn write, digest mismatch, trailing bytes) must never be
+    // committed.
+    let mut input = Vec::new();
     std::io::stdin()
         .lock()
-        .read_to_end(&mut payload)
-        .context("read journal payload from parent")?;
-    if !payload.is_empty() {
-        replace_journal(&cmd.journal_file, &payload)?;
+        .read_to_end(&mut input)
+        .context("read journal frame from parent")?;
+    match parse_frame(&input) {
+        Ok(None) => {}
+        Ok(Some(payload)) => replace_journal(&cmd.journal_file, payload)?,
+        Err(reason) => {
+            eprintln!("frame: {reason}");
+            std::process::exit(EXIT_FRAME);
+        }
     }
     drop(file); // explicit unlock+close before a clean exit
     Ok(())
+}
+
+/// Validate one framed envelope. `Ok(None)` = empty input (abort);
+/// `Ok(Some(payload))` = exact-length, digest-verified payload; `Err` = any
+/// short/malformed/trailing frame.
+fn parse_frame(input: &[u8]) -> std::result::Result<Option<&[u8]>, String> {
+    use sha2::{Digest, Sha256};
+
+    if input.is_empty() {
+        return Ok(None);
+    }
+    let rest = input
+        .strip_prefix(FRAME_MAGIC)
+        .ok_or_else(|| "bad magic".to_string())?;
+    let length_end = rest
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or_else(|| "missing length".to_string())?;
+    let declared: usize = std::str::from_utf8(&rest[..length_end])
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| "bad length".to_string())?;
+    let rest = &rest[length_end + 1..];
+    let digest_end = rest
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or_else(|| "missing digest".to_string())?;
+    let declared_digest =
+        std::str::from_utf8(&rest[..digest_end]).map_err(|_| "bad digest".to_string())?;
+    let payload = &rest[digest_end + 1..];
+    if payload.len() != declared {
+        return Err(format!(
+            "length mismatch: declared {declared}, received {}",
+            payload.len()
+        ));
+    }
+    let actual_digest = format!("{:x}", Sha256::digest(payload));
+    if actual_digest != declared_digest {
+        return Err("digest mismatch".to_string());
+    }
+    Ok(Some(payload))
 }
 
 /// Durable atomic replacement performed UNDER the held lock: temp file
@@ -262,6 +318,35 @@ mod tests {
             b"{\"pid\":123,\"host\":\"old\"}"
         );
     }
+    #[test]
+    fn parse_frame_validates_length_digest_and_framing() {
+        use sha2::{Digest, Sha256};
+        let payload = b"[{\"kind\":\"relay-webhook\"}]\n";
+        let digest = format!("{:x}", Sha256::digest(payload));
+        let mut frame = Vec::new();
+        frame.extend_from_slice(FRAME_MAGIC);
+        frame.extend_from_slice(format!("{}\n{}\n", payload.len(), digest).as_bytes());
+        frame.extend_from_slice(payload);
+
+        // Valid frame round-trips; empty input aborts.
+        assert_eq!(parse_frame(&frame).unwrap(), Some(payload.as_slice()));
+        assert_eq!(parse_frame(b"").unwrap(), None);
+
+        // Truncated body (parent died mid-write): rejected.
+        assert!(parse_frame(&frame[..frame.len() - 5]).is_err());
+        // Trailing bytes: rejected.
+        let mut trailing = frame.clone();
+        trailing.extend_from_slice(b"x");
+        assert!(parse_frame(&trailing).is_err());
+        // Corrupted payload byte (digest mismatch): rejected.
+        let mut corrupted = frame.clone();
+        let last = corrupted.len() - 1;
+        corrupted[last] ^= 0x01;
+        assert!(parse_frame(&corrupted).is_err());
+        // Wrong magic: rejected.
+        assert!(parse_frame(b"NOPE\n1\nabc\nz").is_err());
+    }
+
     #[test]
     fn replace_journal_is_atomic_and_leaves_no_temp_residue() {
         let dir = temp_dir("replace");

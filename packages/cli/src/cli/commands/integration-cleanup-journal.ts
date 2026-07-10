@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getProjectPaths } from '@agent-relay/config';
@@ -372,7 +373,7 @@ async function beginJournalTransaction(lockFile: string, journalFile: string): P
     });
   });
 
-  const finish = async (payload: string | undefined, failure: string): Promise<void> => {
+  const finish = async (payload: Buffer | undefined, failure: string): Promise<void> => {
     const committing = payload !== undefined;
     if (exited) {
       if (committing) {
@@ -418,8 +419,15 @@ async function beginJournalTransaction(lockFile: string, journalFile: string): P
       await finish(undefined, '');
     },
     async commit(payload: string) {
+      // Framed envelope: magic/version + declared byte length + SHA-256 of
+      // the payload. The helper commits ONLY after both validate exactly, so
+      // a parent dying mid-write (partial bytes + clean EOF) can never
+      // replace good journal contents with a truncated payload.
+      const body = Buffer.from(payload, 'utf8');
+      const digest = createHash('sha256').update(body).digest('hex');
+      const framed = Buffer.concat([Buffer.from(`ARJL1\n${body.byteLength}\n${digest}\n`, 'utf8'), body]);
       await finish(
-        payload,
+        framed,
         `The journal-lock helper was lost before the pending-cleanup journal at ${journalFile} could be committed; the journal was left unmodified.`
       );
     },
