@@ -19,6 +19,7 @@ Negotiated Relaycast delivery cursors during agent registration, keyed broker cu
 ## Key Decisions
 
 ### Use a negotiated server-authoritative cursor handshake
+
 - **Chose:** Use a negotiated server-authoritative cursor handshake
 - **Reasoning:** Inferring a cursor from the first replay could skip a genuine gap, while broker-local persistence can become stale if the engine or identity changes. Relaycast returns delivery_ack_seq only after the broker advertises relay:delivery-cursor-v1; Relay keys it to agent_id and retains cursor+1 validation.
 
@@ -27,6 +28,7 @@ Negotiated Relaycast delivery cursors during agent registration, keyed broker cu
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use a negotiated server-authoritative cursor handshake: Use a negotiated server-authoritative cursor handshake
