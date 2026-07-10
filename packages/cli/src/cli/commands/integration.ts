@@ -758,6 +758,11 @@ function relayfileCleanupScope(): string {
  * alternative (pure pid probing) lets PID reuse wedge lifecycles FOREVER.
  */
 const OWNER_LEASE_MS = 15 * 60_000;
+/** Tolerated forward clock skew for heartbeats. A heartbeat further in the
+ * FUTURE than this is malformed or from a skewed clock and counts as
+ * expired — otherwise a finite future value (e.g. 9e15) would make its
+ * owner live forever and unbound the lease again. */
+const OWNER_HEARTBEAT_SKEW_MS = 2 * 60_000;
 
 /** A journal entry lease-owner is live ONLY while its bounded lease is
  * fresh AND (same host) its pid probes alive. The heartbeat bound is what
@@ -767,7 +772,9 @@ const OWNER_LEASE_MS = 15 * 60_000;
  * probe or a foreign host still fails closed. */
 function isOwnerLive(owner: PendingCleanupOwner | undefined): boolean {
   if (!owner) return false;
-  if (Date.now() - owner.heartbeatAt > OWNER_LEASE_MS) return false; // lease expired
+  const age = Date.now() - owner.heartbeatAt;
+  if (age > OWNER_LEASE_MS) return false; // lease expired
+  if (age < -OWNER_HEARTBEAT_SKEW_MS) return false; // future-dated beyond skew: bounded, not immortal
   if (owner.host !== hostname()) return true; // cannot prove death — fail closed within the lease
   try {
     process.kill(owner.pid, 0);

@@ -530,6 +530,32 @@ describe('integration subscribe', () => {
     expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
   });
 
+  it('recovers a lease whose heartbeat is FUTURE-dated beyond the skew bound (P1)', async () => {
+    // A finite-but-absurd future heartbeat (malformed value or badly skewed
+    // clock) must not make its owner immortal: beyond the documented skew it
+    // counts as expired even though the pid probes alive.
+    const futureAttempt = attemptEntry({
+      relayfileWorkspaceId: 'rw_1',
+      owner: {
+        pid: process.pid,
+        host: os.hostname(),
+        attemptId: 'future-heartbeat',
+        heartbeatAt: Date.now() + 9e15,
+      },
+    });
+    const journal = memoryJournal([futureAttempt]);
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: 'rw_1', subscriptions: [] })),
+    });
+    const { program, exit } = harness({ relayfile, journal });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalled();
+    expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
   it('aborts before any create while a live concurrent subscribe holds the reservation (P1)', async () => {
     // The lease-owner is this very process, which is provably alive — exactly
     // what a second CLI racing the same resource would observe.
