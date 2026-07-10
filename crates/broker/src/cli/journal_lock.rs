@@ -199,6 +199,26 @@ fn replace_journal(journal: &Path, payload: &[u8]) -> Result<()> {
     result
 }
 
+/// Open a directory handle for fsync. Windows requires
+/// FILE_FLAG_BACKUP_SEMANTICS to open a directory at all — std's plain
+/// File::open omits it and fails, which would otherwise turn EVERY commit's
+/// dir-fsync into an error there.
+fn open_dir(dir: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        return std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir);
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(dir)
+    }
+}
+
 /// Directory fsync makes the rename itself durable. The OPEN always
 /// propagates — a missing directory is a real failure on every platform.
 /// Only a SYNC failure on a successfully opened directory handle is
@@ -206,8 +226,8 @@ fn replace_journal(journal: &Path, payload: &[u8]) -> Result<()> {
 /// handles surfaces as a permission/handle error); the payload fsync has
 /// already run there. Every other I/O error propagates.
 fn sync_dir(dir: &Path) -> Result<()> {
-    let handle = std::fs::File::open(dir)
-        .with_context(|| format!("open journal directory {}", dir.display()))?;
+    let handle =
+        open_dir(dir).with_context(|| format!("open journal directory {}", dir.display()))?;
     match handle.sync_all() {
         Ok(()) => Ok(()),
         Err(err)
@@ -405,9 +425,12 @@ mod tests {
             "a missing directory must error everywhere; only a sync failure on \
              an OPENED Windows directory handle is tolerated"
         );
-        // And a real, existing directory syncs cleanly (or is tolerated on
-        // Windows).
+        // And a real, existing directory syncs cleanly on EVERY platform —
+        // on Windows this exercises the FILE_FLAG_BACKUP_SEMANTICS directory
+        // open (a plain File::open would fail there and break every commit)
+        // plus the narrow sync-failure tolerance.
         assert!(sync_dir(&temp_dir("syncdir-ok")).is_ok());
+        assert!(open_dir(&temp_dir("syncdir-ok")).is_ok());
     }
 
     #[test]
