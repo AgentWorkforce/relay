@@ -163,15 +163,19 @@ async function runFleetStatus(
 
   // Provider attachment (per-provider liveness) is owned by the engine now, not a
   // local status file; read this node's record from the nodes API.
-  let node: unknown = null;
+  let node: unknown;
   if (nodeName) {
     try {
       const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
       const nodes = await relay.nodes.list({ name: nodeName });
-      node = nodes[0] ?? null;
+      node = nodes[0] ?? { available: false, reason: `no node named "${nodeName}" in the workspace` };
     } catch (error) {
       node = { error: error instanceof Error ? error.message : String(error) };
     }
+  } else {
+    // A running broker that never reported a node name means the engine lookup
+    // was skipped — say so rather than looking fully checked.
+    node = { available: false, reason: 'broker did not report a node name' };
   }
 
   deps.log(JSON.stringify({ broker, node }, null, 2));

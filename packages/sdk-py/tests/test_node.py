@@ -131,6 +131,36 @@ def test_from_enrollment_picks_the_store_record_matching_relay_base_url(monkeypa
     assert node._http_base_url == "https://b.test"
 
 
+def test_from_enrollment_does_not_cross_engines_when_base_url_has_no_match(monkeypatch, tmp_path):
+    store = {
+        "version": 1,
+        "active": {"ws": "a"},
+        "nodes": {
+            "a": {
+                "nodeId": "node_a",
+                "nodeName": "a",
+                "nodeToken": "nt_a",
+                "relayWorkspaceId": "ws",
+                "relaycastUrl": "https://a.test",
+                "websocketUrl": "wss://a.test",
+                "enrolledAt": "2026-07-09T00:00:00Z",
+            }
+        },
+    }
+    (tmp_path / "fleet-enrollments.json").write_text(json.dumps(store))
+    monkeypatch.setenv("AGENT_RELAY_HOME", str(tmp_path))
+    monkeypatch.setenv("RELAY_BASE_URL", "https://other.test")
+    monkeypatch.setenv("RELAY_NODE_TOKEN", "nt_env")
+    monkeypatch.setenv("RELAY_NODE_ID", "node_env")
+
+    node = NodeProvider.from_enrollment()
+
+    # The store's record (a/nt_a) is for a different engine and must not be used.
+    assert node._node_token == "nt_env"
+    assert node._node_id == "node_env"
+    assert node._http_base_url == "https://other.test"
+
+
 def test_from_enrollment_raises_without_a_token(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_RELAY_HOME", str(tmp_path))
 

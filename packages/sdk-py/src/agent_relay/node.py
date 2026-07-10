@@ -131,22 +131,23 @@ def _resolve_enrollment(base_url: str | None = None) -> dict[str, str]:
         return {}
 
     record: Any = None
-    # Prefer a record for the requested engine, so credentials never cross engines.
     if base_url:
+        # A requested engine only matches its own record — never fall back to the
+        # active/sole record for a different engine, so credentials can't cross.
         wanted = base_url.rstrip("/")
         for value in nodes.values():
             if isinstance(value, dict) and str(value.get("relaycastUrl") or "").rstrip("/") == wanted:
                 record = value
                 break
-    if record is None:
+    else:
         active = data.get("active")
         if isinstance(active, dict):
             for key in active.values():
                 if isinstance(key, str) and key in nodes:
                     record = nodes[key]
                     break
-    if record is None and len(nodes) == 1:
-        record = next(iter(nodes.values()))
+        if record is None and len(nodes) == 1:
+            record = next(iter(nodes.values()))
     if not isinstance(record, dict):
         return {}
 
