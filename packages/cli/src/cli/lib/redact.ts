@@ -13,20 +13,34 @@ const SECRET_KEY = /token|secret|password|api[_-]?key|workspace[_-]?key|authoriz
 
 const REDACTED = '[redacted]';
 
+const CIRCULAR = '[circular]';
+
 /**
  * Deep-copy `value`, replacing the value of any credential-named key with
- * `[redacted]`. Non-secret keys are preserved and recursed into.
+ * `[redacted]`. Non-secret keys are preserved and recursed into. A value that
+ * references one of its own ancestors is emitted as `[circular]` so a cyclic
+ * debug dump redacts instead of overflowing the stack.
  */
 export function redactSecrets<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSecrets(item)) as unknown as T;
+  return redact(value, new WeakSet<object>());
+}
+
+function redact<T>(value: T, ancestors: WeakSet<object>): T {
+  if (!value || typeof value !== 'object') {
+    return value;
   }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, child]) =>
-        SECRET_KEY.test(key) ? [key, child == null ? child : REDACTED] : [key, redactSecrets(child)]
-      )
-    ) as T;
+  const node = value as object;
+  if (ancestors.has(node)) {
+    return CIRCULAR as unknown as T;
   }
-  return value;
+  ancestors.add(node);
+  const result = Array.isArray(value)
+    ? (value.map((item) => redact(item, ancestors)) as unknown as T)
+    : (Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, child]) =>
+          SECRET_KEY.test(key) ? [key, child == null ? child : REDACTED] : [key, redact(child, ancestors)]
+        )
+      ) as T);
+  ancestors.delete(node);
+  return result;
 }

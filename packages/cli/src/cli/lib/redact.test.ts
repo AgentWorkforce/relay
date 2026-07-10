@@ -43,4 +43,24 @@ describe('redactSecrets', () => {
     );
     expect(output).not.toMatch(/rk_live_|nt_live_/);
   });
+
+  it('emits [circular] instead of overflowing on a self-referential value', () => {
+    const cyclic: Record<string, unknown> = { name: 'node', token: 'nt_live_secret' };
+    cyclic.self = cyclic;
+
+    const redacted = redactSecrets(cyclic) as Record<string, unknown>;
+    expect(redacted.token).toBe('[redacted]');
+    expect(redacted.self).toBe('[circular]');
+  });
+
+  it('redacts a shared (non-cyclic) reference at every occurrence', () => {
+    const creds = { apiKey: 'rk_live_shared' };
+    const redacted = redactSecrets({ a: creds, b: creds }) as {
+      a: { apiKey: string };
+      b: { apiKey: string };
+    };
+    // A DAG-shared object is a real value, not a cycle: redact both, never [circular].
+    expect(redacted.a.apiKey).toBe('[redacted]');
+    expect(redacted.b.apiKey).toBe('[redacted]');
+  });
 });
