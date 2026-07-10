@@ -19,10 +19,12 @@ Fixed #1241 by separating received and ACKed delivery cursors, retaining Relayca
 ## Key Decisions
 
 ### Split delivery progress into received and ACKed cursors
+
 - **Chose:** Split delivery progress into received and ACKed cursors
 - **Reasoning:** Manual-flush must accept multiple contiguous Relaycast sequences without cumulatively acknowledging volatile queue entries; duplicates and gaps therefore report only the ACKed cursor, while successful enqueue advances received state.
 
 ### Reject the newest delivery when the manual queue is full
+
 - **Chose:** Reject the newest delivery when the manual queue is full
 - **Reasoning:** Evicting an already-held delivery could discard the only actionable copy after a later cumulative ACK. Atomic rejection leaves the FIFO unchanged, does not advance received or ACKed state, and preserves Relaycast ownership for replay.
 
@@ -31,7 +33,8 @@ Fixed #1241 by separating received and ACKed delivery cursors, retaining Relayca
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Split delivery progress into received and ACKed cursors: Split delivery progress into received and ACKed cursors
 - Reject the newest delivery when the manual queue is full: Reject the newest delivery when the manual queue is full
