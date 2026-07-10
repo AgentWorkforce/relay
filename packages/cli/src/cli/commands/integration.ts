@@ -37,6 +37,8 @@ export interface RelayfileBinding {
   channel: string;
   webhookId: string;
   subscriptionId: string;
+  /** relayfile-cloud subscription that forwards provider records to the inbound webhook. */
+  webhookSubscriptionId?: string;
 }
 
 export interface RelayfileResolvedResource {
@@ -68,6 +70,7 @@ export interface RelayfileBridge {
     webhookId: string;
     webhookToken: string;
     subscriptionId: string;
+    webhookSubscriptionId: string;
   }): Promise<void>;
   listBindings(): Promise<RelayfileBinding[]>;
   unbind(provider: string, resource: string): Promise<void>;
@@ -115,6 +118,7 @@ export type IntegrationCommandDependencies = SdkCommandDeps & {
  * import time. One instance is enough — it negotiates the daemon version once.
  */
 let sharedClient: RelayfileControlPlaneClient | undefined;
+const RELAYFILE_WEBHOOK_BINDINGS_API_VERSION = 3;
 function controlPlaneClient(options?: RelayfileClientOptions): RelayfileControlPlaneClient {
   if (options) return new RelayfileControlPlaneClient(options);
   if (!sharedClient) sharedClient = new RelayfileControlPlaneClient();
@@ -185,6 +189,9 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       if (output?.trim()) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
     },
     async bind(input) {
+      // @relayfile/client v0.10.20 forwards this object unchanged at runtime,
+      // but its published BindRequest type predates control-plane API v3. Keep
+      // the cast local until the v3 client package is released.
       await client.bind({
         provider: input.provider,
         resource: input.resource,
@@ -192,7 +199,8 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
         webhookId: input.webhookId,
         webhookToken: input.webhookToken,
         subscriptionId: input.subscriptionId,
-      });
+        webhookSubscriptionId: input.webhookSubscriptionId,
+      } as Parameters<typeof client.bind>[0]);
     },
     async listBindings() {
       const bindings = await client.listBindings();
@@ -205,6 +213,7 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
           channel: b.channel ?? '',
           webhookId: b.webhookId ?? '',
           subscriptionId: b.subscriptionId ?? '',
+          webhookSubscriptionId: b.webhookSubscriptionId,
         })
       );
     },
@@ -224,6 +233,13 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       // Connecting negotiates the daemon version via /v1/hello; a too-old daemon
       // (or one that can't start) throws a typed, actionable error here.
       await client.ensureReady();
+      const hello = await client.hello();
+      if (!hello.supportedApiVersions?.includes(RELAYFILE_WEBHOOK_BINDINGS_API_VERSION)) {
+        throw new RelayfileControlPlaneError(
+          'VERSION_INCOMPATIBLE',
+          `relayfile must support control-plane API v${RELAYFILE_WEBHOOK_BINDINGS_API_VERSION} to safely clean up inbound webhook subscriptions. Upgrade relayfile and retry.`
+        );
+      }
     },
     async resolveWritebackBinding(channel) {
       try {
@@ -638,15 +654,27 @@ async function retireSupersededWebhooks(
     provider: string;
     prefix: string;
     keepWebhookId: string;
+    keepWebhookSubscriptionId: string;
     priorBinding: RelayfileBinding | undefined;
   }
 ): Promise<void> {
-  const { provider, prefix, keepWebhookId, priorBinding } = options;
+  const { provider, prefix, keepWebhookId, keepWebhookSubscriptionId, priorBinding } = options;
 
   if (priorBinding && priorBinding.subscriptionId) {
     await relay.webhooks
       .unsubscribe(priorBinding.subscriptionId)
       .catch((err) => warnCleanup(deps, 'subscription', priorBinding.subscriptionId, err));
+  }
+
+  if (
+    priorBinding?.webhookSubscriptionId &&
+    priorBinding.webhookSubscriptionId !== keepWebhookSubscriptionId
+  ) {
+    await deps.relayfile
+      .deleteWebhookSubscription(priorBinding.webhookSubscriptionId)
+      .catch((err) =>
+        warnCleanup(deps, 'relayfile webhook subscription', priorBinding.webhookSubscriptionId!, err)
+      );
   }
 
   let webhooks: Awaited<ReturnType<typeof relay.webhooks.list>>;
@@ -758,6 +786,7 @@ async function runSubscribe(
       webhookId: webhook.webhookId,
       webhookToken: webhook.token,
       subscriptionId: subscription.id,
+      webhookSubscriptionId: relayfileWebhook.subscriptionId,
     });
   } catch (err) {
     // The new binding never fully landed: roll back only what we just created
@@ -788,6 +817,7 @@ async function runSubscribe(
     provider,
     prefix,
     keepWebhookId: webhook.webhookId,
+    keepWebhookSubscriptionId: relayfileWebhook.subscriptionId,
     priorBinding,
   });
 
@@ -834,6 +864,17 @@ async function runUnsubscribe(
     deps.log(
       `Warning: failed to remove subscription ${binding.subscriptionId}: ${err instanceof Error ? err.message : String(err)}`
     );
+  }
+  if (binding.webhookSubscriptionId) {
+    try {
+      await deps.relayfile.deleteWebhookSubscription(binding.webhookSubscriptionId);
+    } catch (err) {
+      deps.log(
+        `Warning: failed to remove relayfile webhook subscription ${binding.webhookSubscriptionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
   }
   await deps.relayfile.unbind(provider, pathGlob);
   deps.log(`Unsubscribed ${provider} ${resource}.`);

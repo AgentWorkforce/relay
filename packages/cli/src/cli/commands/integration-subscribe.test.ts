@@ -72,6 +72,7 @@ function createRelayfileMock(
         channel: string;
         webhookId: string;
         subscriptionId: string;
+        webhookSubscriptionId: string;
       }) => {
         const record: RelayfileBinding = {
           provider: input.provider,
@@ -79,6 +80,7 @@ function createRelayfileMock(
           channel: input.channel,
           webhookId: input.webhookId,
           subscriptionId: input.subscriptionId,
+          webhookSubscriptionId: input.webhookSubscriptionId,
         };
         const idx = bindings.findIndex((b) => b.provider === input.provider && b.resource === input.resource);
         if (idx >= 0) bindings[idx] = record;
@@ -168,7 +170,12 @@ describe('integration subscribe', () => {
       name: expect.stringMatching(NAME_RE),
     });
     expect(relayfile.bind).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'slack', resource: RESOURCE, channel: 'general' })
+      expect.objectContaining({
+        provider: 'slack',
+        resource: RESOURCE,
+        channel: 'general',
+        webhookSubscriptionId: 'whsub_1',
+      })
     );
     expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith({
       url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
@@ -305,6 +312,7 @@ describe('integration subscribe', () => {
       channel: 'general',
       webhookId: 'old_wh',
       subscriptionId: 'old_sub',
+      webhookSubscriptionId: 'old_whsub',
     };
     const relay = createRelayMock({
       inboundWebhooks: [
@@ -328,6 +336,10 @@ describe('integration subscribe', () => {
 
     expect(relay.webhooks.delete).toHaveBeenCalledWith('old_wh');
     expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('old_sub');
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('old_whsub');
+    expect(relayfile.bind.mock.invocationCallOrder[0]!).toBeLessThan(
+      relayfile.deleteWebhookSubscription.mock.invocationCallOrder[0]!
+    );
   });
 
   it('does NOT delete another resource’s webhook routed to the same channel (P2)', async () => {
@@ -435,5 +447,30 @@ describe('integration subscribe', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('bind failed'));
     expect(exit).toHaveBeenCalledWith(1);
     expect(error.mock.calls.some((c) => String(c[0]).includes('failed to clean up webhook'))).toBe(true);
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1');
+  });
+});
+
+describe('integration unsubscribe', () => {
+  it('removes the persisted relayfile-cloud subscription before unbinding', async () => {
+    const binding: RelayfileBinding = {
+      provider: 'slack',
+      resource: RESOURCE,
+      channel: 'general',
+      webhookId: 'wh_1',
+      subscriptionId: 'sub_1',
+      webhookSubscriptionId: 'whsub_1',
+    };
+    const relayfile = createRelayfileMock([binding]);
+    const { program, relay } = harness({ relayfile });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', RESOURCE], { from: 'user' });
+
+    expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
+    expect(relay.webhooks.unsubscribe).toHaveBeenCalledWith('sub_1');
+    expect(relayfile.deleteWebhookSubscription).toHaveBeenCalledWith('whsub_1');
+    expect(relayfile.deleteWebhookSubscription.mock.invocationCallOrder[0]!).toBeLessThan(
+      relayfile.unbind.mock.invocationCallOrder[0]!
+    );
   });
 });
