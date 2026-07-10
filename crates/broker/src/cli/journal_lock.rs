@@ -441,7 +441,6 @@ mod tests {
     #[test]
     fn exclusive_temp_creation_refuses_to_follow_a_symlink_at_the_candidate() {
         let dir = temp_dir("excl-symlink");
-        let journal = dir.join("pending-cleanups.json");
         let target = dir.join("victim");
         std::fs::write(&target, b"precious").unwrap();
         // Occupy EVERY name create_exclusive_temp could pick this instant is
