@@ -171,7 +171,10 @@ vi.mock('@agent-relay/harness-driver', () => ({
       return {
         node_id: 'node_a',
         node_name: 'the-node',
-        workspace_key: 'rk_test',
+        // Live-shaped secrets so the verbose-output test can assert they never
+        // leak into logs.
+        workspace_key: 'rk_live_secret',
+        node_token: 'nt_live_secret',
         broker_version: 'test',
         protocol_version: 2,
         mode: 'persist',
@@ -343,5 +346,23 @@ describe('runUpCommand node-config gating', () => {
     expect(served.nameOverride).toBe('enrolled-name');
     expect(served.connection).toMatchObject({ nodeToken: 'nt_live_test', nodeId: 'node_a' });
     expect(served.providerName).toBe('from-config');
+  });
+
+  it('never prints the node token or workspace key from the session in --verbose output', async () => {
+    const { deps, projectRoot, log, warn, error } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [] };\n"
+    );
+
+    // Verbose `up` fetches the broker session (which carries nt_live_/rk_live_
+    // secrets in the mock) to attach providers; none of it may reach the logs.
+    await runUpCommand({ discoverConfig: true, verbose: true }, deps);
+
+    const output = [log, warn, error]
+      .flatMap((fn) => vi.mocked(fn).mock.calls.flat())
+      .map((arg) => String(arg))
+      .join('\n');
+    expect(output).not.toMatch(/rk_live_|nt_live_/);
   });
 });
