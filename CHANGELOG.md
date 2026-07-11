@@ -115,6 +115,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.2.4] - 2026-07-11
+
+### Changed
+
+- Drop unused binding in the symlink-refusal test
+- Faithful fake journal-lock helper for broker-less CI jobs
+- Force text diff rendering for the cleanup journal source
+- Fix clippy manual_filter baseline lints
+
+### Fixed
+
+- Use floating Node 22 before npm@latest install in publish workflow
+- Activate relayfile v3 crash recovery
+- Close the two remaining Cubic threads on the journal lifecycle
+- Periodic lease renewal + post-rename-safe temp cleanup + review polish
+- Open journal directories with FILE_FLAG_BACKUP_SEMANTICS on Windows
+- Future-dated heartbeats expire — the owner lease is truly bounded
+- Close the four open review findings on the journal lock
+- Framed journal commit envelope — truncation can never replace good contents
+- Helper-owned journal commit under the held kernel lock
+- Journal kernel lock via broker helper; drop native addon (Bun-safe)
+- Non-append lock descriptor and deterministic contention-test cleanup
+- Kernel advisory lock for the cleanup journal (stable inode, crash-released)
+- Mandatory pre-create workspace pin, fail-closed lockfile, review polish
+- Serialize stale-attempt recovery with the lifecycle lease
+- Concurrency-safe lifecycle leases, workspace pinning, and deterministic crash recovery
+- Crash-safe, retryable webhook cleanup via a durable journal
+- Retain failed webhook cleanup state
+- Clean up inbound webhook subscriptions
+
 ## [9.2.3] - 2026-07-08
 
 ### Added
