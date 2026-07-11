@@ -15,6 +15,13 @@ import { fileURLToPath } from 'node:url';
 import { AgentClient, HttpClient } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
+// Node <22 lacks a global WebSocket, which @relaycast/sdk's in-process
+// AgentClient requires. The spawned CLI installs its own via runCli; this
+// covers the test runner's own client on Node 20/21.
+if (typeof (globalThis as { WebSocket?: unknown }).WebSocket === 'undefined') {
+  (globalThis as { WebSocket?: unknown }).WebSocket = WebSocket;
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 export const NODE_A_FILE = path.join(HERE, 'nodes', 'node-a.ts');
