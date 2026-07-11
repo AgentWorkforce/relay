@@ -127,16 +127,9 @@ export interface RelayfileBridge {
   /** `workspace` pins the delete to the workspace the subscription was
    * created in, guarding against active-workspace switches between runs. */
   deleteWebhookSubscription(subscriptionId: string, workspace?: string): Promise<void>;
-  /**
-   * Lists a workspace's inbound webhook subscriptions so crash-recovery can
-   * find subscriptions whose server-assigned id was never persisted. Optional:
-   * the published @relayfile/client v0.10.20 does not ship it, so the default
-   * bridge exposes it only when the installed client does (see
-   * defaultRelayfileBridge). Absent list capability, recovery falls back to
-   * retaining attempt records and refusing same-key re-subscribes until the
-   * v3 client is published and pinned.
-   */
-  listWebhookSubscriptions?: (workspace?: string) => Promise<{
+  /** Lists a workspace's inbound webhook subscriptions so crash-recovery can
+   * find subscriptions whose server-assigned id was never persisted. */
+  listWebhookSubscriptions: (workspace?: string) => Promise<{
     workspaceId?: string;
     subscriptions: Array<{ subscriptionId: string; url: string; pathGlobs: string[] }>;
   }>;
@@ -229,11 +222,6 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       if (output?.trim()) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
     },
     async bind(input) {
-      // TEMPORARY compatibility cast: registry @relayfile/client v0.10.20
-      // forwards this object unchanged at runtime, but its published
-      // BindRequest type predates control-plane API v3 and omits
-      // webhookSubscriptionId. Remove once the v3 client (relayfile#346) is
-      // published and pinned.
       await client.bind({
         provider: input.provider,
         resource: input.resource,
@@ -245,20 +233,14 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
         ...(input.webhookSubscriptionWorkspaceId
           ? { webhookSubscriptionWorkspaceId: input.webhookSubscriptionWorkspaceId }
           : {}),
-      } as Parameters<typeof client.bind>[0]);
+      });
     },
     async listBindings() {
       const bindings = await client.listBindings();
       // relayfile keys bindings on `pathGlob`; surface it as `resource` so callers
       // (find/unbind) match on the canonical glob.
       return bindings.map((b): RelayfileBinding => {
-        // TEMPORARY compatibility cast (see bind() above): the published
-        // Binding type omits the v3 field the daemon already returns. Remove
-        // once the v3 client (relayfile#346) is published and pinned.
-        const { webhookSubscriptionId, webhookSubscriptionWorkspaceId } = b as typeof b & {
-          webhookSubscriptionId?: string;
-          webhookSubscriptionWorkspaceId?: string;
-        };
+        const { webhookSubscriptionId, webhookSubscriptionWorkspaceId } = b;
         return {
           provider: b.provider ?? '',
           resource: b.pathGlob ?? '',
@@ -296,13 +278,7 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
     },
     async resolveWritebackBinding(channel) {
       try {
-        // TEMPORARY compatibility cast (see bind() above): daemons >= relayfile#346
-        // include workspaceId, which the published v0.10.20 result type omits.
-        const { url, secret, workspaceId } = (await client.writebackSecret(channel)) as {
-          url?: string;
-          secret?: string;
-          workspaceId?: string;
-        };
+        const { url, secret, workspaceId } = await client.writebackSecret(channel);
         if (!url?.trim() || !secret?.trim()) return undefined;
         return { url: url.trim(), secret: secret.trim(), workspaceId: workspaceId?.trim() || undefined };
       } catch (err) {
@@ -320,46 +296,14 @@ export function defaultRelayfileBridge(options?: RelayfileClientOptions): Relayf
       }
     },
     async createWebhookSubscription(input) {
-      // TEMPORARY compatibility cast (see bind() above): daemons >= relayfile#346
-      // return workspaceId, which the published v0.10.20 result type omits.
-      const created = (await client.createWebhookSubscription(input)) as RelayfileWebhookSubscription & {
-        workspaceId?: string;
-      };
-      return created;
+      return client.createWebhookSubscription(input);
     },
     async deleteWebhookSubscription(subscriptionId, workspace) {
       await client.deleteWebhookSubscription(subscriptionId, workspace);
     },
-    // TEMPORARY runtime feature-detection: published @relayfile/client v0.10.20
-    // has no listWebhookSubscriptions (a cast cannot conjure a missing runtime
-    // method). Expose it only when the installed client ships it; collapse to
-    // a plain method once the v3 client (relayfile#346) is published and pinned.
-    ...(typeof (client as { listWebhookSubscriptions?: unknown }).listWebhookSubscriptions === 'function'
-      ? {
-          listWebhookSubscriptions: async (workspace?: string) => {
-            const result = await (
-              client as unknown as {
-                listWebhookSubscriptions: (workspace?: string) => Promise<{
-                  workspaceId?: string;
-                  subscriptions?: Array<{
-                    subscriptionId?: string;
-                    url?: string;
-                    pathGlobs?: string[];
-                  }>;
-                }>;
-              }
-            ).listWebhookSubscriptions(workspace);
-            return {
-              workspaceId: result.workspaceId,
-              subscriptions: (result.subscriptions ?? []).map((s) => ({
-                subscriptionId: s.subscriptionId ?? '',
-                url: s.url ?? '',
-                pathGlobs: s.pathGlobs ?? [],
-              })),
-            };
-          },
-        }
-      : {}),
+    async listWebhookSubscriptions(workspace?: string) {
+      return client.listWebhookSubscriptions(workspace);
+    },
   };
 }
 
@@ -943,8 +887,8 @@ async function removeCleanupEntry(
  * never deleted; cloud deletes are pinned to the entry's recorded workspace
  * and a cloud 404 only converges when pinned (an unpinned 404 might be the
  * wrong active workspace, so the entry is retained); attempt reconciliation
- * needs the (optional) list capability. Failures keep the entry. Never logs
- * entry urls or ids.
+ * uses the API-v3 list operation. Failures keep the entry. Never logs entry
+ * urls or ids.
  */
 async function sweepPendingCleanups(
   deps: IntegrationCommandDependencies,
@@ -1053,7 +997,7 @@ async function sweepPendingCleanups(
                 'deleted';
             } else if (entry.webhookSubscriptionId) {
               cloudResolved = true; // bound and active — nothing to clean
-            } else if (deps.relayfile.listWebhookSubscriptions && entry.relayfileWorkspaceId) {
+            } else if (entry.relayfileWorkspaceId) {
               // Only a workspace-pinned attempt may list-reconcile: an unpinned
               // list would query whatever workspace is active NOW and could
               // falsely settle an attempt whose create landed elsewhere.
@@ -1330,9 +1274,8 @@ async function retireSupersededWebhooks(
  * 2. A retained attempt with the same (scope, provider, resource, url, glob
  *    set) after the sweep is either a LIVE concurrent transaction (its
  *    lease-owner is alive — abort rather than interleave with it) or an
- *    interrupted one that could not be reconciled (no list capability on the
- *    published v0.10.20 client, or the daemon/cloud unreachable — abort
- *    rather than double-subscribe).
+ *    interrupted one that could not be reconciled because the daemon or cloud
+ *    was unreachable — abort rather than double-subscribe).
  * 3. Journal, in ONE atomic write, this run's owner-leased attempt record
  *    (whose deterministic keys can recover all three creates after a crash)
  *    AND the prior binding's non-rediscoverable ids — bind() is about to
@@ -1363,18 +1306,17 @@ async function prepareSubscribeAttempt(
   // the create reaches the server but before its response would otherwise
   // leave the attempt unpinned, and an unpinned list/delete after an
   // active-workspace switch could falsely settle it. The pin is MANDATORY on
-  // every path — no pin, no create. writeback-secret resolution (daemons >=
-  // relayfile#346) provides it normally (the published v0.10.20 client
-  // runtime preserves the extra JSON field); with --bridge-url/--bridge-secret
-  // overrides the control plane is still consulted for the workspace alone,
-  // then the v3 list, and a run that cannot obtain a pin aborts here.
+  // every path — no pin, no create. writeback-secret resolution provides it
+  // normally; with --bridge-url/--bridge-secret overrides the control plane is
+  // still consulted for the workspace alone, then list subscriptions provides
+  // the fallback. A run that cannot obtain a pin aborts here.
   if (!attempt.relayfileWorkspaceId) {
     // Even with explicit --bridge-url/--bridge-secret overrides, the control
     // plane is still consulted for the workspace identity alone.
     const resolved = await deps.relayfile.resolveWritebackBinding(channel).catch(() => undefined);
     if (resolved?.workspaceId) attempt.relayfileWorkspaceId = resolved.workspaceId;
   }
-  if (!attempt.relayfileWorkspaceId && deps.relayfile.listWebhookSubscriptions) {
+  if (!attempt.relayfileWorkspaceId) {
     const { workspaceId } = await deps.relayfile.listWebhookSubscriptions();
     if (workspaceId) attempt.relayfileWorkspaceId = workspaceId;
   }
@@ -1407,11 +1349,6 @@ async function prepareSubscribeAttempt(
     );
   }
   if (conflict === 'unreconciled') {
-    if (!deps.relayfile.listWebhookSubscriptions) {
-      throw new Error(
-        `A previous subscribe of ${attempt.provider} ${attempt.resource} was interrupted before its relayfile webhook subscription could be recorded, and the installed @relayfile/client cannot list subscriptions to reconcile it. Aborting before creating another one (it would duplicate provider deliveries). Upgrade @relayfile/client to v3 and re-run.`
-      );
-    }
     throw new Error(
       `Could not reconcile the resources left by an interrupted subscribe of ${attempt.provider} ${attempt.resource}. Aborting before creating another subscription; re-run once relayfile-cloud is reachable.`
     );

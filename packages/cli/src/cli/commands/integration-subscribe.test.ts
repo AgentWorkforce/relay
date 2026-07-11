@@ -104,6 +104,7 @@ function createRelayfileMock(
       secret: 's3cr3t',
       workspaceId: 'rw_test',
     })),
+    listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: 'rw_test', subscriptions: [] })),
     createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
     deleteWebhookSubscription: vi.fn(async () => undefined),
     ...overrides,
@@ -485,23 +486,19 @@ describe('integration subscribe', () => {
     expect(journal.entries()).toEqual([]);
   });
 
-  it('aborts before any create on a retained matching attempt when the client cannot list (P1)', async () => {
-    // v3-compatible daemon (ensureCompatible passes) but the installed
-    // 0.10.20 client has no runtime list method — the bridge omits it.
-    const journal = memoryJournal([attemptEntry()]);
+  it('reconciles a retained workspace-pinned attempt before creating again (P1)', async () => {
+    const journal = memoryJournal([attemptEntry({ relayfileWorkspaceId: 'rw_test' })]);
     const relayfile = createRelayfileMock();
-    expect(relayfile.listWebhookSubscriptions).toBeUndefined();
-    const { program, relay, error, exit } = harness({ relayfile, journal });
+    const { program, relay, exit } = harness({ relayfile, journal });
 
     await program.parseAsync(ARGS(), { from: 'user' });
 
-    expect(error).toHaveBeenCalledWith(expect.stringContaining('interrupted'));
-    expect(exit).toHaveBeenCalledWith(1);
-    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
-    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
-    expect(relay.integrations.subscriptions.create).not.toHaveBeenCalled();
-    // The attempt stays retained for a later reconciling run.
-    expect(journal.entries()).toEqual([attemptEntry()]);
+    expect(exit).not.toHaveBeenCalled();
+    expect(relayfile.listWebhookSubscriptions).toHaveBeenCalledWith('rw_test');
+    expect(relay.webhooks.createInbound).toHaveBeenCalledOnce();
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalledOnce();
+    expect(relay.integrations.subscriptions.create).toHaveBeenCalledOnce();
+    expect(journal.entries()).toEqual([]);
   });
 
   it('recovers a lease whose pid is ALIVE but whose bounded lease expired (PID-reuse bound)', async () => {
@@ -941,13 +938,16 @@ describe('integration subscribe', () => {
   });
 
   it('releases a partial recovery claim back to a reclaimable state', async () => {
-    // Cloud reconciliation cannot complete (no list capability), so recovery
-    // must hand the lease back — a live-held claim would block every later
-    // lifecycle until this pid exits.
+    // Cloud reconciliation cannot complete when the list request fails, so
+    // recovery must hand the lease back — a live-held claim would block every
+    // later lifecycle until this pid exits.
     const deadAttempt = attemptEntry({ relayfileWorkspaceId: 'rw_1' });
     const journal = memoryJournal([deadAttempt]);
-    const relayfile = createRelayfileMock();
-    expect(relayfile.listWebhookSubscriptions).toBeUndefined();
+    const relayfile = createRelayfileMock([], {
+      listWebhookSubscriptions: vi.fn(async () => {
+        throw new Error('list unavailable');
+      }),
+    });
     const { program, exit } = harness({ relayfile, journal });
 
     await program.parseAsync(ARGS(), { from: 'user' });
@@ -1072,8 +1072,8 @@ describe('integration subscribe', () => {
   it('with --bridge-url overrides, aborts before any create when no pin is obtainable (P1)', async () => {
     const relayfile = createRelayfileMock([], {
       resolveWritebackBinding: vi.fn(async () => undefined),
+      listWebhookSubscriptions: vi.fn(async () => ({ workspaceId: undefined, subscriptions: [] })),
     });
-    expect(relayfile.listWebhookSubscriptions).toBeUndefined();
     const { program, relay, error, exit } = harness({ relayfile });
 
     await program.parseAsync(ARGS(['--bridge-url', 'https://override.example', '--bridge-secret', 'shh']), {
@@ -1082,6 +1082,7 @@ describe('integration subscribe', () => {
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('active relayfile workspace'));
     expect(exit).toHaveBeenCalledWith(1);
+    expect(relayfile.listWebhookSubscriptions).toHaveBeenCalledWith();
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
     expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
     expect(relay.integrations.subscriptions.create).not.toHaveBeenCalled();

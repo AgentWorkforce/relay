@@ -36,6 +36,10 @@ describe('assertRelayfileVersion', () => {
   it('rejects unparseable version output', () => {
     expect(() => assertRelayfileVersion('not a version')).toThrow(/unparseable version/);
   });
+
+  it('ships the API-v3 subscription-list method', () => {
+    expect(typeof RelayfileControlPlaneClient.prototype.listWebhookSubscriptions).toBe('function');
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -126,8 +130,8 @@ describeContract('relayfile bridge contract (real control-plane daemon)', () => 
     expect(binding!.webhookId).toBe('wh_contract');
     expect(binding!.subscriptionId).toBe('sub_contract');
     expect(binding!.webhookSubscriptionId).toBe('whsub_contract');
-    // The (id, workspace) pair round-trips through the published v0.10.20
-    // client's runtime (the daemon enforces them as an atomic pair).
+    // The published v0.10.21 client types the (id, workspace) pair, and the
+    // daemon enforces it as an atomic pair.
     expect(binding!.webhookSubscriptionWorkspaceId).toBe('rw_contract_pin');
 
     await bridge.unbind('github', pathGlob);
