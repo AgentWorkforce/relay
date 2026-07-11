@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -514,12 +515,10 @@ describe('fileCleanupJournal', () => {
     fs.writeFileSync(journalPath, '["original"]\n');
     const lockPath = path.join(dir, 'pending-cleanups.json.lock');
     const helper = process.env.BROKER_BINARY_PATH!;
-    const { spawn: spawnChild } = await import('node:child_process');
-    const { createHash } = await import('node:crypto');
     const body = Buffer.from('["replacement"]\n', 'utf8');
     const digest = createHash('sha256').update(body).digest('hex');
     const framed = Buffer.concat([Buffer.from(`ARJL1\n${body.byteLength}\n${digest}\n`, 'utf8'), body]);
-    const child = spawnChild(
+    const child = spawn(
       helper,
       ['journal-lock', '--file', lockPath, '--journal-file', journalPath, '--timeout-ms', '5000'],
       { stdio: ['pipe', 'pipe', 'ignore'] }

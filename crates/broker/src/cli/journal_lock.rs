@@ -184,19 +184,24 @@ fn replace_journal(journal: &Path, payload: &[u8]) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("."));
     let (tmp, mut temp) = create_exclusive_temp(journal)?;
 
-    let result = (|| -> Result<()> {
+    // Failure-path hygiene applies ONLY BEFORE the rename consumes the temp
+    // file: after a successful rename the temp path no longer belongs to us,
+    // and unlinking it on a later dir-fsync error could delete a rival's
+    // freshly created file at a recreated name.
+    let pre_rename = (|| -> Result<()> {
         temp.write_all(payload).context("write journal payload")?;
         temp.sync_all().context("fsync journal temp file")?;
         drop(temp);
         std::fs::rename(&tmp, journal)
-            .with_context(|| format!("rename journal into place at {}", journal.display()))?;
-        sync_dir(&dir)
+            .with_context(|| format!("rename journal into place at {}", journal.display()))
     })();
-    if result.is_err() {
-        // Failure-path hygiene: never leave a temp file behind.
+    if let Err(err) = pre_rename {
         let _ = std::fs::remove_file(&tmp);
+        return Err(err);
     }
-    result
+    // The rename already landed; a directory-fsync failure propagates but
+    // must not touch the (consumed) temp path.
+    sync_dir(&dir)
 }
 
 /// Open a directory handle for fsync. Windows requires
@@ -477,6 +482,31 @@ mod tests {
         let err = options.open(&link).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&target).unwrap(), b"precious");
+    }
+
+    #[test]
+    fn post_rename_failures_do_not_unlink_recreated_temp_names() {
+        // Structure regression for the cleanup ordering: after a SUCCESSFUL
+        // rename, replace_journal must not remove_file any tmp path. We
+        // simulate a rival recreating a same-shaped tmp file right after our
+        // commit and assert a subsequent successful run leaves it alone
+        // (cleanup only ever fires on pre-rename failures).
+        let dir = temp_dir("postrename");
+        let journal = dir.join("pending-cleanups.json");
+        std::fs::write(&journal, b"[]\n").unwrap();
+        let rival = dir.join(format!(
+            "pending-cleanups.json.tmp-{}-decoy",
+            std::process::id()
+        ));
+        std::fs::write(&rival, b"rival bytes").unwrap();
+
+        replace_journal(&journal, b"[1]\n").unwrap();
+        assert_eq!(std::fs::read(&journal).unwrap(), b"[1]\n");
+        assert_eq!(
+            std::fs::read(&rival).unwrap(),
+            b"rival bytes",
+            "a foreign tmp-shaped file must never be unlinked"
+        );
     }
 
     #[test]

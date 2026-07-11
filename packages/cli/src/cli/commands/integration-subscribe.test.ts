@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RelayfileControlPlaneError } from '@relayfile/client';
 
 import {
+  OWNER_LEASE_CONFIG,
   registerIntegrationCommands,
   relayCleanupScope,
   type IntegrationCommandDependencies,
@@ -528,6 +529,75 @@ describe('integration subscribe', () => {
     expect(exit).not.toHaveBeenCalled();
     expect(relayfile.createWebhookSubscription).toHaveBeenCalled();
     expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+  });
+
+  it('keeps a >lease-duration lifecycle protected via periodic renewal (P1)', async () => {
+    // Deterministic tiny windows: the external create outlives the lease by
+    // 2x, the renewal timer refreshes several times meanwhile, and a rival
+    // probing DURING the long await must still see a LIVE reservation.
+    const saved = { ...OWNER_LEASE_CONFIG };
+    Object.assign(OWNER_LEASE_CONFIG, { leaseMs: 250, renewalMs: 50, skewMs: 100 });
+    try {
+      const journal = memoryJournal();
+      let rivalChecked = false;
+      const relayfile = createRelayfileMock([], {
+        createWebhookSubscription: vi.fn(async () => {
+          // Long external await: past the (tiny) lease, with renewal running.
+          await new Promise((resolve) => setTimeout(resolve, 550));
+          const rival = harness({ relayfile: createRelayfileMock(), journal });
+          await rival.program.parseAsync(ARGS(), { from: 'user' });
+          expect(rival.error).toHaveBeenCalledWith(expect.stringContaining('in progress'));
+          expect(rival.exit).toHaveBeenCalledWith(1);
+          expect(rival.relay.webhooks.createInbound).not.toHaveBeenCalled();
+          rivalChecked = true;
+          return { subscriptionId: 'whsub_1' };
+        }),
+      });
+      const { program, exit } = harness({ relayfile, journal });
+
+      await program.parseAsync(ARGS(), { from: 'user' });
+
+      expect(exit).not.toHaveBeenCalled();
+      expect(rivalChecked).toBe(true);
+      expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+    } finally {
+      Object.assign(OWNER_LEASE_CONFIG, saved);
+    }
+  });
+
+  it('latches a renewal failure and aborts before further external mutations (P1)', async () => {
+    const saved = { ...OWNER_LEASE_CONFIG };
+    Object.assign(OWNER_LEASE_CONFIG, { leaseMs: 250, renewalMs: 40, skewMs: 100 });
+    try {
+      const journal = memoryJournal();
+      // The reservation (1st write) and prior-record write path succeed;
+      // every later journal write — including renewal ticks — fails.
+      let updates = 0;
+      journal.update.mockImplementation(async (mutate) => {
+        updates += 1;
+        if (updates > 1) throw new Error('journal offline');
+        await memoryJournalApply(journal, mutate);
+      });
+      const relay = createRelayMock();
+      relay.webhooks.createInbound.mockImplementation(async () => {
+        // Long enough for a failing renewal tick to latch.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return { webhookId: 'in_1', url: 'u', token: 'tok_once', channel: 'general' };
+      });
+      const relayfile = createRelayfileMock();
+      const { program, error, exit } = harness({ relay, relayfile, journal });
+
+      await program.parseAsync(ARGS(), { from: 'user' });
+
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('could not be renewed'));
+      expect(exit).toHaveBeenCalledWith(1);
+      // The latch fired before the cloud create — nothing external beyond
+      // the rolled-back webhook was mutated.
+      expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+      expect(relay.webhooks.delete).toHaveBeenCalledWith('in_1');
+    } finally {
+      Object.assign(OWNER_LEASE_CONFIG, saved);
+    }
   });
 
   it('recovers a lease whose heartbeat is FUTURE-dated beyond the skew bound (P1)', async () => {

@@ -757,12 +757,21 @@ function relayfileCleanupScope(): string {
  * lease and a rival may proceed — accepted deliberately, because the
  * alternative (pure pid probing) lets PID reuse wedge lifecycles FOREVER.
  */
-const OWNER_LEASE_MS = 15 * 60_000;
-/** Tolerated forward clock skew for heartbeats. A heartbeat further in the
- * FUTURE than this is malformed or from a skewed clock and counts as
- * expired — otherwise a finite future value (e.g. 9e15) would make its
- * owner live forever and unbound the lease again. */
-const OWNER_HEARTBEAT_SKEW_MS = 2 * 60_000;
+/**
+ * Lease timing knobs, exported as one mutable object ONLY so tests can run
+ * deterministic renewal scenarios with tiny windows; production code never
+ * mutates it. renewalMs sits well below leaseMs so an active lifecycle
+ * refreshes its lease several times per window.
+ */
+export const OWNER_LEASE_CONFIG = {
+  leaseMs: 15 * 60_000,
+  renewalMs: 5 * 60_000,
+  /** Tolerated forward clock skew. A heartbeat further in the FUTURE than
+   * this is malformed or from a skewed clock and counts as expired —
+   * otherwise a finite future value (e.g. 9e15) would make its owner live
+   * forever and unbound the lease again. */
+  skewMs: 2 * 60_000,
+};
 
 /** A journal entry lease-owner is live ONLY while its bounded lease is
  * fresh AND (same host) its pid probes alive. The heartbeat bound is what
@@ -773,8 +782,8 @@ const OWNER_HEARTBEAT_SKEW_MS = 2 * 60_000;
 function isOwnerLive(owner: PendingCleanupOwner | undefined): boolean {
   if (!owner) return false;
   const age = Date.now() - owner.heartbeatAt;
-  if (age > OWNER_LEASE_MS) return false; // lease expired
-  if (age < -OWNER_HEARTBEAT_SKEW_MS) return false; // future-dated beyond skew: bounded, not immortal
+  if (age > OWNER_LEASE_CONFIG.leaseMs) return false; // lease expired
+  if (age < -OWNER_LEASE_CONFIG.skewMs) return false; // future-dated beyond skew: bounded, not immortal
   if (owner.host !== hostname()) return true; // cannot prove death — fail closed within the lease
   try {
     process.kill(owner.pid, 0);
@@ -790,6 +799,70 @@ function newCleanupOwner(): PendingCleanupOwner {
     host: hostname(),
     attemptId: randomBytes(8).toString('hex'),
     heartbeatAt: Date.now(),
+  };
+}
+
+/**
+ * Periodic lease renewal for an owned journal record: an unref'd timer
+ * atomically re-stamps heartbeatAt on entries owned by exactly this
+ * attemptId, so a legitimate lifecycle awaiting external operations past
+ * OWNER_LEASE_CONFIG.leaseMs keeps a LIVE reservation (a paused event loop
+ * past the bound remains the documented tradeoff). Started only after the
+ * reservation is durably acquired; MUST be stopped before the record is
+ * cleared on every exit path. A renewal failure latches: assertHealthy()
+ * then throws so later lifecycle mutations/commits never proceed blindly on
+ * a possibly-lost lease.
+ */
+function startLeaseRenewal(
+  deps: IntegrationCommandDependencies,
+  attemptId: string
+): { stop(): void; assertHealthy(context: string): void } {
+  let failed: string | undefined;
+  let renewing = false;
+  const timer = setInterval(() => {
+    if (renewing || failed) return;
+    renewing = true;
+    let matched = 0;
+    deps.cleanupJournal
+      .update((entries) =>
+        entries.map((entry) => {
+          if (entry.owner?.attemptId !== attemptId) return entry;
+          matched += 1;
+          return { ...entry, owner: { ...entry.owner, heartbeatAt: Date.now() } };
+        })
+      )
+      .then(() => {
+        if (matched === 0) {
+          // The owned record is GONE — the lease was lost (e.g. reclaimed);
+          // latch so no further external mutation proceeds on it.
+          failed = 'reservation record no longer present';
+          deps.error(
+            'Warning: the lifecycle lease record disappeared during renewal; aborting before any further external mutation.'
+          );
+        }
+      })
+      .catch((err) => {
+        failed = err instanceof Error ? err.message : String(err);
+        deps.error(
+          'Warning: could not renew the lifecycle lease; aborting before any further external mutation.'
+        );
+      })
+      .finally(() => {
+        renewing = false;
+      });
+  }, OWNER_LEASE_CONFIG.renewalMs);
+  timer.unref?.();
+  return {
+    stop() {
+      clearInterval(timer);
+    },
+    assertHealthy(context: string) {
+      if (failed) {
+        throw new Error(
+          `The lifecycle lease for ${context} could not be renewed (${failed}); aborting instead of proceeding on a possibly-lost reservation.`
+        );
+      }
+    },
   };
 }
 
@@ -1437,6 +1510,9 @@ async function runSubscribe(
       );
   };
   await prepareSubscribeAttempt(deps, relay, attempt, channel, { relayScope, relayfileScope });
+  // The reservation is durable — keep its lease fresh for as long as this
+  // transaction runs, however long the external operations below take.
+  const lease = startLeaseRenewal(deps, owner.attemptId);
 
   // With the lease held, capture the binding we're about to replace
   // (create-first: the per-attempt nonce in `name` means createInbound never
@@ -1469,6 +1545,7 @@ async function runSubscribe(
       });
     }
   } catch (err) {
+    lease.stop();
     await removeCleanupEntry(deps, attempt).catch(() => undefined);
     throw err;
   }
@@ -1478,8 +1555,10 @@ async function runSubscribe(
   let relayfileWebhook: RelayfileWebhookSubscription | undefined;
   let bindingInput: RelayfileBindingInput;
   try {
+    lease.assertHealthy(`${provider} ${pathGlob}`);
     webhook = await relay.webhooks.createInbound({ channel, name });
     await upgradeAttempt({ webhookId: webhook.webhookId });
+    lease.assertHealthy(`${provider} ${pathGlob}`);
     const createdRelayfileWebhook = await deps.relayfile.createWebhookSubscription({
       url: inboundTarget.url,
       pathGlobs: [pathGlob],
@@ -1508,6 +1587,7 @@ async function runSubscribe(
         ? { relayfileWorkspaceId: createdRelayfileWebhook.workspaceId }
         : {}),
     });
+    lease.assertHealthy(`${provider} ${pathGlob}`);
     subscription = await relay.integrations.subscriptions.create({
       event: events.length === 1 ? events[0]! : 'message.created',
       events: events.length ? events : ['message.created', 'thread.reply'],
@@ -1516,6 +1596,7 @@ async function runSubscribe(
       secret: writeback.secret,
     });
     await upgradeAttempt({ subscriptionId: subscription.id });
+    lease.assertHealthy(`${provider} ${pathGlob}`);
     bindingInput = {
       provider,
       resource: pathGlob,
@@ -1586,6 +1667,7 @@ async function runSubscribe(
         }
       }
     }
+    lease.stop();
     if (!unresolved) {
       // Everything we created is deleted or durably recorded as an ownerless
       // entry — the attempt record has served its purpose. If it cannot be
@@ -1599,6 +1681,7 @@ async function runSubscribe(
   // record now persists all three ids, so the attempt record and the
   // pre-recorded prior-id entries it superseded are resolved. Then retire
   // what the binding replaced and sweep.
+  lease.stop();
   await deps.cleanupJournal
     .update((entries) => {
       const resolved = new Set([cleanupEntryKey(attempt)]);
@@ -1684,7 +1767,11 @@ async function runUnsubscribe(
       `Another subscribe/unsubscribe of ${provider} ${resource} appears to be in progress. Wait for it to finish and re-run.`
     );
   }
-  const releaseReservation = () => removeCleanupEntry(deps, reservation).catch(() => undefined);
+  const unsubscribeLease = startLeaseRenewal(deps, reservation.owner!.attemptId);
+  const releaseReservation = () => {
+    unsubscribeLease.stop();
+    return removeCleanupEntry(deps, reservation).catch(() => undefined);
+  };
 
   // The binding is read only AFTER the lease is held — the lease is the
   // linearization point, so these ids cannot be a stale snapshot from before
@@ -1716,6 +1803,7 @@ async function runUnsubscribe(
 
     const webhookSubId = binding.webhookSubscriptionId;
     if (webhookSubId) {
+      unsubscribeLease.assertHealthy(`${provider} ${resource}`);
       const bindingWorkspaceId = binding.webhookSubscriptionWorkspaceId;
       const entry: PendingCleanupEntry = {
         kind: 'relayfile-webhook-subscription',
@@ -1735,6 +1823,7 @@ async function runUnsubscribe(
         }
       }
     }
+    unsubscribeLease.assertHealthy(`${provider} ${resource}`);
     try {
       await relay.webhooks.delete(binding.webhookId);
     } catch (err) {
@@ -1747,6 +1836,7 @@ async function runUnsubscribe(
         if (!recorded) abortRetainingBinding('relay inbound webhook');
       }
     }
+    unsubscribeLease.assertHealthy(`${provider} ${resource}`);
     try {
       await relay.webhooks.unsubscribe(binding.subscriptionId);
     } catch (err) {
@@ -1759,6 +1849,7 @@ async function runUnsubscribe(
         if (!recorded) abortRetainingBinding('relay event subscription');
       }
     }
+    unsubscribeLease.assertHealthy(`${provider} ${resource}`);
     await deps.relayfile.unbind(provider, pathGlob);
   } finally {
     await releaseReservation();
