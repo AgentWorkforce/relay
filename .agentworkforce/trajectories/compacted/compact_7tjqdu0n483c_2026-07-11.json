@@ -1,0 +1,51 @@
+{
+  "id": "compact_7tjqdu0n483c",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-07-11T12:38:00.491Z",
+  "sourceTrajectories": [
+    "traj_x42w8bh32jru",
+    "traj_to027djse2e8",
+    "traj_qolvy5hjn62e"
+  ],
+  "dateRange": {
+    "start": "2026-07-11T12:26:59.246Z",
+    "end": "2026-07-11T12:37:30.121Z"
+  },
+  "summary": {
+    "totalDecisions": 3,
+    "totalEvents": 4,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Retire IDs across agent removal with bounded FIFO history",
+          "chosen": "Retire IDs across agent removal with bounded FIFO history",
+          "reasoning": "A buffered frame can arrive after release and same-name re-registration, so removal must preserve the displaced ID. A 512-entry FIFO bounds churn while explicit reactivation removes an ID from retirement.",
+          "fromTrajectory": "traj_x42w8bh32jru"
+        },
+        {
+          "question": "Reject only identities explicitly displaced by an active replacement",
+          "chosen": "Reject only identities explicitly displaced by an active replacement",
+          "reasoning": "Tracking retired IDs distinguishes buffered old frames from unseeded new identities, preserving the prior high-sequence Gap and legacy first-delivery fallback while enforcing same-name replacement isolation.",
+          "fromTrajectory": "traj_to027djse2e8"
+        },
+        {
+          "question": "Track active agent IDs by name inside FleetDeliveryBook",
+          "chosen": "Track active agent IDs by name inside FleetDeliveryBook",
+          "reasoning": "This rejects buffered frames for retired same-name identities before seq-zero or seq-one surfacing, while unknown names retain legacy first-delivery behavior and runtime inventory is not required.",
+          "fromTrajectory": "traj_qolvy5hjn62e"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
