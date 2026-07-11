@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay integration subscribe|unsubscribe` now safely persists and retires each relayfile-cloud inbound webhook subscription during replacement, rollback, and normal removal. The `@relayfile/client@0.10.21` pin enables full recovery of interrupted cloud creates.
 - Swift SDK: depending on this repository by git URL no longer fails with `no such module 'Relaycast'` — the root `Package.swift` now declares the `relaycast` dependency `AgentRelaySDK` imports.
 - `HarnessDriverClient.spawn()` now polls the broker's startup handshake for the full `startupTimeoutMs` budget (default 45s) instead of a fixed ~10s, so a slow-but-healthy Relaycast handshake that keeps answering `503` while warming up is no longer misreported as a spawn failure.
 - `agent-relay integration subscribe` now resolves provider-native `--resource` values through relayfile before binding, so Slack channel names, GitHub repos, Linear team keys, and Telegram chats bind to matching relayfile VFS globs while explicit `/`-prefixed globs still work.
@@ -116,6 +117,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace `agent-relay up --no-dashboard` with `agent-relay up --background`.
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
+
+## [9.2.4] - 2026-07-11
+
+### Changed
+
+- Drop unused binding in the symlink-refusal test
+- Faithful fake journal-lock helper for broker-less CI jobs
+- Force text diff rendering for the cleanup journal source
+- Fix clippy manual_filter baseline lints
+
+### Fixed
+
+- Use floating Node 22 before npm@latest install in publish workflow
+- Activate relayfile v3 crash recovery
+- Close the two remaining Cubic threads on the journal lifecycle
+- Periodic lease renewal + post-rename-safe temp cleanup + review polish
+- Open journal directories with FILE_FLAG_BACKUP_SEMANTICS on Windows
+- Future-dated heartbeats expire — the owner lease is truly bounded
+- Close the four open review findings on the journal lock
+- Framed journal commit envelope — truncation can never replace good contents
+- Helper-owned journal commit under the held kernel lock
+- Journal kernel lock via broker helper; drop native addon (Bun-safe)
+- Non-append lock descriptor and deterministic contention-test cleanup
+- Kernel advisory lock for the cleanup journal (stable inode, crash-released)
+- Mandatory pre-create workspace pin, fail-closed lockfile, review polish
+- Serialize stale-attempt recovery with the lifecycle lease
+- Concurrency-safe lifecycle leases, workspace pinning, and deterministic crash recovery
+- Crash-safe, retryable webhook cleanup via a durable journal
+- Retain failed webhook cleanup state
+- Clean up inbound webhook subscriptions
 
 ## [9.2.3] - 2026-07-08
 

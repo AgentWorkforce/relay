@@ -29,7 +29,7 @@ const ORCHESTRATOR_HARNESS_ENV: &str = "AGENT_RELAY_ORCHESTRATOR_HARNESS";
 /// treated the same as "unset" so an accidentally-blank secret doesn't trip
 /// us into trying to talk to PostHog with an invalid key.
 fn posthog_api_key() -> Option<&'static str> {
-    POSTHOG_API_KEY.filter(|&k| !k.is_empty())
+    POSTHOG_API_KEY.filter(|k| !k.is_empty())
 }
 
 const FIRST_RUN_NOTICE: &str = "\
@@ -938,13 +938,13 @@ mod tests {
         // it from a test. What we can guarantee is the wrapper's contract:
         // a `Some("")` from `option_env!` must round-trip to `None` so the
         // disabled path takes over. Verify that contract on a synthetic
-        // `Option<&str>` matching the same `and_then` shape.
+        // `Option<&str>` matching the same `filter` shape.
         let synthetic: Option<&str> = Some("");
-        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        let normalized = synthetic.filter(|k| !k.is_empty());
         assert!(normalized.is_none());
 
         let synthetic: Option<&str> = Some("phc_abc");
-        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        let normalized = synthetic.filter(|k| !k.is_empty());
         assert_eq!(normalized, Some("phc_abc"));
     }
 }
