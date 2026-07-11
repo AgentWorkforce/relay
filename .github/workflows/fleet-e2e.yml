@@ -63,7 +63,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: e994671c1ea5cae1ee8b6e2f233ba44b3be8098e # relaycast v6.0.0 (node-provider engine)
+          ref: 58a93422a5a5dc568f2eaffc0ad55fe656a78288 # relaycast v6.0.1 (node-provider engine + self-host write gate, trigger/reschedule node-scoped fixes)
           path: relaycast-engine
 
       - name: Setup Node.js
