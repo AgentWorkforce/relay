@@ -3,11 +3,7 @@
   "version": 1,
   "type": "compacted",
   "compactedAt": "2026-07-11T12:38:00.491Z",
-  "sourceTrajectories": [
-    "traj_x42w8bh32jru",
-    "traj_to027djse2e8",
-    "traj_qolvy5hjn62e"
-  ],
+  "sourceTrajectories": ["traj_x42w8bh32jru", "traj_to027djse2e8", "traj_qolvy5hjn62e"],
   "dateRange": {
     "start": "2026-07-11T12:26:59.246Z",
     "end": "2026-07-11T12:37:30.121Z"
@@ -15,9 +11,7 @@
   "summary": {
     "totalDecisions": 3,
     "totalEvents": 4,
-    "uniqueAgents": [
-      "default"
-    ]
+    "uniqueAgents": ["default"]
   },
   "decisionGroups": [
     {
