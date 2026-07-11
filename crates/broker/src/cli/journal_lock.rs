@@ -177,6 +177,18 @@ fn parse_frame(input: &[u8]) -> std::result::Result<Option<&[u8]>, String> {
 /// and a failed one leaves the journal byte-for-byte unmodified (any temp
 /// residue from a failure path is cleaned up before returning).
 fn replace_journal(journal: &Path, payload: &[u8]) -> Result<()> {
+    replace_journal_impl(journal, payload, |dir, _consumed_tmp| sync_dir(dir))
+}
+
+/// The `sync` seam receives (dir, consumed_tmp) so tests can inject a
+/// POST-RENAME failure and recreate the exact generated temp pathname —
+/// proving the failure path never unlinks a rival file there. Production
+/// ignores the tmp argument.
+fn replace_journal_impl(
+    journal: &Path,
+    payload: &[u8],
+    sync: impl FnOnce(&Path, &Path) -> Result<()>,
+) -> Result<()> {
     let dir = journal
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -201,7 +213,7 @@ fn replace_journal(journal: &Path, payload: &[u8]) -> Result<()> {
     }
     // The rename already landed; a directory-fsync failure propagates but
     // must not touch the (consumed) temp path.
-    sync_dir(&dir)
+    sync(&dir, &tmp)
 }
 
 /// Open a directory handle for fsync. Windows requires
@@ -485,27 +497,34 @@ mod tests {
     }
 
     #[test]
-    fn post_rename_failures_do_not_unlink_recreated_temp_names() {
-        // Structure regression for the cleanup ordering: after a SUCCESSFUL
-        // rename, replace_journal must not remove_file any tmp path. We
-        // simulate a rival recreating a same-shaped tmp file right after our
-        // commit and assert a subsequent successful run leaves it alone
-        // (cleanup only ever fires on pre-rename failures).
+    fn post_rename_sync_failure_never_unlinks_a_rival_at_the_exact_temp_path() {
+        // Deterministic seam: the injected sync fails AFTER the rename and,
+        // before failing, recreates the EXACT consumed temp pathname as a
+        // rival's file. The old cleanup ordering (remove_file on ANY error)
+        // would delete it; the fixed ordering must propagate the error while
+        // the new journal payload AND the rival bytes both survive.
         let dir = temp_dir("postrename");
         let journal = dir.join("pending-cleanups.json");
         std::fs::write(&journal, b"[]\n").unwrap();
-        let rival = dir.join(format!(
-            "pending-cleanups.json.tmp-{}-decoy",
-            std::process::id()
-        ));
-        std::fs::write(&rival, b"rival bytes").unwrap();
 
-        replace_journal(&journal, b"[1]\n").unwrap();
-        assert_eq!(std::fs::read(&journal).unwrap(), b"[1]\n");
+        let mut rival_path: Option<PathBuf> = None;
+        let result = replace_journal_impl(&journal, b"[1]\n", |_dir, consumed_tmp| {
+            std::fs::write(consumed_tmp, b"rival bytes").unwrap();
+            rival_path = Some(consumed_tmp.to_path_buf());
+            anyhow::bail!("injected post-rename fsync failure")
+        });
+
+        assert!(result.is_err(), "post-rename sync failures must propagate");
+        assert_eq!(
+            std::fs::read(&journal).unwrap(),
+            b"[1]\n",
+            "the rename landed before the injected failure"
+        );
+        let rival = rival_path.expect("sync seam ran post-rename");
         assert_eq!(
             std::fs::read(&rival).unwrap(),
             b"rival bytes",
-            "a foreign tmp-shaped file must never be unlinked"
+            "the rival file at the exact consumed temp path must survive"
         );
     }
 

@@ -565,6 +565,55 @@ describe('integration subscribe', () => {
     }
   });
 
+  it('a renewal tick in flight at stop() settles as a no-op after success (P3)', async () => {
+    // Hold a renewal tick across the lifecycle's completion: the lifecycle
+    // removes its reservation and stops the timer; releasing the held tick
+    // afterwards must neither warn, nor latch, nor resurrect the record,
+    // nor reject unhandled.
+    const saved = { ...OWNER_LEASE_CONFIG };
+    Object.assign(OWNER_LEASE_CONFIG, { leaseMs: 400, renewalMs: 30, skewMs: 100 });
+    try {
+      const journal = memoryJournal();
+      let holdRenewals = false;
+      let releaseHeld: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => {
+        releaseHeld = resolve;
+      });
+      const inner = journal.update.getMockImplementation()!;
+      journal.update.mockImplementation(async (mutate) => {
+        if (holdRenewals) {
+          holdRenewals = false; // hold exactly one tick
+          await held;
+        }
+        await inner(mutate);
+      });
+      const relayfile = createRelayfileMock([], {
+        createWebhookSubscription: vi.fn(async () => {
+          holdRenewals = true;
+          // Long enough for one renewal tick to fire and block on the gate.
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return { subscriptionId: 'whsub_1' };
+        }),
+      });
+      const { program, error, exit } = harness({ relayfile, journal });
+
+      await program.parseAsync(ARGS(), { from: 'user' });
+      expect(exit).not.toHaveBeenCalled();
+
+      // Lifecycle done, reservation removed, timer stopped — now release the
+      // held tick and let it settle.
+      releaseHeld!();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      expect(journal.entries().filter((e) => e.kind === 'subscribe-attempt')).toEqual([]);
+      for (const call of error.mock.calls) {
+        expect(String(call[0])).not.toContain('lifecycle lease');
+      }
+    } finally {
+      Object.assign(OWNER_LEASE_CONFIG, saved);
+    }
+  });
+
   it('latches a renewal failure and aborts before further external mutations (P1)', async () => {
     const saved = { ...OWNER_LEASE_CONFIG };
     Object.assign(OWNER_LEASE_CONFIG, { leaseMs: 250, renewalMs: 40, skewMs: 100 });

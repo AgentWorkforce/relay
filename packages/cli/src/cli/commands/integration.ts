@@ -819,8 +819,9 @@ function startLeaseRenewal(
 ): { stop(): void; assertHealthy(context: string): void } {
   let failed: string | undefined;
   let renewing = false;
+  let stopped = false;
   const timer = setInterval(() => {
-    if (renewing || failed) return;
+    if (renewing || failed || stopped) return;
     renewing = true;
     let matched = 0;
     deps.cleanupJournal
@@ -832,6 +833,10 @@ function startLeaseRenewal(
         })
       )
       .then(() => {
+        // A tick that was already in flight when stop() ran settles as a
+        // no-op: after settle removed the record, its zero-match would
+        // otherwise latch a FALSE lost-lease warning.
+        if (stopped) return;
         if (matched === 0) {
           // The owned record is GONE — the lease was lost (e.g. reclaimed);
           // latch so no further external mutation proceeds on it.
@@ -842,6 +847,7 @@ function startLeaseRenewal(
         }
       })
       .catch((err) => {
+        if (stopped) return;
         failed = err instanceof Error ? err.message : String(err);
         deps.error(
           'Warning: could not renew the lifecycle lease; aborting before any further external mutation.'
@@ -854,6 +860,8 @@ function startLeaseRenewal(
   timer.unref?.();
   return {
     stop() {
+      // Latch BEFORE clearing so an in-flight tick's settlement observes it.
+      stopped = true;
       clearInterval(timer);
     },
     assertHealthy(context: string) {
