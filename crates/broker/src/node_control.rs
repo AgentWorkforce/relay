@@ -512,6 +512,7 @@ pub(crate) enum DeliveryDecision {
     Duplicate { up_to_seq: u64 },
     Stale { up_to_seq: u64 },
     Gap { up_to_seq: u64 },
+    IdentityReject,
 }
 
 /// Per-agent set of recently-seen `msg_id`s, capped at a fixed size with FIFO
@@ -520,7 +521,7 @@ pub(crate) enum DeliveryDecision {
 /// receipts, action results) all share seq 0, so `msg_id`-based dedup is the
 /// only duplicate-suppression mechanism available for them; the cap is generous
 /// enough that legitimate same-frame retries are still recognized.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct SeenMsgIds {
     set: HashSet<String>,
     order: VecDeque<String>,
@@ -547,17 +548,24 @@ impl SeenMsgIds {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct AgentDeliveryCursor {
     agent_name: String,
     up_to_seq: u64,
     seen_msg_ids: SeenMsgIds,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveAgentBinding {
+    agent_id: String,
+    authoritative: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FleetDeliveryBook {
     agents: HashMap<String, AgentDeliveryCursor>,
-    active_agent_ids_by_name: HashMap<String, String>,
+    active_agent_bindings_by_name: HashMap<String, ActiveAgentBinding>,
+    active_agent_names_by_id: HashMap<String, String>,
     retired_agent_names_by_id: HashMap<String, String>,
     retired_agent_id_order: VecDeque<String>,
 }
@@ -584,32 +592,83 @@ impl FleetDeliveryBook {
         self.retired_agent_id_order.push_back(agent_id);
     }
 
-    fn activate_identity(&mut self, agent: &str, agent_id: &str) {
-        if let Some(previous_name) = self
-            .agents
-            .get(agent_id)
-            .map(|cursor| cursor.agent_name.clone())
-            .filter(|previous_name| previous_name != agent)
-        {
-            self.active_agent_ids_by_name.remove(&previous_name);
-        }
-        if let Some(previous_agent_id) = self
-            .active_agent_ids_by_name
-            .insert(agent.to_string(), agent_id.to_string())
-        {
-            if previous_agent_id != agent_id {
-                self.agents.remove(&previous_agent_id);
-                self.retire_identity(previous_agent_id, agent.to_string());
-            }
-        }
-        self.forget_retired_identity(agent_id);
+    fn nonauthoritative_binding_conflicts(&self, agent: &str, agent_id: &str) -> bool {
+        self.active_agent_bindings_by_name
+            .get(agent)
+            .is_some_and(|binding| binding.authoritative && binding.agent_id != agent_id)
+            || self
+                .active_agent_names_by_id
+                .get(agent_id)
+                .is_some_and(|active_name| active_name != agent)
+            || self.retired_agent_names_by_id.contains_key(agent_id)
     }
 
-    /// Seed a cursor returned by Relaycast for this exact agent identity.
-    ///
-    /// The immutable `agent_id` is the key: a later agent reusing the same name
-    /// must not inherit the old identity's cumulative ACK position.
-    pub(crate) fn seed_authoritative_cursor(
+    fn bind_identity(&mut self, agent: &str, agent_id: &str, authoritative: bool) -> bool {
+        if !authoritative && self.nonauthoritative_binding_conflicts(agent, agent_id) {
+            return false;
+        }
+
+        self.forget_retired_identity(agent_id);
+
+        if let Some(previous_name) = self
+            .active_agent_names_by_id
+            .get(agent_id)
+            .filter(|previous_name| previous_name.as_str() != agent)
+            .cloned()
+        {
+            if self
+                .active_agent_bindings_by_name
+                .get(&previous_name)
+                .is_some_and(|binding| binding.agent_id == agent_id)
+            {
+                self.active_agent_bindings_by_name.remove(&previous_name);
+            }
+            self.active_agent_names_by_id.remove(agent_id);
+            if let Some(cursor) = self.agents.get_mut(agent_id) {
+                cursor.agent_name = agent.to_string();
+            }
+        }
+
+        if let Some(existing) = self.active_agent_bindings_by_name.get_mut(agent) {
+            if existing.agent_id == agent_id {
+                existing.authoritative |= authoritative;
+                self.active_agent_names_by_id
+                    .insert(agent_id.to_string(), agent.to_string());
+                return true;
+            }
+        }
+
+        if let Some(previous) = self.active_agent_bindings_by_name.remove(agent) {
+            self.active_agent_names_by_id.remove(&previous.agent_id);
+            self.agents.remove(&previous.agent_id);
+            self.retire_identity(previous.agent_id, agent.to_string());
+        }
+
+        self.active_agent_bindings_by_name.insert(
+            agent.to_string(),
+            ActiveAgentBinding {
+                agent_id: agent_id.to_string(),
+                authoritative,
+            },
+        );
+        self.active_agent_names_by_id
+            .insert(agent_id.to_string(), agent.to_string());
+        true
+    }
+
+    /// Bind a name to the immutable identity confirmed by `agent.register`.
+    pub(crate) fn bind_authoritative_identity(
+        &mut self,
+        agent: impl Into<String>,
+        agent_id: impl Into<String>,
+    ) {
+        let agent = agent.into();
+        let agent_id = agent_id.into();
+        self.bind_identity(&agent, &agent_id, true);
+    }
+
+    /// Seed Relaycast's cumulative cursor after identity authority is bound.
+    pub(crate) fn seed_cursor(
         &mut self,
         agent: impl Into<String>,
         agent_id: impl Into<String>,
@@ -617,7 +676,10 @@ impl FleetDeliveryBook {
     ) {
         let agent = agent.into();
         let agent_id = agent_id.into();
-        self.activate_identity(&agent, &agent_id);
+        debug_assert!(self
+            .active_agent_bindings_by_name
+            .get(&agent)
+            .is_some_and(|binding| binding.agent_id == agent_id));
         self.agents.insert(
             agent_id,
             AgentDeliveryCursor {
@@ -628,23 +690,42 @@ impl FleetDeliveryBook {
         );
     }
 
+    fn active_up_to_seq(&self, agent: &str) -> u64 {
+        self.active_agent_bindings_by_name
+            .get(agent)
+            .and_then(|binding| self.agents.get(&binding.agent_id))
+            .map_or(0, |cursor| cursor.up_to_seq)
+    }
+
     pub(crate) fn observe(&self, deliver: &Deliver) -> DeliveryDecision {
-        let cursor = self.agents.get(&deliver.agent_id);
-        if cursor.is_none() {
-            // Surfacing routes by reusable agent name. Reject a buffered frame
-            // from a known replaced identity before either first-delivery fallback.
-            if self
-                .retired_agent_names_by_id
-                .get(&deliver.agent_id)
-                .is_some_and(|retired_name| retired_name == &deliver.agent)
-            {
-                let up_to_seq = self
-                    .active_agent_ids_by_name
-                    .get(&deliver.agent)
-                    .and_then(|active_agent_id| self.agents.get(active_agent_id))
-                    .map_or(0, |active| active.up_to_seq);
-                return DeliveryDecision::Stale { up_to_seq };
+        if self
+            .active_agent_names_by_id
+            .get(&deliver.agent_id)
+            .is_some_and(|active_name| active_name != &deliver.agent)
+        {
+            return DeliveryDecision::IdentityReject;
+        }
+
+        if let Some(retired_name) = self.retired_agent_names_by_id.get(&deliver.agent_id) {
+            if retired_name != &deliver.agent {
+                return DeliveryDecision::IdentityReject;
             }
+            return DeliveryDecision::Stale {
+                up_to_seq: self.active_up_to_seq(&deliver.agent),
+            };
+        }
+
+        if self
+            .active_agent_bindings_by_name
+            .get(&deliver.agent)
+            .is_some_and(|binding| binding.authoritative && binding.agent_id != deliver.agent_id)
+        {
+            return DeliveryDecision::IdentityReject;
+        }
+
+        let cursor = self.agents.get(&deliver.agent_id);
+        if cursor.is_some_and(|cursor| cursor.agent_name != deliver.agent) {
+            return DeliveryDecision::IdentityReject;
         }
 
         // `seq:0` is the engine's fan-out family (reactions, read receipts, and
@@ -697,7 +778,9 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
-        self.activate_identity(&deliver.agent, &deliver.agent_id);
+        if !self.bind_identity(&deliver.agent, &deliver.agent_id, false) {
+            return self.active_up_to_seq(&deliver.agent);
+        }
         let cursor = self
             .agents
             .entry(deliver.agent_id.clone())
@@ -720,9 +803,10 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn remove_agent(&mut self, agent: &str) {
-        if let Some(agent_id) = self.active_agent_ids_by_name.remove(agent) {
-            self.agents.remove(&agent_id);
-            self.retire_identity(agent_id, agent.to_string());
+        if let Some(binding) = self.active_agent_bindings_by_name.remove(agent) {
+            self.active_agent_names_by_id.remove(&binding.agent_id);
+            self.agents.remove(&binding.agent_id);
+            self.retire_identity(binding.agent_id, agent.to_string());
         }
         let orphaned_ids = self
             .agents
@@ -732,6 +816,7 @@ impl FleetDeliveryBook {
             .collect::<Vec<_>>();
         for agent_id in orphaned_ids {
             self.agents.remove(&agent_id);
+            self.active_agent_names_by_id.remove(&agent_id);
             self.retire_identity(agent_id, agent.to_string());
         }
     }
@@ -1707,6 +1792,29 @@ mod tests {
     use super::*;
     use crate::fleet_wire::DeliveryMode;
 
+    fn seed_authoritative_cursor(
+        book: &mut FleetDeliveryBook,
+        agent: &str,
+        agent_id: &str,
+        up_to_seq: u64,
+    ) {
+        book.bind_authoritative_identity(agent, agent_id);
+        book.seed_cursor(agent, agent_id, up_to_seq);
+    }
+
+    fn test_delivery(agent: &str, agent_id: &str, seq: u64) -> Deliver {
+        Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: agent.to_string(),
+            agent_id: agent_id.to_string(),
+            delivery_id: format!("delivery-{agent_id}-{seq}"),
+            msg_id: format!("message-{agent_id}-{seq}"),
+            seq,
+            mode: DeliveryMode::Wait,
+            payload: json!({"type": "message.created", "text": "test"}),
+        }
+    }
+
     #[test]
     fn derive_node_id_is_stable_for_same_seed_and_cwd() {
         let a = derive_node_id("node_seed123", "/Users/will/Projects/relay", "workspace-a");
@@ -1943,7 +2051,7 @@ mod tests {
     #[test]
     fn delivery_book_allows_seeded_resume_cursor() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_authoritative_cursor("agent-a", "agent-a-id", 42);
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 42);
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
@@ -1965,8 +2073,8 @@ mod tests {
     #[test]
     fn delivery_book_scopes_authoritative_cursors_to_agent_identity() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_authoritative_cursor("shared-name", "agent-old", 42);
-        book.seed_authoritative_cursor("other", "agent-other", 7);
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
+        seed_authoritative_cursor(&mut book, "other", "agent-other", 7);
 
         let resumed = Deliver {
             v: FLEET_WIRE_VERSION,
@@ -1989,11 +2097,11 @@ mod tests {
         };
         assert_eq!(
             book.observe(&reused_name),
-            DeliveryDecision::Gap { up_to_seq: 0 },
-            "a new identity must not inherit the previous agent's cursor"
+            DeliveryDecision::IdentityReject,
+            "an authoritative identity must reject an unregistered replacement"
         );
 
-        book.seed_authoritative_cursor("shared-name", "agent-new", 0);
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-new", 0);
         let replacement_first = Deliver {
             delivery_id: "delivery-1".to_string(),
             msg_id: "msg-1".to_string(),
@@ -2024,9 +2132,9 @@ mod tests {
     #[test]
     fn delivery_book_rejects_seq_one_from_replaced_identity() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_authoritative_cursor("shared-name", "agent-old", 42);
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
         book.remove_agent("shared-name");
-        book.seed_authoritative_cursor("shared-name", "agent-new", 0);
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-new", 0);
 
         let stale = Deliver {
             v: FLEET_WIRE_VERSION,
@@ -2059,9 +2167,9 @@ mod tests {
     #[test]
     fn delivery_book_rejects_seq_zero_from_replaced_identity() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_authoritative_cursor("shared-name", "agent-old", 42);
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
         book.remove_agent("shared-name");
-        book.seed_authoritative_cursor("shared-name", "agent-new", 7);
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-new", 7);
 
         let stale = Deliver {
             v: FLEET_WIRE_VERSION,
@@ -2088,6 +2196,111 @@ mod tests {
         assert_eq!(
             book.observe(&current),
             DeliveryDecision::Deliver { up_to_seq: 7 }
+        );
+    }
+
+    #[test]
+    fn delivery_book_preserves_legacy_first_sequence_compatibility() {
+        let mut book = FleetDeliveryBook::default();
+        let original = test_delivery("shared-name", "legacy-old", 1);
+        assert_eq!(
+            book.observe(&original),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+        assert_eq!(book.commit_delivered(&original), 1);
+        assert!(!book.active_agent_bindings_by_name["shared-name"].authoritative);
+
+        let high_sequence = test_delivery("shared-name", "legacy-new", 43);
+        assert_eq!(
+            book.observe(&high_sequence),
+            DeliveryDecision::Gap { up_to_seq: 0 },
+            "a provisional binding must preserve the legacy gap response"
+        );
+
+        let replacement_first = test_delivery("shared-name", "legacy-new", 1);
+        assert_eq!(
+            book.observe(&replacement_first),
+            DeliveryDecision::Deliver { up_to_seq: 1 },
+            "a provisional binding must allow a legacy replacement's first frame"
+        );
+    }
+
+    #[test]
+    fn delivery_book_authoritative_binding_survives_retirement_eviction() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
+        book.remove_agent("shared-name");
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-current", 7);
+
+        for i in 0..=FleetDeliveryBook::RETIRED_AGENT_ID_CAPACITY {
+            let name = format!("churn-{i}");
+            let agent_id = format!("churn-id-{i}");
+            seed_authoritative_cursor(&mut book, &name, &agent_id, 0);
+            book.remove_agent(&name);
+        }
+        assert!(!book.retired_agent_names_by_id.contains_key("agent-old"));
+
+        let snapshot = book.clone();
+        for seq in [0, 1] {
+            assert_eq!(
+                book.observe(&test_delivery("shared-name", "agent-old", seq)),
+                DeliveryDecision::IdentityReject
+            );
+            assert_eq!(book, snapshot, "identity rejection must not mutate state");
+        }
+    }
+
+    #[test]
+    fn delivery_book_rejects_known_ids_under_a_different_name() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "right-name", "known-id", 5);
+
+        let active_snapshot = book.clone();
+        assert_eq!(
+            book.observe(&test_delivery("wrong-name", "known-id", 0)),
+            DeliveryDecision::IdentityReject
+        );
+        assert_eq!(book, active_snapshot);
+
+        book.remove_agent("right-name");
+        let retired_snapshot = book.clone();
+        assert_eq!(
+            book.observe(&test_delivery("wrong-name", "known-id", 1)),
+            DeliveryDecision::IdentityReject
+        );
+        assert_eq!(book, retired_snapshot);
+    }
+
+    #[test]
+    fn delivery_book_nonauthoritative_commit_preserves_authority() {
+        let mut book = FleetDeliveryBook::default();
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        let first = test_delivery("agent-a", "agent-a-id", 1);
+        assert_eq!(
+            book.observe(&first),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+        assert_eq!(book.commit_delivered(&first), 1);
+        assert!(book.active_agent_bindings_by_name["agent-a"].authoritative);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "impostor-id", 1)),
+            DeliveryDecision::IdentityReject
+        );
+    }
+
+    #[test]
+    fn delivery_book_same_id_reactivation_clears_retirement() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 42);
+        book.remove_agent("agent-a");
+        assert!(book.retired_agent_names_by_id.contains_key("agent-a-id"));
+
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        assert!(!book.retired_agent_names_by_id.contains_key("agent-a-id"));
+        assert!(book.active_agent_bindings_by_name["agent-a"].authoritative);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 1)),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
         );
     }
 
@@ -2146,7 +2359,7 @@ mod tests {
             DeliveryDecision::Stale { up_to_seq: 0 }
         );
 
-        book.seed_authoritative_cursor("agent-a", "agent-a-id", 0);
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 0);
         assert_eq!(
             book.observe(&deliver),
             DeliveryDecision::Deliver { up_to_seq: 1 }
@@ -2159,7 +2372,7 @@ mod tests {
         for i in 0..(FleetDeliveryBook::RETIRED_AGENT_ID_CAPACITY + 10) {
             let name = format!("agent-{i}");
             let agent_id = format!("agent-id-{i}");
-            book.seed_authoritative_cursor(&name, &agent_id, 0);
+            seed_authoritative_cursor(&mut book, &name, &agent_id, 0);
             book.remove_agent(&name);
         }
 
@@ -2181,7 +2394,7 @@ mod tests {
     #[test]
     fn delivery_book_surfaces_seq_zero_fanout_without_advancing_cursor() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_authoritative_cursor("agent-a", "agent-a-id", 5);
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 5);
 
         // A seq:0 fan-out frame (e.g. action.completed) is always surfaced,
         // bypassing the monotonic-sequence gate, and acks the current cursor.
