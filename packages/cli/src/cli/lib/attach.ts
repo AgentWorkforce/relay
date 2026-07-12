@@ -214,6 +214,54 @@ export class StreamSyncBuffer {
   }
 }
 
+/**
+ * Conservative terminal-reset control sequence emitted on detach (see #1247).
+ *
+ * A drive/view/passthrough session paints the agent's snapshot (which now
+ * re-emits terminal modes) and then relays the live stream, either of which can
+ * leave the *local* terminal in application-cursor-keys, mouse-reporting,
+ * bracketed-paste, or alt-screen mode. Without a reset on detach the user is
+ * dropped back to their shell with arrows emitting escape codes, mouse clicks
+ * spewing coordinates, or a blank alt screen.
+ *
+ * The sequence is intentionally direction-explicit and idempotent: leave the
+ * alternate screen, show the cursor, restore numeric keypad + application
+ * cursor keys off, autowrap on, origin off, disable every mouse-reporting mode
+ * and bracketed paste, reset the scroll region to full screen, and clear
+ * pending SGR. Only written when stdout is a TTY, consistent with how the
+ * sessions gate raw-mode restore and the status line.
+ */
+export const LOCAL_TERMINAL_RESET_SEQUENCE =
+  '\x1b[?1049l' + // leave alternate screen buffer
+  '\x1b[?25h' + // show cursor (DECTCEM)
+  '\x1b[?1l' + // application cursor keys off (DECCKM)
+  '\x1b[?7h' + // autowrap on (DECAWM)
+  '\x1b[?6l' + // origin mode off (DECOM)
+  '\x1b[?1000l' + // mouse click reporting off
+  '\x1b[?1002l' + // mouse button-event (drag) reporting off
+  '\x1b[?1003l' + // mouse any-event (motion) reporting off
+  '\x1b[?1004l' + // focus in/out reporting off
+  '\x1b[?1005l' + // UTF-8 mouse coordinates off
+  '\x1b[?1006l' + // SGR mouse coordinates off
+  '\x1b[?1007l' + // alternate scroll off
+  '\x1b[?2004l' + // bracketed paste off
+  '\x1b>' + // keypad normal (DECKPNM)
+  '\x1b[r' + // reset scroll region to full screen (DECSTBM)
+  '\x1b[0m'; // reset SGR
+
+/**
+ * Emit {@link LOCAL_TERMINAL_RESET_SEQUENCE} to the local terminal on detach,
+ * but only when stdout is a TTY. A no-op for piped/redirected stdout so the
+ * reset never corrupts a captured log.
+ */
+export function resetLocalTerminalOnDetach(
+  write: (chunk: string) => void,
+  isTty: boolean
+): void {
+  if (!isTty) return;
+  write(LOCAL_TERMINAL_RESET_SEQUENCE);
+}
+
 /** ----- Interactive attach prep helpers ----- */
 
 /** Validated attach target: trimmed agent name + resolved broker connection. */

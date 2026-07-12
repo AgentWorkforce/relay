@@ -968,6 +968,36 @@ describe('runDriveSession', () => {
     expect(writes.length).toBe(before);
   });
 
+  // ---- terminal reset on detach (item #1247) ----
+
+  it('emits a conservative terminal reset on detach when stdout is a TTY', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    stdin.type(Buffer.from([0x03])); // Ctrl+C → detach
+    await sessionPromise;
+
+    // The replayed snapshot + live stream may have left the local terminal in
+    // alt-screen / mouse / bracketed-paste mode; detach must heal it.
+    const reset = writes.find((w) => w.includes('\x1b[?1049l'));
+    expect(reset).toBeDefined();
+    expect(reset).toContain('\x1b[?25h'); // show cursor
+    expect(reset).toContain('\x1b[?1000l'); // mouse reporting off
+    expect(reset).toContain('\x1b[?2004l'); // bracketed paste off
+  });
+
+  it('does not emit a terminal reset on detach when stdout is not a TTY', async () => {
+    const { deps, sockets, writes, signals } = createHarness({ terminalSize: null });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    expect(writes.some((w) => w.includes('\x1b[?1049l'))).toBe(false);
+  });
+
   // ---- status line boundary-hold (item 4) ----
 
   it('holds the status repaint while a worker chunk ends mid escape sequence', async () => {

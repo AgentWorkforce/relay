@@ -4,6 +4,8 @@ import {
   AnsiBoundaryScanner,
   captureAndRenderSnapshot,
   createBackpressureAwareWriter,
+  LOCAL_TERMINAL_RESET_SEQUENCE,
+  resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
   StatusLineController,
   StreamSyncBuffer,
@@ -518,6 +520,28 @@ describe('restoreInboundDeliveryModeOnDetach', () => {
     });
     expect(f.puts).toEqual([]);
     expect(logs.some((a) => String(a[0]).includes('could not restore'))).toBe(true);
+  });
+});
+
+describe('resetLocalTerminalOnDetach', () => {
+  it('writes the full reset sequence when stdout is a TTY', () => {
+    const writes: string[] = [];
+    resetLocalTerminalOnDetach((c) => writes.push(c), true);
+    expect(writes).toEqual([LOCAL_TERMINAL_RESET_SEQUENCE]);
+  });
+
+  it('is a no-op when stdout is not a TTY', () => {
+    const writes: string[] = [];
+    resetLocalTerminalOnDetach((c) => writes.push(c), false);
+    expect(writes).toEqual([]);
+  });
+
+  it('heals the modes a snapshot/live stream can leave enabled', () => {
+    // Spot-check the load-bearing controls: leave alt-screen, show cursor,
+    // disable mouse reporting + bracketed paste, and reset app cursor keys.
+    for (const seq of ['\x1b[?1049l', '\x1b[?25h', '\x1b[?1l', '\x1b[?1000l', '\x1b[?1006l', '\x1b[?2004l']) {
+      expect(LOCAL_TERMINAL_RESET_SEQUENCE).toContain(seq);
+    }
   });
 });
 
