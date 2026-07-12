@@ -18,10 +18,12 @@ Added per-worker byte offsets to worker_stream + snapshot response (relay-pty co
 ## Key Decisions
 
 ### Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch
+
 - **Chose:** Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch
 - **Reasoning:** Workstreams share files (attach-drive.ts, pty_worker.rs); sequential agents avoid conflicts. Opus for the 4 hard workstreams (stream cursor sync, async loop, session robustness, snapshot modes), Sonnet for mechanical transport/misc fixes
 
 ### Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset
+
 - **Chose:** Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset
 - **Reasoning:** Grid is causally ahead of the stream; offset must reflect what the grid painted, and flushing aligns the emission boundary to minimize straddle duplication
 
@@ -30,7 +32,8 @@ Added per-worker byte offsets to worker_stream + snapshot response (relay-pty co
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch: Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch
 - Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset: Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset
