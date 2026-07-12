@@ -327,15 +327,17 @@ impl BrokerRuntime {
                             handle.state = AgentWorkState::Working;
                         }
                         let mut stream_event = json!({
-                                        "kind": "worker_stream",
-                                        "name": name,
-                                        "stream": value.get("payload").and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
-                                        "chunk": value.get("payload").and_then(|p| p.get("chunk")).cloned().unwrap_or(Value::String(String::new())),
-                                    });
+                            "kind": "worker_stream",
+                            "name": name,
+                            "stream": value.get("payload").and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
+                            "chunk": value.get("payload").and_then(|p| p.get("chunk")).cloned().unwrap_or(Value::String(String::new())),
+                        });
                         // Forward the per-worker stream offset when present so
                         // attaching clients can correlate the live stream with
                         // a snapshot. Absent for headless workers (no grid).
-                        if let Some(offset) = value.get("payload").and_then(|p| p.get("offset")).cloned() {
+                        if let Some(offset) =
+                            value.get("payload").and_then(|p| p.get("offset")).cloned()
+                        {
                             if let Some(obj) = stream_event.as_object_mut() {
                                 obj.insert("offset".to_string(), offset);
                             }
