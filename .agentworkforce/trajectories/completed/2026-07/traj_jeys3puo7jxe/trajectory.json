@@ -1,0 +1,88 @@
+{
+  "id": "traj_jeys3puo7jxe",
+  "version": 1,
+  "task": {
+    "title": "Fix harness-driver/PTY attach (drive/view) correctness bugs from audit"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-12T20:20:57.755Z",
+  "completedAt": "2026-07-12T21:02:53.743Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-12T20:22:04.623Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ymopk1df4feb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-12T20:22:04.623Z",
+      "endedAt": "2026-07-12T21:02:53.743Z",
+      "events": [
+        {
+          "ts": 1783887724624,
+          "type": "decision",
+          "content": "Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch: Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch",
+          "raw": {
+            "question": "Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch",
+            "chosen": "Filed issue #1247 with consolidated audit; fixing in 5 sequential workstreams on one branch",
+            "alternatives": [],
+            "reasoning": "Workstreams share files (attach-drive.ts, pty_worker.rs); sequential agents avoid conflicts. Opus for the 4 hard workstreams (stream cursor sync, async loop, session robustness, snapshot modes), Sonnet for mechanical transport/misc fixes"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1783890172698,
+          "type": "decision",
+          "content": "Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset: Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset",
+          "raw": {
+            "question": "Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset",
+            "chosen": "Report snapshot offset as grid consumed-offset (atomic under term lock); flush coalescing buffer before snapshot; clients subscribe-first + reconcile by offset",
+            "alternatives": [],
+            "reasoning": "Grid is causally ahead of the stream; offset must reflect what the grid painted, and flushing aligns the emission boundary to minimize straddle duplication"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added per-worker byte offsets to worker_stream + snapshot response (relay-pty consumed_offset atomic, pty_worker flush-before-snapshot); reworked drive/view/passthrough to subscribe-first buffering + offset reconcile via shared StreamSyncBuffer; moved drive resize after WS subscribe; fixed pending inflation via sinceSeq cutoff (new currentSeq in /api/events/replay). Rust + TS tests green.",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
+  "commits": [
+    "6a4db09",
+    "62f740d"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_jeys3puo7jxe/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/listen_api.rs",
+    "crates/broker/src/protocol.rs",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/runtime/worker_events.rs",
+    "crates/relay-pty/src/pty.rs",
+    "crates/relay-pty/src/snapshot.rs",
+    "packages/cli/src/cli/lib/attach-drive.test.ts",
+    "packages/cli/src/cli/lib/attach-drive.ts",
+    "packages/cli/src/cli/lib/attach-passthrough.test.ts",
+    "packages/cli/src/cli/lib/attach-passthrough.ts",
+    "packages/cli/src/cli/lib/attach-view.test.ts",
+    "packages/cli/src/cli/lib/attach-view.ts",
+    "packages/cli/src/cli/lib/attach.test.ts",
+    "packages/cli/src/cli/lib/attach.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/protocol.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "eac8966ddfa27a4ae7ace2dee4e7641785b015f5",
+    "endRef": "6a4db0953b1fb2045381764c17658ac15591fa27",
+    "traceId": "fc3cbfd6-7784-43a8-b098-85b8f1cf5537"
+  }
+}
