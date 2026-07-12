@@ -82,6 +82,15 @@ impl Snapshot {
         pty.with_term(Self::from_term)
     }
 
+    /// Capture the visible screen together with the grid's consumed byte
+    /// offset, read atomically under the same term lock. The returned
+    /// offset is the position in the `worker_stream` byte stream that this
+    /// snapshot reflects: a client can drop every buffered `worker_stream`
+    /// chunk whose end offset is `<= offset` and apply only what came after.
+    pub fn capture_with_offset(pty: &PtySession) -> (Self, u64) {
+        pty.with_term_and_offset(|term, offset| (Self::from_term(term), offset))
+    }
+
     /// Capture from a free-standing `Term` (used by tests and by the future
     /// `view`/`drive` clients that drive their own VT instances).
     ///

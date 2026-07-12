@@ -709,6 +709,23 @@ export class HarnessDriverClient {
     );
   }
 
+  /**
+   * Current durable-event sequence number. An attaching client uses this as
+   * the `sinceSeq` cutoff when opening the live event WS so the broker does
+   * not replay historical durable events (e.g. old `delivery_queued`
+   * frames) that would otherwise inflate a freshly-seeded pending counter.
+   *
+   * Requests with `sinceSeq` set beyond everything retained so the response
+   * carries only the cutoff, not a payload of replayed events. Returns `0`
+   * on brokers that predate the `currentSeq` field.
+   */
+  async currentEventSeq(): Promise<number> {
+    const body = await this.transport.request<{ currentSeq?: number }>(
+      `/api/events/replay?sinceSeq=${Number.MAX_SAFE_INTEGER}`
+    );
+    return typeof body.currentSeq === 'number' ? body.currentSeq : 0;
+  }
+
   subscribeWorkerStream(name: string, options: WorkerStreamSubscriptionOptions = {}): AsyncIterable<string> {
     this.connectEvents(options.sinceSeq);
 

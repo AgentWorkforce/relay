@@ -170,6 +170,8 @@ interface FetchScript {
   initialMode?: 'manual_flush' | 'auto_inject';
   /** Default pending count reported by `GET …/pending`. */
   initialPending?: number;
+  /** Durable-event cutoff reported by `GET /api/events/replay`. */
+  initialCurrentSeq?: number;
   /** Make `PUT …/delivery-mode` to `manual_flush` fail with this status / body. */
   modeFlipFailure?: { status: number; error?: string };
   /** Make `captureAndRenderSnapshot` return this status. */
@@ -213,8 +215,14 @@ function createHarness(opts: FetchScript = {}): {
 
   const initialMode = opts.initialMode ?? 'auto_inject';
   const initialPending = opts.initialPending ?? 0;
+  const initialCurrentSeq = opts.initialCurrentSeq ?? 0;
 
   const defaultRoutes: Record<string, FetchRoute> = {
+    'GET /events-replay': async () =>
+      new Response(JSON.stringify({ events: [], gap: false, currentSeq: initialCurrentSeq }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
     'POST /resize': async () =>
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -300,6 +308,8 @@ function createHarness(opts: FetchScript = {}): {
       key = `${method} /input`;
     } else if (/\/api\/resize\/[^/]+$/.test(url)) {
       key = `${method} /resize`;
+    } else if (/\/api\/events\/replay(\?|$)/.test(url)) {
+      key = `${method} /events-replay`;
     }
     if (key && routes[key]) {
       return routes[key](init);
@@ -357,16 +367,20 @@ afterEach(() => {
 /** Helpers ----- */
 
 async function openSocket(sockets: FakeWebSocket[]): Promise<FakeWebSocket> {
-  // Allow the awaited mode-flip + snapshot HTTP calls to settle before
-  // the WS factory is invoked.
+  // Allow the awaited mode-flip + pending + cutoff HTTP calls to settle
+  // before the WS factory is invoked.
   for (let i = 0; i < 10 && sockets.length === 0; i++) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   expect(sockets).toHaveLength(1);
   const socket = sockets[0];
   socket.emit('open');
-  // Let the stdin-takeover microtasks run.
-  await new Promise((resolve) => setImmediate(resolve));
+  // Subscribe-first: the `open` handler paints the snapshot, reconciles the
+  // buffer, forwards the initial resize, and takes over stdin — several
+  // awaits deep. Flush enough turns for that chain to settle.
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   return socket;
 }
 
@@ -520,26 +534,39 @@ describe('runDriveSession', () => {
     expect(errors.some((args) => String(args[0]).includes("no agent named 'Ghost'"))).toBe(true);
   });
 
-  it('aborts before opening the WS when the snapshot is not_found', async () => {
+  it('aborts and closes the WS when the snapshot is not_found', async () => {
     const { deps, sockets, errors, fetchLog } = createHarness({
       snapshotResult: { status: 'not_found', message: "no agent named 'Ghost'" },
     });
-    const code = await runDriveSession('Ghost', {}, deps);
+    const sessionPromise = runDriveSession('Ghost', {}, deps);
+    // Subscribe-first: the broker-wide WS opens, then the snapshot 404s.
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    const code = await sessionPromise;
     expect(code).toBe(1);
-    expect(sockets).toHaveLength(0);
+    expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no agent named/);
     // Best-effort restore PUT should still have fired.
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
   });
 
-  it('aborts before opening the WS when the worker has no PTY', async () => {
+  it('aborts and closes the WS when the worker has no PTY', async () => {
     const { deps, sockets, errors } = createHarness({
       snapshotResult: { status: 'no_pty', message: "agent 'Headless' has no PTY" },
     });
-    const code = await runDriveSession('Headless', {}, deps);
+    const sessionPromise = runDriveSession('Headless', {}, deps);
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    const code = await sessionPromise;
     expect(code).toBe(1);
-    expect(sockets).toHaveLength(0);
+    expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no PTY/);
   });
 
@@ -573,6 +600,55 @@ describe('runDriveSession', () => {
     expect(writes.filter((w) => w.includes('pending=0')).length).toBeGreaterThan(0);
 
     stdin.type(Buffer.from([0x03])); // Ctrl+C → detach
+    await sessionPromise;
+  });
+
+  it('connects the event WS with the durable-event sinceSeq cutoff', async () => {
+    // The cutoff stops the broker replaying historical durable events (old
+    // delivery_queued frames) that would otherwise inflate the pending
+    // counter seeded from GET /pending.
+    const { deps, sockets, writes, stdin } = createHarness({
+      initialCurrentSeq: 20,
+      initialPending: 2,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    expect(socket.url).toBe('ws://localhost:3889/ws?sinceSeq=20');
+    // Pending is seeded from the live queue (2), not inflated by lifetime
+    // delivery_queued events — those are suppressed by the broker via sinceSeq.
+    expect(writes.some((w) => w.includes('pending=2'))).toBe(true);
+    expect(writes.some((w) => w.includes('pending=22'))).toBe(false);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('reconciles buffered worker_stream against the snapshot offset', async () => {
+    // Snapshot reports offset=10 (default mock writes nothing but reports the
+    // offset). Chunks buffered before the snapshot with end offset <= 10 are
+    // already on screen and dropped; later ones are applied.
+    const { deps, sockets, writes, stdin } = createHarness({
+      snapshotResult: { status: 'ok', offset: 10 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    // Grab the socket, emit buffered chunks *before* the open handler's async
+    // snapshot resolves, then let it settle.
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const socket = sockets[0];
+    socket.emit('open');
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'inSnap', offset: 10 }));
+    socket.emit(
+      'message',
+      jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'afterSnap', offset: 18 })
+    );
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+
+    expect(writes.includes('afterSnap')).toBe(true);
+    expect(writes.includes('inSnap')).toBe(false);
+
+    stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
 

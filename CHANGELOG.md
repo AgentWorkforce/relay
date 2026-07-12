@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay drive|view|passthrough` no longer lose or duplicate agent output around attach. Each `worker_stream` event now carries a per-worker byte `offset`, and the `/snapshot` response reports the offset its grid reflects; the attach clients subscribe to the event WS first, buffer live output, then paint the snapshot and drop only the buffered chunks the snapshot already shows. Clients fall back to the previous snapshot-then-stream behaviour on brokers that don't report offsets.
+- `agent-relay drive` no longer strands the user on a stale, wrong-geometry screen: the initial terminal-size sync (which triggers the agent's TUI repaint) now runs after the event WS is subscribed, so the repaint lands in the live stream instead of a dead zone before subscription.
+- `agent-relay drive` pending counter is no longer inflated by historical `delivery_queued` events: the event WS connects with a `sinceSeq` cutoff (from `GET /api/events/replay`, which now returns `currentSeq`) so the broker replays only events after attach.
 - `agent-relay integration subscribe|unsubscribe` now safely persists and retires each relayfile-cloud inbound webhook subscription during replacement, rollback, and normal removal. The `@relayfile/client@0.10.21` pin enables full recovery of interrupted cloud creates.
 - Swift SDK: depending on this repository by git URL no longer fails with `no such module 'Relaycast'` — the root `Package.swift` now declares the `relaycast` dependency `AgentRelaySDK` imports.
 - `HarnessDriverClient.spawn()` now polls the broker's startup handshake for the full `startupTimeoutMs` budget (default 45s) instead of a fixed ~10s, so a slow-but-healthy Relaycast handshake that keeps answering `503` while warming up is no longer misreported as a spawn failure.

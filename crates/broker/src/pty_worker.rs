@@ -365,6 +365,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // volume is negligible.
     let mut stream_buffer = String::new();
     let mut stream_buffer_last_flush = Instant::now();
+    // Monotonic count of raw PTY bytes this worker has received from the PTY
+    // reader. Included in every `worker_stream` frame as `offset` (the
+    // cumulative end position of the emitted chunk) so an attaching client
+    // can correlate the live stream with a visible-screen snapshot: the
+    // snapshot response carries the grid's consumed offset, and the client
+    // drops any buffered `worker_stream` whose `offset` is `<=` that value.
+    // Counts every received byte (including UTF-8 continuation bytes held
+    // back by the decoder) so it stays in lockstep with the grid's own
+    // byte counter in `relay-pty`.
+    let mut stream_offset: u64 = 0;
     const STREAM_BUFFER_MAX: usize = 4096;
     const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
     // Armed only while output is buffered mid-burst; when `None` the
@@ -381,6 +391,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 let _ = send_frame(&out_tx, "worker_stream", None, json!({
                     "stream": "stdout",
                     "chunk": chunk,
+                    "offset": stream_offset,
                 })).await;
                 stream_buffer_last_flush = Instant::now();
             }
@@ -571,7 +582,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .and_then(Value::as_str)
                                     .unwrap_or("plain")
                                     .to_string();
-                                let snap = Snapshot::capture(&pty);
+                                // Flush any coalesced stream output first so
+                                // the bytes already parsed into the grid have
+                                // been emitted as `worker_stream` at a clean
+                                // offset boundary before we report the
+                                // snapshot's offset. Without this the 16ms
+                                // coalescing buffer would sit between the grid
+                                // and the stream, and a client couldn't tell
+                                // which side of the snapshot those bytes fell.
+                                flush_stream_buffer!();
+                                let (snap, snapshot_offset) = Snapshot::capture_with_offset(&pty);
                                 let cursor = json!([snap.cursor.0, snap.cursor.1]);
                                 let payload = match format.as_str() {
                                     "ansi" => {
@@ -584,6 +604,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                             "cols": snap.cols,
                                             "cursor": cursor,
                                             "screen": encoded,
+                                            "offset": snapshot_offset,
                                         })
                                     }
                                     "plain" | "" | "text" => json!({
@@ -592,6 +613,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         "cols": snap.cols,
                                         "cursor": cursor,
                                         "screen": snap.to_plain(),
+                                        "offset": snapshot_offset,
                                     }),
                                     other => {
                                         let _ = send_frame(&out_tx, "snapshot_response", frame.request_id, json!({
@@ -628,6 +650,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
                         startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());
+                        // Advance the stream offset by the raw byte count
+                        // before decoding, so `worker_stream.offset` tracks
+                        // the same byte position the grid does (which also
+                        // counts held-back UTF-8 continuation bytes).
+                        stream_offset = stream_offset.saturating_add(chunk.len() as u64);
                         let text = utf8_decoder.decode(&chunk);
                         if text.is_empty() {
                             // Whole chunk was an incomplete UTF-8 prefix held
@@ -1176,6 +1203,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     flush_stream_buffer!();
                     let mut late_output = String::new();
                     while let Ok(chunk) = pty_rx.try_recv() {
+                        stream_offset = stream_offset.saturating_add(chunk.len() as u64);
                         let text = utf8_decoder.decode(&chunk);
                         if text.is_empty() {
                             continue;
@@ -1184,6 +1212,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let _ = send_frame(&out_tx, "worker_stream", None, json!({
                             "stream": "stdout",
                             "chunk": text,
+                            "offset": stream_offset,
                         })).await;
                     }
                     // Stream is closing; flush any incomplete trailing bytes
@@ -1194,6 +1223,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let _ = send_frame(&out_tx, "worker_stream", None, json!({
                             "stream": "stdout",
                             "chunk": tail,
+                            "offset": stream_offset,
                         })).await;
                     }
                     if !late_output.is_empty() {
@@ -1274,6 +1304,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             json!({
                 "stream": "stdout",
                 "chunk": chunk,
+                "offset": stream_offset,
             }),
         )
         .await;

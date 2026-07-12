@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   captureAndRenderSnapshot,
+  StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from './attach.js';
@@ -192,5 +193,68 @@ describe('captureAndRenderSnapshot', () => {
 
     const [url] = fetchMock.mock.calls[0];
     expect(url).toBe('http://localhost:3889/api/spawned/Alice/snapshot?format=ansi');
+  });
+});
+
+describe('StreamSyncBuffer', () => {
+  it('buffers chunks until reconcile, then applies live', () => {
+    const sync = new StreamSyncBuffer();
+    // While buffering, push returns false (hold the chunk).
+    expect(sync.isBuffering).toBe(true);
+    expect(sync.push('a', 5)).toBe(false);
+    expect(sync.push('b', 10)).toBe(false);
+    // Snapshot at offset 5: 'a' (end offset 5) is already on screen → drop;
+    // 'b' (end offset 10 > 5) is applied.
+    expect(sync.reconcile(5)).toEqual(['b']);
+    expect(sync.isBuffering).toBe(false);
+    // After reconcile, push returns true (apply live).
+    expect(sync.push('c', 15)).toBe(true);
+  });
+
+  it('drops every buffered chunk fully covered by the snapshot (no duplication)', () => {
+    const sync = new StreamSyncBuffer();
+    sync.push('x', 4);
+    sync.push('y', 8);
+    sync.push('z', 8); // an empty-progress flush at the same boundary
+    // Snapshot offset 8 covers all of them.
+    expect(sync.reconcile(8)).toEqual([]);
+  });
+
+  it('applies only chunks past the snapshot boundary (no loss)', () => {
+    const sync = new StreamSyncBuffer();
+    sync.push('in', 10);
+    sync.push('edge', 10); // exactly at the boundary → covered
+    sync.push('after', 12);
+    sync.push('later', 20);
+    expect(sync.reconcile(10)).toEqual(['after', 'later']);
+  });
+
+  it('drops the pre-snapshot buffer when the broker reports no offset (snapshot-authoritative)', () => {
+    const sync = new StreamSyncBuffer();
+    sync.push('a', undefined);
+    sync.push('b', undefined);
+    // A painted snapshot with no reported offset: the buffered chunks arrived
+    // before the snapshot response, so drop them (matching the legacy
+    // snapshot-then-subscribe behaviour, which never saw them). Use flushAll
+    // instead when NO snapshot was painted.
+    expect(sync.reconcile(undefined)).toEqual([]);
+  });
+
+  it('applies a buffered chunk with no offset even when the snapshot has one', () => {
+    const sync = new StreamSyncBuffer();
+    sync.push('known', 4);
+    sync.push('legacy', undefined);
+    // With snapshot offset 8, the offset-tagged chunk (4 <= 8) drops; the
+    // untagged one is applied rather than risk losing live output.
+    expect(sync.reconcile(8)).toEqual(['legacy']);
+  });
+
+  it('flushAll returns every buffered chunk and switches to live', () => {
+    const sync = new StreamSyncBuffer();
+    sync.push('a', 4);
+    sync.push('b', 8);
+    expect(sync.flushAll()).toEqual(['a', 'b']);
+    expect(sync.isBuffering).toBe(false);
+    expect(sync.push('c', 12)).toBe(true);
   });
 });

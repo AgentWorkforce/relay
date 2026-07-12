@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Write},
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc as std_mpsc, Arc,
     },
     thread,
@@ -159,6 +159,17 @@ pub struct PtySession {
     /// lock the reader uses — preventing the child's post-resize
     /// redraw from being parsed against stale grid dimensions.
     processor: Arc<Mutex<Processor>>,
+    /// Monotonic count of raw PTY bytes the reader thread has parsed into
+    /// the grid. Incremented under the same `(processor, term)` lock that
+    /// advances the parser, so a reader that snapshots the grid under that
+    /// lock observes exactly the offset corresponding to the grid state.
+    ///
+    /// This is the "stream offset" that correlates a visible-screen
+    /// snapshot with the `worker_stream` byte stream: the broker reports
+    /// this value alongside a snapshot so an attaching client can drop the
+    /// buffered stream chunks the snapshot already reflects and apply only
+    /// the ones that came after.
+    consumed_offset: Arc<AtomicU64>,
 }
 
 fn needs_sane_term_override() -> bool {
@@ -308,6 +319,8 @@ impl PtySession {
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
         let processor_clone = processor.clone();
+        let consumed_offset = Arc::new(AtomicU64::new(0));
+        let consumed_offset_reader = consumed_offset.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -328,6 +341,11 @@ impl PtySession {
                             let mut processor_guard = processor_clone.lock();
                             let mut term_guard = term_clone.lock();
                             processor_guard.advance(&mut *term_guard, &buf[..n]);
+                            // Publish the grid's consumed byte offset while
+                            // still holding the term lock, so a concurrent
+                            // snapshot reader (which also locks `term`) reads
+                            // the offset that matches the grid it renders.
+                            consumed_offset_reader.fetch_add(n as u64, Ordering::Release);
                         }
                         if tx.blocking_send(buf[..n].to_vec()).is_err() {
                             break;
@@ -348,6 +366,7 @@ impl PtySession {
                 no_pid_alive_checks: std::sync::atomic::AtomicU32::new(0),
                 term,
                 processor,
+                consumed_offset,
             },
             rx,
         ))
@@ -476,6 +495,33 @@ impl PtySession {
     pub fn with_term<R>(&self, f: impl FnOnce(&Term<RelayEventListener>) -> R) -> R {
         let term = self.term.lock();
         f(&term)
+    }
+
+    /// Like [`with_term`], but also hands the closure the grid's consumed
+    /// byte offset, read while the term lock is held. The reader thread
+    /// bumps this offset under the *same* lock immediately after advancing
+    /// the parser, so the value the closure sees corresponds exactly to the
+    /// grid state it observes — no chunk parsed into the grid is missing
+    /// from the count, and none is counted ahead of the grid.
+    ///
+    /// [`with_term`]: PtySession::with_term
+    pub fn with_term_and_offset<R>(
+        &self,
+        f: impl FnOnce(&Term<RelayEventListener>, u64) -> R,
+    ) -> R {
+        let term = self.term.lock();
+        let offset = self.consumed_offset.load(Ordering::Acquire);
+        f(&term, offset)
+    }
+
+    /// Monotonic count of raw PTY bytes parsed into the grid so far. Used to
+    /// correlate a visible-screen snapshot with the `worker_stream` byte
+    /// stream. Prefer [`with_term_and_offset`] when the value must line up
+    /// with a grid render.
+    ///
+    /// [`with_term_and_offset`]: PtySession::with_term_and_offset
+    pub fn consumed_offset(&self) -> u64 {
+        self.consumed_offset.load(Ordering::Acquire)
     }
 
     /// Check if the child process has exited without blocking.
@@ -654,6 +700,7 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     use super::{GridSize, PtySession};
+    use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::Processor;
@@ -770,6 +817,31 @@ mod tests {
             screen.contains("hello-grid"),
             "grid should contain echoed text, got: {screen:?}"
         );
+        let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn consumed_offset_tracks_total_bytes_parsed_into_grid() {
+        let (pty, mut rx) = PtySession::spawn("echo", &["offset-line".into()], 24, 80).unwrap();
+        // Drain the channel to EOF (echo exits), summing the raw bytes the
+        // reader thread handed us — that must equal the grid's consumed
+        // offset once the reader has parsed everything.
+        let mut total: u64 = 0;
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            total += chunk.len() as u64;
+        }
+        // The reader increments the offset under the term lock right after
+        // advancing; give it a beat to finish the last chunk.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(total > 0, "echo should have produced output");
+        assert_eq!(
+            pty.consumed_offset(),
+            total,
+            "grid consumed offset must equal the total raw bytes streamed to the reader"
+        );
+        // `capture_with_offset` reports the same value, read under the lock.
+        let (_snap, snap_offset) = Snapshot::capture_with_offset(&pty);
+        assert_eq!(snap_offset, total, "snapshot offset must match consumed offset");
         let _ = pty.shutdown();
     }
 
