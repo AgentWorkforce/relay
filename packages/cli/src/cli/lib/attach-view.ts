@@ -18,6 +18,7 @@ import { getProjectPaths } from '@agent-relay/config';
 
 import {
   captureAndRenderSnapshot,
+  createBackpressureAwareWriter,
   StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
@@ -103,9 +104,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as ViewWebSocket,
-    writeChunk: (chunk) => {
-      process.stdout.write(chunk);
-    },
+    writeChunk: createBackpressureAwareWriter(process.stdout),
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -318,6 +317,8 @@ export async function runViewSession(
     });
 
     socket.on('message', (data) => {
+      // Stop writing output once teardown has begun (no spray past detach).
+      if (settled) return;
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
       const matched = extractMatchingChunk(text, name);

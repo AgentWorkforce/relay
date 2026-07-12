@@ -447,6 +447,31 @@ describe('runViewSession', () => {
     expect(writes).toEqual([snapshotBytes, 'live delta']);
   });
 
+  it('stops writing output once teardown has begun (item 3)', async () => {
+    const { deps, writes, sockets, signals } = createHarness({
+      connectionFile: { url: 'http://localhost:3889', api_key: 'k' },
+      snapshotChunk: '',
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    await settle();
+
+    // Detach via SIGINT.
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    const before = writes.length;
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'POST-DETACH' })
+    );
+    expect(writes.includes('POST-DETACH')).toBe(false);
+    expect(writes.length).toBe(before);
+  });
+
   it('aborts with exit code 1 when the snapshot reports not_found', async () => {
     const { deps, errors, sockets } = createHarness({
       connectionFile: { url: 'http://localhost:3889' },

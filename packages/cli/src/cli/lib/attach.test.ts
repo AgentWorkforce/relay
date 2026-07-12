@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AnsiBoundaryScanner,
   captureAndRenderSnapshot,
+  createBackpressureAwareWriter,
+  restoreInboundDeliveryModeOnDetach,
+  StatusLineController,
   StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
+  type BackpressureWritable,
 } from './attach.js';
+import type { BrokerConnection } from './broker-connection.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -256,5 +262,319 @@ describe('StreamSyncBuffer', () => {
     expect(sync.flushAll()).toEqual(['a', 'b']);
     expect(sync.isBuffering).toBe(false);
     expect(sync.push('c', 12)).toBe(true);
+  });
+});
+
+describe('AnsiBoundaryScanner', () => {
+  it('reports a boundary for plain text', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('hello world');
+    expect(s.atBoundary).toBe(true);
+  });
+
+  it('detects a chunk ending mid-CSI and recovers on the final byte', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('foo\x1b['); // ESC [
+    expect(s.atBoundary).toBe(false);
+    s.push('2'); // parameter byte
+    expect(s.atBoundary).toBe(false);
+    s.push('J'); // CSI final byte
+    expect(s.atBoundary).toBe(true);
+  });
+
+  it('treats a bare trailing ESC as incomplete', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('x\x1b');
+    expect(s.atBoundary).toBe(false);
+    s.push('7'); // ESC 7 — complete 2-byte escape
+    expect(s.atBoundary).toBe(true);
+  });
+
+  it('handles an OSC string terminated by BEL', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('\x1b]0;title');
+    expect(s.atBoundary).toBe(false);
+    s.push('\x07');
+    expect(s.atBoundary).toBe(true);
+  });
+
+  it('handles a DCS string terminated by ST (ESC backslash)', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('\x1bP1;2body');
+    expect(s.atBoundary).toBe(false);
+    s.push('\x1b\\');
+    expect(s.atBoundary).toBe(true);
+  });
+
+  it('is unaffected by multi-byte UTF-8 payload in the ground state', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('café 你好 🎉');
+    expect(s.atBoundary).toBe(true);
+  });
+});
+
+/** Deterministic in-memory timer queue for StatusLineController tests. */
+function fakeTimers() {
+  let seq = 0;
+  let clock = 1000;
+  const timers = new Map<number, { fn: () => void; at: number }>();
+  return {
+    now: () => clock,
+    advance(ms: number) {
+      clock += ms;
+      for (const [id, t] of [...timers]) {
+        if (t.at <= clock) {
+          timers.delete(id);
+          t.fn();
+        }
+      }
+    },
+    setTimer: (fn: () => void, ms: number) => {
+      const id = (seq += 1);
+      timers.set(id, { fn, at: clock + ms });
+      return id as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimer: (id: ReturnType<typeof setTimeout>) => {
+      timers.delete(id as unknown as number);
+    },
+    pending: () => timers.size,
+  };
+}
+
+describe('StatusLineController', () => {
+  it('paints immediately at a boundary when enabled', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    const c = new StatusLineController({
+      render: () => 'STATUS',
+      write: (s) => writes.push(s),
+      enabled: true,
+      coalesceMs: 0,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    c.request();
+    expect(writes).toEqual(['STATUS']);
+  });
+
+  it('never paints when disabled (non-TTY stdout)', () => {
+    const writes: string[] = [];
+    const c = new StatusLineController({
+      render: () => 'STATUS',
+      write: (s) => writes.push(s),
+      enabled: false,
+      coalesceMs: 0,
+    });
+    c.request();
+    c.observeOutput('x');
+    c.request();
+    expect(writes).toEqual([]);
+  });
+
+  it('holds a repaint while output ends mid escape sequence, then paints at the boundary', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    const c = new StatusLineController({
+      render: () => 'S',
+      write: (s) => writes.push(s),
+      enabled: true,
+      coalesceMs: 0,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    c.observeOutput('foo\x1b['); // ends mid-CSI
+    c.request();
+    expect(writes).toEqual([]); // deferred — would splice into the CSI
+    c.observeOutput('0m'); // completes the CSI at a boundary
+    expect(writes).toEqual(['S']);
+  });
+
+  it('force-paints after boundaryHoldMs if output stays mid-sequence', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    const c = new StatusLineController({
+      render: () => 'S',
+      write: (s) => writes.push(s),
+      enabled: true,
+      coalesceMs: 0,
+      boundaryHoldMs: 100,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    c.observeOutput('\x1b[');
+    c.request();
+    expect(writes).toEqual([]);
+    t.advance(100);
+    expect(writes).toEqual(['S']); // bounded fallback
+  });
+
+  it('coalesces rapid repaints into one per window (latest state wins)', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    let n = 0;
+    const c = new StatusLineController({
+      render: () => `S${n}`,
+      write: (s) => writes.push(s),
+      enabled: true,
+      coalesceMs: 50,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    n = 1;
+    c.request(); // leading edge paints immediately
+    expect(writes).toEqual(['S1']);
+    n = 2;
+    c.request(); // within window → deferred
+    n = 3;
+    c.request(); // still within window → coalesced
+    expect(writes).toEqual(['S1']);
+    t.advance(50); // window elapses → single trailing paint of the latest state
+    expect(writes).toEqual(['S1', 'S3']);
+  });
+
+  it('stops painting after dispose', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    const c = new StatusLineController({
+      render: () => 'S',
+      write: (s) => writes.push(s),
+      enabled: true,
+      coalesceMs: 0,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    c.dispose();
+    c.request();
+    expect(writes).toEqual([]);
+    expect(t.pending()).toBe(0);
+  });
+});
+
+/** Fetch stub answering only the delivery-mode endpoint, with mutable state. */
+function deliveryModeFetch(initial: 'manual_flush' | 'auto_inject') {
+  let mode: 'manual_flush' | 'auto_inject' = initial;
+  const puts: Array<'manual_flush' | 'auto_inject'> = [];
+  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (/\/delivery-mode$/.test(url)) {
+      if (method === 'GET') {
+        return new Response(JSON.stringify({ mode }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const body = JSON.parse(String(init?.body)) as { mode: 'manual_flush' | 'auto_inject' };
+      mode = body.mode;
+      puts.push(body.mode);
+      return new Response(JSON.stringify({ mode }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response('nope', { status: 500 });
+  }) as unknown as typeof globalThis.fetch;
+  return { fetch, puts, getMode: () => mode };
+}
+
+describe('restoreInboundDeliveryModeOnDetach', () => {
+  const connection: BrokerConnection = { url: 'http://localhost:3889' };
+
+  it('restores the previous mode when the mode is still what this session set', async () => {
+    const f = deliveryModeFetch('manual_flush'); // session set manual_flush; prev was auto_inject
+    const logs: unknown[][] = [];
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', 'drive', {
+      fetch: f.fetch,
+      log: (...a: unknown[]) => logs.push(a),
+    });
+    expect(f.puts).toEqual(['auto_inject']);
+    expect(f.getMode()).toBe('auto_inject');
+  });
+
+  it('does NOT clobber a mode another session changed after this one set it', async () => {
+    // Session set manual_flush, but the current mode is now auto_inject (someone
+    // else flipped it). Restoring auto_inject → manual_flush would clobber them.
+    const f = deliveryModeFetch('auto_inject');
+    const logs: unknown[][] = [];
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', 'drive', {
+      fetch: f.fetch,
+      log: (...a: unknown[]) => logs.push(a),
+    });
+    expect(f.puts).toEqual([]); // left alone
+    expect(f.getMode()).toBe('auto_inject');
+  });
+
+  it('leaves the mode untouched and warns when the pre-attach mode was unknown', async () => {
+    const f = deliveryModeFetch('manual_flush');
+    const logs: unknown[][] = [];
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', null, 'manual_flush', 'drive', {
+      fetch: f.fetch,
+      log: (...a: unknown[]) => logs.push(a),
+    });
+    expect(f.puts).toEqual([]);
+    expect(logs.some((a) => String(a[0]).includes('could not restore'))).toBe(true);
+  });
+});
+
+describe('createBackpressureAwareWriter', () => {
+  it('writes straight through while the stream accepts data', () => {
+    const written: string[] = [];
+    const stdout: BackpressureWritable = {
+      write: (c) => {
+        written.push(c);
+        return true;
+      },
+      once: () => undefined,
+    };
+    const w = createBackpressureAwareWriter(stdout);
+    w('a');
+    w('b');
+    expect(written).toEqual(['a', 'b']);
+  });
+
+  it('queues while saturated and flushes in order on drain', () => {
+    const written: string[] = [];
+    let accept = true;
+    let drain: (() => void) | null = null;
+    const stdout: BackpressureWritable = {
+      write: (c) => {
+        written.push(c);
+        return accept;
+      },
+      once: (_event, fn) => {
+        drain = fn;
+        return undefined;
+      },
+    };
+    const w = createBackpressureAwareWriter(stdout);
+    accept = false;
+    w('a'); // write returns false → paused, drain registered
+    w('b');
+    w('c'); // held in the bounded queue
+    expect(written).toEqual(['a']);
+    accept = true;
+    drain?.();
+    expect(written).toEqual(['a', 'b', 'c']);
+  });
+
+  it('writes through rather than dropping output once the queue cap is hit', () => {
+    const written: string[] = [];
+    const stdout: BackpressureWritable = {
+      write: (c) => {
+        written.push(c);
+        return false;
+      },
+      once: () => undefined,
+    };
+    const w = createBackpressureAwareWriter(stdout, 2); // 2-byte cap
+    w('a'); // paused
+    w('bb'); // exactly fills the cap → queued
+    w('c'); // over cap → written straight through, not dropped
+    expect(written).toEqual(['a', 'c']);
   });
 });

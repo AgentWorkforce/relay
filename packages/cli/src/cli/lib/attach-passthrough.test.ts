@@ -224,6 +224,10 @@ function createHarness(opts: FetchScript = {}): {
 
   const initialMode = opts.initialMode ?? 'auto_inject';
 
+  // Stateful delivery mode: GET reflects the last successful PUT so the
+  // detach-time re-read behaves like a real broker.
+  let currentMode: 'manual_flush' | 'auto_inject' = initialMode;
+
   const defaultRoutes: Record<string, FetchRoute> = {
     'POST /resize': async () =>
       new Response(JSON.stringify({ ok: true }), {
@@ -231,7 +235,7 @@ function createHarness(opts: FetchScript = {}): {
         headers: { 'Content-Type': 'application/json' },
       }),
     'GET /delivery-mode': async () =>
-      new Response(JSON.stringify({ mode: initialMode }), {
+      new Response(JSON.stringify({ mode: currentMode }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -243,6 +247,7 @@ function createHarness(opts: FetchScript = {}): {
         });
       }
       const body = init?.body ? (JSON.parse(String(init.body)) as { mode: string }) : { mode: '' };
+      if (body.mode === 'manual_flush' || body.mode === 'auto_inject') currentMode = body.mode;
       return new Response(JSON.stringify({ mode: body.mode, flushed: 0 }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -336,6 +341,8 @@ function createHarness(opts: FetchScript = {}): {
       return stream;
     }),
     createPredictiveEcho: opts.predictiveEcho ? () => opts.predictiveEcho ?? null : undefined,
+    // Immediate, deterministic status repaints in tests (no coalescing timer).
+    statusRepaintCoalesceMs: 0,
   };
 
   return {
@@ -720,5 +727,100 @@ describe('runPassthroughSession', () => {
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
+  });
+
+  // ---- multi-byte UTF-8 stdin (item 2) ----
+
+  it('forwards a multi-byte character split across stdin chunks intact', async () => {
+    const { deps, sockets, stdin, inputStreams } = createHarness();
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // '你' = 0xE4 0xBD 0xA0, arriving as three separate stdin data events.
+    stdin.type(Buffer.from([0xe4]));
+    await new Promise((resolve) => setImmediate(resolve));
+    stdin.type(Buffer.from([0xbd]));
+    await new Promise((resolve) => setImmediate(resolve));
+    stdin.type(Buffer.from([0xa0]));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(inputStreams[0].writes).toEqual(['你']);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  // ---- no output after teardown begins (item 3) ----
+
+  it('stops writing output once teardown has begun', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    stdin.type(Buffer.from([0x03])); // detach → settled
+    await sessionPromise;
+
+    const before = writes.length;
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'POST-DETACH' }));
+    expect(writes.includes('POST-DETACH')).toBe(false);
+    expect(writes.length).toBe(before);
+  });
+
+  // ---- status line boundary-hold (item 4) ----
+
+  it('holds the status repaint while a worker chunk ends mid escape sequence', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    const paintsBefore = writes.filter((w) => w.includes('passthrough Alice')).length;
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
+    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBe(paintsBefore);
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
+    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsBefore);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  // ---- non-TTY skips the status line (item 5) ----
+
+  it('skips status-line painting when stdout is not a TTY', async () => {
+    const { deps, sockets, writes, signals } = createHarness({ terminalSize: null });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'plain' }));
+    expect(writes.includes('plain')).toBe(true);
+    expect(writes.some((w) => w.includes('passthrough Alice'))).toBe(false);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  // ---- detach does not clobber another session's mode change (item 6) ----
+
+  it('does not restore the delivery mode if another session changed it before detach', async () => {
+    // Session flips to auto_inject (prev manual_flush). The worker reports
+    // manual_flush on detach (someone re-applied a hold), which is not what
+    // this session set, so no restore PUT should fire.
+    const { deps, sockets, stdin, fetchLog } = createHarness({
+      initialMode: 'manual_flush',
+      routes: {
+        'GET /delivery-mode': async () =>
+          new Response(JSON.stringify({ mode: 'manual_flush' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+
+    const putCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(putCalls.map((c) => c.body)).toEqual([{ mode: 'auto_inject' }]);
   });
 });

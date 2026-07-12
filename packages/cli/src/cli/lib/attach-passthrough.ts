@@ -24,13 +24,17 @@
  */
 
 import { Buffer } from 'node:buffer';
+import { StringDecoder } from 'node:string_decoder';
 
 import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  createBackpressureAwareWriter,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  restoreInboundDeliveryModeOnDetach,
+  StatusLineController,
   StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
@@ -48,7 +52,6 @@ import {
   type CliPtyInputStream,
   openPtyInputStream,
   resizeWorker,
-  setInboundDeliveryMode,
   type InboundDeliveryMode,
 } from './attach-drive.js';
 import { createPredictiveEcho, type CreatePredictiveEchoOptions } from './predictive-echo-screen.js';
@@ -114,6 +117,12 @@ export interface PassthroughDependencies {
    * it (degenerate terminal). Omitted by tests that want plain pass-through.
    */
   createPredictiveEcho?: (opts: CreatePredictiveEchoOptions) => PredictiveEcho | null;
+  /**
+   * Minimum ms between status-line repaints (coalescing window). Defaults to a
+   * small positive value in production to shrink the per-chunk splice window;
+   * tests set `0` for immediate, deterministic paints.
+   */
+  statusRepaintCoalesceMs?: number;
 }
 
 function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
@@ -123,9 +132,8 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as PassthroughWebSocket,
-    writeChunk: (chunk) => {
-      process.stdout.write(chunk);
-    },
+    writeChunk: createBackpressureAwareWriter(process.stdout),
+    statusRepaintCoalesceMs: 40,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -271,6 +279,48 @@ export async function runPassthroughSession(
   if (!flipResult) return 1;
   const { previousMode } = flipResult;
 
+  // The mode is now flipped to `auto_inject`. If the user had an explicit
+  // `agent message hold` (manual_flush) active, killing the process with Ctrl+C
+  // before the session loop installs its handlers would strand the worker in
+  // auto_inject, silently cancelling their hold. Register early restore-and-exit
+  // handlers immediately; the loop disposes them once its own handlers are up.
+  let earlyHandled = false;
+  const earlyCleanups: Array<() => void> = [];
+  const earlyRestore = async (): Promise<void> => {
+    if (earlyHandled) return;
+    earlyHandled = true;
+    for (const cleanup of earlyCleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // best effort
+      }
+    }
+    await restoreInboundDeliveryModeOnDetach(
+      connection,
+      name,
+      previousMode,
+      'auto_inject',
+      'passthrough',
+      deps
+    );
+    deps.exit(0);
+  };
+  const disposeEarlySignals = (): void => {
+    earlyHandled = true;
+    for (const cleanup of earlyCleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // best effort
+      }
+    }
+  };
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    const cleanup = deps.onSignal(signal, earlyRestore);
+    if (typeof cleanup === 'function') earlyCleanups.push(cleanup);
+  }
+
   const initialLocalSize = deps.terminal.getSize();
 
   const wsUrl = toWsUrl(connection.url);
@@ -284,8 +334,13 @@ export async function runPassthroughSession(
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
     const parser = new PassthroughKeybindParser();
+    // Stateful UTF-8 decoder for forwarded stdin — a multi-byte character split
+    // across stdin chunks would otherwise become U+FFFD. See attach-drive.ts.
+    const inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
+    // Skip the status line entirely when stdout is not a TTY (piped output).
+    const statusLineEnabled = initialLocalSize !== null;
     // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
     // is painted and reconciled against its per-worker offset (no lost/dup
     // output around attach time). See StreamSyncBuffer.
@@ -312,13 +367,21 @@ export async function runPassthroughSession(
       snapshotBytes += chunk;
     };
 
+    // Boundary-held + coalesced status painter (skips non-TTY stdout).
+    const statusController = new StatusLineController({
+      render: () => renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }),
+      write: deps.writeChunk,
+      enabled: statusLineEnabled,
+      coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
+    });
     const paintStatus = (): void => {
-      deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }));
+      statusController.request();
     };
 
     // Route server output through the predictive-echo engine (which owns
     // cursor save/restore) or straight to stdout, then repaint the status.
     const applyServerOutput = (chunk: string): void => {
+      statusController.observeOutput(chunk);
       if (predictiveEcho) {
         void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
       } else {
@@ -348,14 +411,19 @@ export async function runPassthroughSession(
           deps.log('[passthrough] input stream is not ready');
           return;
         }
-        void stream.send(outcome.forward.toString('utf-8')).catch((err: unknown) => {
-          if (settled) return;
-          const message = err instanceof Error ? err.message : String(err);
-          deps.log(`[passthrough] input stream send failed: ${message}`);
-          // The keystroke never reached the PTY — drop any optimistic echo
-          // for it so the screen doesn't show input the agent didn't get.
-          predictiveEcho?.rollback();
-        });
+        // Decode through the stateful UTF-8 decoder so a multi-byte character
+        // split across stdin chunks is forwarded intact rather than as U+FFFD.
+        const decoded = inputDecoder.write(outcome.forward);
+        if (decoded.length > 0) {
+          void stream.send(decoded).catch((err: unknown) => {
+            if (settled) return;
+            const message = err instanceof Error ? err.message : String(err);
+            deps.log(`[passthrough] input stream send failed: ${message}`);
+            // The keystroke never reached the PTY — drop any optimistic echo
+            // for it so the screen doesn't show input the agent didn't get.
+            predictiveEcho?.rollback();
+          });
+        }
         predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
@@ -414,6 +482,9 @@ export async function runPassthroughSession(
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
+      // Stop the status painter before restoring cooked mode so no queued
+      // repaint sprays output past detach.
+      statusController.dispose();
       for (const cleanup of cleanupSignals.splice(0)) {
         try {
           cleanup();
@@ -429,9 +500,17 @@ export async function runPassthroughSession(
       } catch {
         // best effort
       }
-      // Restore the worker's previous mode (no-op if it was already
-      // auto-inject, which is the common case).
-      void setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch).finally(() => {
+      // Best-effort restore: re-read and only revert if the mode is still what
+      // this session set, so we don't clobber another session's change or
+      // force a default when the pre-attach mode was unknown.
+      void restoreInboundDeliveryModeOnDetach(
+        connection,
+        name,
+        previousMode,
+        'auto_inject',
+        'passthrough',
+        deps
+      ).finally(() => {
         resolve(code);
       });
     };
@@ -492,6 +571,8 @@ export async function runPassthroughSession(
       }
       if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
       terminalRows = pickInitialTerminalRows(initialLocalSize, snapshot.rows);
+      // Track the snapshot bytes for boundary state before the first repaint.
+      statusController.observeOutput(snapshotBytes);
       paintStatus();
       // Reconcile buffered chunks. On `ok`, drop what the snapshot already
       // reflects (by offset); with no offset this drops the pre-snapshot
@@ -504,6 +585,8 @@ export async function runPassthroughSession(
       await openInputStreamAndTakeStdin();
     };
 
+    // Hand off from the early restore handlers to the fuller loop handlers.
+    disposeEarlySignals();
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const cleanup = deps.onSignal(signal, () => finish(0));
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
@@ -514,6 +597,8 @@ export async function runPassthroughSession(
     });
 
     socket.on('message', (data) => {
+      // Drop inbound frames once teardown has begun (no output past detach).
+      if (settled) return;
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
       const event = classifyWsEvent(text, name);

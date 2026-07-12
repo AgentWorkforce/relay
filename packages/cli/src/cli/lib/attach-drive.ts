@@ -34,14 +34,18 @@
  */
 
 import { Buffer } from 'node:buffer';
+import { StringDecoder } from 'node:string_decoder';
 
 import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
 import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  createBackpressureAwareWriter,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  restoreInboundDeliveryModeOnDetach,
+  StatusLineController,
   StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
@@ -157,6 +161,12 @@ export interface DriveDependencies {
    * it (degenerate terminal). Omitted by tests that want plain pass-through.
    */
   createPredictiveEcho?: (opts: CreatePredictiveEchoOptions) => PredictiveEcho | null;
+  /**
+   * Minimum ms between status-line repaints (coalescing window). Defaults to a
+   * small positive value in production to shrink the per-chunk splice window;
+   * tests set `0` for immediate, deterministic paints.
+   */
+  statusRepaintCoalesceMs?: number;
 }
 
 function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependencies {
@@ -166,9 +176,8 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as DriveWebSocket,
-    writeChunk: (chunk) => {
-      process.stdout.write(chunk);
-    },
+    writeChunk: createBackpressureAwareWriter(process.stdout),
+    statusRepaintCoalesceMs: 40,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -468,6 +477,13 @@ interface DriveSessionState {
    * (old `delivery_queued`) that would inflate the pending counter.
    */
   cutoffSeq: number;
+  /**
+   * Tears down the early SIGINT/SIGTERM handlers registered by
+   * {@link runDriveSession} right after the delivery-mode flip. Called by the
+   * loop before it installs its own fuller handlers so Ctrl+C is never
+   * double-handled. Also disables the early restore path.
+   */
+  disposeEarlySignals: () => void;
 }
 
 /**
@@ -500,8 +516,18 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let pending = state.initialPending;
     let terminalRows = pickInitialTerminalRows(state.initialLocalSize, undefined);
     const parser = new KeybindParser();
+    // Stateful UTF-8 decoder for forwarded stdin. Decoding each raw stdin chunk
+    // independently would turn a multi-byte character split across `data`
+    // events (routine in large pastes / IME) into U+FFFD; the StringDecoder
+    // buffers a trailing incomplete sequence until the next chunk completes it.
+    // Detach scanning still runs on raw bytes upstream (0x03 can't appear inside
+    // a multi-byte sequence), so this only touches the forwarded payload.
+    const inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
+    // Skip the status line entirely when stdout is not a TTY (e.g. piped to
+    // `tee`) — a fabricated row-24 repaint would corrupt the captured log.
+    const statusLineEnabled = state.initialLocalSize !== null;
     // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
     // is painted and reconciled against its per-worker offset.
     const sync = new StreamSyncBuffer();
@@ -526,20 +552,25 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       snapshotBytes += chunk;
     };
 
+    // Boundary-held + coalesced status painter. Holds repaints while the agent
+    // is mid escape-sequence (no splicing into a half-sent CSI), rate-limits
+    // per-chunk repaints, and skips painting entirely on a non-TTY stdout.
+    const statusController = new StatusLineController({
+      render: () => renderStatusLine({ name, mode: 'manual_flush', pending, rows: terminalRows }),
+      write: deps.writeChunk,
+      enabled: statusLineEnabled,
+      coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
+    });
     const paintStatus = (): void => {
-      deps.writeChunk(
-        renderStatusLine({
-          name,
-          mode: 'manual_flush',
-          pending,
-          rows: terminalRows,
-        })
-      );
+      statusController.request();
     };
 
     // Route server output through the predictive-echo engine (which owns
     // cursor save/restore) or straight to stdout, then repaint the status.
+    // Feed every chunk to the status controller for boundary tracking so the
+    // repaint holds off until the stream is back at a sequence boundary.
     const applyServerOutput = (chunk: string): void => {
+      statusController.observeOutput(chunk);
       if (predictiveEcho) {
         void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
       } else {
@@ -578,21 +609,23 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           deps.log('[drive] input stream is not ready');
           return;
         }
-        // Fire-and-forget; surface errors via log but don't block the
-        // event loop on every keystroke.
-        // UTF-8, not latin1 — the broker input stream forwards string
-        // payload bytes verbatim to the PTY.
-        // 'binary' would map bytes ≥ 0x80 to Latin-1 code points,
-        // which then get UTF-8 re-encoded on the wire, doubling
-        // multi-byte characters (e.g. `é` → `Ã©` on the agent's side).
-        void stream.send(outcome.forward.toString('utf-8')).catch((err: unknown) => {
-          if (settled) return;
-          const message = err instanceof Error ? err.message : String(err);
-          deps.log(`[drive] input stream send failed: ${message}`);
-          // The keystroke never reached the PTY — drop any optimistic echo
-          // for it so the screen doesn't show input the agent didn't get.
-          predictiveEcho?.rollback();
-        });
+        // Decode through the stateful UTF-8 decoder so a multi-byte character
+        // split across stdin chunks is forwarded intact rather than as U+FFFD.
+        // An incomplete trailing sequence decodes to '' and is held until the
+        // next chunk completes it.
+        const decoded = inputDecoder.write(outcome.forward);
+        if (decoded.length > 0) {
+          // Fire-and-forget; surface errors via log but don't block the
+          // event loop on every keystroke.
+          void stream.send(decoded).catch((err: unknown) => {
+            if (settled) return;
+            const message = err instanceof Error ? err.message : String(err);
+            deps.log(`[drive] input stream send failed: ${message}`);
+            // The keystroke never reached the PTY — drop any optimistic echo
+            // for it so the screen doesn't show input the agent didn't get.
+            predictiveEcho?.rollback();
+          });
+        }
         predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
@@ -651,6 +684,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
+      // Stop the status painter first so no queued repaint fires after we
+      // restore cooked mode (output would otherwise spray past detach).
+      statusController.dispose();
       for (const cleanup of cleanupSignals.splice(0)) {
         try {
           cleanup();
@@ -666,9 +702,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       } catch {
         // best effort
       }
-      // Best-effort: restore the worker's previous mode so we don't
-      // leave it stuck in manual_flush and silently piling up queued messages.
-      void setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch).finally(() => {
+      // Best-effort restore: re-read the mode and only revert if it's still
+      // what this session set, so we don't leave the worker stuck in
+      // manual_flush and don't clobber a change another session made.
+      void restoreInboundDeliveryModeOnDetach(
+        connection,
+        name,
+        previousMode,
+        'manual_flush',
+        'drive',
+        deps
+      ).finally(() => {
         resolve(code);
       });
     };
@@ -733,6 +777,8 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       }
       if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
       terminalRows = pickInitialTerminalRows(state.initialLocalSize, snapshot.rows);
+      // Track the snapshot bytes for boundary state before the first repaint.
+      statusController.observeOutput(snapshotBytes);
       paintStatus();
       // Reconcile buffered chunks. On `ok`, drop what the snapshot already
       // reflects (by offset); with no offset this drops the pre-snapshot
@@ -748,6 +794,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       await openInputStreamAndTakeStdin();
     };
 
+    // Hand off from the early restore handlers (installed before the awaited
+    // setup) to the fuller session-loop handlers — no double restore.
+    state.disposeEarlySignals();
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const cleanup = deps.onSignal(signal, () => finish(0));
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
@@ -758,6 +807,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     });
 
     socket.on('message', (data) => {
+      // Once teardown has begun, drop inbound frames so we don't write output
+      // or repaint the status line after cooked mode is restored.
+      if (settled) return;
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
       const event = classifyWsEvent(text, name);
@@ -820,6 +872,43 @@ export async function runDriveSession(
   if (!flipResult) return 1;
   const { previousMode } = flipResult;
 
+  // The mode is now flipped to `manual_flush`, but the terminal is still cooked
+  // and we have several awaited HTTP round-trips (pending, cutoff, snapshot,
+  // input stream) before the session loop installs its signal handlers. Ctrl+C
+  // in that window would otherwise kill the process with the worker stranded in
+  // `manual_flush`, silently queueing every later relay message. Register early
+  // restore-and-exit handlers immediately; the loop disposes them once its own
+  // handlers are ready (no double restore — see `disposeEarlySignals`).
+  let earlyHandled = false;
+  const earlyCleanups: Array<() => void> = [];
+  const earlyRestore = async (): Promise<void> => {
+    if (earlyHandled) return;
+    earlyHandled = true;
+    for (const cleanup of earlyCleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // best effort
+      }
+    }
+    await restoreInboundDeliveryModeOnDetach(connection, name, previousMode, 'manual_flush', 'drive', deps);
+    deps.exit(0);
+  };
+  const disposeEarlySignals = (): void => {
+    earlyHandled = true;
+    for (const cleanup of earlyCleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // best effort
+      }
+    }
+  };
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    const cleanup = deps.onSignal(signal, earlyRestore);
+    if (typeof cleanup === 'function') earlyCleanups.push(cleanup);
+  }
+
   const initialLocalSize = deps.terminal.getSize();
   // Seed the pending counter from the live queue, then capture the durable
   // event cutoff. Reading pending *before* the cutoff biases a message that
@@ -837,6 +926,7 @@ export async function runDriveSession(
       initialPending,
       initialLocalSize,
       cutoffSeq,
+      disposeEarlySignals,
     },
     deps
   );
