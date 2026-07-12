@@ -85,10 +85,16 @@ pub enum ListenApiRequest {
         mode: MessageInjectionMode,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    /// `POST /api/input/{name}` and the input WebSocket. The reply is held
+    /// until the worker confirms the PTY write landed (or failed): the broker
+    /// ships a `write_pty` frame with a fresh `request_id`, parks this reply in
+    /// `pending_requests`, and fulfils it from the worker's `write_pty_response`
+    /// (or the deadline / worker-exit sweep). Acking only after a confirmed
+    /// write is what makes a client's `PtyInputStream.send()` reject on failure.
     SendInput {
         name: WorkerName,
         data: String,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, RequestWorkerError>>,
     },
     CheckPtyInputTarget {
         name: WorkerName,
@@ -1651,9 +1657,14 @@ async fn send_pty_input_frame(
     })
     .await
     .map_err(|_| "internal_error: internal channel closed".to_string())?;
+    // The reply now fires only after the worker confirms the PTY write (see
+    // `ListenApiRequest::SendInput`). Map the typed error to the stringly form
+    // `classify_error` understands so both the HTTP route and the input WS keep
+    // producing stable status codes / `pty_input_error` frames.
     reply_rx
         .await
         .map_err(|_| "internal_error: internal reply dropped".to_string())?
+        .map_err(|err| err.to_string())
 }
 
 enum PtyInputFrame {

@@ -17,6 +17,7 @@ impl BrokerRuntime {
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
+        let delivery_states = &self.delivery_states;
 
         match worker_event {
             WorkerEvent::Message { name, value } => {
@@ -341,6 +342,39 @@ impl BrokerRuntime {
                         }
                         let _ = send_event(sdk_out_tx, stream_event).await;
                     } else if msg_type == "worker_ready" {
+                        // If this (re)spawned worker's inbound delivery mode is
+                        // already manual_flush — e.g. it crashed and restarted
+                        // while a human was driving — replay the interactive hold
+                        // so its automation stays paused until the drive is
+                        // released. Fresh workers default to auto_inject, so this
+                        // is a no-op in the common case.
+                        let is_pty_worker = workers
+                            .workers
+                            .get(&name)
+                            .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                            .unwrap_or(false);
+                        if is_pty_worker
+                            && delivery_states
+                                .get(&name)
+                                .map(|s| s.mode == InboundDeliveryMode::ManualFlush)
+                                .unwrap_or(false)
+                        {
+                            if let Err(err) = workers
+                                .send_to_worker(
+                                    &name,
+                                    "set_interactive_hold",
+                                    None,
+                                    json!({ "hold": true }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %err,
+                                    "failed to replay interactive hold to ready worker"
+                                );
+                            }
+                        }
                         if let Some(task_text) = workers.initial_tasks.remove(&name) {
                             let event_id = format!("init_{}", Uuid::new_v4().simple());
                             if let Err(e) = queue_and_try_delivery_raw(

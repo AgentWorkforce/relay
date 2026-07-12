@@ -517,6 +517,15 @@ pub enum BrokerToWorker {
         rows: u16,
         cols: u16,
     },
+    /// Pause (`hold = true`) or resume (`hold = false`) worker-side
+    /// automation while a human drives the PTY. Sent when the inbound
+    /// delivery mode flips to/from `manual_flush`. While held, the worker
+    /// stops popping pending injections, freezes any in-flight injection,
+    /// and gates its auto-enter and prompt auto-responders so they cannot
+    /// splice keystrokes into the human's typing.
+    SetInteractiveHold {
+        hold: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -916,6 +925,19 @@ mod tests {
         assert_eq!(raw["type"], "resize_pty");
         assert_eq!(raw["payload"]["rows"], 40);
         assert_eq!(raw["payload"]["cols"], 120);
+    }
+
+    #[test]
+    fn broker_to_worker_set_interactive_hold_round_trip() {
+        let msg = BrokerToWorker::SetInteractiveHold { hold: true };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        // Wire tag must be snake_case and match the worker-side string match arm
+        // in `pty_worker.rs` and `packages/harness-driver/src/protocol.ts`.
+        assert_eq!(raw["type"], "set_interactive_hold");
+        assert_eq!(raw["payload"]["hold"], true);
+        let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
     }
 
     #[test]

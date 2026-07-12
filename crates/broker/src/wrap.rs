@@ -103,6 +103,13 @@ pub(crate) struct PtyAutoState {
     pub(crate) last_output_time: Instant,
     // Idle detection (edge-triggered)
     pub(crate) is_idle: bool,
+    /// When true, a human is driving the PTY (inbound delivery mode is
+    /// `manual_flush`). All prompt auto-responders and the stuck-agent
+    /// auto-enter are gated off so they cannot press keys while the human
+    /// types. Reset to `false` on release. Only ever set in the broker/worker
+    /// split (`pty_worker`); `run_wrap` leaves it `false` since that mode is
+    /// itself a live human passthrough where auto-responses are wanted.
+    pub(crate) interactive_hold: bool,
 }
 
 impl PtyAutoState {
@@ -133,6 +140,7 @@ impl PtyAutoState {
             editor_mode_buffer: String::new(),
             last_output_time: Instant::now(),
             is_idle: false,
+            interactive_hold: false,
         }
     }
 
@@ -149,6 +157,9 @@ impl PtyAutoState {
     /// Supports full match (header + option) and partial-match timeout (5s fallback).
     /// Handles edge cases where prompt text fragments across reads.
     pub(crate) async fn handle_mcp_approval(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if self.mcp_approved {
             return;
         }
@@ -188,6 +199,9 @@ impl PtyAutoState {
 
     /// Detect and approve bypass-permissions prompts in PTY output.
     pub(crate) async fn handle_bypass_permissions(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         let in_cooldown = self
             .last_bypass_perms_send
             .map(|t| t.elapsed() < BYPASS_PERMS_COOLDOWN)
@@ -216,6 +230,9 @@ impl PtyAutoState {
 
     /// Detect and dismiss Codex model upgrade prompts by selecting "Use existing model".
     pub(crate) async fn handle_codex_model_prompt(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if self.codex_model_prompt_handled {
             return;
         }
@@ -236,6 +253,9 @@ impl PtyAutoState {
     /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
     /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
     pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         let in_cooldown = self
             .last_opencode_perm_approval
             .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
@@ -263,6 +283,9 @@ impl PtyAutoState {
 
     /// Detect and auto-approve Gemini "Action Required" permission prompts.
     pub(crate) async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         let in_cooldown = self
             .last_gemini_action_approval
             .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
@@ -286,6 +309,9 @@ impl PtyAutoState {
     /// Detect and auto-approve Gemini "Modify Trust Level" folder trust prompts.
     /// The menu shows "Trust this folder" pre-selected as option 1, so we just press Enter.
     pub(crate) async fn handle_gemini_trust(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if !self.gemini_trust_handled {
             Self::append_buf(&mut self.gemini_trust_buffer, text, 2500, 2000);
             let clean = strip_ansi(&self.gemini_trust_buffer);
@@ -307,6 +333,9 @@ impl PtyAutoState {
     /// to open the trust menu. The existing `handle_gemini_trust` will then pick up the
     /// interactive "Modify Trust Level" prompt that appears in response.
     pub(crate) async fn handle_gemini_untrusted_banner(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if !self.gemini_untrusted_handled {
             Self::append_buf(&mut self.gemini_untrusted_buffer, text, 2500, 2000);
             let clean = strip_ansi(&self.gemini_untrusted_buffer);
@@ -329,6 +358,9 @@ impl PtyAutoState {
     /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
     /// so we just press Enter to confirm.
     pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if !self.claude_trust_handled {
             Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
             let clean = strip_ansi(&self.claude_trust_buffer);
@@ -347,6 +379,11 @@ impl PtyAutoState {
     /// Send an enter keystroke if the agent appears stuck after injection.
     /// Uses exponential backoff: 10s → 15s → 25s → 40s → 60s.
     pub(crate) fn try_auto_enter(&mut self, pty: &PtySession) {
+        // Suppressed while a human drives: pressing Enter here would submit the
+        // human's half-typed input.
+        if self.interactive_hold {
+            return;
+        }
         if let Some(injection_time) = self.last_injection_time {
             let backoff_multiplier = match self.auto_enter_retry_count {
                 0 => 1.0,
@@ -480,6 +517,45 @@ mod idle_tests {
         assert!(!state.is_idle);
         state.reset_idle_on_output();
         assert!(!state.is_idle);
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    /// While an interactive hold is active, `try_auto_enter` must not press
+    /// Enter (which would submit a human driver's half-typed input). Releasing
+    /// the hold resumes normal behaviour. We observe the effect via
+    /// `auto_enter_retry_count`, which only increments when a `\r` is actually
+    /// submitted.
+    #[tokio::test]
+    async fn interactive_hold_suppresses_and_resumes_auto_enter() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        let mut state = PtyAutoState::new();
+        // Arrange conditions under which auto-enter WOULD fire: an injection
+        // happened and both the injection and the last output are well past the
+        // required silence window, with no cooldown, editor, or suggestion.
+        state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+        state.last_output_time = Instant::now() - Duration::from_secs(120);
+
+        // Held: no keystroke.
+        state.interactive_hold = true;
+        state.try_auto_enter(&pty);
+        assert_eq!(
+            state.auto_enter_retry_count, 0,
+            "auto-enter must be suppressed while interactive hold is active"
+        );
+
+        // Released: resumes and fires.
+        state.interactive_hold = false;
+        state.try_auto_enter(&pty);
+        assert_eq!(
+            state.auto_enter_retry_count, 1,
+            "auto-enter must resume once the hold is released"
+        );
+
+        let _ = pty.shutdown();
     }
 }
 

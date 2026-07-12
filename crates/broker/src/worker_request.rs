@@ -366,6 +366,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_pty_success_response_resolves_input_ack() {
+        // A confirmed PTY write comes back as `write_pty_response` with a
+        // `bytes_written` payload; the parked input-ack reply resolves Ok so a
+        // client's `PtyInputStream.send()` settles successfully.
+        let mut pending: HashMap<String, PendingRequest> = HashMap::new();
+        let (entry, rx) = make_entry(
+            "write_pty",
+            "worker-a",
+            Instant::now() + Duration::from_secs(5),
+        );
+        pending.insert("api-1".to_string(), entry);
+
+        let frame = json!({
+            "type": "write_pty_response",
+            "request_id": "api-1",
+            "payload": { "bytes_written": 6 },
+        });
+        assert!(fulfil_response_frame(&mut pending, &frame));
+
+        let value = rx.await.expect("reply fires").expect("write succeeded");
+        assert_eq!(value["bytes_written"], json!(6));
+    }
+
+    #[tokio::test]
+    async fn write_pty_error_response_rejects_input_ack() {
+        // A failed PTY write comes back as `write_pty_response` with an `error`
+        // envelope; the parked reply rejects so the client's send() rejects and
+        // the CLI predictive-echo rollback runs.
+        let mut pending: HashMap<String, PendingRequest> = HashMap::new();
+        let (entry, rx) = make_entry(
+            "write_pty",
+            "worker-a",
+            Instant::now() + Duration::from_secs(5),
+        );
+        pending.insert("api-2".to_string(), entry);
+
+        let frame = json!({
+            "type": "write_pty_response",
+            "request_id": "api-2",
+            "payload": {
+                "error": { "code": "pty_write_failed", "message": "broken pipe" }
+            },
+        });
+        assert!(fulfil_response_frame(&mut pending, &frame));
+
+        match rx.await.expect("reply fires") {
+            Err(RequestWorkerError::WorkerError { code, message }) => {
+                assert_eq!(code, "pty_write_failed");
+                assert_eq!(message, "broken pipe");
+            }
+            other => panic!("expected WorkerError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_pty_ack_times_out_on_dead_worker() {
+        // A worker that never replies (dead/wedged mid-write) must not hang the
+        // input ack forever: the deadline sweep fails it with Timeout.
+        let mut pending: HashMap<String, PendingRequest> = HashMap::new();
+        let now = Instant::now();
+        let (entry, rx) = make_entry("write_pty", "worker-a", now - Duration::from_millis(1));
+        pending.insert("api-3".to_string(), entry);
+
+        let reaped = reap_expired(&mut pending, now);
+        assert_eq!(reaped.len(), 1);
+        assert_eq!(reaped[0].2, "write_pty");
+        assert!(matches!(
+            rx.await.expect("reply fires"),
+            Err(RequestWorkerError::Timeout)
+        ));
+    }
+
+    #[tokio::test]
     async fn reap_expired_times_out_overdue_entries() {
         let mut pending: HashMap<String, PendingRequest> = HashMap::new();
         let now = Instant::now();

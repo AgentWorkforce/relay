@@ -1,8 +1,12 @@
 use std::{
     collections::{HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::OnceLock,
     time::{Duration, Instant},
 };
+
+use futures_util::{stream::FuturesUnordered, StreamExt};
 
 use crate::{
     ids::{DeliveryId, RequestId},
@@ -74,6 +78,20 @@ struct ActiveInjection {
     next_at: tokio::time::Instant,
     injection_text: Option<String>,
 }
+
+/// Result of an in-flight `write_pty` awaiting the PTY drainer: the request id
+/// to correlate the response frame, the byte length written, and the drainer's
+/// ack (`Ok(Ok)` written+flushed, `Ok(Err)` I/O error, `Err` drainer exited
+/// before acking).
+type PtyWriteAck = (
+    RequestId,
+    usize,
+    Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>,
+);
+
+/// Boxed future stored in the `pending_pty_writes` [`FuturesUnordered`]. Boxed
+/// because each `async move` block is a distinct anonymous type.
+type PtyWriteAckFuture = Pin<Box<dyn Future<Output = PtyWriteAck> + Send>>;
 
 fn cli_basename(command: &str) -> &str {
     command
@@ -222,6 +240,15 @@ fn startup_gate_ready(
     )
 }
 
+/// Whether the loop may pop and start the next pending injection this tick.
+/// Gated off when an injection is already in flight OR an interactive hold is
+/// active (a human is driving). While held, deliveries stay parked in
+/// `pending_worker_injections` — never dropped — and resume popping once the
+/// hold is released.
+fn injection_pop_allowed(active_injection_present: bool, interactive_hold: bool) -> bool {
+    !active_injection_present && !interactive_hold
+}
+
 fn should_block_pending_injection(
     auto_suggestion_visible: bool,
     pending: &PendingWorkerInjection,
@@ -351,6 +378,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // one injection is in flight at a time; the pending-injection interval arm
     // starts the next one once this returns to `None`.
     let mut active_injection: Option<ActiveInjection> = None;
+    // In-flight `write_pty` PTY writes awaiting the drainer's confirmation. Each
+    // entry resolves to `(request_id, byte_len, ack_result)` once the PTY write
+    // (or its failure) is confirmed, at which point the loop sends a
+    // `write_pty_response` frame back to the broker. Awaiting the ack here —
+    // rather than acking on enqueue — is what makes `pty_input_ack` mean "the
+    // bytes reached the child", so a client's `PtyInputStream.send()` only
+    // resolves after a real write (and rejects on failure, driving the CLI
+    // predictive-echo rollback). Draining lives in its own select arm so the
+    // loop keeps forwarding PTY output and handling input while writes settle.
+    let mut pending_pty_writes: FuturesUnordered<PtyWriteAckFuture> = FuturesUnordered::new();
     let wait_for_agent_relay_boot = codex_agent_relay_boot_expected(&resolved_cli, &effective_args);
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
@@ -582,27 +619,75 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         // Non-blocking submission: never parks the
                                         // select loop even if the drainer is wedged
                                         // behind a child that stopped reading stdin.
-                                        if let Err(e) = pty.submit_write(data.as_bytes().to_vec()) {
-                                            tracing::warn!(
-                                                target: "agent_relay::worker::pty",
-                                                error = %e,
-                                                "failed to submit input to pty"
-                                            );
-                                            let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
-                                                "code": "pty_write_failed",
-                                                "message": e.to_string(),
-                                                "retryable": true,
-                                            })).await;
+                                        let bytes = data.as_bytes().to_vec();
+                                        let byte_len = bytes.len();
+                                        match pty.submit_write(bytes) {
+                                            Ok(ack_rx) => {
+                                                // Defer the ack until the drainer confirms the
+                                                // write landed (or failed). The broker holds the
+                                                // SendInput reply / pty_input_ack until the
+                                                // matching `write_pty_response` arrives.
+                                                match frame.request_id.clone() {
+                                                    Some(req_id) => {
+                                                        pending_pty_writes.push(Box::pin(async move {
+                                                            let ack = ack_rx.await;
+                                                            (req_id, byte_len, ack)
+                                                        }));
+                                                    }
+                                                    None => {
+                                                        // No correlation id (legacy / fire-and-forget
+                                                        // input): drop the receiver, nothing to ack.
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    target: "agent_relay::worker::pty",
+                                                    error = %e,
+                                                    "failed to submit input to pty"
+                                                );
+                                                // Surface the enqueue failure on the correlated
+                                                // response so the client's send() rejects instead
+                                                // of resolving on a write that never happened.
+                                                let _ = send_frame(&out_tx, "write_pty_response", frame.request_id, json!({
+                                                    "error": {
+                                                        "code": "pty_write_failed",
+                                                        "message": e.to_string(),
+                                                    }
+                                                })).await;
+                                            }
                                         }
                                     }
                                     None => {
-                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
-                                            "code": "invalid_payload",
-                                            "message": "write_pty payload must include 'data' string",
-                                            "retryable": false,
+                                        let _ = send_frame(&out_tx, "write_pty_response", frame.request_id, json!({
+                                            "error": {
+                                                "code": "invalid_payload",
+                                                "message": "write_pty payload must include 'data' string",
+                                            }
                                         })).await;
                                     }
                                 }
+                            }
+                            "set_interactive_hold" => {
+                                // Human-drive hold toggle. While held, the worker
+                                // stops popping pending injections, freezes any
+                                // in-flight injection (its deadline arm is gated
+                                // off and resumes when released), and gates the
+                                // auto-enter / prompt auto-responders — so none of
+                                // them splice keystrokes into the human's typing.
+                                let hold = frame.payload
+                                    .get("hold")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false);
+                                if pty_auto.interactive_hold != hold {
+                                    tracing::info!(
+                                        target: "agent_relay::worker::pty",
+                                        worker = %worker_name,
+                                        hold,
+                                        "interactive hold updated"
+                                    );
+                                }
+                                pty_auto.interactive_hold = hold;
                             }
                             "ping" => {
                                 let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
@@ -1022,11 +1107,35 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 flush_stream_buffer!();
             }
 
+            // Confirm settled `write_pty` writes back to the broker. The guard
+            // parks this arm on an empty set so an idle worker never busy-loops
+            // on `FuturesUnordered::next()` returning `None`.
+            Some((req_id, byte_len, ack)) = pending_pty_writes.next(), if !pending_pty_writes.is_empty() => {
+                let payload = match ack {
+                    Ok(Ok(())) => json!({ "bytes_written": byte_len }),
+                    Ok(Err(err)) => json!({
+                        "error": {
+                            "code": "pty_write_failed",
+                            "message": err.to_string(),
+                        }
+                    }),
+                    Err(_) => json!({
+                        "error": {
+                            "code": "pty_write_failed",
+                            "message": "pty write drainer exited before acknowledging queued write",
+                        }
+                    }),
+                };
+                let _ = send_frame(&out_tx, "write_pty_response", Some(req_id), payload).await;
+            }
+
             // Start the next injection when the loop is free. All the paced
             // writes happen in the deadline arm below so this tick never
             // blocks: it only pops a delivery and schedules the first stage.
+            // Gated off while an interactive hold is active so queued deliveries
+            // stay parked (not dropped) until the human releases the drive.
             _ = pending_injection_interval.tick() => {
-                if active_injection.is_none() {
+                if injection_pop_allowed(active_injection.is_some(), pty_auto.interactive_hold) {
                     let should_block = pending_worker_injections
                         .front()
                         .map(|pending| should_block_pending_injection(pty_auto.auto_suggestion_visible, pending))
@@ -1056,7 +1165,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     Some(at) => tokio::time::sleep_until(at).await,
                     None => std::future::pending::<()>().await,
                 }
-            }, if active_injection.is_some() => {
+            }, if active_injection.is_some() && !pty_auto.interactive_hold => {
                 let mut inj = active_injection.take().expect("active injection present under guard");
                 match inj.stage {
                     InjectionStage::Escape => {
@@ -1557,6 +1666,18 @@ mod tests {
         };
 
         assert!(!should_block_pending_injection(true, &pending));
+    }
+
+    #[test]
+    fn injection_pop_gated_by_hold_and_active_injection() {
+        // Free loop, no hold: may start the next injection.
+        assert!(injection_pop_allowed(false, false));
+        // An injection is already in flight: wait for it to finish.
+        assert!(!injection_pop_allowed(true, false));
+        // Interactive hold active (human driving): keep deliveries parked —
+        // they are not popped, so nothing is dropped while held.
+        assert!(!injection_pop_allowed(false, true));
+        assert!(!injection_pop_allowed(true, true));
     }
 
     #[test]
