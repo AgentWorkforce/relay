@@ -1,0 +1,23 @@
+{
+  "id": "traj_8r9un8608wrg",
+  "version": 1,
+  "task": {
+    "title": "Fix #1247 B2",
+    "source": {
+      "system": "plain",
+      "id": "1247"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-07-12T21:18:18.032Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4a77520ac143de68e49dca6700f437a5624b3076",
+    "endRef": "4a77520ac143de68e49dca6700f437a5624b3076"
+  }
+}
