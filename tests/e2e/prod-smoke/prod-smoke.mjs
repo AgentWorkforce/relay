@@ -44,25 +44,28 @@ const ACTION = 'hello-prod';
 const CHANNEL = 'prod-smoke';
 
 // ---------------------------------------------------------------------------
-// Output — every printed value passes through the shipped structural redactor so
-// a credential-named field can never surface, plus a prefix helper for the few
-// tokens we intentionally show as proof-of-mint.
+// Output — token material never reaches a log. Structured response bodies go
+// through the shipped structural redactor (credential-named keys → [redacted]);
+// free-form text (the broker's own stdout, which echoes `--workspace-key …`) is
+// scrubbed by token scheme. Nothing logs a slice of a live token, not even a
+// prefix — the workspace id (non-secret) is the recoverable handle we print.
 // ---------------------------------------------------------------------------
 /** @type {<T>(v: T) => T} */
 let redactSecrets = (v) => v;
 
+/** Scrub credential material from free-form text, keeping only the scheme tag. */
+const scrub = (text) =>
+  String(text).replace(/(rk_live_|at_live_|nt_live_|ot_live_|ocl_node_enr_|br_)[A-Za-z0-9_-]+/g, '$1…');
+
 const stamp = () => new Date().toISOString().slice(11, 23);
 /** @param {string} msg */
-const log = (msg) => console.log(`[${stamp()}] ${msg}`);
+const log = (msg) => console.log(`[${stamp()}] ${scrub(msg)}`);
 /** @param {string} msg */
-const fail = (msg) => console.error(`[${stamp()}] ✗ ${msg}`);
+const fail = (msg) => console.error(`[${stamp()}] ✗ ${scrub(msg)}`);
 /** @param {string} msg */
-const pass = (msg) => console.log(`[${stamp()}] ✓ ${msg}`);
-/** Show only a token's prefix (e.g. `rk_live_5874…`). @param {string} tok */
-const prefix = (tok, n = 12) =>
-  typeof tok === 'string' && tok.length > n ? `${tok.slice(0, n)}…` : '[redacted]';
+const pass = (msg) => console.log(`[${stamp()}] ✓ ${scrub(msg)}`);
 /** Pretty-print a response body with credential fields structurally redacted. */
-const show = (body) => JSON.stringify(redactSecrets(body), null, 2);
+const show = (body) => scrub(JSON.stringify(redactSecrets(body), null, 2));
 
 class SmokeError extends Error {}
 /** @param {unknown} cond @param {string} msg */
@@ -196,7 +199,7 @@ class NodeUp {
 
   /** Redacted recent output, for failure diagnostics. */
   get log() {
-    return redactSecrets(this.logBuf);
+    return scrub(this.logBuf);
   }
 
   /** Kill the broker (by connection.json pid) then the `node up` child. */
@@ -302,7 +305,8 @@ async function main() {
     state.workspaceKey = ws.body.data.api_key;
     state.workspaceId = ws.body.data.workspace_id;
     const workspaceKey = /** @type {string} */ (state.workspaceKey);
-    log(`workspace created: id=${state.workspaceId} key=${prefix(workspaceKey)} (name ${wsName})`);
+    assert(workspaceKey?.startsWith('rk_live_'), 'workspace key missing or wrong scheme');
+    log(`workspace created: id=${state.workspaceId} (name ${wsName})`);
 
     // 2) node up — broker provider + TS capability provider on one node.
     const node = new NodeUp({ workspaceKey, brokerBinary, tmpRoot });
@@ -338,7 +342,8 @@ async function main() {
     });
     assert(agentReg.status < 300, `agent register failed (${agentReg.status}): ${show(agentReg.body)}`);
     const agentToken = agentReg.body.data.token ?? agentReg.body.data.agent_token;
-    log(`caller agent registered: name=prod-smoke-caller token=${prefix(agentToken)}`);
+    assert(agentToken?.startsWith('at_live_'), 'agent token missing or wrong scheme');
+    log('caller agent registered: name=prod-smoke-caller');
 
     const sentEcho = { marker: `echo-${Date.now()}`, nested: { n: 42 }, list: [1, 2, 3] };
     const invoke = await req('POST', `/v1/nodes/${NODE_NAME}/actions/${ACTION}/invoke`, {
