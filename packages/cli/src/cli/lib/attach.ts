@@ -329,11 +329,17 @@ export async function syncInitialPtySize(
   name: string,
   localSize: { rows: number; cols: number } | null,
   verb: string,
-  deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void }
+  deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void },
+  options?: { sessionId?: string }
 ): Promise<void> {
   if (!localSize) return;
   try {
-    await createBrokerClient(connection, deps.fetch).resizePty(name, localSize.rows, localSize.cols);
+    await createBrokerClient(connection, deps.fetch).resizePty(
+      name,
+      localSize.rows,
+      localSize.cols,
+      options
+    );
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     deps.log(

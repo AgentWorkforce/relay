@@ -34,6 +34,7 @@
  */
 
 import { Buffer } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
 import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
@@ -338,14 +339,38 @@ export async function resizeWorker(
   name: string,
   rows: number,
   cols: number,
-  fetchFn: typeof globalThis.fetch
+  fetchFn: typeof globalThis.fetch,
+  options?: { sessionId?: string }
 ): Promise<{ ok: boolean; message?: string }> {
   try {
-    await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols);
+    await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols, options);
     return { ok: true };
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     return { ok: false, message: failure.message };
+  }
+}
+
+/**
+ * Release this session's PTY resize ownership on detach (single-resizer
+ * policy, #1247), so the next client that attaches can resize the shared PTY.
+ * Best-effort: the broker also supersedes a crashed owner after an idle window.
+ */
+export async function releaseResizeOwnership(
+  connection: BrokerConnection,
+  name: string,
+  rows: number,
+  cols: number,
+  sessionId: string,
+  fetchFn: typeof globalThis.fetch
+): Promise<void> {
+  try {
+    await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols, {
+      sessionId,
+      release: true,
+    });
+  } catch {
+    // Best-effort — ownership falls back to the broker's idle-takeover net.
   }
 }
 
@@ -514,6 +539,10 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let settled = false;
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
+    // Stable per-attach id for the broker's single-resizer policy (#1247): all
+    // of this session's resizes carry it so we own the shared PTY size while
+    // driving, and we release it on detach.
+    const resizeSessionId = randomUUID();
     let pending = state.initialPending;
     let terminalRows = pickInitialTerminalRows(state.initialLocalSize, undefined);
     const parser = new KeybindParser();
@@ -590,7 +619,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       if (!size) return;
       terminalRows = size.rows;
       predictiveEcho?.onResize(size.cols, size.rows);
-      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch).then((res) => {
+      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+        sessionId: resizeSessionId,
+      }).then((res) => {
         if (!res.ok) {
           deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
         }
@@ -706,6 +737,18 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       teardownStdin();
       predictiveEcho?.reset();
       closeInputStream();
+      // Release resize ownership so the next client can size the shared PTY.
+      const lastSize = deps.terminal.getSize() ?? state.initialLocalSize;
+      if (lastSize) {
+        void releaseResizeOwnership(
+          connection,
+          name,
+          lastSize.rows,
+          lastSize.cols,
+          resizeSessionId,
+          deps.fetch
+        );
+      }
       try {
         socket.close(1000, 'drive client exiting');
       } catch {
@@ -795,7 +838,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // transient snapshot failure nothing was painted, so apply everything.
       const pendingChunks = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
       for (const chunk of pendingChunks) applyServerOutput(chunk);
-      await syncInitialPtySize(connection, name, state.initialLocalSize, 'drive', deps);
+      await syncInitialPtySize(connection, name, state.initialLocalSize, 'drive', deps, {
+        sessionId: resizeSessionId,
+      });
       if (settled) return;
       // Open the SDK input stream before taking over stdin. A failed stream
       // should not leave the user's terminal in raw mode with nowhere to

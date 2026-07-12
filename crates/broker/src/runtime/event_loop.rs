@@ -1,5 +1,46 @@
 use super::*;
 
+/// Current PTY resize owner for a worker under the single-resizer policy.
+///
+/// `session_id` is the client-generated id that currently owns resizing;
+/// `last_seen` timestamps its most recent resize so a crashed client that
+/// never releases can be superseded after [`RESIZE_OWNER_STALE`].
+pub(crate) struct ResizeOwner {
+    pub(super) session_id: String,
+    pub(super) last_seen: Instant,
+}
+
+/// How long an owning session may be idle before another session is allowed
+/// to take over resizing. Only a safety net for clients that crash without
+/// sending an explicit release on detach — a well-behaved client releases
+/// immediately, so this window never fires in the normal path.
+pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
+
+/// Decide whether a resize request from `session_id` should be applied under
+/// the single-resizer policy (#1247).
+///
+/// - Requests without a `session_id` (legacy/one-shot callers) always apply
+///   and never change ownership.
+/// - The first session to resize an unowned worker, and the session that
+///   already owns it, are applied.
+/// - A different session is rejected while the current owner is live, so two
+///   drive clients can't fight over the shared PTY — unless the owner has gone
+///   `owner_stale` (crashed without releasing), in which case the newcomer may
+///   take over.
+pub(crate) fn resize_owner_allows(
+    owner_session: Option<&str>,
+    owner_stale: bool,
+    session_id: Option<&str>,
+) -> bool {
+    match session_id {
+        None => true,
+        Some(sid) => match owner_session {
+            None => true,
+            Some(owner) => owner == sid || owner_stale,
+        },
+    }
+}
+
 pub(crate) struct BrokerRuntime {
     pub(super) persist: bool,
     pub(super) broker_start: Instant,
@@ -42,6 +83,17 @@ pub(crate) struct BrokerRuntime {
     pub(super) pending_deliveries: PendingDeliveryStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
+    /// Per-worker PTY resize ownership (single-resizer policy, see #1247).
+    ///
+    /// A shared PTY has exactly one size, so letting every attached client
+    /// (and every local SIGWINCH) resize it makes concurrent drive clients
+    /// fight and can garble view clients. We therefore key resizes on an
+    /// optional client-generated `session_id`: the first session to resize a
+    /// worker claims it, and only that session's resizes are applied until it
+    /// releases on detach (or is superseded after a long idle window when a
+    /// client crashes without releasing). Resizes without a `session_id` are
+    /// always applied (legacy/one-shot callers), preserving old behaviour.
+    pub(super) resize_owners: HashMap<WorkerName, ResizeOwner>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
     pub(super) recent_thread_messages: VecDeque<Value>,
@@ -225,5 +277,99 @@ impl BrokerRuntime {
         let _ = std::fs::remove_file(&connection_path);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod resize_owner_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn legacy_request_without_session_always_applies() {
+        // Someone else owns it, but a request with no session id still applies.
+        assert!(resize_owner_allows(Some("other"), false, None));
+        assert!(resize_owner_allows(None, false, None));
+    }
+
+    #[test]
+    fn first_session_claims_unowned_worker() {
+        assert!(resize_owner_allows(None, false, Some("s1")));
+    }
+
+    #[test]
+    fn owner_session_is_accepted() {
+        assert!(resize_owner_allows(Some("s1"), false, Some("s1")));
+    }
+
+    #[test]
+    fn different_live_session_is_rejected() {
+        assert!(!resize_owner_allows(Some("s1"), false, Some("s2")));
+    }
+
+    #[test]
+    fn stale_owner_can_be_taken_over() {
+        assert!(resize_owner_allows(Some("s1"), true, Some("s2")));
+    }
+
+    #[test]
+    fn claim_reject_release_lifecycle() {
+        // Model the handler's map operations end-to-end.
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+
+        // s1 claims the (unowned) worker.
+        assert!(resize_owner_allows(None, false, Some("s1")));
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: Instant::now(),
+            },
+        );
+
+        // s2 is rejected while s1 owns and is fresh.
+        let owner = owners.get(&name);
+        assert!(!resize_owner_allows(
+            owner.map(|o| o.session_id.as_str()),
+            false,
+            Some("s2"),
+        ));
+
+        // s1 releases on detach (only its own session may clear ownership).
+        if owners
+            .get(&name)
+            .is_some_and(|o| o.session_id == "s1")
+        {
+            owners.remove(&name);
+        }
+        assert!(!owners.contains_key(&name));
+
+        // Now s2 can claim the freed worker.
+        assert!(resize_owner_allows(None, false, Some("s2")));
+    }
+
+    #[test]
+    fn release_from_non_owner_is_ignored() {
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: Instant::now(),
+            },
+        );
+        // A release carrying the wrong session id must not evict the owner.
+        if owners
+            .get(&name)
+            .is_some_and(|o| o.session_id == "s2")
+        {
+            owners.remove(&name);
+        }
+        assert_eq!(
+            owners.get(&name).map(|o| o.session_id.as_str()),
+            Some("s1")
+        );
     }
 }

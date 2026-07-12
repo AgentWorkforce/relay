@@ -36,7 +36,7 @@ use crate::cli::PtyCommand;
 use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
-use crate::util::ansi::{floor_char_boundary, strip_ansi};
+use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
@@ -423,6 +423,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // across chunks; the decoder holds incomplete trailing bytes for the
     // next chunk instead of corrupting them into U+FFFD.
     let mut utf8_decoder = Utf8StreamDecoder::new();
+    // Stateful ANSI stripper for the readiness/prompt-detection path. Unlike a
+    // per-chunk `strip_ansi`, it stitches escape sequences split across PTY
+    // reads so fragments like `3;5H` never leak into `startup_output` and
+    // confuse boot-marker / prompt matching (#1247).
+    let mut readiness_stripper = AnsiStripper::new();
     // Coalesced buffering for worker_stream emissions, tuned for
     // interactive (`drive`/`passthrough`) latency. Output flushes on a
     // leading edge — the first chunk after an idle gap goes out
@@ -783,7 +788,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             // back for the next read; nothing to emit yet.
                             continue;
                         }
-                        let clean_text = strip_ansi(&text);
+                        let clean_text = readiness_stripper.feed(&text);
                         append_bounded(
                             &mut startup_output,
                             &clean_text,

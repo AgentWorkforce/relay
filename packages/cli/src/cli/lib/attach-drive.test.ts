@@ -828,7 +828,10 @@ describe('runDriveSession', () => {
 
     const resizeCalls = fetchLog.filter((call) => call.method === 'POST' && call.url.includes('/resize/'));
     expect(resizeCalls).toHaveLength(1);
-    expect(resizeCalls[0].body).toEqual({ rows: 60, cols: 200 });
+    const body = resizeCalls[0].body as { rows: number; cols: number; session_id?: string };
+    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 60, cols: 200 });
+    // The on-attach sync carries a session id for the single-resizer policy.
+    expect(body.session_id).toEqual(expect.any(String));
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
@@ -849,13 +852,17 @@ describe('runDriveSession', () => {
 
     const resizeBodies = fetchLog
       .filter((call) => call.method === 'POST' && call.url.includes('/resize/'))
-      .map((call) => call.body);
-    // First the on-attach sync, then each user-driven resize.
-    expect(resizeBodies).toEqual([
+      .map((call) => call.body as { rows: number; cols: number; session_id?: string });
+    // First the on-attach sync, then each user-driven resize. Every resize
+    // carries the same per-attach session id (single-resizer policy, #1247).
+    expect(resizeBodies.map(({ rows, cols }) => ({ rows, cols }))).toEqual([
       { rows: 30, cols: 100 },
       { rows: 50, cols: 150 },
       { rows: 24, cols: 80 },
     ]);
+    const sessionIds = new Set(resizeBodies.map((b) => b.session_id));
+    expect(sessionIds.size).toBe(1);
+    expect([...sessionIds][0]).toEqual(expect.any(String));
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
@@ -870,6 +877,34 @@ describe('runDriveSession', () => {
     await signals.get('SIGINT')?.();
     await sessionPromise;
     expect(terminal.listenerCount()).toBe(0);
+  });
+
+  it('releases resize ownership on detach with the attach session id', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // Capture the session id claimed by the on-attach resize sync.
+    const attachResize = fetchLog.find(
+      (call) => call.method === 'POST' && call.url.includes('/resize/')
+    );
+    const sessionId = (attachResize?.body as { session_id?: string } | undefined)?.session_id;
+    expect(sessionId).toEqual(expect.any(String));
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Detach must send a release for the same session id.
+    const releaseCall = fetchLog.find(
+      (call) =>
+        call.method === 'POST' &&
+        call.url.includes('/resize/') &&
+        (call.body as { release?: boolean }).release === true
+    );
+    expect(releaseCall).toBeDefined();
+    expect((releaseCall?.body as { session_id?: string }).session_id).toBe(sessionId);
   });
 
   it('skips resize forwarding when stdout is not a TTY', async () => {

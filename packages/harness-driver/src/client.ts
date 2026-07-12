@@ -652,14 +652,29 @@ export class HarnessDriverClient {
     return this.transport.openInputStream(name, options);
   }
 
+  /**
+   * Resize a worker's PTY.
+   *
+   * Under the broker's single-resizer policy (#1247) an attach client should
+   * pass a stable `sessionId` so only one client owns the shared PTY size at a
+   * time; on detach it sends `release: true` to hand ownership back. Calls
+   * without `sessionId` are always applied (legacy behaviour), so the extra
+   * options are fully backward compatible.
+   */
   async resizePty(
     name: string,
     rows: number,
-    cols: number
-  ): Promise<{ name: string; rows: number; cols: number }> {
+    cols: number,
+    options?: { sessionId?: string; release?: boolean }
+  ): Promise<{ name: string; rows?: number; cols?: number; applied?: boolean; released?: boolean }> {
     return this.transport.request(`/api/resize/${encodeURIComponent(name)}`, {
       method: 'POST',
-      body: JSON.stringify({ rows, cols }),
+      body: JSON.stringify({
+        rows,
+        cols,
+        ...(options?.sessionId ? { session_id: options.sessionId } : {}),
+        ...(options?.release ? { release: true } : {}),
+      }),
     });
   }
 

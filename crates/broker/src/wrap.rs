@@ -34,7 +34,7 @@ use crate::runtime::{
 };
 use crate::spawner::{spawn_env_vars, Spawner};
 use crate::util::{
-    ansi::{floor_char_boundary, strip_ansi},
+    ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
         detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
         detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
@@ -850,6 +850,12 @@ pub(crate) async fn run_wrap(
     // Pre-seeding dedup with these IDs prevents self-echo when the same message
     // arrives via WS — regardless of what identity the MCP server uses.
     let mut mcp_response_buffer = String::new();
+    // Stateful ANSI stripper for auto-suggestion detection. `is_auto_suggestion`
+    // keys on raw markers (`\x1b[7m`, `\x1b[27m\x1b[2m`); scanning each PTY read
+    // independently misses a marker split across two reads. Stitching the raw
+    // stream here holds back an incomplete trailing escape and prepends it to
+    // the next chunk so the ghost-text guard sees whole markers (#1247).
+    let mut suggestion_stripper = AnsiStripper::new();
 
     let mut pty_auto = PtyAutoState::new();
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
@@ -938,7 +944,10 @@ pub(crate) async fn run_wrap(
                         pty_auto.last_output_time = Instant::now();
                         mcp_reminder_throttle.note_output_bytes(chunk.len());
 
-                        pty_auto.update_auto_suggestion(&text);
+                        // Scan the stitched raw stream so a `\x1b[7m` marker
+                        // split across reads is still detected.
+                        let suggestion_scan = suggestion_stripper.feed_raw(&text);
+                        pty_auto.update_auto_suggestion(&suggestion_scan);
                         pty_auto.update_editor_buffer(&text);
                         pty_auto.reset_auto_enter_on_output(&text);
 

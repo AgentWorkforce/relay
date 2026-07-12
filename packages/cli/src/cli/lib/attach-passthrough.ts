@@ -24,6 +24,7 @@
  */
 
 import { Buffer } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
 import WebSocket from 'ws';
@@ -52,6 +53,7 @@ import { defaultExit, runSignalHandler } from '../lib/exit.js';
 import {
   type CliPtyInputStream,
   openPtyInputStream,
+  releaseResizeOwnership,
   resizeWorker,
   type InboundDeliveryMode,
 } from './attach-drive.js';
@@ -334,6 +336,8 @@ export async function runPassthroughSession(
     let settled = false;
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
+    // Per-attach id for the single-resizer policy (#1247). See attach-drive.ts.
+    const resizeSessionId = randomUUID();
     const parser = new PassthroughKeybindParser();
     // Stateful UTF-8 decoder for forwarded stdin — a multi-byte character split
     // across stdin chunks would otherwise become U+FFFD. See attach-drive.ts.
@@ -396,7 +400,9 @@ export async function runPassthroughSession(
       if (!size) return;
       terminalRows = size.rows;
       predictiveEcho?.onResize(size.cols, size.rows);
-      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch).then((res) => {
+      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+        sessionId: resizeSessionId,
+      }).then((res) => {
         if (!res.ok) {
           deps.log(`[passthrough] resize forward failed: ${res.message ?? 'unknown error'}`);
         }
@@ -504,6 +510,18 @@ export async function runPassthroughSession(
       teardownStdin();
       predictiveEcho?.reset();
       closeInputStream();
+      // Release resize ownership so the next client can size the shared PTY.
+      const lastSize = deps.terminal.getSize() ?? initialLocalSize;
+      if (lastSize) {
+        void releaseResizeOwnership(
+          connection,
+          name,
+          lastSize.rows,
+          lastSize.cols,
+          resizeSessionId,
+          deps.fetch
+        );
+      }
       try {
         socket.close(1000, 'passthrough client exiting');
       } catch {
@@ -589,7 +607,9 @@ export async function runPassthroughSession(
       // transient snapshot failure nothing was painted, so apply everything.
       const pending = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
       for (const chunk of pending) applyServerOutput(chunk);
-      await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps);
+      await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps, {
+        sessionId: resizeSessionId,
+      });
       if (settled) return;
       await openInputStreamAndTakeStdin();
     };

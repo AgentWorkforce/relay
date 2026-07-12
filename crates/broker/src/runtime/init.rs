@@ -656,6 +656,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         pending_deliveries,
         terminal_failed_deliveries,
         pending_requests,
+        resize_owners: HashMap::new(),
         delivery_states,
         agent_result_tokens,
         recent_thread_messages,

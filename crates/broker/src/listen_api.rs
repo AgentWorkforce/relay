@@ -104,6 +104,12 @@ pub enum ListenApiRequest {
         name: WorkerName,
         rows: u16,
         cols: u16,
+        /// Optional client-generated session id for the single-resizer
+        /// policy (#1247). `None` preserves legacy always-apply behaviour.
+        session_id: Option<String>,
+        /// When `true`, the owning `session_id` releases resize ownership
+        /// (sent on detach) instead of applying a resize.
+        release: bool,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     /// Generic worker request/response RPC: park a oneshot in the
@@ -1784,6 +1790,14 @@ async fn send_pty_input_ws_error(
 struct ResizePtyBody {
     rows: u16,
     cols: u16,
+    /// Optional client session id for the single-resizer policy (#1247).
+    /// Additive: legacy clients omit it and keep always-apply behaviour.
+    #[serde(default)]
+    session_id: Option<String>,
+    /// When `true`, releases resize ownership held by `session_id` (sent on
+    /// detach) rather than applying a resize.
+    #[serde(default)]
+    release: bool,
 }
 
 async fn listen_api_resize_pty(
@@ -1798,6 +1812,8 @@ async fn listen_api_resize_pty(
             name: WorkerName::new(name.clone()),
             rows: body.rows,
             cols: body.cols,
+            session_id: body.session_id,
+            release: body.release,
             reply: reply_tx,
         })
         .await
@@ -4164,11 +4180,15 @@ mod auth_tests {
                     name,
                     rows,
                     cols,
+                    session_id,
+                    release,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
                     assert_eq!(rows, 40);
                     assert_eq!(cols, 120);
+                    assert_eq!(session_id, None);
+                    assert!(!release);
                     let _ = reply.send(Ok(json!({ "resized": true })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),

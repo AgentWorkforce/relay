@@ -684,7 +684,10 @@ describe('runPassthroughSession', () => {
 
     const resizeCalls = fetchLog.filter((c) => c.method === 'POST' && c.url.includes('/resize/'));
     expect(resizeCalls).toHaveLength(1);
-    expect(resizeCalls[0].body).toEqual({ rows: 60, cols: 200 });
+    const body = resizeCalls[0].body as { rows: number; cols: number; session_id?: string };
+    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 60, cols: 200 });
+    // The on-attach sync carries a session id for the single-resizer policy.
+    expect(body.session_id).toEqual(expect.any(String));
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
