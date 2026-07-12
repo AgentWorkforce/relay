@@ -968,7 +968,10 @@ mod tests {
         };
         let encoded = serde_json::to_string(&event).unwrap();
         let raw: Value = serde_json::from_str(&encoded).unwrap();
-        assert!(raw.get("offset").is_none(), "offset must be omitted when None");
+        assert!(
+            raw.get("offset").is_none(),
+            "offset must be omitted when None"
+        );
         // A frame with no `offset` key decodes to `None` (backward compatible).
         let legacy = r#"{"kind":"worker_stream","name":"Worker1","stream":"stdout","chunk":"hi"}"#;
         let decoded: BrokerEvent = serde_json::from_str(legacy).unwrap();
