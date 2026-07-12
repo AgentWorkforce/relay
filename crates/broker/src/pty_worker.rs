@@ -45,6 +45,36 @@ struct PendingWorkerInjection {
     queued_at: Instant,
 }
 
+/// Stage of an in-flight injection's paced write sequence. Each stage is
+/// separated from the next by a short TUI-pacing delay. Rather than blocking
+/// the worker select loop with `sleep().await` between stages (which stalled
+/// PTY output forwarding and input handling), the loop tracks the next
+/// deadline in [`ActiveInjection::next_at`] and advances the machine from a
+/// dedicated timer arm — staying responsive to output and keystrokes while
+/// the delay elapses.
+#[derive(Debug, Clone, Copy)]
+enum InjectionStage {
+    /// Pre-injection escape: steer `ESC ESC`, auto-suggestion dismiss `ESC`,
+    /// or nothing when no escape is required.
+    Escape,
+    /// Escape delay elapsed; submit the formatted injection body next.
+    Body,
+    /// Body written; submit the trailing `\r` and finalize (emit
+    /// `delivery_injected`, queue echo verification).
+    Enter,
+}
+
+/// A single injection being written across paced stages. Holds the delivery
+/// plus the formatted injection text (retained from the Body stage so it can
+/// be used as the expected echo when the trailing `\r` is submitted).
+#[derive(Debug)]
+struct ActiveInjection {
+    pending: PendingWorkerInjection,
+    stage: InjectionStage,
+    next_at: tokio::time::Instant,
+    injection_text: Option<String>,
+}
+
 fn cli_basename(command: &str) -> &str {
     command
         .rsplit(['/', '\\'])
@@ -317,6 +347,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
+    // The injection currently being written across paced stages, if any. Only
+    // one injection is in flight at a time; the pending-injection interval arm
+    // starts the next one once this returns to `None`.
+    let mut active_injection: Option<ActiveInjection> = None;
     let wait_for_agent_relay_boot = codex_agent_relay_boot_expected(&resolved_cli, &effective_args);
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
@@ -545,11 +579,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // child process sees the keystrokes.
                                 match frame.payload.get("data").and_then(Value::as_str) {
                                     Some(data) => {
-                                        if let Err(e) = pty.write_all(data.as_bytes()) {
+                                        // Non-blocking submission: never parks the
+                                        // select loop even if the drainer is wedged
+                                        // behind a child that stopped reading stdin.
+                                        if let Err(e) = pty.submit_write(data.as_bytes().to_vec()) {
                                             tracing::warn!(
                                                 target: "agent_relay::worker::pty",
                                                 error = %e,
-                                                "failed to write input to pty"
+                                                "failed to submit input to pty"
                                             );
                                             let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
                                                 "code": "pty_write_failed",
@@ -985,100 +1022,144 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 flush_stream_buffer!();
             }
 
+            // Start the next injection when the loop is free. All the paced
+            // writes happen in the deadline arm below so this tick never
+            // blocks: it only pops a delivery and schedules the first stage.
             _ = pending_injection_interval.tick() => {
-                let should_block = pending_worker_injections
-                    .front()
-                    .map(|pending| should_block_pending_injection(pty_auto.auto_suggestion_visible, pending))
-                    .unwrap_or(false);
-                if should_block {
-                    continue;
-                }
-                if let Some(pending) = pending_worker_injections.pop_front() {
-                    tokio::time::sleep(throttle.delay()).await;
-
-                    if matches!(pending.delivery.injection_mode, MessageInjectionMode::Steer) {
-                        tracing::debug!(
-                            delivery_id = %pending.delivery.delivery_id,
-                            "steer mode: sending ESC ESC before message injection"
-                        );
-                        if let Err(error) = pty.write_all(b"\x1b\x1b") {
-                            tracing::warn!(
-                                delivery_id = %pending.delivery.delivery_id,
-                                error = %error,
-                                "steer mode ESC ESC write failed, re-queuing delivery"
-                            );
-                            pending_worker_injections.push_front(pending);
-                            continue;
+                if active_injection.is_none() {
+                    let should_block = pending_worker_injections
+                        .front()
+                        .map(|pending| should_block_pending_injection(pty_auto.auto_suggestion_visible, pending))
+                        .unwrap_or(false);
+                    if !should_block {
+                        if let Some(pending) = pending_worker_injections.pop_front() {
+                            active_injection = Some(ActiveInjection {
+                                pending,
+                                stage: InjectionStage::Escape,
+                                next_at: tokio::time::Instant::now() + throttle.delay(),
+                                injection_text: None,
+                            });
                         }
-                        tokio::time::sleep(Duration::from_millis(120)).await;
-                        pty_auto.auto_suggestion_visible = false;
-                    } else if pty_auto.auto_suggestion_visible {
-                        tracing::warn!(
-                            delivery_id = %pending.delivery.delivery_id,
-                            "auto-suggestion visible; sending Escape to dismiss before injection"
-                        );
-                        let _ = pty.write_all(b"\x1b");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        pty_auto.auto_suggestion_visible = false;
                     }
+                }
+            }
 
-                    let include_mcp_reminder = !suppress_multiline_mcp_reminder
-                        && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
-                        &pending.delivery.from,
-                        &pending.delivery.event_id,
-                        &pending.delivery.body,
-                        &pending.delivery.target,
-                        include_mcp_reminder,
-                        worker_pre_registered,
-                        assigned_worker_name.as_deref(),
-                        pending.delivery.workspace_id.as_deref(),
-                        pending.delivery.workspace_alias.as_deref(),
-                    );
-                    if include_mcp_reminder {
-                        mcp_reminder_throttle.note_sent(Instant::now());
+            // Advance the in-flight injection's paced write sequence. Parks on
+            // `pending()` (never wakes) whenever no injection is active, so an
+            // idle worker incurs no extra timer wakeups. Each stage submits its
+            // bytes non-blockingly and reschedules the next stage's deadline;
+            // the select loop keeps forwarding PTY output and handling input
+            // between stages.
+            _ = async {
+                let deadline = active_injection.as_ref().map(|inj| inj.next_at);
+                match deadline {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending::<()>().await,
+                }
+            }, if active_injection.is_some() => {
+                let mut inj = active_injection.take().expect("active injection present under guard");
+                match inj.stage {
+                    InjectionStage::Escape => {
+                        if matches!(inj.pending.delivery.injection_mode, MessageInjectionMode::Steer) {
+                            tracing::debug!(
+                                delivery_id = %inj.pending.delivery.delivery_id,
+                                "steer mode: sending ESC ESC before message injection"
+                            );
+                            if let Err(error) = pty.submit_write(b"\x1b\x1b".to_vec()) {
+                                tracing::warn!(
+                                    delivery_id = %inj.pending.delivery.delivery_id,
+                                    error = %error,
+                                    "steer mode ESC ESC write failed, re-queuing delivery"
+                                );
+                                pending_worker_injections.push_front(inj.pending);
+                            } else {
+                                inj.stage = InjectionStage::Body;
+                                inj.next_at = tokio::time::Instant::now() + Duration::from_millis(120);
+                                active_injection = Some(inj);
+                            }
+                        } else if pty_auto.auto_suggestion_visible {
+                            tracing::warn!(
+                                delivery_id = %inj.pending.delivery.delivery_id,
+                                "auto-suggestion visible; sending Escape to dismiss before injection"
+                            );
+                            let _ = pty.submit_write(b"\x1b".to_vec());
+                            inj.stage = InjectionStage::Body;
+                            inj.next_at = tokio::time::Instant::now() + Duration::from_millis(100);
+                            active_injection = Some(inj);
+                        } else {
+                            // No escape needed; submit the body on the next poll.
+                            inj.stage = InjectionStage::Body;
+                            inj.next_at = tokio::time::Instant::now();
+                            active_injection = Some(inj);
+                        }
                     }
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
-                        tracing::warn!(
-                            delivery_id = %pending.delivery.delivery_id,
-                            error = %e,
-                            "PTY injection write failed, re-queuing delivery"
+                    InjectionStage::Body => {
+                        pty_auto.auto_suggestion_visible = false;
+                        let include_mcp_reminder = !suppress_multiline_mcp_reminder
+                            && mcp_reminder_throttle.should_include(Instant::now());
+                        let injection = format_injection_for_worker_with_workspace(
+                            &inj.pending.delivery.from,
+                            &inj.pending.delivery.event_id,
+                            &inj.pending.delivery.body,
+                            &inj.pending.delivery.target,
+                            include_mcp_reminder,
+                            worker_pre_registered,
+                            assigned_worker_name.as_deref(),
+                            inj.pending.delivery.workspace_id.as_deref(),
+                            inj.pending.delivery.workspace_alias.as_deref(),
                         );
-                        pending_worker_injections.push_front(pending);
-                        continue;
+                        if include_mcp_reminder {
+                            mcp_reminder_throttle.note_sent(Instant::now());
+                        }
+                        if let Err(e) = pty.submit_write(injection.clone().into_bytes()) {
+                            tracing::warn!(
+                                delivery_id = %inj.pending.delivery.delivery_id,
+                                error = %e,
+                                "PTY injection write failed, re-queuing delivery"
+                            );
+                            pending_worker_injections.push_front(inj.pending);
+                        } else {
+                            inj.injection_text = Some(injection);
+                            inj.stage = InjectionStage::Enter;
+                            inj.next_at = tokio::time::Instant::now() + Duration::from_millis(50);
+                            active_injection = Some(inj);
+                        }
                     }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
-                    let _ = send_frame(
-                        &out_tx,
-                        "delivery_injected",
-                        None,
-                        delivery_injected_event_payload(
-                            &pending.delivery.delivery_id,
-                            &pending.delivery.event_id,
-                            &worker_name,
-                            current_timestamp_ms(),
-                        ),
-                    )
-                    .await;
-                    pty_auto.last_injection_time = Some(Instant::now());
-                    pty_auto.auto_enter_retry_count = 0;
+                    InjectionStage::Enter => {
+                        let _ = pty.submit_write(b"\r".to_vec());
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_injected",
+                            None,
+                            delivery_injected_event_payload(
+                                &inj.pending.delivery.delivery_id,
+                                &inj.pending.delivery.event_id,
+                                &worker_name,
+                                current_timestamp_ms(),
+                            ),
+                        )
+                        .await;
+                        pty_auto.last_injection_time = Some(Instant::now());
+                        pty_auto.auto_enter_retry_count = 0;
 
-                    // Queue echo verification before acknowledging delivery.
-                    pending_verifications.push_back(PendingVerification {
-                        delivery_id: pending.delivery.delivery_id.clone(),
-                        event_id: pending.delivery.event_id.clone(),
-                        expected_echo: injection,
-                        injected_at: Instant::now(),
-                        attempts: 1,
-                        max_attempts: 1,
-                        request_id: pending.request_id,
-                        workspace_id: pending.delivery.workspace_id.clone(),
-                        workspace_alias: pending.delivery.workspace_alias.clone(),
-                        from: pending.delivery.from,
-                        body: pending.delivery.body,
-                        target: pending.delivery.target,
-                    });
+                        // Queue echo verification before acknowledging delivery.
+                        let injection = inj.injection_text.take().unwrap_or_default();
+                        pending_verifications.push_back(PendingVerification {
+                            delivery_id: inj.pending.delivery.delivery_id.clone(),
+                            event_id: inj.pending.delivery.event_id.clone(),
+                            expected_echo: injection,
+                            injected_at: Instant::now(),
+                            attempts: 1,
+                            max_attempts: 1,
+                            request_id: inj.pending.request_id,
+                            workspace_id: inj.pending.delivery.workspace_id.clone(),
+                            workspace_alias: inj.pending.delivery.workspace_alias.clone(),
+                            from: inj.pending.delivery.from,
+                            body: inj.pending.delivery.body,
+                            target: inj.pending.delivery.target,
+                        });
+                        // active_injection remains None: injection complete.
+                    }
                 }
             }
 

@@ -180,7 +180,7 @@ impl PtyAutoState {
         if full_match || timeout_approval {
             self.mcp_approved = true;
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"a");
+            let _ = pty.submit_write(b"a".to_vec());
             self.mcp_detection_buffer.clear();
             self.mcp_partial_match_since = None;
         }
@@ -201,11 +201,11 @@ impl PtyAutoState {
                 self.last_bypass_perms_send = Some(Instant::now());
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 if is_bypass_selection_menu(&clean) {
-                    let _ = pty.write_all(b"\x1b[B");
+                    let _ = pty.submit_write(b"\x1b[B".to_vec());
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    let _ = pty.write_all(b"\r");
+                    let _ = pty.submit_write(b"\r".to_vec());
                 } else {
-                    let _ = pty.write_all(b"y\n");
+                    let _ = pty.submit_write(b"y\n".to_vec());
                 }
                 self.bypass_perms_buffer.clear();
             }
@@ -226,9 +226,9 @@ impl PtyAutoState {
             tracing::info!("Detected Codex model upgrade prompt, selecting 'Use existing model'");
             self.codex_model_prompt_handled = true;
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"\x1b[B"); // Down arrow → option 2
+            let _ = pty.submit_write(b"\x1b[B".to_vec()); // Down arrow → option 2
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"\r"); // Enter to confirm
+            let _ = pty.submit_write(b"\r".to_vec()); // Enter to confirm
             self.codex_model_buffer.clear();
         }
     }
@@ -250,9 +250,9 @@ impl PtyAutoState {
                 );
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // Arrow down to "Yes, and always allow medium impact commands"
-                let _ = pty.write_all(b"\x1b[B");
+                let _ = pty.submit_write(b"\x1b[B".to_vec());
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let _ = pty.write_all(b"\r");
+                let _ = pty.submit_write(b"\r".to_vec());
                 self.opencode_perm_buffer.clear();
                 self.last_opencode_perm_approval = Some(Instant::now());
             }
@@ -274,7 +274,7 @@ impl PtyAutoState {
             if has_header && has_allow_option {
                 tracing::info!("Detected Gemini 'Action Required' prompt, auto-approving with '2'");
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let _ = pty.write_all(b"2\n");
+                let _ = pty.submit_write(b"2\n".to_vec());
                 self.gemini_action_buffer.clear();
                 self.last_gemini_action_approval = Some(Instant::now());
             }
@@ -296,7 +296,7 @@ impl PtyAutoState {
                 );
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // Option 1 "Trust this folder" is pre-selected, just press Enter
-                let _ = pty.write_all(b"\r");
+                let _ = pty.submit_write(b"\r".to_vec());
                 self.gemini_trust_buffer.clear();
                 self.gemini_trust_handled = true;
             }
@@ -315,7 +315,7 @@ impl PtyAutoState {
                     "Detected Gemini 'untrusted folder' banner, sending /permissions command"
                 );
                 tokio::time::sleep(Duration::from_millis(300)).await;
-                let _ = pty.write_all(b"/permissions\n");
+                let _ = pty.submit_write(b"/permissions\n".to_vec());
                 self.gemini_untrusted_buffer.clear();
                 self.gemini_untrusted_handled = true;
                 // Reset trust handler so it can pick up the resulting "Modify Trust Level" menu
@@ -337,7 +337,7 @@ impl PtyAutoState {
                 tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // "Yes, I trust this folder" is pre-selected (option 1), press Enter
-                let _ = pty.write_all(b"\r");
+                let _ = pty.submit_write(b"\r".to_vec());
                 self.claude_trust_buffer.clear();
                 self.claude_trust_handled = true;
             }
@@ -371,7 +371,7 @@ impl PtyAutoState {
                 && !self.auto_suggestion_visible
                 && self.auto_enter_retry_count < MAX_AUTO_ENTER_RETRIES
             {
-                let _ = pty.write_all(b"\r");
+                let _ = pty.submit_write(b"\r".to_vec());
                 self.last_auto_enter_time = Some(Instant::now());
                 self.auto_enter_retry_count += 1;
             }
@@ -845,7 +845,7 @@ pub(crate) async fn run_wrap(
 
             // Stdin → PTY (passthrough)
             Some(data) = stdin_rx.recv() => {
-                let _ = pty.write_all(&data);
+                let _ = pty.submit_write(data);
             }
 
             // PTY output → stdout (passthrough) + auto-responses
@@ -1344,7 +1344,7 @@ pub(crate) async fn run_wrap(
                             event_id = %pending.event_id,
                             "auto-suggestion visible; sending Escape to dismiss before injection"
                         );
-                        let _ = pty.write_all(b"\x1b");
+                        let _ = pty.submit_write(b"\x1b".to_vec());
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         pty_auto.auto_suggestion_visible = false;
                     }
@@ -1362,7 +1362,7 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
+                    if let Err(e) = pty.submit_write(injection.as_bytes().to_vec()) {
                         tracing::warn!(
                             event_id = %pending.event_id,
                             error = %e,
@@ -1387,7 +1387,7 @@ pub(crate) async fn run_wrap(
                         has_thread: false,
                     });
                     tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
+                    let _ = pty.submit_write(b"\r".to_vec());
                     tracing::debug!(
                         event_id = %pending.event_id,
                         "wrap: delivery injected"
@@ -1472,7 +1472,7 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    if let Err(error) = pty.write_all(injection.as_bytes()) {
+                    if let Err(error) = pty.submit_write(injection.as_bytes().to_vec()) {
                         tracing::warn!(
                             event_id = %pv.event_id,
                             error = %error,
@@ -1483,7 +1483,7 @@ pub(crate) async fn run_wrap(
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
                         tokio::time::sleep(Duration::from_millis(50)).await;
-                        let _ = pty.write_all(b"\r");
+                        let _ = pty.submit_write(b"\r".to_vec());
                         tracing::debug!(
                             delivery_id = %pv.delivery_id,
                             event_id = %pv.event_id,
