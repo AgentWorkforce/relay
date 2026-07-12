@@ -115,6 +115,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/cloud` refresh now fails with typed, timeout-bounded errors and migrates legacy `~/.agent-relay/cloud-auth.json` credentials into the canonical `~/.agentworkforce/relay/cloud-auth.json` store without dual-writing.
 - `@agent-relay/cloud` preserves operator refresh-token expiry metadata and refreshes canonical cloud sessions before access or refresh tokens reach their renewal windows.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
+- `@agent-relay/harness-driver` events WebSocket no longer double-delivers or drops events when `disconnect()` races a subsequent `connect()`: a stale socket's late `open`/`message`/`close`/`error` callbacks are now ignored once a newer socket has taken over, instead of clobbering connection state and leaking the live socket.
+- `@agent-relay/harness-driver` events WebSocket decodes fragmented and binary WebSocket frames correctly instead of silently dropping them (it previously stringified raw frame data directly, which garbles multi-part frames).
+- `@agent-relay/harness-driver` events WebSocket reconnects with exponential backoff (2s up to a 30s cap, reset on success) instead of retrying every 2 seconds indefinitely.
+- `relay node tail --agent <headless-agent>` no longer concatenates all output onto one line — headless worker stdout/stderr chunks now preserve their line terminators.
+- `HarnessDriverClient.subscribeWorkerStream()` now bounds its per-subscription chunk buffer (default 10000, configurable via `maxQueueSize`), dropping the oldest buffered chunk and logging once when a slow consumer falls behind, instead of buffering unboundedly.
+- `agent-relay-broker` PTY input write-serialization state is now pruned when an agent is released or exits, instead of accumulating one entry per agent name for the life of the broker.
 
 ### Removed
 

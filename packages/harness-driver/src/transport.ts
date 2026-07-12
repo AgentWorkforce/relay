@@ -69,6 +69,11 @@ interface PendingPtyInput {
 const DEFAULT_INPUT_HIGH_WATER_MARK_BYTES = 1024 * 1024;
 const DEFAULT_INPUT_OPEN_TIMEOUT_MS = 10_000;
 
+/** Initial delay before retrying a dropped events-WS connection. */
+const INITIAL_RECONNECT_DELAY_MS = 2_000;
+/** Cap on the exponential reconnect backoff. */
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
 export class PtyInputStream {
   private readonly ws: WebSocket;
   private readonly queue: PendingPtyInput[] = [];
@@ -402,6 +407,7 @@ export class BrokerTransport {
   private sinceSeq = 0;
   private _connected = false;
   private _intentionalClose = false;
+  private reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
 
   constructor(options: BrokerTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
@@ -494,19 +500,29 @@ export class BrokerTransport {
       headers['X-API-Key'] = this.apiKey;
     }
 
-    this.ws = new WebSocket(url, { headers });
+    const socket = new WebSocket(url, { headers });
+    this.ws = socket;
 
-    this.ws.on('open', () => {
+    // `disconnect()` followed immediately by `connect()` can race: the old
+    // socket's 'close' handshake may not complete until after a new socket
+    // has already been assigned to `this.ws`. Every handler below captures
+    // `socket` and bails out if `this.ws` has since moved on, so a stale
+    // socket can never clobber `_connected`/`this.ws` or schedule a
+    // duplicate reconnect out from under the live connection.
+    socket.on('open', () => {
+      if (this.ws !== socket) return;
       this._connected = true;
+      this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
     });
 
-    this.ws.on('message', (data) => {
+    socket.on('message', (data) => {
+      if (this.ws !== socket) return;
       try {
-        const event = JSON.parse(data.toString()) as BrokerEvent & { seq?: number };
+        const event = JSON.parse(rawDataToString(data)) as BrokerEvent & { seq?: number };
         // Track sequence for replay on reconnect
         if (typeof event.seq === 'number' && event.seq > this.sinceSeq) {
           this.sinceSeq = event.seq;
@@ -529,22 +545,26 @@ export class BrokerTransport {
       }
     });
 
-    this.ws.on('close', () => {
+    socket.on('close', () => {
+      if (this.ws !== socket) return;
       this._connected = false;
       this.ws = null;
-      // Auto-reconnect after 2s unless intentionally closed
+      // Auto-reconnect with exponential backoff (capped) unless intentionally closed
       if (!this._intentionalClose) {
-        this.reconnectTimer = setTimeout(() => this._connect(), 2000);
+        const delay = this.reconnectDelayMs;
+        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS);
+        this.reconnectTimer = setTimeout(() => this._connect(), delay);
       }
     });
 
-    this.ws.on('error', () => {
+    socket.on('error', () => {
       // error always followed by close
     });
   }
 
   disconnect(): void {
     this._intentionalClose = true;
+    this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

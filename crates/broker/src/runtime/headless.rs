@@ -39,6 +39,14 @@ pub(crate) fn headless_provider_from_cli(value: &str) -> Option<ProtocolHeadless
     }
 }
 
+/// Turn a stdout/stderr line read via `tokio::io::Lines` (which strips the
+/// terminator) back into a `worker_stream` chunk with its newline restored.
+/// Without this, consumers that write chunks verbatim (e.g. `relay node
+/// tail`) concatenate every line from a headless worker onto one giant line.
+pub(crate) fn headless_stream_chunk(line: String) -> String {
+    format!("{line}\n")
+}
+
 pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     let provider: ProtocolHeadlessProvider = cmd.provider.into();
     let provider_name = headless_provider_cli_name(&provider);
@@ -251,7 +259,7 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                                     None,
                                     json!({
                                         "stream": "stdout",
-                                        "chunk": chunk,
+                                        "chunk": headless_stream_chunk(chunk),
                                     }),
                                 )
                                 .await;
@@ -272,7 +280,7 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                                     None,
                                     json!({
                                         "stream": "stderr",
-                                        "chunk": chunk,
+                                        "chunk": headless_stream_chunk(chunk),
                                     }),
                                 )
                                 .await;
@@ -384,4 +392,29 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     let _ = writer_task.await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headless_stream_chunk_restores_stripped_newline() {
+        assert_eq!(headless_stream_chunk("hello".to_string()), "hello\n");
+    }
+
+    #[test]
+    fn headless_stream_chunk_preserves_empty_lines() {
+        assert_eq!(headless_stream_chunk(String::new()), "\n");
+    }
+
+    #[test]
+    fn headless_stream_chunk_does_not_touch_interior_content() {
+        // Only the terminator `lines()` stripped is restored; embedded
+        // whitespace/content is passed through untouched.
+        assert_eq!(
+            headless_stream_chunk("  indented line with trailing spaces  ".to_string()),
+            "  indented line with trailing spaces  \n"
+        );
+    }
 }

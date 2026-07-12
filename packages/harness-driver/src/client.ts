@@ -135,7 +135,18 @@ export interface WorkerStreamSubscriptionOptions {
   stream?: string;
   /** Sequence offset to pass to the broker event stream when connecting. */
   sinceSeq?: number;
+  /**
+   * Maximum number of unconsumed chunks buffered when the caller isn't
+   * pulling from the iterator as fast as events arrive. Once the cap is hit,
+   * the oldest buffered chunk is dropped to make room for the newest one (a
+   * slow/paused consumer trades completeness for bounded memory rather than
+   * growing without limit). A single warning is logged the first time this
+   * happens per subscription. Default: 10000.
+   */
+  maxQueueSize?: number;
 }
+
+const DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE = 10_000;
 
 type BrokerExitListener = (info: BrokerExitInfo) => void;
 
@@ -726,8 +737,25 @@ export class HarnessDriverClient {
     return typeof body.currentSeq === 'number' ? body.currentSeq : 0;
   }
 
+  /**
+   * Subscribe to live `worker_stream` chunks for a worker as an async
+   * iterable of strings.
+   *
+   * Backpressure policy: each iterator buffers chunks the caller hasn't
+   * consumed yet, bounded by `options.maxQueueSize` (default 10000). Once
+   * the buffer is full, the oldest buffered chunk is dropped to make room
+   * for the newest one and a single warning is logged — a slow or paused
+   * consumer trades completeness for bounded memory rather than growing
+   * without limit.
+   *
+   * @param name - The worker's name.
+   * @param options - Stream filter, replay cutoff, and queue size.
+   * @returns An async iterable yielding stream chunks.
+   */
   subscribeWorkerStream(name: string, options: WorkerStreamSubscriptionOptions = {}): AsyncIterable<string> {
     this.connectEvents(options.sinceSeq);
+    const maxQueueSize = options.maxQueueSize ?? DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+    let didWarnQueueOverflow = false;
 
     return {
       [Symbol.asyncIterator]: () => {
@@ -753,6 +781,17 @@ export class HarnessDriverClient {
             pending = undefined;
             resolve({ done: false, value: event.chunk });
             return;
+          }
+          // Drop-oldest: a consumer that isn't pulling fast enough trades
+          // completeness for bounded memory rather than buffering forever.
+          if (queue.length >= maxQueueSize) {
+            queue.shift();
+            if (!didWarnQueueOverflow) {
+              didWarnQueueOverflow = true;
+              console.error(
+                `[agent-relay] subscribeWorkerStream(${JSON.stringify(name)}) queue exceeded ${maxQueueSize} buffered chunks; dropping oldest chunks. The consumer is not reading fast enough.`
+              );
+            }
           }
           queue.push(event.chunk);
         });

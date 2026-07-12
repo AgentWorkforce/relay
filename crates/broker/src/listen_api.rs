@@ -396,6 +396,8 @@ fn listen_api_router_with_auth(
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 
+    spawn_input_serializer_pruner(state.events_tx.subscribe(), state.input_serializers.clone());
+
     let protected = Router::new()
         .route("/api/session", routing::get(listen_api_session))
         .route("/api/session/renew", routing::post(listen_api_renew_lease))
@@ -1611,6 +1613,42 @@ async fn handle_pty_input_ws(
     tracing::info!(agent = %name, "PTY input WS client disconnected");
 }
 
+/// Per-agent entries in `input_serializers` are created lazily on first PTY
+/// input (HTTP POST or WS stream) and, absent this, are never removed —
+/// unbounded growth over a broker's lifetime as agents come and go. Watch the
+/// broadcast event stream and drop an agent's serializer once it is released
+/// or exits, mirroring how other per-worker maps (e.g. `delivery_states`) are
+/// pruned on the same events.
+fn spawn_input_serializer_pruner(
+    mut events_rx: broadcast::Receiver<String>,
+    input_serializers: PtyInputSerializers,
+) {
+    tokio::spawn(async move {
+        loop {
+            match events_rx.recv().await {
+                Ok(json) => {
+                    let Ok(value) = serde_json::from_str::<Value>(&json) else {
+                        continue;
+                    };
+                    let kind = value.get("kind").and_then(Value::as_str);
+                    if !matches!(kind, Some("agent_released") | Some("agent_exited")) {
+                        continue;
+                    }
+                    if let Some(name) = value.get("name").and_then(Value::as_str) {
+                        input_serializers.lock().await.remove(name);
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // We only care about eventually pruning stale entries, not
+                    // every individual release event — keep listening.
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
 async fn send_pty_input_serialized(
     tx: &mpsc::Sender<ListenApiRequest>,
     input_serializers: &PtyInputSerializers,
@@ -2771,6 +2809,86 @@ mod tests {
         assert!(gap.is_none());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event["kind"], "relay_inbound");
+    }
+}
+
+#[cfg(test)]
+mod input_serializer_pruner_tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use tokio::sync::{broadcast, Mutex};
+
+    use super::spawn_input_serializer_pruner;
+
+    async fn wait_until<F: Fn() -> bool>(check: F) {
+        for _ in 0..200 {
+            if check() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("condition was never met");
+    }
+
+    #[tokio::test]
+    async fn prunes_entry_on_agent_released() {
+        let (events_tx, _keep_alive) = broadcast::channel::<String>(8);
+        let input_serializers = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        input_serializers
+            .lock()
+            .await
+            .insert("Worker".to_string(), Arc::new(Mutex::new(())));
+
+        spawn_input_serializer_pruner(events_tx.subscribe(), input_serializers.clone());
+
+        events_tx
+            .send(json!({"kind": "agent_released", "name": "Worker"}).to_string())
+            .unwrap();
+
+        wait_until(|| input_serializers.try_lock().map(|m| m.is_empty()).unwrap_or(false)).await;
+    }
+
+    #[tokio::test]
+    async fn prunes_entry_on_agent_exited() {
+        let (events_tx, _keep_alive) = broadcast::channel::<String>(8);
+        let input_serializers = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        input_serializers
+            .lock()
+            .await
+            .insert("Worker".to_string(), Arc::new(Mutex::new(())));
+
+        spawn_input_serializer_pruner(events_tx.subscribe(), input_serializers.clone());
+
+        events_tx
+            .send(json!({"kind": "agent_exited", "name": "Worker", "code": 0}).to_string())
+            .unwrap();
+
+        wait_until(|| input_serializers.try_lock().map(|m| m.is_empty()).unwrap_or(false)).await;
+    }
+
+    #[tokio::test]
+    async fn leaves_unrelated_agents_and_kinds_untouched() {
+        let (events_tx, _keep_alive) = broadcast::channel::<String>(8);
+        let input_serializers = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        input_serializers
+            .lock()
+            .await
+            .insert("Worker".to_string(), Arc::new(Mutex::new(())));
+
+        spawn_input_serializer_pruner(events_tx.subscribe(), input_serializers.clone());
+
+        events_tx
+            .send(json!({"kind": "agent_spawned", "name": "Worker"}).to_string())
+            .unwrap();
+        events_tx
+            .send(json!({"kind": "agent_released", "name": "OtherWorker"}).to_string())
+            .unwrap();
+        // Give the pruner a chance to process both frames before asserting
+        // the entry is still present.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert!(input_serializers.lock().await.contains_key("Worker"));
     }
 }
 

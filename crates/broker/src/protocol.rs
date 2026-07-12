@@ -421,21 +421,34 @@ pub enum BrokerEvent {
         #[serde(rename = "lastError")]
         last_error: String,
     },
+    // NOTE: these typed variants mirror the ad-hoc `json!({"kind": ...})`
+    // frames actually emitted in `runtime/worker_events.rs` and
+    // `runtime/fleet.rs` (and the TS shapes in
+    // `packages/harness-driver/src/protocol.ts`) — field names/presence
+    // must match what's really on the wire, not just what reads nicely here.
     DeliveryQueued {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
     },
     DeliveryInjected {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
     },
     DeliveryActive {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
     },
     DeliveryAck {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
     },
     AclDenied {
         name: WorkerName,
@@ -762,6 +775,100 @@ mod tests {
             reason: "max retries exceeded".into(),
         };
         let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    // The `DeliveryQueued`/`DeliveryInjected`/`DeliveryActive`/`DeliveryAck`
+    // typed variants below are not currently constructed by the runtime
+    // (the broker emits equivalent ad-hoc `json!({"kind": ...})` frames in
+    // `runtime/worker_events.rs`/`runtime/fleet.rs` instead), but they must
+    // stay wire-compatible with those ad-hoc frames and with the TS union in
+    // `packages/harness-driver/src/protocol.ts` so the first real use
+    // doesn't silently emit events clients drop.
+
+    #[test]
+    fn broker_event_delivery_queued_round_trip() {
+        let event = BrokerEvent::DeliveryQueued {
+            name: "Worker1".into(),
+            delivery_id: "del_q1".into(),
+            event_id: "evt_q1".into(),
+            timestamp: Some(1_700_000_000_000),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_queued");
+        assert_eq!(value["name"], "Worker1");
+        assert_eq!(value["delivery_id"], "del_q1");
+        assert_eq!(value["event_id"], "evt_q1");
+        assert_eq!(value["timestamp"], 1_700_000_000_000i64);
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_queued_omits_absent_timestamp() {
+        let event = BrokerEvent::DeliveryQueued {
+            name: "Worker1".into(),
+            delivery_id: "del_q2".into(),
+            event_id: "evt_q2".into(),
+            timestamp: None,
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert!(
+            !encoded.contains("timestamp"),
+            "absent timestamp must not appear on the wire"
+        );
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_injected_round_trip() {
+        let event = BrokerEvent::DeliveryInjected {
+            name: "Worker1".into(),
+            delivery_id: "del_i1".into(),
+            event_id: "evt_i1".into(),
+            timestamp: Some(1_700_000_001_000),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_injected");
+        assert_eq!(value["name"], "Worker1");
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_active_round_trip() {
+        let event = BrokerEvent::DeliveryActive {
+            name: "Worker1".into(),
+            delivery_id: "del_a1".into(),
+            event_id: "evt_a1".into(),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_active");
+        assert_eq!(value["name"], "Worker1");
+        assert_eq!(value["delivery_id"], "del_a1");
+        assert_eq!(value["event_id"], "evt_a1");
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_ack_round_trip() {
+        let event = BrokerEvent::DeliveryAck {
+            name: "Worker1".into(),
+            delivery_id: "del_ak1".into(),
+            event_id: "evt_ak1".into(),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_ack");
+        assert_eq!(value["name"], "Worker1");
+        assert_eq!(value["delivery_id"], "del_ak1");
+        assert_eq!(value["event_id"], "evt_ak1");
         let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
