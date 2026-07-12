@@ -336,7 +336,13 @@ describe('runViewSession', () => {
     );
     socket.emit(
       'message',
-      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'afterSnap', offset: 18 })
+      JSON.stringify({
+        kind: 'worker_stream',
+        name: 'Alice',
+        stream: 'stdout',
+        chunk: 'afterSnap',
+        offset: 18,
+      })
     );
     await settle();
     socket.emit('close', 1000, Buffer.from(''));

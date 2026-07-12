@@ -501,9 +501,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
   // Omit it when the cutoff is 0 (no durable events yet / lookup failed) so
   // the URL and behaviour match the pre-cutoff default.
   const wsUrl =
-    state.cutoffSeq > 0
-      ? `${toWsUrl(connection.url)}?sinceSeq=${state.cutoffSeq}`
-      : toWsUrl(connection.url);
+    state.cutoffSeq > 0 ? `${toWsUrl(connection.url)}?sinceSeq=${state.cutoffSeq}` : toWsUrl(connection.url);
   const headers: Record<string, string> = {};
   if (connection.apiKey) {
     headers['X-API-Key'] = connection.apiKey;

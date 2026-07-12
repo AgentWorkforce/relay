@@ -431,14 +431,12 @@ export class AnsiBoundaryScanner {
       case 'csi':
         if (c === 0x1b)
           this.state = 'esc'; // stray ESC restarts
-        else if (c >= 0x40 && c <= 0x7e)
-          this.state = 'ground'; // final byte ends the CSI
+        else if (c >= 0x40 && c <= 0x7e) this.state = 'ground'; // final byte ends the CSI
         return;
       case 'osc':
         if (c === 0x07)
           this.state = 'ground'; // BEL terminator
-        else if (c === 0x1b)
-          this.state = 'osc_esc'; // possible ST (ESC \)
+        else if (c === 0x1b) this.state = 'osc_esc'; // possible ST (ESC \)
         return;
       case 'osc_esc':
         this.state = c === 0x5c ? 'ground' : 'osc';
