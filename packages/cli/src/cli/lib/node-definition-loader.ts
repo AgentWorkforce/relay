@@ -58,6 +58,17 @@ function isFile(candidate: string): boolean {
 }
 
 /**
+ * Resolve an `agent-relay.py` node definition in the project root, served by
+ * `relay node up` as a supervised Python child process.
+ * @param cwd - Project root to search.
+ * @returns The absolute path to `agent-relay.py`, or `undefined` when absent.
+ */
+export function discoverPythonNodeConfigPath(cwd: string): string | undefined {
+  const candidate = path.join(cwd, 'agent-relay.py');
+  return isFile(candidate) ? candidate : undefined;
+}
+
+/**
  * Load and validate a fleet node definition from a TS/JS file.
  * @param file - Path to a node definition file default-exporting `defineNode(...)`.
  */

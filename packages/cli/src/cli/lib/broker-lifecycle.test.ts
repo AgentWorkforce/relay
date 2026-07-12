@@ -163,6 +163,30 @@ vi.mock('@agent-relay/fleet', async (importOriginal) => {
     startServeNode: vi.fn(() => ({ stop: vi.fn(async () => undefined), done: Promise.resolve() })),
   };
 });
+// The capability providers read the broker's resolved node id from its HTTP
+// session; serve it from a fake so `node up` can attach providers to the node.
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: class {
+    async getSession() {
+      return {
+        node_id: 'node_a',
+        node_name: 'the-node',
+        // Live-shaped secrets so the verbose-output test can assert they never
+        // leak into logs.
+        workspace_key: 'rk_live_secret',
+        node_token: 'nt_live_secret',
+        broker_version: 'test',
+        protocol_version: 2,
+        mode: 'persist',
+        uptime_secs: 1,
+      };
+    }
+    async getStatus() {
+      return {};
+    }
+    disconnect() {}
+  },
+}));
 
 import fsReal from 'node:fs';
 import os from 'node:os';
@@ -229,7 +253,7 @@ function createUpHarness() {
     generateAgentName: () => 'agent',
     checkForUpdates: vi.fn(async () => ({ updateAvailable: false })),
     getVersion: () => 'test',
-    env: {} as NodeJS.ProcessEnv,
+    env: { RELAY_NODE_TOKEN: 'nt_live_test', RELAY_BASE_URL: 'https://engine.test' } as NodeJS.ProcessEnv,
     argv: ['node', 'agent-relay', 'node', 'up'],
     execPath: process.execPath,
     cliScript: 'cli.js',
@@ -268,7 +292,7 @@ describe('runUpCommand node-config gating', () => {
     expect(startServeNode).not.toHaveBeenCalled();
   });
 
-  it('warns and serves the implicit node when a DISCOVERED config fails to load', async () => {
+  it('serves no provider when a DISCOVERED config fails to load (broker capacity handles it)', async () => {
     const { deps, projectRoot, createRelay, warn } = createUpHarness();
     fsReal.writeFileSync(pathReal.join(projectRoot, 'agent-relay.js'), 'export default 42;\n');
 
@@ -276,9 +300,9 @@ describe('runUpCommand node-config gating', () => {
 
     expect(warn.mock.calls.flat().join('\n')).toContain('Ignoring discovered node config');
     expect(createRelay).toHaveBeenCalledTimes(1);
-    expect(startServeNode).toHaveBeenCalledTimes(1);
-    const served = vi.mocked(startServeNode).mock.calls[0]![0];
-    expect(served.definition.name).toBe(pathReal.basename(projectRoot));
+    // No implicit provider is served; the broker's own capacity brings the node
+    // online, so there is nothing to serve when the discovered config is invalid.
+    expect(startServeNode).not.toHaveBeenCalled();
   });
 
   it('never touches agent-relay.* files without the discoverConfig opt-in (legacy local up)', async () => {
@@ -291,7 +315,7 @@ describe('runUpCommand node-config gating', () => {
 
     expect(warn.mock.calls.flat().join('\n')).not.toContain('Ignoring discovered node config');
     expect(createRelay).toHaveBeenCalledTimes(1);
-    expect(startServeNode).toHaveBeenCalledTimes(1);
+    expect(startServeNode).not.toHaveBeenCalled();
   });
 
   it('skips config discovery entirely when the implicit fleet node is disabled', async () => {
@@ -320,5 +344,25 @@ describe('runUpCommand node-config gating', () => {
     const served = vi.mocked(startServeNode).mock.calls[0]![0];
     expect(served.definition.name).toBe('from-config');
     expect(served.nameOverride).toBe('enrolled-name');
+    expect(served.connection).toMatchObject({ nodeToken: 'nt_live_test', nodeId: 'node_a' });
+    expect(served.providerName).toBe('from-config');
+  });
+
+  it('never prints the node token or workspace key from the session in --verbose output', async () => {
+    const { deps, projectRoot, log, warn, error } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [] };\n"
+    );
+
+    // Verbose `up` fetches the broker session (which carries nt_live_/rk_live_
+    // secrets in the mock) to attach providers; none of it may reach the logs.
+    await runUpCommand({ discoverConfig: true, verbose: true }, deps);
+
+    const output = [log, warn, error]
+      .flatMap((fn) => vi.mocked(fn).mock.calls.flat())
+      .map((arg) => String(arg))
+      .join('\n');
+    expect(output).not.toMatch(/rk_live_|nt_live_/);
   });
 });

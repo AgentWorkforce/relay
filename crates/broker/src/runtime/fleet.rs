@@ -2,315 +2,15 @@ use super::*;
 use crate::{
     fleet_wire::{
         ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
-        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode,
-        RelaycastToBroker, FLEET_WIRE_VERSION,
+        AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, RelaycastToBroker,
+        FLEET_WIRE_VERSION,
     },
-    node_control::{delivery_ack, HandlerDispatchDecision},
-    protocol::{BrokerToSdk, SdkToBroker},
+    node_control::{delivery_ack, handler_unavailable_result},
 };
 
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
-#[derive(Debug, Clone, Default)]
-pub(super) struct FleetSidecarRestartState {
-    policy: RestartPolicy,
-    total_restarts: u32,
-    consecutive_failures: u32,
-}
-
-impl FleetSidecarRestartState {
-    fn reset(&mut self, policy: RestartPolicy) {
-        self.policy = policy;
-        self.total_restarts = 0;
-        self.consecutive_failures = 0;
-    }
-
-    fn clear(&mut self) {
-        self.reset(RestartPolicy::default());
-    }
-
-    fn on_exit(&mut self) -> RestartDecision {
-        if !self.policy.enabled {
-            return RestartDecision::PermanentlyDead {
-                reason: "restart policy disabled".to_string(),
-            };
-        }
-
-        self.consecutive_failures += 1;
-        if self.total_restarts >= self.policy.max_restarts {
-            return RestartDecision::PermanentlyDead {
-                reason: format!("exceeded max restarts ({})", self.policy.max_restarts),
-            };
-        }
-        if self.consecutive_failures > self.policy.max_consecutive_failures {
-            return RestartDecision::PermanentlyDead {
-                reason: format!(
-                    "exceeded max consecutive failures ({})",
-                    self.policy.max_consecutive_failures
-                ),
-            };
-        }
-
-        RestartDecision::Restart {
-            delay: Duration::from_millis(self.policy.cooldown_ms),
-        }
-    }
-
-    fn on_restarted(&mut self) {
-        self.total_restarts += 1;
-        self.consecutive_failures = 0;
-    }
-}
 
 impl BrokerRuntime {
-    pub(super) async fn handle_fleet_sidecar_connect(
-        &mut self,
-        outbound: mpsc::Sender<ProtocolEnvelope<Value>>,
-    ) -> Result<Value, String> {
-        self.fleet_sidecar_out_tx = Some(outbound);
-        self.fleet_handlers.connect_sidecar();
-        self.publish_fleet_load(true).await;
-        Ok(json!({"connected": true}))
-    }
-
-    pub(super) async fn handle_fleet_sidecar_disconnect(&mut self) {
-        self.fleet_sidecar_out_tx = None;
-        self.fleet_handlers.disconnect_sidecar();
-        for result in self.fleet_handlers.drain_in_flight_unavailable() {
-            self.send_fleet_action_result(result).await;
-        }
-        if self.fleet_sidecar_supervision.is_some() && self.fleet_sidecar_child.is_none() {
-            self.schedule_fleet_sidecar_restart("sidecar disconnected");
-        }
-        self.publish_fleet_load(true).await;
-    }
-
-    async fn handle_fleet_sidecar_deregister(&mut self) -> Result<(), String> {
-        self.fleet_sidecar_out_tx = None;
-        self.fleet_handlers.disconnect_sidecar();
-        for result in self.fleet_handlers.drain_in_flight_unavailable() {
-            self.send_fleet_action_result(result).await;
-        }
-        self.fleet_sidecar_supervision = None;
-        self.fleet_sidecar_restart_at = None;
-        self.fleet_sidecar_restart.clear();
-        self.fleet_sidecar_child = None;
-        self.fleet_control_tx
-            .send(FleetControlCommand::DeregisterNode)
-            .await
-            .map_err(|_| "fleet_control_unavailable".to_string())?;
-        self.publish_fleet_load(true).await;
-        Ok(())
-    }
-
-    pub(super) async fn handle_fleet_sidecar_frame(
-        &mut self,
-        frame: ProtocolEnvelope<Value>,
-    ) -> Result<FleetSidecarFrameResponse, String> {
-        let request_id = frame.request_id.clone();
-        let frame_value = json!({
-            "type": frame.msg_type,
-            "payload": frame.payload,
-        });
-        let message: SdkToBroker = serde_json::from_value(frame_value)
-            .map_err(|error| format!("invalid local protocol frame: {error}"))?;
-
-        match message {
-            SdkToBroker::Hello {
-                client_name: _,
-                client_version: _,
-            } => Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                request_id,
-                serde_json::to_value(BrokerToSdk::HelloAck {
-                    broker_version: crate::util::version::broker_version().to_string(),
-                    protocol_version: PROTOCOL_VERSION,
-                })
-                .map_err(|error| error.to_string())?
-                .get("payload")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
-            ))),
-            SdkToBroker::RegisterNode {
-                manifest,
-                supervision,
-            } => {
-                self.fleet_max_agents = manifest.max_agents.unwrap_or(self.fleet_max_agents);
-                self.fleet_sidecar_restart.reset(
-                    supervision
-                        .as_ref()
-                        .and_then(|supervision| supervision.restart_policy.clone())
-                        .unwrap_or_default(),
-                );
-                self.fleet_sidecar_supervision = supervision;
-                self.fleet_control_tx
-                    .send(FleetControlCommand::RegisterNode {
-                        manifest,
-                        resume_cursor: None,
-                    })
-                    .await
-                    .map_err(|_| "fleet_control_unavailable".to_string())?;
-                self.publish_fleet_load(true).await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    json!({"registered": true}),
-                )))
-            }
-            SdkToBroker::DeregisterNode {} => {
-                self.handle_fleet_sidecar_deregister().await?;
-                Ok(FleetSidecarFrameResponse::close_after(ok_protocol_frame(
-                    request_id,
-                    json!({"deregistered": true}),
-                )))
-            }
-            SdkToBroker::RegisterHandlers { names } => {
-                self.fleet_handlers.register_handlers(names);
-                self.publish_fleet_load(true).await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    json!({"handlers_live": self.fleet_handlers.handlers_live()}),
-                )))
-            }
-            SdkToBroker::HandlerResult(result) => {
-                let Some(action_result) = self.fleet_handlers.complete(result) else {
-                    return Ok(FleetSidecarFrameResponse::frame(error_protocol_frame(
-                        request_id,
-                        "unknown_invocation",
-                        "handler_result did not match an in-flight invocation",
-                    )));
-                };
-                self.send_fleet_action_result(action_result).await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    json!({"completed": true}),
-                )))
-            }
-            SdkToBroker::SpawnAgent {
-                agent,
-                invocation_id,
-                initial_task,
-                skip_relay_prompt,
-            } => {
-                if invocation_id.is_none() && self.fleet_handlers.has_in_flight() {
-                    tracing::debug!(
-                        target = "relay_broker::fleet",
-                        agent = %agent.name,
-                        "spawn_agent arrived without invocation_id while handler invocations are in flight"
-                    );
-                }
-                let result = self
-                    .handle_fleet_spawn_agent(
-                        *agent,
-                        invocation_id,
-                        initial_task,
-                        skip_relay_prompt,
-                    )
-                    .await?;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id, result,
-                )))
-            }
-            SdkToBroker::SendInput { name, data } => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                Box::pin(self.handle_api_request(ListenApiRequest::SendInput {
-                    name,
-                    data,
-                    reply: reply_tx,
-                }))
-                .await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    reply_rx.await.map_err(|_| "reply_dropped".to_string())??,
-                )))
-            }
-            SdkToBroker::SendMessage {
-                to,
-                text,
-                from,
-                thread_id,
-                workspace_id,
-                workspace_alias,
-                priority: _,
-                mode,
-            } => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                Box::pin(self.handle_api_request(ListenApiRequest::Send {
-                    to,
-                    text,
-                    from,
-                    thread_id,
-                    workspace_id,
-                    workspace_alias,
-                    mode,
-                    reply: reply_tx,
-                }))
-                .await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    reply_rx.await.map_err(|_| "reply_dropped".to_string())??,
-                )))
-            }
-            SdkToBroker::ReleaseAgent { name } => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                Box::pin(self.handle_api_request(ListenApiRequest::Release {
-                    name,
-                    reason: Some("fleet_sidecar_release".to_string()),
-                    reply: reply_tx,
-                }))
-                .await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    reply_rx.await.map_err(|_| "reply_dropped".to_string())??,
-                )))
-            }
-            SdkToBroker::SubscribeChannels { name, channels } => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                Box::pin(
-                    self.handle_api_request(ListenApiRequest::SubscribeChannels {
-                        name,
-                        channels,
-                        reply: reply_tx,
-                    }),
-                )
-                .await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    reply_rx.await.map_err(|_| "reply_dropped".to_string())??,
-                )))
-            }
-            SdkToBroker::UnsubscribeChannels { name, channels } => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                Box::pin(
-                    self.handle_api_request(ListenApiRequest::UnsubscribeChannels {
-                        name,
-                        channels,
-                        reply: reply_tx,
-                    }),
-                )
-                .await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    reply_rx.await.map_err(|_| "reply_dropped".to_string())??,
-                )))
-            }
-            SdkToBroker::ListAgents {} => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                Box::pin(self.handle_api_request(ListenApiRequest::List { reply: reply_tx })).await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    reply_rx.await.map_err(|_| "reply_dropped".to_string())??,
-                )))
-            }
-            SdkToBroker::Shutdown {} => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                Box::pin(self.handle_api_request(ListenApiRequest::Shutdown { reply: reply_tx }))
-                    .await;
-                Ok(FleetSidecarFrameResponse::frame(ok_protocol_frame(
-                    request_id,
-                    reply_rx.await.map_err(|_| "reply_dropped".to_string())??,
-                )))
-            }
-        }
-    }
-
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {
@@ -571,22 +271,13 @@ impl BrokerRuntime {
     }
 
     async fn handle_fleet_action_invoke(&mut self, invoke: ActionInvoke) {
-        // Spawn / release are node actions, not ordinary sidecar handlers: the
-        // engine targets this node for placement and the broker runs them.
-        //
-        // A `spawn:<harness>` for which the sidecar registered a handler is the
-        // exception: in the fleet/sidecar model the sidecar OWNS the harness. Its
-        // `spawn(<harness>)` handler resolves the declared harness spec and calls
-        // `ctx.spawnAgent` (→ `spawn_agent` → `handle_fleet_spawn_agent`), so the
-        // broker spawns the DECLARED harness, not the raw `cli` from the action
-        // input. Dispatch those to the sidecar exactly like `echo`/`work`.
-        //
-        // The broker-direct `handle_fleet_action_spawn` (which runs the raw `cli`)
-        // is reserved for the direct / no-sidecar path where no sidecar handler is
-        // registered for the action and there is no declared harness to resolve.
+        // The broker is the node's capacity executor. The engine only dispatches
+        // the capacity it owns — `spawn:<harness>` and `release` — to this
+        // connection; the broker runs them directly against its PTY runtime.
+        // Capability action handlers live in their own providers and are
+        // dispatched to those sockets by the engine, never here.
         let action = invoke.action.as_str();
-        let spawn_action = action == "spawn" || action.starts_with("spawn:");
-        if spawn_action && !self.fleet_handlers.has_handler(action) {
+        if action == "spawn" || action.starts_with("spawn:") {
             self.handle_fleet_action_spawn(invoke).await;
             return;
         }
@@ -595,40 +286,17 @@ impl BrokerRuntime {
             return;
         }
 
-        match self.fleet_handlers.handle_invoke(&invoke) {
-            HandlerDispatchDecision::Dispatch {
-                invocation_id,
-                name,
-                input,
-            } => {
-                let frame = ProtocolEnvelope {
-                    v: PROTOCOL_VERSION,
-                    msg_type: "invoke_handler".to_string(),
-                    request_id: None,
-                    payload: json!({
-                        "invocation_id": invocation_id,
-                        "name": name,
-                        "input": input,
-                    }),
-                };
-                let sent = match &self.fleet_sidecar_out_tx {
-                    Some(tx) => tx.send(frame).await.is_ok(),
-                    None => false,
-                };
-                if !sent {
-                    self.fleet_sidecar_out_tx = None;
-                    self.fleet_handlers.disconnect_sidecar();
-                    let result = self.fleet_handlers.fail_unavailable(&invoke.invocation_id);
-                    self.send_fleet_action_result(result).await;
-                    self.publish_fleet_load(true).await;
-                }
-            }
-            HandlerDispatchDecision::AlreadyInFlight => {}
-            HandlerDispatchDecision::Completed(result)
-            | HandlerDispatchDecision::Unavailable(result) => {
-                self.send_fleet_action_result(result).await;
-            }
-        }
+        // An invoke for a capability the broker does not own should never reach
+        // it (the engine routes actions to their registering provider). Reply
+        // loudly rather than silently dropping the invocation.
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            action = %action,
+            invocation_id = %invoke.invocation_id,
+            "broker received action.invoke for a non-capacity action; replying handler_unavailable"
+        );
+        self.send_fleet_action_result(handler_unavailable_result(&invoke.invocation_id))
+            .await;
     }
 
     /// Run a `spawn` / `spawn:<harness>` node action by parsing the invoke input
@@ -796,112 +464,6 @@ impl BrokerRuntime {
         .await;
     }
 
-    async fn handle_fleet_spawn_agent(
-        &mut self,
-        spec: AgentSpec,
-        invocation_id: Option<String>,
-        initial_task: Option<String>,
-        skip_relay_prompt: bool,
-    ) -> Result<Value, String> {
-        let initial_session_ref = fleet_initial_session_ref(&spec);
-        let token = self
-            .register_fleet_agent_token(&spec, invocation_id.clone(), initial_session_ref.clone())
-            .await?;
-        let name = spec.name.clone();
-        let agent_id = token.agent_id.clone();
-        let result = match self
-            .spawn_from_agent_spec(spec, initial_task, skip_relay_prompt, Some(token.token))
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                cleanup_failed_fleet_spawn(
-                    &self.fleet_control_tx,
-                    &mut self.fleet_inventory,
-                    &mut self.fleet_delivery_book,
-                    &name,
-                    &agent_id,
-                )
-                .await;
-                return Err(error);
-            }
-        };
-        let discovered_session_ref = fleet_discovered_session_ref(
-            self.workers.workers.get(&name).map(|handle| &handle.spec),
-            &result,
-        )
-        .or(initial_session_ref);
-        self.fleet_inventory.insert(
-            name.clone(),
-            InventoryAgent {
-                agent_id,
-                name: name.as_str().to_string(),
-                invocation_id,
-                session_ref: discovered_session_ref,
-            },
-        );
-        self.publish_fleet_inventory().await;
-        self.publish_fleet_load(true).await;
-        Ok(result)
-    }
-
-    async fn register_fleet_agent_token(
-        &mut self,
-        spec: &AgentSpec,
-        invocation_id: Option<String>,
-        session_ref: Option<String>,
-    ) -> Result<crate::node_control::AgentRegistrationToken, String> {
-        register_node_agent_token(
-            &self.fleet_control_tx,
-            spec.name.as_str(),
-            invocation_id,
-            session_ref,
-        )
-        .await
-    }
-
-    async fn spawn_from_agent_spec(
-        &mut self,
-        spec: AgentSpec,
-        initial_task: Option<String>,
-        skip_relay_prompt: bool,
-        agent_token: Option<String>,
-    ) -> Result<Value, String> {
-        let cli = cli_for_agent_spec(&spec)?;
-        let transport = Some(runtime_label(&spec.runtime).to_string());
-        let restart_policy = spec
-            .restart_policy
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        Box::pin(self.handle_api_request(ListenApiRequest::Spawn {
-            name: spec.name,
-            cli,
-            transport,
-            model: spec.model,
-            args: spec.args,
-            task: initial_task,
-            channels: spec.channels,
-            cwd: spec.cwd,
-            team: spec.team,
-            shadow_of: spec.shadow_of,
-            shadow_mode: spec.shadow_mode,
-            continue_from: None,
-            idle_threshold_secs: None,
-            skip_relay_prompt,
-            restart_policy: Box::new(restart_policy),
-            harness_config: spec.harness_config,
-            agent_token,
-            agent_result_schema: None,
-            exit_after_task: false,
-            reply: reply_tx,
-        }))
-        .await;
-        reply_rx.await.map_err(|_| "reply_dropped".to_string())?
-    }
-
     async fn send_fleet_action_result(&self, result: ActionResult) {
         let _ = self
             .fleet_control_tx
@@ -913,106 +475,17 @@ impl BrokerRuntime {
 
     async fn publish_fleet_load(&self, heartbeat_now: bool) {
         let active_agents = u32::try_from(self.workers.workers.len()).unwrap_or(u32::MAX);
+        // The broker provider's capacity handlers (spawn/release) are live for as
+        // long as its connection is up, so `handlers_live` is unconditionally true
+        // here — a connected broker can always place work.
         publish_fleet_load_snapshot(
             &self.fleet_control_tx,
             active_agents,
             self.fleet_max_agents,
-            self.fleet_handlers.handlers_live(),
+            true,
             heartbeat_now,
         )
         .await;
-    }
-
-    async fn publish_fleet_inventory(&self) {
-        publish_fleet_inventory_snapshot(&self.fleet_control_tx, &self.fleet_inventory).await;
-    }
-
-    fn schedule_fleet_sidecar_restart(&mut self, trigger: &str) {
-        if self.fleet_sidecar_supervision.is_none() {
-            self.fleet_sidecar_restart_at = None;
-            return;
-        }
-        match self.fleet_sidecar_restart.on_exit() {
-            RestartDecision::Restart { delay } => {
-                self.fleet_sidecar_restart_at = Some(Instant::now() + delay);
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    trigger,
-                    delay_ms = delay.as_millis() as u64,
-                    "fleet sidecar supervision scheduled restart"
-                );
-            }
-            RestartDecision::PermanentlyDead { reason } => {
-                self.fleet_sidecar_restart_at = None;
-                self.fleet_sidecar_supervision = None;
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    trigger,
-                    reason = %reason,
-                    "fleet sidecar supervision exhausted; not restarting"
-                );
-            }
-        }
-    }
-
-    pub(super) async fn handle_fleet_sidecar_supervision_tick(&mut self) {
-        if let Some(child) = self.fleet_sidecar_child.as_mut() {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        status = %status,
-                        "fleet sidecar supervised child exited"
-                    );
-                    self.fleet_sidecar_child = None;
-                    self.schedule_fleet_sidecar_restart("supervised child exited");
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(target = "relay_broker::fleet", error = %error, "failed to poll fleet sidecar child");
-                    self.fleet_sidecar_child = None;
-                    self.schedule_fleet_sidecar_restart("supervised child poll failed");
-                }
-            }
-        }
-
-        let Some(restart_at) = self.fleet_sidecar_restart_at else {
-            return;
-        };
-        if restart_at > Instant::now() || self.fleet_sidecar_out_tx.is_some() {
-            return;
-        }
-        let Some(supervision) = self.fleet_sidecar_supervision.clone() else {
-            self.fleet_sidecar_restart_at = None;
-            return;
-        };
-        if supervision.argv.is_empty() {
-            self.fleet_sidecar_restart_at = None;
-            return;
-        }
-
-        let mut command = tokio::process::Command::new(&supervision.argv[0]);
-        command.args(&supervision.argv[1..]);
-        command.current_dir(&supervision.cwd);
-        if let Some(env) = supervision.env {
-            command.envs(env);
-        }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        match command.spawn() {
-            Ok(child) => {
-                tracing::info!(target = "relay_broker::fleet", "restarted fleet sidecar");
-                self.fleet_sidecar_child = Some(child);
-                self.fleet_sidecar_restart_at = None;
-                self.fleet_sidecar_restart.on_restarted();
-            }
-            Err(error) => {
-                tracing::warn!(target = "relay_broker::fleet", error = %error, "failed to restart fleet sidecar");
-                self.schedule_fleet_sidecar_restart("sidecar restart spawn failed");
-            }
-        }
     }
 }
 
@@ -1122,63 +595,6 @@ pub(super) async fn prune_fleet_agent_state(
 ) {
     fleet_delivery_book.remove_agent(name.as_str());
     prune_fleet_inventory_entry(fleet_control_tx, fleet_inventory, name).await;
-}
-
-async fn cleanup_failed_fleet_spawn(
-    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
-    fleet_delivery_book: &mut FleetDeliveryBook,
-    name: &WorkerName,
-    agent_id: &str,
-) {
-    let _ = fleet_control_tx
-        .send(FleetControlCommand::Send(
-            BrokerToRelaycast::AgentDeregister(AgentDeregister {
-                v: FLEET_WIRE_VERSION,
-                id: None,
-                agent_id: agent_id.to_string(),
-                name: None,
-            }),
-        ))
-        .await;
-    prune_fleet_agent_state(fleet_control_tx, fleet_inventory, fleet_delivery_book, name).await;
-}
-
-fn ok_protocol_frame(request_id: Option<RequestId>, result: Value) -> ProtocolEnvelope<Value> {
-    ProtocolEnvelope {
-        v: PROTOCOL_VERSION,
-        msg_type: "ok".to_string(),
-        request_id,
-        payload: json!({ "result": result }),
-    }
-}
-
-fn error_protocol_frame(
-    request_id: Option<RequestId>,
-    code: &str,
-    message: &str,
-) -> ProtocolEnvelope<Value> {
-    ProtocolEnvelope {
-        v: PROTOCOL_VERSION,
-        msg_type: "error".to_string(),
-        request_id,
-        payload: json!({
-            "code": code,
-            "message": message,
-            "retryable": false,
-        }),
-    }
-}
-
-fn cli_for_agent_spec(spec: &AgentSpec) -> Result<String, String> {
-    if let Some(cli) = spec.cli.as_deref().and_then(non_empty) {
-        return Ok(cli.to_string());
-    }
-    match spec.provider {
-        Some(ProtocolHeadlessProvider::Claude) => Ok("claude".to_string()),
-        Some(ProtocolHeadlessProvider::Opencode) => Ok("opencode".to_string()),
-        None => Err("agent spec requires cli or provider".to_string()),
-    }
 }
 
 fn non_empty(value: &str) -> Option<&str> {
@@ -1493,21 +909,6 @@ pub(super) fn fleet_initial_session_ref(spec: &AgentSpec) -> Option<String> {
     })
 }
 
-fn fleet_discovered_session_ref(
-    effective_spec: Option<&AgentSpec>,
-    spawn_result: &Value,
-) -> Option<String> {
-    effective_spec
-        .and_then(fleet_initial_session_ref)
-        .or_else(|| {
-            spawn_result
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .and_then(non_empty)
-                .map(ToOwned::to_owned)
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1806,22 +1207,6 @@ mod tests {
             None
         );
     }
-
-    #[test]
-    fn fleet_discovered_session_ref_prefers_effective_worker_spec() {
-        let effective = test_agent_spec(Some("session-discovered"), None);
-        assert_eq!(
-            fleet_discovered_session_ref(Some(&effective), &json!({"sessionId": "session-result"}))
-                .as_deref(),
-            Some("session-discovered")
-        );
-
-        assert_eq!(
-            fleet_discovered_session_ref(None, &json!({"sessionId": "session-result"})).as_deref(),
-            Some("session-result")
-        );
-    }
-
     #[tokio::test]
     async fn prune_fleet_inventory_entry_publishes_without_removed_agent() {
         let (tx, mut rx) = mpsc::channel(4);
@@ -1917,77 +1302,6 @@ mod tests {
         ));
         assert!(rx.try_recv().is_err());
     }
-
-    #[test]
-    fn sidecar_restart_state_obeys_restart_policy_bounds() {
-        let mut state = FleetSidecarRestartState::default();
-        state.reset(RestartPolicy {
-            max_restarts: 1,
-            cooldown_ms: 7,
-            max_consecutive_failures: 2,
-            ..Default::default()
-        });
-
-        assert_eq!(
-            state.on_exit(),
-            RestartDecision::Restart {
-                delay: Duration::from_millis(7)
-            }
-        );
-        state.on_restarted();
-        assert!(matches!(
-            state.on_exit(),
-            RestartDecision::PermanentlyDead { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn failed_spawn_cleanup_deregisters_agent_and_prunes_state() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let name = WorkerName::from("agent-a");
-        let mut inventory = HashMap::from([(
-            name.clone(),
-            InventoryAgent {
-                agent_id: "agt-a".to_string(),
-                name: "agent-a".to_string(),
-                invocation_id: Some("inv-a".to_string()),
-                session_ref: Some("session-a".to_string()),
-            },
-        )]);
-        let mut delivery_book = FleetDeliveryBook::default();
-        let deliver = Deliver {
-            v: FLEET_WIRE_VERSION,
-            agent: "agent-a".to_string(),
-            agent_id: "agent-a-id".to_string(),
-            delivery_id: "delivery-a".to_string(),
-            msg_id: "msg-a".to_string(),
-            seq: 1,
-            mode: DeliveryMode::Wait,
-            payload: json!({"text": "hello"}),
-        };
-        assert_eq!(delivery_book.commit_delivered(&deliver), 1);
-
-        cleanup_failed_fleet_spawn(&tx, &mut inventory, &mut delivery_book, &name, "agt-a").await;
-
-        match rx.recv().await {
-            Some(FleetControlCommand::Send(BrokerToRelaycast::AgentDeregister(
-                AgentDeregister { agent_id, .. },
-            ))) => assert_eq!(agent_id, "agt-a"),
-            other => panic!("expected agent.deregister, got {other:?}"),
-        }
-        match rx.recv().await {
-            Some(FleetControlCommand::UpdateInventory(agents)) => {
-                assert!(agents.is_empty());
-            }
-            other => panic!("expected inventory update, got {other:?}"),
-        }
-        assert!(inventory.is_empty());
-        assert_eq!(
-            delivery_book.observe(&deliver),
-            crate::node_control::DeliveryDecision::Deliver { up_to_seq: 1 }
-        );
-    }
-
     fn test_deliver(agent: &str, delivery_id: &str, msg_id: &str, payload: Value) -> Deliver {
         Deliver {
             v: FLEET_WIRE_VERSION,
