@@ -18,13 +18,7 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "f9da582",
-    "1c08f61",
-    "e2792f3",
-    "4ff6854",
-    "2b0ae52"
-  ],
+  "commits": ["f9da582", "1c08f61", "e2792f3", "4ff6854", "2b0ae52"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_8r9un8608wrg/trajectory.json",
     "CHANGELOG.md",

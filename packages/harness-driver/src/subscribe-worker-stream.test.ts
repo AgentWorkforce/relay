@@ -49,7 +49,10 @@ vi.mock('ws', () => ({ default: FakeWebSocket }));
 const { HarnessDriverClient } = await import('./client.js');
 
 function emitWorkerStream(socket: FakeWebSocket, name: string, chunk: string): void {
-  socket.emit('message', Buffer.from(JSON.stringify({ kind: 'worker_stream', name, stream: 'stdout', chunk })));
+  socket.emit(
+    'message',
+    Buffer.from(JSON.stringify({ kind: 'worker_stream', name, stream: 'stdout', chunk }))
+  );
 }
 
 beforeEach(() => {

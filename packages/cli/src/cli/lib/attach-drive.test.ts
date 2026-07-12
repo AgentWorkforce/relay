@@ -646,7 +646,10 @@ describe('runDriveSession', () => {
     }
     const socket = sockets[0];
     socket.emit('open');
-    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'inSnap', offset: 10 }));
+    socket.emit(
+      'message',
+      jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'inSnap', offset: 10 })
+    );
     socket.emit(
       'message',
       jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'afterSnap', offset: 18 })

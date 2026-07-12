@@ -142,10 +142,7 @@ describe('BrokerTransport events WS — message decoding', () => {
 
     const payload = JSON.stringify({ kind: 'agent_spawned', name: 'Worker' });
     const midpoint = Math.floor(payload.length / 2);
-    const fragments = [
-      Buffer.from(payload.slice(0, midpoint)),
-      Buffer.from(payload.slice(midpoint)),
-    ];
+    const fragments = [Buffer.from(payload.slice(0, midpoint)), Buffer.from(payload.slice(midpoint))];
 
     socket.emit('message', fragments);
 

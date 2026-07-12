@@ -254,10 +254,7 @@ export const LOCAL_TERMINAL_RESET_SEQUENCE =
  * but only when stdout is a TTY. A no-op for piped/redirected stdout so the
  * reset never corrupts a captured log.
  */
-export function resetLocalTerminalOnDetach(
-  write: (chunk: string) => void,
-  isTty: boolean
-): void {
+export function resetLocalTerminalOnDetach(write: (chunk: string) => void, isTty: boolean): void {
   if (!isTty) return;
   write(LOCAL_TERMINAL_RESET_SEQUENCE);
 }
@@ -479,14 +476,12 @@ export class AnsiBoundaryScanner {
       case 'csi':
         if (c === 0x1b)
           this.state = 'esc'; // stray ESC restarts
-        else if (c >= 0x40 && c <= 0x7e)
-          this.state = 'ground'; // final byte ends the CSI
+        else if (c >= 0x40 && c <= 0x7e) this.state = 'ground'; // final byte ends the CSI
         return;
       case 'osc':
         if (c === 0x07)
           this.state = 'ground'; // BEL terminator
-        else if (c === 0x1b)
-          this.state = 'osc_esc'; // possible ST (ESC \)
+        else if (c === 0x1b) this.state = 'osc_esc'; // possible ST (ESC \)
         return;
       case 'osc_esc':
         this.state = c === 0x5c ? 'ground' : 'osc';
