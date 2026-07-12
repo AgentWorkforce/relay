@@ -2862,7 +2862,13 @@ mod input_serializer_pruner_tests {
             .send(json!({"kind": "agent_released", "name": "Worker"}).to_string())
             .unwrap();
 
-        wait_until(|| input_serializers.try_lock().map(|m| m.is_empty()).unwrap_or(false)).await;
+        wait_until(|| {
+            input_serializers
+                .try_lock()
+                .map(|m| m.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -2880,7 +2886,13 @@ mod input_serializer_pruner_tests {
             .send(json!({"kind": "agent_exited", "name": "Worker", "code": 0}).to_string())
             .unwrap();
 
-        wait_until(|| input_serializers.try_lock().map(|m| m.is_empty()).unwrap_or(false)).await;
+        wait_until(|| {
+            input_serializers
+                .try_lock()
+                .map(|m| m.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
     }
 
     #[tokio::test]

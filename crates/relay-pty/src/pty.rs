@@ -941,7 +941,10 @@ mod tests {
         );
         // `capture_with_offset` reports the same value, read under the lock.
         let (_snap, snap_offset) = Snapshot::capture_with_offset(&pty);
-        assert_eq!(snap_offset, total, "snapshot offset must match consumed offset");
+        assert_eq!(
+            snap_offset, total,
+            "snapshot offset must match consumed offset"
+        );
         let _ = pty.shutdown();
     }
 

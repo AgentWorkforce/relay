@@ -558,7 +558,11 @@ mod tests {
         // A non-alt-screen source leaves the alt buffer first (healing a client
         // stuck in a prior session's alt screen), then resets SGR + scroll
         // region and clears/homes.
-        assert!(bytes.starts_with(b"\x1b[?1049l\x1b[0m\x1b[r\x1b[H\x1b[2J"), "got prefix {:?}", &bytes[..24.min(bytes.len())]);
+        assert!(
+            bytes.starts_with(b"\x1b[?1049l\x1b[0m\x1b[r\x1b[H\x1b[2J"),
+            "got prefix {:?}",
+            &bytes[..24.min(bytes.len())]
+        );
     }
 
     /// Locate the byte offset of the first occurrence of `needle` in `hay`.
@@ -573,7 +577,11 @@ mod tests {
         let term = parse_into(4, 20, &[b"\x1b[?25lhi"]);
         let snap = Snapshot::from_term(&term);
         let bytes = snap.to_ansi();
-        assert!(find_seq(&bytes, b"\x1b[?25l").is_some(), "expected ?25l in {:?}", String::from_utf8_lossy(&bytes));
+        assert!(
+            find_seq(&bytes, b"\x1b[?25l").is_some(),
+            "expected ?25l in {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
     }
 
     #[test]
@@ -643,7 +651,10 @@ mod tests {
         let bytes = snap.to_ansi();
         let enter = find_seq(&bytes, b"\x1b[?1049h").expect("alt-screen enter present");
         let clear = find_seq(&bytes, b"\x1b[2J").expect("erase-display present");
-        assert!(enter < clear, "alt-screen enter ({enter}) must precede clear ({clear})");
+        assert!(
+            enter < clear,
+            "alt-screen enter ({enter}) must precede clear ({clear})"
+        );
     }
 
     #[test]
@@ -656,7 +667,10 @@ mod tests {
         let stbm = find_seq(&bytes, b"\x1b[r").expect("scroll-region reset present");
         // Final CUP for the captured cursor (row 3, col 6 after the 'x').
         let cup = find_seq(&bytes, b"\x1b[3;6H").expect("final CUP present");
-        assert!(stbm < cup, "scroll-region reset ({stbm}) must precede final CUP ({cup})");
+        assert!(
+            stbm < cup,
+            "scroll-region reset ({stbm}) must precede final CUP ({cup})"
+        );
     }
 
     #[test]
@@ -680,7 +694,10 @@ mod tests {
         ] {
             assert!(mode_b.contains(flag), "replayed term missing {flag:?}");
         }
-        assert!(!mode_b.contains(TermMode::SHOW_CURSOR), "cursor should be hidden after replay");
+        assert!(
+            !mode_b.contains(TermMode::SHOW_CURSOR),
+            "cursor should be hidden after replay"
+        );
     }
 
     #[test]
@@ -690,7 +707,10 @@ mod tests {
         let snap = Snapshot::from_term(&term);
         let plain = snap.to_plain();
         assert!(plain.starts_with("hi\n"), "got {plain:?}");
-        assert!(!plain.contains('\x1b'), "plain must not contain escapes: {plain:?}");
+        assert!(
+            !plain.contains('\x1b'),
+            "plain must not contain escapes: {plain:?}"
+        );
     }
 
     #[test]

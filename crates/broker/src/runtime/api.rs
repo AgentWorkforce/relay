@@ -990,11 +990,10 @@ impl BrokerRuntime {
                     .map(|handle| handle.spec.runtime.clone())
                 {
                     None => {
-                        let _ = reply.send(Err(
-                            worker_request::RequestWorkerError::WorkerNotFound(format!(
-                                "no worker named '{name}'"
-                            )),
-                        ));
+                        let _ =
+                            reply.send(Err(worker_request::RequestWorkerError::WorkerNotFound(
+                                format!("no worker named '{name}'"),
+                            )));
                     }
                     Some(AgentRuntime::Headless) => {
                         let _ = reply.send(Err(
@@ -1012,8 +1011,7 @@ impl BrokerRuntime {
                         // sweep (`reap_tick`) and worker-teardown paths fail the
                         // reply if the worker dies mid-write, so a client's
                         // `send()` never hangs on a dead worker.
-                        let request_id =
-                            RequestId::new(format!("api_{}", Uuid::new_v4().simple()));
+                        let request_id = RequestId::new(format!("api_{}", Uuid::new_v4().simple()));
                         if let Err(err) = workers
                             .send_to_worker(
                                 &name,
@@ -1117,8 +1115,8 @@ impl BrokerRuntime {
                             // live drive client's resize is rejected so the
                             // two clients don't fight over the shared PTY.
                             let owner = resize_owners.get(&name);
-                            let owner_stale = owner
-                                .is_some_and(|o| o.last_seen.elapsed() >= RESIZE_OWNER_STALE);
+                            let owner_stale =
+                                owner.is_some_and(|o| o.last_seen.elapsed() >= RESIZE_OWNER_STALE);
                             let allowed = resize_owner_allows(
                                 owner.map(|o| o.session_id.as_str()),
                                 owner_stale,

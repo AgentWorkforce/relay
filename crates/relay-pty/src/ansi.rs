@@ -186,8 +186,8 @@ impl AnsiStripper {
                     }
                 }
                 AnsiState::Esc => match code {
-                    0x5b => state = AnsiState::Csi, // ESC [
-                    0x5d => state = AnsiState::Osc, // ESC ]
+                    0x5b => state = AnsiState::Csi,                      // ESC [
+                    0x5d => state = AnsiState::Osc,                      // ESC ]
                     0x50 | 0x58 | 0x5e | 0x5f => state = AnsiState::Str, // DCS/SOS/PM/APC
                     _ => state = AnsiState::Ground, // 2-byte escape (ESC 7, ESC c, …)
                 },

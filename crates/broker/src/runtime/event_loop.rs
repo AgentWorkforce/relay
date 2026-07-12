@@ -337,10 +337,7 @@ mod resize_owner_tests {
         ));
 
         // s1 releases on detach (only its own session may clear ownership).
-        if owners
-            .get(&name)
-            .is_some_and(|o| o.session_id == "s1")
-        {
+        if owners.get(&name).is_some_and(|o| o.session_id == "s1") {
             owners.remove(&name);
         }
         assert!(!owners.contains_key(&name));
@@ -361,15 +358,9 @@ mod resize_owner_tests {
             },
         );
         // A release carrying the wrong session id must not evict the owner.
-        if owners
-            .get(&name)
-            .is_some_and(|o| o.session_id == "s2")
-        {
+        if owners.get(&name).is_some_and(|o| o.session_id == "s2") {
             owners.remove(&name);
         }
-        assert_eq!(
-            owners.get(&name).map(|o| o.session_id.as_str()),
-            Some("s1")
-        );
+        assert_eq!(owners.get(&name).map(|o| o.session_id.as_str()), Some("s1"));
     }
 }
