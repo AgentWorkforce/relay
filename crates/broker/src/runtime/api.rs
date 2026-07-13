@@ -1069,23 +1069,34 @@ impl BrokerRuntime {
                 release,
                 reply,
             } => {
+                // Treat an empty/whitespace session id as absent: it is not a
+                // meaningful owner key, and a shared empty-string "owner" would
+                // let unrelated clients collide. (The HTTP boundary already
+                // normalises this; belt-and-braces for other callers.)
+                let session_id = session_id.filter(|sid| !sid.trim().is_empty());
+
                 // Explicit ownership release on detach (see `resize_owners`
                 // doc on `BrokerRuntime`). A release carries the owning
                 // `session_id`; we drop ownership only if it matches, then
                 // return without touching the PTY size. A release without a
-                // session id, or from a non-owner, is a no-op.
+                // session id, or from a non-owner, is a no-op. The response
+                // reports the *actual* outcome so the client can tell a real
+                // release from a no-op.
                 if release {
-                    if let Some(sid) = session_id.as_deref() {
-                        if resize_owners
-                            .get(&name)
-                            .is_some_and(|owner| owner.session_id == sid)
+                    let released = match session_id.as_deref() {
+                        Some(sid)
+                            if resize_owners
+                                .get(&name)
+                                .is_some_and(|owner| owner.session_id == sid) =>
                         {
                             resize_owners.remove(&name);
+                            true
                         }
-                    }
+                        _ => false,
+                    };
                     let _ = reply.send(Ok(json!({
                         "name": name,
-                        "released": true,
+                        "released": released,
                     })));
                 } else if rows == 0 || cols == 0 {
                     let _ =
@@ -1122,6 +1133,19 @@ impl BrokerRuntime {
                                 owner_stale,
                                 session_id.as_deref(),
                             );
+                            // Same-size owner re-assert: the client periodically
+                            // re-sends the current size (session-keyed) purely to
+                            // refresh its liveness so an idle-but-live drive
+                            // session isn't superseded after RESIZE_OWNER_STALE.
+                            // When the owner already holds this exact size, just
+                            // touch `last_seen` — do NOT re-send `resize_pty`, or
+                            // the child would get a spurious SIGWINCH/repaint on
+                            // every keep-alive.
+                            let owner_refresh = session_id.as_deref().is_some_and(|sid| {
+                                resize_owners.get(&name).is_some_and(|o| {
+                                    o.session_id == sid && o.rows == rows && o.cols == cols
+                                })
+                            });
                             if !allowed {
                                 // Not the resize owner: acknowledge without
                                 // resizing so the client doesn't error-spam
@@ -1132,6 +1156,17 @@ impl BrokerRuntime {
                                     "cols": cols,
                                     "applied": false,
                                     "reason": "not_resize_owner",
+                                })));
+                            } else if owner_refresh {
+                                if let Some(owner) = resize_owners.get_mut(&name) {
+                                    owner.last_seen = Instant::now();
+                                }
+                                let _ = reply.send(Ok(json!({
+                                    "name": name,
+                                    "rows": rows,
+                                    "cols": cols,
+                                    "applied": false,
+                                    "reason": "unchanged",
                                 })));
                             } else if let Err(err) = workers
                                 .send_to_worker(
@@ -1155,6 +1190,8 @@ impl BrokerRuntime {
                                         ResizeOwner {
                                             session_id: sid,
                                             last_seen: Instant::now(),
+                                            rows,
+                                            cols,
                                         },
                                     );
                                 }

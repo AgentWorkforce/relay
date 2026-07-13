@@ -182,6 +182,9 @@ interface FetchScript {
   terminalSize?: { rows: number; cols: number } | null;
   inputStreamOpenError?: Error;
   inputStreamSendError?: Error;
+  /** Ownership re-assert interval (ms). Defaults to disabled (0) in tests so
+   *  the keep-alive timer doesn't interfere; the re-assert test sets it small. */
+  ownershipReassertMs?: number;
 }
 
 function createHarness(opts: FetchScript = {}): {
@@ -374,6 +377,9 @@ function createHarness(opts: FetchScript = {}): {
     }),
     // Immediate, deterministic status repaints in tests (no coalescing timer).
     statusRepaintCoalesceMs: 0,
+    // Disable the ownership re-assert timer by default so it can't perturb
+    // resize-count assertions; individual tests opt in with a small value.
+    ownershipReassertMs: opts.ownershipReassertMs ?? 0,
   };
 
   return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog, inputStreams };
@@ -970,6 +976,43 @@ describe('runDriveSession', () => {
     );
     expect(releaseCall).toBeDefined();
     expect((releaseCall?.body as { session_id?: string }).session_id).toBe(sessionId);
+    // A pure release carries no placeholder dimensions (#1247).
+    const releaseBody = releaseCall?.body as { rows?: number; cols?: number };
+    expect(releaseBody.rows).toBeUndefined();
+    expect(releaseBody.cols).toBeUndefined();
+  });
+
+  it('periodically re-asserts resize ownership on the same session id', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      ownershipReassertMs: 5,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // Let a couple of re-assert ticks fire without any local resize.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const activeResizes = fetchLog.filter(
+      (call) =>
+        call.method === 'POST' &&
+        call.url.includes('/resize/') &&
+        (call.body as { release?: boolean }).release !== true
+    );
+    // The on-attach sync plus at least one keep-alive re-assert.
+    expect(activeResizes.length).toBeGreaterThanOrEqual(2);
+    // Every resize (initial + re-asserts) carries the same owning session id.
+    const sessionIds = new Set(
+      activeResizes.map((call) => (call.body as { session_id?: string }).session_id)
+    );
+    expect(sessionIds.size).toBe(1);
+    // Re-asserts re-send the unchanged current size.
+    for (const call of activeResizes) {
+      expect(call.body as { rows: number; cols: number }).toMatchObject({ rows: 30, cols: 100 });
+    }
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
   });
 
   it('skips resize forwarding when stdout is not a TTY', async () => {

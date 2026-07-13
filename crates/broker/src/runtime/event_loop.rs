@@ -4,10 +4,15 @@ use super::*;
 ///
 /// `session_id` is the client-generated id that currently owns resizing;
 /// `last_seen` timestamps its most recent resize so a crashed client that
-/// never releases can be superseded after [`RESIZE_OWNER_STALE`].
+/// never releases can be superseded after [`RESIZE_OWNER_STALE`]. `rows`/`cols`
+/// record the last size the owner applied so a periodic same-size re-assert
+/// (the client's liveness keep-alive) can refresh `last_seen` without emitting
+/// a redundant SIGWINCH/repaint to the child.
 pub(crate) struct ResizeOwner {
     pub(super) session_id: String,
     pub(super) last_seen: Instant,
+    pub(super) rows: u16,
+    pub(super) cols: u16,
 }
 
 /// How long an owning session may be idle before another session is allowed
@@ -325,6 +330,8 @@ mod resize_owner_tests {
             ResizeOwner {
                 session_id: "s1".to_string(),
                 last_seen: Instant::now(),
+                rows: 24,
+                cols: 80,
             },
         );
 
@@ -347,6 +354,75 @@ mod resize_owner_tests {
     }
 
     #[test]
+    fn same_size_owner_reassert_refreshes_without_repaint() {
+        // Model the handler's owner-refresh no-op: the owner re-sends its
+        // current size to stay live; we refresh `last_seen` but must NOT treat
+        // it as a fresh resize (no worker send / SIGWINCH).
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        let stale_seen = Instant::now() - Duration::from_secs(120);
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: stale_seen,
+                rows: 24,
+                cols: 80,
+            },
+        );
+
+        // Same session, same size → owner refresh.
+        let (rows, cols, sid) = (24u16, 80u16, "s1");
+        let owner_refresh = owners
+            .get(&name)
+            .is_some_and(|o| o.session_id == sid && o.rows == rows && o.cols == cols);
+        assert!(
+            owner_refresh,
+            "same-size re-assert must be an owner refresh"
+        );
+        if owner_refresh {
+            if let Some(o) = owners.get_mut(&name) {
+                o.last_seen = Instant::now();
+            }
+        }
+        assert!(
+            owners.get(&name).unwrap().last_seen > stale_seen,
+            "owner refresh must bump last_seen"
+        );
+
+        // A *different* size from the owner is a real resize, not a refresh.
+        let owner_refresh_diff = owners
+            .get(&name)
+            .is_some_and(|o| o.session_id == sid && o.rows == 30 && o.cols == 100);
+        assert!(!owner_refresh_diff, "changed size must not be a refresh");
+    }
+
+    #[test]
+    fn release_outcome_reports_actual_removal() {
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: Instant::now(),
+                rows: 24,
+                cols: 80,
+            },
+        );
+
+        // Release from the owner removes and reports true.
+        let released = matches!(owners.get(&name).map(|o| o.session_id.as_str()), Some("s1"))
+            && owners.remove(&name).is_some();
+        assert!(released, "owner release must report released=true");
+
+        // A second release (nothing owned) is a no-op → false.
+        let released_again = owners.get(&name).is_some_and(|o| o.session_id == "s1")
+            && owners.remove(&name).is_some();
+        assert!(!released_again, "no-op release must report released=false");
+    }
+
+    #[test]
     fn release_from_non_owner_is_ignored() {
         let name = WorkerName::new("w1".to_string());
         let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
@@ -355,6 +431,8 @@ mod resize_owner_tests {
             ResizeOwner {
                 session_id: "s1".to_string(),
                 last_seen: Instant::now(),
+                rows: 24,
+                cols: 80,
             },
         );
         // A release carrying the wrong session id must not evict the owner.

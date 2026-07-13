@@ -133,6 +133,14 @@ export interface PassthroughDependencies {
    * tests set `0` for immediate, deterministic paints.
    */
   statusRepaintCoalesceMs?: number;
+  /**
+   * Interval (ms) at which the session re-asserts PTY resize ownership by
+   * re-sending its current size (single-resizer policy, #1247). Keeps an
+   * idle-but-live session from being superseded after the broker's
+   * stale-owner window; the broker treats a same-size re-assert as a no-op
+   * refresh (no SIGWINCH). Defaults to 60000. Set `0` to disable (tests).
+   */
+  ownershipReassertMs?: number;
 }
 
 function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
@@ -347,6 +355,15 @@ export async function runPassthroughSession(
     let unsubscribeResize: (() => void) | null = null;
     // Per-attach id for the single-resizer policy (#1247). See attach-drive.ts.
     const resizeSessionId = randomUUID();
+    // In-flight resize requests, awaited before release on detach so a late
+    // SIGWINCH resize can't re-claim after the release (detach race, #1247).
+    const outstandingResizes = new Set<Promise<unknown>>();
+    const trackResize = (p: Promise<unknown>): void => {
+      outstandingResizes.add(p);
+      void p.finally(() => outstandingResizes.delete(p));
+    };
+    // Periodic ownership re-assert timer (see `ownershipReassertMs`).
+    let reassertTimer: ReturnType<typeof setInterval> | null = null;
     const parser = new PassthroughKeybindParser();
     // Stateful UTF-8 decoder for forwarded stdin — a multi-byte character split
     // across stdin chunks would otherwise become U+FFFD. See attach-drive.ts.
@@ -413,13 +430,15 @@ export async function runPassthroughSession(
       if (!size) return;
       terminalRows = size.rows;
       predictiveEcho?.onResize(size.cols, size.rows);
-      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
-        sessionId: resizeSessionId,
-      }).then((res) => {
-        if (!res.ok) {
-          deps.log(`[passthrough] resize forward failed: ${res.message ?? 'unknown error'}`);
-        }
-      });
+      trackResize(
+        resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+          sessionId: resizeSessionId,
+        }).then((res) => {
+          if (!res.ok) {
+            deps.log(`[passthrough] resize forward failed: ${res.message ?? 'unknown error'}`);
+          }
+        })
+      );
       paintStatus();
     };
 
@@ -493,6 +512,14 @@ export async function runPassthroughSession(
       } catch {
         // best effort
       }
+      try {
+        if (reassertTimer) {
+          clearInterval(reassertTimer);
+          reassertTimer = null;
+        }
+      } catch {
+        // best effort
+      }
       rawModeWasSet = false;
     };
 
@@ -524,17 +551,20 @@ export async function runPassthroughSession(
       predictiveEcho?.reset();
       closeInputStream();
       // Release resize ownership so the next client can size the shared PTY.
-      const lastSize = deps.terminal.getSize() ?? initialLocalSize;
-      if (lastSize) {
-        void releaseResizeOwnership(
-          connection,
-          name,
-          lastSize.rows,
-          lastSize.cols,
-          resizeSessionId,
-          deps.fetch
-        );
-      }
+      // Await any in-flight resizes first so a late one can't re-claim the PTY
+      // after the release lands (detach race, #1247). `teardownStdin` already
+      // stopped the resize handler and re-assert timer, so nothing new is
+      // enqueued past this point.
+      void (async () => {
+        try {
+          if (outstandingResizes.size > 0) {
+            await Promise.allSettled([...outstandingResizes]);
+          }
+          await releaseResizeOwnership(connection, name, resizeSessionId, deps.fetch);
+        } catch {
+          // Best-effort — the broker's idle-takeover net still frees ownership.
+        }
+      })();
       try {
         socket.close(1000, 'passthrough client exiting');
       } catch {
@@ -575,6 +605,25 @@ export async function runPassthroughSession(
         deps.stdin.resume();
         deps.stdin.on('data', stdinDataHandler);
         unsubscribeResize = deps.terminal.onResize(resizeHandler);
+        // Periodic ownership re-assert (see `ownershipReassertMs`): keeps the
+        // single-resizer lease alive on an idle-but-live session; the broker
+        // no-ops a same-size re-assert (no SIGWINCH/repaint).
+        const reassertMs = deps.ownershipReassertMs ?? 60_000;
+        if (reassertMs > 0) {
+          reassertTimer = setInterval(() => {
+            const size = deps.terminal.getSize() ?? initialLocalSize;
+            if (!size) return;
+            trackResize(
+              resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+                sessionId: resizeSessionId,
+              }).then(
+                () => {},
+                () => {}
+              )
+            );
+          }, reassertMs);
+          reassertTimer.unref?.();
+        }
       } catch (err: unknown) {
         if (settled) return;
         const message = err instanceof Error ? err.message : String(err);

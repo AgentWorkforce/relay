@@ -419,6 +419,10 @@ impl BrokerRuntime {
         )
         .await;
 
+        // Drop any resize ownership for the released worker so a later worker
+        // reusing the name isn't rejected by a stale single-resizer entry.
+        self.resize_owners.remove(&name);
+
         prune_fleet_agent_state(
             &self.fleet_control_tx,
             &mut self.fleet_inventory,

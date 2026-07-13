@@ -19,50 +19,85 @@ pub fn strip_ansi(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    // Collect parameter bytes (digits, ';', '?')
-                    let mut param_buf = String::new();
-                    while let Some(&nc) = chars.peek() {
-                        chars.next();
-                        if nc.is_ascii_alphabetic() || nc == '@' || nc == '`' {
-                            // Cursor-forward: replace with spaces
-                            if nc == 'C' {
-                                let count = param_buf.parse::<usize>().unwrap_or(1);
-                                for _ in 0..count {
-                                    result.push(' ');
-                                }
-                            }
-                            break;
-                        }
-                        param_buf.push(nc);
-                    }
-                }
-                Some(']') => {
-                    chars.next();
-                    while let Some(nc) = chars.next() {
-                        if nc == '\x07' {
-                            break;
-                        }
-                        if nc == '\x1b' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                Some('(' | ')' | '*' | '+') => {
-                    chars.next();
-                    chars.next();
-                }
-                Some(c) if *c >= '0' && *c <= '~' => {
-                    chars.next();
-                }
-                _ => {}
-            }
-        } else {
+        if c != '\x1b' {
             result.push(c);
+            continue;
+        }
+        // Dispatch on the byte after ESC. The final-byte grammar here is kept
+        // deliberately in step with the streaming scanner ([`AnsiStripper::scan`])
+        // so a sequence the scanner treats as complete is stripped identically
+        // here — otherwise `feed()` (which delegates removal to this function)
+        // could over- or under-consume a boundary character.
+        match chars.peek().map(|c| *c as u32) {
+            // CSI (`ESC [`): parameter/intermediate bytes until a final byte in
+            // 0x40–0x7E (standard CSI final range — includes non-alphabetic
+            // finals like `~` in bracketed paste `ESC[200~`).
+            Some(0x5b) => {
+                chars.next();
+                let mut param_buf = String::new();
+                while let Some(&nc) = chars.peek() {
+                    chars.next();
+                    if (0x40..=0x7e).contains(&(nc as u32)) {
+                        // Cursor-forward: replace with spaces so CLIs that
+                        // render injected text via cursor movement still
+                        // produce readable echo-detection text.
+                        if nc == 'C' {
+                            let count = param_buf.parse::<usize>().unwrap_or(1);
+                            for _ in 0..count {
+                                result.push(' ');
+                            }
+                        }
+                        break;
+                    }
+                    param_buf.push(nc);
+                }
+            }
+            // OSC (`ESC ]`): terminated by BEL or ST (`ESC \`).
+            Some(0x5d) => {
+                chars.next();
+                while let Some(nc) = chars.next() {
+                    if nc == '\x07' {
+                        break;
+                    }
+                    if nc == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // DCS/SOS/PM/APC (`ESC P`/`X`/`^`/`_`): string terminated by ST
+            // (`ESC \`). The scanner skips these the same way; strip them here
+            // rather than treating `ESC P` as a bare 2-byte escape that leaks
+            // the string body as printable text.
+            Some(0x50 | 0x58 | 0x5e | 0x5f) => {
+                chars.next();
+                while let Some(nc) = chars.next() {
+                    if nc == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // ESC + intermediate byte(s) 0x20–0x2F (e.g. charset designators
+            // `ESC ( B`, or multi-byte `ESC $ ( C`): per ECMA-35 the
+            // intermediates continue the sequence until a final byte 0x30–0x7E.
+            Some(0x20..=0x2f) => {
+                chars.next();
+                while let Some(&nc) = chars.peek() {
+                    chars.next();
+                    if !(0x20..=0x2f).contains(&(nc as u32)) {
+                        // final byte (or a stray non-intermediate) ends it
+                        break;
+                    }
+                }
+            }
+            // Any other final byte 0x30–0x7E: a plain 2-byte escape (`ESC 7`,
+            // `ESC c`, `ESC =`, …). Drop the single trailing byte.
+            Some(0x30..=0x7e) => {
+                chars.next();
+            }
+            // Lone ESC or ESC + control byte: drop just the ESC.
+            _ => {}
         }
     }
     result
@@ -79,6 +114,9 @@ enum AnsiState {
     Ground,
     /// Saw `ESC`; awaiting the sequence introducer.
     Esc,
+    /// Saw `ESC` + an intermediate byte (0x20–0x2F, e.g. a charset designator
+    /// `ESC ( B`); collecting further intermediates until a final byte 0x30–0x7E.
+    EscIntermediate,
     /// Inside a CSI (`ESC [`) sequence, collecting params until a final byte.
     Csi,
     /// Inside an OSC (`ESC ]`) string, terminated by `BEL` or `ST` (`ESC \`).
@@ -186,10 +224,29 @@ impl AnsiStripper {
                     }
                 }
                 AnsiState::Esc => match code {
-                    0x5b => state = AnsiState::Csi,                      // ESC [
-                    0x5d => state = AnsiState::Osc,                      // ESC ]
+                    // A stray ESC restarts escape parsing rather than being
+                    // treated as the terminator of the previous ESC — e.g.
+                    // `ESC ESC [ 3 ~` is a fresh CSI, not `ESC ESC` + `[3~`.
+                    0x1b => seq_start = idx,
+                    0x5b => state = AnsiState::Csi, // ESC [
+                    0x5d => state = AnsiState::Osc, // ESC ]
                     0x50 | 0x58 | 0x5e | 0x5f => state = AnsiState::Str, // DCS/SOS/PM/APC
+                    // Intermediate byte (0x20–0x2F): the escape continues until
+                    // a final byte (e.g. charset designator `ESC ( B`). Treating
+                    // `ESC (` as a complete 2-byte escape would leak the `B`.
+                    0x20..=0x2f => state = AnsiState::EscIntermediate,
                     _ => state = AnsiState::Ground, // 2-byte escape (ESC 7, ESC c, …)
+                },
+                AnsiState::EscIntermediate => match code {
+                    // A stray ESC restarts (as in `AnsiState::Esc`).
+                    0x1b => {
+                        state = AnsiState::Esc;
+                        seq_start = idx;
+                    }
+                    // Further intermediates continue the sequence.
+                    0x20..=0x2f => {}
+                    // A final byte 0x30–0x7E (or any other byte) ends it.
+                    _ => state = AnsiState::Ground,
                 },
                 AnsiState::Csi => {
                     if code == 0x1b {
@@ -206,25 +263,22 @@ impl AnsiStripper {
                         state = AnsiState::OscEsc; // possible ST
                     }
                 }
-                AnsiState::OscEsc => {
-                    state = if code == 0x5c {
-                        AnsiState::Ground
-                    } else {
-                        AnsiState::Osc
-                    };
-                }
+                AnsiState::OscEsc => match code {
+                    0x5c => state = AnsiState::Ground, // ST (`ESC \`) terminates
+                    0x07 => state = AnsiState::Ground, // BEL also terminates the OSC
+                    0x1b => {}                         // stay: new potential ST introducer
+                    _ => state = AnsiState::Osc,       // not a terminator: still in the OSC body
+                },
                 AnsiState::Str => {
                     if code == 0x1b {
                         state = AnsiState::StrEsc;
                     }
                 }
-                AnsiState::StrEsc => {
-                    state = if code == 0x5c {
-                        AnsiState::Ground
-                    } else {
-                        AnsiState::Str
-                    };
-                }
+                AnsiState::StrEsc => match code {
+                    0x5c => state = AnsiState::Ground, // ST (`ESC \`) terminates
+                    0x1b => {}                         // stay: new potential ST introducer
+                    _ => state = AnsiState::Str,       // not a terminator: still in the string body
+                },
             }
         }
         if state == AnsiState::Ground {
@@ -265,6 +319,31 @@ mod tests {
     #[test]
     fn strip_ansi_handles_charset_sequences() {
         assert_eq!(strip_ansi("\x1b(Btext"), "text");
+        // Multi-byte designator (`ESC $ ( C`) strips all intermediates + final.
+        assert_eq!(strip_ansi("\x1b$(Ctext"), "text");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_char_after_csi_tilde_final() {
+        // `~` (0x7e) is a valid CSI final (bracketed-paste `ESC[200~`). The
+        // trailing printable must survive — the narrower alphabetic-final
+        // grammar used to swallow it.
+        assert_eq!(strip_ansi("\x1b[200~x"), "x");
+        assert_eq!(strip_ansi("\x1b[201~done"), "done");
+    }
+
+    #[test]
+    fn strip_ansi_strips_dcs_string() {
+        // DCS body terminated by ST must be removed, not leaked as text.
+        assert_eq!(strip_ansi("\x1bPq#0;1;2\x1b\\shown"), "shown");
+        // APC (`ESC _`) likewise.
+        assert_eq!(strip_ansi("\x1b_payload\x1b\\after"), "after");
+    }
+
+    #[test]
+    fn strip_ansi_handles_double_esc_csi() {
+        // `ESC ESC [ 3 ~`: the second ESC restarts, so the whole CSI strips.
+        assert_eq!(strip_ansi("\x1b\x1b[3~keep"), "keep");
     }
 
     // ---- AnsiStripper (stateful streaming) ----
@@ -355,6 +434,63 @@ mod tests {
         let mut s2 = AnsiStripper::new();
         let _ = s2.feed(&big);
         assert_eq!(s2.feed("plain"), "plain");
+    }
+
+    #[test]
+    fn stripper_keeps_char_after_bracketed_paste_final() {
+        // `ESC[200~` is complete to the scanner (final `~` = 0x7e); the
+        // following `x` must not be consumed when `feed` delegates to
+        // `strip_ansi`.
+        let mut s = AnsiStripper::new();
+        assert_eq!(s.feed("\x1b[200~x"), "x");
+        // Split at the final byte: scanner holds the incomplete tail, then
+        // completes it without eating the trailing printable.
+        let mut s2 = AnsiStripper::new();
+        let a = s2.feed("\x1b[200");
+        let b = s2.feed("~x");
+        assert_eq!(format!("{a}{b}"), "x");
+    }
+
+    #[test]
+    fn stripper_handles_osc_bel_whole_and_split() {
+        // Whole OSC terminated by BEL.
+        let mut whole = AnsiStripper::new();
+        assert_eq!(whole.feed("\x1b]0;title\x07body"), "body");
+        // Split just before the BEL terminator.
+        let mut split = AnsiStripper::new();
+        let a = split.feed("\x1b]0;title");
+        let b = split.feed("\x07body");
+        assert_eq!(format!("{a}{b}"), "body");
+    }
+
+    #[test]
+    fn stripper_handles_charset_designator_split() {
+        // `ESC ( B` split as `ESC (` + `B`: the `B` (final) must be stripped
+        // with the sequence, not leaked as printable text.
+        let mut s = AnsiStripper::new();
+        let a = s.feed("x\x1b(");
+        let b = s.feed("Bplain");
+        assert_eq!(format!("{a}{b}"), "xplain");
+    }
+
+    #[test]
+    fn stripper_handles_double_esc_csi() {
+        // `ESC ESC [ 3 ~`: the leading stray ESC restarts, so the whole CSI is
+        // stripped and the trailing text survives — even split mid-sequence.
+        let mut s = AnsiStripper::new();
+        assert_eq!(s.feed("\x1b\x1b[3~keep"), "keep");
+        let input = "a\x1b\x1b[3~b";
+        let expected = strip_ansi(input);
+        for split in 1..input.len() {
+            if !input.is_char_boundary(split) {
+                continue;
+            }
+            let mut st = AnsiStripper::new();
+            let mut out = st.feed(&input[..split]);
+            out.push_str(&st.feed(&input[split..]));
+            out.push_str(&strip_ansi(&st.flush()));
+            assert_eq!(out, expected, "double-ESC CSI split at {split} corrupted");
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Write},
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc as std_mpsc, Arc,
     },
     thread,
@@ -163,8 +163,14 @@ pub struct PtySession {
     /// AND we had no PID to verify with kill(0). After
     /// [`no_pid_exit_threshold`](Self::no_pid_exit_threshold) checks, we
     /// assume the child is gone (macOS PTY quirk). Reset on any observed
-    /// child-side activity (PTY output or a submitted write).
-    no_pid_alive_checks: std::sync::atomic::AtomicU32,
+    /// child-side activity (PTY output, or a write the drainer has *confirmed*
+    /// actually reached the PTY master).
+    ///
+    /// Shared with the write drainer thread (`Arc`) so a confirmed write — not
+    /// a mere enqueue — resets the counter. Resetting on enqueue would let a
+    /// wedged drainer plus periodic input postpone the no-PID fallback forever
+    /// even though no byte is reaching the child.
+    no_pid_alive_checks: Arc<AtomicU32>,
     /// Consecutive no-PID `Ok(None)` checks tolerated before declaring a
     /// child with no discoverable PID exited. See [`has_exited`](Self::has_exited)
     /// for the full rationale. Configurable so tests (and future tuning)
@@ -246,7 +252,18 @@ fn resolve_command_path(command: &str) -> String {
     command.to_string()
 }
 
-fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<WriteMsg>) {
+/// Drain the shared write FIFO into the PTY writer.
+///
+/// `no_pid_alive_checks` is the watchdog's silence counter (shared with the
+/// [`PtySession`]). It is reset to `0` only when a user-input write is
+/// *confirmed* flushed to the PTY master — proof the write path (drainer → PTY)
+/// is actually live. Resetting on enqueue instead would let a wedged drainer
+/// plus periodic input starve the no-PID fallback indefinitely.
+fn drain_write_queue<W: Write>(
+    mut writer: W,
+    write_rx: std_mpsc::Receiver<WriteMsg>,
+    no_pid_alive_checks: Arc<AtomicU32>,
+) {
     while let Ok(msg) = write_rx.recv() {
         match msg {
             WriteMsg::Reply(bytes) => {
@@ -267,6 +284,10 @@ fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<Write
                 }
                 match writer.write_all(&bytes).and_then(|_| writer.flush()) {
                     Ok(()) => {
+                        // Confirmed child-side activity: the bytes reached the
+                        // PTY master. Only now is it safe to reset the no-PID
+                        // silence counter.
+                        no_pid_alive_checks.store(0, Ordering::Relaxed);
                         let _ = ack.send(Ok(()));
                     }
                     Err(err) => {
@@ -333,13 +354,18 @@ impl PtySession {
         let term = Arc::new(Mutex::new(Term::new(Config::default(), &size, listener)));
         let processor = Arc::new(Mutex::new(Processor::new()));
 
+        // Watchdog silence counter, shared with the drainer so a confirmed
+        // write (not a mere enqueue) resets it.
+        let no_pid_alive_checks = Arc::new(AtomicU32::new(0));
+
         // Drainer: single owner of the writer. Receives `WriteMsg`s
         // from the queue and pushes them to the PTY. Lives on a
         // std::thread so it doesn't need a tokio runtime. Exits when
         // every sender is dropped — i.e. when the listener inside
         // `term` is dropped (term goes away at PtySession drop) AND
         // the `write_tx` clone on the struct is dropped (same time).
-        thread::spawn(move || drain_write_queue(writer, write_rx));
+        let drainer_no_pid = no_pid_alive_checks.clone();
+        thread::spawn(move || drain_write_queue(writer, write_rx, drainer_no_pid));
 
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
@@ -388,7 +414,7 @@ impl PtySession {
                 child: Arc::new(Mutex::new(child)),
                 child_pid,
                 reaped: Arc::new(AtomicBool::new(false)),
-                no_pid_alive_checks: std::sync::atomic::AtomicU32::new(0),
+                no_pid_alive_checks,
                 no_pid_exit_threshold: DEFAULT_NO_PID_EXIT_THRESHOLD,
                 term,
                 processor,
@@ -430,11 +456,13 @@ impl PtySession {
             ack: ack_tx,
         }) {
             Ok(()) => {
-                // A successful enqueue is child-side activity: the write path
-                // (drainer → PTY master) is live. Reset the no-PID watchdog
-                // counter so an interactive session that's receiving input but
-                // producing no output for a while isn't declared dead.
-                self.no_pid_alive_checks.store(0, Ordering::Relaxed);
+                // NB: do *not* reset the no-PID watchdog counter here. A
+                // successful enqueue only proves the queue had room, not that
+                // any byte reached the child — a wedged drainer accepts the
+                // message and never writes it. The counter is reset by the
+                // drainer once it confirms the write flushed to the PTY master
+                // (see `drain_write_queue`), so a stuck write path can no
+                // longer indefinitely defer the no-PID fallback.
                 Ok(ack_rx)
             }
             Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
@@ -1088,7 +1116,9 @@ mod tests {
     // `TerminalQueryParser` that hardcoded `1;1` for CPR.
 
     use super::{RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use std::sync::atomic::AtomicU32;
     use std::sync::mpsc as std_mpsc;
+    use std::sync::Arc;
     use std::time::Duration as StdDuration;
     use tokio::sync::oneshot;
 
@@ -1240,7 +1270,9 @@ mod tests {
         }
 
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
-        let drainer = std::thread::spawn(move || super::drain_write_queue(AlwaysFailWriter, rx));
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(AlwaysFailWriter, rx, Arc::new(AtomicU32::new(0)))
+        });
 
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
@@ -1275,7 +1307,9 @@ mod tests {
         }
 
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
-        let drainer = std::thread::spawn(move || super::drain_write_queue(FlushFailWriter, rx));
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(FlushFailWriter, rx, Arc::new(AtomicU32::new(0)))
+        });
 
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
@@ -1403,22 +1437,51 @@ mod tests {
         let _ = pty.shutdown();
     }
 
-    /// A submitted write is child-side activity and must reset the no-PID
+    /// A *confirmed* write is child-side activity and must reset the no-PID
     /// silence counter, so an interactive session receiving input but emitting
-    /// no output for a while is never declared dead.
+    /// no output for a while is never declared dead. The reset is driven by the
+    /// drainer once the bytes flush — awaiting the ack proves that path.
     #[tokio::test]
     async fn write_resets_no_pid_counter() {
         let (pty, _rx) = PtySession::spawn("cat", &[], 24, 80).unwrap();
         pty.set_no_pid_alive_checks(pty.no_pid_exit_threshold() - 1);
-        let _ack = pty
+        let ack = pty
             .submit_write(b"hello\n".to_vec())
             .expect("submit_write enqueues");
+        // The drainer resets the counter on confirmed write success, so wait
+        // for the ack before asserting.
+        ack.await
+            .expect("drainer acks the write")
+            .expect("write succeeds");
         assert_eq!(
             pty.no_pid_alive_checks(),
             0,
-            "a successful write must reset the no-PID silence counter"
+            "a confirmed write must reset the no-PID silence counter"
         );
         let _ = pty.shutdown();
+    }
+
+    /// A mere *enqueue* must not reset the counter: if the drainer is wedged and
+    /// never flushes, periodic input can't indefinitely defer the no-PID
+    /// fallback. We simulate a wedged write path with a fake queue whose drainer
+    /// never runs, so the ack stays pending and the counter is untouched.
+    #[tokio::test]
+    async fn enqueue_without_confirm_does_not_reset_no_pid_counter() {
+        let counter = Arc::new(AtomicU32::new(5));
+        // A bounded queue with no drainer: the message sits unconfirmed.
+        let (tx, _rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let (ack_tx, _ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"queued\n".to_vec(),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the write");
+        // No drainer consumed it, so the shared counter is left as-is.
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::Relaxed),
+            5,
+            "an unconfirmed enqueue must not reset the silence counter"
+        );
     }
 
     /// The threshold is configurable and clamped to at least 1.

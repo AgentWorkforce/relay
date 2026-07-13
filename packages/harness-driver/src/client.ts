@@ -696,18 +696,22 @@ export class HarnessDriverClient {
    * time; on detach it sends `release: true` to hand ownership back. Calls
    * without `sessionId` are always applied (legacy behaviour), so the extra
    * options are fully backward compatible.
+   *
+   * `rows`/`cols` are optional so a pure ownership release (`release: true`)
+   * can omit them entirely rather than sending placeholder dimensions — the
+   * broker defaults them and skips the resize on a release.
    */
   async resizePty(
     name: string,
-    rows: number,
-    cols: number,
+    rows?: number,
+    cols?: number,
     options?: { sessionId?: string; release?: boolean }
   ): Promise<{ name: string; rows?: number; cols?: number; applied?: boolean; released?: boolean }> {
     return this.transport.request(`/api/resize/${encodeURIComponent(name)}`, {
       method: 'POST',
       body: JSON.stringify({
-        rows,
-        cols,
+        ...(rows !== undefined ? { rows } : {}),
+        ...(cols !== undefined ? { cols } : {}),
         ...(options?.sessionId ? { session_id: options.sessionId } : {}),
         ...(options?.release ? { release: true } : {}),
       }),

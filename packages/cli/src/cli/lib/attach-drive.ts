@@ -179,6 +179,14 @@ export interface DriveDependencies {
    * tests set `0` for immediate, deterministic paints.
    */
   statusRepaintCoalesceMs?: number;
+  /**
+   * Interval (ms) at which the session re-asserts PTY resize ownership by
+   * re-sending its current size (single-resizer policy, #1247). Keeps an
+   * idle-but-live session from being superseded after the broker's
+   * stale-owner window; the broker treats a same-size re-assert as a no-op
+   * refresh (no SIGWINCH). Defaults to 60000. Set `0` to disable (tests).
+   */
+  ownershipReassertMs?: number;
 }
 
 function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependencies {
@@ -391,13 +399,13 @@ export async function resizeWorker(
 export async function releaseResizeOwnership(
   connection: BrokerConnection,
   name: string,
-  rows: number,
-  cols: number,
   sessionId: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<void> {
   try {
-    await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols, {
+    // A pure release carries no dimensions — the broker skips the resize and
+    // only drops ownership, so there are no placeholder sizes to invent.
+    await createBrokerClient(connection, fetchFn).resizePty(name, undefined, undefined, {
       sessionId,
       release: true,
     });
@@ -586,6 +594,16 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     // of this session's resizes carry it so we own the shared PTY size while
     // driving, and we release it on detach.
     const resizeSessionId = randomUUID();
+    // In-flight resize requests. Detach awaits these before releasing ownership
+    // so a late-resolving SIGWINCH resize can't re-claim the PTY *after* the
+    // release lands (single-resizer detach race, #1247).
+    const outstandingResizes = new Set<Promise<unknown>>();
+    const trackResize = (p: Promise<unknown>): void => {
+      outstandingResizes.add(p);
+      void p.finally(() => outstandingResizes.delete(p));
+    };
+    // Periodic ownership re-assert timer (see `ownershipReassertMs`).
+    let reassertTimer: ReturnType<typeof setInterval> | null = null;
     let pending = state.initialPending;
     let terminalRows = pickInitialTerminalRows(state.initialLocalSize, undefined);
     const parser = new KeybindParser();
@@ -666,13 +684,15 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       if (!size) return;
       terminalRows = size.rows;
       predictiveEcho?.onResize(size.cols, size.rows);
-      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
-        sessionId: resizeSessionId,
-      }).then((res) => {
-        if (!res.ok) {
-          deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
-        }
-      });
+      trackResize(
+        resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+          sessionId: resizeSessionId,
+        }).then((res) => {
+          if (!res.ok) {
+            deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
+          }
+        })
+      );
       // Repaint regardless of fetch outcome — the local terminal has
       // already moved, so the status line position needs to move with
       // it whether or not the broker accepted the resize.
@@ -754,6 +774,14 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       } catch {
         // best effort
       }
+      try {
+        if (reassertTimer) {
+          clearInterval(reassertTimer);
+          reassertTimer = null;
+        }
+      } catch {
+        // best effort
+      }
       rawModeWasSet = false;
     };
 
@@ -785,17 +813,21 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       predictiveEcho?.reset();
       closeInputStream();
       // Release resize ownership so the next client can size the shared PTY.
-      const lastSize = deps.terminal.getSize() ?? state.initialLocalSize;
-      if (lastSize) {
-        void releaseResizeOwnership(
-          connection,
-          name,
-          lastSize.rows,
-          lastSize.cols,
-          resizeSessionId,
-          deps.fetch
-        );
-      }
+      // Await any in-flight resizes first: the release must be ordered *after*
+      // the last SIGWINCH resize resolves, or that resize could re-claim the
+      // PTY just after the release lands (detach race, #1247). `teardownStdin`
+      // has already stopped the resize handler and re-assert timer above, so
+      // no new resizes are enqueued past this point.
+      void (async () => {
+        try {
+          if (outstandingResizes.size > 0) {
+            await Promise.allSettled([...outstandingResizes]);
+          }
+          await releaseResizeOwnership(connection, name, resizeSessionId, deps.fetch);
+        } catch {
+          // Best-effort — the broker's idle-takeover net still frees ownership.
+        }
+      })();
       try {
         socket.close(1000, 'drive client exiting');
       } catch {
@@ -839,6 +871,26 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         // we take over stdin so the lifecycles match — both go away in
         // `teardownStdin` on any exit path.
         unsubscribeResize = deps.terminal.onResize(resizeHandler);
+        // Start the periodic ownership re-assert so an idle-but-live session
+        // keeps the single-resizer lease past the broker's stale window. The
+        // broker no-ops a same-size re-assert (no SIGWINCH/repaint).
+        const reassertMs = deps.ownershipReassertMs ?? 60_000;
+        if (reassertMs > 0) {
+          reassertTimer = setInterval(() => {
+            const size = deps.terminal.getSize() ?? state.initialLocalSize;
+            if (!size) return;
+            trackResize(
+              resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+                sessionId: resizeSessionId,
+              }).then(
+                () => {},
+                () => {}
+              )
+            );
+          }, reassertMs);
+          // Don't let the keep-alive timer hold the process open on its own.
+          reassertTimer.unref?.();
+        }
       } catch (err: unknown) {
         if (settled) return;
         const message = err instanceof Error ? err.message : String(err);
