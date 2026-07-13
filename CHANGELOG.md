@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Changed
+
+- `agent-relay-broker` upgrades the bundled `relaycast` engine crate to 6.0 and parses inbound Relaycast WebSocket events against the published typed contract first, logging a structured warning when an event only parses via the tolerant fallback — so engine contract drift is observable without dropping traffic.
 
 ## [10.1.0] - 2026-07-13
 
