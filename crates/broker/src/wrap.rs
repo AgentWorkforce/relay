@@ -322,10 +322,7 @@ impl PtyAutoState {
             tracing::info!("Detected Codex model upgrade prompt, selecting 'Use existing model'");
             self.codex_model_prompt_handled = true;
             tokio::time::sleep(Duration::from_millis(100)).await;
-            warn_on_auto_response_write(
-                pty.submit_write(b"\x1b[B".to_vec()),
-                "codex_model_down",
-            ); // Down arrow → option 2
+            warn_on_auto_response_write(pty.submit_write(b"\x1b[B".to_vec()), "codex_model_down"); // Down arrow → option 2
             tokio::time::sleep(Duration::from_millis(100)).await;
             warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "codex_model_enter"); // Enter to confirm
             self.codex_model_buffer.clear();
@@ -1783,19 +1780,18 @@ mod tests {
         let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
         let mut delivered: Vec<Vec<u8>> = Vec::new();
         for chunk in [b"a".to_vec(), b"bc".to_vec(), b"d".to_vec()] {
-            let backlogged = buffer_and_drain_stdin(
-                &mut pending,
-                chunk,
-                STDIN_PENDING_MAX_CHUNKS,
-                |bytes| {
+            let backlogged =
+                buffer_and_drain_stdin(&mut pending, chunk, STDIN_PENDING_MAX_CHUNKS, |bytes| {
                     delivered.push(bytes.to_vec());
                     true
-                },
-            );
+                });
             assert!(!backlogged, "nothing should remain buffered when accepted");
         }
         assert!(pending.is_empty());
-        assert_eq!(delivered, vec![b"a".to_vec(), b"bc".to_vec(), b"d".to_vec()]);
+        assert_eq!(
+            delivered,
+            vec![b"a".to_vec(), b"bc".to_vec(), b"d".to_vec()]
+        );
     }
 
     #[test]
