@@ -1,21 +1,23 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  AgentEventListener,
+  AgentStream,
   cleanupTmp,
   createTrigger,
   createWorkspace,
   delay,
-  enableFleet,
   enrollNode,
   FleetNode,
   getFreePort,
   getInvocation,
   getNodes,
   invokeAction,
+  invokeNodeAction,
   joinChannel,
   listDeliveries,
   listMessages,
   makeTmpRoot,
+  mintObserverToken,
+  ObserverStream,
   NODE_A_FILE,
   NODE_B_FILE,
   postMessage,
@@ -82,7 +84,6 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     tmpRoot = makeTmpRoot();
     engine = await startEngine(pre.engineServe!, tmpRoot);
     workspaceKey = await createWorkspace(engine, 'fleet-e2e');
-    await enableFleet(engine, workspaceKey);
 
     const tokenA = await enrollNode(engine, workspaceKey, 'node_a', 'node-a', [
       'spawn:claude',
@@ -107,6 +108,12 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
       brokerPort: await getFreePort(),
+      // Pin capacity so the node advertises a distinct harness (`claude`) plus the
+      // shared `pool`. A `spawn:<harness>` shadow delegates to the broker's native
+      // capacity for that harness, so every shadow the node defines (spawn:claude,
+      // spawn:pool) needs matching broker capacity — otherwise the delegation has
+      // nothing to run.
+      capacityHarnesses: 'claude,pool',
     });
     nodeB = new FleetNode({
       name: 'node-b',
@@ -118,6 +125,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
       brokerPort: await getFreePort(),
+      // Distinct `codex` plus the shared `pool` (see node-a's note).
+      capacityHarnesses: 'codex,pool',
     });
     nodeA.start();
     nodeB.start();
@@ -150,8 +159,22 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(a.live).toBe(true);
     expect(a.handlers_live).toBe(true);
     expect(b.handlers_live).toBe(true);
-    expect(a.capabilities.map((c) => c.name).sort()).toEqual(['echo', 'spawn:claude', 'spawn:pool', 'work']);
-    expect(b.capabilities.map((c) => c.name).sort()).toEqual(['ping', 'spawn:codex', 'spawn:pool', 'work']);
+    // The aggregate is the union of the broker provider's capacity (its pinned
+    // spawn:<harness> + release) and the fleet provider's action capabilities.
+    expect(a.capabilities.map((c) => c.name).sort()).toEqual([
+      'echo',
+      'release',
+      'spawn:claude',
+      'spawn:pool',
+      'work',
+    ]);
+    expect(b.capabilities.map((c) => c.name).sort()).toEqual([
+      'ping',
+      'release',
+      'spawn:codex',
+      'spawn:pool',
+      'work',
+    ]);
   });
 
   it('negative auth: a node whose broker presents a bogus token never comes online', async () => {
@@ -166,7 +189,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       nodeId: 'node_c',
       nodeFile: NODE_B_FILE,
       nodeToken: 'nt_live_bogustoken0000000000000000',
-      workspaceKey,
+      // No workspace key: with one, the broker would re-mint a valid node token on
+      // the 401 (self-heal) and come online. Withholding it makes the bogus token
+      // fatal, which is what this test guards.
+      workspaceKey: '',
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
@@ -202,8 +228,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
   });
 
   it('cross-node dispatch: a node-native action runs on its owning node and acks the result', async () => {
-    const echo = await invokeAction(engine, driverToken, 'echo', { text: 'hello-a' });
+    // Fleet-provider actions are node-scoped, so they are invoked on their owning node.
+    const echo = await invokeNodeAction(engine, driverToken, 'node-a', 'echo', { text: 'hello-a' });
     expect(echo.status).toBe(201);
+    expect(echo.body.data.handler_node_id).toBe('node_a');
     const echoDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'echo', echo.invocationId!);
@@ -213,7 +241,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     );
     expect(echoDone.output).toMatchObject({ echoed: 'hello-a', node: 'node-a' });
 
-    const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'xyz' });
+    const ping = await invokeNodeAction(engine, driverToken, 'node-b', 'ping', { nonce: 'xyz' });
+    expect(ping.status).toBe(201);
     const pingDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
@@ -397,10 +426,14 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
   });
 
   it('reschedule on death + restart reconcile: an in-flight invocation reruns elsewhere; the node rejoins and dispatch stays idempotent', async () => {
-    // `work` lives on BOTH nodes but binds to whichever registered it first, so
-    // discover where it dispatches, then kill THAT node mid-flight.
-    const work = await invokeAction(engine, driverToken, 'work', { nonce: 'resched-1', delayMs: 6_000 });
-    const homeId = work.body.data.handler_node_id as string; // 'node_a' | 'node_b'
+    // `work` is a node-scoped action on BOTH nodes, so it is node-addressed. Send
+    // it to node-a, then kill node-a mid-flight; the engine reschedules the SAME
+    // invocation onto the other node that also advertises `work`.
+    const work = await invokeNodeAction(engine, driverToken, 'node-a', 'work', {
+      nonce: 'resched-1',
+      delayMs: 6_000,
+    });
+    const homeId = work.body.data.handler_node_id as string; // 'node_a'
     const homeName = homeId === 'node_a' ? 'node-a' : 'node-b';
     const otherName = homeName === 'node-a' ? 'node-b' : 'node-a';
     const homeNode = homeName === 'node-a' ? nodeA : nodeB;
@@ -449,8 +482,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       await delay(500);
     }
 
-    // (e) dispatch works again on the restored node.
-    const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'after-restart' });
+    // (e) dispatch works again on the restored node. `ping` is node-scoped to
+    // node-b, so it is node-addressed.
+    const ping = await invokeNodeAction(engine, driverToken, 'node-b', 'ping', { nonce: 'after-restart' });
     const pingDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
@@ -461,49 +495,34 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(pingDone.output).toMatchObject({ pong: 'after-restart', node: 'node-b' });
   }, 120_000);
 
-  it('delivery seq/dedup: per-agent deliveries are strictly monotonic and a resync replays with no duplicates', async () => {
-    // Asserts the engine's exactly-once delivery cursor — the SAME monotonic-seq +
-    // dedup mechanism the node-restart reconcile (inventory.sync) relies on for
-    // redelivery without duplicates. Driven through a WS-connected recipient whose
-    // event stream IS observable (a spawned via-node child's stream is not).
-    const recipient = await registerAgent(engine, workspaceKey, 'seq-rx');
-    const listener = new AgentEventListener(engine.baseUrl.replace(/^http/, 'ws'), recipient);
-    await listener.ready();
+  it('delivery seq/dedup: an offline agent replays its queued DMs exactly once, in order, on reconnect', async () => {
+    // Exactly-once ordered delivery through the real SDK consumer path (AgentClient
+    // over the node transport): the same guarantee the node-restart reconcile relies
+    // on. DMs sent while the recipient is disconnected QUEUE per-agent and redeliver
+    // once, in order, when it reconnects — no over-delivery (replaying acked history)
+    // and no under-delivery (replaying nothing). The wire-level resync cursor itself
+    // is covered by the relaycast engine's delivery conformance matrix (§8).
+    const recipientToken = await registerAgent(engine, workspaceKey, 'seq-rx');
+    const rx = new AgentStream(engine.baseUrl, recipientToken);
+    await rx.connect();
 
-    const N = 4;
-    for (let i = 0; i < N; i++) {
-      expect((await sendDm(engine, driverToken, 'seq-rx', `seq-${i}`)).status).toBeLessThan(300);
-    }
-    await waitFor(async () => listener.ofType('dm.received').length >= N, { label: 'all DMs delivered' });
+    // Two DMs delivered live to the connected recipient.
+    expect((await sendDm(engine, driverToken, 'seq-rx', 'seq-0')).status).toBeLessThan(300);
+    expect((await sendDm(engine, driverToken, 'seq-rx', 'seq-1')).status).toBeLessThan(300);
+    await waitFor(async () => rx.texts().length >= 2, { label: 'live DMs delivered' });
 
-    const seqs = listener.ofType('dm.received').map((e) => e.agent_seq as number);
-    expect(seqs).toHaveLength(N);
-    expect(new Set(seqs).size).toBe(N); // no duplicate delivery
-    expect([...seqs].sort((a, b) => a - b)).toEqual(seqs); // strictly monotonic, in order
-    const maxSeq = Math.max(...seqs);
-
-    // Resync a FRESH connection from the midpoint: the engine must replay EXACTLY
-    // the tail after the cursor — no more, no less.
-    const cursor = seqs[1];
-    const expectedTail = seqs.filter((s) => s > cursor); // e.g. [3, 4]
-    const replay = new AgentEventListener(engine.baseUrl.replace(/^http/, 'ws'), recipient);
-    await replay.ready();
-    replay.resync(cursor);
-    const ack = await waitFor(async () => replay.ofType('resync_ack')[0] ?? null, { label: 'resync_ack' });
-    expect(ack).toMatchObject({ last_seen_seq: cursor, current_seq: maxSeq, gap_detected: false });
-
-    // The UNFILTERED replayed dm.received seqs must equal the expected tail exactly,
-    // in order. This fails on BOTH over-delivery (replaying acked history) and
-    // under-delivery (replaying nothing) — the previous filtered check passed both.
-    await waitFor(async () => replay.ofType('dm.received').length >= expectedTail.length, {
-      label: 'tail replayed',
-    });
+    // Disconnect, send two more while offline (they queue), then reconnect.
+    await rx.disconnect();
+    expect((await sendDm(engine, driverToken, 'seq-rx', 'seq-2')).status).toBeLessThan(300);
+    expect((await sendDm(engine, driverToken, 'seq-rx', 'seq-3')).status).toBeLessThan(300);
+    await rx.connect();
+    await waitFor(async () => rx.texts().length >= 4, { label: 'queued DMs redelivered' });
     await delay(1_000); // settle so any over-delivery surfaces before asserting
-    const replayedSeqs = replay.ofType('dm.received').map((e) => e.agent_seq as number);
-    expect(replayedSeqs).toEqual(expectedTail);
 
-    listener.close();
-    replay.close();
+    // Every DM exactly once, in order — the reconnect replay neither drops nor duplicates.
+    expect(rx.texts()).toEqual(['seq-0', 'seq-1', 'seq-2', 'seq-3']);
+
+    await rx.disconnect();
   }, 30_000);
 });
 
@@ -537,8 +556,10 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
 
   it('TTL: an undelivered message dead-letters AND the sender is notified (delivery.failed)', async () => {
     const recipient = await registerAgent(engine, workspaceKey, 'ttl-recipient');
-    // The sender holds a live WS so it can observe the realtime delivery.failed.
-    const senderWs = new AgentEventListener(engine.baseUrl.replace(/^http/, 'ws'), sender);
+    // A workspace observer stream carries the realtime delivery.failed: `stream:read`
+    // opens the socket, `deliveries:read` admits the `delivery.*` events.
+    const observerToken = await mintObserverToken(engine, workspaceKey, ['stream:read', 'deliveries:read']);
+    const senderWs = new ObserverStream(engine.baseUrl.replace(/^http/, 'ws'), observerToken);
     await senderWs.ready();
 
     const dm = await sendDm(engine, sender, 'ttl-recipient', 'will expire');

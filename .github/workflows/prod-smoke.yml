@@ -1,0 +1,62 @@
+name: Prod Smoke
+
+# Synthetic monitoring of the DEPLOYED node-providers engine (cast.agentrelay.com
+# by default). Builds the relay CLI + broker, then brings a real node online and
+# drives a node-addressed invoke round-trip against whatever is live. This is not
+# a merge gate — it never runs on pull_request. Per-PR coverage of the same model
+# is the local-engine matrix in tests/e2e/fleet (workflow: Fleet E2E).
+#
+# No repository secrets are required: the smoke self-mints a throwaway workspace
+# on the target engine (POST /v1/workspaces, no auth) and deletes it on teardown.
+on:
+  schedule:
+    # Nightly at 08:00 UTC.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Engine base URL to smoke (defaults to cast.agentrelay.com)'
+        required: false
+        default: 'https://cast.agentrelay.com'
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+jobs:
+  prod-smoke:
+    name: Node-providers prod smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout relay
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build relay (CLI + fleet + harness-driver)
+        run: |
+          npm ci
+          npm run build:core
+
+      - name: Build agent-relay-broker
+        run: cargo build --release --bin agent-relay-broker
+
+      - name: Run prod smoke
+        env:
+          BROKER_BINARY_PATH: ${{ github.workspace }}/target/release/agent-relay-broker
+          PROD_SMOKE_BASE_URL: ${{ github.event.inputs.base_url || 'https://cast.agentrelay.com' }}
+        run: npm run smoke:prod

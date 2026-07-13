@@ -5,6 +5,7 @@ import {
   classifyBrokerStartStage,
   describeError,
   readNodeDeliveryStatus,
+  resolveNodeIdentityFromSession,
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
 
@@ -163,6 +164,30 @@ vi.mock('@agent-relay/fleet', async (importOriginal) => {
     startServeNode: vi.fn(() => ({ stop: vi.fn(async () => undefined), done: Promise.resolve() })),
   };
 });
+// The capability providers read the broker's resolved node id from its HTTP
+// session; serve it from a fake so `node up` can attach providers to the node.
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: class {
+    async getSession() {
+      return {
+        node_id: 'node_a',
+        node_name: 'the-node',
+        // Live-shaped secrets so the verbose-output test can assert they never
+        // leak into logs.
+        workspace_key: 'rk_live_secret',
+        node_token: 'nt_live_secret',
+        broker_version: 'test',
+        protocol_version: 2,
+        mode: 'persist',
+        uptime_secs: 1,
+      };
+    }
+    async getStatus() {
+      return {};
+    }
+    disconnect() {}
+  },
+}));
 
 import fsReal from 'node:fs';
 import os from 'node:os';
@@ -229,7 +254,7 @@ function createUpHarness() {
     generateAgentName: () => 'agent',
     checkForUpdates: vi.fn(async () => ({ updateAvailable: false })),
     getVersion: () => 'test',
-    env: {} as NodeJS.ProcessEnv,
+    env: { RELAY_NODE_TOKEN: 'nt_live_test', RELAY_BASE_URL: 'https://engine.test' } as NodeJS.ProcessEnv,
     argv: ['node', 'agent-relay', 'node', 'up'],
     execPath: process.execPath,
     cliScript: 'cli.js',
@@ -268,7 +293,7 @@ describe('runUpCommand node-config gating', () => {
     expect(startServeNode).not.toHaveBeenCalled();
   });
 
-  it('warns and serves the implicit node when a DISCOVERED config fails to load', async () => {
+  it('serves no provider when a DISCOVERED config fails to load (broker capacity handles it)', async () => {
     const { deps, projectRoot, createRelay, warn } = createUpHarness();
     fsReal.writeFileSync(pathReal.join(projectRoot, 'agent-relay.js'), 'export default 42;\n');
 
@@ -276,9 +301,9 @@ describe('runUpCommand node-config gating', () => {
 
     expect(warn.mock.calls.flat().join('\n')).toContain('Ignoring discovered node config');
     expect(createRelay).toHaveBeenCalledTimes(1);
-    expect(startServeNode).toHaveBeenCalledTimes(1);
-    const served = vi.mocked(startServeNode).mock.calls[0]![0];
-    expect(served.definition.name).toBe(pathReal.basename(projectRoot));
+    // No implicit provider is served; the broker's own capacity brings the node
+    // online, so there is nothing to serve when the discovered config is invalid.
+    expect(startServeNode).not.toHaveBeenCalled();
   });
 
   it('never touches agent-relay.* files without the discoverConfig opt-in (legacy local up)', async () => {
@@ -291,7 +316,7 @@ describe('runUpCommand node-config gating', () => {
 
     expect(warn.mock.calls.flat().join('\n')).not.toContain('Ignoring discovered node config');
     expect(createRelay).toHaveBeenCalledTimes(1);
-    expect(startServeNode).toHaveBeenCalledTimes(1);
+    expect(startServeNode).not.toHaveBeenCalled();
   });
 
   it('skips config discovery entirely when the implicit fleet node is disabled', async () => {
@@ -320,5 +345,139 @@ describe('runUpCommand node-config gating', () => {
     const served = vi.mocked(startServeNode).mock.calls[0]![0];
     expect(served.definition.name).toBe('from-config');
     expect(served.nameOverride).toBe('enrolled-name');
+    expect(served.connection).toMatchObject({ nodeToken: 'nt_live_test', nodeId: 'node_a' });
+    expect(served.providerName).toBe('from-config');
+  });
+
+  it('never prints the node token or workspace key from the session in --verbose output', async () => {
+    const { deps, projectRoot, log, warn, error } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [] };\n"
+    );
+
+    // Verbose `up` fetches the broker session (which carries nt_live_/rk_live_
+    // secrets in the mock) to attach providers; none of it may reach the logs.
+    await runUpCommand({ discoverConfig: true, verbose: true }, deps);
+
+    const output = [log, warn, error]
+      .flatMap((fn) => vi.mocked(fn).mock.calls.flat())
+      .map((arg) => String(arg))
+      .join('\n');
+    expect(output).not.toMatch(/rk_live_|nt_live_/);
+  });
+});
+
+describe('resolveNodeIdentityFromSession', () => {
+  const noSleep = vi.fn(async () => {});
+
+  it('returns identity immediately when the token is already present', async () => {
+    const getSession = vi.fn(async () => ({
+      node_id: 'node-1',
+      node_name: 'host-1',
+      node_token: 'nt_live_ready',
+    }));
+
+    const identity = await resolveNodeIdentityFromSession(getSession, {
+      awaitTokenMs: 15_000,
+      sleep: noSleep,
+    });
+
+    expect(identity).toEqual({ nodeId: 'node-1', nodeName: 'host-1', nodeToken: 'nt_live_ready' });
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(noSleep).not.toHaveBeenCalled();
+  });
+
+  it('polls until the background-minted token appears', async () => {
+    const sessions = [
+      { node_id: 'node-1', node_name: 'host-1' },
+      { node_id: 'node-1', node_name: 'host-1' },
+      { node_id: 'node-1', node_name: 'host-1', node_token: 'nt_live_late' },
+    ];
+    let call = 0;
+    const getSession = vi.fn(async () => sessions[Math.min(call++, sessions.length - 1)]);
+    const sleep = vi.fn(async () => {});
+
+    const identity = await resolveNodeIdentityFromSession(getSession, {
+      awaitTokenMs: 15_000,
+      sleep,
+    });
+
+    expect(identity).toEqual({ nodeId: 'node-1', nodeName: 'host-1', nodeToken: 'nt_live_late' });
+    expect(getSession).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not poll when awaitTokenMs is zero (explicit RELAY_NODE_TOKEN path)', async () => {
+    const getSession = vi.fn(async () => ({ node_id: 'node-1', node_name: 'host-1' }));
+    const sleep = vi.fn(async () => {});
+
+    const identity = await resolveNodeIdentityFromSession(getSession, { awaitTokenMs: 0, sleep });
+
+    expect(identity).toEqual({ nodeId: 'node-1', nodeName: 'host-1' });
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('returns the best identity seen so far when the deadline elapses without a token', async () => {
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const getSession = vi.fn(async () => ({ node_id: 'node-1', node_name: 'host-1' }));
+    const sleep = vi.fn(async () => {
+      now += 200; // advance past the awaitTokenMs budget after the first sleep
+    });
+
+    const identity = await resolveNodeIdentityFromSession(getSession, {
+      awaitTokenMs: 150,
+      sleep,
+    });
+
+    expect(identity).toEqual({ nodeId: 'node-1', nodeName: 'host-1' });
+    expect(getSession).toHaveBeenCalledTimes(2);
+    nowSpy.mockRestore();
+  });
+
+  it('returns null when the broker never reports a node id', async () => {
+    const getSession = vi.fn(async () => ({}));
+
+    const identity = await resolveNodeIdentityFromSession(getSession, {
+      awaitTokenMs: 15_000,
+      sleep: noSleep,
+    });
+
+    expect(identity).toBeNull();
+  });
+
+  it('yields the last good identity when a later session read throws', async () => {
+    let call = 0;
+    const getSession = vi.fn(async () => {
+      if (call++ === 0) return { node_id: 'node-1', node_name: 'host-1' };
+      throw new Error('connection reset');
+    });
+    const sleep = vi.fn(async () => {});
+
+    const identity = await resolveNodeIdentityFromSession(getSession, {
+      awaitTokenMs: 15_000,
+      sleep,
+    });
+
+    expect(identity).toEqual({ nodeId: 'node-1', nodeName: 'host-1' });
+  });
+
+  it('bounds a stalled session read to the token-wait budget instead of hanging', async () => {
+    // getSession never resolves; without the per-read bound this would hang past
+    // the transport's 30s timeout. With a 60ms budget it must return ~promptly.
+    const getSession = vi.fn(() => new Promise<{ node_id?: string }>(() => {}));
+    const sleep = vi.fn(async () => {});
+
+    const start = Date.now();
+    const identity = await resolveNodeIdentityFromSession(getSession, {
+      awaitTokenMs: 60,
+      sleep,
+    });
+
+    expect(identity).toBeNull();
+    expect(Date.now() - start).toBeLessThan(1_000);
+    expect(getSession).toHaveBeenCalledTimes(1);
   });
 });

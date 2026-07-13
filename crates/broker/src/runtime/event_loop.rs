@@ -26,12 +26,6 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
-    pub(super) fleet_handlers: HandlerDispatchState,
-    pub(super) fleet_sidecar_out_tx: Option<mpsc::Sender<ProtocolEnvelope<Value>>>,
-    pub(super) fleet_sidecar_supervision: Option<NodeSupervision>,
-    pub(super) fleet_sidecar_child: Option<tokio::process::Child>,
-    pub(super) fleet_sidecar_restart_at: Option<Instant>,
-    pub(super) fleet_sidecar_restart: fleet::FleetSidecarRestartState,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
     pub(super) sdk_out_tx: mpsc::Sender<ProtocolEnvelope<Value>>,
@@ -213,9 +207,6 @@ impl BrokerRuntime {
             .await
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
-        }
-        if let Some(mut child) = self.fleet_sidecar_child.take() {
-            let _ = crate::spawner::terminate_child(&mut child, Duration::from_secs(3)).await;
         }
         // Persist any still-pending deliveries so the next start can
         // redeliver them; only remove the file when nothing is pending.

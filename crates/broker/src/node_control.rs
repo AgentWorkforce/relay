@@ -9,7 +9,6 @@ use std::{
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
@@ -17,12 +16,12 @@ use uuid::Uuid;
 
 use crate::{
     fleet_wire::{
-        ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
-        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryAck, FleetCapability,
-        InventoryAgent, InventorySync, NodeDeregister, NodeHeartbeat, NodeRegister,
-        RelaycastToBroker, FLEET_WIRE_VERSION,
+        ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, AgentRegister,
+        BrokerToRelaycast, Deliver, DeliveryAck, FleetCapability, FleetProviderIdentity,
+        InventoryAgent, InventorySync, NodeHeartbeat, NodeRegister, RelaycastToBroker,
+        FLEET_WIRE_VERSION,
     },
-    protocol::{HandlerResult, HandlerResultPayload, NodeManifest},
+    protocol::NodeManifest,
 };
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
@@ -56,12 +55,17 @@ pub(crate) struct FleetControlConfig {
     /// current one with HTTP 401 on the `/v1/node/ws` handshake. Absent in tests
     /// and when no workspace key is available.
     pub(crate) token_minter: Option<NodeTokenMinter>,
+    /// Shared handle for the current node token, mirrored to the HTTP session so
+    /// providers reading it after a re-mint get the fresh token, not the startup
+    /// snapshot. Absent in tests.
+    pub(crate) session_token: Option<std::sync::Arc<std::sync::RwLock<Option<String>>>>,
 }
 
-/// Re-mints a fresh node token via `POST /v1/nodes` and rewrites the
-/// workspace-scoped cache, used to recover from a stale/rejected cached token
-/// (HTTP 401 on the node-control handshake) instead of looping forever on the
-/// same token. Mirrors the initial mint wired in `runtime::init::resolve_node_token`.
+/// Mints node tokens via `POST /v1/nodes` and maintains the workspace-scoped
+/// cache. Held by the node-control client, which uses it both for the initial
+/// mint (when no token is cached — see [`NodeTokenMinter::mint`]) and to recover
+/// from a stale/rejected cached token (HTTP 401 on the node-control handshake —
+/// see [`NodeTokenMinter::remint`]) instead of looping forever on the same token.
 #[derive(Clone)]
 pub(crate) struct NodeTokenMinter {
     pub(crate) workspace_key: String,
@@ -76,24 +80,11 @@ pub(crate) struct NodeTokenMinter {
 }
 
 impl NodeTokenMinter {
-    /// Discard the cached token for this workspace and mint a fresh one. Returns
-    /// the new token on success. On failure the caller surfaces a loud error and
-    /// backs off rather than looping on the rejected token.
-    async fn remint(&self) -> Option<String> {
-        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
-        // stale token behind for the next start.
-        if let Some(path) = self.token_path.as_deref() {
-            if let Err(error) = fs::remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %self.node_id,
-                        error = %error,
-                        "failed to clear rejected node token cache before re-mint"
-                    );
-                }
-            }
-        }
+    /// Mint a fresh node token via `POST /v1/nodes` and persist it to the
+    /// workspace-scoped cache. Returns the new token on success, or `None` after
+    /// logging the failure so the caller can back off and retry. Used for the
+    /// initial mint (no cached token) and as the shared body of [`Self::remint`].
+    async fn mint(&self) -> Option<String> {
         let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
         match mint_node_token(
             &self.workspace_key,
@@ -119,7 +110,7 @@ impl NodeTokenMinter {
                             target = "relay_broker::fleet",
                             node_id = %self.node_id,
                             error = %error,
-                            "failed to persist re-minted node token"
+                            "failed to persist minted node token"
                         );
                     }
                 }
@@ -127,7 +118,7 @@ impl NodeTokenMinter {
                     target = "relay_broker::fleet",
                     node_id = %self.node_id,
                     workspace_id = %self.workspace_id,
-                    "re-minted node token after node-control 401"
+                    "minted node token via create_node"
                 );
                 Some(token)
             }
@@ -137,11 +128,32 @@ impl NodeTokenMinter {
                     &self.node_id,
                     &self.workspace_id,
                     &error,
-                    "failed to re-mint node token after node-control 401",
+                    "failed to mint node token via create_node",
                 );
                 None
             }
         }
+    }
+
+    /// Discard the cached token for this workspace and mint a fresh one. Returns
+    /// the new token on success. On failure the caller surfaces a loud error and
+    /// backs off rather than looping on the rejected token.
+    async fn remint(&self) -> Option<String> {
+        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
+        // stale token behind for the next start.
+        if let Some(path) = self.token_path.as_deref() {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        error = %error,
+                        "failed to clear rejected node token cache before re-mint"
+                    );
+                }
+            }
+        }
+        self.mint().await
     }
 }
 
@@ -454,6 +466,7 @@ impl FleetLoadSnapshot {
         NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            provider: node.provider.clone(),
             name: node.name.clone(),
             node_id: node.node_id.clone(),
             capabilities: node.capabilities.clone(),
@@ -490,7 +503,6 @@ pub(crate) enum FleetControlCommand {
     UpdateInventory(Vec<InventoryAgent>),
     UpdateLoad(FleetLoadSnapshot),
     HeartbeatNow,
-    DeregisterNode,
     Send(BrokerToRelaycast),
     RegisterAgent {
         request: AgentRegister,
@@ -822,132 +834,6 @@ impl FleetDeliveryBook {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum HandlerDispatchDecision {
-    Dispatch {
-        invocation_id: String,
-        name: String,
-        input: Value,
-    },
-    AlreadyInFlight,
-    Completed(ActionResult),
-    Unavailable(ActionResult),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct InFlightHandler {
-    name: String,
-    input: Value,
-}
-
-#[derive(Debug, Default, Clone)]
-pub(crate) struct HandlerDispatchState {
-    sidecar_connected: bool,
-    handlers: HashSet<String>,
-    in_flight: HashMap<String, InFlightHandler>,
-    completed: HashMap<String, ActionResultPayload>,
-}
-
-impl HandlerDispatchState {
-    pub(crate) fn connect_sidecar(&mut self) {
-        self.sidecar_connected = true;
-        self.handlers.clear();
-    }
-
-    pub(crate) fn disconnect_sidecar(&mut self) {
-        self.sidecar_connected = false;
-        self.handlers.clear();
-    }
-
-    pub(crate) fn register_handlers(&mut self, names: Vec<String>) {
-        self.handlers = names
-            .into_iter()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .collect();
-    }
-
-    pub(crate) fn handlers_live(&self) -> bool {
-        self.sidecar_connected && !self.handlers.is_empty()
-    }
-
-    /// Whether the connected sidecar registered a handler for `action`. Used to
-    /// decide whether a `spawn:<harness>` node action should be dispatched to the
-    /// sidecar (which owns the declared harness) rather than run directly with the
-    /// raw `cli` from the action input.
-    pub(crate) fn has_handler(&self, action: &str) -> bool {
-        self.sidecar_connected && self.handlers.contains(action)
-    }
-
-    pub(crate) fn has_in_flight(&self) -> bool {
-        !self.in_flight.is_empty()
-    }
-
-    pub(crate) fn drain_in_flight_unavailable(&mut self) -> Vec<ActionResult> {
-        self.in_flight
-            .drain()
-            .map(|(invocation_id, _)| handler_unavailable_result(&invocation_id))
-            .collect()
-    }
-
-    pub(crate) fn fail_unavailable(&mut self, invocation_id: &str) -> ActionResult {
-        self.in_flight.remove(invocation_id);
-        handler_unavailable_result(invocation_id)
-    }
-
-    pub(crate) fn handle_invoke(&mut self, invoke: &ActionInvoke) -> HandlerDispatchDecision {
-        if let Some(result) = self.completed.get(&invoke.invocation_id).cloned() {
-            return HandlerDispatchDecision::Completed(ActionResult {
-                v: FLEET_WIRE_VERSION,
-                id: None,
-                invocation_id: invoke.invocation_id.clone(),
-                result,
-            });
-        }
-        if self.in_flight.contains_key(&invoke.invocation_id) {
-            return HandlerDispatchDecision::AlreadyInFlight;
-        }
-        if !self.sidecar_connected || !self.handlers.contains(&invoke.action) {
-            return HandlerDispatchDecision::Unavailable(handler_unavailable_result(
-                &invoke.invocation_id,
-            ));
-        }
-
-        self.in_flight.insert(
-            invoke.invocation_id.clone(),
-            InFlightHandler {
-                name: invoke.action.clone(),
-                input: invoke.input.clone(),
-            },
-        );
-        HandlerDispatchDecision::Dispatch {
-            invocation_id: invoke.invocation_id.clone(),
-            name: invoke.action.clone(),
-            input: invoke.input.clone(),
-        }
-    }
-
-    pub(crate) fn complete(&mut self, result: HandlerResult) -> Option<ActionResult> {
-        let invocation_id = result.invocation_id;
-        self.in_flight.remove(&invocation_id)?;
-        let result = match result.result {
-            HandlerResultPayload::Output { output } => {
-                ActionResultPayload::Output(ActionResultOutput { output })
-            }
-            HandlerResultPayload::Error { error } => {
-                ActionResultPayload::Error(ActionResultError { error })
-            }
-        };
-        self.completed.insert(invocation_id.clone(), result.clone());
-        Some(ActionResult {
-            v: FLEET_WIRE_VERSION,
-            id: None,
-            invocation_id,
-            result,
-        })
-    }
-}
-
 pub(crate) fn handler_unavailable_result(invocation_id: &str) -> ActionResult {
     ActionResult {
         v: FLEET_WIRE_VERSION,
@@ -973,6 +859,8 @@ pub(crate) fn build_node_register(
         .map(|capability| FleetCapability {
             name: capability.name.clone(),
             kind: capability.kind.clone(),
+            global: None,
+            queue: None,
             metadata: capability.metadata.as_ref().map(|metadata| {
                 metadata
                     .iter()
@@ -984,6 +872,8 @@ pub(crate) fn build_node_register(
     capabilities.push(FleetCapability {
         name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
         kind: Some("capacity".to_string()),
+        global: None,
+        queue: None,
         metadata: None,
     });
 
@@ -999,6 +889,7 @@ pub(crate) fn build_node_register(
             .and_then(non_empty)
             .unwrap_or(default_node_id)
             .to_string(),
+        provider: None,
         capabilities,
         max_agents: manifest.max_agents.unwrap_or(0),
         tags: manifest.tags.clone().unwrap_or_default(),
@@ -1008,9 +899,16 @@ pub(crate) fn build_node_register(
             .and_then(non_empty)
             .unwrap_or(default_version)
             .to_string(),
+        machine_id: None,
         resume_cursor,
     }
 }
+
+/// The broker's stable provider name. The broker attaches to its node as one
+/// provider among several, registering `spawn:<harness>` / `release` capacity
+/// under this name; each connection uses a fresh `instance_id` so a reconnect
+/// replaces the prior attachment.
+pub(crate) const BROKER_PROVIDER_NAME: &str = "broker";
 
 fn non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();
@@ -1217,6 +1115,53 @@ pub(crate) fn persist_node_token(
     Ok(())
 }
 
+/// Outcome of handling a control command received while the node is not yet
+/// connected to `/v1/node/ws`. `Shutdown` means the command channel closed or a
+/// `Shutdown` command arrived and the caller should return.
+enum DisconnectedCommandOutcome {
+    Handled,
+    Shutdown,
+}
+
+/// Apply a control command received while the node is disconnected, shared by the
+/// three not-yet-connected wait points (pre-registration, mint backoff, and the
+/// no-minter idle wait) so a new `FleetControlCommand` variant or state update
+/// stays consistent across them. `register_agent_error` is the reason replied to
+/// a `RegisterAgent` that can't be served yet: `node_not_registered` before the
+/// node is registered, `node_token_missing` once registered but tokenless.
+fn handle_disconnected_command(
+    command: Option<FleetControlCommand>,
+    config: &FleetControlConfig,
+    registration: &mut Option<NodeRegister>,
+    load: &mut FleetLoadSnapshot,
+    inventory: &mut Vec<InventoryAgent>,
+    register_agent_error: &str,
+) -> DisconnectedCommandOutcome {
+    match command {
+        Some(FleetControlCommand::RegisterNode {
+            manifest,
+            resume_cursor,
+        }) => {
+            load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+            *registration = Some(build_node_register(
+                &manifest,
+                &config.node_id,
+                &config.node_name,
+                &config.broker_version,
+                resume_cursor,
+            ));
+        }
+        Some(FleetControlCommand::UpdateLoad(next)) => *load = next,
+        Some(FleetControlCommand::UpdateInventory(next)) => *inventory = next,
+        Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
+            let _ = reply.send(Err(register_agent_error.to_string()));
+        }
+        Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+        Some(FleetControlCommand::Shutdown) | None => return DisconnectedCommandOutcome::Shutdown,
+    }
+    DisconnectedCommandOutcome::Handled
+}
+
 pub(crate) async fn run_node_control_client(
     mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
@@ -1236,31 +1181,18 @@ pub(crate) async fn run_node_control_client(
 
     loop {
         while registration.is_none() {
-            match command_rx.recv().await {
-                Some(FleetControlCommand::RegisterNode {
-                    manifest,
-                    resume_cursor,
-                }) => {
-                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                    registration = Some(build_node_register(
-                        &manifest,
-                        &config.node_id,
-                        &config.node_name,
-                        &config.broker_version,
-                        resume_cursor,
-                    ));
-                }
-                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                Some(FleetControlCommand::Shutdown) | None => return,
-                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                    let _ = reply.send(Err("node_not_registered".to_string()));
-                }
-                Some(FleetControlCommand::DeregisterNode) => {
-                    inventory.clear();
-                    load.handlers_live = false;
-                }
-                Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+            if matches!(
+                handle_disconnected_command(
+                    command_rx.recv().await,
+                    &config,
+                    &mut registration,
+                    &mut load,
+                    &mut inventory,
+                    "node_not_registered",
+                ),
+                DisconnectedCommandOutcome::Shutdown
+            ) {
+                return;
             }
         }
 
@@ -1271,34 +1203,81 @@ pub(crate) async fn run_node_control_client(
             .unwrap_or("")
             .is_empty()
         {
-            match command_rx.recv().await {
-                Some(FleetControlCommand::RegisterNode {
-                    manifest,
-                    resume_cursor,
-                }) => {
-                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                    registration = Some(build_node_register(
-                        &manifest,
-                        &config.node_id,
-                        &config.node_name,
-                        &config.broker_version,
-                        resume_cursor,
-                    ));
+            // No pre-supplied or cached token. Broker startup deliberately skips
+            // the network mint (it must not gate `/api/session` readiness), so the
+            // initial mint happens here, in the background. On success, publish the
+            // token to the shared HTTP session so `/api/session` starts reporting
+            // it, then fall through to connect. On failure, back off and retry
+            // rather than idling forever — realtime delivery self-heals once the
+            // engine is reachable.
+            if let Some(minter) = config.token_minter.as_ref() {
+                if let Some(fresh) = minter.mint().await {
+                    config.node_token = Some(fresh);
+                    if let Some(shared) = &config.session_token {
+                        if let Ok(mut guard) = shared.write() {
+                            guard.clone_from(&config.node_token);
+                        }
+                    }
+                    // A successful mint proves the engine is reachable, so reset
+                    // the backoff any earlier mint failures grew — the first
+                    // `/v1/node/ws` connect should start from the minimum delay,
+                    // not inherit a bloated one.
+                    reconnect_delay = INITIAL_RECONNECT_DELAY;
+                } else {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %config.node_id,
+                        "node token mint failed; retrying after backoff (realtime delivery pending)"
+                    );
+                    // Stay responsive during the backoff instead of a blind
+                    // sleep: a spawn's `RegisterAgent` must get an immediate
+                    // `node_token_missing` (so the caller falls back to HTTP
+                    // register) rather than blocking on the 30s register timeout,
+                    // and load/inventory updates must keep draining so the bounded
+                    // control channel can't fill during a Relaycast outage.
+                    let backoff = tokio::time::sleep(reconnect_delay);
+                    tokio::pin!(backoff);
+                    loop {
+                        tokio::select! {
+                            _ = &mut backoff => break,
+                            command = command_rx.recv() => {
+                                if matches!(
+                                    handle_disconnected_command(
+                                        command,
+                                        &config,
+                                        &mut registration,
+                                        &mut load,
+                                        &mut inventory,
+                                        "node_token_missing",
+                                    ),
+                                    DisconnectedCommandOutcome::Shutdown
+                                ) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                    continue;
                 }
-                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                Some(FleetControlCommand::Shutdown) | None => return,
-                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                    let _ = reply.send(Err("node_token_missing".to_string()));
+            } else {
+                // No minter available (e.g. no workspace RelayCast client). Can't
+                // self-recover; wait for a token to arrive via command.
+                if matches!(
+                    handle_disconnected_command(
+                        command_rx.recv().await,
+                        &config,
+                        &mut registration,
+                        &mut load,
+                        &mut inventory,
+                        "node_token_missing",
+                    ),
+                    DisconnectedCommandOutcome::Shutdown
+                ) {
+                    return;
                 }
-                Some(FleetControlCommand::DeregisterNode) => {
-                    registration = None;
-                    inventory.clear();
-                    load.handlers_live = false;
-                }
-                Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+                continue;
             }
-            continue;
         }
 
         let result = run_connected_once(
@@ -1312,11 +1291,6 @@ pub(crate) async fn run_node_control_client(
         .await;
         if matches!(result, ControlRunResult::Shutdown) {
             return;
-        }
-        if matches!(result, ControlRunResult::Deregistered) {
-            reconnect_delay = INITIAL_RECONNECT_DELAY;
-            consecutive_unauthorized = 0;
-            continue;
         }
         if matches!(result, ControlRunResult::Disconnected) {
             // A real connection was established and then dropped, so the current
@@ -1343,6 +1317,13 @@ pub(crate) async fn run_node_control_client(
                         // above), so repeated 401s still accumulate toward the cap
                         // even when each mint succeeds.
                         config.node_token = Some(fresh);
+                        // Mirror the fresh token to the HTTP session so a provider
+                        // reading it after this re-mint gets the valid token.
+                        if let Some(shared) = &config.session_token {
+                            if let Ok(mut guard) = shared.write() {
+                                guard.clone_from(&config.node_token);
+                            }
+                        }
                     }
                 } else {
                     tracing::error!(
@@ -1375,7 +1356,6 @@ enum ControlRunResult {
     /// i.e. the current node token is stale or scoped to a different
     /// workspace/engine and must be re-minted before retrying.
     Unauthorized,
-    Deregistered,
     Shutdown,
 }
 
@@ -1404,6 +1384,17 @@ async fn run_connected_once(
     let Some(node_token) = config.node_token.as_deref() else {
         return ControlRunResult::Disconnected;
     };
+
+    // A fresh provider instance per connection: reconnecting with a new
+    // instance_id replaces the previous attachment (the engine's
+    // reconnect-vs-duplicate arbitration). The broker attaches as the "broker"
+    // provider, distinct from any capability providers on the same node.
+    let provider = FleetProviderIdentity {
+        name: BROKER_PROVIDER_NAME.to_string(),
+        instance_id: format!("broker_{}", Uuid::new_v4().simple()),
+    };
+    node_register.provider = Some(provider.clone());
+    *registration = Some(node_register.clone());
 
     let mut request = match config.ws_url.as_str().into_client_request() {
         Ok(request) => request,
@@ -1479,7 +1470,8 @@ async fn run_connected_once(
                 match command {
                     Some(FleetControlCommand::RegisterNode { manifest, resume_cursor }) => {
                         load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                        let next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
+                        let mut next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
+                        next.provider = Some(provider.clone());
                         node_register = next.clone();
                         *registration = Some(next.clone());
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(next)).await.is_err() {
@@ -1513,24 +1505,6 @@ async fn run_connected_once(
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
                             return ControlRunResult::Disconnected;
                         }
-                    }
-                    Some(FleetControlCommand::DeregisterNode) => {
-                        let _ = send_wire(
-                            &mut sink,
-                            &BrokerToRelaycast::NodeDeregister(NodeDeregister {
-                                v: FLEET_WIRE_VERSION,
-                                id: None,
-                            }),
-                        )
-                        .await;
-                        *registration = None;
-                        inventory.clear();
-                        load.handlers_live = false;
-                        drain_agent_registrations(
-                            &mut pending_agent_registrations,
-                            "node_deregistered",
-                        );
-                        return ControlRunResult::Deregistered;
                     }
                     Some(FleetControlCommand::Send(message)) => {
                         if send_wire(&mut sink, &message).await.is_err() {
@@ -1606,6 +1580,17 @@ where
                 complete_agent_registration(reply, pending_agent_registrations, sink).await
             }
             Ok(RelaycastToBroker::Error(error)) => {
+                // Surface every engine rejection at error level. A node.register or
+                // heartbeat rejection (e.g. node_name_conflict) matches no pending
+                // agent registration below, so without this it vanishes silently —
+                // leaving the node half-registered with dead heartbeats and no signal.
+                tracing::error!(
+                    target = "relay_broker::fleet",
+                    code = %error.code,
+                    message = %error.message,
+                    id = %error.id,
+                    "engine rejected a node control frame"
+                );
                 fail_agent_registration(
                     &error.id,
                     format!("{}: {}", error.code, error.message),
@@ -1784,13 +1769,13 @@ mod tests {
     };
 
     use httpmock::{Method::POST, MockServer};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
 
     use super::*;
-    use crate::fleet_wire::DeliveryMode;
+    use crate::fleet_wire::{ActionInvoke, ActionResultOutput, DeliveryMode};
 
     fn seed_authoritative_cursor(
         book: &mut FleetDeliveryBook,
@@ -2599,190 +2584,6 @@ mod tests {
             "the pending registration must remain in flight"
         );
     }
-
-    #[test]
-    fn handler_dispatch_requires_live_registered_handler() {
-        let mut state = HandlerDispatchState::default();
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({"suite": "unit"}),
-            agent_id: None,
-            agent_name: None,
-        };
-
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Unavailable(_)
-        ));
-
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch {
-                invocation_id: "inv-1".to_string(),
-                name: "run:test".to_string(),
-                input: json!({"suite": "unit"}),
-            }
-        );
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::AlreadyInFlight
-        );
-    }
-
-    #[test]
-    fn has_handler_gates_spawn_dispatch_on_sidecar_registration() {
-        // `has_handler` is the predicate that decides whether a `spawn:<harness>`
-        // node action is dispatched to the sidecar (which owns the declared
-        // harness) instead of being run directly with the raw `cli` from the
-        // action input. It is true only when the sidecar is connected AND
-        // registered a handler for that exact capability name.
-        let mut state = HandlerDispatchState::default();
-        // No sidecar connected: a spawn:* action has no declared harness, so the
-        // broker must take the direct raw-`cli` path.
-        assert!(!state.has_handler("spawn:claude"));
-
-        state.connect_sidecar();
-        state.register_handlers(vec!["spawn:claude".to_string(), "echo".to_string()]);
-        // The sidecar declared `spawn:claude` → dispatch to it so its
-        // `spawn(<harness>)` handler resolves the DECLARED harness.
-        assert!(state.has_handler("spawn:claude"));
-        // A capability the sidecar did not register stays on the direct path.
-        assert!(!state.has_handler("spawn:codex"));
-
-        // A dropped sidecar clears handlers, so spawn falls back to direct.
-        state.disconnect_sidecar();
-        assert!(!state.has_handler("spawn:claude"));
-    }
-
-    #[test]
-    fn handler_unavailable_failure_clears_inflight_invocation() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({"suite": "unit"}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        assert_eq!(
-            state.fail_unavailable("inv-1"),
-            handler_unavailable_result("inv-1")
-        );
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch {
-                invocation_id: "inv-1".to_string(),
-                name: "run:test".to_string(),
-                input: json!({"suite": "unit"}),
-            }
-        );
-    }
-
-    #[test]
-    fn handler_result_completes_once_and_duplicate_invoke_replays_result() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        let completed = state
-            .complete(HandlerResult {
-                invocation_id: "inv-1".to_string(),
-                result: HandlerResultPayload::Output {
-                    output: json!({"ok": true}),
-                },
-            })
-            .expect("in-flight result should complete");
-        assert_eq!(completed.invocation_id, "inv-1");
-
-        assert_eq!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Completed(completed)
-        );
-    }
-
-    #[test]
-    fn handler_error_maps_verbatim_to_action_error() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-err".to_string(),
-            action: "run:test".to_string(),
-            input: json!({}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        let completed = state
-            .complete(HandlerResult {
-                invocation_id: "inv-err".to_string(),
-                result: HandlerResultPayload::Error {
-                    error: "sidecar_failed".to_string(),
-                },
-            })
-            .expect("in-flight result should complete");
-        assert_eq!(
-            completed.result,
-            ActionResultPayload::Error(ActionResultError {
-                error: "sidecar_failed".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn sidecar_disconnect_drains_inflight_as_unavailable() {
-        let mut state = HandlerDispatchState::default();
-        state.connect_sidecar();
-        state.register_handlers(vec!["run:test".to_string()]);
-        let invoke = ActionInvoke {
-            v: FLEET_WIRE_VERSION,
-            invocation_id: "inv-1".to_string(),
-            action: "run:test".to_string(),
-            input: json!({}),
-            agent_id: None,
-            agent_name: None,
-        };
-        assert!(matches!(
-            state.handle_invoke(&invoke),
-            HandlerDispatchDecision::Dispatch { .. }
-        ));
-
-        state.disconnect_sidecar();
-        let drained = state.drain_in_flight_unavailable();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0], handler_unavailable_result("inv-1"));
-        assert!(!state.handlers_live());
-    }
-
     #[test]
     fn build_node_register_prefers_manifest_identity() {
         let manifest = NodeManifest {
@@ -2818,6 +2619,8 @@ mod tests {
             Some(&FleetCapability {
                 name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
                 kind: Some("capacity".to_string()),
+                global: None,
+                queue: None,
                 metadata: None,
             })
         );
@@ -2838,6 +2641,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,
@@ -2949,6 +2753,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,
@@ -3060,6 +2865,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn node_control_client_mints_initial_token_when_none_supplied() {
+        // Broker startup no longer mints the node token on the API-readiness
+        // path; the client mints it in the background. Started with no token but
+        // a minter, it must mint via create_node, publish the token to the shared
+        // HTTP session handle, and connect.
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST).path("/v1/nodes");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "node-test",
+                    "name": "host-test",
+                    "kind": "ws",
+                    "role": "broker",
+                    "version": "broker/test",
+                    "status": "online",
+                    "live": true,
+                    "handlers_live": true,
+                    "load": 0.0,
+                    "active_agents": 0,
+                    "max_agents": 0,
+                    "created_at": "2026-06-30T00:00:00Z",
+                    "token": "nt_minted_by_client"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(None));
+
+        tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: None,
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: None,
+                }),
+                session_token: Some(session_token.clone()),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+        });
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        // Bounded: if the mint or connect path regresses, the client retries
+        // without ever emitting `Connected`, so an unbounded recv would hang the
+        // whole suite. Fail with an assertion instead.
+        let connected = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("node-control client should emit Connected within 5s")
+            .unwrap();
+        assert_eq!(connected, FleetControlEvent::Connected);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+
+        create_node.assert_hits(1);
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_minted_by_client"),
+            "the background mint must publish the token to the shared HTTP session"
+        );
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    #[tokio::test]
     async fn node_control_agent_register_timeout_late_success_deregisters() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
@@ -3076,6 +2977,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,
@@ -3167,66 +3069,6 @@ mod tests {
             .unwrap();
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
-
-    #[tokio::test]
-    async fn node_control_deregister_sends_node_deregister() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
-        let (command_tx, command_rx) = mpsc::channel(32);
-        let (event_tx, mut event_rx) = mpsc::channel(32);
-
-        tokio::spawn(run_node_control_client(
-            FleetControlConfig {
-                ws_url,
-                node_token: Some("nt_test".to_string()),
-                node_id: "node-test".to_string(),
-                node_name: "host-test".to_string(),
-                broker_version: "broker/test".to_string(),
-                token_minter: None,
-            },
-            command_rx,
-            event_tx,
-        ));
-
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = accept_async(stream).await.unwrap();
-            assert!(matches!(
-                next_node_to_server(&mut ws).await,
-                BrokerToRelaycast::NodeRegister(_)
-            ));
-            assert!(matches!(
-                next_node_to_server(&mut ws).await,
-                BrokerToRelaycast::NodeHeartbeat(_)
-            ));
-            assert_eq!(
-                next_non_heartbeat_node_to_server(&mut ws).await,
-                BrokerToRelaycast::NodeDeregister(NodeDeregister {
-                    v: FLEET_WIRE_VERSION,
-                    id: None
-                })
-            );
-        });
-
-        command_tx
-            .send(FleetControlCommand::RegisterNode {
-                manifest: test_manifest(),
-                resume_cursor: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
-        command_tx
-            .send(FleetControlCommand::DeregisterNode)
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), server)
-            .await
-            .unwrap()
-            .unwrap();
-        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
-    }
-
     #[tokio::test]
     async fn node_control_reconnect_sends_inventory_sync() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3242,6 +3084,7 @@ mod tests {
                 node_name: "host-test".to_string(),
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
+                session_token: None,
             },
             command_rx,
             event_tx,

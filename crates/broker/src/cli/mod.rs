@@ -371,6 +371,31 @@ mod tests {
     }
 
     #[test]
+    fn node_name_uses_resolved_instance_name_then_hostname_fallback() {
+        let _guard = broker_name_env_guard();
+
+        // Mirrors run_init's node-name derivation: the node registers under its
+        // resolved instance name, falling back to a non-empty hostname.
+        fn node_name(cmd: &InitCommand) -> String {
+            let resolved = cmd.resolved_instance_name(None);
+            crate::node_control::default_node_name(
+                (!resolved.trim().is_empty()).then_some(resolved.as_str()),
+            )
+        }
+
+        // --instance-name wins.
+        assert_eq!(node_name(&init_command("legacy", Some("node-a"))), "node-a");
+        // Legacy --name / --broker-name when no --instance-name.
+        assert_eq!(node_name(&init_command("node-b", None)), "node-b");
+        // AGENT_RELAY_BROKER_NAME when neither flag is set.
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-node");
+        assert_eq!(node_name(&init_command("", None)), "env-node");
+        std::env::remove_var("AGENT_RELAY_BROKER_NAME");
+        // Nothing set → non-empty hostname fallback (never an empty node name).
+        assert!(!node_name(&init_command("", None)).is_empty());
+    }
+
+    #[test]
     fn blank_instance_name_falls_through_to_legacy_name() {
         let _guard = broker_name_env_guard();
         std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
