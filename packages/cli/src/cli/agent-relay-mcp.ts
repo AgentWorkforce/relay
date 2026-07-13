@@ -11,11 +11,15 @@ import {
   SubscribeRequestSchema,
   UnsubscribeRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { RelayCast, SDK_VERSION, WsClient } from '@relaycast/sdk';
-import { AgentRelay } from '@agent-relay/sdk';
+import {
+  AgentRelay,
+  RELAYCAST_SDK_VERSION,
+  createAgentClient,
+  createRealtimeClient,
+  createWorkspaceClient,
+} from '@agent-relay/sdk';
 import { z } from 'zod';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
-import { withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
 import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinitions } from './mcp/resources.js';
 import { jsonContent, jsonResult, textContent } from './mcp/tool-results.js';
 import {
@@ -40,7 +44,8 @@ import type {
 } from './mcp/types.js';
 export type { AgentRelayMcpServerOptions } from './mcp/types.js';
 
-export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
+export const AGENT_RELAY_MCP_VERSION =
+  process.env.AGENT_RELAY_CLI_VERSION ?? RELAYCAST_SDK_VERSION ?? 'unknown';
 let mcpTelemetryExitHookInstalled = false;
 
 const EXIT_AFTER_TASK_INSTRUCTION =
@@ -108,8 +113,9 @@ function resolveEnv(key: string): string | undefined {
 /**
  * Normalize a base URL by stripping trailing slashes. Returns `undefined` when
  * no base URL is provided — this helper never injects a default. The hosted
- * base-URL default is owned by `@relaycast/sdk` (`RelayCast`/`WsClient`/
- * `AgentRelay` apply it when `options.baseUrl` is omitted).
+ * base-URL default is owned by the underlying Relaycast engine clients (the
+ * `@agent-relay/sdk` thin clients and `AgentRelay` apply it when
+ * `options.baseUrl` is omitted).
  *
  * @deprecated No longer used internally; retained only to keep the public
  * `agent-relay/mcp` export surface stable for downstream importers.
@@ -369,7 +375,7 @@ export async function registerAgentWithRebind({
 
 function registerAgentRelayTools(
   server: McpServer,
-  getRelay: () => RelayCast,
+  getRelay: () => RelayCastLike,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
   getSession: () => SessionState,
   setSession: SessionSetter,
@@ -599,10 +605,7 @@ function registerAgentRelayTools(
       jsonContent(
         await getRelay().agents.spawn({
           name,
-          // The broker/gateway support grok and opencode at runtime, but the
-          // @relaycast/sdk SpawnAgentRequest type narrows cli to the core five.
-          // Cast to keep grok/opencode selectable from the MCP tool enum.
-          cli: cli as 'claude' | 'codex' | 'gemini' | 'aider' | 'goose',
+          cli,
           task:
             exit_after_task ||
             spawn_mode === 'task_exit' ||
@@ -704,7 +707,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
   );
 
   const getSession = (): SessionState => session;
-  const getRelay = (): RelayCast => {
+  const getRelay = (): RelayCastLike => {
     const workspaceKey = session.workspaceKey;
     if (!workspaceKey) {
       throw new Error(
@@ -712,12 +715,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
       );
     }
 
-    return new RelayCast(
-      withRelaycastTelemetry({
-        apiKey: workspaceKey,
-        baseUrl: options.baseUrl,
-      })
-    );
+    return createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
   };
 
   const notifySubscribers = () => {
@@ -746,8 +744,8 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     if (session.agentToken && !session.wsBridge && !session.wsInitAttempted) {
       try {
         const subscriptions = new SubscriptionManager();
-        const wsClient = new WsClient({
-          token: session.agentToken,
+        const wsClient = createRealtimeClient({
+          agentToken: session.agentToken,
           baseUrl: options.baseUrl,
         });
         const wsBridge = new RealtimeResourceBridge(wsClient, subscriptions, (uri) => {
@@ -807,12 +805,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
 
   const getAgentClient = (asIdentity?: string): AgentClientLike => {
     const agentToken = resolveAgentToken(asIdentity);
-    return new RelayCast(
-      withRelaycastTelemetry({
-        apiKey: agentToken,
-        baseUrl: options.baseUrl,
-      })
-    ).as(agentToken, { autoHeartbeatMs: false });
+    return createAgentClient({ agentToken, baseUrl: options.baseUrl });
   };
 
   enableInboxPiggyback(
@@ -920,12 +913,7 @@ export async function resolveStdioBootstrapOptions(
     return options;
   }
 
-  const relay = new RelayCast(
-    withRelaycastTelemetry({
-      apiKey: workspaceKey,
-      baseUrl: options.baseUrl,
-    })
-  );
+  const relay = createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
 
   const registered = await relay.agents.registerOrRotate({
     name: options.agentName,

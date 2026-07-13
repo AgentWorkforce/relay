@@ -141,6 +141,7 @@ impl BrokerRuntime {
                     let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                     match super::fleet::register_node_agent_token(
                         fleet_control_tx,
+                        fleet_delivery_book,
                         name.as_str(),
                         None,
                         session_ref,
