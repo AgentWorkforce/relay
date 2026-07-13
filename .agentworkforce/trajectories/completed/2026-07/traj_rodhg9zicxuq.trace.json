@@ -1,0 +1,363 @@
+{
+  "version": "1.0.0",
+  "id": "2924bf23-798d-455f-a751-35d4f7663171",
+  "timestamp": "2026-07-13T20:51:40.225Z",
+  "trajectory": "traj_rodhg9zicxuq",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_rodhg9zicxuq/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 50,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 19,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Package.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            },
+            {
+              "start_line": 10,
+              "end_line": 44,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Package.resolved",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 14,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Package.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 18,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            },
+            {
+              "start_line": 20,
+              "end_line": 51,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 13,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            },
+            {
+              "start_line": 22,
+              "end_line": 216,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/AgentRelayClient.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1038,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelayFacadeTypes.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 376,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelayFacades.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 721,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelayListeners.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 172,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelayObserver.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 325,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelayObserverTypes.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 143,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelayRestClient.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 518,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelayTypes.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 436,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelaycastBridge.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 96,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelaySDK/RelaycastTranslate.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 317,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Tests/AgentRelaySDKTests/AgentRelaySDKTests.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 173,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Tests/AgentRelaySDKTests/RelayFacadeTests.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 315,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Tests/AgentRelaySDKTests/RelayObserverTests.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 526,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Tests/AgentRelaySDKTests/RelayRestTests.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 624,
+              "revision": "6535b191b51e1ca7d573f98aacec109f0227a37f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

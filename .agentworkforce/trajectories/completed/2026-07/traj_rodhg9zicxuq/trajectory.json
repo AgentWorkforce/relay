@@ -1,0 +1,82 @@
+{
+  "id": "traj_rodhg9zicxuq",
+  "version": 1,
+  "task": {
+    "title": "Rebuild AgentRelaySDK Swift facade over Relaycast",
+    "source": {
+      "system": "plain",
+      "id": "restore-and-rebuild-sdk-swift"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-07-13T20:32:58.465Z",
+  "completedAt": "2026-07-13T20:51:40.185Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-13T20:35:34.624Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lqw48x97le94",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-13T20:35:34.624Z",
+      "endedAt": "2026-07-13T20:51:40.185Z",
+      "events": [
+        {
+          "ts": 1783974934626,
+          "type": "decision",
+          "content": "Target Relaycast v6.0.5 and build a translating facade layer: Target Relaycast v6.0.5 and build a translating facade layer",
+          "raw": {
+            "question": "Target Relaycast v6.0.5 and build a translating facade layer",
+            "chosen": "Target Relaycast v6.0.5 and build a translating facade layer",
+            "alternatives": [],
+            "reasoning": "v6.0.5 natively exposes threads/inbox/deliveries/channels/agents/nodes/triggers/webhooks/workspace; restored 5.x-era code is API-compatible with 6.0.5. Facade translates Relaycast.* into relay-owned types, mirroring the TS SDK's relaycast-translate/relaycast-client boundary."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reverted the AgentRelaySDK retirement, then rebuilt it as a rich translating facade over relaycast v6.0.5: threads, inbox, deliveries, channels, agents, nodes, triggers, integrations, files, workspace admin, attachments, and a typed listener hub. Added translation + listener unit tests, README, and a Minor CHANGELOG entry. Swift toolchain unavailable so verified by close reading against the cloned v6.0.5 API.",
+    "approach": "Standard approach",
+    "confidence": 0.72
+  },
+  "commits": [
+    "6535b19",
+    "f3da164"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_rodhg9zicxuq/trajectory.json",
+    "CHANGELOG.md",
+    "Package.swift",
+    "packages/sdk-swift/Package.resolved",
+    "packages/sdk-swift/Package.swift",
+    "packages/sdk-swift/README.md",
+    "packages/sdk-swift/Sources/AgentRelaySDK/AgentRelayClient.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelayFacadeTypes.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelayFacades.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelayListeners.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelayObserver.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelayObserverTypes.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelayRestClient.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelayTypes.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelaycastBridge.swift",
+    "packages/sdk-swift/Sources/AgentRelaySDK/RelaycastTranslate.swift",
+    "packages/sdk-swift/Tests/AgentRelaySDKTests/AgentRelaySDKTests.swift",
+    "packages/sdk-swift/Tests/AgentRelaySDKTests/RelayFacadeTests.swift",
+    "packages/sdk-swift/Tests/AgentRelaySDKTests/RelayObserverTests.swift",
+    "packages/sdk-swift/Tests/AgentRelaySDKTests/RelayRestTests.swift"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6b29127895e5332718da1af23b4e3cfc805b83a2",
+    "endRef": "6535b191b51e1ca7d573f98aacec109f0227a37f",
+    "traceId": "2924bf23-798d-455f-a751-35d4f7663171"
+  }
+}
