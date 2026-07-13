@@ -19,15 +19,17 @@ Reverted the AgentRelaySDK retirement, then rebuilt it as a rich translating fac
 ## Key Decisions
 
 ### Target Relaycast v6.0.5 and build a translating facade layer
+
 - **Chose:** Target Relaycast v6.0.5 and build a translating facade layer
-- **Reasoning:** v6.0.5 natively exposes threads/inbox/deliveries/channels/agents/nodes/triggers/webhooks/workspace; restored 5.x-era code is API-compatible with 6.0.5. Facade translates Relaycast.* into relay-owned types, mirroring the TS SDK's relaycast-translate/relaycast-client boundary.
+- **Reasoning:** v6.0.5 natively exposes threads/inbox/deliveries/channels/agents/nodes/triggers/webhooks/workspace; restored 5.x-era code is API-compatible with 6.0.5. Facade translates Relaycast.\* into relay-owned types, mirroring the TS SDK's relaycast-translate/relaycast-client boundary.
 
 ---
 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Target Relaycast v6.0.5 and build a translating facade layer: Target Relaycast v6.0.5 and build a translating facade layer
 
