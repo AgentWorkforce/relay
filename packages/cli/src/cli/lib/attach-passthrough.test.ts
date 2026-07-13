@@ -246,9 +246,20 @@ function createHarness(opts: FetchScript = {}): {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const body = init?.body ? (JSON.parse(String(init.body)) as { mode: string }) : { mode: '' };
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as { mode: string; expected_mode?: string })
+        : { mode: '' };
+      // Compare-and-set: when `expected_mode` is present and no longer matches
+      // the current mode, no-op and report `matched:false` with the unchanged
+      // current mode (mirrors the real broker).
+      if (body.expected_mode !== undefined && body.expected_mode !== currentMode) {
+        return new Response(JSON.stringify({ mode: currentMode, flushed: 0, matched: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       if (body.mode === 'manual_flush' || body.mode === 'auto_inject') currentMode = body.mode;
-      return new Response(JSON.stringify({ mode: body.mode, flushed: 0 }), {
+      return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -486,7 +497,12 @@ describe('runPassthroughSession', () => {
     // After detach, the restore PUT to the prior mode should
     // have fired, and raw mode should be off.
     const afterDetach = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    expect(afterDetach.map((c) => c.body)).toEqual([{ mode: 'auto_inject' }, { mode: 'auto_inject' }]);
+    // Attach flip (unconditional), then a compare-and-set restore guarded by
+    // `expected_mode` so a concurrent change is never clobbered.
+    expect(afterDetach.map((c) => c.body)).toEqual([
+      { mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject' },
+    ]);
     expect(stdin.rawModeCalls).toEqual([true, false]);
   });
 
@@ -501,7 +517,10 @@ describe('runPassthroughSession', () => {
     const flipBodies = fetchLog
       .filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'))
       .map((c) => c.body);
-    expect(flipBodies).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush' }]);
+    expect(flipBodies).toEqual([
+      { mode: 'auto_inject' },
+      { mode: 'manual_flush', expected_mode: 'auto_inject' },
+    ]);
   });
 
   it('aborts before opening the WS when the broker rejects the mode flip', async () => {
@@ -529,9 +548,12 @@ describe('runPassthroughSession', () => {
     expect(code).toBe(1);
     expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no agent named/);
-    // Best-effort restore PUT.
+    // Best-effort compare-and-set restore PUT (guarded by `expected_mode`).
     const flips = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    expect(flips.map((c) => c.body)).toEqual([{ mode: 'auto_inject' }, { mode: 'auto_inject' }]);
+    expect(flips.map((c) => c.body)).toEqual([
+      { mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject' },
+    ]);
   });
 
   it('continues with a warning when the snapshot is transiently unavailable', async () => {
@@ -602,7 +624,7 @@ describe('runPassthroughSession', () => {
     const flips = fetchLog
       .filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'))
       .map((c) => c.body);
-    expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush' }]);
+    expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush', expected_mode: 'auto_inject' }]);
   });
 
   it('treats WebSocket errors as fatal and restores delivery mode', async () => {
@@ -618,7 +640,7 @@ describe('runPassthroughSession', () => {
     const flips = fetchLog
       .filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'))
       .map((c) => c.body);
-    expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush' }]);
+    expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush', expected_mode: 'auto_inject' }]);
   });
 
   it('exits cleanly on SIGINT', async () => {
@@ -800,18 +822,33 @@ describe('runPassthroughSession', () => {
 
   // ---- detach does not clobber another session's mode change (item 6) ----
 
-  it('does not restore the delivery mode if another session changed it before detach', async () => {
-    // Session flips to auto_inject (prev manual_flush). The worker reports
-    // manual_flush on detach (someone re-applied a hold), which is not what
-    // this session set, so no restore PUT should fire.
+  it('restores via compare-and-set so a concurrent mode change is not clobbered on detach', async () => {
+    // Session flips to auto_inject (prev manual_flush). Another session changes
+    // the mode before detach, so the broker's compare-and-set (guarded by
+    // `expected_mode: auto_inject`) misses and the restore is a broker-side
+    // no-op — the concurrent change is preserved. The client no longer does a
+    // read-then-set (which had a TOCTOU); it always sends the guarded PUT.
     const { deps, sockets, stdin, fetchLog } = createHarness({
       initialMode: 'manual_flush',
       routes: {
-        'GET /delivery-mode': async () =>
-          new Response(JSON.stringify({ mode: 'manual_flush' }), {
+        'PUT /delivery-mode': async (init) => {
+          const body = JSON.parse(String(init?.body ?? '{}')) as {
+            mode: string;
+            expected_mode?: string;
+          };
+          // The restore carries `expected_mode`; model a broker whose current
+          // mode was changed by another session, so the compare-and-set misses.
+          if (body.expected_mode !== undefined) {
+            return new Response(JSON.stringify({ mode: 'manual_flush', flushed: 0, matched: false }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
-          }),
+          });
+        },
       },
     });
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
@@ -821,6 +858,11 @@ describe('runPassthroughSession', () => {
     await sessionPromise;
 
     const putCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    expect(putCalls.map((c) => c.body)).toEqual([{ mode: 'auto_inject' }]);
+    // Attach flip (unconditional), then a compare-and-set restore guarded by
+    // `expected_mode`. The restore no-ops broker-side rather than clobbering.
+    expect(putCalls.map((c) => c.body)).toEqual([
+      { mode: 'auto_inject' },
+      { mode: 'manual_flush', expected_mode: 'auto_inject' },
+    ]);
   });
 });

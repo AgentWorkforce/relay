@@ -128,6 +128,24 @@ export interface SessionInfo {
 export interface SetInboundDeliveryModeResult {
   mode: InboundDeliveryMode;
   flushed: number;
+  /**
+   * `true` when the set was applied. `false` only when an `expectedMode`
+   * compare-and-set guard did not match the worker's current mode, in which
+   * case `mode` reports the current (unchanged) mode and no set happened.
+   * Defaults to `true` against brokers that predate the field.
+   */
+  matched: boolean;
+}
+
+/** Options for {@link HarnessDriverClient.setInboundDeliveryMode}. */
+export interface SetInboundDeliveryModeOptions {
+  /**
+   * Compare-and-set guard: apply the new mode only if the worker's current
+   * mode still equals this value. Used by the CLI detach-restore path to avoid
+   * clobbering a concurrent mode change (a read-then-set TOCTOU). Omit for an
+   * unconditional set.
+   */
+  expectedMode?: InboundDeliveryMode;
 }
 
 export interface WorkerStreamSubscriptionOptions {
@@ -667,15 +685,21 @@ export class HarnessDriverClient {
 
   async setInboundDeliveryMode(
     name: string,
-    mode: InboundDeliveryMode
+    mode: InboundDeliveryMode,
+    options?: SetInboundDeliveryModeOptions
   ): Promise<SetInboundDeliveryModeResult> {
-    const result = await this.transport.request<{ mode?: unknown; flushed?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ mode }),
-      }
-    );
+    const body: { mode: InboundDeliveryMode; expected_mode?: InboundDeliveryMode } = { mode };
+    if (options?.expectedMode !== undefined) {
+      body.expected_mode = options.expectedMode;
+    }
+    const result = await this.transport.request<{
+      mode?: unknown;
+      flushed?: unknown;
+      matched?: unknown;
+    }>(`/api/spawned/${encodeURIComponent(name)}/delivery-mode`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
       throw new HarnessDriverProtocolError({
         code: 'invalid_response',
@@ -685,6 +709,9 @@ export class HarnessDriverClient {
     return {
       mode: result.mode,
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      // Brokers that predate compare-and-set omit `matched`; a set with no
+      // guard is always applied, so default to `true`.
+      matched: typeof result.matched === 'boolean' ? result.matched : true,
     };
   }
 

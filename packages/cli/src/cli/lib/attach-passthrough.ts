@@ -99,6 +99,13 @@ export interface PassthroughDependencies {
   env: NodeJS.ProcessEnv;
   createWebSocket: PassthroughWebSocketFactory;
   writeChunk: (chunk: string) => void;
+  /**
+   * Tear down the backpressure-aware writer on detach: drop its pending queue
+   * and unhook its `'drain'` listener so nothing flushes to stdout after the
+   * session settles. Defaults to the writer created in {@link withDefaults};
+   * tests that inject their own `writeChunk` can omit it (no-op).
+   */
+  disposeWriter?: () => void;
   onSignal: PassthroughSignalRegistrar;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -128,12 +135,14 @@ export interface PassthroughDependencies {
 
 function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
   const fetchFn: typeof globalThis.fetch = overrides.fetch ?? ((input, init) => fetch(input, init));
+  const writer = createBackpressureAwareWriter(process.stdout);
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as PassthroughWebSocket,
-    writeChunk: createBackpressureAwareWriter(process.stdout),
+    writeChunk: writer.write,
+    disposeWriter: writer.dispose,
     statusRepaintCoalesceMs: 40,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
@@ -363,7 +372,11 @@ export async function runPassthroughSession(
     // model with them — its cursor must match the real screen before we
     // optimistically echo, or predicted glyphs land at the wrong position.
     let snapshotBytes = '';
+    // Guard the snapshot paint on `settled`: a Ctrl+C during the snapshot HTTP
+    // fetch would otherwise paint the snapshot after teardown began (the render
+    // runs inside the awaited `captureAndRenderSnapshot`, past the WS guard).
     const captureWrite = (chunk: string): void => {
+      if (settled) return;
       deps.writeChunk(chunk);
       snapshotBytes += chunk;
     };
@@ -509,6 +522,9 @@ export async function runPassthroughSession(
       } catch {
         // best effort
       }
+      // Drop the writer's pending queue and unhook its drain listener so no
+      // buffered chunk flushes to stdout after detach.
+      deps.disposeWriter?.();
       // Best-effort restore: re-read and only revert if the mode is still what
       // this session set, so we don't clobber another session's change or
       // force a default when the pre-attach mode was unknown.

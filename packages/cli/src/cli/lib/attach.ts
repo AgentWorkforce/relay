@@ -154,30 +154,58 @@ export async function captureAndRenderSnapshot(
  * `snapshotOffset`. A buffered chunk carries the cumulative byte offset at
  * its *end*; if that end offset is `<=` the snapshot offset the chunk is
  * already on screen and is dropped, otherwise it is applied.
+ *
+ * The snapshot offset is retained as a post-reconcile *watermark*: once
+ * buffering ends, {@link push} keeps suppressing any live frame whose end
+ * offset is `<=` the watermark. This closes a broker-side race — the PTY
+ * reader advances `consumed_offset` and the grid *before* the decoded chunk
+ * reaches the broadcast queue, so a chunk with `offset <= snapshotOffset`
+ * can still arrive *after* the client reconciles. Offsets are cumulative and
+ * monotonic, so the watermark drops exactly those already-painted stragglers
+ * without touching genuinely new output.
  */
 export class StreamSyncBuffer {
   private buffering = true;
   private readonly buffered: Array<{ chunk: string; offset?: number }> = [];
+  /**
+   * Post-reconcile suppression watermark: the snapshot offset the grid had
+   * already painted. `undefined` until {@link reconcile} runs with a defined
+   * offset (or forever, on brokers without offset support / after
+   * {@link flushAll}), in which case no post-reconcile suppression happens.
+   */
+  private watermark: number | undefined = undefined;
 
   /**
    * Record a live `worker_stream` chunk. Returns `true` when the caller
-   * should apply the chunk immediately (post-reconcile live mode), `false`
-   * while still buffering (the chunk is held for {@link reconcile}).
+   * should apply the chunk immediately, `false` when the chunk must be held
+   * or dropped. While buffering, the chunk is retained for {@link reconcile}.
+   * After reconcile, a chunk whose end offset is `<=` the snapshot watermark
+   * is a late-arriving straggler the snapshot already painted and is
+   * suppressed (see the class docstring's race note); everything else passes
+   * through live.
    */
   push(chunk: string, offset: number | undefined): boolean {
-    if (!this.buffering) return true;
-    this.buffered.push({ chunk, offset });
-    return false;
+    if (this.buffering) {
+      this.buffered.push({ chunk, offset });
+      return false;
+    }
+    // Live pass-through, minus stragglers the snapshot already reflects.
+    if (this.watermark !== undefined && offset !== undefined && offset <= this.watermark) {
+      return false;
+    }
+    return true;
   }
 
   /**
    * Reconcile the buffered chunks against the painted snapshot's offset and
-   * return the chunks to apply, in order. Switches to live pass-through.
+   * return the chunks to apply, in order. Switches to live pass-through and
+   * arms the post-reconcile watermark (see {@link push}).
    *
    * When `snapshotOffset` is `undefined` (broker without offset support) all
    * buffered chunks are discarded: they arrived before the snapshot was
    * painted, so dropping them matches the snapshot-authoritative fallback
-   * and avoids double-painting what the snapshot already shows.
+   * and avoids double-painting what the snapshot already shows. No watermark
+   * is armed in that case — there is no offset to compare live frames to.
    */
   reconcile(snapshotOffset: number | undefined): string[] {
     const out: string[] = [];
@@ -190,6 +218,7 @@ export class StreamSyncBuffer {
         out.push(item.chunk);
       }
     }
+    this.watermark = snapshotOffset;
     this.buffered.length = 0;
     this.buffering = false;
     return out;
@@ -383,11 +412,15 @@ export async function switchInboundDeliveryModeOrAbort(
  *
  * Two hazards this guards against (see #1247):
  *
- *  1. Get-then-set race — a second session attaching while this one is active
- *     would read *this* session's mode as the "previous" one, so blindly
+ *  1. Concurrent-change race — a second session attaching while this one is
+ *     active would read *this* session's mode as the "previous" one, so blindly
  *     writing `previousMode` back on detach can clobber a change another
- *     session/CLI made in the meantime. We re-read the current mode and only
- *     restore when it still equals what *this* session set.
+ *     session/CLI made in the meantime. We restore via the broker's atomic
+ *     compare-and-set (`expectedMode: sessionMode`): the broker applies
+ *     `previousMode` only if the worker's current mode still equals what *this*
+ *     session set, and no-ops (`matched: false`) otherwise. This removes the
+ *     read-then-set TOCTOU a client-side re-read still had (a change landing
+ *     between the read and the restore PUT).
  *  2. Failed initial read — when the pre-attach mode was never learned
  *     (`previousMode === null`), forcing a default (`auto_inject`) would
  *     silently cancel an explicit `agent message hold`. In that case we leave
@@ -410,17 +443,13 @@ export async function restoreInboundDeliveryModeOnDetach(
     );
     return;
   }
-  let current: InboundDeliveryMode | null = null;
   try {
-    current = await createBrokerClient(connection, deps.fetch).getInboundDeliveryMode(name);
-  } catch {
-    current = null;
-  }
-  // Only restore when the mode is still what this session set. If the read
-  // failed (null) or another session changed it, leave it alone.
-  if (current !== sessionMode) return;
-  try {
-    await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, previousMode);
+    // Atomic compare-and-set: restore `previousMode` only if the mode is still
+    // what this session set. If another session changed it, the broker no-ops
+    // (`matched: false`) rather than clobbering their change.
+    await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, previousMode, {
+      expectedMode: sessionMode,
+    });
   } catch {
     // best-effort
   }
@@ -581,6 +610,14 @@ export class StatusLineController {
       this.arm(this.opts.boundaryHoldMs ?? 100, true);
       return;
     }
+    // Back at a boundary: any pending *force* (boundary-hold) timer carries the
+    // wrong deadline now — it was armed to paint mid-sequence after
+    // `boundaryHoldMs`, which would either paint later than the coalescing
+    // window needs or bypass the window entirely. Clear it so the normal
+    // coalescing logic below re-arms a plain timer for the correct remainder.
+    // A non-force (coalescing) timer already has the right deadline, so leave
+    // it in place.
+    if (this.timer && this.timerForce) this.clearTimer();
     const elapsed = this.now() - this.lastPaintAt;
     if (elapsed >= this.opts.coalesceMs) {
       this.paintNow();
@@ -626,6 +663,21 @@ export class StatusLineController {
 export interface BackpressureWritable {
   write(chunk: string): boolean;
   once(event: 'drain', listener: () => void): unknown;
+  off?(event: 'drain', listener: () => void): unknown;
+  removeListener?(event: 'drain', listener: () => void): unknown;
+}
+
+/**
+ * A backpressure-aware writer plus a teardown hook. Call the writer with each
+ * chunk; call {@link BackpressureAwareWriter.dispose} on detach to drop any
+ * still-queued chunks and unhook the pending `'drain'` listener so nothing
+ * flushes to stdout after the session tears down.
+ */
+export interface BackpressureAwareWriter {
+  /** Write a chunk, respecting backpressure. No-op after {@link dispose}. */
+  write: (chunk: string) => void;
+  /** Drop the pending queue and unhook the `'drain'` listener. Idempotent. */
+  dispose: () => void;
 }
 
 /**
@@ -634,20 +686,28 @@ export interface BackpressureWritable {
  * When the underlying stream reports saturation (`write()` returns false) we
  * hold subsequent chunks in a bounded in-memory queue and flush them on
  * `'drain'`, rather than letting Node's stdout buffer grow without limit under
- * a fast agent + slow terminal. If our own queue reaches `maxQueuedBytes` we
- * fall back to writing straight through — bounded extra buffering, never
- * dropped output. Documented residual risk: under sustained overload Node's
- * internal stdout buffer can still grow.
+ * a fast agent + slow terminal.
+ *
+ * FIFO is preserved even when our own queue reaches `maxQueuedBytes`: rather
+ * than writing the overflow chunk straight through (which would jump it ahead
+ * of older queued chunks and reorder/split the PTY byte stream), we first flush
+ * the entire local queue into stdout's internal buffer — `stdout.write` buffers
+ * internally when saturated, so ignoring its return value here is safe — then
+ * write the new chunk last. Bounded extra buffering, never dropped or reordered
+ * output. Documented residual risk: under sustained overload Node's internal
+ * stdout buffer can still grow.
  */
 export function createBackpressureAwareWriter(
   stdout: BackpressureWritable,
   maxQueuedBytes = 4 * 1024 * 1024
-): (chunk: string) => void {
+): BackpressureAwareWriter {
   let paused = false;
-  const queue: string[] = [];
+  let disposed = false;
+  let queue: string[] = [];
   let queuedBytes = 0;
 
   const flushQueue = (): void => {
+    if (disposed) return;
     while (queue.length > 0) {
       const next = queue.shift() as string;
       queuedBytes -= Buffer.byteLength(next, 'utf8');
@@ -659,7 +719,8 @@ export function createBackpressureAwareWriter(
     paused = false;
   };
 
-  return (chunk: string): void => {
+  const write = (chunk: string): void => {
+    if (disposed) return;
     if (paused) {
       const bytes = Buffer.byteLength(chunk, 'utf8');
       if (queuedBytes + bytes <= maxQueuedBytes) {
@@ -667,7 +728,13 @@ export function createBackpressureAwareWriter(
         queuedBytes += bytes;
         return;
       }
-      // Queue is full — write through rather than drop output.
+      // Queue cap hit. Preserve FIFO: flush the whole local queue into
+      // stdout's internal buffer first (write buffers internally when
+      // saturated, so the return value is intentionally ignored), then write
+      // the new chunk last so it never jumps ahead of older output.
+      for (const queued of queue) stdout.write(queued);
+      queue = [];
+      queuedBytes = 0;
       stdout.write(chunk);
       return;
     }
@@ -676,6 +743,18 @@ export function createBackpressureAwareWriter(
       stdout.once('drain', flushQueue);
     }
   };
+
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    queue = [];
+    queuedBytes = 0;
+    paused = false;
+    const off = stdout.off ?? stdout.removeListener;
+    off?.call(stdout, 'drain', flushQueue);
+  };
+
+  return { write, dispose };
 }
 
 /** Dependencies for `captureInitialSnapshot`. `captureAndRenderSnapshot`
