@@ -16,7 +16,8 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
-import { RelayCast, type BrokerEvent } from '@agent-relay/sdk';
+import type { BrokerEvent } from '@agent-relay/harness-driver';
+import { RelayCast } from '@relaycast/sdk';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import { eventsForAgent } from './utils/assert-helpers.js';
 import { skipIfNotRealCli, skipIfCliMissing, sleep } from './utils/cli-helpers.js';

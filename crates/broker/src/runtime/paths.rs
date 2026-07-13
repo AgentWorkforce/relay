@@ -189,14 +189,3 @@ pub(crate) fn ensure_runtime_paths(
         _lock: Some(lock_file),
     })
 }
-
-pub(crate) fn derive_ws_base_url_from_http(http_base: &str) -> String {
-    let trimmed = http_base.trim();
-    if let Some(rest) = trimmed.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else {
-        trimmed.to_string()
-    }
-}

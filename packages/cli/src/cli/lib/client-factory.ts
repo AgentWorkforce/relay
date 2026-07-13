@@ -8,6 +8,10 @@ export interface CreateRuntimeClientOptions {
   brokerName?: string;
   env?: NodeJS.ProcessEnv;
   preferConnect?: boolean;
+  /** Forward broker stderr lines to this callback (e.g. for `--verbose`). */
+  onStderr?: (line: string) => void;
+  /** Forward human-readable startup step markers to this callback (e.g. for `--verbose`). */
+  onStep?: (message: string) => void;
 }
 
 export interface ClientSpawnOptions {
@@ -21,6 +25,8 @@ export interface ClientSpawnOptions {
   cwd?: string;
   shadowOf?: string;
   shadowMode?: 'subagent' | 'process';
+  spawnMode?: 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
+  exitAfterTask?: boolean;
 }
 
 export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<HarnessDriverClient> {
@@ -32,6 +38,8 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     brokerName,
     env = process.env,
     preferConnect = false,
+    onStderr,
+    onStep,
   } = options;
 
   if (preferConnect) {
@@ -51,6 +59,8 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     channels,
     cwd,
     env: env as Record<string, string>,
+    onStderr,
+    onStep,
   });
 }
 

@@ -14,7 +14,6 @@ jobs:
     name: Detect change scope
     runs-on: ubuntu-latest
     outputs:
-      web_only: ${{ steps.scope.outputs.web_only }}
       sdk_swift_only: ${{ steps.scope.outputs.sdk_swift_only }}
     steps:
       - id: scope
@@ -41,16 +40,14 @@ jobs:
               files = (comparison.data.files || []).map((file) => file.filename);
             }
 
-            const webOnly = files.length > 0 && files.every((file) => file.startsWith('web/'));
             const sdkSwiftOnly = files.length > 0 && files.every((file) => file.startsWith('packages/sdk-swift/'));
             core.info(`Changed files (${files.length}): ${files.join(', ')}`);
-            core.setOutput('web_only', webOnly ? 'true' : 'false');
             core.setOutput('sdk_swift_only', sdkSwiftOnly ? 'true' : 'false');
 
   rust-test:
     name: Rust Tests (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -70,7 +67,7 @@ jobs:
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -104,7 +101,7 @@ jobs:
   rust-clippy:
     name: Clippy (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -123,7 +120,7 @@ jobs:
   rust-fmt:
     name: Format
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,12 +132,12 @@ jobs:
   sdk-check:
     name: SDK TypeScript Check
     needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
+    if: needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
+      - run: scripts/post-publish-verify/retry-command.sh "SDK npm install" npm install
       - run: npm run -w @agent-relay/sdk check

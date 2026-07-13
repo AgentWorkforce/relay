@@ -1,18 +1,16 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use parking_lot::Mutex;
 use relaycast::{
     agent::DmOptions, format_registration_error,
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    CompleteInvocationRequest, MessageListQuery, RegisterActionRequest, RelayCast,
-    RelayCastOptions, ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
+    CompleteInvocationRequest, CreateObserverTokenRequest, MessageListQuery, ObserverToken,
+    RegisterActionRequest, RelayCast, RelayCastOptions, ReleaseAgentRequest,
 };
-use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use serde_json::Value;
 
-use crate::{events::EventEmitter, protocol::MessageInjectionMode};
+use crate::protocol::MessageInjectionMode;
 
 #[derive(Debug, Clone)]
 pub enum WsControl {
@@ -25,299 +23,13 @@ pub enum WsControl {
     Unsubscribe(Vec<crate::ids::ChannelName>),
 }
 
-#[derive(Clone)]
-pub struct RelaycastWsClient {
-    ws_base_url: String,
-    workspace_http: RelaycastHttpClient,
-    /// Reference-counted channel subscriptions: channel_name -> number of agents subscribed.
-    /// The WS only unsubscribes when the count drops to zero.
-    subscriptions: Arc<Mutex<HashMap<crate::ids::ChannelName, usize>>>,
-}
-
-impl RelaycastWsClient {
-    pub fn new(
-        ws_base_url: impl Into<String>,
-        workspace_http: RelaycastHttpClient,
-        channels: impl IntoIterator<Item = String>,
-    ) -> Self {
-        let mut subs = HashMap::new();
-        for ch in channels {
-            *subs.entry(crate::ids::ChannelName::from(ch)).or_insert(0) += 1;
-        }
-        Self {
-            ws_base_url: ws_base_url.into(),
-            workspace_http,
-            subscriptions: Arc::new(Mutex::new(subs)),
-        }
-    }
-
-    pub fn active_subscriptions(&self) -> Vec<crate::ids::ChannelName> {
-        self.subscriptions.lock().keys().cloned().collect()
-    }
-
-    pub async fn run(
-        &self,
-        inbound_tx: mpsc::Sender<Value>,
-        mut control_rx: mpsc::Receiver<WsControl>,
-        events: EventEmitter,
-    ) {
-        let mut has_connected = false;
-
-        loop {
-            if let Err(error) = self.workspace_http.ensure_workspace_stream_enabled().await {
-                tracing::warn!(
-                    target = "relay_broker::ws",
-                    error = %error,
-                    "failed to enable workspace stream before websocket connect"
-                );
-            }
-
-            // Attribute the broker's own relaycast traffic (the workspace
-            // stream) to the agent-relay CLI as the origin actor — forwarded as
-            // the `origin_actor` query param (WS upgrades can't set headers).
-            let ws_opts = WsClientOptions::new(self.workspace_http.api_key.clone())
-                .with_base_url(self.ws_base_url.clone())
-                .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
-            let mut ws = WsClient::new(ws_opts);
-
-            match ws.connect().await {
-                Ok(()) => {
-                    let status = if has_connected {
-                        "reconnected"
-                    } else {
-                        "connected"
-                    };
-                    has_connected = true;
-                    tracing::info!(
-                        target = "broker::ws",
-                        base_url = %self.ws_base_url,
-                        status = %status,
-                        "WebSocket {status}"
-                    );
-                    events.emit("connection", json!({"status":status}));
-                    let _ = inbound_tx
-                        .send(json!({
-                            "type":"broker.connection",
-                            "payload":{"status":status}
-                        }))
-                        .await;
-
-                    // The workspace stream delivers DMs automatically, but channel
-                    // messages still require explicit WS subscriptions. Keep local
-                    // broker channel join events so existing UI/state consumers see
-                    // the same join notifications.
-                    let active_subscriptions = self.active_subscriptions();
-                    if !active_subscriptions.is_empty() {
-                        let active_strs: Vec<String> = active_subscriptions
-                            .iter()
-                            .map(|c| c.as_str().to_string())
-                            .collect();
-                        if let Err(error) = ws.subscribe(active_strs.clone()).await {
-                            tracing::warn!(
-                                target = "relay_broker::ws",
-                                channels = ?active_subscriptions,
-                                error = %error,
-                                "failed to subscribe websocket to broker channels after connect"
-                            );
-                        } else {
-                            tracing::info!(
-                                target = "broker::ws",
-                                channels = ?active_subscriptions,
-                                "subscribed websocket to broker channels after connect"
-                            );
-                        }
-
-                        for channel in &active_subscriptions {
-                            let _ = inbound_tx
-                                .send(json!({
-                                    "type":"broker.channel_join",
-                                    "payload":{"channel":channel}
-                                }))
-                                .await;
-                        }
-                    }
-
-                    // Raw events keep Relay's broker bridge on the exact wire
-                    // payload while the SDK owns websocket transport details.
-                    let mut raw_event_rx = ws.subscribe_raw_events();
-                    let mut lifecycle_rx = ws.subscribe_lifecycle();
-
-                    let mut shutdown = false;
-                    while !shutdown {
-                        tokio::select! {
-                            ctrl = control_rx.recv() => {
-                                match ctrl {
-                                    Some(WsControl::Shutdown) | None => {
-                                        ws.disconnect().await;
-                                        shutdown = true;
-                                    }
-                                    Some(WsControl::Publish(payload)) => {
-                                        // SDK doesn't support raw WS publish; loop back locally
-                                        let _ = inbound_tx.send(payload).await;
-                                    }
-                                    Some(WsControl::Subscribe(channels)) => {
-                                        let mut joined_now = Vec::new();
-                                        {
-                                            let mut subs = self.subscriptions.lock();
-                                            for ch in &channels {
-                                                let count = subs.entry(ch.clone()).or_insert(0);
-                                                if *count == 0 {
-                                                    joined_now.push(ch.clone());
-                                                }
-                                                *count += 1;
-                                            }
-                                        }
-                                        if !joined_now.is_empty() {
-                                            let joined_strs: Vec<String> = joined_now
-                                                .iter()
-                                                .map(|c| c.as_str().to_string())
-                                                .collect();
-                                            if let Err(error) = ws.subscribe(joined_strs).await {
-                                                tracing::warn!(
-                                                    target = "relay_broker::ws",
-                                                    channels = ?joined_now,
-                                                    error = %error,
-                                                    "failed to subscribe websocket to newly joined broker channels"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    target = "broker::ws",
-                                                    channels = ?joined_now,
-                                                    "subscribed websocket to newly joined broker channels"
-                                                );
-                                            }
-                                        }
-
-                                        for channel in &joined_now {
-                                            let _ = inbound_tx
-                                                .send(json!({
-                                                    "type":"broker.channel_join",
-                                                    "payload":{"channel":channel}
-                                                }))
-                                                .await;
-                                        }
-                                    }
-                                    Some(WsControl::Unsubscribe(channels)) => {
-                                        let mut left_now = Vec::new();
-                                        {
-                                            let mut subs = self.subscriptions.lock();
-                                            for ch in &channels {
-                                                if let Some(count) = subs.get_mut(ch) {
-                                                    *count = count.saturating_sub(1);
-                                                    if *count == 0 {
-                                                        subs.remove(ch);
-                                                        left_now.push(ch.clone());
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if !left_now.is_empty() {
-                                            let left_strs: Vec<String> = left_now
-                                                .iter()
-                                                .map(|c| c.as_str().to_string())
-                                                .collect();
-                                            if let Err(error) = ws.unsubscribe(left_strs).await {
-                                                tracing::warn!(
-                                                    target = "relay_broker::ws",
-                                                    channels = ?left_now,
-                                                    error = %error,
-                                                    "failed to unsubscribe websocket from broker channels"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    target = "broker::ws",
-                                                    channels = ?left_now,
-                                                    "unsubscribed websocket from broker channels"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            event = raw_event_rx.recv() => {
-                                match event {
-                                    Ok(value) => {
-                                        let _ = inbound_tx.send(value).await;
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                        tracing::warn!(
-                                            target = "relay_broker::ws",
-                                            skipped = n,
-                                            "event receiver lagged, skipped events"
-                                        );
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                        tracing::info!(target = "broker::ws", "SDK event channel closed");
-                                        break;
-                                    }
-                                }
-                            }
-                            lifecycle = lifecycle_rx.recv() => {
-                                match lifecycle {
-                                    Ok(WsLifecycleEvent::Close) => {
-                                        tracing::info!(target = "broker::ws", "WebSocket closed by SDK");
-                                        break;
-                                    }
-                                    Ok(WsLifecycleEvent::Error(msg)) => {
-                                        tracing::warn!(target = "relay_broker::ws", error = %msg, "SDK lifecycle error");
-                                    }
-                                    Ok(WsLifecycleEvent::Reconnecting { attempt }) => {
-                                        tracing::info!(target = "broker::ws", attempt, "SDK reconnecting");
-                                        events.emit("connection", json!({"status":"reconnecting","attempt":attempt}));
-                                    }
-                                    Ok(WsLifecycleEvent::Open) => {
-                                        tracing::info!(target = "broker::ws", "SDK WebSocket re-opened");
-                                        events.emit("connection", json!({"status":"reconnected"}));
-                                        let _ = inbound_tx
-                                            .send(json!({
-                                                "type":"broker.connection",
-                                                "payload":{"status":"reconnected"}
-                                            }))
-                                            .await;
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                        tracing::info!(target = "broker::ws", "SDK lifecycle channel closed");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if shutdown {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        target = "relay_broker::ws",
-                        base_url = %self.ws_base_url,
-                        error = %error,
-                        "SDK ws connect failed"
-                    );
-                }
-            }
-
-            events.emit("connection", json!({"status":"disconnected"}));
-            let _ = inbound_tx
-                .send(json!({
-                    "type":"broker.connection",
-                    "payload":{"status":"disconnected"}
-                }))
-                .await;
-            tokio::time::sleep(Duration::from_secs(3)).await;
-        }
-    }
-}
-
 /// HTTP client for publishing messages to the Relaycast REST API.
 ///
 /// Used by the broker to asynchronously forward messages to Relaycast when the
 /// target is not a local worker.
 #[derive(Clone)]
 pub struct RelaycastHttpClient {
-    pub base_url: String,
+    pub base_url: Option<String>,
     pub api_key: String,
     relay: Arc<Option<RelayCast>>,
     registration: Arc<Option<AgentRegistrationClient>>,
@@ -333,15 +45,14 @@ pub(crate) use relaycast::registration_retry_after_secs;
 
 impl RelaycastHttpClient {
     pub fn new(
-        base_url: impl Into<String>,
+        base_url: Option<String>,
         api_key: impl Into<String>,
         agent_name: impl Into<String>,
         default_cli: impl Into<String>,
     ) -> Self {
-        let base_url = base_url.into();
         let api_key = api_key.into();
         let default_cli = default_cli.into();
-        let relay = Arc::new(build_relay_client(&api_key, &base_url));
+        let relay = Arc::new(build_relay_client(&api_key, base_url.as_deref()));
         let registration = Arc::new(
             relay
                 .as_ref()
@@ -420,6 +131,19 @@ impl RelaycastHttpClient {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
+    /// Authenticate as `agent_name` rather than this broker's own identity.
+    ///
+    /// **Callers must only pass a name this broker has custodial
+    /// responsibility for** (a worker it spawned, or its own identity) —
+    /// this is not a safe way to relay an arbitrary, caller-supplied sender
+    /// label. Underneath, `AgentRegistrationClient::register_agent_token`
+    /// either registers a brand-new Relaycast agent under `agent_name` if
+    /// none exists, or — if one already does (409) — ROTATES its token,
+    /// invalidating whatever token that agent was already using. Passing an
+    /// unvalidated `agent_name` therefore risks silently disconnecting an
+    /// unrelated, already-registered agent that happens to share the name.
+    /// Validate against known-local names first; fall back to this
+    /// broker's own identity (`registered_agent_client`) for anything else.
     async fn registered_agent_client_as(
         &self,
         agent_name: &str,
@@ -463,6 +187,25 @@ impl RelaycastHttpClient {
             .context("SDK relay client not initialized")?;
         relay
             .register_action(request)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Mint a scoped, read-only observer token for this workspace. Used by
+    /// the local HTTP API so callers (e.g. Pear's "Join as observer" link)
+    /// can hand out a narrow `ot_live_...` credential instead of the raw
+    /// `rk_live_...` workspace key, which grants full read/write/spawn
+    /// access. The raw token material is only present on this response (and
+    /// on `rotate_observer_token`'s), never on subsequent reads.
+    pub async fn create_observer_token(
+        &self,
+        request: CreateObserverTokenRequest,
+    ) -> Result<ObserverToken> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        relay
+            .create_observer_token(request)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
@@ -528,18 +271,27 @@ impl RelaycastHttpClient {
 
     /// Send a direct message to a named agent via the Relaycast REST API.
     pub async fn send_dm(&self, to: &str, text: &str) -> Result<()> {
-        self.send_dm_with_mode(to, text, MessageInjectionMode::Wait)
+        self.send_dm_with_mode(to, text, MessageInjectionMode::Wait, &self.agent_name)
             .await
     }
 
     /// Send a direct message with explicit injection mode via the Relaycast REST API.
+    ///
+    /// `from` is authenticated via [`registered_agent_client_as`] rather than
+    /// always posting as this broker's own registered identity, so a DM
+    /// forwarded from a locally-attached worker is attributed to that
+    /// worker's own Relaycast identity instead of losing sender identity at
+    /// the relay boundary. **The caller must validate `from` first** —
+    /// see [`registered_agent_client_as`]'s doc comment for why passing an
+    /// arbitrary, unvalidated sender label here is unsafe.
     pub async fn send_dm_with_mode(
         &self,
         to: &str,
         text: &str,
         mode: MessageInjectionMode,
+        from: &str,
     ) -> Result<()> {
-        let agent_client = self.registered_agent_client().await?;
+        let agent_client = self.registered_agent_client_as(from, None).await?;
         let relay_mode = match mode {
             MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
             MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
@@ -566,26 +318,6 @@ impl RelaycastHttpClient {
             .send(channel, text, None, None, None)
             .await
             .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
-        Ok(())
-    }
-
-    /// Ensure workspace-wide WebSocket fanout is enabled for this workspace.
-    pub async fn ensure_workspace_stream_enabled(&self) -> Result<()> {
-        let Some(relay) = (*self.relay).as_ref() else {
-            tracing::warn!("SDK relay client not initialized; cannot enable workspace stream");
-            return Ok(());
-        };
-
-        let config = relay
-            .workspace_stream_set(true)
-            .await
-            .map_err(|error| anyhow::anyhow!("relaycast workspace_stream_set failed: {error}"))?;
-        tracing::debug!(
-            enabled = config.enabled,
-            default_enabled = config.default_enabled,
-            override = ?config.override_value,
-            "ensured workspace stream enabled"
-        );
         Ok(())
     }
 
@@ -773,39 +505,82 @@ impl RelaycastHttpClient {
 
     /// Smart send: routes to channel or DM based on `#` prefix.
     pub async fn send(&self, to: &str, text: &str) -> Result<()> {
-        self.send_with_mode(to, text, MessageInjectionMode::Wait)
+        self.send_with_mode(to, text, MessageInjectionMode::Wait, &self.agent_name, None)
             .await
     }
 
     /// Smart send with explicit injection mode.
+    ///
+    /// `from` is authenticated via [`registered_agent_client_as`] (see
+    /// [`send_dm_with_mode`]) so the Relaycast-recorded sender matches the
+    /// original request's `from` rather than always this broker's own
+    /// identity. **The caller must validate `from` first** (a locally-known
+    /// worker name or this broker's own identity) — see
+    /// [`registered_agent_client_as`]'s doc comment for why an arbitrary,
+    /// unvalidated sender label is unsafe to pass here. This is the only
+    /// delivery path now (no local-injection bypass), so every send's
+    /// sender attribution flows through here.
+    ///
+    /// `thread_id`, when present, is a Relaycast message id to reply to
+    /// (channel targets only — Relaycast DMs have no thread concept): posting
+    /// via [`AgentClient::reply`] instead of a plain channel post is what
+    /// actually creates real thread/conversation grouping on the Relaycast
+    /// side, as opposed to passing an opaque value the server doesn't
+    /// interpret as a reply. `reply` takes no injection mode, so a threaded
+    /// reply is always delivered with Wait semantics — a `Steer` request with
+    /// a `thread_id` is downgraded to a normal reply (logged, not dropped).
     pub async fn send_with_mode(
         &self,
         to: &str,
         text: &str,
         mode: MessageInjectionMode,
+        from: &str,
+        thread_id: Option<&str>,
     ) -> Result<()> {
         if to.starts_with('#') {
-            let agent_client = self.registered_agent_client().await?;
+            let agent_client = self.registered_agent_client_as(from, None).await?;
             let relay_mode = match mode {
                 MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
                 MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
             };
-            agent_client
-                .send_with_mode(to, text, None, None, relay_mode, None)
-                .await
-                .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+            if let Some(thread_id) = thread_id {
+                // `AgentClient::reply` has no injection-mode parameter, so a
+                // threaded reply is always delivered with Wait semantics.
+                // `Steer` can't be honored on a reply; downgrade rather than
+                // drop the message, but log it so the loss of steer is visible
+                // instead of silent.
+                if matches!(mode, MessageInjectionMode::Steer) {
+                    tracing::warn!(
+                        target = "relay_broker::relaycast",
+                        thread_id = %thread_id,
+                        "steer injection mode is not supported on threaded replies; delivering as a normal reply"
+                    );
+                }
+                agent_client
+                    .reply(thread_id, text, None, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("relaycast thread reply failed: {e}"))?;
+            } else {
+                agent_client
+                    .send_with_mode(to, text, None, None, relay_mode, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("relaycast send_to_channel failed: {e}"))?;
+            }
             return Ok(());
         }
 
-        self.send_dm_with_mode(to, text, mode).await
+        self.send_dm_with_mode(to, text, mode, from).await
     }
 }
 
-/// Build a `RelayCast` workspace client from an API key and base URL.
-fn build_relay_client(api_key: &str, base_url: &str) -> Option<RelayCast> {
-    let opts = RelayCastOptions::new(api_key)
-        .with_base_url(base_url)
-        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+/// Build a `RelayCast` workspace client from an API key and optional base URL.
+/// When `base_url` is `None`, the SDK applies its own default.
+fn build_relay_client(api_key: &str, base_url: Option<&str>) -> Option<RelayCast> {
+    let mut opts =
+        RelayCastOptions::new(api_key).with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+    if let Some(base_url) = base_url {
+        opts = opts.with_base_url(base_url);
+    }
     RelayCast::new(opts).ok()
 }
 
@@ -843,8 +618,12 @@ mod tests {
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
-        let client =
-            RelaycastHttpClient::new(base_url.to_string(), "rk_live_test", "broker", "codex");
+        let client = RelaycastHttpClient::new(
+            Some(base_url.to_string()),
+            "rk_live_test",
+            "broker",
+            "codex",
+        );
         client.seed_agent_token("broker", "at_live_test");
         client
     }
@@ -888,25 +667,22 @@ mod tests {
             }));
         });
         let spawn_mock = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/spawn");
+            when.method(POST).path("/v1/agents");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
-                    "agent": {
-                        "id": "agent_fresh_wrong",
-                        "name": "recipient",
-                        "type": "agent",
-                        "status": "online",
-                        "created_at": "2026-06-08T10:00:00.000Z",
-                        "last_seen": "2026-06-08T10:00:00.000Z",
-                        "metadata": {}
-                    },
+                    "id": "agent_fresh_wrong",
+                    "workspace_id": "ws_fresh_wrong",
+                    "name": "recipient",
+                    "status": "online",
+                    "created_at": "2026-06-08T10:00:00.000Z",
                     "token": "at_live_fresh_wrong"
                 }
             }));
         });
 
-        let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
         client.seed_agent_token("recipient", "at_live_existing_recipient");
 
         let result = client
@@ -944,7 +720,13 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .send_with_mode("worker-a", "interrupt", MessageInjectionMode::Steer)
+            .send_with_mode(
+                "worker-a",
+                "interrupt",
+                MessageInjectionMode::Steer,
+                "broker",
+                None,
+            )
             .await
             .expect("relaycast DM steer send should succeed");
     }

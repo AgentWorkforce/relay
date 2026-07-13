@@ -32,8 +32,16 @@ function createMessagingMock() {
       channels: [],
     })),
   };
-  const messaging = { messages, agents, events: {} } as unknown as RelayMessaging;
-  return { messaging, messages, agents };
+  const workspace = {
+    info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
+    fleetNodes: {
+      get: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+      set: vi.fn(async (enabled: boolean) => ({ enabled, defaultEnabled: false, override: enabled })),
+      inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+    },
+  };
+  const messaging = { messages, agents, workspace, events: {} } as unknown as RelayMessaging;
+  return { messaging, messages, agents, workspace };
 }
 
 describe('AgentRelay facade (Phase A)', () => {
@@ -70,6 +78,31 @@ describe('AgentRelay facade (Phase A)', () => {
     expect(client.id).toBe('id-self');
     expect(client.name).toBe('self');
     expect(client.token).toBe('tok-self');
+  });
+
+  it('workspace.fleetNodes delegates fleet node config calls', async () => {
+    const { messaging, workspace } = createMessagingMock();
+    const relay = new AgentRelay({ messaging });
+
+    await expect(relay.workspace.fleetNodes.get()).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: null,
+    });
+    await expect(relay.workspace.fleetNodes.set(true)).resolves.toEqual({
+      enabled: true,
+      defaultEnabled: false,
+      override: true,
+    });
+    await expect(relay.workspace.fleetNodes.inherit()).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: null,
+    });
+
+    expect(workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
+    expect(workspace.fleetNodes.set).toHaveBeenCalledWith(true);
+    expect(workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
   });
 
   it('sendMessage routes #channel to messages.send and a bare name to direct', async () => {

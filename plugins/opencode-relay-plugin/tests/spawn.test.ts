@@ -4,7 +4,7 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RelayState, type SpawnLike, createRelayDismissTool, createRelaySpawnTool } from '../src/index.js';
-import { MockRelayServer, connectRelayState, createMockFetch } from './mock-relay-server.js';
+import { MockRelayServer, connectRelayState } from './mock-relay-server.js';
 
 class FakeChildProcess extends EventEmitter implements Pick<ChildProcess, 'kill' | 'pid'> {
   pid: number;
@@ -26,16 +26,14 @@ describe('OpenCode relay spawn and dismiss tools', () => {
 
   beforeEach(() => {
     server = new MockRelayServer();
-    vi.stubGlobal('fetch', createMockFetch(server) as typeof fetch);
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   it('spawns an OpenCode worker with the relay bootstrap prompt and env vars', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
     const proc = new FakeChildProcess(4242);
     const spawnMock = vi.fn<SpawnLike>(
       (command: string, args?: readonly string[], options?: SpawnOptions) => {
@@ -103,7 +101,7 @@ describe('OpenCode relay spawn and dismiss tools', () => {
   });
 
   it('marks a spawned worker as errored when the process exits non-zero', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
     const proc = new FakeChildProcess(5050);
     const spawnMock = vi.fn<SpawnLike>(() => proc as unknown as ChildProcess);
 
@@ -118,7 +116,7 @@ describe('OpenCode relay spawn and dismiss tools', () => {
   });
 
   it('dismisses a running worker by killing the process and removing it from relay state', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
     const proc = new FakeChildProcess(6060);
 
     state.spawned.set('Researcher', {
@@ -142,7 +140,7 @@ describe('OpenCode relay spawn and dismiss tools', () => {
   });
 
   it('dismisses an already-finished worker without killing it again', async () => {
-    const state = connectRelayState(new RelayState());
+    const state = connectRelayState(new RelayState(), server);
     const proc = new FakeChildProcess(7070);
 
     state.spawned.set('Researcher', {

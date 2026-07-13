@@ -278,43 +278,13 @@ export async function runUninstallCommand(
     removeZedConfig(serverName, deps.fs, isDryRun, deps.log);
   }
 
-  // --- Dashboard static assets removal ---
-  const homeDir = os.homedir();
-  const dashboardAssetPaths = [
-    path.join(homeDir, '.relay', 'dashboard', 'out'),
-    path.join(homeDir, '.relay', 'dashboard', '.version'),
-    ...INSTALL_DIR_NAMES.flatMap((installDir) => [
-      path.join(homeDir, installDir, 'dashboard', 'out'),
-      path.join(homeDir, installDir, 'dashboard', '.version'),
-    ]),
-  ];
-  for (const assetPath of dashboardAssetPaths) {
-    if (deps.fs.existsSync(assetPath)) {
-      if (isDryRun) {
-        deps.log(`[dry-run] Would remove dashboard asset path: ${assetPath}`);
-      } else {
-        try {
-          deps.fs.rmSync(assetPath, { recursive: true, force: true });
-          deps.log(`Removed dashboard asset path: ${assetPath}`);
-        } catch {
-          // Best-effort fallback for file-only implementations.
-          try {
-            deps.fs.unlinkSync(assetPath);
-            deps.log(`Removed dashboard asset path: ${assetPath}`);
-          } catch {
-            // Best-effort.
-          }
-        }
-      }
-    }
-  }
-
   // --- Binary removal (standalone binaries + npm packages) ---
+  const homeDir = os.homedir();
   const standaloneBinDir = path.join(homeDir, '.local', 'bin');
   const installBinDirs = INSTALL_DIR_NAMES.map((installDir) => path.join(homeDir, installDir, 'bin'));
 
   // Remove standalone binaries from ~/.local/bin
-  for (const binaryName of ['agent-relay', 'relay-dashboard-server', 'relay-acp']) {
+  for (const binaryName of ['agent-relay', 'relay-acp']) {
     const binPath = path.join(standaloneBinDir, binaryName);
     if (deps.fs.existsSync(binPath)) {
       if (isDryRun) {
@@ -326,21 +296,6 @@ export async function runUninstallCommand(
         } catch {
           // Best-effort.
         }
-      }
-    }
-  }
-
-  // Remove relay-dashboard-server from /usr/local/bin (another search path used by findDashboardBinary)
-  const usrLocalBinDashboard = path.join('/usr/local/bin', 'relay-dashboard-server');
-  if (deps.fs.existsSync(usrLocalBinDashboard)) {
-    if (isDryRun) {
-      deps.log(`[dry-run] Would remove binary: ${usrLocalBinDashboard}`);
-    } else {
-      try {
-        deps.fs.unlinkSync(usrLocalBinDashboard);
-        deps.log(`Removed ${usrLocalBinDashboard}`);
-      } catch {
-        // Best-effort.
       }
     }
   }
@@ -364,7 +319,7 @@ export async function runUninstallCommand(
 
   // Remove npm-installed packages
   if (!isDryRun) {
-    for (const pkg of ['agent-relay', '@agent-relay/dashboard-server']) {
+    for (const pkg of ['agent-relay']) {
       try {
         await deps.execCommand(`npm uninstall -g ${pkg}`);
         deps.log(`Uninstalled npm package: ${pkg}`);
@@ -373,7 +328,7 @@ export async function runUninstallCommand(
       }
     }
   } else {
-    deps.log('[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server');
+    deps.log('[dry-run] Would run: npm uninstall -g agent-relay');
   }
 
   // --- Snippet cleanup (CLAUDE.md, GEMINI.md, AGENTS.md) ---

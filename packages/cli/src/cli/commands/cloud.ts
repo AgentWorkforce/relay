@@ -5,6 +5,7 @@ import { Command, InvalidArgumentError } from 'commander';
 
 import {
   ensureAuthenticated,
+  ensureCloudSession,
   authorizedApiFetch,
   readStoredAuth,
   clearStoredAuth,
@@ -21,6 +22,8 @@ import {
   connectProvider,
   getProviderHelpText,
   normalizeProvider,
+  enrollFleetNode,
+  upsertFleetNodeEnrollment,
   type WhoAmIResponse,
   type WorkflowFileType,
   type WorkflowSchedule,
@@ -29,6 +32,7 @@ import {
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
+import { registerCloudWorkerCommands } from './cloud-worker.js';
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
   '.agent-bin/**',
@@ -51,6 +55,14 @@ export interface CloudDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  enrollFleetNode: typeof enrollFleetNode;
+  upsertFleetNodeEnrollment: typeof upsertFleetNodeEnrollment;
+  /**
+   * Persist redeemed-but-unstorable enrollment credentials to a 0600 recovery
+   * file and return its path. Kept injectable so tests can simulate the
+   * "recovery write also failed" last resort.
+   */
+  writeEnrollmentRecoveryFile: (record: unknown) => string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -60,6 +72,19 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
+    enrollFleetNode,
+    upsertFleetNodeEnrollment,
+    writeEnrollmentRecoveryFile: (record: unknown) => {
+      // The tmpdir is a different filesystem/permission domain than the failed
+      // enrollment store, so this write usually succeeds when the store's did not.
+      const file = path.join(
+        os.tmpdir(),
+        `agent-relay-enrollment-recovery-${process.pid}-${Date.now()}.json`
+      );
+      fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      fs.chmodSync(file, 0o600);
+      return file;
+    },
     ...overrides,
   };
 }
@@ -187,6 +212,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .command('cloud')
     .description('Cloud account, provider auth, and workflow commands');
 
+  registerCloudWorkerCommands(cloudCommand, deps);
+
   // ── login ──────────────────────────────────────────────────────────────────
 
   cloudCommand
@@ -278,6 +305,50 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
   // ── whoami ─────────────────────────────────────────────────────────────────
 
   cloudCommand
+    .command('session')
+    .description('Show the canonical Agent Relay Cloud session')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Output the session as JSON')
+    .option(
+      '--refresh-timeout <milliseconds>',
+      'Timeout for refreshing the cloud session',
+      parsePositiveInteger
+    )
+    .action(async (options: { apiUrl?: string; json?: boolean; refreshTimeout?: number }) => {
+      const apiUrl = options.apiUrl || defaultApiUrl();
+      const session = await ensureCloudSession({
+        apiUrl,
+        interactive: false,
+        refreshTimeoutMs: options.refreshTimeout,
+      });
+
+      if (options.json) {
+        deps.log(
+          JSON.stringify(
+            {
+              apiUrl: session.auth.apiUrl,
+              accessToken: session.auth.accessToken,
+              accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
+              ...(session.auth.refreshTokenExpiresAt
+                ? { refreshTokenExpiresAt: session.auth.refreshTokenExpiresAt }
+                : {}),
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+
+      deps.log(`API URL: ${session.auth.apiUrl}`);
+      deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
+      if (session.auth.refreshTokenExpiresAt) {
+        deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
+      }
+      deps.log(`Token file: ${AUTH_FILE_PATH}`);
+    });
+
+  cloudCommand
     .command('whoami')
     .description('Show current authentication status')
     .option('--api-url <url>', 'Cloud API base URL')
@@ -360,6 +431,87 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
       }
     });
+
+  // ── enroll ─────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('enroll')
+    .description('Enroll this machine as a Cloud-managed fleet node')
+    .requiredOption('--token <token>', 'One-time Cloud enrollment token (ocl_node_enr_...)')
+    .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')
+    .option('--name <name>', 'Override the node name')
+    .option('--max-agents <n>', 'Maximum managed agents for this node', parsePositiveInteger)
+    .option('--json', 'Print the persisted enrollment record as JSON (never the token)', false)
+    .action(
+      async (options: {
+        token: string;
+        enrollmentUrl?: string;
+        name?: string;
+        maxAgents?: number;
+        json?: boolean;
+      }) => {
+        try {
+          const enrollment = await deps.enrollFleetNode({
+            enrollmentToken: options.token,
+            enrollmentUrl: options.enrollmentUrl ?? '',
+            ...(options.name ? { name: options.name } : {}),
+            ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
+          });
+          const record = { ...enrollment, enrolledAt: new Date().toISOString() };
+          // Persist BEFORE printing success: the enrollment token is one-time, so
+          // durable credentials must hit disk before we report success. If the
+          // write fails the token is already burned, so dump the credentials
+          // (token included) for manual recovery instead of losing them forever.
+          try {
+            deps.upsertFleetNodeEnrollment(record);
+          } catch (persistErr) {
+            deps.error(
+              `Enrollment succeeded but persisting credentials failed: ${
+                persistErr instanceof Error ? persistErr.message : String(persistErr)
+              }`
+            );
+            // The one-time token is already consumed, so the credentials must
+            // survive somewhere. Prefer a 0600 recovery file (never print the
+            // token); dump to stderr only if even that write fails — losing
+            // the credentials entirely is the strictly worse outcome.
+            try {
+              const recoveryPath = deps.writeEnrollmentRecoveryFile(record);
+              deps.error(
+                `The one-time enrollment token has been consumed. Credentials were saved to ${recoveryPath} (owner-only permissions).`
+              );
+              deps.error(
+                "Fix the store problem and re-add them from that file, or export RELAY_NODE_TOKEN/RELAY_BASE_URL from it before 'relay node up'. Delete the file afterwards."
+              );
+            } catch {
+              deps.error(
+                'The one-time enrollment token has been consumed and a recovery file could not be written. SAVE THESE CREDENTIALS NOW:'
+              );
+              deps.error(JSON.stringify(record, null, 2));
+              deps.error("Export RELAY_NODE_TOKEN/RELAY_BASE_URL from them before 'relay node up'.");
+            }
+            deps.exit(1);
+            return;
+          }
+
+          if (options.json) {
+            // Never print the node token, even in JSON mode.
+            const { nodeToken: _nodeToken, ...safe } = record;
+            void _nodeToken;
+            deps.log(JSON.stringify(safe, null, 2));
+            return;
+          }
+
+          const nodeIdSuffix = record.nodeId ? ` (${record.nodeId})` : '';
+          deps.log(
+            `Enrolled node "${record.nodeName}"${nodeIdSuffix} in workspace ${record.relayWorkspaceId}. ` +
+              "Run 'relay node up' to serve it."
+          );
+        } catch (err) {
+          deps.error(err instanceof Error ? err.message : String(err));
+          deps.exit(1);
+        }
+      }
+    );
 
   // ── run ────────────────────────────────────────────────────────────────────
 

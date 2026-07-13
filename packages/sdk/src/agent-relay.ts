@@ -75,6 +75,8 @@ export interface AgentRelayAgent {
   readonly integrations: RelayMessaging['integrations'];
   readonly webhooks: RelayMessaging['webhooks'];
   readonly capabilities: RelayMessaging['commands'];
+  readonly nodes: RelayMessaging['nodes'];
+  readonly triggers: RelayMessaging['triggers'];
   readonly workspace: RelayWorkspace;
   registerAction<TInput, TOutput>(
     def: RegisterActionInput<TInput, TOutput>
@@ -198,6 +200,14 @@ export class AgentRelay implements AgentRelayAgent {
 
   get capabilities(): RelayMessaging['commands'] {
     return this.messaging.commands;
+  }
+
+  get nodes(): RelayMessaging['nodes'] {
+    return this.messaging.nodes;
+  }
+
+  get triggers(): RelayMessaging['triggers'] {
+    return this.messaging.triggers;
   }
 
   get workspace(): RelayWorkspace {
@@ -370,6 +380,8 @@ export function agentRelayAgent(
     integrations: messaging.integrations,
     webhooks: messaging.webhooks,
     capabilities: messaging.commands,
+    nodes: messaging.nodes,
+    triggers: messaging.triggers,
     workspace: createWorkspaceFacade(messaging),
     registerAction: (def) =>
       registerFacadeAction(actions, def, { messaging, handlerAgent, onError: options?.onError }),

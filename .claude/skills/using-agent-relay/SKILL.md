@@ -194,13 +194,13 @@ operations:
 
 ```bash
 agent-relay status
-agent-relay local up --no-dashboard --verbose
-agent-relay local status --wait-for 10
-agent-relay local agent list
-agent-relay local agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
-agent-relay local tail --agent Worker
-agent-relay local agent attach Worker --mode view
-agent-relay local agent release Worker
+agent-relay node up --verbose
+agent-relay node status --wait-for 10
+agent-relay node agent list
+agent-relay node agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
+agent-relay node tail --agent Worker
+agent-relay node agent attach Worker --mode view
+agent-relay node agent release Worker
 
 agent-relay agent register Worker --workspace-key rk_live_...
 agent-relay agent list --workspace-key rk_live_...

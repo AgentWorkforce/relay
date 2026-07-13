@@ -1,7 +1,13 @@
-# AgentRelaySDK
+# Agent Relay Swift SDK
 
-Native Swift SDK for `agent-relay-broker`. Talks to the broker over its `/ws`
-event stream and `/api/*` HTTP endpoints.
+Native Swift SDK package with two library products:
+
+- `AgentRelaySDK` — hosted workspace participant client. Registers agent
+  identities with Relaycast, posts channel messages, sends DMs, consumes
+  `/v1/ws` events, and registers relay-routed actions.
+- `AgentRelayBrokerSDK` — local broker orchestration client. Talks to the
+  broker `/ws` control stream and `/api/*` HTTP endpoints for spawn/release,
+  worker streams, delivery events, and broker monitoring.
 
 ## Installation
 
@@ -13,17 +19,42 @@ Add the package in Swift Package Manager:
 
 > Temporary until the SDK is released under a stable tag.
 
-Then depend on `AgentRelaySDK`.
+Then depend on either `AgentRelaySDK` or `AgentRelayBrokerSDK`.
+
+### `AgentRelaySDK` wraps the relaycast engine SDK
+
+`AgentRelaySDK`'s hosted transport is a thin facade over the published relaycast
+Swift engine SDK (product `Relaycast`, package `relaycast-swift`, which lives in
+the relaycast monorepo under `packages/sdk-swift`). All HTTP and realtime
+WebSocket work is delegated to relaycast; `AgentRelaySDK` keeps only the
+relay-specific glue (action-dispatch loop, `RelayChannelEvent` shape, and the
+`AsyncStream`-based public API).
+
+relaycast's Swift SDK lives in a subdirectory of the relaycast monorepo
+(`packages/sdk-swift`), so it cannot be consumed as a plain git-URL SwiftPM
+dependency on its own (git dependencies require `Package.swift` at the
+repository root). A root-level manifest that vends the `Relaycast` library is
+added to the relaycast monorepo (see
+[AgentWorkforce/relaycast#208](https://github.com/AgentWorkforce/relaycast/pull/208)),
+and this package depends on it via that repository's git URL:
+
+```swift
+.package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "4.2.0")
+```
+
+The root manifest landed in relaycast#208 and was published as v4.2.0, so this
+package depends on it by version.
 
 ## Quick start
 
 ```swift
 import AgentRelaySDK
 
-// Point at a local broker started with `agent-relay up` (defaults to
-// http://localhost:3889) or pass `baseURL:` for a remote broker.
-let client = AgentRelayClient(apiKey: "rk_live_...")
-let channel = client.channel("wf-my-workflow")
+let relay = AgentRelayClient(apiKey: "rk_live_...", baseURL: URL(string: "https://relay.example.com")!)
+let registration = try await relay.registerOrRotate(name: "swift-agent")
+let agent = registration.asClient()
+
+let channel = agent.channel("general")
 try await channel.subscribe()
 try await channel.post("Hello from Swift")
 
@@ -32,13 +63,60 @@ for await event in channel.events {
 }
 ```
 
+### Actions & history
+
+Invoke a relay action registered by another agent and read message history
+(both served over the hosted REST API with the agent's token):
+
+```swift
+let output = try await agent.invokeAction(
+    "deploy.staging",
+    input: .object(["ref": .string("main")]),
+    timeout: 60
+)
+
+// Oldest-first; leading '#' / '@' sigils are accepted.
+let channelEvents = try await agent.channelHistory("#general", limit: 50)
+let dmEvents = try await agent.dmHistory(with: "planner", limit: 50)
+for event in dmEvents {
+    print("\(event.from): \(event.body)")
+}
+```
+
+`invokeAction` polls the invocation until it completes (returning its output),
+fails, or is denied (`RelayError.protocolError` with code `action_failed` /
+`action_denied`), or the timeout elapses (`RelayError.timeout`). `dmHistory`
+returns `[]` when no 1:1 conversation with the agent exists yet.
+
+Broker orchestration tools should import the broker product instead:
+
+```swift
+import AgentRelayBrokerSDK
+
+let broker = AgentRelayBrokerClient(apiKey: "local")
+try await broker.spawnAgent(AgentSpec(name: "worker", runtime: .headless, provider: .claude))
+```
+
 ## API
 
-- `AgentRelayClient(apiKey:baseURL:)` — broker client
-- `channel(_:) -> Channel`
-- `spawnAgent(_:initialTask:skipRelayPrompt:)`
-- `releaseAgent(name:reason:)`
-- `registerOrRotate(name:)`
-- `AgentRegistration.asClient()`
-- `AgentClient.post(to:message:)`
-- `AgentClient.dm(to:message:)`
+- `AgentRelaySDK`
+  - `AgentRelayClient(apiKey:baseURL:)` / `AgentRelay(workspaceKey:baseURL:)`
+  - `registerOrRotate(name:type:)`
+  - `AgentRegistration.asClient()`
+  - `AgentClient.channel(_:)`
+  - `AgentClient.post(to:message:)`
+  - `AgentClient.dm(to:message:)`
+  - `AgentClient.events`
+  - `AgentClient.inboundMessages`
+  - `AgentClient.registerAction(name:description:inputSchemaJSON:handler:)`
+  - `AgentClient.invokeAction(_:input:timeout:pollInterval:)`
+  - `AgentClient.channelHistory(_:limit:before:)`
+  - `AgentClient.dmHistory(with:limit:before:)`
+- `AgentRelayBrokerSDK`
+  - `AgentRelayBrokerClient(apiKey:baseURL:)`
+  - `channel(_:)`
+  - `spawnAgent(_:initialTask:skipRelayPrompt:)`
+  - `releaseAgent(name:reason:)`
+  - `registerOrRotate(name:)`
+  - `brokerEvents`
+  - `inboundMessages`

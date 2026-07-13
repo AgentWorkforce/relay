@@ -1,0 +1,77 @@
+{
+  "id": "traj_q768ixcuyzh7",
+  "version": 1,
+  "task": {
+    "title": "Architecture refactor: decompose SDK/CLI god files into single-responsibility modules"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-21T14:47:04.706Z",
+  "completedAt": "2026-06-21T15:21:14.742Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-21T15:05:03.456Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ogralcr6cr73",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-21T15:05:03.456Z",
+      "endedAt": "2026-06-21T15:21:14.742Z",
+      "events": [
+        {
+          "ts": 1782054303457,
+          "type": "decision",
+          "content": "Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts: Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts",
+          "raw": {
+            "question": "Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts",
+            "chosen": "Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts",
+            "alternatives": [],
+            "reasoning": "normalize.ts readers have divergent semantics (readString coerces number/bigint->string, readRecord clones) so consolidating would be a behavior change, not a pure refactor"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1782055254612,
+          "type": "decision",
+          "content": "Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts: Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts",
+          "raw": {
+            "question": "Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts",
+            "chosen": "Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts",
+            "alternatives": [],
+            "reasoning": "workflows.ts mixed pure text parsing with auth/S3/API IO; isolating the side-effect-free parsers makes them testable and shrinks the IO module. Validation (incl child_process) and runtime-only regex kept behind."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Decomposed the three largest TypeScript god files behind unchanged public surfaces: sdk relaycast.ts (1654->1126; +translate/placement/client modules), harness-driver client.ts (1199->931; +spawn-request/broker-process), cloud workflows.ts (1129->893; +workflow-paths). Each a verified pure move: build green, 959 tests pass throughout, live smoke tests, and independent autoreview (all APPROVE). Declined merging translate vs normalize record readers due to genuine semantic divergence.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": ["8e494d2", "3fe8ae1", "08035c2", "a61deaf"],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_q768ixcuyzh7/trajectory.json",
+    "packages/cloud/src/workflow-paths.ts",
+    "packages/cloud/src/workflows.ts",
+    "packages/harness-driver/src/broker-process.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/spawn-request.ts",
+    "packages/sdk/src/messaging/relaycast-client.ts",
+    "packages/sdk/src/messaging/relaycast-placement.ts",
+    "packages/sdk/src/messaging/relaycast-translate.ts",
+    "packages/sdk/src/messaging/relaycast.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ff3f773ee5e313d2afbb9865908e245c167d89c8",
+    "endRef": "8e494d2631f4ac0a3476160fecccb9bf0eb0b139",
+    "traceId": "bc440d9f-d115-480b-a555-72007f502f14"
+  }
+}

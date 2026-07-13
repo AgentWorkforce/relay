@@ -1,0 +1,53 @@
+{
+  "id": "traj_442l4obkevgg",
+  "version": 1,
+  "task": {
+    "title": "Extract integration prompt contract package"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-17T20:34:17.016Z",
+  "completedAt": "2026-06-17T20:52:03.028Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-17T20:52:02.664Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_o9liwzoleam3",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-17T20:52:02.664Z",
+      "endedAt": "2026-06-17T20:52:03.028Z",
+      "events": [
+        {
+          "ts": 1781729522666,
+          "type": "decision",
+          "content": "Kept integration prompt descriptor portable with optional pear richness: Kept integration prompt descriptor portable with optional pear richness",
+          "raw": {
+            "question": "Kept integration prompt descriptor portable with optional pear richness",
+            "chosen": "Kept integration prompt descriptor portable with optional pear richness",
+            "alternatives": [],
+            "reasoning": "Factory only needs provider, mountRoot, and writableResources while Pear needs optional scope, subscription, and history fields to preserve full integrations-update wording."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added @agent-relay/integration-prompts with discovery reader, prompt builders, eval re-exports, tests, and build wiring.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "aece52a852c93d4d81ece4d2ed7fb021f8bace29",
+    "endRef": "aece52a852c93d4d81ece4d2ed7fb021f8bace29"
+  }
+}

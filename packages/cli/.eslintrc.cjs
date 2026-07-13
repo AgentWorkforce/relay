@@ -42,5 +42,5 @@ module.exports = {
     complexity: ['warn', 15],
     'max-depth': ['warn', 4],
   },
-  ignorePatterns: ['dist/**', 'node_modules/**', 'coverage/**', '**/out/**'],
+  ignorePatterns: ['dist/**', 'node_modules/**', 'coverage/**', '**/out/**', '**/*.gen.ts'],
 };

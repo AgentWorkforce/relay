@@ -24,11 +24,14 @@
     "dist",
     "README.md"
   ],
+  "dependencies": {
+    "@relaycast/sdk": "^4.1.6"
+  },
   "peerDependencies": {
     "opencode": ">=0.1.0"
   },
   "scripts": {
     "build": "npx tsc -p tsconfig.json",
-    "test": "npx vitest run tests/tools.test.ts tests/spawn.test.ts tests/polling.test.ts tests/integration.test.ts"
+    "test": "npx vitest run --config vitest.config.ts tests/tools.test.ts tests/spawn.test.ts tests/polling.test.ts tests/integration.test.ts"
   }
 }

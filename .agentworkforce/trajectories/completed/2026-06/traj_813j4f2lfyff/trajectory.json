@@ -1,0 +1,65 @@
+{
+  "id": "traj_813j4f2lfyff",
+  "version": 1,
+  "task": {
+    "title": "Add 'relay skills add' command with TUI to install the /orchestrate skill"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-27T04:21:42.177Z",
+  "completedAt": "2026-06-27T04:22:16.091Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-27T04:22:14.220Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ba3i631abtdx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-27T04:22:14.220Z",
+      "endedAt": "2026-06-27T04:22:16.091Z",
+      "events": [
+        {
+          "ts": 1782534134221,
+          "type": "decision",
+          "content": "Per-harness install registry mapping claude/codex/cursor/gemini/opencode to native command/skill paths; Gemini rendered as TOML, Codex/OpenCode get body-only prompts, Claude/Cursor keep full frontmatter: Per-harness install registry mapping claude/codex/cursor/gemini/opencode to native command/skill paths; Gemini rendered as TOML, Codex/OpenCode get body-only prompts, Claude/Cursor keep full frontmatter",
+          "raw": {
+            "question": "Per-harness install registry mapping claude/codex/cursor/gemini/opencode to native command/skill paths; Gemini rendered as TOML, Codex/OpenCode get body-only prompts, Claude/Cursor keep full frontmatter",
+            "chosen": "Per-harness install registry mapping claude/codex/cursor/gemini/opencode to native command/skill paths; Gemini rendered as TOML, Codex/OpenCode get body-only prompts, Claude/Cursor keep full frontmatter",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1782534135153,
+          "type": "decision",
+          "content": "Dependency-free keypress TUI (selectScope + multi-select selectHarnesses) instead of adding a prompt lib; non-interactive shells use --global/--local/--harness/--all flags: Dependency-free keypress TUI (selectScope + multi-select selectHarnesses) instead of adding a prompt lib; non-interactive shells use --global/--local/--harness/--all flags",
+          "raw": {
+            "question": "Dependency-free keypress TUI (selectScope + multi-select selectHarnesses) instead of adding a prompt lib; non-interactive shells use --global/--local/--harness/--all flags",
+            "chosen": "Dependency-free keypress TUI (selectScope + multi-select selectHarnesses) instead of adding a prompt lib; non-interactive shells use --global/--local/--harness/--all flags",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added 'agent-relay skills add': fetches agentrelay.com/skill.md and installs the /orchestrate skill per-harness, project or global, via interactive TUI or flags. 29 tests, typecheck + build green.",
+    "approach": "Standard approach",
+    "confidence": 0.83
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "80d687502bb829437a055ca6f0115258f0d070f6",
+    "endRef": "80d687502bb829437a055ca6f0115258f0d070f6"
+  }
+}

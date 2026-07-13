@@ -22,7 +22,7 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
-import type { HarnessDriverClient, BrokerEvent } from '@agent-relay/sdk';
+import type { HarnessDriverClient, BrokerEvent } from '@agent-relay/harness-driver';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import { assertAgentExists, assertNoDroppedDeliveries, eventsForAgent } from './utils/assert-helpers.js';
 import { skipIfCliMissing, skipIfNotRealCli, sleep } from './utils/cli-helpers.js';

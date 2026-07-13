@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "type": "node.register",
+  "name": "builder-1",
+  "node_id": "node_01J7FLEET000000000000001",
+  "capabilities": [
+    {
+      "name": "spawn:codex",
+      "kind": "spawn",
+      "metadata": {
+        "agent": "codex"
+      }
+    },
+    {
+      "name": "spawn:claude",
+      "kind": "spawn"
+    },
+    {
+      "name": "run:test",
+      "kind": "run",
+      "metadata": {
+        "command": "vitest"
+      }
+    }
+  ],
+  "max_agents": 8,
+  "tags": ["darwin", "arm64", "ssd"],
+  "version": "relay-broker/0.7.0",
+  "resume_cursor": null
+}

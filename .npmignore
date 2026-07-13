@@ -103,7 +103,6 @@ tsconfig.tsbuildinfo
 packages/*/*.tsbuildinfo
 
 # Other dev files
-run-dashboard.js
 CLAUDE.md
 AGENTS.md
 *.tasks.md
