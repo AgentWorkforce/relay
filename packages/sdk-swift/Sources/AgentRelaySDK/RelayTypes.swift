@@ -111,6 +111,24 @@ public struct RelayAgent: Decodable, Sendable {
         case lastSeenAtCamel = "lastSeenAt"
     }
 
+    public init(
+        id: String,
+        name: String,
+        type: RelayAgentType = .agent,
+        status: RelayAgentStatus = .unknown,
+        persona: String? = nil,
+        createdAt: String? = nil,
+        lastSeenAt: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.status = status
+        self.persona = persona
+        self.createdAt = createdAt
+        self.lastSeenAt = lastSeenAt
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
@@ -180,6 +198,11 @@ public struct RelayMessageSender: Decodable, Sendable, Equatable {
 public struct RelayMessageChannelRef: Decodable, Sendable, Equatable {
     public let id: String?
     public let name: String?
+
+    public init(id: String? = nil, name: String? = nil) {
+        self.id = id
+        self.name = name
+    }
 }
 
 public struct RelayMessage: Decodable, Sendable, Equatable {
@@ -192,9 +215,18 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
     public let threadId: String?
     public let parentId: String?
     public let createdAt: String?
+    /// File attachments carried by the message (see #1144). Translated from the
+    /// relaycast `FileAttachment` list; empty/absent when the message has none.
+    public let attachments: [RelayAttachment]
+    /// Emoji reaction rollups on the message (facade returns only; `nil` for
+    /// realtime event messages that do not carry reaction summaries).
+    public let reactions: [RelayMessageReaction]?
+    public let replyCount: Int?
+    public let readByCount: Int?
+    public let mentions: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, text, from, channel
+        case id, text, from, channel, attachments, reactions, mentions
         case body
         case messageId = "message_id"
         case messageIdCamel = "messageId"
@@ -206,6 +238,45 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
         case parentIdCamel = "parentId"
         case createdAt = "created_at"
         case createdAtCamel = "createdAt"
+        case replyCount = "reply_count"
+        case replyCountCamel = "replyCount"
+        case readByCount = "read_by_count"
+        case readByCountCamel = "readByCount"
+    }
+
+    /// Memberwise initializer used by the facade translation layer to build a
+    /// `RelayMessage` from a relaycast `MessageWithMeta`/thread reply without
+    /// round-tripping through JSON.
+    public init(
+        id: String,
+        messageId: String,
+        text: String,
+        from: RelayMessageSender,
+        channel: RelayMessageChannelRef? = nil,
+        conversationId: String? = nil,
+        threadId: String? = nil,
+        parentId: String? = nil,
+        createdAt: String? = nil,
+        attachments: [RelayAttachment] = [],
+        reactions: [RelayMessageReaction]? = nil,
+        replyCount: Int? = nil,
+        readByCount: Int? = nil,
+        mentions: [String]? = nil
+    ) {
+        self.id = id
+        self.messageId = messageId
+        self.text = text
+        self.from = from
+        self.channel = channel
+        self.conversationId = conversationId
+        self.threadId = threadId
+        self.parentId = parentId
+        self.createdAt = createdAt
+        self.attachments = attachments
+        self.reactions = reactions
+        self.replyCount = replyCount
+        self.readByCount = readByCount
+        self.mentions = mentions
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,6 +298,16 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
             ?? container.decodeIfPresent(String.self, forKey: .parentIdCamel)
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
             ?? container.decodeIfPresent(String.self, forKey: .createdAtCamel)
+        // Rich fields are only present on facade responses; keep decoding
+        // lenient (`try?`) so realtime event payloads with divergent shapes
+        // never fail the whole message decode.
+        attachments = (try? container.decode([RelayAttachment].self, forKey: .attachments)) ?? []
+        reactions = (try? container.decode([RelayMessageReaction].self, forKey: .reactions))
+        replyCount = (try? container.decode(Int.self, forKey: .replyCount))
+            ?? (try? container.decode(Int.self, forKey: .replyCountCamel))
+        readByCount = (try? container.decode(Int.self, forKey: .readByCount))
+            ?? (try? container.decode(Int.self, forKey: .readByCountCamel))
+        mentions = (try? container.decode([String].self, forKey: .mentions))
     }
 }
 

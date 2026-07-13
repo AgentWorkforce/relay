@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `AgentRelaySDK` (Swift) gains rich relay facades over the relaycast engine SDK, mirroring the TypeScript `@agent-relay/sdk`: `AgentClient.threads` (get/reply), `inbox` and `deliveries` (list/ack/fail/defer), `channels` (list/get/create/update/archive/join/leave/invite/members/mute/unmute), `agents` (list/get/me/update/delete/presence), `nodes`, `triggers`, `integrations` (webhooks + subscriptions), `files` (upload), and `workspace` admin. `post`/`dm` accept `attachments`, and a typed listener hub adds `addListener`/`once`/`onError` alongside the existing event streams. `AgentRelay.createWorkspace(name:)` and `AgentRelay.workspace` consolidate workspace bootstrap and participant registration. Depends on relaycast `6.0.5+`.
 
 ### Changed
 

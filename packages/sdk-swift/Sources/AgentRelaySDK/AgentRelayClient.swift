@@ -56,6 +56,46 @@ public final class AgentRelay: @unchecked Sendable {
         try await core.workspaceInfo()
     }
 
+    /// Consolidated workspace facade (#1156): `register`/`reconnect`/`info`/
+    /// `update`/`delete` in one place, mirroring the TS SDK `relay.workspace`.
+    public var workspace: RelayWorkspace {
+        RelayWorkspace(relay: self)
+    }
+
+    /// Create a hosted workspace and return an `AgentRelay` bound to its key.
+    /// Mirrors the TS SDK `AgentRelay.createWorkspace(...)`.
+    public static func createWorkspace(name: String, baseURL: URL? = nil) async throws -> AgentRelay {
+        let resolved = resolveBaseURL(from: baseURL)
+        do {
+            let response = try await Relaycast.RelayCast.createWorkspace(
+                name,
+                options: Relaycast.WorkspaceBootstrapOptions(baseURL: resolved.absoluteString)
+            )
+            guard let apiKey = response.apiKey, !apiKey.isEmpty else {
+                throw RelayError.protocolError(
+                    code: "workspace_missing_key",
+                    message: "Workspace created, but the response did not include a workspace key.",
+                    retryable: false
+                )
+            }
+            return AgentRelay(workspaceKey: apiKey, baseURL: resolved)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
+    func workspaceInfoDetail() async throws -> RelayWorkspaceInfo {
+        try await core.workspaceInfoDetail()
+    }
+
+    func workspaceUpdate(_ input: RelayUpdateWorkspaceInput) async throws -> RelayWorkspaceInfo {
+        try await core.workspaceUpdate(input)
+    }
+
+    func workspaceDelete() async throws {
+        try await core.workspaceDelete()
+    }
+
     private static func resolveBaseURL(from baseURL: URL?) -> URL {
         if let baseURL {
             return baseURL
@@ -153,6 +193,36 @@ final class HostedWorkspaceCore: @unchecked Sendable {
         }
     }
 
+    func workspaceInfoDetail() async throws -> RelayWorkspaceInfo {
+        let relay = try relayCast()
+        do {
+            return RelayWorkspaceInfo(try await relay.workspace.info())
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
+    func workspaceUpdate(_ input: RelayUpdateWorkspaceInput) async throws -> RelayWorkspaceInfo {
+        let relay = try relayCast()
+        do {
+            let workspace = try await relay.workspace.update(
+                Relaycast.UpdateWorkspaceRequest(name: input.name, systemPrompt: input.systemPrompt)
+            )
+            return RelayWorkspaceInfo(workspace)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
+    func workspaceDelete() async throws {
+        let relay = try relayCast()
+        do {
+            try await relay.workspace.delete()
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
     func makeParticipantCore(id: String, name: String, token: String) -> HostedParticipantCore {
         Self.makeParticipantCore(relayResult: relayResult, baseURL: baseURL, id: id, name: name, token: token)
     }
@@ -241,12 +311,79 @@ public final class AgentClient: @unchecked Sendable {
         RelayChannel(name: name, core: core)
     }
 
-    public func post(to channel: String, message: String) async throws {
-        try await core.post(channel: channel, text: message)
+    public func post(to channel: String, message: String, attachments: [RelayAttachmentInput] = []) async throws {
+        try await core.post(channel: channel, text: message, attachments: attachments.map { $0.fileId })
     }
 
-    public func dm(to agentName: String, message: String) async throws {
-        try await core.dm(to: agentName, text: message)
+    public func dm(to agentName: String, message: String, attachments: [RelayAttachmentInput] = []) async throws {
+        try await core.dm(to: agentName, text: message, attachments: attachments.map { $0.fileId })
+    }
+
+    // MARK: - Rich facades (#1150–#1158)
+
+    /// Message threads: fetch a thread or post a reply.
+    public var threads: RelayThreads { RelayThreads(core: core) }
+
+    /// Unread inbox summary plus delivery ack/fail/defer.
+    public var inbox: RelayInboxService { RelayInboxService(core: core) }
+
+    /// Durable per-recipient delivery ledger.
+    public var deliveries: RelayDeliveries { RelayDeliveries(core: core) }
+
+    /// Rich channels facade: list/get/create/update/archive/join/leave/invite/members/mute/unmute.
+    public var channels: RelayChannels { RelayChannels(core: core) }
+
+    /// Rich agents facade: list/get/me/update/delete/presence.
+    public var agents: RelayAgents { RelayAgents(core: core) }
+
+    /// Fleet nodes: list/get/bind/unbind.
+    public var nodes: RelayNodes { RelayNodes(core: core) }
+
+    /// Message triggers: list/create/update/delete.
+    public var triggers: RelayTriggers { RelayTriggers(core: core) }
+
+    /// Inbound webhooks and outbound event subscriptions.
+    public var integrations: RelayIntegrations { RelayIntegrations(core: core) }
+
+    /// File uploads for message attachments (#1144).
+    public var files: RelayFiles { RelayFiles(core: core) }
+
+    /// Workspace admin available to an agent-scoped client (info/update/delete).
+    public var workspace: RelayWorkspaceAdmin { RelayWorkspaceAdmin(core: core) }
+
+    // MARK: - Typed listener hub (#1159)
+
+    /// Subscribe to realtime events by selector (exact `message.created`,
+    /// wildcard `message.*`/`*`, or a predicate). The returned token
+    /// unsubscribes on `cancel()`. Complements the `events` AsyncStream.
+    @discardableResult
+    public func addListener(_ selector: RelayEventSelector, handler: @escaping RelayEventHandler) async -> RelayListenerToken {
+        let core = self.core
+        let id = await core.registerTypedListener(selector: selector, once: false, handler: handler)
+        return RelayListenerToken {
+            Task { await core.removeTypedListener(id) }
+        }
+    }
+
+    /// Like `addListener`, but auto-unsubscribes after the first matching event.
+    @discardableResult
+    public func once(_ selector: RelayEventSelector, handler: @escaping RelayEventHandler) async -> RelayListenerToken {
+        let core = self.core
+        let id = await core.registerTypedListener(selector: selector, once: true, handler: handler)
+        return RelayListenerToken {
+            Task { await core.removeTypedListener(id) }
+        }
+    }
+
+    /// Register a hook that receives typed-listener handler errors. Returns a
+    /// token whose `cancel()` removes the hook.
+    @discardableResult
+    public func onError(_ hook: @escaping RelayErrorHook) async -> RelayListenerToken {
+        let core = self.core
+        let id = await core.registerErrorHook(hook)
+        return RelayListenerToken {
+            Task { await core.removeErrorHook(id) }
+        }
     }
 
     public func registerAction(
@@ -413,6 +550,12 @@ actor HostedParticipantCore {
     private var actionHandlers: [String: RegisteredAction] = [:]
     private var unsubscribeHandlers: [() -> Void] = []
 
+    // Typed listener hub (#1159): registrations keyed by id, plus error hooks.
+    // Declared `internal` (not `private`) so the hub methods in
+    // `RelayListeners.swift` can register/dispatch across files.
+    var typedListeners: [UUID: TypedListenerRegistration] = [:]
+    var listenerErrorHooks: [UUID: RelayErrorHook] = [:]
+
     // Serialized inbound-event pipeline. The engine delivers events in order
     // from a single receive loop; we yield them (synchronously, FIFO) into this
     // stream and drain them through `routeEvent` on one consumer task so that
@@ -430,8 +573,9 @@ actor HostedParticipantCore {
     }
 
     /// Resolve (and cache) the relaycast `RelayCast` engine wrapper. Surfaces
-    /// configuration errors as `RelayError`.
-    private func relayCast() throws -> Relaycast.RelayCast {
+    /// configuration errors as `RelayError`. Internal so the rich facade
+    /// services (`RelayFacades.swift`) can reach workspace-scoped endpoints.
+    func relayCast() throws -> Relaycast.RelayCast {
         if let resolvedRelay { return resolvedRelay }
         switch engineSource {
         case .ready(_, let relay):
@@ -450,7 +594,8 @@ actor HostedParticipantCore {
 
     /// Resolve (and cache) the per-agent engine, building it lazily for the
     /// `.deferred` source. Surfaces `asAgent`/configuration errors as `RelayError`.
-    private func engine() throws -> Relaycast.AgentClient {
+    /// Internal so the rich facade services can reach agent-scoped endpoints.
+    func engine() throws -> Relaycast.AgentClient {
         if let resolvedEngine { return resolvedEngine }
         switch engineSource {
         case .ready(let engine, _):
@@ -527,19 +672,27 @@ actor HostedParticipantCore {
         try await ensureConnected()
     }
 
-    func post(channel: String, text: String) async throws {
+    func post(channel: String, text: String, attachments: [String] = []) async throws {
         let engine = try engine()
         do {
-            _ = try await engine.send(Self.normalizeChannel(channel), text: text, options: Relaycast.SendMessageOptions(mode: .wait))
+            _ = try await engine.send(
+                Self.normalizeChannel(channel),
+                text: text,
+                options: Relaycast.SendMessageOptions(attachments: attachments.isEmpty ? nil : attachments, mode: .wait)
+            )
         } catch let error as Relaycast.RelayError {
             throw RelayError(error)
         }
     }
 
-    func dm(to target: String, text: String) async throws {
+    func dm(to target: String, text: String, attachments: [String] = []) async throws {
         let engine = try engine()
         do {
-            _ = try await engine.dm(Self.stripSigil(target), text: text, options: Relaycast.DMOptions(mode: .wait))
+            _ = try await engine.dm(
+                Self.stripSigil(target),
+                text: text,
+                options: Relaycast.DMOptions(mode: .wait, attachments: attachments.isEmpty ? nil : attachments)
+            )
         } catch let error as Relaycast.RelayError {
             throw RelayError(error)
         }
@@ -686,6 +839,10 @@ actor HostedParticipantCore {
         for continuation in eventContinuations {
             continuation.yield(event)
         }
+
+        // Fan out to the typed listener hub (#1159) alongside the back-compat
+        // AsyncStreams above.
+        dispatchToTypedListeners(event)
 
         if event.type == "action.invoked" || event.type == "actionInvoked" {
             routeActionInvocation(event)
