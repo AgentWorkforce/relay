@@ -159,12 +159,30 @@ export interface WorkerStreamSubscriptionOptions {
    * the oldest buffered chunk is dropped to make room for the newest one (a
    * slow/paused consumer trades completeness for bounded memory rather than
    * growing without limit). A single warning is logged the first time this
-   * happens per subscription. Default: 10000.
+   * happens per subscription.
+   *
+   * Normalized to a finite positive integer: non-finite (`NaN`/`Infinity`),
+   * zero, or negative values are ignored and fall back to the default rather
+   * than silently disabling the bound. Default: 10000.
    */
   maxQueueSize?: number;
 }
 
 const DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE = 10_000;
+
+/**
+ * Coerce a caller-supplied `maxQueueSize` to a finite positive integer. A
+ * non-finite, zero, or negative value would defeat the buffer bound entirely
+ * (`queue.length >= NaN` is always false), so those fall back to the default.
+ */
+function normalizeMaxQueueSize(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+  }
+  return Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+}
 
 type BrokerExitListener = (info: BrokerExitInfo) => void;
 
@@ -781,12 +799,19 @@ export class HarnessDriverClient {
    */
   subscribeWorkerStream(name: string, options: WorkerStreamSubscriptionOptions = {}): AsyncIterable<string> {
     this.connectEvents(options.sinceSeq);
-    const maxQueueSize = options.maxQueueSize ?? DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+    const maxQueueSize = normalizeMaxQueueSize(options.maxQueueSize);
     let didWarnQueueOverflow = false;
 
     return {
       [Symbol.asyncIterator]: () => {
+        // Ring-style buffer: `queue` is the backing array and `head` is the
+        // index of the oldest live chunk. Dropping or consuming the oldest
+        // chunk advances `head` (O(1)) instead of `Array.prototype.shift()`
+        // (O(n)) — under sustained overload at the cap every chunk would
+        // otherwise pay an O(n) memmove. The dead prefix is reclaimed by
+        // `compactQueue` amortized O(1).
         const queue: string[] = [];
+        let head = 0;
         let pending:
           | {
               resolve: (result: IteratorResult<string>) => void;
@@ -794,6 +819,26 @@ export class HarnessDriverClient {
             }
           | undefined;
         let done = false;
+
+        const compactQueue = (): void => {
+          if (head === 0) {
+            return;
+          }
+          if (head >= queue.length) {
+            // Fully drained — reset so the backing array is reused from the
+            // front rather than growing without bound.
+            queue.length = 0;
+            head = 0;
+            return;
+          }
+          // Only pay the O(n) splice once the dead prefix has grown to at
+          // least half the backing array (past a small floor), keeping the
+          // per-chunk cost amortized O(1).
+          if (head >= 32 && head * 2 >= queue.length) {
+            queue.splice(0, head);
+            head = 0;
+          }
+        };
 
         const unsubscribe = this.onEvent((event) => {
           if (
@@ -811,8 +856,10 @@ export class HarnessDriverClient {
           }
           // Drop-oldest: a consumer that isn't pulling fast enough trades
           // completeness for bounded memory rather than buffering forever.
-          if (queue.length >= maxQueueSize) {
-            queue.shift();
+          if (queue.length - head >= maxQueueSize) {
+            queue[head] = undefined as unknown as string; // release reference
+            head += 1;
+            compactQueue();
             if (!didWarnQueueOverflow) {
               didWarnQueueOverflow = true;
               console.error(
@@ -836,8 +883,12 @@ export class HarnessDriverClient {
 
         return {
           next(): Promise<IteratorResult<string>> {
-            if (queue.length > 0) {
-              return Promise.resolve({ done: false, value: queue.shift() as string });
+            if (queue.length - head > 0) {
+              const value = queue[head];
+              queue[head] = undefined as unknown as string; // release reference
+              head += 1;
+              compactQueue();
+              return Promise.resolve({ done: false, value });
             }
             if (done) {
               return Promise.resolve({ done: true, value: undefined as never });

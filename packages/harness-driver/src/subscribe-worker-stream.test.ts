@@ -126,4 +126,82 @@ describe('subscribeWorkerStream backpressure', () => {
     await expect(iterator.next()).resolves.toEqual({ done: false, value: '0' });
     expect(warn).not.toHaveBeenCalled();
   });
+
+  // maxQueueSize normalization: a non-finite/zero/negative value must not
+  // silently defeat the bound (with the old `queue.length >= NaN`/`>= 0` logic
+  // every chunk would be dropped, or the buffer would grow unbounded). Each
+  // invalid value falls back to the default (10000) cap instead.
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['zero', 0],
+    ['negative', -5],
+  ])('falls back to the default cap when maxQueueSize is %s', async (_label, value) => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const client = new HarnessDriverClient({ baseUrl: 'http://x' });
+
+    const iterable = client.subscribeWorkerStream('Worker', { maxQueueSize: value });
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    const iterator = iterable[Symbol.asyncIterator]();
+    for (const chunk of ['a', 'b', 'c']) {
+      emitWorkerStream(socket, 'Worker', chunk);
+    }
+
+    // Under the default cap nothing is dropped: the oldest chunk is still 'a'.
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: 'a' });
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: 'b' });
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: 'c' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a fractional maxQueueSize down to an integer cap', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const client = new HarnessDriverClient({ baseUrl: 'http://x' });
+
+    // 2.9 floors to a cap of 2.
+    const iterable = client.subscribeWorkerStream('Worker', { maxQueueSize: 2.9 });
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    const iterator = iterable[Symbol.asyncIterator]();
+    for (const chunk of ['a', 'b', 'c', 'd']) {
+      emitWorkerStream(socket, 'Worker', chunk);
+    }
+
+    const drained: string[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const { value } = await iterator.next();
+      drained.push(value as string);
+    }
+    // Cap 2 keeps only the two most recent chunks.
+    expect(drained).toEqual(['c', 'd']);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps FIFO order and stays bounded across sustained drop-oldest churn', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const client = new HarnessDriverClient({ baseUrl: 'http://x' });
+
+    const iterable = client.subscribeWorkerStream('Worker', { maxQueueSize: 4 });
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    const iterator = iterable[Symbol.asyncIterator]();
+    // Push far more than the cap without consuming, forcing repeated
+    // drop-oldest (the head-index path that must stay O(1) and compact).
+    for (let i = 0; i < 500; i += 1) {
+      emitWorkerStream(socket, 'Worker', String(i));
+    }
+
+    const drained: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const { value } = await iterator.next();
+      drained.push(value as string);
+    }
+    // Only the last 4 survive, in FIFO order.
+    expect(drained).toEqual(['496', '497', '498', '499']);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
 });
