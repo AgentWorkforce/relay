@@ -19,10 +19,12 @@ Addressed PR #1253 review: ANSI grammar (double-ESC restart, ESC intermediates, 
 ## Key Decisions
 
 ### Cluster B1 client re-assert via unref'd interval, broker same-size no-op
+
 - **Chose:** Cluster B1 client re-assert via unref'd interval, broker same-size no-op
 - **Reasoning:** No timer DI existed; unref'd setInterval cleared on teardown keeps ownership alive without SIGWINCH; simplest robust option per review
 
 ### Cluster C: reset no_pid counter in drainer on confirmed write, share AtomicU32 via Arc
+
 - **Chose:** Cluster C: reset no_pid counter in drainer on confirmed write, share AtomicU32 via Arc
 - **Reasoning:** Enqueue success proved only queue room, not delivery; confirmed flush is real child-side activity
 
@@ -31,7 +33,8 @@ Addressed PR #1253 review: ANSI grammar (double-ESC restart, ESC intermediates, 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Cluster B1 client re-assert via unref'd interval, broker same-size no-op: Cluster B1 client re-assert via unref'd interval, broker same-size no-op
 - Cluster C: reset no_pid counter in drainer on confirmed write, share AtomicU32 via Arc: Cluster C: reset no_pid counter in drainer on confirmed write, share AtomicU32 via Arc

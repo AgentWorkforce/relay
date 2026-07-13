@@ -376,12 +376,7 @@ export async function syncInitialPtySize(
 ): Promise<void> {
   if (!localSize) return;
   try {
-    await createBrokerClient(connection, deps.fetch).resizePty(
-      name,
-      localSize.rows,
-      localSize.cols,
-      options
-    );
+    await createBrokerClient(connection, deps.fetch).resizePty(name, localSize.rows, localSize.cols, options);
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     deps.log(

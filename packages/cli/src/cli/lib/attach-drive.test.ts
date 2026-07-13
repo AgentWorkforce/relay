@@ -958,9 +958,7 @@ describe('runDriveSession', () => {
     await openSocket(sockets);
 
     // Capture the session id claimed by the on-attach resize sync.
-    const attachResize = fetchLog.find(
-      (call) => call.method === 'POST' && call.url.includes('/resize/')
-    );
+    const attachResize = fetchLog.find((call) => call.method === 'POST' && call.url.includes('/resize/'));
     const sessionId = (attachResize?.body as { session_id?: string } | undefined)?.session_id;
     expect(sessionId).toEqual(expect.any(String));
 
