@@ -17,11 +17,14 @@
  *   1. Discover broker connection (CLI flag → env → connection.json).
  *   2. `GET  /api/spawned/{name}/delivery-mode`  → remember the previous mode.
  *   3. `PUT  /api/spawned/{name}/delivery-mode`  → switch to `manual_flush`.
- *   4. `GET  /api/spawned/{name}/pending` → seed the status-line counter, then
- *      `GET /api/events/replay` → capture the durable-event `sinceSeq` cutoff.
+ *   4. `GET /api/events/replay` → capture the durable-event `sinceSeq` cutoff,
+ *      then `GET /api/spawned/{name}/pending` → seed the status-line counter
+ *      and the set of already-queued `event_id`s. Cutoff-first + id-dedupe
+ *      keeps the counter exact across the attach race (no under/over-count).
  *   5. Open `/ws?sinceSeq=<cutoff>`, subscribe, and buffer live output. The
  *      cutoff stops the broker replaying historical durable events that would
- *      inflate the pending counter.
+ *      inflate the pending counter; any replayed `delivery_queued` already in
+ *      the seed is deduped by `event_id`.
  *   6. On subscribe: `captureAndRenderSnapshot` repaints the agent's current
  *      screen; buffered chunks are reconciled against the snapshot's stream
  *      offset (drop what the snapshot already shows, apply the rest).
@@ -245,16 +248,36 @@ export async function setInboundDeliveryMode(
   }
 }
 
-/** `GET /api/spawned/{name}/pending` → count, or `0` on failure (best-effort). */
-export async function getPendingCount(
+/** Seed for the `drive` pending counter: the current queue depth plus the
+ *  set of `event_id`s already in the queue. The id set lets the WS handler
+ *  dedupe replayed `delivery_queued` frames against deliveries already
+ *  counted in `count` (see {@link runDriveSession}). */
+export interface PendingSeed {
+  count: number;
+  eventIds: Set<string>;
+}
+
+/**
+ * `GET /api/spawned/{name}/pending` → `{ count, eventIds }`, or an empty seed
+ * on failure (best-effort). The `eventIds` set carries every pending
+ * delivery's `event_id` (deliveries without one are still counted but can't
+ * be deduped) so a replayed `delivery_queued` frame for an already-seeded
+ * delivery doesn't inflate the counter.
+ */
+export async function getPendingSeed(
   connection: BrokerConnection,
   name: string,
   fetchFn: typeof globalThis.fetch
-): Promise<number> {
+): Promise<PendingSeed> {
   try {
-    return (await createBrokerClient(connection, fetchFn).getPending(name)).length;
+    const pending = await createBrokerClient(connection, fetchFn).getPending(name);
+    const eventIds = new Set<string>();
+    for (const message of pending) {
+      if (typeof message.event_id === 'string') eventIds.add(message.event_id);
+    }
+    return { count: pending.length, eventIds };
   } catch {
-    return 0;
+    return { count: 0, eventIds: new Set<string>() };
   }
 }
 
@@ -348,7 +371,7 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
 /** Discriminated union of the broker events `drive` cares about. */
 export type DriveWsEvent =
   | { kind: 'worker_stream'; chunk: string; offset?: number }
-  | { kind: 'delivery_queued' }
+  | { kind: 'delivery_queued'; eventId?: string }
   | { kind: 'agent_pending_drained'; count?: number }
   | { kind: 'other' };
 
@@ -377,7 +400,12 @@ export function classifyWsEvent(rawMessage: string, name: string): DriveWsEvent 
     return { kind: 'worker_stream', chunk, offset };
   }
   if (parsed.kind === 'delivery_queued') {
-    return { kind: 'delivery_queued' };
+    // `event_id` correlates a replayed frame with the pending seed so the
+    // counter isn't double-incremented for a delivery already reflected in
+    // the seed (see the seed-dedup note in `runDriveSession`). Absent on
+    // legacy/mixed frames — treated as "not in the seed" (counted).
+    const eventId = typeof parsed.event_id === 'string' ? parsed.event_id : undefined;
+    return { kind: 'delivery_queued', eventId };
   }
   if (parsed.kind === 'agent_pending_drained') {
     const count = typeof parsed.count === 'number' ? parsed.count : undefined;
@@ -460,6 +488,14 @@ interface DriveSessionState {
   name: string;
   previousMode: InboundDeliveryMode | null;
   initialPending: number;
+  /**
+   * `event_id`s already reflected in `initialPending`. The event WS replays
+   * durable `delivery_queued` frames with `seq > cutoffSeq`; a frame whose id
+   * is in this set was already counted in the seed and must not re-increment
+   * the counter (see {@link runDriveSession} for why the cutoff is captured
+   * first and the seed second).
+   */
+  seededEventIds: Set<string>;
   /** Local terminal size at attach, for sizing the predictive-echo model. */
   initialLocalSize: { rows: number; cols: number } | null;
   /**
@@ -478,7 +514,7 @@ interface DriveSessionState {
  * exit path. Resolves with the exit code the CLI should propagate.
  */
 function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies): Promise<number> {
-  const { connection, name, previousMode } = state;
+  const { connection, name, previousMode, seededEventIds } = state;
 
   // Connect with a `sinceSeq` cutoff so the broker replays only events after
   // attach — historical durable events must not inflate the pending counter.
@@ -764,6 +800,14 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           if (sync.push(event.chunk, event.offset)) applyServerOutput(event.chunk);
           break;
         case 'delivery_queued':
+          // A replayed frame (seq > cutoff) can still be for a delivery
+          // already reflected in the seeded pending count when it raced the
+          // cutoff/seed capture. Dedupe by `event_id`: count it once, then
+          // forget the id so a genuine re-queue of the same event later still
+          // registers.
+          if (event.eventId !== undefined && seededEventIds.delete(event.eventId)) {
+            break;
+          }
           pending += 1;
           paintStatus();
           break;
@@ -819,13 +863,23 @@ export async function runDriveSession(
   const { previousMode } = flipResult;
 
   const initialLocalSize = deps.terminal.getSize();
-  // Seed the pending counter from the live queue, then capture the durable
-  // event cutoff. Reading pending *before* the cutoff biases a message that
-  // races attach toward being counted once (via the queue) rather than
-  // double-counted (queue + replayed event). The snapshot is captured
-  // subscribe-first inside the session loop, after the WS is subscribed.
-  const initialPending = await getPendingCount(connection, name, deps.fetch);
+  // Capture the durable-event cutoff *first*, then seed the pending counter.
+  //
+  // The event WS replays durable `delivery_queued` frames with `seq >
+  // cutoffSeq`. Reading the cutoff before the seed guarantees every delivery
+  // NOT captured in the seed has `seq > cutoffSeq` (it was queued after the
+  // cutoff snapshot), so it is replayed and counted — closing the
+  // undercount hole where a delivery racing between the two reads was in
+  // neither the seed nor the replay. The flip side (a delivery that IS in the
+  // seed and also replays because its `seq > cutoffSeq`) is handled by
+  // deduping replayed frames against the seed's `event_id`s (see
+  // `seededEventIds` in the WS handler), so it's counted exactly once.
   const cutoffSeq = await getCurrentEventSeq(connection, deps.fetch);
+  const { count: initialPending, eventIds: seededEventIds } = await getPendingSeed(
+    connection,
+    name,
+    deps.fetch
+  );
 
   return runDriveSessionLoop(
     {
@@ -833,6 +887,7 @@ export async function runDriveSession(
       name,
       previousMode,
       initialPending,
+      seededEventIds,
       initialLocalSize,
       cutoffSeq,
     },
