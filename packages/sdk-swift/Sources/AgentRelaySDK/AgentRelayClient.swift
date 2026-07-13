@@ -150,7 +150,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
             )
             return makeRegistration(created)
         } catch let error as Relaycast.RelayError {
-            throw RelayError(error)
+            throw Self.registrationConflictAwareError(error)
         }
     }
 
@@ -162,8 +162,20 @@ final class HostedWorkspaceCore: @unchecked Sendable {
             )
             return makeRegistration(created)
         } catch let error as Relaycast.RelayError {
-            throw RelayError(error)
+            throw Self.registrationConflictAwareError(error)
         }
+    }
+
+    /// Agent registration is the one operation where a bare HTTP 409 is
+    /// unambiguous: it means the requested agent name is already taken. Every
+    /// other relaycast call bridges through the generic, non-guessing
+    /// `RelayError(_:)` mapping instead, since a 409 elsewhere (channel,
+    /// trigger, node, webhook, ...) means a different kind of conflict.
+    static func registrationConflictAwareError(_ error: Relaycast.RelayError) -> RelayError {
+        if case .api(_, let message, let statusCode, let retryable) = error, statusCode == 409 {
+            return .protocolError(code: "agent_already_exists", message: message, retryable: retryable)
+        }
+        return RelayError(error)
     }
 
     func reconnect(apiToken: String) async throws -> AgentClient {

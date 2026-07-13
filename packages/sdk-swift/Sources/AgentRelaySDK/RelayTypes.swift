@@ -242,6 +242,15 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
         case replyCountCamel = "replyCount"
         case readByCount = "read_by_count"
         case readByCountCamel = "readByCount"
+        // relaycast's realtime WS events (`message.created`, `thread.reply`,
+        // `dm.received`, ...) carry the sender as `agent_id`/`agent_name`
+        // fields directly on the message object rather than a nested `from`
+        // object; these keys let `from` fall back to that shape instead of
+        // silently resolving to an empty sender.
+        case agentId = "agent_id"
+        case agentIdCamel = "agentId"
+        case agentName = "agent_name"
+        case agentNameCamel = "agentName"
     }
 
     /// Memberwise initializer used by the facade translation layer to build a
@@ -288,7 +297,18 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
         text = (try? container.decode(String.self, forKey: .text))
             ?? (try? container.decode(String.self, forKey: .body))
             ?? ""
-        from = (try? container.decode(RelayMessageSender.self, forKey: .from)) ?? RelayMessageSender()
+        if let sender = try? container.decodeIfPresent(RelayMessageSender.self, forKey: .from) {
+            from = sender
+        } else {
+            // No nested `from` object (the realtime WS shape): build the
+            // sender from message-level `agent_id`/`agent_name` instead of
+            // falling back to an empty (`"unknown"`) sender.
+            let agentId = try container.decodeIfPresent(String.self, forKey: .agentId)
+                ?? container.decodeIfPresent(String.self, forKey: .agentIdCamel)
+            let agentName = try container.decodeIfPresent(String.self, forKey: .agentName)
+                ?? container.decodeIfPresent(String.self, forKey: .agentNameCamel)
+            from = RelayMessageSender(id: agentId, name: agentName)
+        }
         channel = try container.decodeIfPresent(RelayMessageChannelRef.self, forKey: .channel)
         conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId)
             ?? container.decodeIfPresent(String.self, forKey: .conversationIdCamel)
