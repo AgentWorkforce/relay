@@ -29,9 +29,9 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
-  captureInitialSnapshot,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
   type AttachSnapshotConnection,
@@ -167,7 +167,9 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
  *  about. No `delivery_queued` / `agent_pending_drained` — there's no
  *  queue in passthrough session, so those events (which the broker doesn't
  *  emit while the worker is in `auto_inject`) would be `other`. */
-export type PassthroughWsEvent = { kind: 'worker_stream'; chunk: string } | { kind: 'other' };
+export type PassthroughWsEvent =
+  | { kind: 'worker_stream'; chunk: string; offset?: number }
+  | { kind: 'other' };
 
 /**
  * Inspect a single WebSocket frame and classify it relative to the
@@ -186,7 +188,8 @@ export function classifyWsEvent(rawMessage: string, name: string): PassthroughWs
   if (parsed.kind === 'worker_stream') {
     const chunk = parsed.chunk;
     if (typeof chunk !== 'string') return { kind: 'other' };
-    return { kind: 'worker_stream', chunk };
+    const offset = typeof parsed.offset === 'number' ? parsed.offset : undefined;
+    return { kind: 'worker_stream', chunk, offset };
   }
   return { kind: 'other' };
 }
@@ -268,39 +271,7 @@ export async function runPassthroughSession(
   if (!flipResult) return 1;
   const { previousMode } = flipResult;
 
-  // Tee the snapshot's painted bytes so we can seed the predictive-echo
-  // model with them — its cursor must match the real screen before we
-  // optimistically echo, or predicted glyphs land at the wrong position.
-  let snapshotBytes = '';
-  const captureWrite = (chunk: string): void => {
-    deps.writeChunk(chunk);
-    snapshotBytes += chunk;
-  };
-  const snapshotResult = await captureInitialSnapshot(
-    connection,
-    name,
-    previousMode,
-    'passthrough',
-    'attach to',
-    {
-      fetch: deps.fetch,
-      writeChunk: captureWrite,
-      log: deps.log,
-      error: deps.error,
-      captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
-    }
-  );
-  if (!snapshotResult) return 1;
-
   const initialLocalSize = deps.terminal.getSize();
-  let terminalRows = pickInitialTerminalRows(initialLocalSize, snapshotResult.snapshotRows);
-
-  const paintStatus = (): void => {
-    deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }));
-  };
-  paintStatus();
-
-  await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps);
 
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};
@@ -315,9 +286,15 @@ export async function runPassthroughSession(
     const parser = new PassthroughKeybindParser();
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
+    // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
+    // is painted and reconciled against its per-worker offset (no lost/dup
+    // output around attach time). See StreamSyncBuffer.
+    const sync = new StreamSyncBuffer();
+    let terminalRows = pickInitialTerminalRows(initialLocalSize, undefined);
 
     // Adaptive predictive echo masks round-trip latency on remote brokers.
-    // Seeded with the snapshot so its confirmed model matches the screen.
+    // Seeded with the snapshot (after it is painted) so its confirmed model
+    // matches the screen.
     const predictiveEcho =
       deps.createPredictiveEcho?.({
         cols: initialLocalSize?.cols ?? 0,
@@ -325,9 +302,30 @@ export async function runPassthroughSession(
         write: deps.writeChunk,
         getInputSrtt: () => inputStream?.srttMs ?? null,
       }) ?? null;
-    if (predictiveEcho) {
-      void predictiveEcho.seed(snapshotBytes);
-    }
+
+    // Tee the snapshot's painted bytes so we can seed the predictive-echo
+    // model with them — its cursor must match the real screen before we
+    // optimistically echo, or predicted glyphs land at the wrong position.
+    let snapshotBytes = '';
+    const captureWrite = (chunk: string): void => {
+      deps.writeChunk(chunk);
+      snapshotBytes += chunk;
+    };
+
+    const paintStatus = (): void => {
+      deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }));
+    };
+
+    // Route server output through the predictive-echo engine (which owns
+    // cursor save/restore) or straight to stdout, then repaint the status.
+    const applyServerOutput = (chunk: string): void => {
+      if (predictiveEcho) {
+        void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
+      } else {
+        deps.writeChunk(chunk);
+        paintStatus();
+      }
+    };
 
     const resizeHandler = (): void => {
       const size = deps.terminal.getSize();
@@ -463,13 +461,56 @@ export async function runPassthroughSession(
       }
     };
 
+    // Runs once the event WS is subscribed: paint the snapshot, seed
+    // predictive echo, reconcile buffered live output, forward the initial
+    // resize (now that we're subscribed, so its SIGWINCH repaint lands in the
+    // live stream rather than a dead zone), then take over stdin.
+    const onSubscribed = async (): Promise<void> => {
+      const snapshot = await deps.captureAndRenderSnapshot(
+        { url: connection.url, apiKey: connection.apiKey },
+        name,
+        { fetch: deps.fetch, writeChunk: captureWrite }
+      );
+      if (settled) return;
+      switch (snapshot.status) {
+        case 'ok':
+          break;
+        case 'not_found':
+          deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
+          finish(1);
+          return;
+        case 'no_pty':
+          deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to attach to`}`);
+          finish(1);
+          return;
+        case 'unavailable':
+        case 'transport_error':
+          deps.log(
+            `[passthrough] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+          );
+          break;
+      }
+      if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
+      terminalRows = pickInitialTerminalRows(initialLocalSize, snapshot.rows);
+      paintStatus();
+      // Reconcile buffered chunks. On `ok`, drop what the snapshot already
+      // reflects (by offset); with no offset this drops the pre-snapshot
+      // buffer (snapshot-authoritative, matching the legacy behaviour). On a
+      // transient snapshot failure nothing was painted, so apply everything.
+      const pending = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
+      for (const chunk of pending) applyServerOutput(chunk);
+      await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps);
+      if (settled) return;
+      await openInputStreamAndTakeStdin();
+    };
+
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const cleanup = deps.onSignal(signal, () => finish(0));
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
     }
 
     socket.on('open', () => {
-      void openInputStreamAndTakeStdin();
+      void onSubscribed();
     });
 
     socket.on('message', (data) => {
@@ -478,15 +519,7 @@ export async function runPassthroughSession(
       const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
-          if (predictiveEcho) {
-            // The engine owns pass-through (it must restore the cursor
-            // before writing server bytes when predictions are live);
-            // repaint the status line once it has flushed.
-            void predictiveEcho.onServerOutput(event.chunk).then(paintStatus, paintStatus);
-          } else {
-            deps.writeChunk(event.chunk);
-            paintStatus();
-          }
+          if (sync.push(event.chunk, event.offset)) applyServerOutput(event.chunk);
           break;
         case 'other':
           break;

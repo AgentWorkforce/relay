@@ -360,6 +360,11 @@ pub enum BrokerEvent {
         name: WorkerName,
         stream: String,
         chunk: String,
+        /// Cumulative per-worker byte offset at the end of this chunk. Lets
+        /// attaching clients correlate the live stream with a snapshot.
+        /// Absent for headless workers (no VT grid).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     DeliveryRetry {
         name: WorkerName,
@@ -537,6 +542,10 @@ pub enum WorkerToBroker {
     WorkerStream {
         stream: String,
         chunk: String,
+        /// Cumulative per-worker byte offset at the end of this chunk (the
+        /// count of raw PTY bytes the worker has parsed into its grid).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     WorkerError(ProtocolError),
     WorkerExited {
@@ -928,6 +937,44 @@ mod tests {
         };
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_worker_stream_carries_offset_when_present() {
+        let event = BrokerEvent::WorkerStream {
+            name: "Worker1".into(),
+            stream: "stdout".to_string(),
+            chunk: "hello".to_string(),
+            offset: Some(42),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw.get("offset").and_then(Value::as_u64), Some(42));
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_worker_stream_omits_offset_when_absent() {
+        // Headless workers (no VT grid) and pre-offset brokers don't set it;
+        // the field must be omitted from the wire, and absence must decode
+        // back to `None`.
+        let event = BrokerEvent::WorkerStream {
+            name: "Worker1".into(),
+            stream: "stdout".to_string(),
+            chunk: "hi".to_string(),
+            offset: None,
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert!(
+            raw.get("offset").is_none(),
+            "offset must be omitted when None"
+        );
+        // A frame with no `offset` key decodes to `None` (backward compatible).
+        let legacy = r#"{"kind":"worker_stream","name":"Worker1","stream":"stdout","chunk":"hi"}"#;
+        let decoded: BrokerEvent = serde_json::from_str(legacy).unwrap();
         assert_eq!(decoded, event);
     }
 }

@@ -11,16 +11,26 @@
  * mode, and leaves the agent running under the broker — `drive` never kills the
  * worker.
  *
- * Sequence of operations on attach:
+ * Sequence of operations on attach (subscribe-first, so no output around
+ * attach time is lost and none is double-painted):
  *
  *   1. Discover broker connection (CLI flag → env → connection.json).
  *   2. `GET  /api/spawned/{name}/delivery-mode`  → remember the previous mode.
  *   3. `PUT  /api/spawned/{name}/delivery-mode`  → switch to `manual_flush`.
- *   4. `captureAndRenderSnapshot`       → repaint the agent's current screen.
- *   5. `GET  /api/spawned/{name}/pending` → seed the status-line counter.
- *   6. Open `/ws`, subscribe to events for this worker.
- *   7. Open the SDK PTY input stream, then switch local stdin to raw
- *      mode and forward bytes through that stream.
+ *   4. `GET /api/events/replay` → capture the durable-event `sinceSeq` cutoff,
+ *      then `GET /api/spawned/{name}/pending` → seed the status-line counter
+ *      and the set of already-queued `event_id`s. Cutoff-first + id-dedupe
+ *      keeps the counter exact across the attach race (no under/over-count).
+ *   5. Open `/ws?sinceSeq=<cutoff>`, subscribe, and buffer live output. The
+ *      cutoff stops the broker replaying historical durable events that would
+ *      inflate the pending counter; any replayed `delivery_queued` already in
+ *      the seed is deduped by `event_id`.
+ *   6. On subscribe: `captureAndRenderSnapshot` repaints the agent's current
+ *      screen; buffered chunks are reconciled against the snapshot's stream
+ *      offset (drop what the snapshot already shows, apply the rest).
+ *   7. Forward the initial terminal size (resize now lands in the live stream,
+ *      not a dead zone), then open the SDK PTY input stream and switch local
+ *      stdin to raw mode.
  *
  * On detach (clean or abnormal), best-effort `PUT .../delivery-mode` restores the
  * previous mode so the queue doesn't fill up indefinitely.
@@ -33,9 +43,9 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
-  captureInitialSnapshot,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
   type AttachSnapshotConnection,
@@ -238,14 +248,52 @@ export async function setInboundDeliveryMode(
   }
 }
 
-/** `GET /api/spawned/{name}/pending` → count, or `0` on failure (best-effort). */
-export async function getPendingCount(
+/** Seed for the `drive` pending counter: the current queue depth plus the
+ *  set of `event_id`s already in the queue. The id set lets the WS handler
+ *  dedupe replayed `delivery_queued` frames against deliveries already
+ *  counted in `count` (see {@link runDriveSession}). */
+export interface PendingSeed {
+  count: number;
+  eventIds: Set<string>;
+}
+
+/**
+ * `GET /api/spawned/{name}/pending` → `{ count, eventIds }`, or an empty seed
+ * on failure (best-effort). The `eventIds` set carries every pending
+ * delivery's `event_id` (deliveries without one are still counted but can't
+ * be deduped) so a replayed `delivery_queued` frame for an already-seeded
+ * delivery doesn't inflate the counter.
+ */
+export async function getPendingSeed(
   connection: BrokerConnection,
   name: string,
   fetchFn: typeof globalThis.fetch
+): Promise<PendingSeed> {
+  try {
+    const pending = await createBrokerClient(connection, fetchFn).getPending(name);
+    const eventIds = new Set<string>();
+    for (const message of pending) {
+      if (typeof message.event_id === 'string') eventIds.add(message.event_id);
+    }
+    return { count: pending.length, eventIds };
+  } catch {
+    return { count: 0, eventIds: new Set<string>() };
+  }
+}
+
+/**
+ * Current durable-event sequence cutoff, used as the event WS `sinceSeq` so
+ * the broker does not replay historical durable events (old `delivery_queued`
+ * frames) that would otherwise inflate the freshly-seeded pending counter.
+ * Returns `0` on failure (best-effort) — the caller then omits `sinceSeq`
+ * and behaves as before.
+ */
+export async function getCurrentEventSeq(
+  connection: BrokerConnection,
+  fetchFn: typeof globalThis.fetch
 ): Promise<number> {
   try {
-    return (await createBrokerClient(connection, fetchFn).getPending(name)).length;
+    return await createBrokerClient(connection, fetchFn).currentEventSeq();
   } catch {
     return 0;
   }
@@ -322,8 +370,8 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
 
 /** Discriminated union of the broker events `drive` cares about. */
 export type DriveWsEvent =
-  | { kind: 'worker_stream'; chunk: string }
-  | { kind: 'delivery_queued' }
+  | { kind: 'worker_stream'; chunk: string; offset?: number }
+  | { kind: 'delivery_queued'; eventId?: string }
   | { kind: 'agent_pending_drained'; count?: number }
   | { kind: 'other' };
 
@@ -348,10 +396,16 @@ export function classifyWsEvent(rawMessage: string, name: string): DriveWsEvent 
   if (parsed.kind === 'worker_stream') {
     const chunk = parsed.chunk;
     if (typeof chunk !== 'string') return { kind: 'other' };
-    return { kind: 'worker_stream', chunk };
+    const offset = typeof parsed.offset === 'number' ? parsed.offset : undefined;
+    return { kind: 'worker_stream', chunk, offset };
   }
   if (parsed.kind === 'delivery_queued') {
-    return { kind: 'delivery_queued' };
+    // `event_id` correlates a replayed frame with the pending seed so the
+    // counter isn't double-incremented for a delivery already reflected in
+    // the seed (see the seed-dedup note in `runDriveSession`). Absent on
+    // legacy/mixed frames — treated as "not in the seed" (counted).
+    const eventId = typeof parsed.event_id === 'string' ? parsed.event_id : undefined;
+    return { kind: 'delivery_queued', eventId };
   }
   if (parsed.kind === 'agent_pending_drained') {
     const count = typeof parsed.count === 'number' ? parsed.count : undefined;
@@ -434,23 +488,40 @@ interface DriveSessionState {
   name: string;
   previousMode: InboundDeliveryMode | null;
   initialPending: number;
-  initialTerminalRows: number | undefined;
+  /**
+   * `event_id`s already reflected in `initialPending`. The event WS replays
+   * durable `delivery_queued` frames with `seq > cutoffSeq`; a frame whose id
+   * is in this set was already counted in the seed and must not re-increment
+   * the counter (see {@link runDriveSession} for why the cutoff is captured
+   * first and the seed second).
+   */
+  seededEventIds: Set<string>;
   /** Local terminal size at attach, for sizing the predictive-echo model. */
   initialLocalSize: { rows: number; cols: number } | null;
-  /** Painted snapshot bytes, used to seed the predictive-echo model. */
-  snapshotBytes: string;
+  /**
+   * Durable-event sequence cutoff at attach. Passed to the event WS as
+   * `sinceSeq` so the broker doesn't replay historical durable events
+   * (old `delivery_queued`) that would inflate the pending counter.
+   */
+  cutoffSeq: number;
 }
 
 /**
- * Run the interactive session: opens the WS, takes over stdin on
- * `open`, drives resize/status-line handling, and restores the
- * worker's previous mode on any exit path. Resolves with the exit
- * code the CLI should propagate.
+ * Run the interactive session. Subscribe-first: opens the event WS, buffers
+ * live `worker_stream` chunks, then (on subscribe) paints the snapshot,
+ * reconciles the buffer against the snapshot offset, forwards the initial
+ * resize, and takes over stdin. Restores the worker's previous mode on any
+ * exit path. Resolves with the exit code the CLI should propagate.
  */
 function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies): Promise<number> {
-  const { connection, name, previousMode } = state;
+  const { connection, name, previousMode, seededEventIds } = state;
 
-  const wsUrl = toWsUrl(connection.url);
+  // Connect with a `sinceSeq` cutoff so the broker replays only events after
+  // attach — historical durable events must not inflate the pending counter.
+  // Omit it when the cutoff is 0 (no durable events yet / lookup failed) so
+  // the URL and behaviour match the pre-cutoff default.
+  const wsUrl =
+    state.cutoffSeq > 0 ? `${toWsUrl(connection.url)}?sinceSeq=${state.cutoffSeq}` : toWsUrl(connection.url);
   const headers: Record<string, string> = {};
   if (connection.apiKey) {
     headers['X-API-Key'] = connection.apiKey;
@@ -461,13 +532,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
     let pending = state.initialPending;
-    let terminalRows = state.initialTerminalRows;
+    let terminalRows = pickInitialTerminalRows(state.initialLocalSize, undefined);
     const parser = new KeybindParser();
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
+    // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
+    // is painted and reconciled against its per-worker offset.
+    const sync = new StreamSyncBuffer();
 
     // Adaptive predictive echo masks round-trip latency on remote brokers.
-    // Seeded with the snapshot so its confirmed model matches the screen.
+    // Seeded with the snapshot (once painted) so its confirmed model matches
+    // the screen.
     const predictiveEcho =
       deps.createPredictiveEcho?.({
         cols: state.initialLocalSize?.cols ?? 0,
@@ -475,9 +550,15 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         write: deps.writeChunk,
         getInputSrtt: () => inputStream?.srttMs ?? null,
       }) ?? null;
-    if (predictiveEcho) {
-      void predictiveEcho.seed(state.snapshotBytes);
-    }
+
+    // Tee the snapshot's painted bytes so we can seed the predictive-echo
+    // model with them — its cursor must match the real screen before we
+    // optimistically echo, or predicted glyphs land at the wrong position.
+    let snapshotBytes = '';
+    const captureWrite = (chunk: string): void => {
+      deps.writeChunk(chunk);
+      snapshotBytes += chunk;
+    };
 
     const paintStatus = (): void => {
       deps.writeChunk(
@@ -489,7 +570,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         })
       );
     };
-    paintStatus();
+
+    // Route server output through the predictive-echo engine (which owns
+    // cursor save/restore) or straight to stdout, then repaint the status.
+    const applyServerOutput = (chunk: string): void => {
+      if (predictiveEcho) {
+        void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
+      } else {
+        deps.writeChunk(chunk);
+        paintStatus();
+      }
+    };
 
     // Local-terminal resize handler. Forwards to the broker and
     // repaints the status line at the new bottom-row index. Registered
@@ -644,16 +735,60 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       }
     };
 
+    // Runs once the event WS is subscribed: paint the snapshot, seed
+    // predictive echo, reconcile buffered live output against the snapshot
+    // offset, forward the initial resize (now that we're subscribed, so its
+    // SIGWINCH repaint lands in the live stream instead of a dead zone before
+    // subscription), then open the input stream and take over stdin.
+    const onSubscribed = async (): Promise<void> => {
+      const snapshot = await deps.captureAndRenderSnapshot(
+        { url: connection.url, apiKey: connection.apiKey },
+        name,
+        { fetch: deps.fetch, writeChunk: captureWrite }
+      );
+      if (settled) return;
+      switch (snapshot.status) {
+        case 'ok':
+          break;
+        case 'not_found':
+          deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
+          finish(1);
+          return;
+        case 'no_pty':
+          deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to drive`}`);
+          finish(1);
+          return;
+        case 'unavailable':
+        case 'transport_error':
+          deps.log(
+            `[drive] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+          );
+          break;
+      }
+      if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
+      terminalRows = pickInitialTerminalRows(state.initialLocalSize, snapshot.rows);
+      paintStatus();
+      // Reconcile buffered chunks. On `ok`, drop what the snapshot already
+      // reflects (by offset); with no offset this drops the pre-snapshot
+      // buffer (snapshot-authoritative, matching the legacy behaviour). On a
+      // transient snapshot failure nothing was painted, so apply everything.
+      const pendingChunks = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
+      for (const chunk of pendingChunks) applyServerOutput(chunk);
+      await syncInitialPtySize(connection, name, state.initialLocalSize, 'drive', deps);
+      if (settled) return;
+      // Open the SDK input stream before taking over stdin. A failed stream
+      // should not leave the user's terminal in raw mode with nowhere to
+      // send bytes.
+      await openInputStreamAndTakeStdin();
+    };
+
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const cleanup = deps.onSignal(signal, () => finish(0));
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
     }
 
     socket.on('open', () => {
-      // Now that the event WS is up, open the SDK input stream before
-      // taking over stdin. A failed stream should not leave the user's
-      // terminal in raw mode with nowhere to send bytes.
-      void openInputStreamAndTakeStdin();
+      void onSubscribed();
     });
 
     socket.on('message', (data) => {
@@ -662,19 +797,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
-          if (predictiveEcho) {
-            // The engine owns pass-through (it must restore the cursor
-            // before writing server bytes when predictions are live);
-            // repaint the status line once it has flushed.
-            void predictiveEcho.onServerOutput(event.chunk).then(paintStatus, paintStatus);
-          } else {
-            deps.writeChunk(event.chunk);
-            // Repaint the status line so the worker's writes don't
-            // obscure it. Cheap — it's just an ANSI escape sequence.
-            paintStatus();
-          }
+          if (sync.push(event.chunk, event.offset)) applyServerOutput(event.chunk);
           break;
         case 'delivery_queued':
+          // A replayed frame (seq > cutoff) can still be for a delivery
+          // already reflected in the seeded pending count when it raced the
+          // cutoff/seed capture. Dedupe by `event_id`: count it once, then
+          // forget the id so a genuine re-queue of the same event later still
+          // registers.
+          if (event.eventId !== undefined && seededEventIds.delete(event.eventId)) {
+            break;
+          }
           pending += 1;
           paintStatus();
           break;
@@ -729,28 +862,24 @@ export async function runDriveSession(
   if (!flipResult) return 1;
   const { previousMode } = flipResult;
 
-  // Tee the snapshot's painted bytes so we can seed the predictive-echo
-  // model with them — its cursor must match the real screen before we
-  // optimistically echo, or predicted glyphs land at the wrong position.
-  let snapshotBytes = '';
-  const captureWrite = (chunk: string): void => {
-    deps.writeChunk(chunk);
-    snapshotBytes += chunk;
-  };
-  const snapshotResult = await captureInitialSnapshot(connection, name, previousMode, 'drive', 'drive', {
-    fetch: deps.fetch,
-    writeChunk: captureWrite,
-    log: deps.log,
-    error: deps.error,
-    captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
-  });
-  if (!snapshotResult) return 1;
-
-  const initialPending = await getPendingCount(connection, name, deps.fetch);
   const initialLocalSize = deps.terminal.getSize();
-  const initialTerminalRows = pickInitialTerminalRows(initialLocalSize, snapshotResult.snapshotRows);
-
-  await syncInitialPtySize(connection, name, initialLocalSize, 'drive', deps);
+  // Capture the durable-event cutoff *first*, then seed the pending counter.
+  //
+  // The event WS replays durable `delivery_queued` frames with `seq >
+  // cutoffSeq`. Reading the cutoff before the seed guarantees every delivery
+  // NOT captured in the seed has `seq > cutoffSeq` (it was queued after the
+  // cutoff snapshot), so it is replayed and counted — closing the
+  // undercount hole where a delivery racing between the two reads was in
+  // neither the seed nor the replay. The flip side (a delivery that IS in the
+  // seed and also replays because its `seq > cutoffSeq`) is handled by
+  // deduping replayed frames against the seed's `event_id`s (see
+  // `seededEventIds` in the WS handler), so it's counted exactly once.
+  const cutoffSeq = await getCurrentEventSeq(connection, deps.fetch);
+  const { count: initialPending, eventIds: seededEventIds } = await getPendingSeed(
+    connection,
+    name,
+    deps.fetch
+  );
 
   return runDriveSessionLoop(
     {
@@ -758,9 +887,9 @@ export async function runDriveSession(
       name,
       previousMode,
       initialPending,
-      initialTerminalRows,
+      seededEventIds,
       initialLocalSize,
-      snapshotBytes,
+      cutoffSeq,
     },
     deps
   );

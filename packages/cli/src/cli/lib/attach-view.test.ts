@@ -125,8 +125,9 @@ describe('extractMatchingChunk', () => {
       name: 'Alice',
       stream: 'stdout',
       chunk: '[31mhello[0m',
+      offset: 7,
     });
-    expect(extractMatchingChunk(raw, 'Alice')).toBe('[31mhello[0m');
+    expect(extractMatchingChunk(raw, 'Alice')).toEqual({ chunk: '[31mhello[0m', offset: 7 });
   });
 
   it('filters out events for other agents', () => {
@@ -162,7 +163,7 @@ describe('extractMatchingChunk', () => {
 
   it('keeps empty chunks (server sends them to signal flushes)', () => {
     const raw = JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: '' });
-    expect(extractMatchingChunk(raw, 'Alice')).toBe('');
+    expect(extractMatchingChunk(raw, 'Alice')).toEqual({ chunk: '', offset: undefined });
   });
 });
 
@@ -247,6 +248,14 @@ describe('resolveViewBrokerConnection', () => {
   });
 });
 
+/** Flush enough microtasks/macrotasks that the async
+ *  paint-snapshot-then-reconcile chain in the `open` handler settles. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 describe('runViewSession', () => {
   it('writes chunks for matching events and ignores others', async () => {
     const { deps, writes, sockets, logs } = createHarness({
@@ -261,7 +270,9 @@ describe('runViewSession', () => {
     expect(socket.url).toBe('ws://localhost:3889/ws');
     expect(socket.headers['X-API-Key']).toBe('k');
 
+    // Subscribe-first: the snapshot is painted+reconciled after `open`.
     socket.emit('open');
+    await settle();
     expect(logs.some((args) => String(args[0]).includes('streaming Alice from'))).toBe(false);
     socket.emit(
       'message',
@@ -292,6 +303,7 @@ describe('runViewSession', () => {
     await new Promise((resolve) => setImmediate(resolve));
     const socket = sockets[0];
     socket.emit('open');
+    await settle();
     socket.emit(
       'message',
       JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: ansi })
@@ -300,6 +312,44 @@ describe('runViewSession', () => {
 
     await sessionPromise;
     expect(writes).toEqual([ansi]);
+  });
+
+  it('drops buffered chunks the snapshot already reflects, applies the rest (offset reconcile)', async () => {
+    // Snapshot reports offset=10. Chunks with end offset <= 10 are already on
+    // screen (drop); later ones are applied. Chunks buffered before the
+    // snapshot is painted must be reconciled, not lost or double-applied.
+    const snapshotBytes = 'SNAPSHOT';
+    const { deps, writes, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotChunk: snapshotBytes,
+      snapshotResult: { status: 'ok', offset: 10 },
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    // These arrive while the snapshot is still being fetched → buffered.
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'inSnap', offset: 10 })
+    );
+    socket.emit(
+      'message',
+      JSON.stringify({
+        kind: 'worker_stream',
+        name: 'Alice',
+        stream: 'stdout',
+        chunk: 'afterSnap',
+        offset: 18,
+      })
+    );
+    await settle();
+    socket.emit('close', 1000, Buffer.from(''));
+
+    await sessionPromise;
+    // Snapshot painted first, then only the post-offset chunk applied.
+    expect(writes).toEqual([snapshotBytes, 'afterSnap']);
   });
 
   it('exits cleanly on SIGINT without surfacing an error', async () => {
@@ -372,10 +422,10 @@ describe('runViewSession', () => {
     await sessionPromise;
   });
 
-  it('renders the snapshot to stdout BEFORE the WebSocket opens', async () => {
-    // The snapshot helper writes a clear-screen + welcome banner first;
-    // the live WS then appends a delta. The user's terminal should see
-    // the snapshot bytes first, then the live chunk.
+  it('renders the snapshot to stdout after subscribing, before live deltas', async () => {
+    // Subscribe-first: the WS opens (and subscribes) first, then the
+    // snapshot is painted, then buffered/live deltas are applied — so the
+    // user still sees the snapshot before the live delta, with no gap.
     const snapshotBytes = '\x1b[2J\x1b[H\x1b[32mWelcome back Will\x1b[0m\n❯\n';
     const { deps, writes, sockets } = createHarness({
       connectionFile: { url: 'http://localhost:3889', api_key: 'k' },
@@ -385,11 +435,14 @@ describe('runViewSession', () => {
     const sessionPromise = runViewSession('Alice', {}, deps);
     await new Promise((resolve) => setImmediate(resolve));
 
-    // Snapshot must have been written before any WS chunk arrives.
-    expect(writes).toEqual([snapshotBytes]);
+    // Nothing painted until the WS subscribes and the snapshot is fetched.
+    expect(writes).toEqual([]);
 
     const socket = sockets[0];
     socket.emit('open');
+    await settle();
+    // Snapshot painted on open.
+    expect(writes).toEqual([snapshotBytes]);
     socket.emit(
       'message',
       JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'live delta' })
@@ -406,9 +459,15 @@ describe('runViewSession', () => {
       snapshotResult: { status: 'not_found', message: "no agent named 'Ghost'" },
     });
 
-    const code = await runViewSession('Ghost', {}, deps);
+    const sessionPromise = runViewSession('Ghost', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    // Subscribe-first: the broker-wide WS opens, then the snapshot 404s and
+    // we close it and abort.
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    const code = await sessionPromise;
     expect(code).toBe(1);
-    expect(sockets).toHaveLength(0); // never opened the WS
+    expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no agent named/);
   });
 
@@ -421,16 +480,21 @@ describe('runViewSession', () => {
       },
     });
 
-    const code = await runViewSession('Headless', {}, deps);
+    const sessionPromise = runViewSession('Headless', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    const code = await sessionPromise;
     expect(code).toBe(1);
-    expect(sockets).toHaveLength(0);
+    expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no PTY/);
   });
 
   it('logs and continues when the snapshot is transiently unavailable', async () => {
     // Snapshot fails (broker hiccup, worker crashed mid-snapshot, etc.)
     // but the live stream should still attach — the agent may produce
-    // useful output even if the current screen couldn't be captured.
+    // useful output even if the current screen couldn't be captured. With no
+    // snapshot to reconcile against, buffered chunks are applied as-is.
     const { deps, logs, sockets, writes } = createHarness({
       connectionFile: { url: 'http://localhost:3889' },
       snapshotResult: { status: 'unavailable', message: 'snapshot returned HTTP 504' },
@@ -438,12 +502,12 @@ describe('runViewSession', () => {
 
     const sessionPromise = runViewSession('Alice', {}, deps);
     await new Promise((resolve) => setImmediate(resolve));
-
-    expect(sockets).toHaveLength(1); // WS still opened
-    expect(logs.some((args) => String(args[0]).includes('could not capture initial screen'))).toBe(true);
+    expect(sockets).toHaveLength(1); // WS opened first
 
     const socket = sockets[0];
     socket.emit('open');
+    await settle();
+    expect(logs.some((args) => String(args[0]).includes('could not capture initial screen'))).toBe(true);
     socket.emit(
       'message',
       JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'live' })

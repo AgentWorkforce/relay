@@ -89,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay drive|view|passthrough` no longer lose or duplicate agent output around attach.
+- `agent-relay drive` no longer strands the user on a stale, wrong-geometry screen after attach.
+- `agent-relay drive` pending counter is no longer inflated or under-counted by events around attach.
 - Swift SDK: depending on this repository by git URL no longer fails with `no such module 'Relaycast'` — the root `Package.swift` now declares the `relaycast` dependency `AgentRelaySDK` imports.
 
 ## [9.2.1] - 2026-07-02

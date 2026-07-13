@@ -612,6 +612,11 @@ async fn listen_api_replay(
     axum::extract::Query(query): axum::extract::Query<ListenReplayQuery>,
 ) -> axum::Json<Value> {
     let since_seq = query.since_seq();
+    // Snapshot the cutoff before draining so a client that only wants the
+    // current sequence position (to open a live WS without replaying stale
+    // durable events) can read it cheaply, e.g. with `sinceSeq` set beyond
+    // everything retained.
+    let current_seq = state.replay_buffer.current_seq();
     let (entries, gap_oldest) = state.replay_buffer.replay_since(since_seq).await;
     let events: Vec<Value> = entries.into_iter().map(|entry| entry.event).collect();
     axum::Json(json!({
@@ -621,6 +626,7 @@ async fn listen_api_replay(
         "droppedCount": gap_oldest
             .map(|oldest| dropped_event_count(since_seq, oldest))
             .unwrap_or(0),
+        "currentSeq": current_seq,
     }))
 }
 

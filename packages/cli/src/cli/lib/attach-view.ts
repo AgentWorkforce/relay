@@ -18,6 +18,7 @@ import { getProjectPaths } from '@agent-relay/config';
 
 import {
   captureAndRenderSnapshot,
+  StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
@@ -178,15 +179,22 @@ export function toWsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/^http/, 'ws')}/ws`;
 }
 
+/** A matched `worker_stream` chunk plus its per-worker byte offset (absent on
+ *  brokers that predate stream-offset support). */
+export interface MatchedChunk {
+  chunk: string;
+  offset?: number;
+}
+
 /**
  * Inspect a single WebSocket message and, if it's a `worker_stream` event for
- * the requested agent, return the raw chunk string. Returns `null` for events
- * that don't match (other kinds, other agents, malformed JSON, etc.) so the
- * caller can ignore them.
+ * the requested agent, return the raw chunk string plus its stream offset.
+ * Returns `null` for events that don't match (other kinds, other agents,
+ * malformed JSON, etc.) so the caller can ignore them.
  *
  * Exported for unit testing the filter in isolation from any WebSocket.
  */
-export function extractMatchingChunk(rawMessage: string, agentName: string): string | null {
+export function extractMatchingChunk(rawMessage: string, agentName: string): MatchedChunk | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawMessage);
@@ -198,7 +206,8 @@ export function extractMatchingChunk(rawMessage: string, agentName: string): str
   if (parsed.name !== agentName) return null;
   const chunk = parsed.chunk;
   if (typeof chunk !== 'string') return null;
-  return chunk;
+  const offset = typeof parsed.offset === 'number' ? parsed.offset : undefined;
+  return { chunk, offset };
 }
 
 /**
@@ -229,35 +238,6 @@ export async function runViewSession(
     return 1;
   }
 
-  // Render the agent's current screen before the live stream begins, so
-  // the user sees what's there instead of staring at a blank terminal
-  // until the agent happens to produce more output. Hard errors
-  // (`not_found` / `no_pty`) abort — there's nothing meaningful to view.
-  // Transient errors (`unavailable` / `transport_error`) are surfaced as
-  // a warning and we fall through to the live stream; the agent may
-  // still produce useful output even if the snapshot couldn't be served.
-  const snapshot = await deps.captureAndRenderSnapshot(
-    { url: connection.url, apiKey: connection.apiKey },
-    name,
-    { fetch: deps.fetch, writeChunk: deps.writeChunk }
-  );
-  switch (snapshot.status) {
-    case 'ok':
-      break;
-    case 'not_found':
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
-      return 1;
-    case 'no_pty':
-      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to view`}`);
-      return 1;
-    case 'unavailable':
-    case 'transport_error':
-      deps.log(
-        `[view] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
-      );
-      break;
-  }
-
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};
   if (connection.apiKey) {
@@ -267,6 +247,10 @@ export async function runViewSession(
   return new Promise<number>((resolve) => {
     let settled = false;
     const cleanupSignals: Array<() => void> = [];
+    // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
+    // is painted and reconciled, so no output around attach time is lost and
+    // (via per-worker offsets) none is double-applied. See StreamSyncBuffer.
+    const sync = new StreamSyncBuffer();
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
@@ -285,6 +269,43 @@ export async function runViewSession(
       resolve(code);
     };
 
+    // Render the agent's current screen once the WS is subscribed, then
+    // reconcile the buffered live chunks against it. Hard errors
+    // (`not_found` / `no_pty`) abort — there's nothing meaningful to view.
+    // Transient errors (`unavailable` / `transport_error`) are surfaced as a
+    // warning and we fall through to the live stream; the agent may still
+    // produce useful output even if the snapshot couldn't be served.
+    const paintSnapshotAndReconcile = async (): Promise<void> => {
+      const snapshot = await deps.captureAndRenderSnapshot(
+        { url: connection.url, apiKey: connection.apiKey },
+        name,
+        { fetch: deps.fetch, writeChunk: deps.writeChunk }
+      );
+      if (settled) return;
+      switch (snapshot.status) {
+        case 'ok':
+          for (const chunk of sync.reconcile(snapshot.offset)) deps.writeChunk(chunk);
+          return;
+        case 'not_found':
+          deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
+          finish(1);
+          return;
+        case 'no_pty':
+          deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to view`}`);
+          finish(1);
+          return;
+        case 'unavailable':
+        case 'transport_error':
+          deps.log(
+            `[view] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+          );
+          // No snapshot painted — apply everything buffered so far rather
+          // than dropping live output we already received.
+          for (const chunk of sync.flushAll()) deps.writeChunk(chunk);
+          return;
+      }
+    };
+
     const socket = deps.createWebSocket(wsUrl, headers);
 
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -292,12 +313,16 @@ export async function runViewSession(
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
     }
 
+    socket.on('open', () => {
+      void paintSnapshotAndReconcile();
+    });
+
     socket.on('message', (data) => {
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
-      const chunk = extractMatchingChunk(text, name);
-      if (chunk !== null) {
-        deps.writeChunk(chunk);
+      const matched = extractMatchingChunk(text, name);
+      if (matched !== null && sync.push(matched.chunk, matched.offset)) {
+        deps.writeChunk(matched.chunk);
       }
     });
 

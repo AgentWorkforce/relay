@@ -48,25 +48,37 @@ export interface AttachSnapshotResult {
   cols?: number;
   /** Cursor position `[row, col]`, 1-indexed, if the call succeeded. */
   cursor?: [number, number];
+  /**
+   * Cumulative per-worker byte offset the grid had consumed when the
+   * snapshot was captured. Used to reconcile the snapshot against buffered
+   * `worker_stream` chunks (drop `offset <= this`, apply the rest).
+   * `undefined` on brokers that predate stream-offset support.
+   */
+  offset?: number;
   /** Human-readable detail for error variants. */
   message?: string;
 }
 
 /**
  * Fetch a worker's current visible screen as ANSI reproduction bytes and
- * write them to the caller's output. Callers should invoke this BEFORE
- * subscribing to the WebSocket event stream so the user sees the agent's
- * current state before live deltas start arriving.
+ * write them to the caller's output.
  *
- * There is a tiny window between the snapshot capture and the live stream
- * starting in which the agent's output could be missed (≤10ms in practice).
- * Most TUI agents repaint heavily so the next update overwrites anything
- * lost; subscribe-first + buffer + drain would close the gap at the cost
- * of risking double-application of bytes that arrive in both the snapshot
- * and the buffered stream, which is the worse failure mode for TUIs.
+ * The attach clients open and subscribe to the WebSocket event stream
+ * *first*, buffer incoming `worker_stream` chunks, then call this to paint
+ * the snapshot, and finally reconcile the buffer against the snapshot's
+ * `offset` (see {@link StreamSyncBuffer}). That ordering closes the gap
+ * between the snapshot and the live stream: no output emitted around attach
+ * time is lost, and the per-worker byte offset lets the client drop exactly
+ * the chunks the snapshot already reflects so nothing is double-applied.
+ *
+ * On brokers that don't report an `offset`, the clients fall back to
+ * snapshot-authoritative behaviour (paint the snapshot, discard chunks that
+ * arrived before it), which trades a tiny gap for no duplication — the same
+ * bias the pre-offset code had.
  *
  * @returns A status describing the outcome. `ok` means the screen was
- * rendered; other variants carry a message the caller can surface.
+ * rendered; other variants carry a message the caller can surface. `offset`
+ * is populated on `ok` when the broker reports one.
  */
 export async function captureAndRenderSnapshot(
   connection: AttachSnapshotConnection,
@@ -110,6 +122,7 @@ export async function captureAndRenderSnapshot(
 
   const rows = typeof obj.rows === 'number' ? obj.rows : undefined;
   const cols = typeof obj.cols === 'number' ? obj.cols : undefined;
+  const offset = typeof obj.offset === 'number' ? obj.offset : undefined;
   const cursorRaw = Array.isArray(obj.cursor) ? obj.cursor : undefined;
   const cursor: [number, number] | undefined =
     cursorRaw &&
@@ -119,7 +132,115 @@ export async function captureAndRenderSnapshot(
       ? [cursorRaw[0], cursorRaw[1]]
       : undefined;
 
-  return { status: 'ok', rows, cols, cursor };
+  return { status: 'ok', rows, cols, cursor, offset };
+}
+
+/**
+ * Reconciles a visible-screen snapshot with the live `worker_stream` byte
+ * stream so an attaching client neither loses nor double-applies output
+ * around attach time.
+ *
+ * Usage (subscribe-first):
+ *
+ *   1. Open + subscribe the event WS. Feed every `worker_stream` chunk to
+ *      {@link push} as it arrives, applying the chunk only when `push`
+ *      returns `true`.
+ *   2. Fetch and paint the snapshot.
+ *   3. Call {@link reconcile} with the snapshot's `offset`. Apply the
+ *      returned chunks in order. From then on, `push` returns `true` for
+ *      every chunk (live pass-through).
+ *
+ * Correlation rule: the snapshot reflects every byte with offset `<=`
+ * `snapshotOffset`. A buffered chunk carries the cumulative byte offset at
+ * its *end*; if that end offset is `<=` the snapshot offset the chunk is
+ * already on screen and is dropped, otherwise it is applied.
+ *
+ * The snapshot offset is retained as a post-reconcile *watermark*: once
+ * buffering ends, {@link push} keeps suppressing any live frame whose end
+ * offset is `<=` the watermark. This closes a broker-side race — the PTY
+ * reader advances `consumed_offset` and the grid *before* the decoded chunk
+ * reaches the broadcast queue, so a chunk with `offset <= snapshotOffset`
+ * can still arrive *after* the client reconciles. Offsets are cumulative and
+ * monotonic, so the watermark drops exactly those already-painted stragglers
+ * without touching genuinely new output.
+ */
+export class StreamSyncBuffer {
+  private buffering = true;
+  private readonly buffered: Array<{ chunk: string; offset?: number }> = [];
+  /**
+   * Post-reconcile suppression watermark: the snapshot offset the grid had
+   * already painted. `undefined` until {@link reconcile} runs with a defined
+   * offset (or forever, on brokers without offset support / after
+   * {@link flushAll}), in which case no post-reconcile suppression happens.
+   */
+  private watermark: number | undefined = undefined;
+
+  /**
+   * Record a live `worker_stream` chunk. Returns `true` when the caller
+   * should apply the chunk immediately, `false` when the chunk must be held
+   * or dropped. While buffering, the chunk is retained for {@link reconcile}.
+   * After reconcile, a chunk whose end offset is `<=` the snapshot watermark
+   * is a late-arriving straggler the snapshot already painted and is
+   * suppressed (see the class docstring's race note); everything else passes
+   * through live.
+   */
+  push(chunk: string, offset: number | undefined): boolean {
+    if (this.buffering) {
+      this.buffered.push({ chunk, offset });
+      return false;
+    }
+    // Live pass-through, minus stragglers the snapshot already reflects.
+    if (this.watermark !== undefined && offset !== undefined && offset <= this.watermark) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Reconcile the buffered chunks against the painted snapshot's offset and
+   * return the chunks to apply, in order. Switches to live pass-through and
+   * arms the post-reconcile watermark (see {@link push}).
+   *
+   * When `snapshotOffset` is `undefined` (broker without offset support) all
+   * buffered chunks are discarded: they arrived before the snapshot was
+   * painted, so dropping them matches the snapshot-authoritative fallback
+   * and avoids double-painting what the snapshot already shows. No watermark
+   * is armed in that case — there is no offset to compare live frames to.
+   */
+  reconcile(snapshotOffset: number | undefined): string[] {
+    const out: string[] = [];
+    if (snapshotOffset !== undefined) {
+      for (const item of this.buffered) {
+        // Drop chunks the snapshot already reflects; apply the rest. A chunk
+        // with no offset (mixed/legacy frame) is applied rather than risk
+        // silently dropping live output.
+        if (item.offset !== undefined && item.offset <= snapshotOffset) continue;
+        out.push(item.chunk);
+      }
+    }
+    this.watermark = snapshotOffset;
+    this.buffered.length = 0;
+    this.buffering = false;
+    return out;
+  }
+
+  /**
+   * Return every buffered chunk unchanged and switch to live pass-through.
+   * Used when no snapshot was painted (transient snapshot failure): there is
+   * nothing to reconcile against, so applying everything preserves output
+   * rather than dropping the buffered live stream.
+   */
+  flushAll(): string[] {
+    const out = this.buffered.map((item) => item.chunk);
+    this.buffered.length = 0;
+    this.buffering = false;
+    return out;
+  }
+
+  /** True while chunks are still being buffered (before reconcile). */
+  get isBuffering(): boolean {
+    return this.buffering;
+  }
 }
 
 /** ----- Interactive attach prep helpers ----- */

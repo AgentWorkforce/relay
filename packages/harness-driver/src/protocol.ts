@@ -64,6 +64,14 @@ export interface PtySnapshot {
   cursor: [number, number];
   /** Plain text for `format=plain`; base64-encoded ANSI bytes for `format=ansi`. */
   screen: string;
+  /**
+   * Cumulative per-worker byte offset the grid had consumed when this
+   * snapshot was captured. Correlates the snapshot with the `worker_stream`
+   * byte stream: a client can drop every buffered `worker_stream` chunk whose
+   * `offset` is `<=` this value and apply only what came after. Absent on
+   * brokers that predate stream-offset support.
+   */
+  offset?: number;
 }
 
 export interface ProtocolEnvelope<TPayload> {
@@ -266,6 +274,11 @@ export type BrokerEvent =
       name: string;
       stream: string;
       chunk: string;
+      /**
+       * Cumulative per-worker byte offset at the end of this chunk. Present
+       * for PTY workers; absent for headless workers and pre-offset brokers.
+       */
+      offset?: number;
     }
   | {
       kind: 'delivery_retry';
@@ -484,7 +497,7 @@ export type WorkerToBroker =
     }
   | {
       type: 'worker_stream';
-      payload: { stream: string; chunk: string };
+      payload: { stream: string; chunk: string; offset?: number };
     }
   | {
       type: 'worker_error';

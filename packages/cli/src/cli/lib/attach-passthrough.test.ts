@@ -364,7 +364,12 @@ async function openSocket(sockets: FakeWebSocket[]): Promise<FakeWebSocket> {
   expect(sockets).toHaveLength(1);
   const socket = sockets[0];
   socket.emit('open');
-  await new Promise((resolve) => setImmediate(resolve));
+  // Subscribe-first: the `open` handler paints the snapshot, reconciles the
+  // buffer, forwards the initial resize, and takes over stdin — several
+  // awaits deep. Flush enough turns for that chain to settle.
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   return socket;
 }
 
@@ -506,9 +511,16 @@ describe('runPassthroughSession', () => {
     const { deps, sockets, errors, fetchLog } = createHarness({
       snapshotResult: { status: 'not_found', message: "no agent named 'Ghost'" },
     });
-    const code = await runPassthroughSession('Ghost', {}, deps);
+    const sessionPromise = runPassthroughSession('Ghost', {}, deps);
+    // Subscribe-first: the broker-wide WS opens, then the snapshot 404s.
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    const code = await sessionPromise;
     expect(code).toBe(1);
-    expect(sockets).toHaveLength(0);
+    expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no agent named/);
     // Best-effort restore PUT.
     const flips = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
