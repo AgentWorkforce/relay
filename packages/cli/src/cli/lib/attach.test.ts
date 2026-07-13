@@ -622,6 +622,23 @@ describe('resetLocalTerminalOnDetach', () => {
       expect(LOCAL_TERMINAL_RESET_SEQUENCE).toContain(seq);
     }
   });
+
+  it('runs cursor-homing resets before leaving the alt screen (see #1251)', () => {
+    // DECSTBM (`\x1b[r`) and DECOM reset (`\x1b[?6l`) both home the cursor.
+    // `\x1b[?1049l` restores the main-buffer cursor saved on alt-screen entry,
+    // so the homing controls must precede it — otherwise they clobber the
+    // restored position and the shell prompt lands at top-left after detach.
+    const stbm = LOCAL_TERMINAL_RESET_SEQUENCE.indexOf('\x1b[r');
+    const origin = LOCAL_TERMINAL_RESET_SEQUENCE.indexOf('\x1b[?6l');
+    const leaveAlt = LOCAL_TERMINAL_RESET_SEQUENCE.indexOf('\x1b[?1049l');
+    expect(stbm).toBeGreaterThanOrEqual(0);
+    expect(origin).toBeGreaterThanOrEqual(0);
+    expect(leaveAlt).toBeGreaterThanOrEqual(0);
+    expect(stbm).toBeLessThan(leaveAlt);
+    expect(origin).toBeLessThan(leaveAlt);
+    // The SGR reset stays last so nothing re-dirties attributes afterward.
+    expect(LOCAL_TERMINAL_RESET_SEQUENCE.endsWith('\x1b[0m')).toBe(true);
+  });
 });
 
 describe('createBackpressureAwareWriter', () => {

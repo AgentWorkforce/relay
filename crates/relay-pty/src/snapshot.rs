@@ -203,10 +203,22 @@ impl Snapshot {
         // terminals that don't repaint every cell). DECSTBM (`\x1b[r`) homes
         // the cursor, so it must precede the final CUP; resetting it here also
         // heals a stale scroll region from a crashed session and guarantees
-        // painting happens against a full-screen coordinate system. The
-        // emulator's public API does not expose the source's actual scroll
-        // region, so we conservatively reset to full and let the live stream
-        // re-establish any region the app needs.
+        // painting happens against a full-screen coordinate system.
+        //
+        // Residual limitation (see #1251): the source's *actual* DECSTBM margins
+        // are unrecoverable here. `alacritty_terminal` 0.26 keeps `scroll_region`
+        // a private field with no public accessor — it is absent from `Term`'s
+        // public methods and from `renderable_content()` (which exposes only the
+        // grid iterator, selection, cursor, display offset, colors, and mode) —
+        // so the snapshot cannot read, let alone re-emit, the app's margins. We
+        // therefore reset to full screen unconditionally. The visible cells are
+        // still painted correctly, but an app with an *active* non-full scroll
+        // region (e.g. a pager pinning a header/footer) repaints against the
+        // wrong margins until it re-emits its own DECSTBM. Because this snapshot
+        // is a viewport cutoff, the original DECSTBM is never replayed from the
+        // stream, so relative scrolling can touch the wrong rows in that window.
+        // Full-screen reset is the least-surprising fallback; capturing margins
+        // must wait for an upstream accessor.
         out.extend_from_slice(b"\x1b[0m\x1b[r\x1b[H\x1b[2J");
 
         let mut current = SgrState::default();
@@ -472,8 +484,29 @@ fn named_color_sgr(named: NamedColor, role: &ColorRole) -> Option<u16> {
 /// Append a DEC private mode set (`ESC[?<n>h`) or reset (`ESC[?<n>l`).
 fn write_dec_mode(out: &mut Vec<u8>, code: u16, enabled: bool) {
     out.extend_from_slice(b"\x1b[?");
-    out.extend_from_slice(code.to_string().as_bytes());
+    push_u16(out, code);
     out.push(if enabled { b'h' } else { b'l' });
+}
+
+/// Append the decimal ASCII digits of `value` to `out` without heap-allocating.
+///
+/// `write_dec_mode` runs once per mode flag on every snapshot render, so the
+/// per-call `u16::to_string` allocation is pure waste. A `u16` is at most five
+/// digits (65535), so we format it into a fixed stack buffer and copy the
+/// populated tail out in one shot.
+fn push_u16(out: &mut Vec<u8>, value: u16) {
+    let mut buf = [0u8; 5];
+    let mut idx = buf.len();
+    let mut n = value;
+    loop {
+        idx -= 1;
+        buf[idx] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[idx..]);
 }
 
 /// Append an `ESC[<row>;<col>H` cursor-position command (1-indexed).
@@ -800,6 +833,27 @@ mod tests {
             snap_b.to_plain(),
             "wide char + ASCII round-trip mismatch (spacer cell was emitted as a real space?)"
         );
+    }
+
+    #[test]
+    fn push_u16_formats_without_allocating() {
+        // Edge cases for the stack-buffer formatter used by write_dec_mode:
+        // zero, single digit, multi-digit, and the u16 maximum (5 digits).
+        for value in [0u16, 7, 25, 1000, 2004, u16::MAX] {
+            let mut out = Vec::new();
+            push_u16(&mut out, value);
+            assert_eq!(out, value.to_string().into_bytes(), "mismatch for {value}");
+        }
+    }
+
+    #[test]
+    fn write_dec_mode_emits_expected_set_and_reset_forms() {
+        let mut on = Vec::new();
+        write_dec_mode(&mut on, 2004, true);
+        assert_eq!(on, b"\x1b[?2004h");
+        let mut off = Vec::new();
+        write_dec_mode(&mut off, 25, false);
+        assert_eq!(off, b"\x1b[?25l");
     }
 
     #[test]

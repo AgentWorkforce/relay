@@ -253,19 +253,36 @@ export class StreamSyncBuffer {
  * dropped back to their shell with arrows emitting escape codes, mouse clicks
  * spewing coordinates, or a blank alt screen.
  *
- * The sequence is intentionally direction-explicit and idempotent: leave the
- * alternate screen, show the cursor, restore numeric keypad + application
- * cursor keys off, autowrap on, origin off, disable every mouse-reporting mode
- * and bracketed paste, reset the scroll region to full screen, and clear
- * pending SGR. Only written when stdout is a TTY, consistent with how the
- * sessions gate raw-mode restore and the status line.
+ * The sequence is intentionally direction-explicit and idempotent. Ordering is
+ * load-bearing (see #1251): a few of these controls move the cursor, and
+ * `\x1b[?1049l` (leave alt screen) *restores* the main-buffer cursor that was
+ * saved on alt-screen entry. Anything that homes the cursor must therefore run
+ * *before* the alt-screen leave, or it clobbers that restored position and the
+ * next shell prompt lands at top-left. Two controls home the cursor:
+ *
+ *  - `\x1b[r` (DECSTBM scroll-region reset) homes the cursor on xterm/DEC-style
+ *    terminals. The scroll-region margins are shared terminal state, so
+ *    resetting them while still in the alt buffer heals a stale region and the
+ *    homing is harmless (the pending `?1049l` restore supersedes it).
+ *  - `\x1b[?6l` (DECOM origin-mode reset) also moves the cursor to home per the
+ *    DEC spec, so it belongs in the same pre-leave group.
+ *
+ * Everything after the alt-screen leave is position-independent (mode flags
+ * that never move the cursor): show cursor, application cursor keys off,
+ * autowrap on, every mouse-reporting mode off, bracketed paste off, numeric
+ * keypad, and a final SGR reset. Only written when stdout is a TTY, consistent
+ * with how the sessions gate raw-mode restore and the status line.
  */
 export const LOCAL_TERMINAL_RESET_SEQUENCE =
+  // --- cursor-homing resets: must precede the alt-screen leave/restore ---
+  '\x1b[?6l' + // origin mode off (DECOM) — homes the cursor
+  '\x1b[r' + // reset scroll region to full screen (DECSTBM) — homes the cursor
+  // --- leave alt screen: restores the main-buffer cursor saved on entry ---
   '\x1b[?1049l' + // leave alternate screen buffer
+  // --- position-independent mode resets (none move the cursor) ---
   '\x1b[?25h' + // show cursor (DECTCEM)
   '\x1b[?1l' + // application cursor keys off (DECCKM)
   '\x1b[?7h' + // autowrap on (DECAWM)
-  '\x1b[?6l' + // origin mode off (DECOM)
   '\x1b[?1000l' + // mouse click reporting off
   '\x1b[?1002l' + // mouse button-event (drag) reporting off
   '\x1b[?1003l' + // mouse any-event (motion) reporting off
@@ -275,7 +292,6 @@ export const LOCAL_TERMINAL_RESET_SEQUENCE =
   '\x1b[?1007l' + // alternate scroll off
   '\x1b[?2004l' + // bracketed paste off
   '\x1b>' + // keypad normal (DECKPNM)
-  '\x1b[r' + // reset scroll region to full screen (DECSTBM)
   '\x1b[0m'; // reset SGR
 
 /**
