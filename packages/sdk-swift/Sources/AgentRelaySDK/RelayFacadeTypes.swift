@@ -30,10 +30,22 @@ public struct RelayAttachment: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decodeIfPresent(String.self, forKey: .fileId)
+        // No `""` fallback: an attachment payload with none of these id
+        // aliases is malformed, and a usable-looking attachment with an empty
+        // id would let callers attempt file operations against it. Throwing
+        // here surfaces as "no attachments" on the message (`RelayMessage`
+        // decodes its `attachments` array with `try?`), matching how other
+        // malformed realtime shapes are handled.
+        guard let resolvedId = try container.decodeIfPresent(String.self, forKey: .fileId)
             ?? container.decodeIfPresent(String.self, forKey: .fileIdCamel)
-            ?? container.decodeIfPresent(String.self, forKey: .id)
-            ?? ""
+            ?? container.decodeIfPresent(String.self, forKey: .id) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .fileId,
+                in: container,
+                debugDescription: "Attachment is missing a file id (file_id/fileId/id)"
+            )
+        }
+        id = resolvedId
         filename = try container.decodeIfPresent(String.self, forKey: .filename)
         contentType = try container.decodeIfPresent(String.self, forKey: .contentType)
             ?? container.decodeIfPresent(String.self, forKey: .contentTypeCamel)

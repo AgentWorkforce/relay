@@ -390,6 +390,14 @@ extension HostedParticipantCore {
     }
 
     func deliveriesList(state: RelayDeliveryState?, limit: Int?) async throws -> [RelayDelivery] {
+        // relaycast's `DeliveryStatus` has no `.deferred` case (a deferred
+        // delivery is represented as `queued` with a future `deferUntil` on
+        // its own model, not a distinct filterable status). Silently dropping
+        // the filter would return every delivery when the caller asked for
+        // deferred-only ones, so reject the request instead of widening it.
+        if state == .deferred {
+            throw RelayError.unsupported("relaycast does not support filtering deliveries by \"deferred\" status; fetch unfiltered and check `deferUntil`/`deferredAt` on each delivery instead.")
+        }
         let engine = try engine()
         return try await run {
             let options = Relaycast.ListDeliveriesOptions(status: state.flatMap(Self.deliveryStatus), limit: limit)

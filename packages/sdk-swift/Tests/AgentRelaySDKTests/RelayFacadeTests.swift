@@ -272,6 +272,36 @@ final class RelayFacadeTests: XCTestCase {
         XCTAssertEqual(box.matched, ["message.created", "message.created"])
     }
 
+    func testCancelAndWaitGuaranteesRemovalBeforeReturning() async {
+        // Unlike `cancel()` (which dispatches removal via an unstructured
+        // Task and can race an in-flight event), `cancelAndWait()` must not
+        // return until the actor-side removal has actually happened.
+        let box = MatchBox()
+        var removed = false
+        let token = RelayListenerToken(
+            onCancel: { XCTFail("cancel() should not be exercised by this test") },
+            onCancelAsync: { removed = true; box.record("removed") }
+        )
+
+        await token.cancelAndWait()
+
+        XCTAssertTrue(removed)
+        XCTAssertEqual(box.matched, ["removed"])
+    }
+
+    func testCancelAndWaitIsIdempotent() async {
+        let box = MatchBox()
+        let token = RelayListenerToken(
+            onCancel: {},
+            onCancelAsync: { box.record("removed") }
+        )
+
+        await token.cancelAndWait()
+        await token.cancelAndWait()
+
+        XCTAssertEqual(box.matched, ["removed"])
+    }
+
     func testOnceListenerFiresOnlyOnce() async {
         let core = HostedParticipantCore(
             engineSource: .deferred(

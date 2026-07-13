@@ -372,9 +372,10 @@ public final class AgentClient: @unchecked Sendable {
     public func addListener(_ selector: RelayEventSelector, handler: @escaping RelayEventHandler) async -> RelayListenerToken {
         let core = self.core
         let id = await core.registerTypedListener(selector: selector, once: false, handler: handler)
-        return RelayListenerToken {
-            Task { await core.removeTypedListener(id) }
-        }
+        return RelayListenerToken(
+            onCancel: { Task { await core.removeTypedListener(id) } },
+            onCancelAsync: { await core.removeTypedListener(id) }
+        )
     }
 
     /// Like `addListener`, but auto-unsubscribes after the first matching event.
@@ -382,9 +383,10 @@ public final class AgentClient: @unchecked Sendable {
     public func once(_ selector: RelayEventSelector, handler: @escaping RelayEventHandler) async -> RelayListenerToken {
         let core = self.core
         let id = await core.registerTypedListener(selector: selector, once: true, handler: handler)
-        return RelayListenerToken {
-            Task { await core.removeTypedListener(id) }
-        }
+        return RelayListenerToken(
+            onCancel: { Task { await core.removeTypedListener(id) } },
+            onCancelAsync: { await core.removeTypedListener(id) }
+        )
     }
 
     /// Register a hook that receives typed-listener handler errors. Returns a
@@ -393,9 +395,10 @@ public final class AgentClient: @unchecked Sendable {
     public func onError(_ hook: @escaping RelayErrorHook) async -> RelayListenerToken {
         let core = self.core
         let id = await core.registerErrorHook(hook)
-        return RelayListenerToken {
-            Task { await core.removeErrorHook(id) }
-        }
+        return RelayListenerToken(
+            onCancel: { Task { await core.removeErrorHook(id) } },
+            onCancelAsync: { await core.removeErrorHook(id) }
+        )
     }
 
     public func registerAction(

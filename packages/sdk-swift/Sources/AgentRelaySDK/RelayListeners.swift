@@ -79,13 +79,20 @@ struct TypedListenerRegistration: Sendable {
 /// unsubscribe; idempotent and safe to drop.
 public final class RelayListenerToken: @unchecked Sendable {
     private let onCancel: @Sendable () -> Void
+    private let onCancelAsync: @Sendable () async -> Void
     private let lock = NSLock()
     private var cancelled = false
 
-    init(onCancel: @escaping @Sendable () -> Void) {
+    init(onCancel: @escaping @Sendable () -> Void, onCancelAsync: @escaping @Sendable () async -> Void) {
         self.onCancel = onCancel
+        self.onCancelAsync = onCancelAsync
     }
 
+    /// Unsubscribe. Removal is dispatched onto the participant actor
+    /// asynchronously, so this call is best-effort: an event dispatch already
+    /// in flight (or racing this call) can still reach the handler once more
+    /// after `cancel()` returns. Use `cancelAndWait()` when the caller needs a
+    /// hard guarantee that no further events will be delivered.
     public func cancel() {
         lock.lock()
         let alreadyCancelled = cancelled
@@ -93,6 +100,17 @@ public final class RelayListenerToken: @unchecked Sendable {
         lock.unlock()
         guard !alreadyCancelled else { return }
         onCancel()
+    }
+
+    /// Unsubscribe and wait for the removal to land on the participant actor.
+    /// Once this returns, the handler is guaranteed not to fire again.
+    public func cancelAndWait() async {
+        lock.lock()
+        let alreadyCancelled = cancelled
+        cancelled = true
+        lock.unlock()
+        guard !alreadyCancelled else { return }
+        await onCancelAsync()
     }
 }
 
