@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `AgentRelaySDK` (Swift): realtime channel/DM/thread events now resolve the sender correctly instead of falling back to `"unknown"` — relaycast's WS events carry the sender as message-level `agent_id`/`agent_name` fields, which `RelayMessage` decoding now reads directly instead of only looking for a nested `from` object. A bare HTTP 409 from relaycast is no longer blanket-mapped to `agent_already_exists` for every call; only agent registration (`register`/`registerOrRotate`, where a 409 unambiguously means a name conflict) gets that remapping — every other endpoint (channels, triggers, nodes, webhooks, ...) now surfaces its original error code.
+- `AgentRelaySDK` (Swift): realtime channel/DM/thread events now resolve the sender correctly instead of falling back to `"unknown"`, reading it from relaycast's message-level `agent_id`/`agent_name` fields.
+- `AgentRelaySDK` (Swift): a bare HTTP 409 from relaycast is no longer blanket-mapped to `agent_already_exists`; only agent registration (`register`/`registerOrRotate`) gets that remapping, while every other endpoint (channels, triggers, nodes, webhooks, ...) surfaces its original error code.
 
 ### Changed
 
