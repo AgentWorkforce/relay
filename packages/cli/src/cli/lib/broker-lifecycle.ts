@@ -321,6 +321,23 @@ interface SessionSnapshot {
   node_token?: string;
 }
 
+/** Reject if `promise` doesn't settle within `ms`, clearing the timer on settle. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('session read exceeded token-wait budget')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 /**
  * Resolve the broker's node identity from repeated `/api/session` reads.
  *
@@ -343,7 +360,14 @@ export async function resolveNodeIdentityFromSession(
   for (;;) {
     let session: SessionSnapshot;
     try {
-      session = await getSession();
+      // Bound each read to the remaining token-wait budget so a single stalled
+      // `/api/session` can't hold startup past `awaitTokenMs` (the transport's
+      // own request timeout is far longer). The non-await path issues one read
+      // and doesn't need the bound.
+      session =
+        awaitTokenMs > 0
+          ? await withTimeout(getSession(), Math.max(0, deadline - Date.now()))
+          : await getSession();
     } catch {
       return identity;
     }
@@ -1199,7 +1223,14 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
       vlog(deps, options.verbose, 'Waiting for broker node delivery (/v1/node/ws) before auto-spawning...');
-      const delivery = await waitForNodeDelivery(relay, deps);
+      // Node delivery can't connect until the broker mints its node token, which
+      // now happens in the background after `Broker started.`. Budget for that
+      // mint window plus the connect so a slow mint doesn't abort auto-spawn.
+      const delivery = await waitForNodeDelivery(
+        relay,
+        deps,
+        NODE_TOKEN_WAIT_MS + NODE_DELIVERY_READY_TIMEOUT_MS
+      );
       if (!delivery.ready) {
         deps.error('Refusing to auto-spawn agents because broker node delivery is not connected.');
         deps.error(`Node delivery: ${formatNodeDeliveryStatus(delivery.status)}`);

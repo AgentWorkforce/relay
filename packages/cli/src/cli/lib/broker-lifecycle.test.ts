@@ -463,4 +463,21 @@ describe('resolveNodeIdentityFromSession', () => {
 
     expect(identity).toEqual({ nodeId: 'node-1', nodeName: 'host-1' });
   });
+
+  it('bounds a stalled session read to the token-wait budget instead of hanging', async () => {
+    // getSession never resolves; without the per-read bound this would hang past
+    // the transport's 30s timeout. With a 60ms budget it must return ~promptly.
+    const getSession = vi.fn(() => new Promise<{ node_id?: string }>(() => {}));
+    const sleep = vi.fn(async () => {});
+
+    const start = Date.now();
+    const identity = await resolveNodeIdentityFromSession(getSession, {
+      awaitTokenMs: 60,
+      sleep,
+    });
+
+    expect(identity).toBeNull();
+    expect(Date.now() - start).toBeLessThan(1_000);
+    expect(getSession).toHaveBeenCalledTimes(1);
+  });
 });

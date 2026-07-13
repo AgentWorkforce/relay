@@ -654,23 +654,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     runtime.run().await
 }
 
-/// Resolve the node token used to authenticate the `/v1/node/ws` connection.
+/// Resolve the node token used to authenticate the `/v1/node/ws` connection
+/// from the fast, local sources only, in precedence order:
 ///
-/// Precedence:
 /// 1. `RELAY_NODE_TOKEN` env override (operator-supplied; never persisted).
 /// 2. A token previously minted for this exact `node_id` and cached on disk.
-/// 3. A freshly minted token via `RelayCast::create_node` (workspace key),
-///    persisted next to the node id for reuse on the next start.
 ///
-/// Returns `None` only when no override or cache exists and minting is
-/// impossible (no relay client) or fails; the caller logs and continues without
-/// node delivery.
-/// Resolve a node token from the fast, local sources only: the `RELAY_NODE_TOKEN`
-/// override and the on-disk cache scoped to this node id / workspace / engine.
-///
-/// This never performs a network mint — that stays off the broker's API-readiness
-/// path (see the call site) and is handled in the background by the node-control
-/// client, which holds the same [`crate::node_control::NodeTokenMinter`].
+/// Returns `None` when neither exists. This never performs a network mint — that
+/// stays off the broker's API-readiness path (see the call site) and is handled
+/// in the background by the node-control client, which holds the same
+/// [`crate::node_control::NodeTokenMinter`].
 fn resolve_cached_node_token(
     node_id: &str,
     workspace_id: &str,

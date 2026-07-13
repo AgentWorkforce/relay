@@ -990,7 +990,42 @@ pub(crate) async fn run_node_control_client(
                         node_id = %config.node_id,
                         "node token mint failed; retrying after backoff (realtime delivery pending)"
                     );
-                    tokio::time::sleep(reconnect_delay).await;
+                    // Stay responsive during the backoff instead of a blind
+                    // sleep: a spawn's `RegisterAgent` must get an immediate
+                    // `node_token_missing` (so the caller falls back to HTTP
+                    // register) rather than blocking on the 30s register timeout,
+                    // and load/inventory updates must keep draining so the bounded
+                    // control channel can't fill during a Relaycast outage.
+                    let backoff = tokio::time::sleep(reconnect_delay);
+                    tokio::pin!(backoff);
+                    loop {
+                        tokio::select! {
+                            _ = &mut backoff => break,
+                            command = command_rx.recv() => match command {
+                                Some(FleetControlCommand::RegisterNode {
+                                    manifest,
+                                    resume_cursor,
+                                }) => {
+                                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+                                    registration = Some(build_node_register(
+                                        &manifest,
+                                        &config.node_id,
+                                        &config.node_name,
+                                        &config.broker_version,
+                                        resume_cursor,
+                                    ));
+                                }
+                                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
+                                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
+                                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
+                                    let _ = reply.send(Err("node_token_missing".to_string()));
+                                }
+                                Some(FleetControlCommand::Send(_))
+                                | Some(FleetControlCommand::HeartbeatNow) => {}
+                                Some(FleetControlCommand::Shutdown) | None => return,
+                            },
+                        }
+                    }
                     reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
                     continue;
                 }
@@ -2380,7 +2415,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
+        // Bounded: if the mint or connect path regresses, the client retries
+        // without ever emitting `Connected`, so an unbounded recv would hang the
+        // whole suite. Fail with an assertion instead.
+        let connected = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("node-control client should emit Connected within 5s")
+            .unwrap();
+        assert_eq!(connected, FleetControlEvent::Connected);
         tokio::time::timeout(Duration::from_secs(5), server)
             .await
             .unwrap()
