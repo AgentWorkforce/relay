@@ -154,30 +154,58 @@ export async function captureAndRenderSnapshot(
  * `snapshotOffset`. A buffered chunk carries the cumulative byte offset at
  * its *end*; if that end offset is `<=` the snapshot offset the chunk is
  * already on screen and is dropped, otherwise it is applied.
+ *
+ * The snapshot offset is retained as a post-reconcile *watermark*: once
+ * buffering ends, {@link push} keeps suppressing any live frame whose end
+ * offset is `<=` the watermark. This closes a broker-side race — the PTY
+ * reader advances `consumed_offset` and the grid *before* the decoded chunk
+ * reaches the broadcast queue, so a chunk with `offset <= snapshotOffset`
+ * can still arrive *after* the client reconciles. Offsets are cumulative and
+ * monotonic, so the watermark drops exactly those already-painted stragglers
+ * without touching genuinely new output.
  */
 export class StreamSyncBuffer {
   private buffering = true;
   private readonly buffered: Array<{ chunk: string; offset?: number }> = [];
+  /**
+   * Post-reconcile suppression watermark: the snapshot offset the grid had
+   * already painted. `undefined` until {@link reconcile} runs with a defined
+   * offset (or forever, on brokers without offset support / after
+   * {@link flushAll}), in which case no post-reconcile suppression happens.
+   */
+  private watermark: number | undefined = undefined;
 
   /**
    * Record a live `worker_stream` chunk. Returns `true` when the caller
-   * should apply the chunk immediately (post-reconcile live mode), `false`
-   * while still buffering (the chunk is held for {@link reconcile}).
+   * should apply the chunk immediately, `false` when the chunk must be held
+   * or dropped. While buffering, the chunk is retained for {@link reconcile}.
+   * After reconcile, a chunk whose end offset is `<=` the snapshot watermark
+   * is a late-arriving straggler the snapshot already painted and is
+   * suppressed (see the class docstring's race note); everything else passes
+   * through live.
    */
   push(chunk: string, offset: number | undefined): boolean {
-    if (!this.buffering) return true;
-    this.buffered.push({ chunk, offset });
-    return false;
+    if (this.buffering) {
+      this.buffered.push({ chunk, offset });
+      return false;
+    }
+    // Live pass-through, minus stragglers the snapshot already reflects.
+    if (this.watermark !== undefined && offset !== undefined && offset <= this.watermark) {
+      return false;
+    }
+    return true;
   }
 
   /**
    * Reconcile the buffered chunks against the painted snapshot's offset and
-   * return the chunks to apply, in order. Switches to live pass-through.
+   * return the chunks to apply, in order. Switches to live pass-through and
+   * arms the post-reconcile watermark (see {@link push}).
    *
    * When `snapshotOffset` is `undefined` (broker without offset support) all
    * buffered chunks are discarded: they arrived before the snapshot was
    * painted, so dropping them matches the snapshot-authoritative fallback
-   * and avoids double-painting what the snapshot already shows.
+   * and avoids double-painting what the snapshot already shows. No watermark
+   * is armed in that case — there is no offset to compare live frames to.
    */
   reconcile(snapshotOffset: number | undefined): string[] {
     const out: string[] = [];
@@ -190,6 +218,7 @@ export class StreamSyncBuffer {
         out.push(item.chunk);
       }
     }
+    this.watermark = snapshotOffset;
     this.buffered.length = 0;
     this.buffering = false;
     return out;

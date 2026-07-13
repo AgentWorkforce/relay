@@ -411,10 +411,17 @@ describe('classifyWsEvent', () => {
     ).toEqual({ kind: 'other' });
   });
 
-  it('classifies delivery_queued for the targeted agent', () => {
+  it('classifies delivery_queued for the targeted agent, carrying its event id', () => {
     expect(
       classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }), 'Alice')
-    ).toEqual({ kind: 'delivery_queued' });
+    ).toEqual({ kind: 'delivery_queued', eventId: 'e1' });
+  });
+
+  it('classifies delivery_queued without an event id (legacy frame)', () => {
+    expect(classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice' }), 'Alice')).toEqual({
+      kind: 'delivery_queued',
+      eventId: undefined,
+    });
   });
 
   it('classifies agent_pending_drained with optional count', () => {
@@ -626,6 +633,36 @@ describe('runDriveSession', () => {
     // delivery_queued events — those are suppressed by the broker via sinceSeq.
     expect(writes.some((w) => w.includes('pending=2'))).toBe(true);
     expect(writes.some((w) => w.includes('pending=22'))).toBe(false);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('dedupes replayed delivery_queued frames against the pending seed', async () => {
+    // The seed (GET /pending) reports 2 messages with ids e0/e1. A frame
+    // replayed for one of them (it raced the cutoff/seed capture and has
+    // seq > cutoff) must not re-increment the counter; a frame for a new
+    // delivery must.
+    const { deps, sockets, writes, stdin } = createHarness({
+      initialCurrentSeq: 20,
+      initialPending: 2,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    expect(writes.some((w) => w.includes('pending=2'))).toBe(true);
+
+    // Replayed frame for a seeded delivery — deduped, stays at 2.
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e0' }));
+    expect(writes.some((w) => w.includes('pending=3'))).toBe(false);
+
+    // A genuinely new delivery — counted, goes to 3.
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'brand-new' }));
+    expect(writes.some((w) => w.includes('pending=3'))).toBe(true);
+
+    // The same seeded id re-queued *later* (after being consumed once from the
+    // seed) counts normally — the id was forgotten after its first dedupe.
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e0' }));
+    expect(writes.some((w) => w.includes('pending=4'))).toBe(true);
 
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
