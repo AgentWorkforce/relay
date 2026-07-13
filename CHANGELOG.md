@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay node up` gains `--log-file <path>`, `--log-level <debug|info|warn|error>`, and `--log-json`: a served node logs each capability it registers (`debug`) and every action that hits it (`info`, with a duration and `node`/`kind`/`invocationId` fields; failures at `warn`). Without a flag the node stays quiet apart from warnings; `--verbose` raises the level to `debug`. An invalid `--log-level` is rejected instead of silently disabling logs. Serving programmatically, inject any sink via `serveNode({ logger })`.
 
+### Fixed
+
+- `agent-relay-broker` resumes Relaycast mailbox delivery at the server's authoritative per-agent ACK cursor after a broker restart, preserving strict gap detection and legacy node compatibility.
+
 ## [10.0.0] - 2026-07-13
 
 ### Added

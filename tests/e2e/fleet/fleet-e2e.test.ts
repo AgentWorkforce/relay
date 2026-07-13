@@ -160,9 +160,12 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(a.handlers_live).toBe(true);
     expect(b.handlers_live).toBe(true);
     // The aggregate is the union of the broker provider's capacity (its pinned
-    // spawn:<harness> + release) and the fleet provider's action capabilities.
+    // spawn:<harness> + release, plus the relay:delivery-cursor-v1 marker it
+    // advertises for restart-safe mailbox resume) and the fleet provider's
+    // action capabilities.
     expect(a.capabilities.map((c) => c.name).sort()).toEqual([
       'echo',
+      'relay:delivery-cursor-v1',
       'release',
       'spawn:claude',
       'spawn:pool',
@@ -170,6 +173,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     ]);
     expect(b.capabilities.map((c) => c.name).sort()).toEqual([
       'ping',
+      'relay:delivery-cursor-v1',
       'release',
       'spawn:codex',
       'spawn:pool',
