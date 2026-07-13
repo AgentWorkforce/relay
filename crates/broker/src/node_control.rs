@@ -61,10 +61,11 @@ pub(crate) struct FleetControlConfig {
     pub(crate) session_token: Option<std::sync::Arc<std::sync::RwLock<Option<String>>>>,
 }
 
-/// Re-mints a fresh node token via `POST /v1/nodes` and rewrites the
-/// workspace-scoped cache, used to recover from a stale/rejected cached token
-/// (HTTP 401 on the node-control handshake) instead of looping forever on the
-/// same token. Mirrors the initial mint wired in `runtime::init::resolve_node_token`.
+/// Mints node tokens via `POST /v1/nodes` and maintains the workspace-scoped
+/// cache. Held by the node-control client, which uses it both for the initial
+/// mint (when no token is cached — see [`NodeTokenMinter::mint`]) and to recover
+/// from a stale/rejected cached token (HTTP 401 on the node-control handshake —
+/// see [`NodeTokenMinter::remint`]) instead of looping forever on the same token.
 #[derive(Clone)]
 pub(crate) struct NodeTokenMinter {
     pub(crate) workspace_key: String,
@@ -79,24 +80,11 @@ pub(crate) struct NodeTokenMinter {
 }
 
 impl NodeTokenMinter {
-    /// Discard the cached token for this workspace and mint a fresh one. Returns
-    /// the new token on success. On failure the caller surfaces a loud error and
-    /// backs off rather than looping on the rejected token.
-    async fn remint(&self) -> Option<String> {
-        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
-        // stale token behind for the next start.
-        if let Some(path) = self.token_path.as_deref() {
-            if let Err(error) = fs::remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %self.node_id,
-                        error = %error,
-                        "failed to clear rejected node token cache before re-mint"
-                    );
-                }
-            }
-        }
+    /// Mint a fresh node token via `POST /v1/nodes` and persist it to the
+    /// workspace-scoped cache. Returns the new token on success, or `None` after
+    /// logging the failure so the caller can back off and retry. Used for the
+    /// initial mint (no cached token) and as the shared body of [`Self::remint`].
+    async fn mint(&self) -> Option<String> {
         let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
         match mint_node_token(
             &self.workspace_key,
@@ -122,7 +110,7 @@ impl NodeTokenMinter {
                             target = "relay_broker::fleet",
                             node_id = %self.node_id,
                             error = %error,
-                            "failed to persist re-minted node token"
+                            "failed to persist minted node token"
                         );
                     }
                 }
@@ -130,7 +118,7 @@ impl NodeTokenMinter {
                     target = "relay_broker::fleet",
                     node_id = %self.node_id,
                     workspace_id = %self.workspace_id,
-                    "re-minted node token after node-control 401"
+                    "minted node token via create_node"
                 );
                 Some(token)
             }
@@ -140,11 +128,32 @@ impl NodeTokenMinter {
                     &self.node_id,
                     &self.workspace_id,
                     &error,
-                    "failed to re-mint node token after node-control 401",
+                    "failed to mint node token via create_node",
                 );
                 None
             }
         }
+    }
+
+    /// Discard the cached token for this workspace and mint a fresh one. Returns
+    /// the new token on success. On failure the caller surfaces a loud error and
+    /// backs off rather than looping on the rejected token.
+    async fn remint(&self) -> Option<String> {
+        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
+        // stale token behind for the next start.
+        if let Some(path) = self.token_path.as_deref() {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        error = %error,
+                        "failed to clear rejected node token cache before re-mint"
+                    );
+                }
+            }
+        }
+        self.mint().await
     }
 }
 
@@ -955,29 +964,59 @@ pub(crate) async fn run_node_control_client(
             .unwrap_or("")
             .is_empty()
         {
-            match command_rx.recv().await {
-                Some(FleetControlCommand::RegisterNode {
-                    manifest,
-                    resume_cursor,
-                }) => {
-                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                    registration = Some(build_node_register(
-                        &manifest,
-                        &config.node_id,
-                        &config.node_name,
-                        &config.broker_version,
+            // No pre-supplied or cached token. Broker startup deliberately skips
+            // the network mint (it must not gate `/api/session` readiness), so the
+            // initial mint happens here, in the background. On success, publish the
+            // token to the shared HTTP session so `/api/session` starts reporting
+            // it, then fall through to connect. On failure, back off and retry
+            // rather than idling forever — realtime delivery self-heals once the
+            // engine is reachable.
+            if let Some(minter) = config.token_minter.as_ref() {
+                if let Some(fresh) = minter.mint().await {
+                    config.node_token = Some(fresh);
+                    if let Some(shared) = &config.session_token {
+                        if let Ok(mut guard) = shared.write() {
+                            guard.clone_from(&config.node_token);
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %config.node_id,
+                        "node token mint failed; retrying after backoff (realtime delivery pending)"
+                    );
+                    tokio::time::sleep(reconnect_delay).await;
+                    reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                    continue;
+                }
+            } else {
+                // No minter available (e.g. no workspace RelayCast client). Can't
+                // self-recover; wait for a token to arrive via command.
+                match command_rx.recv().await {
+                    Some(FleetControlCommand::RegisterNode {
+                        manifest,
                         resume_cursor,
-                    ));
+                    }) => {
+                        load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+                        registration = Some(build_node_register(
+                            &manifest,
+                            &config.node_id,
+                            &config.node_name,
+                            &config.broker_version,
+                            resume_cursor,
+                        ));
+                    }
+                    Some(FleetControlCommand::UpdateLoad(next)) => load = next,
+                    Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
+                    Some(FleetControlCommand::Shutdown) | None => return,
+                    Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
+                        let _ = reply.send(Err("node_token_missing".to_string()));
+                    }
+                    Some(FleetControlCommand::Send(_))
+                    | Some(FleetControlCommand::HeartbeatNow) => {}
                 }
-                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                Some(FleetControlCommand::Shutdown) | None => return,
-                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                    let _ = reply.send(Err("node_token_missing".to_string()));
-                }
-                Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+                continue;
             }
-            continue;
         }
 
         let result = run_connected_once(
@@ -2259,6 +2298,95 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn node_control_client_mints_initial_token_when_none_supplied() {
+        // Broker startup no longer mints the node token on the API-readiness
+        // path; the client mints it in the background. Started with no token but
+        // a minter, it must mint via create_node, publish the token to the shared
+        // HTTP session handle, and connect.
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST).path("/v1/nodes");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "node-test",
+                    "name": "host-test",
+                    "kind": "ws",
+                    "role": "broker",
+                    "version": "broker/test",
+                    "status": "online",
+                    "live": true,
+                    "handlers_live": true,
+                    "load": 0.0,
+                    "active_agents": 0,
+                    "max_agents": 0,
+                    "created_at": "2026-06-30T00:00:00Z",
+                    "token": "nt_minted_by_client"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(None));
+
+        tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: None,
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: None,
+                }),
+                session_token: Some(session_token.clone()),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+        });
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+
+        create_node.assert_hits(1);
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_minted_by_client"),
+            "the background mint must publish the token to the shared HTTP session"
+        );
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 
