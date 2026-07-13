@@ -139,10 +139,7 @@ export interface RelayAgentThinClient {
   };
   react(messageId: string, emoji: string): Promise<unknown>;
   unreact(messageId: string, emoji: string): Promise<unknown>;
-  search(
-    query: string,
-    options?: { channel?: string; from?: string; limit?: number }
-  ): Promise<unknown[]>;
+  search(query: string, options?: { channel?: string; from?: string; limit?: number }): Promise<unknown[]>;
   inbox(options?: { limit?: number }): Promise<unknown>;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
