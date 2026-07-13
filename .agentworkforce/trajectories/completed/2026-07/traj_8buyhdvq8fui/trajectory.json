@@ -14,14 +14,8 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "90ca71a",
-    "5df8ebb"
-  ],
-  "filesChanged": [
-    ".agentworkforce/trajectories/active/traj_8buyhdvq8fui/trajectory.json",
-    "CHANGELOG.md"
-  ],
+  "commits": ["90ca71a", "5df8ebb"],
+  "filesChanged": [".agentworkforce/trajectories/active/traj_8buyhdvq8fui/trajectory.json", "CHANGELOG.md"],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
