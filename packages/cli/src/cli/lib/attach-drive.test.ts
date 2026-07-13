@@ -410,9 +410,10 @@ describe('classifyWsEvent', () => {
   });
 
   it('classifies delivery_queued without an event id (legacy frame)', () => {
-    expect(
-      classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice' }), 'Alice')
-    ).toEqual({ kind: 'delivery_queued', eventId: undefined });
+    expect(classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice' }), 'Alice')).toEqual({
+      kind: 'delivery_queued',
+      eventId: undefined,
+    });
   });
 
   it('classifies agent_pending_drained with optional count', () => {
@@ -647,10 +648,7 @@ describe('runDriveSession', () => {
     expect(writes.some((w) => w.includes('pending=3'))).toBe(false);
 
     // A genuinely new delivery — counted, goes to 3.
-    socket.emit(
-      'message',
-      jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'brand-new' })
-    );
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'brand-new' }));
     expect(writes.some((w) => w.includes('pending=3'))).toBe(true);
 
     // The same seeded id re-queued *later* (after being consumed once from the

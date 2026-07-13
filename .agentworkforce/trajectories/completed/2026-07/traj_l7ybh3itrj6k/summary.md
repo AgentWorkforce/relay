@@ -19,6 +19,7 @@ Addressed PR #1248 review: (1) post-reconcile offset watermark in StreamSyncBuff
 ## Key Decisions
 
 ### Comment 2: implemented option (b) dedup-by-event_id, not (a)
+
 - **Chose:** Comment 2: implemented option (b) dedup-by-event_id, not (a)
 - **Reasoning:** Replay seq is assigned asynchronously downstream of the runtime turn (in broadcast_if_relevant), so /pending cannot capture currentSeq coherently with the queue snapshot; (a) would still race (double-count). Option (b) is provably correct and purely client-side: capture cutoff first then seed, and dedupe replayed delivery_queued frames by event_id (present on both pending messages and WS frames).
 
@@ -27,6 +28,7 @@ Addressed PR #1248 review: (1) post-reconcile offset watermark in StreamSyncBuff
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Comment 2: implemented option (b) dedup-by-event_id, not (a): Comment 2: implemented option (b) dedup-by-event_id, not (a)
