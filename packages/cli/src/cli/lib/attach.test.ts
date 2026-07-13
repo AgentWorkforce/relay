@@ -219,6 +219,38 @@ describe('StreamSyncBuffer', () => {
     expect(sync.push('c', 15)).toBe(true);
   });
 
+  it('suppresses post-reconcile stragglers at or below the snapshot watermark', () => {
+    const sync = new StreamSyncBuffer();
+    // Nothing buffered before reconcile; snapshot painted up to offset 10.
+    expect(sync.reconcile(10)).toEqual([]);
+    // A chunk still in-flight broker-side when the snapshot was captured
+    // (end offset <= 10) arrives after reconcile — the snapshot already
+    // painted it, so it must be dropped (returns false).
+    expect(sync.push('straggler-below', 8)).toBe(false);
+    expect(sync.push('straggler-edge', 10)).toBe(false);
+    // Genuinely new output past the watermark passes through.
+    expect(sync.push('fresh', 11)).toBe(true);
+    // A live frame with no offset is applied rather than risk dropping output.
+    expect(sync.push('untagged', undefined)).toBe(true);
+  });
+
+  it('does not arm a watermark when the broker reports no offset', () => {
+    const sync = new StreamSyncBuffer();
+    // Snapshot with no offset: buffered chunks drop, and there is nothing to
+    // compare live frames against, so everything passes through afterwards.
+    expect(sync.reconcile(undefined)).toEqual([]);
+    expect(sync.push('a', 4)).toBe(true);
+    expect(sync.push('b', 8)).toBe(true);
+  });
+
+  it('does not arm a watermark after flushAll (no snapshot painted)', () => {
+    const sync = new StreamSyncBuffer();
+    sync.push('early', 4);
+    expect(sync.flushAll()).toEqual(['early']);
+    // No snapshot was painted, so even low-offset frames are live output.
+    expect(sync.push('low', 2)).toBe(true);
+  });
+
   it('drops every buffered chunk fully covered by the snapshot (no duplication)', () => {
     const sync = new StreamSyncBuffer();
     sync.push('x', 4);
@@ -438,6 +470,41 @@ describe('StatusLineController', () => {
     expect(writes).toEqual(['S1', 'S3']);
   });
 
+  it('re-arms a plain coalescing timer when a boundary-hold timer is pending and output returns to a boundary', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    const c = new StatusLineController({
+      render: () => 'S',
+      write: (s) => writes.push(s),
+      enabled: true,
+      coalesceMs: 50,
+      boundaryHoldMs: 100,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    // Leading-edge paint establishes lastPaintAt so the next repaint falls
+    // inside the coalescing window.
+    c.request();
+    expect(writes).toEqual(['S']);
+    // Output ends mid-CSI, then a repaint is requested → a force (boundary-hold)
+    // timer is armed for boundaryHoldMs (deadline now+100).
+    c.observeOutput('\x1b[');
+    c.request();
+    expect(t.pending()).toBe(1);
+    // A little later, output returns to a boundary. The stale force timer must
+    // be cleared and a plain coalescing timer armed for the *remainder* of the
+    // 50ms window (≈40ms from here), not left to fire at the 100ms deadline.
+    t.advance(10);
+    c.observeOutput('0m'); // completes the CSI → boundary
+    expect(writes).toEqual(['S']); // still deferred within the coalescing window
+    // The coalescing remainder elapses at +40ms; a boundary-hold timer would
+    // not have fired until +90ms, so this paint proves the re-arm.
+    t.advance(40);
+    expect(writes).toEqual(['S', 'S']);
+    expect(t.pending()).toBe(0);
+  });
+
   it('stops painting after dispose', () => {
     const writes: string[] = [];
     const t = fakeTimers();
@@ -471,10 +538,22 @@ function deliveryModeFetch(initial: 'manual_flush' | 'auto_inject') {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const body = JSON.parse(String(init?.body)) as { mode: 'manual_flush' | 'auto_inject' };
+      const body = JSON.parse(String(init?.body)) as {
+        mode: 'manual_flush' | 'auto_inject';
+        expected_mode?: 'manual_flush' | 'auto_inject';
+      };
+      // Simulate the broker's compare-and-set: when `expected_mode` is present
+      // and no longer matches the current mode, no-op and report `matched:false`
+      // with the unchanged current mode.
+      if (body.expected_mode !== undefined && body.expected_mode !== mode) {
+        return new Response(JSON.stringify({ mode, flushed: 0, matched: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       mode = body.mode;
       puts.push(body.mode);
-      return new Response(JSON.stringify({ mode }), {
+      return new Response(JSON.stringify({ mode, flushed: 0, matched: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -543,6 +622,23 @@ describe('resetLocalTerminalOnDetach', () => {
       expect(LOCAL_TERMINAL_RESET_SEQUENCE).toContain(seq);
     }
   });
+
+  it('runs cursor-homing resets before leaving the alt screen (see #1251)', () => {
+    // DECSTBM (`\x1b[r`) and DECOM reset (`\x1b[?6l`) both home the cursor.
+    // `\x1b[?1049l` restores the main-buffer cursor saved on alt-screen entry,
+    // so the homing controls must precede it — otherwise they clobber the
+    // restored position and the shell prompt lands at top-left after detach.
+    const stbm = LOCAL_TERMINAL_RESET_SEQUENCE.indexOf('\x1b[r');
+    const origin = LOCAL_TERMINAL_RESET_SEQUENCE.indexOf('\x1b[?6l');
+    const leaveAlt = LOCAL_TERMINAL_RESET_SEQUENCE.indexOf('\x1b[?1049l');
+    expect(stbm).toBeGreaterThanOrEqual(0);
+    expect(origin).toBeGreaterThanOrEqual(0);
+    expect(leaveAlt).toBeGreaterThanOrEqual(0);
+    expect(stbm).toBeLessThan(leaveAlt);
+    expect(origin).toBeLessThan(leaveAlt);
+    // The SGR reset stays last so nothing re-dirties attributes afterward.
+    expect(LOCAL_TERMINAL_RESET_SEQUENCE.endsWith('\x1b[0m')).toBe(true);
+  });
 });
 
 describe('createBackpressureAwareWriter', () => {
@@ -556,8 +652,8 @@ describe('createBackpressureAwareWriter', () => {
       once: () => undefined,
     };
     const w = createBackpressureAwareWriter(stdout);
-    w('a');
-    w('b');
+    w.write('a');
+    w.write('b');
     expect(written).toEqual(['a', 'b']);
   });
 
@@ -577,16 +673,16 @@ describe('createBackpressureAwareWriter', () => {
     };
     const w = createBackpressureAwareWriter(stdout);
     accept = false;
-    w('a'); // write returns false → paused, drain registered
-    w('b');
-    w('c'); // held in the bounded queue
+    w.write('a'); // write returns false → paused, drain registered
+    w.write('b');
+    w.write('c'); // held in the bounded queue
     expect(written).toEqual(['a']);
     accept = true;
     drain?.();
     expect(written).toEqual(['a', 'b', 'c']);
   });
 
-  it('writes through rather than dropping output once the queue cap is hit', () => {
+  it('preserves FIFO order when the queue cap is hit (no reordering)', () => {
     const written: string[] = [];
     const stdout: BackpressureWritable = {
       write: (c) => {
@@ -596,9 +692,44 @@ describe('createBackpressureAwareWriter', () => {
       once: () => undefined,
     };
     const w = createBackpressureAwareWriter(stdout, 2); // 2-byte cap
-    w('a'); // paused
-    w('bb'); // exactly fills the cap → queued
-    w('c'); // over cap → written straight through, not dropped
-    expect(written).toEqual(['a', 'c']);
+    w.write('a'); // paused
+    w.write('bb'); // exactly fills the cap → queued
+    w.write('c'); // over cap → flush the queue first, then this chunk, in order
+    // FIFO: 'bb' (already queued) must land before 'c', never after it.
+    expect(written).toEqual(['a', 'bb', 'c']);
+  });
+
+  it('drops the pending queue and unhooks drain on dispose', () => {
+    const written: string[] = [];
+    let accept = true;
+    let drain: (() => void) | null = null;
+    let offCalled = false;
+    const stdout: BackpressureWritable = {
+      write: (c) => {
+        written.push(c);
+        return accept;
+      },
+      once: (_event, fn) => {
+        drain = fn;
+        return undefined;
+      },
+      off: (_event, fn) => {
+        // Unhooking the same listener that `once('drain', …)` registered.
+        if (fn === drain) offCalled = true;
+        return undefined;
+      },
+    };
+    const w = createBackpressureAwareWriter(stdout);
+    accept = false;
+    w.write('a'); // paused, drain registered
+    w.write('b'); // queued
+    expect(written).toEqual(['a']);
+    w.dispose();
+    expect(offCalled).toBe(true);
+    // A late drain (or further writes) must not flush the dropped queue.
+    accept = true;
+    drain?.();
+    w.write('c');
+    expect(written).toEqual(['a']);
   });
 });

@@ -131,7 +131,7 @@ pub(crate) fn fulfil_response_frame(
         return false;
     };
 
-    let payload = frame.get("payload").cloned().unwrap_or(Value::Null);
+    let mut payload = frame.get("payload").cloned().unwrap_or(Value::Null);
     let result = if let Some(error) = payload.get("error") {
         let code = error
             .get("code")
@@ -145,13 +145,20 @@ pub(crate) fn fulfil_response_frame(
             .to_string();
         Err(RequestWorkerError::WorkerError { code, message })
     } else {
+        // The `write_pty_response` frame only carries `bytes_written`; the
+        // HTTP `POST /api/input/{name}` contract (and `HarnessDriverClient
+        // .sendInput`) also expects `name`. The broker knows the target from
+        // the pending entry, so stamp it in here rather than trusting the
+        // worker frame to echo its own name back.
+        if entry.kind == "write_pty" {
+            if let Value::Object(ref mut map) = payload {
+                map.entry("name")
+                    .or_insert_with(|| Value::String(entry.worker_name.clone()));
+            }
+        }
         Ok(payload)
     };
     let _ = entry.reply.send(result);
-    // `kind` and `worker_name` are read by the timeout sweep below; we
-    // drop them here without inspection because the response succeeded
-    // before they were needed for diagnostics.
-    let _ = (entry.kind, entry.worker_name);
     true
 }
 
@@ -387,6 +394,57 @@ mod tests {
 
         let value = rx.await.expect("reply fires").expect("write succeeded");
         assert_eq!(value["bytes_written"], json!(6));
+        // The broker stamps the worker name into the write_pty response so the
+        // `POST /api/input/{name}` body / `HarnessDriverClient.sendInput` return
+        // matches its `{ name, bytes_written }` contract — the worker frame only
+        // carries `bytes_written`.
+        assert_eq!(value["name"], json!("worker-a"));
+    }
+
+    #[tokio::test]
+    async fn write_pty_response_preserves_worker_supplied_name() {
+        // If the worker frame ever does echo a name, the broker must not
+        // clobber it — `or_insert` only fills a missing `name`.
+        let mut pending: HashMap<String, PendingRequest> = HashMap::new();
+        let (entry, rx) = make_entry(
+            "write_pty",
+            "broker-side-name",
+            Instant::now() + Duration::from_secs(5),
+        );
+        pending.insert("api-3".to_string(), entry);
+
+        let frame = json!({
+            "type": "write_pty_response",
+            "request_id": "api-3",
+            "payload": { "bytes_written": 2, "name": "worker-side-name" },
+        });
+        assert!(fulfil_response_frame(&mut pending, &frame));
+
+        let value = rx.await.expect("reply fires").expect("write succeeded");
+        assert_eq!(value["name"], json!("worker-side-name"));
+    }
+
+    #[tokio::test]
+    async fn non_write_pty_response_is_not_name_stamped() {
+        // Only write_pty responses get the name treatment; other request kinds
+        // (e.g. snapshot) forward their payload verbatim.
+        let mut pending: HashMap<String, PendingRequest> = HashMap::new();
+        let (entry, rx) = make_entry(
+            "snapshot_pty",
+            "worker-a",
+            Instant::now() + Duration::from_secs(5),
+        );
+        pending.insert("snap-1".to_string(), entry);
+
+        let frame = json!({
+            "type": "snapshot_response",
+            "request_id": "snap-1",
+            "payload": { "format": "plain", "screen": "hi" },
+        });
+        assert!(fulfil_response_frame(&mut pending, &frame));
+
+        let value = rx.await.expect("reply fires").expect("snapshot ok");
+        assert!(value.get("name").is_none());
     }
 
     #[tokio::test]
