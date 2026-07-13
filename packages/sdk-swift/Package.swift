@@ -1,18 +1,17 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// The hosted-participant transport (`AgentRelaySDK`) is a thin facade over the
-// relaycast Swift engine SDK (product `Relaycast`).
+// This package ships a single product, `AgentRelayBrokerSDK`: the local broker
+// orchestration client. It talks to the broker's own `/ws` control stream and
+// `/api/*` HTTP endpoints and has no external package dependencies.
 //
-// relaycast's Swift SDK lives in a subdirectory of the relaycast monorepo
-// (`packages/sdk-swift`), so it cannot be consumed as a plain git-URL SwiftPM
-// dependency on its own (git dependencies require `Package.swift` at the
-// repository root). A root-level manifest vending the `Relaycast` library was
-// added in the relaycast monorepo (AgentWorkforce/relaycast#208) and published
-// as v4.2.0; this package depends on it via that repository's git URL.
+// Hosted-workspace participation is no longer vended from here. Consumers who
+// want to join a hosted Relaycast workspace from Swift should depend on
+// relaycast's official Swift SDK directly (product `Relaycast`, from
+// https://github.com/AgentWorkforce/relaycast.git).
 //
 let package = Package(
-    name: "AgentRelaySDK",
+    name: "AgentRelayBrokerSDK",
     platforms: [
         .macOS(.v13),
         .iOS(.v16),
@@ -20,31 +19,12 @@ let package = Package(
         .tvOS(.v16)
     ],
     products: [
-        .library(name: "AgentRelaySDK", targets: ["AgentRelaySDK"]),
         .library(name: "AgentRelayBrokerSDK", targets: ["AgentRelayBrokerSDK"])
-    ],
-    dependencies: [
-        .package(
-            url: "https://github.com/AgentWorkforce/relaycast.git",
-            from: "5.0.5"
-        )
     ],
     targets: [
         .target(
-            name: "AgentRelaySDK",
-            dependencies: [
-                .product(name: "Relaycast", package: "relaycast")
-            ],
-            path: "Sources/AgentRelaySDK"
-        ),
-        .target(
             name: "AgentRelayBrokerSDK",
             path: "Sources/AgentRelayBrokerSDK"
-        ),
-        .testTarget(
-            name: "AgentRelaySDKTests",
-            dependencies: ["AgentRelaySDK"],
-            path: "Tests/AgentRelaySDKTests"
         ),
         .testTarget(
             name: "AgentRelayBrokerSDKTests",

@@ -5,11 +5,23 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Major]
 
 ### Changed
 
 - `agent-relay-broker` upgrades the bundled `relaycast` engine crate to 6.0 and parses inbound Relaycast WebSocket events against the published typed contract first, logging a structured warning when an event only parses via the tolerant fallback — so engine contract drift is observable without dropping traffic.
+
+### Removed
+
+- `packages/sdk-swift` no longer ships the `AgentRelaySDK` product (the hosted-workspace-participant facade over relaycast's Swift engine SDK). The package now vends only `AgentRelayBrokerSDK` (local broker orchestration), and the `Relaycast` package dependency is dropped from both the sub-package and root Swift manifests.
+
+### Breaking Changes
+
+- The `AgentRelaySDK` Swift library product is removed. relaycast's official Swift SDK (`Relaycast`) already implements the entire hosted surface natively — channels, threads, inbox, deliveries, file attachments, agents, nodes, triggers, webhooks, subscriptions, workspace admin, and a typed per-event listener hub — so the facade added no capability and is retired rather than maintained as duplicate indirection.
+
+### Migration Guidance
+
+- Depend on relaycast's `Relaycast` product directly instead of `AgentRelaySDK`: `.package(url: "https://github.com/AgentWorkforce/relaycast.git", from: "6.0.5")`. Replace the old wrapper types with relaycast's native API — `RelayCast.createWorkspace(...)`/`relay.asAgent(token)` for identity, `agent.channels.*` for channels, `agent.thread(_:)`/`agent.reply(_:text:)` for threads, `agent.inbox()`/`agent.deliveries()` for delivery, and the `RelayNodesService`/`RelayTriggersService`/`RelayWebhooksService`/`RelaySubscriptionsService`/`RelayAgentsService` services for the rest. `AgentRelayBrokerSDK` is unaffected.
 
 ## [10.1.0] - 2026-07-13
 
