@@ -19,6 +19,7 @@ Reordered detach reset seq (cursor-homing before alt-leave), documented alacritt
 ## Key Decisions
 
 ### Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side
+
 - **Chose:** Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side
 - **Reasoning:** Reviewer confirmed it's small; additive optional field, backward compatible; fully eliminates the read-then-restore TOCTOU rather than shrinking it
 
@@ -27,7 +28,8 @@ Reordered detach reset seq (cursor-homing before alt-leave), documented alacritt
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side: Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side
 
