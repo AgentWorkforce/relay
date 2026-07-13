@@ -1,0 +1,19 @@
+{
+  "id": "traj_8buyhdvq8fui",
+  "version": 1,
+  "task": {
+    "title": "Reconcile CHANGELOG unreleased bloat"
+  },
+  "status": "active",
+  "startedAt": "2026-07-13T10:49:34.342Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6de0d794d78c4ce00352bd0bdb2f0679166d3588",
+    "endRef": "6de0d794d78c4ce00352bd0bdb2f0679166d3588"
+  }
+}
