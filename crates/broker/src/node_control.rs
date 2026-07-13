@@ -979,6 +979,11 @@ pub(crate) async fn run_node_control_client(
                             guard.clone_from(&config.node_token);
                         }
                     }
+                    // A successful mint proves the engine is reachable, so reset
+                    // the backoff any earlier mint failures grew — the first
+                    // `/v1/node/ws` connect should start from the minimum delay,
+                    // not inherit a bloated one.
+                    reconnect_delay = INITIAL_RECONNECT_DELAY;
                 } else {
                     tracing::warn!(
                         target = "relay_broker::fleet",
