@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay skills add` installs the `/orchestrate` skill (from `agentrelay.com/skill.md`) into your coding harnesses. An interactive TUI asks whether to install for the current project or globally and which harnesses to target (Claude Code, Codex, Cursor, Gemini, OpenCode); `--global`/`--local`, `--harness <ids>`, and `--all` flags drive it non-interactively.
-- `agent-relay up --verbose` now prints step-by-step startup progress (port resolution, broker process spawn, handshake retries, fleet sidecar, node-delivery wait, agent spawns) and streams the broker's own startup-phase logs and stderr live, instead of only surfacing a terse error if startup fails.
+- `agent-relay up --verbose` now prints step-by-step startup progress (port resolution, broker process spawn, handshake retries, capability providers, node-delivery wait, agent spawns) and streams the broker's own startup-phase logs and stderr live, instead of only surfacing a terse error if startup fails.
+- `agent-relay integration subscribe` now wires a server-side inbound bridge: it provisions a relaycast inbound-target and a relayfile-cloud webhook subscription so real provider messages (Slack/GitHub/Linear) are injected into the target relay channel — and delivered to on-node agents — with no local watcher or client process running.
 - `agent-relay cloud enroll --token <ocl_node_enr_…>` redeems a one-time Cloud enrollment token and persists node credentials to `~/.agentworkforce/relay/fleet-enrollments.json` (0600); a later plain `agent-relay node up` then runs as the Cloud-managed node. The token is never printed.
-- `agent-relay node up|down|status|metrics|tail`, `node agent …`, and `node workflow run|logs|sync` unify `local up` and `fleet serve` under one command group. `node up [--config <file>]` auto-discovers and serves a `defineNode(...)` file (`agent-relay.{ts,tsx,mts,cts,js,mjs,cjs}`) in the project root and picks up persisted Cloud enrollment credentials; with no config it runs the implicit local node from teams.json.
-- `@agent-relay/fleet` now publishes the node runtime — `serveNode(options)` / `startServeNode(options)` returning `RunningNode { stop(), done }`, plus `FleetTriggerSyncClient`, `buildNodeSupervision`, and `readFleetSidecarStatus` — so one package both authors and serves a node. Fleet no longer depends on `@agent-relay/sdk`.
+- `agent-relay node up|down|status|metrics|tail`, `node agent …`, and `node workflow run|logs|sync` unify `local up` and `fleet serve` under one command group. `node up [--config <file>]` brings the current context's node online: the broker runs agents, and a project `agent-relay.{ts,…}` or `agent-relay.py` is served as a capability provider. A plain agent host needs no definition file.
+- **Node providers** — a node's actions are hosted by providers that connect directly to the engine and are invoked node-addressed (`POST /v1/nodes/:node/actions/:name/invoke`). Author TypeScript actions with `@agent-relay/fleet` (`defineNode`/`serveNode`); an action named `spawn:<harness>` wraps the broker's spawn so any language can adjust the command, env, or cwd before it runs.
+- Python `agent_relay.node.NodeProvider.from_enrollment()` serves node actions from Python, reading the node credentials from the enrollment. Install with the `node` extra.
 - `agent-relay node up` gains `--log-file <path>`, `--log-level <debug|info|warn|error>`, and `--log-json`: a served node logs each capability it registers (`debug`) and every action that hits it (`info`, with a duration and `node`/`kind`/`invocationId` fields; failures at `warn`). Without a flag the node stays quiet apart from warnings; `--verbose` raises the level to `debug`. An invalid `--log-level` is now rejected instead of silently disabling logs. Serving programmatically, inject any sink via `serveNode({ logger })`.
 - Swift SDK (`AgentRelaySDK`, `packages/sdk-swift`): `AgentClient` gains `invokeAction(_:input:timeout:pollInterval:)` — invoke a relay action and await its output — plus `channelHistory(_:limit:before:)` and `dmHistory(with:limit:before:)` for reading channel and 1:1 DM message history as oldest-first `RelayChannelEvent`s.
 
@@ -22,11 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `local` is now a hidden deprecated alias of `node` (the full old surface, including `local run|logs|sync`, still works) and prints a one-time deprecation warning; it is slated for removal in a future major.
 - `agent-relay integration` commands now talk to relayfile over its local **control-plane unix socket** (`relayfile control-plane serve`) via the published **`@relayfile/client`** package — a typed, version-negotiated client (`/v1/hello` handshake) — instead of shelling out to the `relayfile` CLI and parsing stdout. The daemon is auto-started on first use (or required already-running via `RELAYFILE_REQUIRE_DAEMON=1`); request/response types are generated from relayfile's OpenAPI so contract drift is a build error rather than a runtime surprise. The provider resource is canonicalized to relayfile's stored path-glob before bind/unbind so re-subscribing and unsubscribing match reliably. Requires relayfile ≥ 0.10.17.
 - `agent-relay integration subscribe` now points the writeback subscription at the relayfile-cloud ingress and signs it with a per-channel secret fetched from relayfile (`relayfile integration writeback-secret`), instead of a relay-server path that returned 404. The secret is derived server-side and tied to the logged-in account, so there's nothing to provision; `--bridge-url`/`--bridge-secret` still override.
-- relaycast SDKs upgraded to latest: `@relaycast/sdk` 5.0.5 (v4→v5 major), `relaycast` crate 5.0.2, `relaycast-sdk` 0.3.0, Swift relaycast 5.0.5. The v5 `agents.release` now returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
+- relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 (adds the node-provider client), `relaycast-sdk` (Python) 1.0.0 (adds `relay_sdk.node.NodeProvider`). The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
+- `agent-relay fleet status` reads this node's provider attachment and per-provider liveness from the engine nodes API instead of a local status file.
 - The hosted engine base URL default is owned solely by the relaycast SDK. `agent-relay`, `agent-relay-broker`, and the bundled SDKs no longer hardcode a base URL — they pass `RELAYCAST_BASE_URL`/`RELAY_BASE_URL` through for self-hosting and otherwise inherit the SDK default (`cast.agentrelay.com`). The broker reaches the fleet node-control endpoint via the SDK's `node_control_ws_url` helper and only injects `RELAY_BASE_URL` into spawned agents when an override is set.
 
 ### Removed
 
+- **Breaking (pre-launch, no shim):** the broker's local `/api/fleet/ws` sidecar protocol — and its `@agent-relay/harness-driver` TS mirror (`SdkToBroker`/`BrokerToSdk`/`NodeSupervision`) — is removed. Capability handlers connect to the engine directly as node providers instead of tunnelling through the broker, which keeps only its PTY runtime, agent delivery, and `spawn:<harness>`/`release` capacity. Node-scoped action rows replace workspace-global ones and existing action-invoke URLs change to `POST /v1/nodes/:node/actions/:name/invoke`.
 - `agent-relay fleet serve` is removed. Run `agent-relay node up` (optionally `--config <file>`); for a Cloud-managed node run `agent-relay cloud enroll --token <token>` first.
 - Removed the orphaned `@agent-relay/utils` `relay-pty-path` resolver, its `./relay-pty-path` subpath export, and other stale references to the pre-broker `relay-pty` standalone binary (rules docs, `.gitignore`, an unrunnable benchmark script).
 - Removed all `gateway.relaycast.dev` / `api.relaycast.dev` references; clients target `cast.agentrelay.com` only.
@@ -34,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay integration subscribe|unsubscribe` now safely persists and retires each relayfile-cloud inbound webhook subscription during replacement, rollback, and normal removal. The `@relayfile/client@0.10.21` pin enables full recovery of interrupted cloud creates.
 - Swift SDK: depending on this repository by git URL no longer fails with `no such module 'Relaycast'` — the root `Package.swift` now declares the `relaycast` dependency `AgentRelaySDK` imports.
 - `HarnessDriverClient.spawn()` now polls the broker's startup handshake for the full `startupTimeoutMs` budget (default 45s) instead of a fixed ~10s, so a slow-but-healthy Relaycast handshake that keeps answering `503` while warming up is no longer misreported as a spawn failure.
 - `agent-relay integration subscribe` now resolves provider-native `--resource` values through relayfile before binding, so Slack channel names, GitHub repos, Linear team keys, and Telegram chats bind to matching relayfile VFS globs while explicit `/`-prefixed globs still work.
@@ -113,6 +118,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace `agent-relay up --no-dashboard` with `agent-relay up --background`.
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
+
+## [9.2.4] - 2026-07-11
+
+### Changed
+
+- Drop unused binding in the symlink-refusal test
+- Faithful fake journal-lock helper for broker-less CI jobs
+- Force text diff rendering for the cleanup journal source
+- Fix clippy manual_filter baseline lints
+
+### Fixed
+
+- Use floating Node 22 before npm@latest install in publish workflow
+- Activate relayfile v3 crash recovery
+- Close the two remaining Cubic threads on the journal lifecycle
+- Periodic lease renewal + post-rename-safe temp cleanup + review polish
+- Open journal directories with FILE_FLAG_BACKUP_SEMANTICS on Windows
+- Future-dated heartbeats expire — the owner lease is truly bounded
+- Close the four open review findings on the journal lock
+- Framed journal commit envelope — truncation can never replace good contents
+- Helper-owned journal commit under the held kernel lock
+- Journal kernel lock via broker helper; drop native addon (Bun-safe)
+- Non-append lock descriptor and deterministic contention-test cleanup
+- Kernel advisory lock for the cleanup journal (stable inode, crash-released)
+- Mandatory pre-create workspace pin, fail-closed lockfile, review polish
+- Serialize stale-attempt recovery with the lifecycle lease
+- Concurrency-safe lifecycle leases, workspace pinning, and deterministic crash recovery
+- Crash-safe, retryable webhook cleanup via a durable journal
+- Retain failed webhook cleanup state
+- Clean up inbound webhook subscriptions
+
+## [9.2.3] - 2026-07-08
+
+### Added
+
+- Provision server-side inbound integration bridge in `integration subscribe`
 
 ## [9.2.2] - 2026-07-08
 

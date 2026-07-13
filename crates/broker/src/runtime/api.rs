@@ -25,23 +25,6 @@ pub(crate) fn default_observer_token_scopes() -> Vec<ObserverScope> {
 
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
-        let req = match req {
-            ListenApiRequest::FleetSidecarConnect { outbound, reply } => {
-                let result = self.handle_fleet_sidecar_connect(outbound).await;
-                let _ = reply.send(result);
-                return;
-            }
-            ListenApiRequest::FleetSidecarDisconnect => {
-                self.handle_fleet_sidecar_disconnect().await;
-                return;
-            }
-            ListenApiRequest::FleetSidecarFrame { frame, reply } => {
-                let result = self.handle_fleet_sidecar_frame(frame).await;
-                let _ = reply.send(result);
-                return;
-            }
-            other => other,
-        };
         let paths = &self.paths;
         let state = &mut self.state;
         let workspaces = &self.workspaces;
@@ -60,7 +43,9 @@ impl BrokerRuntime {
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
-        let fleet_handlers_live = self.fleet_handlers.handlers_live();
+        // The broker provider's capacity handlers are live whenever it is
+        // connected, so node heartbeats always report handlers_live.
+        let fleet_handlers_live = true;
         let telemetry = &self.telemetry;
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
@@ -1558,11 +1543,6 @@ impl BrokerRuntime {
                     "expires_in_secs": expires_in,
                     "persist": persist,
                 })));
-            }
-            ListenApiRequest::FleetSidecarConnect { .. }
-            | ListenApiRequest::FleetSidecarDisconnect
-            | ListenApiRequest::FleetSidecarFrame { .. } => {
-                unreachable!("fleet sidecar API requests are handled before runtime borrows")
             }
         }
     }

@@ -1,6 +1,30 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
+// `fleet status` fetches the broker session (which carries the node token and
+// workspace key) and queries the engine nodes API; stub both so the redaction
+// path can be exercised without a running broker.
+vi.mock('../lib/broker-lifecycle.js', () => ({
+  readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
+}));
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: class {
+    async getSession() {
+      return {
+        workspace_key: 'rk_live_secret',
+        node_token: 'nt_live_secret',
+        node_id: 'node_1',
+        node_name: 'live-node',
+        broker_version: '9.2.3',
+        protocol_version: 2,
+        mode: 'persist',
+        uptime_secs: 1,
+      };
+    }
+    disconnect() {}
+  },
+}));
+
 import { registerFleetCommands } from './fleet.js';
 
 describe('fleet command support', () => {
@@ -54,6 +78,40 @@ describe('fleet command support', () => {
       enabled: method === 'set' ? value : false,
       defaultEnabled: false,
     });
+  });
+
+  it('fleet status output redacts the node token and workspace key from the session', async () => {
+    const logs: string[] = [];
+    const nodes = { list: vi.fn(async () => [{ name: 'live-node', status: 'online', capabilities: [] }]) };
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      core: {
+        getProjectPaths: () => ({ projectRoot: '/p', dataDir: '/p/.agentworkforce/relay', teamDir: '/p' }),
+        exit: vi.fn(),
+      } as never,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: (...args: unknown[]) => logs.push(args.join(' ')),
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'status'], { from: 'user' });
+
+    const output = logs.join('\n');
+    // The session carried rk_live_/nt_live_ secrets; the printed status must not.
+    expect(output).not.toMatch(/rk_live_|nt_live_/);
+    expect(output).toContain('[redacted]');
+    // Non-secret identity is still shown.
+    expect(output).toContain('node_1');
+    expect(output).toContain('live-node');
   });
 
   it('registers `fleet serve` as a hidden stub that prints migration guidance and exits 1', async () => {

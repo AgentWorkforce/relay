@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerAgentCommands } from './agent.js';
 import { registerChannelCommands } from './channel.js';
@@ -7,6 +7,32 @@ import { registerMessageCommands } from './message.js';
 import { registerIntegrationCommands, type IntegrationCommandDependencies } from './integration.js';
 import { registerCapabilitiesCommands } from './capabilities.js';
 import type { SdkCommandDeps } from '../lib/sdk-command.js';
+
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+              secret: 'inbound-secret',
+            },
+          }),
+          {
+            status: 201,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+    )
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function createRelayMock() {
   return {
@@ -63,6 +89,17 @@ function createRelayMock() {
     capabilities: {
       register: vi.fn(async (i: unknown) => ({ ...(i as object) })),
       list: vi.fn(async () => []),
+    },
+  };
+}
+
+// Keep integration-command tests off the default file-backed cleanup journal.
+function memoryJournal() {
+  let entries: unknown[] = [];
+  return {
+    list: async () => [...entries],
+    update: async (mutate: (e: never[]) => unknown[] | Promise<unknown[]>) => {
+      entries = await mutate([...entries] as never[]);
     },
   };
 }
@@ -300,6 +337,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       isInteractive: () => false,
+      cleanupJournal: memoryJournal(),
       relayfile: {
         isConnected: vi.fn(async () => false),
         connect: vi.fn(async () => undefined),
@@ -312,6 +350,8 @@ describe('SDK-backed CLI groups', () => {
           url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
           secret: 'test-secret',
         })),
+        createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+        deleteWebhookSubscription: vi.fn(async () => undefined),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
 
@@ -341,7 +381,10 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
+        workspaceId: 'rw_test',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -359,6 +402,7 @@ describe('SDK-backed CLI groups', () => {
       })),
       isInteractive: () => false,
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(
@@ -382,11 +426,19 @@ describe('SDK-backed CLI groups', () => {
       channel: 'slackbot',
       name: expect.stringMatching(/^relayfile:slack:.+-[0-9a-f]{10}:[0-9a-f]{10}$/),
     });
+    expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith({
+      url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+      pathGlobs: ['#acme'],
+      secret: 'inbound-secret',
+      workspace: 'rw_test',
+    });
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
       event: 'message.created',
       events: ['message.created', 'thread.reply'],
       filter: { channel: 'slackbot' },
-      url: 'https://bridge.test/writeback',
+      // The per-attempt marker uniquely identifies this subscription for
+      // crash recovery without changing delivery (query is ignored).
+      url: expect.stringMatching(/^https:\/\/bridge\.test\/writeback\?relaySubscribeAttempt=[0-9a-f]{16}$/),
       secret: 'secret',
     });
     expect(relayfile.bind).toHaveBeenCalledWith({
@@ -396,6 +448,8 @@ describe('SDK-backed CLI groups', () => {
       webhookId: 'in1',
       webhookToken: 'tok_once',
       subscriptionId: 'sub1',
+      webhookSubscriptionId: 'whsub_1',
+      webhookSubscriptionWorkspaceId: 'rw_test',
     });
     expect(error).not.toHaveBeenCalled();
   });
@@ -414,7 +468,10 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
         secret: 'derived-secret-hex',
+        workspaceId: 'rw_7ccfea89',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const program = new Command();
     program.exitOverride();
@@ -423,9 +480,10 @@ describe('SDK-backed CLI groups', () => {
       log: vi.fn(),
       error: vi.fn(),
       exit: vi.fn() as never,
-      resolveLocalRelayOptions: vi.fn(async () => undefined),
+      resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       isInteractive: () => false,
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(
@@ -436,7 +494,9 @@ describe('SDK-backed CLI groups', () => {
     expect(relayfile.resolveWritebackBinding).toHaveBeenCalledWith('slackbot');
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        url: 'https://file.agentrelay.com/v1/workspaces/rw_7ccfea89/integrations/relay/writeback',
+        url: expect.stringMatching(
+          /^https:\/\/file\.agentrelay\.com\/v1\/workspaces\/rw_7ccfea89\/integrations\/relay\/writeback\?relaySubscribeAttempt=[0-9a-f]{16}$/
+        ),
         secret: 'derived-secret-hex',
       })
     );
@@ -463,7 +523,10 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
+        workspaceId: 'rw_test',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -477,6 +540,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
@@ -521,6 +585,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       isInteractive: () => false,
+      cleanupJournal: memoryJournal(),
       relayfile: {
         isConnected: vi.fn(async () => true),
         connect: vi.fn(async () => undefined),
@@ -533,6 +598,8 @@ describe('SDK-backed CLI groups', () => {
           url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
           secret: 'test-secret',
         })),
+        createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+        deleteWebhookSubscription: vi.fn(async () => undefined),
       },
     } satisfies Partial<IntegrationCommandDependencies>);
 
@@ -568,7 +635,10 @@ describe('SDK-backed CLI groups', () => {
       resolveWritebackBinding: vi.fn(async () => ({
         url: 'https://file.test/v1/workspaces/rw_test/integrations/relay/writeback',
         secret: 'test-secret',
+        workspaceId: 'rw_test',
       })),
+      createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
+      deleteWebhookSubscription: vi.fn(async () => undefined),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -582,6 +652,7 @@ describe('SDK-backed CLI groups', () => {
       exit: exit as never,
       resolveLocalRelayOptions: vi.fn(async () => ({ workspaceKey: 'rk_live_local' })),
       relayfile,
+      cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
 
     await program.parseAsync(['integration', 'unsubscribe', 'slack', '--resource', '#acme'], {

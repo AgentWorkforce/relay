@@ -93,13 +93,7 @@ pub(crate) async fn handle_startup_api_connection(mut stream: tokio::net::TcpStr
 
 /// Build the standard env-var array passed to every spawned child agent.
 pub(crate) fn normalize_initial_task(task: Option<String>) -> Option<String> {
-    task.and_then(|value| {
-        if value.trim().is_empty() {
-            None
-        } else {
-            Some(value)
-        }
-    })
+    task.filter(|value| !value.trim().is_empty())
 }
 
 const EXIT_AFTER_TASK_INSTRUCTION: &str = "## Post-task exit\n\

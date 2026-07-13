@@ -17,35 +17,64 @@ vi.mock('@agent-relay/sdk', () => ({
   }),
 }));
 
-import type { CoreProjectPaths } from '../commands/core.js';
-import { createImplicitLocalFleetNode, createTriggerSyncClient, fleetStatusPath } from './fleet-sidecar.js';
+import { defineNode, spawn } from '@agent-relay/fleet';
 
-const paths: CoreProjectPaths = {
-  projectRoot: '/tmp/my-project',
-  dataDir: '/tmp/my-project/.agentworkforce/relay',
-  teamDir: '/tmp/my-project/.agentworkforce/relay/teams',
-};
+import type { CoreTeamsConfig } from '../commands/core.js';
+import {
+  createTriggerSyncClient,
+  nodeCapacityHarnesses,
+  resolveNodeCapacityHarnesses,
+} from './fleet-sidecar.js';
 
-describe('fleetStatusPath', () => {
-  it('resolves the diagnostic status file inside the data dir', () => {
-    expect(fleetStatusPath(paths)).toBe('/tmp/my-project/.agentworkforce/relay/fleet-node.json');
+describe('nodeCapacityHarnesses', () => {
+  it('advertises the default harness set (matching the broker default) when there is no config', () => {
+    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini', 'opencode']);
+  });
+
+  it('adds teams.json clis, de-duplicated and order-preserving', () => {
+    const teams: CoreTeamsConfig = {
+      team: 't',
+      agents: [
+        { name: 'a', cli: 'aider' },
+        { name: 'b', cli: 'claude' },
+      ],
+    };
+    expect(nodeCapacityHarnesses(teams)).toEqual(['claude', 'codex', 'gemini', 'opencode', 'aider']);
+  });
+
+  it('adds spawn:<harness> definitions from a discovered node config', () => {
+    const definition = defineNode({
+      name: 'p',
+      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+    });
+    expect(nodeCapacityHarnesses(null, definition)).toEqual([
+      'claude',
+      'codex',
+      'gemini',
+      'opencode',
+      'aider',
+    ]);
   });
 });
 
-describe('createImplicitLocalFleetNode', () => {
-  it('derives the node name from the project root basename by default', () => {
-    const node = createImplicitLocalFleetNode({ paths, teamsConfig: null });
-
-    expect(node.name).toBe('my-project');
-    expect(Object.keys(node.capabilities)).toEqual(
-      expect.arrayContaining(['spawn:claude', 'spawn:codex', 'spawn:gemini'])
-    );
+describe('resolveNodeCapacityHarnesses', () => {
+  it('uses a pre-set AGENT_RELAY_NODE_HARNESSES value verbatim (operator authority)', () => {
+    const teams: CoreTeamsConfig = { team: 't', agents: [{ name: 'a', cli: 'aider' }] };
+    // A pinned value wins over the computed default+config set.
+    expect(resolveNodeCapacityHarnesses('  claude  ', teams)).toBe('claude');
+    expect(resolveNodeCapacityHarnesses('claude,codex', null)).toBe('claude,codex');
   });
 
-  it('honors an explicit name override', () => {
-    const node = createImplicitLocalFleetNode({ paths, teamsConfig: null, name: 'custom-node' });
-
-    expect(node.name).toBe('custom-node');
+  it('computes defaults ∪ config when no value is pre-set', () => {
+    const definition = defineNode({
+      name: 'p',
+      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+    });
+    expect(resolveNodeCapacityHarnesses(undefined, null, definition)).toBe(
+      'claude,codex,gemini,opencode,aider'
+    );
+    // A blank/whitespace value is treated as unset.
+    expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,gemini,opencode');
   });
 });
 

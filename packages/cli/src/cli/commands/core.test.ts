@@ -22,6 +22,18 @@ vi.mock('../telemetry/index.js', () => ({
   track: telemetryMocks.track,
 }));
 
+vi.mock('../lib/reflex-capture.js', () => ({
+  startReflexCapture: vi.fn(() => ({ stop: vi.fn(async () => undefined) })),
+}));
+
+vi.mock('@agent-relay/fleet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/fleet')>();
+  return {
+    ...actual,
+    startServeNode: vi.fn(() => ({ stop: vi.fn(async () => undefined), done: Promise.resolve() })),
+  };
+});
+
 beforeEach(() => {
   sdkStatusClient.getStatus.mockReset();
   sdkStatusClient.getStatus.mockResolvedValue({ agent_count: 0, pending_delivery_count: 0 });
@@ -110,6 +122,7 @@ function createHarness(options?: {
   killImpl?: CoreDependencies['killProcess'];
   nowImpl?: CoreDependencies['now'];
   sleepImpl?: CoreDependencies['sleep'];
+  holdOpen?: CoreDependencies['holdOpen'];
   execPath?: string;
   cliScript?: string;
   argv?: string[];
@@ -124,6 +137,8 @@ function createHarness(options?: {
   const fs = options?.fs ?? createFsMock();
   const relay = options?.relay ?? createRelayMock();
   const spawnedProcess = options?.spawnedProcess ?? createSpawnedProcessMock();
+  const env = options?.env ?? {};
+  env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE ??= '1';
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -149,7 +164,7 @@ function createHarness(options?: {
       async () => options?.checkForUpdatesResult ?? { updateAvailable: false, latestVersion: '1.2.3' }
     ) as unknown as CoreDependencies['checkForUpdates'],
     getVersion: vi.fn(() => '1.2.3'),
-    env: options?.env ?? {},
+    env,
     argv: options?.argv ?? ['node', '/tmp/agent-relay.js', 'up'],
     execPath: options?.execPath ?? '/usr/bin/node',
     cliScript: options?.cliScript ?? '/tmp/agent-relay.js',
@@ -158,7 +173,7 @@ function createHarness(options?: {
     isPortInUse: vi.fn(async () => false),
     sleep: options?.sleepImpl ?? vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
-    holdOpen: vi.fn(async () => undefined),
+    holdOpen: options?.holdOpen ?? vi.fn(async () => undefined),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     warn: vi.fn(() => undefined),
@@ -312,6 +327,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('up refuses auto-spawn when node delivery is down', async () => {
+    let now = 0;
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({
         agent_count: 0,
@@ -327,7 +343,11 @@ describe('registerCoreCommands', () => {
         autoSpawn: true,
         agents: [{ name: 'WorkerA', cli: 'codex', task: 'Ship tests' }],
       },
-      nowImpl: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(10_000).mockReturnValue(10_000),
+      nowImpl: vi.fn(() => {
+        const current = now;
+        now += 10_000;
+        return current;
+      }),
     });
 
     const exitCode = await runCommand(program, ['up']);
@@ -751,9 +771,19 @@ describe('registerCoreCommands', () => {
       shutdown: vi.fn(() => new Promise(() => undefined)),
     });
 
-    const { program, deps } = createHarness({ relay });
-    const exitCode = await runCommand(program, ['up']);
-    expect(exitCode).toBeUndefined();
+    const { program, deps } = createHarness({
+      relay,
+      holdOpen: vi.fn(() => new Promise(() => undefined)),
+    });
+    void runCommand(program, ['up']);
+
+    for (
+      let i = 0;
+      i < 10 && (deps.onSignal as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
+      i += 1
+    ) {
+      await Promise.resolve();
+    }
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as

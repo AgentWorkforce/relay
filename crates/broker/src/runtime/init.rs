@@ -245,8 +245,14 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         }
         None => format!("node_{}", Uuid::new_v4().simple()),
     };
+    // The node registers under its resolved instance name (--instance-name, the
+    // legacy --name/--broker-name alias, or AGENT_RELAY_BROKER_NAME), falling back
+    // to the machine hostname only when none is set. Deriving this from the raw
+    // `cmd.name` (the empty legacy flag) instead would register every node under its
+    // hostname, colliding whenever two nodes share a host.
+    let resolved_node_name = cmd.resolved_instance_name(None);
     let node_name = crate::node_control::default_node_name(
-        (!cmd.name.trim().is_empty()).then_some(cmd.name.as_str()),
+        (!resolved_node_name.trim().is_empty()).then_some(resolved_node_name.as_str()),
     );
     let fleet_ws_url = relaycast::node_control_ws_url(configured_base.as_deref());
     let broker_version = format!("relay-broker/{}", crate::util::version::broker_version());
@@ -294,6 +300,18 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // spawned agents to this node so they become `via_node` and node delivery
     // reaches them.
     let fleet_node_name = node_name.clone();
+    // Capture the resolved node identity for the HTTP session endpoint before it
+    // is moved into the control client. Capability providers served by the CLI
+    // attach to this same node id.
+    let session_node_id = node_id.clone();
+    let session_node_name = node_name.clone();
+    // The node token is shared by every provider on this node (spec §2). Expose
+    // the broker's resolved token on the api-key-gated session so the CLI can
+    // serve local config providers without a pre-enrolled RELAY_NODE_TOKEN (the
+    // broker mints its own in that case). Alongside the workspace key already
+    // returned there, this stays within the local trust boundary. A shared handle
+    // (updated by the node-control re-mint path) keeps the session token current.
+    let session_node_token = std::sync::Arc::new(std::sync::RwLock::new(node_token.clone()));
     // Wire a re-mint facility so a node-control 401 (stale/wrong-scoped token)
     // discards the cached token and mints a fresh one, instead of looping
     // forever on the rejected token. Mirrors the initial mint above. Absent when
@@ -319,6 +337,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             node_name,
             broker_version,
             token_minter,
+            session_token: Some(session_node_token.clone()),
         },
         fleet_control_rx,
         fleet_event_tx,
@@ -372,6 +391,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         relay_base_url: configured_base.clone(),
         memberships: workspace_memberships.clone(),
         default_workspace_id: default_workspace_id.clone(),
+        node_id: session_node_id,
+        node_name: session_node_name,
+        node_token: session_node_token,
         persist: cmd.persist,
     });
     {
@@ -615,13 +637,10 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         fleet_event_rx,
         fleet_control_open: true,
         fleet_delivery_book: FleetDeliveryBook::default(),
-        fleet_handlers: HandlerDispatchState::default(),
-        fleet_sidecar_out_tx: None,
-        fleet_sidecar_supervision: None,
-        fleet_sidecar_child: None,
-        fleet_sidecar_restart_at: None,
-        fleet_sidecar_restart: fleet::FleetSidecarRestartState::default(),
-        fleet_max_agents: 0,
+        // Seed the live capacity with the configured max so heartbeats/load
+        // updates keep reporting it (they overwrite load.max_agents from this
+        // field); 0 means unlimited, matching the register manifest.
+        fleet_max_agents: node_max_agents().unwrap_or(0),
         fleet_inventory: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,
@@ -755,28 +774,81 @@ fn bracket_ipv6_host(host: &str) -> String {
     }
 }
 
-/// Build the bootstrap node descriptor the broker sends before the fleet sidecar
-/// reports its real `defineNode` manifest.
+/// The harnesses the broker advertises `spawn:<harness>` capacity for when
+/// `AGENT_RELAY_NODE_HARNESSES` is unset.
+const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode"];
+
+/// Build the node descriptor the broker registers as the `broker` provider.
 ///
-/// It carries NO capabilities: the node's real `spawn:*`/action capabilities
-/// arrive on the sidecar's `node.register` (see `SdkToBroker::RegisterNode`). The
-/// bootstrap manifest must never advertise a bare `"spawn"` capability, because
-/// the relaycast engine does not treat `"spawn"` as a placement capability (only
-/// `spawn:*` is). A bare `"spawn"` makes the engine materialize a generic `spawn`
-/// ACTION pinned to this node's id, which then short-circuits capability-based
-/// spawn placement for the whole workspace — every `spawn` invoke is dispatched
-/// to whichever node bootstrapped first, ignoring `cli`/`target_node`/least-loaded
-/// routing. An empty manifest keeps the node online (registered) without claiming
-/// any handler until the sidecar supplies the authoritative capability set.
+/// The broker is the node's capacity executor, so this advertises what the node
+/// can *run*: `spawn:<harness>` for each harness the broker can launch, plus
+/// `release`, all `kind: "capacity"`. Capacity capabilities feed placement and
+/// `ctx.spawnAgent` delegation and are never materialized as actions. The
+/// manifest must never advertise a bare `"spawn"`: the engine treats that as a
+/// generic action pinned to this node, hijacking capability-based spawn
+/// placement for the whole workspace. The harness set comes from the
+/// `AGENT_RELAY_NODE_HARNESSES` CSV (the CLI sets it from the project's
+/// teams.json / node definition), falling back to a built-in default.
 fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str) -> NodeManifest {
+    let mut capabilities: Vec<crate::protocol::NodeCapabilityManifest> = node_capacity_harnesses()
+        .into_iter()
+        .map(|harness| crate::protocol::NodeCapabilityManifest {
+            name: format!("spawn:{harness}"),
+            kind: Some("capacity".to_string()),
+            metadata: None,
+        })
+        .collect();
+    capabilities.push(crate::protocol::NodeCapabilityManifest {
+        name: "release".to_string(),
+        kind: Some("capacity".to_string()),
+        metadata: None,
+    });
     NodeManifest {
         name: node_name.to_string(),
         node_id: Some(node_id.to_string()),
-        capabilities: Vec::new(),
-        max_agents: None,
+        capabilities,
+        max_agents: node_max_agents(),
         tags: None,
         version: Some(broker_version.to_string()),
     }
+}
+
+/// The harness names this broker can spawn, from `AGENT_RELAY_NODE_HARNESSES`
+/// (comma-separated, order-preserving, de-duplicated) or the built-in default.
+fn node_capacity_harnesses() -> Vec<String> {
+    let configured: Vec<String> = std::env::var("AGENT_RELAY_NODE_HARNESSES")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let source: Vec<String> = if configured.is_empty() {
+        DEFAULT_NODE_HARNESSES
+            .iter()
+            .map(|h| (*h).to_string())
+            .collect()
+    } else {
+        configured
+    };
+    let mut seen = std::collections::HashSet::new();
+    source
+        .into_iter()
+        .filter(|h| seen.insert(h.clone()))
+        .collect()
+}
+
+/// Provider-level agent capacity, from `AGENT_RELAY_NODE_MAX_AGENTS`. Absent
+/// (0/unlimited) preserves the broker's historically unbounded capacity.
+fn node_max_agents() -> Option<u32> {
+    std::env::var("AGENT_RELAY_NODE_MAX_AGENTS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        // 0 means unlimited, same as absent; normalize it away so the doc
+        // comment holds and `Some(0)` never reads as an explicit zero-capacity.
+        .filter(|&max| max > 0)
 }
 
 #[cfg(test)]
@@ -785,18 +857,41 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
-    fn bootstrap_node_manifest_advertises_no_capabilities() {
-        // Regression: a bare `"spawn"` capability in the bootstrap manifest makes
-        // the engine create a generic `spawn` action pinned to the bootstrapping
-        // node, hijacking capability-based spawn placement for the workspace. The
-        // bootstrap descriptor must carry the node's identity but ZERO
-        // capabilities; the real capability set arrives from the sidecar's
-        // `node.register`.
+    fn bootstrap_node_manifest_advertises_capacity_not_bare_spawn() {
+        // The broker registers its run capacity: `spawn:<harness>` + `release`,
+        // all `kind: "capacity"`. It must never advertise a bare `"spawn"`, which
+        // the engine would materialize as a generic action pinned to this node,
+        // hijacking capability-based spawn placement for the whole workspace.
         let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
         assert!(
-            manifest.capabilities.is_empty(),
-            "bootstrap manifest must advertise no capabilities, got {:?}",
+            !manifest.capabilities.is_empty(),
+            "broker manifest must advertise its capacity"
+        );
+        assert!(
+            manifest
+                .capabilities
+                .iter()
+                .all(|cap| cap.kind.as_deref() == Some("capacity")),
+            "every advertised capability must be kind capacity, got {:?}",
             manifest.capabilities
+        );
+        assert!(
+            manifest.capabilities.iter().all(|cap| cap.name != "spawn"),
+            "manifest must not advertise a bare spawn capability"
+        );
+        assert!(
+            manifest
+                .capabilities
+                .iter()
+                .any(|cap| cap.name == "release"),
+            "manifest must advertise release capacity"
+        );
+        assert!(
+            manifest
+                .capabilities
+                .iter()
+                .any(|cap| cap.name.starts_with("spawn:")),
+            "manifest must advertise at least one spawn:<harness> capacity"
         );
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
