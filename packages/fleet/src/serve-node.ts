@@ -267,11 +267,7 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
  * structured `{ node, action, kind, invocationId }` fields, so a file/JSON sink
  * can group a node's activity by node and by capability kind (spawn vs action).
  */
-function adaptHandler(
-  options: ServeNodeOptions,
-  name: string,
-  logger: FleetLogger
-): NodeCapabilityHandler {
+function adaptHandler(options: ServeNodeOptions, name: string, logger: FleetLogger): NodeCapabilityHandler {
   const node = options.nameOverride ?? options.definition.name;
   const kind = options.definition.capabilities[name]?.kind;
   const base = { node, action: name, ...(kind ? { kind } : {}) };
