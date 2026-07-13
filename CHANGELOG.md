@@ -119,6 +119,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [10.0.0] - 2026-07-13
+
+### Changed
+
+- Prod smoke: node-providers synthetic monitoring
+- Node providers: broker demotion, fleet retarget, per-language node up
+
+### Fixed
+
+- Mint the node token off the API-readiness path
+
 ## [9.2.4] - 2026-07-11
 
 ### Changed
