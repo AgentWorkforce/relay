@@ -39,7 +39,7 @@ use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
-use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
+use crate::wrap::{warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 use base64::Engine;
 
 #[derive(Debug, Clone)]
@@ -63,9 +63,12 @@ enum InjectionStage {
     Escape,
     /// Escape delay elapsed; submit the formatted injection body next.
     Body,
-    /// Body written; submit the trailing `\r` and finalize (emit
-    /// `delivery_injected`, queue echo verification).
+    /// Body write confirmed by the drainer; submit the trailing `\r` next.
     Enter,
+    /// Trailing `\r` submitted; awaiting its drainer ack before finalizing
+    /// (emit `delivery_injected`, queue echo verification). Finalization runs
+    /// in the injection-ack arm, not the deadline arm.
+    Finalize,
 }
 
 /// A single injection being written across paced stages. Holds the delivery
@@ -249,6 +252,40 @@ fn injection_pop_allowed(active_injection_present: bool, interactive_hold: bool)
     !active_injection_present && !interactive_hold
 }
 
+/// What to do with an in-flight injection once its Body or Enter write ack
+/// resolves. Keeps the ack-resolution policy pure and unit-testable, separate
+/// from the frame-sending / verification side effects in the select loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InjectionAckOutcome {
+    /// Ack failed, was lost, or arrived for a stage that awaits no ack:
+    /// requeue the delivery at the front of the pending queue. Crucially, a
+    /// failed Body or Enter ack lands here — so no `delivery_injected` is
+    /// emitted and no echo verification is seeded against bytes the child
+    /// never received.
+    Requeue,
+    /// Body write confirmed on the child: schedule the trailing Enter.
+    PaceEnter,
+    /// Enter write confirmed on the child: only now is the delivery genuinely
+    /// injected — emit `delivery_injected` and queue echo verification.
+    Finalize,
+}
+
+/// Decide the fate of an in-flight injection from the stage it is in and
+/// whether the drainer confirmed the write. `stage` is the stage the machine
+/// advanced to *after* submitting the write whose ack just resolved: `Enter`
+/// means the Body ack, `Finalize` means the Enter ack. A resolution in any
+/// other stage (or a failed/lost ack) requeues.
+fn injection_ack_outcome(stage: InjectionStage, confirmed: bool) -> InjectionAckOutcome {
+    if !confirmed {
+        return InjectionAckOutcome::Requeue;
+    }
+    match stage {
+        InjectionStage::Enter => InjectionAckOutcome::PaceEnter,
+        InjectionStage::Finalize => InjectionAckOutcome::Finalize,
+        InjectionStage::Escape | InjectionStage::Body => InjectionAckOutcome::Requeue,
+    }
+}
+
 fn should_block_pending_injection(
     auto_suggestion_visible: bool,
     pending: &PendingWorkerInjection,
@@ -378,6 +415,15 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // one injection is in flight at a time; the pending-injection interval arm
     // starts the next one once this returns to `None`.
     let mut active_injection: Option<ActiveInjection> = None;
+    // Ack receiver for the in-flight injection's most recent Body/Enter write.
+    // `submit_write` only enqueues to the bounded drainer queue; the oneshot
+    // resolves once the drainer has actually written and flushed those bytes to
+    // the child (or hit an I/O error / exited). While this is `Some` the loop is
+    // awaiting that confirmation and the injection deadline arm is gated off, so
+    // a wedged drainer can never advance the paced sequence — no false
+    // `delivery_injected`, no bogus echo baseline. On a failed ack the delivery
+    // is requeued at the front of `pending_worker_injections`.
+    let mut injection_ack: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>> = None;
     // In-flight `write_pty` PTY writes awaiting the drainer's confirmation. Each
     // entry resolves to `(request_id, byte_len, ack_result)` once the PTY write
     // (or its failure) is confirmed, at which point the loop sends a
@@ -491,7 +537,33 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut reported_idle = false;
     let mut last_context_low_pct: Option<u8> = None;
 
+    // Pinned timer for the injection pacing arm. Hoisted out of the select loop
+    // so heavy PTY output — which spins the loop once per chunk — doesn't churn
+    // a fresh `Sleep` (and its timer-wheel registration) every iteration. The
+    // sleep is `.reset()` only when the in-flight injection's deadline actually
+    // changes, tracked via `injection_delay_at`. Absolute deadlines (`next_at`)
+    // mean a reset after an interactive-hold freeze still resumes correctly: if
+    // the deadline already passed while held, the timer is immediately ready on
+    // release, matching the old `sleep_until(past)` semantics.
+    let injection_delay = tokio::time::sleep(Duration::from_secs(0));
+    tokio::pin!(injection_delay);
+    let mut injection_delay_at: Option<tokio::time::Instant> = None;
+
     while running {
+        // Re-point the pinned injection timer whenever the active injection's
+        // deadline changes (new injection popped, stage advanced, or ack paced
+        // the next stage). One comparison per iteration; a `reset` only on a
+        // genuine change, so the steady state incurs no timer churn.
+        {
+            let target = active_injection.as_ref().map(|inj| inj.next_at);
+            if target != injection_delay_at {
+                injection_delay_at = target;
+                if let Some(at) = target {
+                    injection_delay.as_mut().reset(at);
+                }
+            }
+        }
+
         tokio::select! {
             line = lines.next_line() => {
                 match line {
@@ -1158,19 +1230,15 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 }
             }
 
-            // Advance the in-flight injection's paced write sequence. Parks on
-            // `pending()` (never wakes) whenever no injection is active, so an
-            // idle worker incurs no extra timer wakeups. Each stage submits its
-            // bytes non-blockingly and reschedules the next stage's deadline;
-            // the select loop keeps forwarding PTY output and handling input
-            // between stages.
-            _ = async {
-                let deadline = active_injection.as_ref().map(|inj| inj.next_at);
-                match deadline {
-                    Some(at) => tokio::time::sleep_until(at).await,
-                    None => std::future::pending::<()>().await,
-                }
-            }, if active_injection.is_some() && !pty_auto.interactive_hold => {
+            // Advance the in-flight injection's paced write sequence. Driven by
+            // the hoisted `injection_delay` timer; the guard disables this arm
+            // when no injection is active, an ack is outstanding, or a human
+            // hold is in effect, so an idle worker incurs no wakeups. Each stage
+            // submits its bytes non-blockingly; Body/Enter then hand off to the
+            // injection-ack arm, which paces the next stage once the drainer
+            // confirms the write. The select loop keeps forwarding PTY output
+            // and handling input between stages.
+            _ = &mut injection_delay, if active_injection.is_some() && injection_ack.is_none() && !pty_auto.interactive_hold => {
                 let mut inj = active_injection.take().expect("active injection present under guard");
                 match inj.stage {
                     InjectionStage::Escape => {
@@ -1196,7 +1264,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 delivery_id = %inj.pending.delivery.delivery_id,
                                 "auto-suggestion visible; sending Escape to dismiss before injection"
                             );
-                            let _ = pty.submit_write(b"\x1b".to_vec());
+                            warn_on_auto_response_write(
+                                pty.submit_write(b"\x1b".to_vec()),
+                                "injection_escape_dismiss",
+                            );
                             inj.stage = InjectionStage::Body;
                             inj.next_at = tokio::time::Instant::now() + Duration::from_millis(100);
                             active_injection = Some(inj);
@@ -1225,54 +1296,140 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
-                        if let Err(e) = pty.submit_write(injection.clone().into_bytes()) {
-                            tracing::warn!(
-                                delivery_id = %inj.pending.delivery.delivery_id,
-                                error = %e,
-                                "PTY injection write failed, re-queuing delivery"
-                            );
-                            pending_worker_injections.push_front(inj.pending);
-                        } else {
-                            inj.injection_text = Some(injection);
-                            inj.stage = InjectionStage::Enter;
-                            inj.next_at = tokio::time::Instant::now() + Duration::from_millis(50);
-                            active_injection = Some(inj);
+                        // Submit the body and hold the ack: only advance to Enter
+                        // once the drainer confirms the child received these
+                        // bytes, so the trailing `\r` and echo baseline never
+                        // race ahead of a wedged queue.
+                        match pty.submit_write(injection.clone().into_bytes()) {
+                            Ok(ack_rx) => {
+                                inj.injection_text = Some(injection);
+                                inj.stage = InjectionStage::Enter;
+                                injection_ack = Some(ack_rx);
+                                active_injection = Some(inj);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    delivery_id = %inj.pending.delivery.delivery_id,
+                                    error = %e,
+                                    "PTY injection write failed, re-queuing delivery"
+                                );
+                                pending_worker_injections.push_front(inj.pending);
+                            }
                         }
                     }
                     InjectionStage::Enter => {
-                        let _ = pty.submit_write(b"\r".to_vec());
-                        let _ = send_frame(
-                            &out_tx,
-                            "delivery_injected",
-                            None,
-                            delivery_injected_event_payload(
-                                &inj.pending.delivery.delivery_id,
-                                &inj.pending.delivery.event_id,
-                                &worker_name,
-                                current_timestamp_ms(),
-                            ),
-                        )
-                        .await;
-                        pty_auto.last_injection_time = Some(Instant::now());
-                        pty_auto.auto_enter_retry_count = 0;
+                        // Submit the trailing `\r` and hold its ack. The
+                        // `delivery_injected` event and echo verification are
+                        // emitted only after this write is confirmed, in the
+                        // injection-ack arm — never on enqueue alone.
+                        match pty.submit_write(b"\r".to_vec()) {
+                            Ok(ack_rx) => {
+                                inj.stage = InjectionStage::Finalize;
+                                injection_ack = Some(ack_rx);
+                                active_injection = Some(inj);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    delivery_id = %inj.pending.delivery.delivery_id,
+                                    error = %e,
+                                    "PTY injection Enter write failed, re-queuing delivery"
+                                );
+                                pending_worker_injections.push_front(inj.pending);
+                            }
+                        }
+                    }
+                    InjectionStage::Finalize => {
+                        // Unreachable in practice: the deadline arm is gated off
+                        // while `injection_ack` is `Some`, which it always is on
+                        // entry to Finalize. Reaching here means the Enter ack was
+                        // lost; requeue defensively rather than silently drop.
+                        tracing::error!(
+                            delivery_id = %inj.pending.delivery.delivery_id,
+                            "injection reached Finalize in deadline arm without pending ack; re-queuing delivery"
+                        );
+                        pending_worker_injections.push_front(inj.pending);
+                    }
+                }
+            }
 
-                        // Queue echo verification before acknowledging delivery.
-                        let injection = inj.injection_text.take().unwrap_or_default();
-                        pending_verifications.push_back(PendingVerification {
-                            delivery_id: inj.pending.delivery.delivery_id.clone(),
-                            event_id: inj.pending.delivery.event_id.clone(),
-                            expected_echo: injection,
-                            injected_at: Instant::now(),
-                            attempts: 1,
-                            max_attempts: 1,
-                            request_id: inj.pending.request_id,
-                            workspace_id: inj.pending.delivery.workspace_id.clone(),
-                            workspace_alias: inj.pending.delivery.workspace_alias.clone(),
-                            from: inj.pending.delivery.from,
-                            body: inj.pending.delivery.body,
-                            target: inj.pending.delivery.target,
-                        });
-                        // active_injection remains None: injection complete.
+            // Resolve the in-flight injection's Body/Enter write ack. Awaiting
+            // the drainer's confirmation here — rather than acking on enqueue —
+            // is what makes injection progression honest: a wedged drainer
+            // blocks in this arm instead of emitting a false `delivery_injected`
+            // or seeding echo verification against bytes the child never saw.
+            // On a failed/lost ack the delivery is requeued at the front of
+            // `pending_worker_injections`, matching the enqueue-failure retry
+            // path. Parked (never polled) whenever no ack is outstanding.
+            ack = async {
+                injection_ack
+                    .as_mut()
+                    .expect("injection ack present under guard")
+                    .await
+            }, if injection_ack.is_some() => {
+                injection_ack = None;
+                if let Some(mut inj) = active_injection.take() {
+                    let confirmed = matches!(ack, Ok(Ok(())));
+                    match injection_ack_outcome(inj.stage, confirmed) {
+                        InjectionAckOutcome::PaceEnter => {
+                            // Body confirmed on the child; pace the trailing
+                            // Enter via the deadline arm.
+                            inj.next_at =
+                                tokio::time::Instant::now() + Duration::from_millis(50);
+                            active_injection = Some(inj);
+                        }
+                        InjectionAckOutcome::Finalize => {
+                            // Enter confirmed on the child: only now is the
+                            // delivery genuinely injected.
+                            let _ = send_frame(
+                                &out_tx,
+                                "delivery_injected",
+                                None,
+                                delivery_injected_event_payload(
+                                    &inj.pending.delivery.delivery_id,
+                                    &inj.pending.delivery.event_id,
+                                    &worker_name,
+                                    current_timestamp_ms(),
+                                ),
+                            )
+                            .await;
+                            pty_auto.last_injection_time = Some(Instant::now());
+                            pty_auto.auto_enter_retry_count = 0;
+
+                            // Queue echo verification against the confirmed body.
+                            let injection = inj.injection_text.take().unwrap_or_default();
+                            pending_verifications.push_back(PendingVerification {
+                                delivery_id: inj.pending.delivery.delivery_id.clone(),
+                                event_id: inj.pending.delivery.event_id.clone(),
+                                expected_echo: injection,
+                                injected_at: Instant::now(),
+                                attempts: 1,
+                                max_attempts: 1,
+                                request_id: inj.pending.request_id,
+                                workspace_id: inj.pending.delivery.workspace_id.clone(),
+                                workspace_alias: inj.pending.delivery.workspace_alias.clone(),
+                                from: inj.pending.delivery.from,
+                                body: inj.pending.delivery.body,
+                                target: inj.pending.delivery.target,
+                            });
+                            // active_injection remains None: injection complete.
+                        }
+                        InjectionAckOutcome::Requeue => {
+                            let reason = match ack {
+                                Ok(Err(err)) => err.to_string(),
+                                Err(_) => "pty write drainer exited before acknowledging queued write".to_string(),
+                                Ok(Ok(())) => "unexpected ack for a stage that awaits none".to_string(),
+                            };
+                            tracing::warn!(
+                                delivery_id = %inj.pending.delivery.delivery_id,
+                                stage = ?inj.stage,
+                                error = %reason,
+                                "injection write not confirmed by drainer, re-queuing delivery"
+                            );
+                            // Requeue at the front, preserving retry ordering. The
+                            // delivery_id stays in `pending_worker_delivery_ids`, so
+                            // the next pop retries the same delivery.
+                            pending_worker_injections.push_front(inj.pending);
+                        }
                     }
                 }
             }
@@ -1683,6 +1840,57 @@ mod tests {
         // they are not popped, so nothing is dropped while held.
         assert!(!injection_pop_allowed(false, true));
         assert!(!injection_pop_allowed(true, true));
+    }
+
+    #[test]
+    fn injection_body_ack_paces_enter_when_confirmed() {
+        // Body write confirmed (stage advanced to Enter) → schedule the Enter.
+        assert_eq!(
+            injection_ack_outcome(InjectionStage::Enter, true),
+            InjectionAckOutcome::PaceEnter
+        );
+    }
+
+    #[test]
+    fn injection_enter_ack_finalizes_when_confirmed() {
+        // Enter write confirmed (stage advanced to Finalize) → emit injected.
+        assert_eq!(
+            injection_ack_outcome(InjectionStage::Finalize, true),
+            InjectionAckOutcome::Finalize
+        );
+    }
+
+    #[test]
+    fn injection_failed_body_ack_requeues_without_finalizing() {
+        // A failed Body ack must NOT advance to Enter and must NOT finalize —
+        // it requeues so no false `delivery_injected` is emitted.
+        assert_eq!(
+            injection_ack_outcome(InjectionStage::Enter, false),
+            InjectionAckOutcome::Requeue
+        );
+    }
+
+    #[test]
+    fn injection_failed_enter_ack_requeues_without_finalizing() {
+        // A failed Enter ack must NOT finalize — the trailing `\r` never
+        // reached the child, so requeue rather than confirm injection.
+        assert_eq!(
+            injection_ack_outcome(InjectionStage::Finalize, false),
+            InjectionAckOutcome::Requeue
+        );
+    }
+
+    #[test]
+    fn injection_ack_for_non_write_stage_requeues() {
+        // Stages that await no ack should never be finalized off a stray ack.
+        assert_eq!(
+            injection_ack_outcome(InjectionStage::Escape, true),
+            InjectionAckOutcome::Requeue
+        );
+        assert_eq!(
+            injection_ack_outcome(InjectionStage::Body, true),
+            InjectionAckOutcome::Requeue
+        );
     }
 
     #[test]

@@ -128,6 +128,24 @@ export interface SessionInfo {
 export interface SetInboundDeliveryModeResult {
   mode: InboundDeliveryMode;
   flushed: number;
+  /**
+   * `true` when the set was applied. `false` only when an `expectedMode`
+   * compare-and-set guard did not match the worker's current mode, in which
+   * case `mode` reports the current (unchanged) mode and no set happened.
+   * Defaults to `true` against brokers that predate the field.
+   */
+  matched: boolean;
+}
+
+/** Options for {@link HarnessDriverClient.setInboundDeliveryMode}. */
+export interface SetInboundDeliveryModeOptions {
+  /**
+   * Compare-and-set guard: apply the new mode only if the worker's current
+   * mode still equals this value. Used by the CLI detach-restore path to avoid
+   * clobbering a concurrent mode change (a read-then-set TOCTOU). Omit for an
+   * unconditional set.
+   */
+  expectedMode?: InboundDeliveryMode;
 }
 
 export interface WorkerStreamSubscriptionOptions {
@@ -141,12 +159,30 @@ export interface WorkerStreamSubscriptionOptions {
    * the oldest buffered chunk is dropped to make room for the newest one (a
    * slow/paused consumer trades completeness for bounded memory rather than
    * growing without limit). A single warning is logged the first time this
-   * happens per subscription. Default: 10000.
+   * happens per subscription.
+   *
+   * Normalized to a finite positive integer: non-finite (`NaN`/`Infinity`),
+   * zero, or negative values are ignored and fall back to the default rather
+   * than silently disabling the bound. Default: 10000.
    */
   maxQueueSize?: number;
 }
 
 const DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE = 10_000;
+
+/**
+ * Coerce a caller-supplied `maxQueueSize` to a finite positive integer. A
+ * non-finite, zero, or negative value would defeat the buffer bound entirely
+ * (`queue.length >= NaN` is always false), so those fall back to the default.
+ */
+function normalizeMaxQueueSize(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+  }
+  return Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+}
 
 type BrokerExitListener = (info: BrokerExitInfo) => void;
 
@@ -693,15 +729,21 @@ export class HarnessDriverClient {
 
   async setInboundDeliveryMode(
     name: string,
-    mode: InboundDeliveryMode
+    mode: InboundDeliveryMode,
+    options?: SetInboundDeliveryModeOptions
   ): Promise<SetInboundDeliveryModeResult> {
-    const result = await this.transport.request<{ mode?: unknown; flushed?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ mode }),
-      }
-    );
+    const body: { mode: InboundDeliveryMode; expected_mode?: InboundDeliveryMode } = { mode };
+    if (options?.expectedMode !== undefined) {
+      body.expected_mode = options.expectedMode;
+    }
+    const result = await this.transport.request<{
+      mode?: unknown;
+      flushed?: unknown;
+      matched?: unknown;
+    }>(`/api/spawned/${encodeURIComponent(name)}/delivery-mode`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
       throw new HarnessDriverProtocolError({
         code: 'invalid_response',
@@ -711,6 +753,9 @@ export class HarnessDriverClient {
     return {
       mode: result.mode,
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      // Brokers that predate compare-and-set omit `matched`; a set with no
+      // guard is always applied, so default to `true`.
+      matched: typeof result.matched === 'boolean' ? result.matched : true,
     };
   }
 
@@ -769,12 +814,19 @@ export class HarnessDriverClient {
    */
   subscribeWorkerStream(name: string, options: WorkerStreamSubscriptionOptions = {}): AsyncIterable<string> {
     this.connectEvents(options.sinceSeq);
-    const maxQueueSize = options.maxQueueSize ?? DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+    const maxQueueSize = normalizeMaxQueueSize(options.maxQueueSize);
     let didWarnQueueOverflow = false;
 
     return {
       [Symbol.asyncIterator]: () => {
+        // Ring-style buffer: `queue` is the backing array and `head` is the
+        // index of the oldest live chunk. Dropping or consuming the oldest
+        // chunk advances `head` (O(1)) instead of `Array.prototype.shift()`
+        // (O(n)) — under sustained overload at the cap every chunk would
+        // otherwise pay an O(n) memmove. The dead prefix is reclaimed by
+        // `compactQueue` amortized O(1).
         const queue: string[] = [];
+        let head = 0;
         let pending:
           | {
               resolve: (result: IteratorResult<string>) => void;
@@ -782,6 +834,26 @@ export class HarnessDriverClient {
             }
           | undefined;
         let done = false;
+
+        const compactQueue = (): void => {
+          if (head === 0) {
+            return;
+          }
+          if (head >= queue.length) {
+            // Fully drained — reset so the backing array is reused from the
+            // front rather than growing without bound.
+            queue.length = 0;
+            head = 0;
+            return;
+          }
+          // Only pay the O(n) splice once the dead prefix has grown to at
+          // least half the backing array (past a small floor), keeping the
+          // per-chunk cost amortized O(1).
+          if (head >= 32 && head * 2 >= queue.length) {
+            queue.splice(0, head);
+            head = 0;
+          }
+        };
 
         const unsubscribe = this.onEvent((event) => {
           if (
@@ -799,8 +871,10 @@ export class HarnessDriverClient {
           }
           // Drop-oldest: a consumer that isn't pulling fast enough trades
           // completeness for bounded memory rather than buffering forever.
-          if (queue.length >= maxQueueSize) {
-            queue.shift();
+          if (queue.length - head >= maxQueueSize) {
+            queue[head] = undefined as unknown as string; // release reference
+            head += 1;
+            compactQueue();
             if (!didWarnQueueOverflow) {
               didWarnQueueOverflow = true;
               console.error(
@@ -824,8 +898,12 @@ export class HarnessDriverClient {
 
         return {
           next(): Promise<IteratorResult<string>> {
-            if (queue.length > 0) {
-              return Promise.resolve({ done: false, value: queue.shift() as string });
+            if (queue.length - head > 0) {
+              const value = queue[head];
+              queue[head] = undefined as unknown as string; // release reference
+              head += 1;
+              compactQueue();
+              return Promise.resolve({ done: false, value });
             }
             if (done) {
               return Promise.resolve({ done: true, value: undefined as never });

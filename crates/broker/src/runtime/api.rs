@@ -1497,11 +1497,40 @@ impl BrokerRuntime {
                     let _ = reply.send(Ok(mode));
                 }
             }
-            ListenApiRequest::SetInboundDeliveryMode { name, mode, reply } => {
+            ListenApiRequest::SetInboundDeliveryMode {
+                name,
+                mode,
+                expected_mode,
+                reply,
+            } => {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
                     let entry = delivery_states.entry(name.clone()).or_default();
+                    // Compare-and-set guard: when the caller supplied an
+                    // `expected_mode` (detach restore) and it no longer matches
+                    // the worker's current mode, a concurrent change happened —
+                    // no-op and report the current mode with `matched: false`
+                    // rather than clobbering it. Closes the restore TOCTOU.
+                    if let Some(expected) = expected_mode {
+                        if entry.mode != expected {
+                            let current = entry.mode;
+                            tracing::info!(
+                                target = "agent_relay::broker",
+                                worker = %name,
+                                expected = expected.as_wire_str(),
+                                current = current.as_wire_str(),
+                                requested = mode.as_wire_str(),
+                                "inbound delivery mode compare-and-set skipped (expected_mode mismatch)"
+                            );
+                            let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                                mode: current,
+                                flushed: 0,
+                                matched: false,
+                            }));
+                            return;
+                        }
+                    }
                     let previous = entry.mode;
                     entry.mode = mode;
                     let to_flush: Vec<PendingRelayMessage> = if previous
@@ -1595,7 +1624,11 @@ impl BrokerRuntime {
                         )
                         .await;
                     }
-                    let _ = reply.send(Ok(SetInboundDeliveryModeOk { mode, flushed }));
+                    let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                        mode,
+                        flushed,
+                        matched: true,
+                    }));
                 }
             }
             ListenApiRequest::GetPending { name, reply } => {

@@ -39,12 +39,53 @@ pub(crate) fn headless_provider_from_cli(value: &str) -> Option<ProtocolHeadless
     }
 }
 
-/// Turn a stdout/stderr line read via `tokio::io::Lines` (which strips the
-/// terminator) back into a `worker_stream` chunk with its newline restored.
-/// Without this, consumers that write chunks verbatim (e.g. `relay node
-/// tail`) concatenate every line from a headless worker onto one giant line.
-pub(crate) fn headless_stream_chunk(line: String) -> String {
-    format!("{line}\n")
+/// Turn a raw stdout/stderr segment read via `read_until(b'\n', …)` into a
+/// `worker_stream` chunk, forwarding the bytes verbatim. Unlike
+/// `tokio::io::Lines` — which strips the terminator (losing `\r\n` vs `\n`) and
+/// gives no way to tell a terminated line from a final unterminated one — a
+/// delimiter-preserving read keeps the exact byte boundaries the child wrote:
+/// the trailing `\n` (and any preceding `\r`) is retained, and a final segment
+/// with no terminator is forwarded without fabricating one. Invalid UTF-8 is
+/// replaced lossily, consistent with the rest of the headless path.
+///
+/// Without preserving the terminator, consumers that write chunks verbatim
+/// (e.g. `relay node tail`) would concatenate every line from a headless worker
+/// onto one giant line.
+pub(crate) fn headless_stream_chunk(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Read a child stdout/stderr pipe segment-by-segment on `\n` boundaries and
+/// forward each segment as a `worker_stream` chunk, preserving the terminator
+/// (or its absence, for a final unterminated segment) via
+/// [`headless_stream_chunk`]. A zero-length `read_until` result means EOF.
+async fn forward_headless_stream<R>(
+    reader: R,
+    stream: &'static str,
+    out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let _ = send_frame(
+                    out_tx,
+                    "worker_stream",
+                    None,
+                    json!({
+                        "stream": stream,
+                        "chunk": headless_stream_chunk(&buf),
+                    }),
+                )
+                .await;
+            }
+        }
+    }
 }
 
 pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
@@ -251,19 +292,7 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                     let out_tx = out_tx.clone();
                     async move {
                         if let Some(stdout) = stdout {
-                            let mut lines = BufReader::new(stdout).lines();
-                            while let Ok(Some(chunk)) = lines.next_line().await {
-                                let _ = send_frame(
-                                    &out_tx,
-                                    "worker_stream",
-                                    None,
-                                    json!({
-                                        "stream": "stdout",
-                                        "chunk": headless_stream_chunk(chunk),
-                                    }),
-                                )
-                                .await;
-                            }
+                            forward_headless_stream(stdout, "stdout", &out_tx).await;
                         }
                     }
                 };
@@ -272,19 +301,7 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                     let out_tx = out_tx.clone();
                     async move {
                         if let Some(stderr) = stderr {
-                            let mut lines = BufReader::new(stderr).lines();
-                            while let Ok(Some(chunk)) = lines.next_line().await {
-                                let _ = send_frame(
-                                    &out_tx,
-                                    "worker_stream",
-                                    None,
-                                    json!({
-                                        "stream": "stderr",
-                                        "chunk": headless_stream_chunk(chunk),
-                                    }),
-                                )
-                                .await;
-                            }
+                            forward_headless_stream(stderr, "stderr", &out_tx).await;
                         }
                     }
                 };
@@ -399,22 +416,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn headless_stream_chunk_restores_stripped_newline() {
-        assert_eq!(headless_stream_chunk("hello".to_string()), "hello\n");
+    fn headless_stream_chunk_preserves_terminated_line() {
+        // A `read_until(b'\n', …)` segment for a terminated line carries the
+        // trailing newline, which is forwarded verbatim.
+        assert_eq!(headless_stream_chunk(b"hello\n"), "hello\n");
     }
 
     #[test]
-    fn headless_stream_chunk_preserves_empty_lines() {
-        assert_eq!(headless_stream_chunk(String::new()), "\n");
+    fn headless_stream_chunk_preserves_crlf() {
+        // `Lines` would strip both `\r` and `\n`, silently normalizing `\r\n`
+        // to `\n`. A delimiter-preserving read keeps the CR intact.
+        assert_eq!(headless_stream_chunk(b"hello\r\n"), "hello\r\n");
+    }
+
+    #[test]
+    fn headless_stream_chunk_does_not_fabricate_newline_for_final_segment() {
+        // A final unterminated segment (e.g. child `printf 'result'`) is
+        // forwarded as-is, without a fabricated trailing `\n`.
+        assert_eq!(headless_stream_chunk(b"result"), "result");
+    }
+
+    #[test]
+    fn headless_stream_chunk_preserves_blank_line() {
+        // A blank line in the stream is a bare `\n` segment, forwarded as-is.
+        assert_eq!(headless_stream_chunk(b"\n"), "\n");
     }
 
     #[test]
     fn headless_stream_chunk_does_not_touch_interior_content() {
-        // Only the terminator `lines()` stripped is restored; embedded
-        // whitespace/content is passed through untouched.
+        // Embedded whitespace/content is passed through untouched alongside the
+        // preserved terminator.
         assert_eq!(
-            headless_stream_chunk("  indented line with trailing spaces  ".to_string()),
+            headless_stream_chunk(b"  indented line with trailing spaces  \n"),
             "  indented line with trailing spaces  \n"
         );
+    }
+
+    #[test]
+    fn headless_stream_chunk_replaces_invalid_utf8_lossily() {
+        // Invalid UTF-8 bytes are replaced with U+FFFD, consistent with the
+        // rest of the headless path; the terminator is still preserved.
+        assert_eq!(headless_stream_chunk(b"\xff\n"), "\u{fffd}\n");
     }
 }
