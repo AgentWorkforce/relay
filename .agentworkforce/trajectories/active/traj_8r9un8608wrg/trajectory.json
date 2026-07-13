@@ -10,8 +10,35 @@
   },
   "status": "active",
   "startedAt": "2026-07-12T21:18:18.032Z",
-  "agents": [],
-  "chapters": [],
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-13T00:48:09.983Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xcjby8ldl7z3",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-13T00:48:09.983Z",
+      "events": [
+        {
+          "ts": 1783903689986,
+          "type": "decision",
+          "content": "Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side: Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side",
+          "raw": {
+            "question": "Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side",
+            "chosen": "Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side",
+            "alternatives": [],
+            "reasoning": "Reviewer confirmed it's small; additive optional field, backward compatible; fully eliminates the read-then-restore TOCTOU rather than shrinking it"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",
