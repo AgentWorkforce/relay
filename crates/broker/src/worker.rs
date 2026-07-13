@@ -29,7 +29,6 @@ use tokio::{
 
 use crate::{
     cli::command_parse::{normalize_cli_name, parse_cli_command},
-    routing,
     runtime::headless_provider_cli_name,
     spawner::terminate_child,
 };
@@ -43,7 +42,9 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
 const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 
-pub(crate) mod detection;
+// Working/idle activity inference from PTY output comes from the
+// harness-agnostic `relay-pty` crate.
+pub(crate) use relay_pty::detection;
 
 #[derive(Debug)]
 pub(crate) struct WorkerHandle {
@@ -210,6 +211,25 @@ impl WorkerRegistry {
         self.workers.contains_key(name)
     }
 
+    /// True when a worker named `name` exists and either has no recorded
+    /// workspace or belongs to `workspace_id`. Gates sender impersonation on
+    /// Relaycast publish: a worker attached to workspace A must not be
+    /// impersonated when publishing into workspace B, which would register or
+    /// rotate that name's token in the wrong workspace.
+    pub(crate) fn has_worker_in_workspace(
+        &self,
+        name: &str,
+        workspace_id: &crate::ids::WorkspaceId,
+    ) -> bool {
+        match self.workers.get(name) {
+            Some(handle) => match &handle.workspace_id {
+                Some(worker_ws) => worker_ws == workspace_id,
+                None => true,
+            },
+            None => false,
+        }
+    }
+
     pub(crate) fn worker_pid(&self, name: &str) -> Option<u32> {
         self.workers.get(name).and_then(|h| h.child.id())
     }
@@ -314,6 +334,7 @@ impl WorkerRegistry {
                                         cwd,
                                         &self.worker_env,
                                         &effective_args,
+                                        crate::util::version::broker_version(),
                                     )
                                     .await
                                     {
@@ -518,6 +539,7 @@ impl WorkerRegistry {
                                             cwd,
                                             &self.worker_env,
                                             &effective_args,
+                                            crate::util::version::broker_version(),
                                         )
                                         .await
                                         {
@@ -975,49 +997,6 @@ impl WorkerRegistry {
         }
         Ok(exited)
     }
-
-    pub(crate) fn routing_workers(&self) -> Vec<routing::RoutingWorker<'_>> {
-        self.workers
-            .iter()
-            .map(|(name, handle)| routing::RoutingWorker {
-                name,
-                channels: &handle.spec.channels,
-                workspace_id: handle.workspace_id.as_deref(),
-            })
-            .collect()
-    }
-
-    pub(crate) fn worker_names_for_channel_delivery(
-        &self,
-        channel: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_channel_delivery(&workers, channel, from, workspace_id)
-    }
-
-    pub(crate) fn worker_names_for_direct_target(
-        &self,
-        target: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
-    }
-
-    pub(crate) fn has_any_worker(&self) -> bool {
-        !self.workers.is_empty()
-    }
-
-    pub(crate) fn has_worker_by_name_ignoring_case(&self, target: &str) -> bool {
-        let trimmed = target.trim();
-        self.workers.iter().any(|(worker_name, _)| {
-            trimmed.eq_ignore_ascii_case(worker_name)
-                || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
-        })
-    }
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
@@ -1389,14 +1368,14 @@ async fn codex_local_fallback_model(
     }
 
     match codex_debug_models_contains_model(resolved_cli, requested_model).await {
-        Some(true) => None,
-        Some(false) | None => Some(GPT_5_5_FALLBACK),
+        Some(true) | None => None,
+        Some(false) => Some(GPT_5_5_FALLBACK),
     }
 }
 
 async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> Option<bool> {
     let output = timeout(
-        Duration::from_millis(1_500),
+        Duration::from_secs(5),
         Command::new(resolved_cli)
             .arg("debug")
             .arg("models")
@@ -1603,7 +1582,6 @@ mod tests {
     #[test]
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
-        assert!(!reg.has_any_worker());
         assert!(reg.list().is_empty());
     }
 
@@ -1611,6 +1589,13 @@ mod tests {
     fn has_worker_returns_false_for_unknown() {
         let reg = make_registry(vec![]);
         assert!(!reg.has_worker("nonexistent"));
+    }
+
+    #[test]
+    fn has_worker_in_workspace_returns_false_for_unknown() {
+        let reg = make_registry(vec![]);
+        let workspace = crate::ids::WorkspaceId::new("ws_1".to_string());
+        assert!(!reg.has_worker_in_workspace("nonexistent", &workspace));
     }
 
     #[test]
@@ -1731,12 +1716,6 @@ mod tests {
         };
 
         assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
-    }
-
-    #[test]
-    fn routing_workers_empty_when_no_workers() {
-        let reg = make_registry(vec![]);
-        assert!(reg.routing_workers().is_empty());
     }
 
     #[test]

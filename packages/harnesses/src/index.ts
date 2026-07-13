@@ -19,7 +19,7 @@ export const codex: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'co
 
 export const gemini: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'gemini' });
 
-export const cursor: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'cursor' });
+export const cursor: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'cursor-agent' });
 
 export const droid: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'droid' });
 

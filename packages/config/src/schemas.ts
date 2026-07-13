@@ -127,7 +127,6 @@ export const CloudConfigSchema = z.object({
   publicUrl: z.string(),
   appUrl: z.string(),
   sessionSecret: z.string(),
-  localDashboardUrl: z.string().optional(),
   databaseUrl: z.string(),
   redisUrl: z.string(),
   github: z.object({

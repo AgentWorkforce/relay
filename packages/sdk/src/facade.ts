@@ -11,6 +11,7 @@ import type {
   RelayMessageMode,
   RelaySendChannelMessageInput,
   RelayWorkspaceInfo,
+  RelayWorkspaceFleetNodesConfig,
 } from './messaging/index.js';
 import {
   actionSchemaToJsonSchema,
@@ -196,6 +197,11 @@ export interface RelayWorkspace {
   ): Promise<T extends AgentLike[] ? RelayAgentClient[] : RelayAgentClient>;
   reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
+  fleetNodes: {
+    get(): Promise<RelayWorkspaceFleetNodesConfig>;
+    set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
+    inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
+  };
 }
 
 export interface NotifyOptions {
@@ -353,6 +359,7 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
 
   return {
     info: () => messaging.workspace.info(),
+    fleetNodes: messaging.workspace.fleetNodes,
     register: register as RelayWorkspace['register'],
     reconnect: async ({ apiToken }) => {
       if (!deps) {

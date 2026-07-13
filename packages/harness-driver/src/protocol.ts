@@ -73,81 +73,42 @@ export interface ProtocolEnvelope<TPayload> {
   payload: TPayload;
 }
 
-export type SdkToBroker =
-  | {
-      type: 'hello';
-      payload: { client_name: string; client_version: string };
-    }
-  | {
-      type: 'spawn_agent';
-      payload: { agent: AgentSpec; initial_task?: string; skip_relay_prompt?: boolean };
-    }
-  | {
-      type: 'send_message';
-      payload: {
-        to: string;
-        text: string;
-        from?: string;
-        thread_id?: string;
-        workspace_id?: string;
-        workspace_alias?: string;
-        priority?: number;
-        data?: Record<string, unknown>;
-        mode?: MessageInjectionMode;
-      };
-    }
-  | {
-      type: 'release_agent';
-      payload: { name: string; reason?: string };
-    }
-  | {
-      type: 'send_input';
-      payload: { name: string; data: string };
-    }
-  | {
-      type: 'subscribe_channels';
-      payload: { name: string; channels: string[] };
-    }
-  | {
-      type: 'unsubscribe_channels';
-      payload: { name: string; channels: string[] };
-    }
-  | {
-      type: 'set_model';
-      payload: { name: string; model: string; timeout_ms?: number };
-    }
-  | {
-      type: 'get_metrics';
-      payload: { agent?: string };
-    }
-  | {
-      type: 'list_agents';
-      payload: Record<string, never>;
-    }
-  | {
-      type: 'get_status';
-      payload: Record<string, never>;
-    }
-  | {
-      type: 'get_crash_insights';
-      payload: Record<string, never>;
-    }
-  | {
-      type: 'shutdown';
-      payload: Record<string, never>;
-    }
-  | {
-      /** Pre-register a batch of agents with Relaycast before their steps execute.
-       *  Broker warms its token cache in parallel; subsequent spawn_agent calls hit
-       *  the cache instead of waiting on individual HTTP registrations. */
-      type: 'preflight_agents';
-      payload: { agents: Array<{ name: string; cli: string }> };
-    }
-  | {
-      /** Resize a PTY agent's terminal dimensions. */
-      type: 'resize_pty';
-      payload: { name: string; rows: number; cols: number };
-    };
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export interface NodeCapabilityManifest {
+  name: string;
+  kind?: string;
+  /** Capability metadata only; handler code stays in the sidecar. */
+  metadata?: Record<string, JsonValue>;
+}
+
+type AssertNodeCapabilityManifest<T extends NodeCapabilityManifest> = T;
+type _NodeCapabilityAllowsObjectMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-foo';
+  metadata: { schema: { type: 'object' }; retryable: false };
+}>;
+type _NodeCapabilityAllowsMissingMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-bar';
+}>;
+// @ts-expect-error capability metadata must be an object record.
+type _NodeCapabilityRejectsScalarMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-baz';
+  metadata: 'v1';
+}>;
+// @ts-expect-error capability metadata must be an object record.
+type _NodeCapabilityRejectsArrayMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-qux';
+  metadata: ['v1'];
+}>;
+
+export interface NodeManifest {
+  name: string;
+  node_id?: string;
+  capabilities: NodeCapabilityManifest[];
+  max_agents?: number;
+  tags?: string[];
+  version?: string;
+}
 
 export interface PendingDeliveryInfo {
   delivery_id: string;
@@ -180,6 +141,11 @@ export interface BrokerStatus {
   }>;
   pending_delivery_count: number;
   pending_deliveries: PendingDeliveryInfo[];
+  node_connected?: boolean;
+  node_delivery?: {
+    token_present?: boolean;
+    connected?: boolean;
+  };
   auth?: BrokerAuthStatus;
 }
 
@@ -475,24 +441,6 @@ export type BrokerEvent =
       kind: 'agent_permanently_dead';
       name: string;
       reason: string;
-    };
-
-export type BrokerToSdk =
-  | {
-      type: 'hello_ack';
-      payload: { broker_version: string; protocol_version: number };
-    }
-  | {
-      type: 'ok';
-      payload: { result: unknown };
-    }
-  | {
-      type: 'error';
-      payload: ProtocolError;
-    }
-  | {
-      type: 'event';
-      payload: BrokerEvent;
     };
 
 export type BrokerToWorker =

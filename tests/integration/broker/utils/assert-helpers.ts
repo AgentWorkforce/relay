@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 
-import type { BrokerEvent, ListAgent } from '@agent-relay/sdk';
+import type { BrokerEvent, ListAgent } from '@agent-relay/harness-driver';
 import type { BrokerHarness } from './broker-harness.js';
 
 // ── Delivery assertions ──────────────────────────────────────────────────────

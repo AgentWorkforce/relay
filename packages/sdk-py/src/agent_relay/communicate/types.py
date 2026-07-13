@@ -6,8 +6,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, TypeAlias
 
-DEFAULT_RELAY_BASE_URL = "https://api.relaycast.dev"
-
 
 @dataclass(frozen=True)
 class Message:
@@ -51,7 +49,7 @@ class RelayConfig:
     ) -> "RelayConfig":
         resolved_workspace = workspace if workspace is not None else os.getenv("RELAY_WORKSPACE")
         resolved_api_key = api_key if api_key is not None else os.getenv("RELAY_API_KEY")
-        resolved_base_url = base_url if base_url is not None else os.getenv("RELAY_BASE_URL") or DEFAULT_RELAY_BASE_URL
+        resolved_base_url = base_url if base_url is not None else os.getenv("RELAY_BASE_URL")
         return cls(
             workspace=resolved_workspace,
             api_key=resolved_api_key,
@@ -79,7 +77,6 @@ class RelayAuthError(RelayConnectionError):
 
 
 __all__ = [
-    "DEFAULT_RELAY_BASE_URL",
     "Message",
     "MessageCallback",
     "RelayAuthError",

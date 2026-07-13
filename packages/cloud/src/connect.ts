@@ -117,6 +117,15 @@ export async function connectProvider(options: ConnectProviderOptions): Promise<
 
   const apiUrl = options.apiUrl || defaultApiUrl();
 
+  // Daytona cannot authenticate inside a sandbox: its `login` is a loopback-only
+  // Auth0 flow with no device-code fallback, and Daytona's managed SSH gateway
+  // won't forward the OAuth callback into the sandbox. Capture it locally instead
+  // (browser + loopback both run on the user's machine) and upload to the store.
+  if (provider === 'daytona') {
+    const { connectDaytonaLocal } = await import('./connect-daytona-local.js');
+    return connectDaytonaLocal({ apiUrl, io });
+  }
+
   io.log('');
   io.log(color.cyan('═══════════════════════════════════════════════════'));
   io.log(color.cyan('      Provider Authentication (Daytona Connect)'));

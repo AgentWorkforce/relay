@@ -17,6 +17,17 @@ pub(crate) struct BrokerRuntime {
     pub(super) api_open: bool,
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
+    pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
+    /// This broker's relaycast node name, used to bind agents to the node over
+    /// HTTP when the node-control `agent.register` path is unavailable.
+    pub(super) fleet_node_name: String,
+    pub(super) node_delivery_token_present: bool,
+    pub(super) node_delivery_connected: bool,
+    pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
+    pub(super) fleet_control_open: bool,
+    pub(super) fleet_delivery_book: FleetDeliveryBook,
+    pub(super) fleet_max_agents: u32,
+    pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
     pub(super) sdk_out_tx: mpsc::Sender<ProtocolEnvelope<Value>>,
     pub(super) worker_event_rx: mpsc::Receiver<WorkerEvent>,
     pub(super) worker_events_open: bool,
@@ -33,7 +44,6 @@ pub(crate) struct BrokerRuntime {
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
-    pub(super) dm_participants_cache: DmParticipantsCache,
     pub(super) recent_thread_messages: VecDeque<Value>,
     pub(super) shutdown: bool,
     pub(super) lease_duration: Option<Duration>,
@@ -54,6 +64,7 @@ enum RuntimeEvent {
     ApiClosed,
     Stdin(std::io::Result<Option<String>>),
     Relaycast(Option<WorkspaceInboundMessage>),
+    Fleet(Option<FleetControlEvent>),
     Worker(Option<WorkerEvent>),
     MaintenanceTick,
 }
@@ -71,6 +82,7 @@ impl BrokerRuntime {
                 },
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
                 message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
+                event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
@@ -102,6 +114,12 @@ impl BrokerRuntime {
                 }
                 RuntimeEvent::Relaycast(None) => {
                     self.relaycast_open = false;
+                }
+                RuntimeEvent::Fleet(Some(event)) => {
+                    self.handle_fleet_control_event(event).await;
+                }
+                RuntimeEvent::Fleet(None) => {
+                    self.fleet_control_open = false;
                 }
                 RuntimeEvent::Worker(Some(event)) => {
                     self.handle_worker_event(event).await;
@@ -182,6 +200,13 @@ impl BrokerRuntime {
 
         if let Err(error) = self.ws_control_tx.send(WsControl::Shutdown).await {
             tracing::warn!(error = %error, "failed to send ws shutdown signal");
+        }
+        if let Err(error) = self
+            .fleet_control_tx
+            .send(FleetControlCommand::Shutdown)
+            .await
+        {
+            tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
         }
         // Persist any still-pending deliveries so the next start can
         // redeliver them; only remove the file when nothing is pending.

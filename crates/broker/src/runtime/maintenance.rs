@@ -8,6 +8,13 @@ impl BrokerRuntime {
         let ws_control_tx = &self.ws_control_tx;
         let relaycast_http = &self.relaycast_http;
         let workers = &mut self.workers;
+        let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_inventory = &mut self.fleet_inventory;
+        let fleet_delivery_book = &mut self.fleet_delivery_book;
+        let fleet_max_agents = self.fleet_max_agents;
+        // The broker provider's capacity handlers are live whenever it is
+        // connected, so node heartbeats always report handlers_live.
+        let fleet_handlers_live = true;
         let telemetry = &self.telemetry;
         let crash_insights = &mut self.crash_insights;
         let pending_deliveries = &mut self.pending_deliveries;
@@ -84,6 +91,7 @@ impl BrokerRuntime {
                 vec![]
             }
         };
+        let mut fleet_load_changed = !exited.is_empty();
         for (name, code, signal, exit_reason) in &exited {
             let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
             // Record crash in insights
@@ -196,6 +204,13 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
+                    super::fleet::prune_fleet_agent_state(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await;
                 }
                 None => {
                     // Not supervised — original behavior
@@ -249,9 +264,21 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
+                    super::fleet::prune_fleet_agent_state(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await;
                 }
             }
         }
+        // NOTE: the fleet load snapshot is published *after* the restart
+        // handling below, not here. Reaping a dead worker and restarting it can
+        // both happen within a single maintenance tick; publishing here would
+        // broadcast the post-reap / pre-restart count and leave the broker
+        // advertising a stale under-count until the next periodic heartbeat.
 
         // Check for agents ready to restart (past cooldown)
         if !*shutdown {
@@ -267,11 +294,11 @@ impl BrokerRuntime {
                     continue;
                 }
 
-                let worker_relay_key = if rst.skip_relay_prompt {
+                let worker_relay_key = if rst.payload.skip_relay_prompt {
                     None
                 } else {
                     match relaycast_http
-                        .register_agent_token(&name, rst.spec.cli.as_deref())
+                        .register_agent_token(&name, rst.payload.spec.cli.as_deref())
                         .await
                     {
                         Ok(token) => Some(token),
@@ -300,20 +327,21 @@ impl BrokerRuntime {
 
                 match workers
                     .spawn(
-                        rst.spec.clone(),
-                        rst.parent.clone(),
+                        rst.payload.spec.clone(),
+                        rst.payload.parent.clone(),
                         None,
                         worker_relay_key,
-                        rst.skip_relay_prompt,
+                        rst.payload.skip_relay_prompt,
                         None,
-                        rst.agent_result.clone(),
+                        rst.payload.agent_result.clone(),
                     )
                     .await
                 {
                     Ok(effective_spec) => {
+                        fleet_load_changed = true;
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
-                        let initial_task = rst.initial_task.clone();
+                        let initial_task = rst.payload.initial_task.clone();
                         if let Some(task) = initial_task.clone() {
                             workers.initial_tasks.insert(name.clone(), task);
                         }
@@ -328,7 +356,7 @@ impl BrokerRuntime {
                             .entry(name.clone())
                             .and_modify(|agent| {
                                 agent.runtime = effective_spec.runtime.clone();
-                                agent.parent = rst.parent.clone();
+                                agent.parent = rst.payload.parent.clone();
                                 agent.channels = effective_spec.channels.clone();
                                 agent.pid = pid;
                                 agent.started_at = Some(unix_timestamp_secs());
@@ -338,7 +366,7 @@ impl BrokerRuntime {
                             })
                             .or_insert_with(|| broker::PersistedAgent {
                                 runtime: effective_spec.runtime.clone(),
-                                parent: rst.parent.clone(),
+                                parent: rst.payload.parent.clone(),
                                 channels: effective_spec.channels.clone(),
                                 pid,
                                 started_at: Some(unix_timestamp_secs()),
@@ -379,6 +407,20 @@ impl BrokerRuntime {
                     }
                 }
             }
+        }
+
+        // Publish the fleet load snapshot once, after both reaping and restart
+        // handling, so the broadcast count reflects the final post-restart live
+        // worker set rather than a same-tick post-reap intermediate.
+        if fleet_load_changed {
+            super::fleet::publish_fleet_load_snapshot(
+                fleet_control_tx,
+                u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                fleet_max_agents,
+                fleet_handlers_live,
+                true,
+            )
+            .await;
         }
 
         // Pending deliveries are persisted by the event loop whenever the

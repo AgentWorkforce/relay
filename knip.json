@@ -24,9 +24,6 @@
     },
     "packages/utils": {
       "project": ["src/**/*.ts", "scripts/**/*.mjs"]
-    },
-    "packages/telemetry": {
-      "project": ["src/**/*.ts"]
     }
   },
   "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
@@ -50,7 +47,6 @@
     "packages/personas",
     "packages/policy",
     "packages/slack-primitive",
-    "packages/trajectory",
-    "web"
+    "packages/trajectory"
   ]
 }
