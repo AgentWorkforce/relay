@@ -54,8 +54,11 @@ export interface RelaySpawnAgentInput {
   /** Channel the worker should join. */
   channel?: string;
   persona?: string;
-  /** Model powering the worker, forwarded to the launched CLI. */
-  model?: string;
+  /**
+   * Free-form spawn metadata forwarded to the broker (for example `{ model }`,
+   * which the broker extracts to pass `--model` to the launched CLI).
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /** Input for `agents.release`. */
