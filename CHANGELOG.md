@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Bun-compiled `agent-relay` standalone binary now bundles workspace packages from their compiled JS instead of their `.d.ts`, so `node up` starts the implicit Fleet local node instead of failing with `Fleet local node skipped: … is not a function`. The `tsconfig` `paths` that mapped `@agent-relay/*` to declaration files (no runtime exports) were redundant with the npm workspace symlinks and have been removed.
 - `agent-relay` and `@agent-relay/sdk` require `@relaycast/sdk` `^4.1.2`, whose matching `@relaycast/types` package is now published, so publish installs resolve cleanly without pinning.
 - `agent-relay node up --config <node-def>` loads plain JavaScript node definitions without `jiti`, so the published Bun-compiled CLI can serve compiled JS node files.
+- `agent-relay node up` reports `Broker started.` as soon as the workspace handshake completes: the broker no longer blocks its `/api/session` readiness on minting the node token (a Relaycast `create_node` round-trip). The node-control client mints the token in the background and publishes it to the session, so a slow node-token mint on a slow network no longer delays or fails startup. Serving a capability definition without an explicit `RELAY_NODE_TOKEN` waits briefly for the background-minted token instead of skipping the provider.
 - Spawned opencode worker agents no longer pause for interactive tool-approval prompts; the broker injects a wildcard allow-all permission block into every generated `opencode.json`, augmenting existing partial permission objects rather than replacing them.
 
 ### Added
@@ -120,6 +121,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace `agent-relay up --no-dashboard` with `agent-relay up --background`.
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
+
+## [10.0.0] - 2026-07-13
+
+### Changed
+
+- Prod smoke: node-providers synthetic monitoring
+- Node providers: broker demotion, fleet retarget, per-language node up
+
+### Fixed
+
+- Mint the node token off the API-readiness path
 
 ## [9.2.4] - 2026-07-11
 
