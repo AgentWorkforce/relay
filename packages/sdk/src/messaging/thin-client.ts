@@ -183,7 +183,8 @@ export interface RelayRealtimeClientOptions extends RelaycastTelemetryOptions {
   baseUrl?: string;
 }
 
-export interface RelayCreateWorkspaceOptions extends RelaycastTelemetryOptions {
+export interface RelayCreateWorkspaceOptions
+  extends Pick<RelaycastTelemetryOptions, 'agentRelayDistinctId'> {
   baseUrl?: string;
 }
 

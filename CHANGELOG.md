@@ -10,11 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay node up` gains `--log-file <path>`, `--log-level <debug|info|warn|error>`, and `--log-json`: a served node logs each capability it registers (`debug`) and every action that hits it (`info`, with a duration and `node`/`kind`/`invocationId` fields; failures at `warn`). Without a flag the node stays quiet apart from warnings; `--verbose` raises the level to `debug`. An invalid `--log-level` is rejected instead of silently disabling logs. Serving programmatically, inject any sink via `serveNode({ logger })`.
-- `@agent-relay/sdk` adds thin Relaycast client factories — `createWorkspaceClient`, `createAgentClient`, `createRealtimeClient`, and `createWorkspace` — typed raw pass-throughs for workspace-key and agent-token operations (registration, spawn/release, messaging, channels, reactions, inbox, actions, realtime events) that keep upstream payloads and errors untouched.
+- `@agent-relay/sdk` adds thin Relaycast client factories — `createWorkspaceClient`, `createAgentClient`, `createRealtimeClient`, and `createWorkspace` — typed raw pass-throughs for workspace-key and agent-token operations that keep upstream payloads and errors untouched.
 
 ### Changed
 
-- `agent-relay mcp` now talks to the hosted engine exclusively through `@agent-relay/sdk` thin clients instead of constructing raw `@relaycast/sdk` clients; `@relaycast/sdk` is no longer a runtime dependency of the `agent-relay` CLI package. Tool schemas, payloads, and error behavior are unchanged.
+- `@relaycast/sdk` is no longer a runtime dependency of the `agent-relay` CLI package.
 
 ### Fixed
 
