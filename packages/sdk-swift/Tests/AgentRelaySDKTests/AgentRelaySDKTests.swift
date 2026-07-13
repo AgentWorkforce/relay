@@ -40,6 +40,10 @@ final class HostedParticipantSDKTests: XCTestCase {
     }
 
     func testAgentStatusBridging() {
+        XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.active), .online)
+        XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.idle), .away)
+        XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.blocked), .away)
+        XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.waiting), .away)
         XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.online), .online)
         XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.offline), .offline)
         XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.away), .away)

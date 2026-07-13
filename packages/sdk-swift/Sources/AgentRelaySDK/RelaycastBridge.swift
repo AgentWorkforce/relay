@@ -18,9 +18,9 @@ extension RelayAgentType {
 extension RelayAgentStatus {
     init(_ status: Relaycast.AgentStatus) {
         switch status {
-        case .online: self = .online
+        case .active, .online: self = .online
         case .offline: self = .offline
-        case .away: self = .away
+        case .idle, .blocked, .waiting, .away: self = .away
         }
     }
 }
