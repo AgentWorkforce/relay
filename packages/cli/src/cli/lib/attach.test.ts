@@ -211,6 +211,38 @@ describe('StreamSyncBuffer', () => {
     expect(sync.push('c', 15)).toBe(true);
   });
 
+  it('suppresses post-reconcile stragglers at or below the snapshot watermark', () => {
+    const sync = new StreamSyncBuffer();
+    // Nothing buffered before reconcile; snapshot painted up to offset 10.
+    expect(sync.reconcile(10)).toEqual([]);
+    // A chunk still in-flight broker-side when the snapshot was captured
+    // (end offset <= 10) arrives after reconcile — the snapshot already
+    // painted it, so it must be dropped (returns false).
+    expect(sync.push('straggler-below', 8)).toBe(false);
+    expect(sync.push('straggler-edge', 10)).toBe(false);
+    // Genuinely new output past the watermark passes through.
+    expect(sync.push('fresh', 11)).toBe(true);
+    // A live frame with no offset is applied rather than risk dropping output.
+    expect(sync.push('untagged', undefined)).toBe(true);
+  });
+
+  it('does not arm a watermark when the broker reports no offset', () => {
+    const sync = new StreamSyncBuffer();
+    // Snapshot with no offset: buffered chunks drop, and there is nothing to
+    // compare live frames against, so everything passes through afterwards.
+    expect(sync.reconcile(undefined)).toEqual([]);
+    expect(sync.push('a', 4)).toBe(true);
+    expect(sync.push('b', 8)).toBe(true);
+  });
+
+  it('does not arm a watermark after flushAll (no snapshot painted)', () => {
+    const sync = new StreamSyncBuffer();
+    sync.push('early', 4);
+    expect(sync.flushAll()).toEqual(['early']);
+    // No snapshot was painted, so even low-offset frames are live output.
+    expect(sync.push('low', 2)).toBe(true);
+  });
+
   it('drops every buffered chunk fully covered by the snapshot (no duplication)', () => {
     const sync = new StreamSyncBuffer();
     sync.push('x', 4);
