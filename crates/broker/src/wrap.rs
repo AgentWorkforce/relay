@@ -112,6 +112,10 @@ fn buffer_and_drain_stdin<F>(
 where
     F: FnMut(&[u8]) -> bool,
 {
+    // Drain whatever the drainer will now accept before evicting anything —
+    // capacity may have freed up since the last retry, in which case there's
+    // no need to drop a chunk that could have been written successfully.
+    drain_stdin_buffer(pending, &mut submit);
     if pending.len() >= max {
         tracing::warn!(
             target: "agent_relay::worker::pty",
