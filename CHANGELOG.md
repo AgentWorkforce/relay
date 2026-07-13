@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.1.0] - 2026-07-13
+
 ### Added
 
 - `agent-relay node up` gains `--log-file <path>`, `--log-level <debug|info|warn|error>`, and `--log-json`: a served node logs each capability it registers (`debug`) and every action that hits it (`info`, with a duration and `node`/`kind`/`invocationId` fields; failures at `warn`). Without a flag the node stays quiet apart from warnings; `--verbose` raises the level to `debug`. An invalid `--log-level` is rejected instead of silently disabling logs. Serving programmatically, inject any sink via `serveNode({ logger })`.
@@ -20,18 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-broker` resumes Relaycast mailbox delivery at the server's authoritative per-agent ACK cursor after a broker restart, preserving strict gap detection and legacy node compatibility.
 
-## [10.1.0] - 2026-07-13
-
-### Changed
-
-- Route the MCP server through @agent-relay/sdk thin clients
-- Reconcile [Unreleased] with what actually shipped
-- Fleet node structured logging: capabilities registered and actions invoked
-
-### Fixed
-
-- Recover delivery cursor on resume
-
 ## [10.0.0] - 2026-07-13
 
 ### Added
@@ -41,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 (adds the node-provider client) and `relaycast-sdk` (Python) 1.0.0 (adds `relay_sdk.node.NodeProvider`). The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
+- relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 (adds the node-provider client) and `relaycast-sdk` (Python) 1.0.0 (adds `relay_sdk.node.NodeProvider`).
 - `agent-relay fleet status` reads this node's provider attachment and per-provider liveness from the engine nodes API instead of a local status file.
 
 ### Removed
@@ -163,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `agent-relay` and `@agent-relay/sdk` require `@relaycast/sdk` `^4.1.2`, whose matching `@relaycast/types` package is now published, so publish installs resolve cleanly without pinning.
+- relaycast SDKs upgraded to v5: `@relaycast/sdk` `^5.0.5` (v4→v5 major), the `relaycast` broker crate `5.0.2`, `relaycast-sdk` (Python) `0.3.0`, and Swift relaycast `5.0.5`. The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
 
 ## [9.1.3] - 2026-06-26
 
@@ -305,7 +295,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Add --cwd flag to local agent spawn and new
+- `agent-relay local agent spawn` and `agent-relay new` accept `--cwd` so agents spawn into a specific working directory.
+
+### Fixed
+
+- `agent-relay-broker` keeps an explicitly requested codex model when the model catalog cannot be queried, falling back to the default only when the catalog explicitly rejects the model.
 
 ## [8.8.2] - 2026-06-17
 
@@ -1691,22 +1685,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Stabilize macOS CLI agents timeout
-- Allow SDK broker fallback in macOS npx verify
-- Accept SDK broker fallback in npx resolution check
-- Fix verify-publish PR package resolution
-- Accept both relaycast workspace key field shapes
-- Restore coverage threshold and fix sdk integration type
-- Retrigger checks
-- Use published relaycast 0.3.0 crate
-
-### Fixed
-
-- Resolve platform-specific broker binary in SDK
-- Use SDK join_channel API for broker channel joins
-- Remove relay-pty references from postinstall.js
-- Update verify-install to check for agent-relay-broker instead of relay-pty
-- Remove redundant registration map_err conversion
+- Republished 2.3.16 unchanged under the 3.x version line; no functional changes.
 
 ## [2.3.16] - 2026-03-02
 
