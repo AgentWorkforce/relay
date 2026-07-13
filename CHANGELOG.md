@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-broker` resumes Relaycast mailbox delivery at the server's authoritative per-agent ACK cursor after a broker restart, preserving strict gap detection and legacy node compatibility.
 
+## [10.1.0] - 2026-07-13
+
+### Changed
+
+- Route the MCP server through @agent-relay/sdk thin clients
+- Reconcile [Unreleased] with what actually shipped
+- Fleet node structured logging: capabilities registered and actions invoked
+
+### Fixed
+
+- Recover delivery cursor on resume
+
 ## [10.0.0] - 2026-07-13
 
 ### Added
