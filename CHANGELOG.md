@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `@relaycast/sdk` is no longer a runtime dependency of the `agent-relay` CLI package.
 
+### Changed
+
+- `agent-relay-broker` links the `relaycast` engine crate at 6.0.0 (multi-provider fleet-wire registration); WebSocket event schemas are unchanged.
+- `agent-relay-broker` now parses inbound Relaycast WebSocket events (channel messages, DMs, group DMs, thread replies, reactions, presence, `action.invoked`) against the typed wire contract first; events that do not match the published schema still route through the previous tolerant field probing, with a structured warning so contract drift is observable in broker logs.
+
 ### Fixed
 
 - `agent-relay-broker` resumes Relaycast mailbox delivery at the server's authoritative per-agent ACK cursor after a broker restart, preserving strict gap detection and legacy node compatibility.
