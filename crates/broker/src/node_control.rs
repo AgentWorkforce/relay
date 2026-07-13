@@ -914,6 +914,53 @@ pub(crate) fn persist_node_token(
     Ok(())
 }
 
+/// Outcome of handling a control command received while the node is not yet
+/// connected to `/v1/node/ws`. `Shutdown` means the command channel closed or a
+/// `Shutdown` command arrived and the caller should return.
+enum DisconnectedCommandOutcome {
+    Handled,
+    Shutdown,
+}
+
+/// Apply a control command received while the node is disconnected, shared by the
+/// three not-yet-connected wait points (pre-registration, mint backoff, and the
+/// no-minter idle wait) so a new `FleetControlCommand` variant or state update
+/// stays consistent across them. `register_agent_error` is the reason replied to
+/// a `RegisterAgent` that can't be served yet: `node_not_registered` before the
+/// node is registered, `node_token_missing` once registered but tokenless.
+fn handle_disconnected_command(
+    command: Option<FleetControlCommand>,
+    config: &FleetControlConfig,
+    registration: &mut Option<NodeRegister>,
+    load: &mut FleetLoadSnapshot,
+    inventory: &mut Vec<InventoryAgent>,
+    register_agent_error: &str,
+) -> DisconnectedCommandOutcome {
+    match command {
+        Some(FleetControlCommand::RegisterNode {
+            manifest,
+            resume_cursor,
+        }) => {
+            load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+            *registration = Some(build_node_register(
+                &manifest,
+                &config.node_id,
+                &config.node_name,
+                &config.broker_version,
+                resume_cursor,
+            ));
+        }
+        Some(FleetControlCommand::UpdateLoad(next)) => *load = next,
+        Some(FleetControlCommand::UpdateInventory(next)) => *inventory = next,
+        Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
+            let _ = reply.send(Err(register_agent_error.to_string()));
+        }
+        Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+        Some(FleetControlCommand::Shutdown) | None => return DisconnectedCommandOutcome::Shutdown,
+    }
+    DisconnectedCommandOutcome::Handled
+}
+
 pub(crate) async fn run_node_control_client(
     mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
@@ -933,27 +980,18 @@ pub(crate) async fn run_node_control_client(
 
     loop {
         while registration.is_none() {
-            match command_rx.recv().await {
-                Some(FleetControlCommand::RegisterNode {
-                    manifest,
-                    resume_cursor,
-                }) => {
-                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                    registration = Some(build_node_register(
-                        &manifest,
-                        &config.node_id,
-                        &config.node_name,
-                        &config.broker_version,
-                        resume_cursor,
-                    ));
-                }
-                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                Some(FleetControlCommand::Shutdown) | None => return,
-                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                    let _ = reply.send(Err("node_not_registered".to_string()));
-                }
-                Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+            if matches!(
+                handle_disconnected_command(
+                    command_rx.recv().await,
+                    &config,
+                    &mut registration,
+                    &mut load,
+                    &mut inventory,
+                    "node_not_registered",
+                ),
+                DisconnectedCommandOutcome::Shutdown
+            ) {
+                return;
             }
         }
 
@@ -1001,29 +1039,21 @@ pub(crate) async fn run_node_control_client(
                     loop {
                         tokio::select! {
                             _ = &mut backoff => break,
-                            command = command_rx.recv() => match command {
-                                Some(FleetControlCommand::RegisterNode {
-                                    manifest,
-                                    resume_cursor,
-                                }) => {
-                                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                                    registration = Some(build_node_register(
-                                        &manifest,
-                                        &config.node_id,
-                                        &config.node_name,
-                                        &config.broker_version,
-                                        resume_cursor,
-                                    ));
+                            command = command_rx.recv() => {
+                                if matches!(
+                                    handle_disconnected_command(
+                                        command,
+                                        &config,
+                                        &mut registration,
+                                        &mut load,
+                                        &mut inventory,
+                                        "node_token_missing",
+                                    ),
+                                    DisconnectedCommandOutcome::Shutdown
+                                ) {
+                                    return;
                                 }
-                                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                                    let _ = reply.send(Err("node_token_missing".to_string()));
-                                }
-                                Some(FleetControlCommand::Send(_))
-                                | Some(FleetControlCommand::HeartbeatNow) => {}
-                                Some(FleetControlCommand::Shutdown) | None => return,
-                            },
+                            }
                         }
                     }
                     reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
@@ -1032,28 +1062,18 @@ pub(crate) async fn run_node_control_client(
             } else {
                 // No minter available (e.g. no workspace RelayCast client). Can't
                 // self-recover; wait for a token to arrive via command.
-                match command_rx.recv().await {
-                    Some(FleetControlCommand::RegisterNode {
-                        manifest,
-                        resume_cursor,
-                    }) => {
-                        load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                        registration = Some(build_node_register(
-                            &manifest,
-                            &config.node_id,
-                            &config.node_name,
-                            &config.broker_version,
-                            resume_cursor,
-                        ));
-                    }
-                    Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                    Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                    Some(FleetControlCommand::Shutdown) | None => return,
-                    Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                        let _ = reply.send(Err("node_token_missing".to_string()));
-                    }
-                    Some(FleetControlCommand::Send(_))
-                    | Some(FleetControlCommand::HeartbeatNow) => {}
+                if matches!(
+                    handle_disconnected_command(
+                        command_rx.recv().await,
+                        &config,
+                        &mut registration,
+                        &mut load,
+                        &mut inventory,
+                        "node_token_missing",
+                    ),
+                    DisconnectedCommandOutcome::Shutdown
+                ) {
+                    return;
                 }
                 continue;
             }
