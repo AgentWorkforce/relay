@@ -288,14 +288,20 @@ final class RelayFacadeTests: XCTestCase {
     }
 
     func testCancelAndWaitIsIdempotent() async {
+        // Exercise the lock under genuine concurrent access, not just two
+        // sequential calls (which would trivially see `cancelled == true`
+        // already set on the second call).
         let box = MatchBox()
         let token = RelayListenerToken(
             onCancel: {},
             onCancelAsync: { box.record("removed") }
         )
 
-        await token.cancelAndWait()
-        await token.cancelAndWait()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<10 {
+                group.addTask { await token.cancelAndWait() }
+            }
+        }
 
         XCTAssertEqual(box.matched, ["removed"])
     }

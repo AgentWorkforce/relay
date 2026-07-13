@@ -11,14 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `AgentRelaySDK` (Swift) gains rich relay facades over the relaycast engine SDK, mirroring the TypeScript `@agent-relay/sdk`: `AgentClient.threads` (get/reply), `inbox` and `deliveries` (list/ack/fail/defer), `channels` (list/get/create/update/archive/join/leave/invite/members/mute/unmute), `agents` (list/get/me/update/delete/presence), `nodes`, `triggers`, `integrations` (webhooks + subscriptions), `files` (upload), and `workspace` admin. `post`/`dm` accept `attachments`, and a typed listener hub adds `addListener`/`once`/`onError` alongside the existing event streams. `AgentRelay.createWorkspace(name:)` and `AgentRelay.workspace` consolidate workspace bootstrap and participant registration. Depends on relaycast `6.0.5+`.
 
+### Changed
+
+- `agent-relay-broker` upgrades the bundled `relaycast` engine crate to 6.0 and parses inbound Relaycast WebSocket events against the published typed contract first, logging a structured warning when an event only parses via the tolerant fallback — so engine contract drift is observable without dropping traffic.
+
 ### Fixed
 
 - `AgentRelaySDK` (Swift): realtime channel/DM/thread events now resolve the sender correctly instead of falling back to `"unknown"`, reading it from relaycast's message-level `agent_id`/`agent_name` fields.
 - `AgentRelaySDK` (Swift): a bare HTTP 409 from relaycast is no longer blanket-mapped to `agent_already_exists`; only agent registration (`register`/`registerOrRotate`) gets that remapping, while every other endpoint (channels, triggers, nodes, webhooks, ...) surfaces its original error code.
-
-### Changed
-
-- `agent-relay-broker` upgrades the bundled `relaycast` engine crate to 6.0 and parses inbound Relaycast WebSocket events against the published typed contract first, logging a structured warning when an event only parses via the tolerant fallback — so engine contract drift is observable without dropping traffic.
 
 ## [10.1.0] - 2026-07-13
 
