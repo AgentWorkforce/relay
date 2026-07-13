@@ -160,8 +160,7 @@ pub(crate) enum TypedThreadMessage {
     DmHistory(DmHistoryMessage),
 }
 
-/// The shape recorded by `record_thread_history_event` callers
-/// (`runtime/relaycast_events.rs`, `runtime/api.rs`).
+/// The shape recorded by `record_thread_history_event` (`runtime/api.rs`).
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RecordedThreadMessage {
     #[allow(dead_code)]
