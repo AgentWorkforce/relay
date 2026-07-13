@@ -1,14 +1,10 @@
-import { RelayCast } from '@relaycast/sdk';
+import { createWorkspace as createRelayWorkspace } from '@agent-relay/sdk';
 
-import { relaycastWorkspaceTelemetryOptions } from '../lib/relaycast-telemetry.js';
 import type { RegistrationSession } from './types.js';
 
 /** Create a new RelayCast workspace, returning the raw provisioning payload. */
 export async function createWorkspace(name: string, baseUrl?: string): Promise<Record<string, unknown>> {
-  return (await RelayCast.createWorkspace(name, {
-    baseUrl,
-    ...relaycastWorkspaceTelemetryOptions(),
-  })) as Record<string, unknown>;
+  return createRelayWorkspace(name, { baseUrl });
 }
 
 /** Extract a workspace key from a provisioning payload, tolerating naming variants. */

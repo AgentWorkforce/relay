@@ -1874,34 +1874,52 @@ jobs:
             if (!entries.includes(parsed.title)) entries.push(parsed.title);
           }
 
-          if ([...sections.values()].every(entries => entries.length === 0)) {
-            console.log('No changelog-worthy commits since last tag, skipping changelog');
-            process.exit(0);
-          }
-
-          const lines = [];
-          lines.push(`## [${newVersion}] - ${today}`);
-          lines.push('');
-
-          for (const [section, entries] of sections) {
-            if (entries.length === 0) continue;
-            lines.push(`### ${section}`);
-            lines.push('');
-            for (const entry of entries) lines.push(`- ${entry}`);
-            lines.push('');
-          }
-
-          const newEntry = lines.join('\n').trimEnd() + '\n\n';
           const changelog = readFileSync('CHANGELOG.md', 'utf-8');
 
-          // Insert after the [Unreleased] block, before the first versioned entry
-          // Use \d to match versioned headings (e.g. ## [2.1.5]) and skip ## [Unreleased]
-          const match = changelog.match(/\n## \[\d/);
-          const insertAt = match ? match.index : -1;
-          if (insertAt === -1) {
-            writeFileSync('CHANGELOG.md', changelog.trimEnd() + '\n\n' + newEntry);
+          // Curated [Unreleased] entries are authoritative (AGENTS.md "Changelog"):
+          // move them under the new version and restore a bare, empty [Unreleased]
+          // heading. Commit subjects are only the fallback for an empty block.
+          const unreleased = changelog.match(
+            /^## \[Unreleased(?: - (?:Patch|Minor|Major))?\][ \t]*\n([\s\S]*?)(?=^## \[|(?![\s\S]))/m
+          );
+          const curated = unreleased ? unreleased[1].trim() : '';
+
+          let body = curated;
+          if (!body) {
+            if ([...sections.values()].every(entries => entries.length === 0)) {
+              console.log('No curated entries and no changelog-worthy commits since last tag, skipping changelog');
+              process.exit(0);
+            }
+            const lines = [];
+            for (const [section, entries] of sections) {
+              if (entries.length === 0) continue;
+              lines.push(`### ${section}`);
+              lines.push('');
+              for (const entry of entries) lines.push(`- ${entry}`);
+              lines.push('');
+            }
+            body = lines.join('\n').trimEnd();
+          }
+
+          const newEntry = `## [${newVersion}] - ${today}\n\n${body}\n\n`;
+
+          if (unreleased) {
+            const start = unreleased.index;
+            const end = start + unreleased[0].length;
+            writeFileSync(
+              'CHANGELOG.md',
+              changelog.slice(0, start) + '## [Unreleased]\n\n' + newEntry + changelog.slice(end)
+            );
           } else {
-            writeFileSync('CHANGELOG.md', changelog.slice(0, insertAt + 1) + newEntry + changelog.slice(insertAt + 1));
+            // No [Unreleased] heading: insert before the first versioned entry
+            // Use \d to match versioned headings (e.g. ## [2.1.5])
+            const match = changelog.match(/\n## \[\d/);
+            const insertAt = match ? match.index : -1;
+            if (insertAt === -1) {
+              writeFileSync('CHANGELOG.md', changelog.trimEnd() + '\n\n' + newEntry);
+            } else {
+              writeFileSync('CHANGELOG.md', changelog.slice(0, insertAt + 1) + newEntry + changelog.slice(insertAt + 1));
+            }
           }
 
           console.log(`Changelog updated for v${newVersion}`);

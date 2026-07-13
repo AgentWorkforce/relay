@@ -139,7 +139,23 @@ Consequence: persistence _across process death_ is a **resumable-only** property
 - **Relaycast** holds all durable state (source of truth): mailboxes, agent records (`resumable`, `session_ref`, origin node), locations, node registry. Must survive Relaycast restarts.
 - **Broker** keeps only in-memory per-session state: `seq` cursor, dedup set, local pending-injection queue. **No disk needed for delivery durability.**
   - Uplink blip, broker alive → cursor/dedup survive → clean replay, no duplicates.
-  - Broker process dies → its child agents die too → they respawn and _want_ redelivery → redelivery is correct, not duplicate.
+  - Broker process dies → its child agents die too. When a resumable identity re-registers, Relaycast returns that identity's authoritative cumulative ACK cursor before replaying pending delivery, so the fresh broker can continue at `cursor + 1` without accepting an arbitrary first sequence.
+
+#### Cursor recovery handshake
+
+A broker that understands cursor recovery advertises the reserved node capability
+`relay:delivery-cursor-v1` (with `kind: "capacity"`) on every `node.register`. For
+that connection only, Relaycast adds `delivery_ack_seq` to a successful
+`agent.register` reply. The value belongs to the returned immutable `agent_id`,
+not merely its reusable name. Relaycast sends this reply before draining the
+agent's pending mailbox; WebSocket ordering therefore establishes the cursor
+before the first resumed `deliver` frame.
+
+The broker accepts a positive sequence only when it is exactly one greater than
+the returned cursor. If the capability or reply field is absent, the broker uses
+the legacy fresh-session rule (`seq == 1`) and continues rejecting gaps. Relaycast
+omits the field for nodes that did not advertise the capability so older brokers
+with strict reply decoders remain compatible.
 
 ### 8.5 One durable store
 
@@ -157,7 +173,7 @@ The per-agent mailbox **subsumes** any per-node replay buffer: node-disconnect r
 
 A node's broker holds one control connection to Relaycast, serving two roles: **compute provider** (advertises capabilities, receives spawn/release action invocations, reports results) and **delivery relay** (receives inbound for the PTY agents located on it, injects, acks).
 
-- **Register** (on connect): node name, capabilities, version, `max_agents`, tags, and a resume cursor for replay.
+- **Register** (on connect): node name, capabilities (including negotiated protocol capabilities), version, `max_agents`, tags, and a resume cursor for replay.
 - **Heartbeat** (~10–15s): `load`, `active_agents`. Relaycast TTL marks offline → stop placing there; mark its located agents unreachable.
 - **Reconnect inventory sync:** after register, the broker re-announces its full live agent inventory (`agent_id`, name, `invocationId`, `session_ref`). Relaycast reconciles **locations** and open **invocations** (§7) from it.
 - **Deregister:** graceful on shutdown; else liveness TTL.

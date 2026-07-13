@@ -5,10 +5,27 @@ use crate::{
         AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, RelaycastToBroker,
         FLEET_WIRE_VERSION,
     },
-    node_control::{delivery_ack, handler_unavailable_result},
+    node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
 };
 
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FleetDeliveryPlan {
+    Surface,
+    Acknowledge(u64),
+    RejectWithoutAck,
+}
+
+fn plan_fleet_delivery(decision: DeliveryDecision) -> FleetDeliveryPlan {
+    match decision {
+        DeliveryDecision::Deliver { .. } => FleetDeliveryPlan::Surface,
+        DeliveryDecision::Duplicate { up_to_seq }
+        | DeliveryDecision::Stale { up_to_seq }
+        | DeliveryDecision::Gap { up_to_seq } => FleetDeliveryPlan::Acknowledge(up_to_seq),
+        DeliveryDecision::IdentityReject => FleetDeliveryPlan::RejectWithoutAck,
+    }
+}
 
 impl BrokerRuntime {
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
@@ -45,26 +62,33 @@ impl BrokerRuntime {
 
     async fn handle_fleet_deliver(&mut self, deliver: Deliver) {
         let decision = self.fleet_delivery_book.observe(&deliver);
-        let up_to_seq = match decision {
-            crate::node_control::DeliveryDecision::Deliver { up_to_seq: _ } => {
-                match self.surface_fleet_deliver(&deliver).await {
-                    Ok(()) => self.fleet_delivery_book.commit_delivered(&deliver),
-                    Err(error) => {
-                        tracing::warn!(
-                            target = "relay_broker::fleet",
-                            agent = %deliver.agent,
-                            delivery_id = %deliver.delivery_id,
-                            msg_id = %deliver.msg_id,
-                            error = %error,
-                            "fleet delivery injection failed; withholding ack"
-                        );
-                        return;
-                    }
+        let up_to_seq = match plan_fleet_delivery(decision) {
+            FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
+                Ok(()) => self.fleet_delivery_book.commit_delivered(&deliver),
+                Err(error) => {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        agent = %deliver.agent,
+                        delivery_id = %deliver.delivery_id,
+                        msg_id = %deliver.msg_id,
+                        error = %error,
+                        "fleet delivery injection failed; withholding ack"
+                    );
+                    return;
                 }
+            },
+            FleetDeliveryPlan::Acknowledge(up_to_seq) => up_to_seq,
+            FleetDeliveryPlan::RejectWithoutAck => {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    agent = %deliver.agent,
+                    agent_id = %deliver.agent_id,
+                    delivery_id = %deliver.delivery_id,
+                    msg_id = %deliver.msg_id,
+                    "rejecting fleet delivery with conflicting agent identity; withholding ack"
+                );
+                return;
             }
-            crate::node_control::DeliveryDecision::Duplicate { up_to_seq }
-            | crate::node_control::DeliveryDecision::Stale { up_to_seq }
-            | crate::node_control::DeliveryDecision::Gap { up_to_seq } => up_to_seq,
         };
         let _ = self
             .fleet_control_tx
@@ -365,6 +389,7 @@ impl BrokerRuntime {
             &mut self.dedup,
             &mut self.agent_spawn_count,
             &self.fleet_control_tx,
+            &mut self.fleet_delivery_book,
             &self.fleet_node_name,
             Some(invoke.invocation_id.clone()),
             session_ref,
@@ -498,6 +523,7 @@ impl BrokerRuntime {
 /// the worker MCP never re-registers over HTTP.
 pub(super) async fn register_node_agent_token(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_delivery_book: &mut FleetDeliveryBook,
     name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
@@ -517,10 +543,15 @@ pub(super) async fn register_node_agent_token(
         })
         .await
         .map_err(|_| "fleet_control_unavailable".to_string())?;
-    tokio::time::timeout(FLEET_AGENT_REGISTER_TIMEOUT, reply_rx)
+    let token = tokio::time::timeout(FLEET_AGENT_REGISTER_TIMEOUT, reply_rx)
         .await
         .map_err(|_| "agent_register_timeout".to_string())?
-        .map_err(|_| "agent_register_reply_dropped".to_string())?
+        .map_err(|_| "agent_register_reply_dropped".to_string())??;
+    fleet_delivery_book.bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
+    if let Some(up_to_seq) = token.delivery_ack_seq {
+        fleet_delivery_book.seed_cursor(token.name.clone(), token.agent_id.clone(), up_to_seq);
+    }
+    Ok(token)
 }
 
 pub(super) async fn publish_fleet_load_snapshot(
@@ -944,6 +975,14 @@ mod tests {
     }
 
     #[test]
+    fn identity_reject_plan_neither_surfaces_nor_acks() {
+        assert_eq!(
+            plan_fleet_delivery(DeliveryDecision::IdentityReject),
+            FleetDeliveryPlan::RejectWithoutAck
+        );
+    }
+
+    #[test]
     fn classify_fleet_delivery_injects_message_classes_and_acks_receipts() {
         // Mirrors relaycast parse_inbound_kind message-class alias set: any of
         // these must inject, not ack-and-drop.
@@ -1141,7 +1180,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn action_invoke_spawn_forwards_session_ref_and_invocation_into_agent_register() {
+    async fn action_invoke_spawn_seeds_authoritative_cursor_before_resumed_delivery() {
         // An `action.invoke` spawn carrying `harnessConfig.session_id` must
         // forward a non-None session_ref (and the invocation id) into the node
         // `agent.register` it emits, so the spawn resumes the session and the
@@ -1167,7 +1206,16 @@ mod tests {
         // emitted AgentRegister to confirm both fields are threaded through.
         let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
         let register_handle = tokio::spawn(async move {
-            register_node_agent_token(&tx, "agent-a", Some("inv-42".to_string()), session_ref).await
+            let mut delivery_book = FleetDeliveryBook::default();
+            let token = register_node_agent_token(
+                &tx,
+                &mut delivery_book,
+                "agent-a",
+                Some("inv-42".to_string()),
+                session_ref,
+            )
+            .await?;
+            Ok::<_, String>((token, delivery_book))
         });
 
         let command = rx.recv().await.expect("register command emitted");
@@ -1185,10 +1233,70 @@ mod tests {
                 name: "agent-a".to_string(),
                 agent_id: "agent-a-id".to_string(),
                 token: "at_test".to_string(),
+                delivery_ack_seq: Some(42),
             }))
             .unwrap();
-        let token = register_handle.await.unwrap().unwrap();
+        let (token, delivery_book) = register_handle.await.unwrap().unwrap();
         assert_eq!(token.token, "at_test");
+
+        let resumed = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-43".to_string(),
+            msg_id: "msg-43".to_string(),
+            seq: 43,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "after restart"}),
+        };
+        assert_eq!(
+            delivery_book.observe(&resumed),
+            crate::node_control::DeliveryDecision::Deliver { up_to_seq: 43 }
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_register_without_cursor_still_binds_authoritative_identity() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
+        let register_handle = tokio::spawn(async move {
+            let mut delivery_book = FleetDeliveryBook::default();
+            register_node_agent_token(&tx, &mut delivery_book, "agent-a", None, None).await?;
+            Ok::<_, String>(delivery_book)
+        });
+
+        let FleetControlCommand::RegisterAgent { reply, .. } =
+            rx.recv().await.expect("register command emitted")
+        else {
+            panic!("expected RegisterAgent command");
+        };
+        reply
+            .send(Ok(crate::node_control::AgentRegistrationToken {
+                name: "agent-a".to_string(),
+                agent_id: "agent-a-id".to_string(),
+                token: "at_test".to_string(),
+                delivery_ack_seq: None,
+            }))
+            .unwrap();
+        let delivery_book = register_handle.await.unwrap().unwrap();
+
+        let current = test_deliver(
+            "agent-a",
+            "delivery-current",
+            "message-current",
+            json!({"type": "message.created"}),
+        );
+        assert_eq!(
+            delivery_book.observe(&current),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+        let mismatch = Deliver {
+            agent_id: "impostor-id".to_string(),
+            ..current
+        };
+        assert_eq!(
+            delivery_book.observe(&mismatch),
+            DeliveryDecision::IdentityReject
+        );
     }
 
     #[test]
