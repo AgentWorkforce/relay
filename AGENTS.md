@@ -33,7 +33,7 @@ the cross-package, user-facing release narrative for Relay. It follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and Semantic
 Versioning.
 
-An empty post-release changelog starts at `[Unreleased]`. The first pending
+An empty post-release changelog starts with `[Unreleased]`. The first pending
 user-visible change must set the heading to `[Unreleased - Patch]`,
 `[Unreleased - Minor]`, or `[Unreleased - Major]` according to its SemVer
 impact. The pending release level is monotonic (`Patch < Minor < Major`):

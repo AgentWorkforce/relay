@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 (adds the node-provider client) and `relaycast-sdk` (Python) 1.0.0 (adds `relay_sdk.node.NodeProvider`).
+- Relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 (adds the node-provider client) and `relaycast-sdk` (Python) 1.0.0 (adds `relay_sdk.node.NodeProvider`).
 - `agent-relay fleet status` reads this node's provider attachment and per-provider liveness from the engine nodes API instead of a local status file.
 
 ### Removed
@@ -158,7 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- relaycast SDKs upgraded to v5: `@relaycast/sdk` `^5.0.5` (v4→v5 major), the `relaycast` broker crate `5.0.2`, `relaycast-sdk` (Python) `0.3.0`, and Swift relaycast `5.0.5`. The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
+- Relaycast SDKs upgraded to v5: `@relaycast/sdk` `^5.0.5` (v4→v5 major), the `relaycast` broker crate `5.0.2`, `relaycast-sdk` (Python) `0.3.0`, and Swift Relaycast `5.0.5`. The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
 
 ## [9.1.3] - 2026-06-26
 
@@ -304,7 +304,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-broker` keeps an explicitly requested codex model when the model catalog cannot be queried, falling back to the default only when the catalog explicitly rejects the model.
+- `agent-relay-broker` keeps an explicitly requested Codex model when the model catalog cannot be queried, falling back to the default only when the catalog explicitly rejects the model.
 
 ## [8.8.2] - 2026-06-17
 
