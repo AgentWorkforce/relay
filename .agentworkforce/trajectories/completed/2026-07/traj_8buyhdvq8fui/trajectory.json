@@ -1,0 +1,32 @@
+{
+  "id": "traj_8buyhdvq8fui",
+  "version": 1,
+  "task": {
+    "title": "Reconcile CHANGELOG unreleased bloat"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-13T10:49:34.342Z",
+  "completedAt": "2026-07-13T14:16:13.394Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Reconciled CHANGELOG: reduced [Unreleased] to the single genuinely-unreleased change, rewrote 10.0.0 as the node-providers/sidecar-removal major, harvested stranded curated entries into their real shipped releases (8.5.0-9.2.4), fixed duplicate headers and the gateway.relaycast.dev contradiction",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [
+    "90ca71a",
+    "5df8ebb"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_8buyhdvq8fui/trajectory.json",
+    "CHANGELOG.md"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6de0d794d78c4ce00352bd0bdb2f0679166d3588",
+    "endRef": "90ca71a3720eb059d766f67a1fb25b74047c0954",
+    "traceId": "09e68981-9974-45b2-83c1-5f8cb17c6d6b"
+  }
+}
