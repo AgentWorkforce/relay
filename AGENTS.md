@@ -33,6 +33,15 @@ the cross-package, user-facing release narrative for Relay. It follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and Semantic
 Versioning.
 
+An empty post-release changelog starts at `[Unreleased]`. The first pending
+user-visible change must set the heading to `[Unreleased - Patch]`,
+`[Unreleased - Minor]`, or `[Unreleased - Major]` according to its SemVer
+impact. The pending release level is monotonic (`Patch < Minor < Major`):
+raise the heading when a higher-impact change arrives; never lower it for a
+later lower-impact change, and leave it unchanged for another change at the
+same level. When a release is cut, move the pending entries under the released
+version and restore an empty `[Unreleased]` heading with no release level.
+
 Changelog entries should be concise and impact-first. Prefer one short bullet
 per user-visible change: name the command, API, schema, or package touched and
 the practical effect. Drop issue/PR links, internal review notes,
