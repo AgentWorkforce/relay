@@ -1,6 +1,6 @@
-//! Typed deserialization of the Relaycast v3 WebSocket wire contract.
+//! Typed deserialization of the Relaycast WebSocket wire contract.
 //!
-//! The hosted engine (v3.1.x) emits the event shapes published as zod
+//! The hosted engine emits the event shapes published as zod
 //! schemas in `@relaycast/types` (`events.ts`, `message.ts`). This module
 //! mirrors the subset of that contract the broker routes: channel
 //! messages, DMs, group DMs, thread replies, reactions, and agent
@@ -38,7 +38,7 @@ pub(crate) enum TypedInbound {
     Ignored,
 }
 
-/// Parse a raw WS event against the typed v3 wire contract.
+/// Parse a raw WS event against the typed wire contract.
 ///
 /// Returns `None` when the event type is outside the contract subset or
 /// the body is missing schema-required fields; callers fall back to the
@@ -189,8 +189,8 @@ impl WireDirectMessage {
     }
 }
 
-/// `thread.reply` (zod `ThreadReplyEventSchema`): the v3 engine always
-/// includes the channel; channel-less replies are pre-v3 shapes handled by
+/// `thread.reply` (zod `ThreadReplyEventSchema`): the hosted engine always
+/// includes the channel; channel-less replies are legacy shapes handled by
 /// the tolerant fallback (`"thread"` sentinel target).
 #[derive(Debug, Deserialize)]
 struct WireThreadReply {
@@ -498,7 +498,7 @@ mod tests {
             }
         }))
         .is_none());
-        // Legacy alias event types are not part of the v3 contract.
+        // Legacy alias event types are not part of the typed contract.
         assert!(parse_typed_inbound(&json!({
             "id": "6f7a8b9c-0d1e-5f2a-8b3c-4d5e6f7a8b9c",
             "type": "message.received",

@@ -17,7 +17,7 @@ fn ws_event_type(value: &Value) -> &str {
 
 /// Map a Relaycast ServerEvent (received over WebSocket) to an InboundRelayEvent.
 ///
-/// Events are first parsed against the typed v3 wire contract
+/// Events are first parsed against the typed wire contract
 /// ([`wire::parse_typed_inbound`]); shapes that do not match fall back to
 /// the tolerant `relaycast::normalize_inbound_event` field probing with a
 /// structured warning, so contract drift is observable without dropping
@@ -36,7 +36,7 @@ pub fn map_ws_event(
                 target = "broker::bridge",
                 event_type = %ws_event_type(value),
                 event_id = %event.event_id,
-                "WS event did not match the typed v3 wire contract; mapped via tolerant fallback"
+                "WS event did not match the typed wire contract; mapped via tolerant fallback"
             );
             event
         }
@@ -85,7 +85,7 @@ pub struct ActionInvokedRef {
 
 /// Parse a raw `action.invoked` WebSocket event.
 ///
-/// The typed v3 contract shape (`relaycast::ActionInvokedEvent`, all
+/// The typed contract shape (`relaycast::ActionInvokedEvent`, all
 /// fields required) is tried first; legacy top-level or payload-wrapped
 /// shapes fall back to field probing with a structured warning.
 pub fn parse_ws_action_invoked(value: &Value) -> Option<ActionInvokedRef> {
@@ -117,7 +117,7 @@ pub fn parse_ws_action_invoked(value: &Value) -> Option<ActionInvokedRef> {
         target = "broker::bridge",
         invocation_id = %parsed.invocation_id,
         action = %parsed.action,
-        "action.invoked event did not match the typed v3 wire contract; parsed via tolerant fallback"
+        "action.invoked event did not match the typed wire contract; parsed via tolerant fallback"
     );
     Some(parsed)
 }

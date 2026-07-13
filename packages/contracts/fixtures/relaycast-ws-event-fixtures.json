@@ -1,5 +1,5 @@
 {
-  "description": "Canonical Relaycast v3 engine WebSocket event shapes for the events the broker routes. Shapes follow the @relaycast/types zod schemas (events.ts, message.ts) as emitted by the engine's wsTransform. Each typed_inbound case must parse via the broker's typed wire contract (crates/broker/src/relaycast/wire.rs), not the tolerant fallback, and must map to the expected inbound event. typed_ignored cases must match the typed contract but be intentionally dropped. typed_action cases must parse via the typed relaycast::ActionInvokedEvent struct.",
+  "description": "Canonical Relaycast engine WebSocket event shapes for the events the broker routes. Shapes follow the @relaycast/types zod schemas (events.ts, message.ts) as emitted by the engine's wsTransform. One exception: message.reacted's channel_name field is engine runtime enrichment and is not present in the published zod schema. Each typed_inbound case must parse via the broker's typed wire contract (crates/broker/src/relaycast/wire.rs), not the tolerant fallback, and must map to the expected inbound event. typed_ignored cases must match the typed contract but be intentionally dropped. typed_action cases must parse via the typed relaycast::ActionInvokedEvent struct.",
   "typed_inbound": [
     {
       "name": "message.created",
