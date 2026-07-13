@@ -277,15 +277,13 @@ final class RelayFacadeTests: XCTestCase {
         // Task and can race an in-flight event), `cancelAndWait()` must not
         // return until the actor-side removal has actually happened.
         let box = MatchBox()
-        var removed = false
         let token = RelayListenerToken(
             onCancel: { XCTFail("cancel() should not be exercised by this test") },
-            onCancelAsync: { removed = true; box.record("removed") }
+            onCancelAsync: { box.record("removed") }
         )
 
         await token.cancelAndWait()
 
-        XCTAssertTrue(removed)
         XCTAssertEqual(box.matched, ["removed"])
     }
 
