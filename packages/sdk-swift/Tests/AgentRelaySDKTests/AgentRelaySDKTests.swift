@@ -66,9 +66,13 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertEqual(object["nothing"], .null)
     }
 
-    func testErrorBridgingMapsConflictToAlreadyExists() {
+    func testErrorBridgingIsLiteralForGenericAPIErrors() {
+        // The generic bridge must not guess: a bare 409 means different
+        // things on different endpoints (channel/trigger/node conflicts,
+        // not just agent registration), so it passes the original code
+        // through unchanged.
         let relaycastError = Relaycast.RelayError.api(
-            code: "some_code",
+            code: "channel_already_exists",
             message: "name_taken",
             statusCode: 409,
             retryable: false
@@ -77,8 +81,41 @@ final class HostedParticipantSDKTests: XCTestCase {
         guard case .protocolError(let code, let message, _) = bridged else {
             return XCTFail("Expected protocolError")
         }
+        XCTAssertEqual(code, "channel_already_exists")
+        XCTAssertEqual(message, "name_taken")
+    }
+
+    func testRegistrationConflictAwareErrorMapsBareConflictToAlreadyExists() {
+        // Agent registration is the one place a bare 409 unambiguously means
+        // a name conflict, even when relaycast's own `code` is generic.
+        let relaycastError = Relaycast.RelayError.api(
+            code: "some_code",
+            message: "name_taken",
+            statusCode: 409,
+            retryable: false
+        )
+        let bridged = HostedWorkspaceCore.registrationConflictAwareError(relaycastError)
+        guard case .protocolError(let code, let message, _) = bridged else {
+            return XCTFail("Expected protocolError")
+        }
         XCTAssertEqual(code, "agent_already_exists")
         XCTAssertEqual(message, "name_taken")
+    }
+
+    func testRegistrationConflictAwareErrorLeavesNonConflictsAlone() {
+        let relaycastError = Relaycast.RelayError.api(
+            code: "rate_limited",
+            message: "slow down",
+            statusCode: 429,
+            retryable: true
+        )
+        let bridged = HostedWorkspaceCore.registrationConflictAwareError(relaycastError)
+        guard case .protocolError(let code, let message, let retryable) = bridged else {
+            return XCTFail("Expected protocolError")
+        }
+        XCTAssertEqual(code, "rate_limited")
+        XCTAssertEqual(message, "slow down")
+        XCTAssertTrue(retryable)
     }
 
     func testErrorBridgingMapsNotConnected() {
@@ -110,6 +147,29 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertEqual(event.message?.text, "hello")
         XCTAssertEqual(event.message?.from.name, "alice")
         XCTAssertEqual(event.message?.channel?.name, "general")
+    }
+
+    func testRelayEventFromWsEventResolvesSenderFromMessageLevelAgentFields() {
+        // relaycast's actual realtime wire shape carries the sender as
+        // `agent_id`/`agent_name` directly on the message object rather than
+        // a nested `from` object. Without a fallback here, `from` silently
+        // resolves to an empty sender ("unknown" once surfaced as a
+        // `RelayChannelEvent`).
+        let wsEvent = Relaycast.WsEvent(type: "message.created", payload: [
+            "channel": .string("general"),
+            "message": .object([
+                "id": .string("msg_1"),
+                "message_id": .string("msg_1"),
+                "body": .string("hello"),
+                "agent_id": .string("agent_1"),
+                "agent_name": .string("bob"),
+                "channel": .object(["name": .string("general")])
+            ])
+        ])
+
+        let event = RelayEvent(wsEvent)
+        XCTAssertEqual(event.message?.from.id, "agent_1")
+        XCTAssertEqual(event.message?.from.name, "bob")
     }
 
     func testRelayEventFromWsEventExtractsActionInvocationFields() {

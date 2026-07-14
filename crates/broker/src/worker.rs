@@ -1374,8 +1374,11 @@ async fn codex_local_fallback_model(
 }
 
 async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> Option<bool> {
+    // Matches the spawn+output timeout used in snippets.rs: under CI load, spawning
+    // the Codex CLI can take longer than 5s, which was previously causing a spurious
+    // fallback away from the requested model instead of a genuine "unsupported" result.
     let output = timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         Command::new(resolved_cli)
             .arg("debug")
             .arg("models")
