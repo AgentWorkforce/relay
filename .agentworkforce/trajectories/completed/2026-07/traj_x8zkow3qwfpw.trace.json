@@ -1,0 +1,614 @@
+{
+  "version": "1.0.0",
+  "id": "2938aa4d-2f92-44f1-a8e1-e21f10edcb29",
+  "timestamp": "2026-07-14T15:25:55.190Z",
+  "trajectory": "traj_x8zkow3qwfpw",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_x8zkow3qwfpw/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 62,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 17,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/dedup.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 27,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 31,
+              "end_line": 37,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 41,
+              "end_line": 47,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 66,
+              "end_line": 79,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 84,
+              "end_line": 166,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 189,
+              "end_line": 269,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/listen_api.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 11,
+              "end_line": 19,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 146,
+              "end_line": 163,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 484,
+              "end_line": 494,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 2349,
+              "end_line": 2420,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/protocol.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 426,
+              "end_line": 445,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/api.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 56,
+              "end_line": 62,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 551,
+              "end_line": 557,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 1333,
+              "end_line": 1339,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 1345,
+              "end_line": 1429,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/dead_letter.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 198,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/delivery.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 22,
+              "end_line": 39,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 128,
+              "end_line": 134,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 692,
+              "end_line": 711,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 739,
+              "end_line": 751,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 757,
+              "end_line": 763,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 782,
+              "end_line": 804,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 831,
+              "end_line": 837,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 849,
+              "end_line": 855,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/event_loop.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 167,
+              "end_line": 173,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 271,
+              "end_line": 322,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 380,
+              "end_line": 399,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 467,
+              "end_line": 473,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/init.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 544,
+              "end_line": 570,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 656,
+              "end_line": 662,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/maintenance.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 18,
+              "end_line": 24,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 68,
+              "end_line": 81,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 178,
+              "end_line": 184,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 239,
+              "end_line": 251,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/mod.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 67,
+              "end_line": 73,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 90,
+              "end_line": 96,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/paths.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 68,
+              "end_line": 75,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 146,
+              "end_line": 153,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 184,
+              "end_line": 191,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 197,
+              "end_line": 204,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/relaycast_events.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 165,
+              "end_line": 171,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 194,
+              "end_line": 206,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/tests.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 38,
+              "end_line": 54,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 517,
+              "end_line": 707,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 743,
+              "end_line": 763,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 814,
+              "end_line": 824,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 864,
+              "end_line": 879,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 899,
+              "end_line": 919,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 1795,
+              "end_line": 1810,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 1819,
+              "end_line": 1833,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/util/fs.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 18,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/util/mod.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/bootstrap.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 16,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/core.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 8,
+              "end_line": 22,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 45,
+              "end_line": 51,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 221,
+              "end_line": 229,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 1234,
+              "end_line": 1346,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/core.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 370,
+              "end_line": 448,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/harness-driver/src/client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 27,
+              "end_line": 34,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 1024,
+              "end_line": 1046,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/harness-driver/src/protocol.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 154,
+              "end_line": 187,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            },
+            {
+              "start_line": 386,
+              "end_line": 407,
+              "revision": "defd3305decc224b6d113aabe3d5e3be098aa183"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
