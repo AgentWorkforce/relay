@@ -96,7 +96,15 @@ describe('registerWorkspaceCommands', () => {
       relaycastApiKey: 'rk_live_new',
     });
 
-    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'new-ws', '--api-url', 'https://cloud.test']);
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'workspace',
+      'create',
+      'new-ws',
+      '--api-url',
+      'https://cloud.test',
+    ]);
 
     expect(deps.createWorkspace).toHaveBeenCalledWith('new-ws', 'https://cloud.test');
     expect(vi.mocked(setWorkspaceKey)).toHaveBeenCalledWith('new-ws', 'rk_live_new');

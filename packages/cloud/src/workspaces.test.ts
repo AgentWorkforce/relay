@@ -133,10 +133,7 @@ describe('resolveActiveWorkspace', () => {
         });
       }
 
-      if (
-        method === 'GET' &&
-        url === 'https://cloud.example.test/api/v1/workspaces/rk_live_healed/resolve'
-      ) {
+      if (method === 'GET' && url === 'https://cloud.example.test/api/v1/workspaces/rk_live_healed/resolve') {
         return new Response(
           JSON.stringify({
             workspace: {
@@ -161,9 +158,14 @@ describe('resolveActiveWorkspace', () => {
     expect(descriptor.cloudWorkspaceId).toBe('rw_ops');
     // The healed key is persisted locally so subsequent calls don't self-heal
     // again on every resolve.
-    expect(readWorkspaceStore().workspaces.ops).toEqual({ key: 'rk_live_healed', cloudWorkspaceId: 'rw_ops' });
+    expect(readWorkspaceStore().workspaces.ops).toEqual({
+      key: 'rk_live_healed',
+      cloudWorkspaceId: 'rw_ops',
+    });
 
-    const joinCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+    const joinCall = fetchSpy.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'POST'
+    );
     expect(joinCall).toBeDefined();
     expect(JSON.parse(String((joinCall![1] as RequestInit).body))).toEqual({
       agentName: 'cli-workspace-self-heal',
@@ -229,7 +231,9 @@ describe('joinWorkspace', () => {
       relaycastApiKey: 'rk_live_joined',
     });
 
-    expect(String(fetchSpy.mock.calls[0][0])).toBe('https://cloud.example.test/api/v1/workspaces/rw_ops/join');
+    expect(String(fetchSpy.mock.calls[0][0])).toBe(
+      'https://cloud.example.test/api/v1/workspaces/rw_ops/join'
+    );
     expect((fetchSpy.mock.calls[0][1] as RequestInit).method).toBe('POST');
   });
 

@@ -95,7 +95,9 @@ function normalizeWorkspaceCreateResponse(payload: unknown): WorkspaceCreateResp
   return {
     workspaceId,
     ...(readString(payload, 'name') ? { name: readString(payload, 'name') } : {}),
-    ...(readString(payload, 'relaycastApiKey') ? { relaycastApiKey: readString(payload, 'relaycastApiKey') } : {}),
+    ...(readString(payload, 'relaycastApiKey')
+      ? { relaycastApiKey: readString(payload, 'relaycastApiKey') }
+      : {}),
     ...(readString(payload, 'relayfileUrl') ? { relayfileUrl: readString(payload, 'relayfileUrl') } : {}),
     ...(readString(payload, 'relaycronUrl') ? { relaycronUrl: readString(payload, 'relaycronUrl') } : {}),
     ...(readString(payload, 'relaycastUrl') ? { relaycastUrl: readString(payload, 'relaycastUrl') } : {}),
@@ -443,7 +445,10 @@ export async function resolveActiveWorkspace(
     // Opportunistically cache the resolved cloud workspace id (if new/changed)
     // so a future rotated/orphaned key can self-heal below without the caller
     // ever having to remember or re-supply it.
-    if (primary.descriptor.cloudWorkspaceId && primary.descriptor.cloudWorkspaceId !== entry.cloudWorkspaceId) {
+    if (
+      primary.descriptor.cloudWorkspaceId &&
+      primary.descriptor.cloudWorkspaceId !== entry.cloudWorkspaceId
+    ) {
       setWorkspaceKey(name, entry.key, options.env, primary.descriptor.cloudWorkspaceId);
     }
     return primary.descriptor;
@@ -473,5 +478,7 @@ export async function resolveActiveWorkspace(
     }
   }
 
-  throw primary.lastUnsupported ?? new Error('Workspace resolution is not supported by the configured cloud API.');
+  throw (
+    primary.lastUnsupported ?? new Error('Workspace resolution is not supported by the configured cloud API.')
+  );
 }
