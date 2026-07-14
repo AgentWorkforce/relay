@@ -36,7 +36,7 @@ use crate::cli::PtyCommand;
 use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
-use crate::util::ansi::{floor_char_boundary, strip_ansi};
+use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
@@ -467,6 +467,27 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // across chunks; the decoder holds incomplete trailing bytes for the
     // next chunk instead of corrupting them into U+FFFD.
     let mut utf8_decoder = Utf8StreamDecoder::new();
+    // Stateful ANSI stripper for the readiness/prompt-detection path. Unlike a
+    // per-chunk `strip_ansi`, it stitches escape sequences split across PTY
+    // reads so fragments like `3;5H` never leak into `startup_output` and
+    // confuse boot-marker / prompt matching (#1247).
+    let mut readiness_stripper = AnsiStripper::new();
+    // Stateful ANSI stripper for auto-suggestion detection, mirroring
+    // `suggestion_stripper` in wrap.rs. `is_auto_suggestion` keys on raw
+    // markers (`\x1b[7m`, `\x1b[27m\x1b[2m`); scanning each PTY read
+    // independently misses a marker split across two reads. Stitching the raw
+    // stream here holds back an incomplete trailing escape and prepends it to
+    // the next chunk so the ghost-text guard sees whole markers (#1247).
+    let mut suggestion_stripper = AnsiStripper::new();
+    // Bounded tail of the *previous* scanned chunk for ghost-text detection.
+    // `is_auto_suggestion` requires a marker *pair* (`\x1b[7m` … `\x1b[27m\x1b[2m`)
+    // in one string; when the halves land in different PTY reads, neither chunk
+    // contains both. Passing this tail alongside the new chunk to
+    // `update_auto_suggestion_windowed` lets a pair straddling the boundary be
+    // seen whole. It holds only the previous chunk's tail (not accumulated
+    // history), so a stale suggestion can't keep the guard armed.
+    let mut suggestion_prev_tail = String::new();
+    const SUGGESTION_LOOKBEHIND_MAX: usize = 512;
     // Coalesced buffering for worker_stream emissions, tuned for
     // interactive (`drive`/`passthrough`) latency. Output flushes on a
     // leading edge — the first chunk after an idle gap goes out
@@ -853,7 +874,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             // back for the next read; nothing to emit yet.
                             continue;
                         }
-                        let clean_text = strip_ansi(&text);
+                        let clean_text = readiness_stripper.feed(&text);
                         append_bounded(
                             &mut startup_output,
                             &clean_text,
@@ -952,7 +973,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             running = false;
                         }
 
-                        pty_auto.update_auto_suggestion(&text);
+                        // Scan the stitched raw stream so a `\x1b[7m` marker
+                        // split mid-sequence is reassembled, and pass the
+                        // previous chunk's tail so a marker *pair* straddling
+                        // the read boundary is still detected — while the
+                        // clear decision stays on the current chunk.
+                        let suggestion_scan = suggestion_stripper.feed_raw(&text);
+                        pty_auto
+                            .update_auto_suggestion_windowed(&suggestion_scan, &suggestion_prev_tail);
+                        if !suggestion_scan.is_empty() {
+                            let start = floor_char_boundary(
+                                &suggestion_scan,
+                                suggestion_scan.len().saturating_sub(SUGGESTION_LOOKBEHIND_MAX),
+                            );
+                            suggestion_prev_tail.clear();
+                            suggestion_prev_tail.push_str(&suggestion_scan[start..]);
+                        }
                         pty_auto.last_output_time = Instant::now();
                         pty_auto.reset_idle_on_output();
                         pty_auto.update_editor_buffer(&text);
