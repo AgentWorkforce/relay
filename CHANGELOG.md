@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-broker` bounds each initial Relaycast startup handshake attempt and retries transient failures/timeouts with backoff, so a stalled backend connection no longer hangs `agent-relay node up`/`init` until an external supervisor kills the broker (which surfaced as an opaque "broker exited with code null during initial handshake"). Tunable via `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` and `AGENT_RELAY_HANDSHAKE_ATTEMPTS`.
 - `AgentRelaySDK` (Swift): realtime channel/DM/thread events now resolve the sender correctly instead of falling back to `"unknown"`, reading it from relaycast's message-level `agent_id`/`agent_name` fields.
 - `AgentRelaySDK` (Swift): a bare HTTP 409 from relaycast is no longer blanket-mapped to `agent_already_exists`; only agent registration (`register`/`registerOrRotate`) gets that remapping, while every other endpoint (channels, triggers, nodes, webhooks, ...) surfaces its original error code.
 - `@agent-relay/harness-driver` ignores callbacks from superseded event WebSockets, decodes fragmented and binary frames correctly, and reconnects with exponential backoff, preventing duplicate or dropped events during reconnect races.

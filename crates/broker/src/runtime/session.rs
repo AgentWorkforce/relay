@@ -117,6 +117,50 @@ pub(crate) struct RelaySessionOptions<'a> {
     pub(crate) runtime_cwd: &'a Path,
 }
 
+/// Default per-attempt timeout for the initial Relaycast handshake
+/// (`startup_session_set_with_options`). The underlying SDK bootstrap calls
+/// (`create_workspace` / agent registration) build a timeout-less reqwest
+/// client, so a stalled connection to the relay backend would otherwise hang
+/// startup indefinitely — long enough for an external supervisor (the CLI's
+/// `down --force`, a test watchdog) to reap the broker, which surfaces to the
+/// SDK as an opaque "broker exited with code null during initial handshake".
+/// Bounding each attempt turns that hang into a fast, retryable error.
+const HANDSHAKE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default number of handshake attempts (initial try + retries) before giving
+/// up. Kept well within the SDK's 45s startup budget at the default timeout so
+/// a transient blip recovers in-process instead of failing startup.
+const HANDSHAKE_MAX_ATTEMPTS: u32 = 4;
+/// Base backoff between handshake attempts; doubles each retry, capped.
+const HANDSHAKE_BACKOFF_BASE: Duration = Duration::from_millis(250);
+const HANDSHAKE_BACKOFF_MAX: Duration = Duration::from_secs(2);
+
+/// Per-attempt handshake timeout, overridable via
+/// `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` (must be > 0).
+fn handshake_attempt_timeout() -> Duration {
+    env_positive_u64("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS")
+        .map(Duration::from_millis)
+        .unwrap_or(HANDSHAKE_ATTEMPT_TIMEOUT)
+}
+
+/// Max handshake attempts, overridable via `AGENT_RELAY_HANDSHAKE_ATTEMPTS`
+/// (must be >= 1).
+fn handshake_max_attempts() -> u32 {
+    std::env::var("AGENT_RELAY_HANDSHAKE_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|&attempts| attempts >= 1)
+        .unwrap_or(HANDSHAKE_MAX_ATTEMPTS)
+}
+
+/// Parse a strictly-positive `u64` from an environment variable, ignoring
+/// empty/invalid/zero values so callers fall back to their default.
+fn env_positive_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|&value| value > 0)
+}
+
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let startup_debug = startup_debug_enabled();
     let connect_started = Instant::now();
@@ -142,14 +186,80 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         ),
     );
     let auth = AuthClient::new(configured_base.clone());
-    let sessions = auth
-        .startup_session_set_with_options(
-            Some(opts.requested_name),
-            opts.strict_name,
-            opts.agent_type,
-        )
-        .await
-        .context("failed to initialize relaycast session")?;
+    // Bound each handshake attempt and retry transient failures/timeouts with
+    // backoff. The SDK bootstrap calls have no client-side timeout, so without
+    // this a stalled relay backend hangs startup until an external supervisor
+    // kills the broker (reported to the SDK as an opaque code-null exit). A
+    // per-attempt deadline converts that into a retryable error that usually
+    // recovers on the next attempt, all within the SDK's startup budget.
+    let attempt_timeout = handshake_attempt_timeout();
+    let max_attempts = handshake_max_attempts();
+    let mut backoff = HANDSHAKE_BACKOFF_BASE;
+    let sessions = {
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            match timeout(
+                attempt_timeout,
+                auth.startup_session_set_with_options(
+                    Some(opts.requested_name),
+                    opts.strict_name,
+                    opts.agent_type,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(sessions)) => break sessions,
+                Ok(Err(error)) => {
+                    if attempt >= max_attempts {
+                        return Err(error).context(format!(
+                            "failed to initialize relaycast session after {attempt} attempt(s)"
+                        ));
+                    }
+                    tracing::warn!(
+                        attempt,
+                        max_attempts,
+                        error = %error,
+                        "relaycast startup handshake failed; retrying"
+                    );
+                    log_startup_phase(
+                        startup_debug,
+                        connect_started,
+                        format!(
+                            "handshake attempt {attempt}/{max_attempts} failed ({error}); retrying in {}ms",
+                            backoff.as_millis()
+                        ),
+                    );
+                }
+                Err(_elapsed) => {
+                    if attempt >= max_attempts {
+                        anyhow::bail!(
+                            "relaycast startup handshake timed out after {attempt} attempt(s) of {}ms each; \
+                             the relay backend was unreachable or too slow to complete registration",
+                            attempt_timeout.as_millis()
+                        );
+                    }
+                    tracing::warn!(
+                        attempt,
+                        max_attempts,
+                        timeout_ms = attempt_timeout.as_millis() as u64,
+                        "relaycast startup handshake timed out; retrying"
+                    );
+                    log_startup_phase(
+                        startup_debug,
+                        connect_started,
+                        format!(
+                            "handshake attempt {attempt}/{max_attempts} timed out after {}ms; retrying in {}ms",
+                            attempt_timeout.as_millis(),
+                            backoff.as_millis()
+                        ),
+                    );
+                }
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
+        }
+    };
     log_startup_phase(
         startup_debug,
         connect_started,
@@ -253,4 +363,52 @@ timestamp='{}'
         workspaces,
         ws_inbound_rx: multi.inbound_rx,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: these two tests read/write distinct process-global env vars, so they
+    // do not race each other. Keep all assertions for a given var within one
+    // test to avoid cross-test interference under the parallel test runner.
+
+    #[test]
+    fn handshake_max_attempts_honors_env_override() {
+        std::env::remove_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS");
+        assert_eq!(handshake_max_attempts(), HANDSHAKE_MAX_ATTEMPTS);
+
+        std::env::set_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS", "0");
+        assert_eq!(
+            handshake_max_attempts(),
+            HANDSHAKE_MAX_ATTEMPTS,
+            "zero attempts is rejected in favor of the default"
+        );
+
+        std::env::set_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS", "not-a-number");
+        assert_eq!(handshake_max_attempts(), HANDSHAKE_MAX_ATTEMPTS);
+
+        std::env::set_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS", "7");
+        assert_eq!(handshake_max_attempts(), 7);
+
+        std::env::remove_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS");
+    }
+
+    #[test]
+    fn handshake_attempt_timeout_honors_env_override() {
+        std::env::remove_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS");
+        assert_eq!(handshake_attempt_timeout(), HANDSHAKE_ATTEMPT_TIMEOUT);
+
+        std::env::set_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS", "0");
+        assert_eq!(
+            handshake_attempt_timeout(),
+            HANDSHAKE_ATTEMPT_TIMEOUT,
+            "zero ms is rejected in favor of the default"
+        );
+
+        std::env::set_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS", "1234");
+        assert_eq!(handshake_attempt_timeout(), Duration::from_millis(1234));
+
+        std::env::remove_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS");
+    }
 }
