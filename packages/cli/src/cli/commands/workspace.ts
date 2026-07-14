@@ -54,16 +54,24 @@ export function registerWorkspaceCommands(
 
   group
     .command('create')
-    .description('Create a new workspace and store its key')
+    .description('Create a new workspace (via Cloud) and store its key')
     .argument('<name>', 'Workspace name')
-    .option('--base-url <url>', 'Override the API base URL')
+    .option('--api-url <url>', 'Cloud API base URL')
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
-        const relay = await deps.createWorkspace(name, o.baseUrl as string | undefined);
-        if (relay.workspaceKey) {
-          setWorkspaceKey(name, relay.workspaceKey);
+        const workspace = await deps.createWorkspace(name, o.apiUrl as string | undefined);
+        if (!workspace.relaycastApiKey) {
+          throw new Error(
+            'Workspace create response is missing relaycastApiKey — cannot store a usable workspace key. ' +
+              'Make sure you are logged in to Cloud (`agent-relay login`).'
+          );
         }
-        printJson(deps, { name, workspaceKey: relay.workspaceKey });
+        setWorkspaceKey(name, workspace.relaycastApiKey);
+        printJson(deps, {
+          name,
+          workspaceId: workspace.workspaceId,
+          workspaceKey: workspace.relaycastApiKey,
+        });
       });
     });
 

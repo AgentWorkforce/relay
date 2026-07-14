@@ -8,7 +8,7 @@ vi.mock('@agent-relay/cloud', () => ({
   switchWorkspace: vi.fn(),
 }));
 
-import { resolveActiveWorkspace } from '@agent-relay/cloud';
+import { resolveActiveWorkspace, setWorkspaceKey } from '@agent-relay/cloud';
 
 import { registerWorkspaceCommands, type WorkspaceCommandDependencies } from './workspace.js';
 
@@ -82,5 +82,40 @@ describe('registerWorkspaceCommands', () => {
       urls: {},
       apiUrl: 'https://cloud.test',
     });
+  });
+
+  // Regression coverage for AgentWorkforce/relay#1260: `workspace create` must
+  // store the Cloud-issued `relaycastApiKey` (which has the Postgres row
+  // `resolveActiveWorkspace` looks up), not silently store nothing / a key
+  // from a direct-Relaycast create that would later 404 on `workspace active`.
+  it('stores the Cloud-issued relaycastApiKey after create and prints it', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({
+      workspaceId: 'rw_new',
+      name: 'new-ws',
+      relaycastApiKey: 'rk_live_new',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'new-ws', '--api-url', 'https://cloud.test']);
+
+    expect(deps.createWorkspace).toHaveBeenCalledWith('new-ws', 'https://cloud.test');
+    expect(vi.mocked(setWorkspaceKey)).toHaveBeenCalledWith('new-ws', 'rk_live_new');
+    expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
+      name: 'new-ws',
+      workspaceId: 'rw_new',
+      workspaceKey: 'rk_live_new',
+    });
+  });
+
+  it('fails loudly instead of storing an unusable workspace when relaycastApiKey is missing', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({ workspaceId: 'rw_new' });
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'new-ws'])
+    ).rejects.toThrow('exit:1');
+
+    expect(vi.mocked(setWorkspaceKey)).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.error)).toHaveBeenCalledWith(expect.stringContaining('missing relaycastApiKey'));
   });
 });

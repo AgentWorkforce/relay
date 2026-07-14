@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 
-import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import type { AgentRelayAgent } from '@agent-relay/sdk';
+import { createWorkspace as createCloudWorkspace, type WorkspaceCreateResponse } from '@agent-relay/cloud';
 
 import { defaultExit } from './exit.js';
 import { createAgentRelay, createWorkspaceRelay, type SdkClientOptions } from './sdk-client.js';
@@ -11,7 +12,16 @@ type ExitFn = (code: number) => never;
 export interface SdkCommandDeps {
   createAgentRelay: (options?: SdkClientOptions) => AgentRelayAgent;
   createWorkspaceRelay: (options?: SdkClientOptions) => AgentRelayAgent;
-  createWorkspace: (name: string, baseUrl?: string) => Promise<AgentRelay>;
+  /**
+   * Creates a workspace through Cloud's unified `/api/v1/workspaces` endpoint
+   * (NOT the direct-Relaycast `AgentRelay.createWorkspace`/`RelayCast.createWorkspace`
+   * path) so the returned `relaycastApiKey` has the Cloud Postgres row that
+   * `workspace active` / `resolveActiveWorkspace` requires. A key minted
+   * directly against Relaycast is valid there but is an orphan to Cloud —
+   * `workspace active` on it 404s with "Workspace not found" even though the
+   * key itself works. See AgentWorkforce/relay#1260.
+   */
+  createWorkspace: (name: string, apiUrl?: string) => Promise<WorkspaceCreateResponse>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -21,7 +31,7 @@ export function withSdkDefaults(overrides: Partial<SdkCommandDeps> = {}): SdkCom
   return {
     createAgentRelay,
     createWorkspaceRelay,
-    createWorkspace: (name, baseUrl) => AgentRelay.createWorkspace({ name, baseUrl }),
+    createWorkspace: (name, apiUrl) => createCloudWorkspace(name, { apiUrl }),
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,

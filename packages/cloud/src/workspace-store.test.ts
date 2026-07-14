@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   readWorkspaceStore,
+  resolveActiveWorkspaceEntry,
   resolveActiveWorkspaceKey,
   setActiveWorkspace,
   setWorkspaceKey,
@@ -51,5 +52,29 @@ describe('workspace store', () => {
   it('rejects reserved object-property workspace names', () => {
     expect(() => setWorkspaceKey('__proto__', 'rk_bad')).toThrow(/Invalid workspace name/);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('caches cloudWorkspaceId alongside the key and preserves it across a plain key update', () => {
+    setWorkspaceKey('ops', 'rk_ops', undefined, 'rw_ops');
+    expect(resolveActiveWorkspaceEntry()).toEqual({
+      name: 'ops',
+      entry: { key: 'rk_ops', cloudWorkspaceId: 'rw_ops' },
+    });
+
+    // A later call that only updates the key (e.g. self-heal) keeps the
+    // previously-cached cloudWorkspaceId instead of dropping it.
+    setWorkspaceKey('ops', 'rk_ops_rotated');
+    expect(resolveActiveWorkspaceEntry()).toEqual({
+      name: 'ops',
+      entry: { key: 'rk_ops_rotated', cloudWorkspaceId: 'rw_ops' },
+    });
+
+    // An explicit new cloudWorkspaceId overrides the cached one.
+    setWorkspaceKey('ops', 'rk_ops_rotated', undefined, 'rw_ops_new');
+    expect(resolveActiveWorkspaceEntry()?.entry.cloudWorkspaceId).toBe('rw_ops_new');
+  });
+
+  it('resolveActiveWorkspaceEntry returns undefined when there is no active workspace', () => {
+    expect(resolveActiveWorkspaceEntry()).toBeUndefined();
   });
 });
