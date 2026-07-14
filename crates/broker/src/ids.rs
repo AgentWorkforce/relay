@@ -214,6 +214,21 @@ pub enum MessageTargetKind<'a> {
 
 impl MessageTarget {
     /// Classify the target string into its semantic shape.
+    ///
+    /// Parsing precedence (kept identical to the historical inline
+    /// prefix checks; do not reorder):
+    ///
+    /// 1. leading `#` → [`MessageTargetKind::Channel`]
+    /// 2. the exact string `"thread"` → [`MessageTargetKind::Thread`]
+    /// 3. `dm_` prefix → [`MessageTargetKind::DirectMessage`]
+    /// 4. `conv_` prefix → [`MessageTargetKind::Conversation`]
+    /// 5. anything else → [`MessageTargetKind::Worker`]
+    ///
+    /// Consequence of (2)–(5): a worker literally named `thread`,
+    /// `dm_x`, or `conv_x` cannot be addressed by bare name — the wire
+    /// convention reserves those shapes. This is a property of the wire
+    /// protocol, not of this classifier; keep the convention audited
+    /// here rather than re-deriving it at call sites.
     pub fn kind(&self) -> MessageTargetKind<'_> {
         let s = self.0.as_str();
         if let Some(channel) = s.strip_prefix('#') {

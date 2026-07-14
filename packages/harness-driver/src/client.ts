@@ -129,12 +129,13 @@ export interface SetInboundDeliveryModeResult {
   mode: InboundDeliveryMode;
   flushed: number;
   /**
-   * `true` when the set was applied. `false` only when an `expectedMode`
-   * compare-and-set guard did not match the worker's current mode, in which
-   * case `mode` reports the current (unchanged) mode and no set happened.
-   * Defaults to `true` against brokers that predate the field.
+   * `true` when the set was applied. `false` when an expected mode or revision
+   * did not match, in which case `mode` reports the current unchanged mode.
+   * Guarded calls fail closed when a legacy broker omits this field.
    */
   matched: boolean;
+  /** Monotonic broker generation after the set, or `null` on a legacy broker. */
+  revision: string | null;
 }
 
 /** Options for {@link HarnessDriverClient.setInboundDeliveryMode}. */
@@ -146,6 +147,8 @@ export interface SetInboundDeliveryModeOptions {
    * unconditional set.
    */
   expectedMode?: InboundDeliveryMode;
+  /** Require the worker mode generation to still equal this decimal string. */
+  expectedRevision?: string;
 }
 
 export interface WorkerStreamSubscriptionOptions {
@@ -717,14 +720,22 @@ export class HarnessDriverClient {
     mode: InboundDeliveryMode,
     options?: SetInboundDeliveryModeOptions
   ): Promise<SetInboundDeliveryModeResult> {
-    const body: { mode: InboundDeliveryMode; expected_mode?: InboundDeliveryMode } = { mode };
+    const body: {
+      mode: InboundDeliveryMode;
+      expected_mode?: InboundDeliveryMode;
+      expected_revision?: string;
+    } = { mode };
     if (options?.expectedMode !== undefined) {
       body.expected_mode = options.expectedMode;
+    }
+    if (options?.expectedRevision !== undefined) {
+      body.expected_revision = options.expectedRevision;
     }
     const result = await this.transport.request<{
       mode?: unknown;
       flushed?: unknown;
       matched?: unknown;
+      revision?: unknown;
     }>(`/api/spawned/${encodeURIComponent(name)}/delivery-mode`, {
       method: 'PUT',
       body: JSON.stringify(body),
@@ -738,9 +749,12 @@ export class HarnessDriverClient {
     return {
       mode: result.mode,
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
-      // Brokers that predate compare-and-set omit `matched`; a set with no
-      // guard is always applied, so default to `true`.
-      matched: typeof result.matched === 'boolean' ? result.matched : true,
+      // A guarded call must fail closed when a legacy broker omits `matched`.
+      matched:
+        typeof result.matched === 'boolean'
+          ? result.matched
+          : options?.expectedMode === undefined && options?.expectedRevision === undefined,
+      revision: typeof result.revision === 'string' && /^\d+$/.test(result.revision) ? result.revision : null,
     };
   }
 

@@ -13,6 +13,7 @@ import {
   type AttachSnapshotDeps,
   type BackpressureWritable,
 } from './attach.js';
+import { createBrokerClient } from './attach-broker.js';
 import type { BrokerConnection } from './broker-connection.js';
 
 afterEach(() => {
@@ -525,8 +526,9 @@ describe('StatusLineController', () => {
 });
 
 /** Fetch stub answering only the delivery-mode endpoint, with mutable state. */
-function deliveryModeFetch(initial: 'manual_flush' | 'auto_inject') {
+function deliveryModeFetch(initial: 'manual_flush' | 'auto_inject', initialRevision = 1) {
   let mode: 'manual_flush' | 'auto_inject' = initial;
+  let revision = initialRevision;
   const puts: Array<'manual_flush' | 'auto_inject'> = [];
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -541,19 +543,27 @@ function deliveryModeFetch(initial: 'manual_flush' | 'auto_inject') {
       const body = JSON.parse(String(init?.body)) as {
         mode: 'manual_flush' | 'auto_inject';
         expected_mode?: 'manual_flush' | 'auto_inject';
+        expected_revision?: string;
       };
       // Simulate the broker's compare-and-set: when `expected_mode` is present
       // and no longer matches the current mode, no-op and report `matched:false`
       // with the unchanged current mode.
-      if (body.expected_mode !== undefined && body.expected_mode !== mode) {
-        return new Response(JSON.stringify({ mode, flushed: 0, matched: false }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+      if (
+        (body.expected_mode !== undefined && body.expected_mode !== mode) ||
+        (body.expected_revision !== undefined && body.expected_revision !== String(revision))
+      ) {
+        return new Response(
+          JSON.stringify({ mode, flushed: 0, matched: false, revision: String(revision) }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
       }
       mode = body.mode;
+      revision += 1;
       puts.push(body.mode);
-      return new Response(JSON.stringify({ mode, flushed: 0, matched: true }), {
+      return new Response(JSON.stringify({ mode, flushed: 0, matched: true, revision: String(revision) }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -569,7 +579,7 @@ describe('restoreInboundDeliveryModeOnDetach', () => {
   it('restores the previous mode when the mode is still what this session set', async () => {
     const f = deliveryModeFetch('manual_flush'); // session set manual_flush; prev was auto_inject
     const logs: unknown[][] = [];
-    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', 'drive', {
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', '1', 'drive', {
       fetch: f.fetch,
       log: (...a: unknown[]) => logs.push(a),
     });
@@ -582,18 +592,43 @@ describe('restoreInboundDeliveryModeOnDetach', () => {
     // else flipped it). Restoring auto_inject → manual_flush would clobber them.
     const f = deliveryModeFetch('auto_inject');
     const logs: unknown[][] = [];
-    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', 'drive', {
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', '1', 'drive', {
       fetch: f.fetch,
       log: (...a: unknown[]) => logs.push(a),
     });
     expect(f.puts).toEqual([]); // left alone
     expect(f.getMode()).toBe('auto_inject');
+    expect(logs.some((a) => String(a[0]).includes('another session changed'))).toBe(true);
+  });
+
+  it('does NOT restore after an ABA mode change advances the broker revision', async () => {
+    const f = deliveryModeFetch('manual_flush', 3);
+    const logs: unknown[][] = [];
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', '1', 'drive', {
+      fetch: f.fetch,
+      log: (...a: unknown[]) => logs.push(a),
+    });
+    expect(f.puts).toEqual([]);
+    expect(f.getMode()).toBe('manual_flush');
+    expect(logs.some((a) => String(a[0]).includes('another session changed'))).toBe(true);
+  });
+
+  it('fails closed and warns when a legacy broker reports no revision', async () => {
+    const f = deliveryModeFetch('manual_flush');
+    const logs: unknown[][] = [];
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', 'auto_inject', 'manual_flush', null, 'drive', {
+      fetch: f.fetch,
+      log: (...a: unknown[]) => logs.push(a),
+    });
+    expect(f.puts).toEqual([]);
+    expect(f.getMode()).toBe('manual_flush');
+    expect(logs.some((a) => String(a[0]).includes('did not report a mode revision'))).toBe(true);
   });
 
   it('leaves the mode untouched and warns when the pre-attach mode was unknown', async () => {
     const f = deliveryModeFetch('manual_flush');
     const logs: unknown[][] = [];
-    await restoreInboundDeliveryModeOnDetach(connection, 'A', null, 'manual_flush', 'drive', {
+    await restoreInboundDeliveryModeOnDetach(connection, 'A', null, 'manual_flush', '1', 'drive', {
       fetch: f.fetch,
       log: (...a: unknown[]) => logs.push(a),
     });
@@ -638,6 +673,25 @@ describe('resetLocalTerminalOnDetach', () => {
     expect(origin).toBeLessThan(leaveAlt);
     // The SGR reset stays last so nothing re-dirties attributes afterward.
     expect(LOCAL_TERMINAL_RESET_SEQUENCE.endsWith('\x1b[0m')).toBe(true);
+  });
+});
+
+describe('guarded delivery-mode compatibility', () => {
+  it('treats an omitted matched field as a failed guard', async () => {
+    const fetch = (async () =>
+      new Response(JSON.stringify({ mode: 'auto_inject', flushed: 0 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof globalThis.fetch;
+    const client = createBrokerClient({ url: 'http://localhost:3889' }, fetch);
+
+    const result = await client.setInboundDeliveryMode('A', 'auto_inject', {
+      expectedMode: 'manual_flush',
+      expectedRevision: '7',
+    });
+
+    expect(result.matched).toBe(false);
+    expect(result.revision).toBeNull();
   });
 });
 

@@ -1,5 +1,9 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { type AgentClient, type RelayCast, type WsClient } from '@relaycast/sdk';
+import type {
+  RelayAgentThinClient,
+  RelayRealtimeThinClient,
+  RelayWorkspaceThinClient,
+} from '@agent-relay/sdk';
 
 /**
  * Tracks the set of `relay://` resource URIs the MCP client has subscribed to,
@@ -92,7 +96,7 @@ export class RealtimeResourceBridge {
   private unsubscribeFn: (() => void) | null = null;
 
   constructor(
-    private readonly wsClient: WsClient,
+    private readonly wsClient: RelayRealtimeThinClient,
     private readonly subscriptions: SubscriptionManager,
     private readonly notifyCallback: (uri: string) => void
   ) {}
@@ -132,8 +136,8 @@ export class RealtimeResourceBridge {
  */
 export function registerResourceDefinitions(
   server: McpServer,
-  getAgentClient: (asIdentity?: string) => AgentClient,
-  getRelay: () => RelayCast
+  getAgentClient: (asIdentity?: string) => RelayAgentThinClient,
+  getRelay: () => Pick<RelayWorkspaceThinClient, 'agents'>
 ): void {
   server.registerResource(
     'inbox',
