@@ -50,6 +50,7 @@ impl DeadLetterStore {
         // The cap is a `push`-time invariant; a snapshot restored from disk
         // bypasses `push`, so enforce it here too. Entries are oldest-first,
         // so drop from the front to keep the newest `MAX_DEAD_LETTERS`.
+        let mut trimmed = false;
         if entries.len() > MAX_DEAD_LETTERS {
             let evicted = entries.len() - MAX_DEAD_LETTERS;
             tracing::warn!(
@@ -62,10 +63,15 @@ impl DeadLetterStore {
             for _ in 0..evicted {
                 entries.pop_front();
             }
+            trimmed = true;
         }
         Self {
             entries,
-            dirty: false,
+            // Start dirty only when we trimmed an oversized snapshot, so the
+            // next flush rewrites the capped file. Otherwise a crash before the
+            // next mutation would reload the same oversized snapshot and repeat
+            // the eviction instead of durably enforcing the cap.
+            dirty: trimmed,
         }
     }
 

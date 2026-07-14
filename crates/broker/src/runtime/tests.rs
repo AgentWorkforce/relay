@@ -544,6 +544,40 @@ fn dead_letter_store_caps_size_and_evicts_oldest() {
 }
 
 #[test]
+fn dead_letter_store_trims_oversized_load_and_marks_dirty() {
+    // A snapshot larger than the cap (older version, manual edit, or a bug)
+    // must be bounded on load, keeping the newest MAX_DEAD_LETTERS entries.
+    let oversized: Vec<DeadLetterEntry> = (0..MAX_DEAD_LETTERS + 5)
+        .map(|index| make_dead_letter(&format!("del_{index}"), "worker-a", "x"))
+        .collect();
+    let mut store = DeadLetterStore::new(oversized);
+
+    assert_eq!(
+        store.len(),
+        MAX_DEAD_LETTERS,
+        "oversized load is trimmed to cap"
+    );
+    assert!(
+        store.get("del_0").is_none(),
+        "oldest over-cap entries are dropped"
+    );
+    assert!(
+        store
+            .get(&format!("del_{}", MAX_DEAD_LETTERS + 4))
+            .is_some(),
+        "newest entries are kept"
+    );
+    assert!(
+        store.take_dirty(),
+        "trimming an oversized load marks the store dirty so the next flush rewrites the capped file"
+    );
+
+    // A within-cap load must not spuriously mark the store dirty.
+    let mut small = DeadLetterStore::new(vec![make_dead_letter("del_a", "worker-a", "x")]);
+    assert!(!small.take_dirty(), "a within-cap load stays clean");
+}
+
+#[test]
 fn dead_letter_store_tracks_mutations() {
     let mut store = DeadLetterStore::default();
     assert!(!store.take_dirty(), "fresh store starts clean");
@@ -658,6 +692,10 @@ fn redeliver_survives_a_stale_ack_from_the_previous_attempt() {
     assert!(pending_deliveries.is_empty());
 }
 
+// `is_worker_live` only probes child liveness on Unix (`kill(pid, 0)`); the
+// `cfg(not(unix))` implementation always returns `true`, so the stopped-child
+// assertion below is Unix-specific.
+#[cfg(unix)]
 #[tokio::test]
 async fn is_worker_live_gates_redeliver_skip_on_child_liveness() {
     // The redeliver handler skips entries whose recipient is not running by
