@@ -182,9 +182,7 @@ function normalizeMaxQueueSize(value: number | undefined): number {
   if (value === undefined) {
     return DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
   }
-  return Number.isFinite(value) && value >= 1
-    ? Math.floor(value)
-    : DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
 }
 
 type BrokerExitListener = (info: BrokerExitInfo) => void;
