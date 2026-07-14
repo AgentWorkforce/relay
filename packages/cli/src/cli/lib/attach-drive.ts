@@ -47,6 +47,7 @@ import {
   createBackpressureAwareWriter,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
   StatusLineController,
   StreamSyncBuffer,
@@ -699,6 +700,14 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         if (rawModeWasSet && typeof deps.stdin.setRawMode === 'function') {
           deps.stdin.setRawMode(false);
         }
+      } catch {
+        // best effort
+      }
+      try {
+        // Heal the local terminal: the snapshot + live stream may have left it
+        // in app-cursor / mouse / bracketed-paste / alt-screen mode. Gate on a
+        // TTY stdout (same signal that gates the status line).
+        resetLocalTerminalOnDetach(deps.writeChunk, statusLineEnabled);
       } catch {
         // best effort
       }

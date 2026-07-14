@@ -59,6 +59,8 @@ interface HarnessOverrides {
   snapshotResult?: Awaited<ReturnType<ViewDependencies['captureAndRenderSnapshot']>>;
   /** If set, snapshot helper writes this string to `writeChunk` when called. */
   snapshotChunk?: string;
+  /** Simulate an interactive (TTY) stdout so the on-detach reset fires. */
+  stdoutIsTty?: boolean;
 }
 
 function createHarness(overrides: HarnessOverrides = {}): {
@@ -109,6 +111,7 @@ function createHarness(overrides: HarnessOverrides = {}): {
       }
       return overrides.snapshotResult ?? { status: 'ok' };
     }) as ViewDependencies['captureAndRenderSnapshot'],
+    stdoutIsTty: overrides.stdoutIsTty ?? false,
   };
 
   return { deps, writes, errors, logs, signals, sockets };
@@ -369,6 +372,39 @@ describe('runViewSession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
     expect(socket.closed).toBe(true);
+  });
+
+  it('emits a terminal reset on detach when stdout is a TTY', async () => {
+    const { deps, writes, sockets, signals } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      stdoutIsTty: true,
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    sockets[0].emit('open');
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Leave alt-screen + show cursor + disable mouse/bracketed-paste must be
+    // written so the viewer's terminal isn't left mis-configured by a snapshot
+    // that re-emitted those modes.
+    expect(writes.some((w) => w.includes('\x1b[?1049l') && w.includes('\x1b[?25h'))).toBe(true);
+  });
+
+  it('does not emit a terminal reset on detach when stdout is not a TTY', async () => {
+    const { deps, writes, sockets, signals } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      stdoutIsTty: false,
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    sockets[0].emit('open');
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    expect(writes.some((w) => w.includes('\x1b[?1049l'))).toBe(false);
   });
 
   it('reports an error and resolves with 1 on abnormal close', async () => {

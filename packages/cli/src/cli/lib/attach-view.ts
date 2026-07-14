@@ -19,6 +19,7 @@ import { getProjectPaths } from '@agent-relay/config';
 import {
   captureAndRenderSnapshot,
   createBackpressureAwareWriter,
+  resetLocalTerminalOnDetach,
   StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
@@ -86,6 +87,12 @@ export interface ViewDependencies {
     agentName: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
+  /**
+   * True when stdout is an interactive terminal. Gates the on-detach terminal
+   * reset so a piped/redirected `view` never writes reset controls into the
+   * captured log. Defaults to `Boolean(process.stdout.isTTY)`.
+   */
+  stdoutIsTty: boolean;
 }
 
 function readConnectionFileFromDisk(stateDir: string): unknown {
@@ -124,6 +131,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     exit: defaultExit,
     fetch: (input, init) => fetch(input, init),
     captureAndRenderSnapshot,
+    stdoutIsTty: Boolean(process.stdout.isTTY),
     ...overrides,
   };
 }
@@ -273,6 +281,15 @@ export async function runViewSession(
         socket.close(1000, 'view client exiting');
       } catch {
         // best effort — already closed
+      }
+      try {
+        // Heal the local terminal: a replayed snapshot re-emits terminal modes
+        // (alt-screen, mouse reporting, bracketed paste, ...) that would
+        // otherwise linger after the viewer detaches. TTY stdout only.
+        // Must run before disposeWriter — the writer no-ops once disposed.
+        resetLocalTerminalOnDetach(deps.writeChunk, deps.stdoutIsTty);
+      } catch {
+        // best effort
       }
       // Drop the writer's pending queue and unhook its drain listener so no
       // buffered chunk flushes to stdout after detach.

@@ -33,6 +33,7 @@ import {
   createBackpressureAwareWriter,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
   StatusLineController,
   StreamSyncBuffer,
@@ -463,6 +464,14 @@ export async function runPassthroughSession(
         if (rawModeWasSet && typeof deps.stdin.setRawMode === 'function') {
           deps.stdin.setRawMode(false);
         }
+      } catch {
+        // best effort
+      }
+      try {
+        // Heal the local terminal on detach: the snapshot + live stream may
+        // have left it in app-cursor / mouse / bracketed-paste / alt-screen
+        // mode. Gate on TTY stdout (same signal as the status line).
+        resetLocalTerminalOnDetach(deps.writeChunk, statusLineEnabled);
       } catch {
         // best effort
       }
