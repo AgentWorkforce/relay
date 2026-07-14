@@ -479,6 +479,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // stream here holds back an incomplete trailing escape and prepends it to
     // the next chunk so the ghost-text guard sees whole markers (#1247).
     let mut suggestion_stripper = AnsiStripper::new();
+    // Bounded raw lookbehind for ghost-text detection. `is_auto_suggestion`
+    // requires a *pair* of markers (`\x1b[7m` … `\x1b[27m\x1b[2m`) in the same
+    // string; when the two halves land in different PTY reads, neither chunk
+    // contains both. Retaining a small tail of recent scanned output and
+    // matching against it together with the new chunk lets the guard see the
+    // pair whole. Capped so it can't grow unbounded.
+    let mut suggestion_lookbehind = String::new();
+    const SUGGESTION_LOOKBEHIND_MAX: usize = 512;
     // Coalesced buffering for worker_stream emissions, tuned for
     // interactive (`drive`/`passthrough`) latency. Output flushes on a
     // leading edge — the first chunk after an idle gap goes out
@@ -965,9 +973,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         }
 
                         // Scan the stitched raw stream so a `\x1b[7m` marker
-                        // split across reads is still detected.
+                        // split mid-sequence is reassembled, and keep a bounded
+                        // lookbehind so a marker *pair* split across reads is
+                        // still seen whole by `is_auto_suggestion`.
                         let suggestion_scan = suggestion_stripper.feed_raw(&text);
-                        pty_auto.update_auto_suggestion(&suggestion_scan);
+                        suggestion_lookbehind.push_str(&suggestion_scan);
+                        if suggestion_lookbehind.len() > SUGGESTION_LOOKBEHIND_MAX {
+                            let cut = floor_char_boundary(
+                                &suggestion_lookbehind,
+                                suggestion_lookbehind.len() - SUGGESTION_LOOKBEHIND_MAX,
+                            );
+                            suggestion_lookbehind.drain(..cut);
+                        }
+                        pty_auto.update_auto_suggestion(&suggestion_lookbehind);
                         pty_auto.last_output_time = Instant::now();
                         pty_auto.reset_idle_on_output();
                         pty_auto.update_editor_buffer(&text);

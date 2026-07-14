@@ -46,6 +46,7 @@ import WebSocket from 'ws';
 import {
   captureAndRenderSnapshot,
   createBackpressureAwareWriter,
+  DETACH_CLEANUP_DEADLINE_MS,
   pickInitialTerminalRows,
   prepareAttachTarget,
   resetLocalTerminalOnDetach,
@@ -845,7 +846,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // typically ends the process, which aborts any still-pending fetch. The
       // release awaits `outstandingResizes` first, so it would otherwise lose
       // the race to the restore and be aborted, defeating the detach-race fix.
-      void Promise.allSettled([
+      //
+      // Bound the wait: both are best-effort HTTP round-trips that can stall if
+      // the broker is down, and terminal exit must not hang on them. Resolve
+      // once they settle or after DETACH_CLEANUP_DEADLINE_MS, whichever first.
+      const cleanup = Promise.allSettled([
         releasePromise,
         restoreInboundDeliveryModeOnDetach(
           connection,
@@ -856,7 +861,13 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           'drive',
           deps
         ),
-      ]).finally(() => {
+      ]);
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<void>((res) => {
+        deadlineTimer = setTimeout(res, DETACH_CLEANUP_DEADLINE_MS);
+      });
+      void Promise.race([cleanup, deadline]).finally(() => {
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
         resolve(code);
       });
     };

@@ -1183,13 +1183,19 @@ impl BrokerRuntime {
                                         // Ownership is recorded only after the
                                         // resize actually reaches the worker, so
                                         // a failed send doesn't claim the lease.
+                                        // Re-sample the clock *after* the awaited
+                                        // send so `last_seen` (the liveness
+                                        // anchor for the stale-owner window) is
+                                        // stamped when the resize actually
+                                        // applied, not before a possibly-slow
+                                        // worker send.
                                         commit_resize_ownership(
                                             resize_owners,
                                             &name,
                                             rows,
                                             cols,
                                             session_id,
-                                            now,
+                                            Instant::now(),
                                         );
                                         let _ = reply.send(Ok(json!({
                                             "name": name,

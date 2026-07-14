@@ -1476,11 +1476,19 @@ mod tests {
     /// unconditionally and catch nothing.)
     #[tokio::test]
     async fn enqueue_without_confirm_does_not_reset_no_pid_counter() {
-        struct BlockingWriter;
+        // Signals when the drainer has actually dequeued the message and
+        // entered `write` — so the assertion below observes the genuine
+        // "picked up but unconfirmed" state, not a race where the drainer
+        // hasn't touched the message yet (which would pass vacuously).
+        let (entered_tx, entered_rx) = std_mpsc::channel::<()>();
+        struct BlockingWriter {
+            entered: std_mpsc::Sender<()>,
+        }
         impl std::io::Write for BlockingWriter {
             fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-                // Simulate a wedged PTY master: never returns before the test
-                // makes its assertion, so the write can never be confirmed.
+                // Announce entry, then wedge: never return before the test
+                // asserts, so the write can never be confirmed.
+                let _ = self.entered.send(());
                 std::thread::sleep(StdDuration::from_secs(60));
                 Ok(0)
             }
@@ -1493,13 +1501,23 @@ mod tests {
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
         let counter_for_drainer = counter.clone();
         let _drainer = std::thread::spawn(move || {
-            super::drain_write_queue(BlockingWriter, rx, counter_for_drainer)
+            super::drain_write_queue(
+                BlockingWriter {
+                    entered: entered_tx,
+                },
+                rx,
+                counter_for_drainer,
+            )
         });
 
         let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec())
             .expect("submit path accepts the write");
-        // The drainer picks the message up and blocks in `write`, so the ack
-        // must stay pending — the write is never confirmed.
+        // Block until the drainer has dequeued the message and is wedged inside
+        // `write` — the write is now genuinely picked up but not confirmed.
+        entered_rx
+            .recv_timeout(StdDuration::from_secs(5))
+            .expect("drainer reaches write() with the queued message");
+        // The wedged write leaves the ack pending — never confirmed.
         assert!(
             timeout(Duration::from_millis(50), ack).await.is_err(),
             "a wedged writer must leave the write unconfirmed"

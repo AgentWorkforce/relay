@@ -441,25 +441,30 @@ mod resize_owner_tests {
         // must return Refresh (no worker send / SIGWINCH) and bump `last_seen`.
         let name = WorkerName::new("w1".to_string());
         let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
-        let stale_seen = Instant::now() - Duration::from_secs(120);
+        // Offset the injected "now" *forward* rather than pushing `last_seen`
+        // backward — `Instant - Duration` panics on a freshly booted host whose
+        // monotonic clock is younger than the offset.
+        let base = Instant::now();
         owners.insert(
             name.clone(),
             ResizeOwner {
                 session_id: "s1".to_string(),
-                last_seen: stale_seen,
+                last_seen: base,
                 rows: 24,
                 cols: 80,
             },
         );
 
         // Same session, same size → owner refresh with a bumped `last_seen`.
-        let now = Instant::now();
+        // `now` is 120s later but still within the stale window, so the owner
+        // keeps ownership.
+        let now = base + Duration::from_secs(120);
         assert_eq!(
             plan_resize(&mut owners, &name, 24, 80, Some("s1"), now),
             ResizeAction::Refresh,
         );
         assert!(
-            owners.get(&name).unwrap().last_seen > stale_seen,
+            owners.get(&name).unwrap().last_seen > base,
             "owner refresh must bump last_seen"
         );
 
@@ -515,16 +520,20 @@ mod resize_owner_tests {
         // by a new session's resize through the real transition helper.
         let name = WorkerName::new("w1".to_string());
         let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
-        let now = Instant::now();
+        // Anchor `last_seen` at a real instant and push the injected "now"
+        // forward past the stale window — `Instant - Duration` panics on a
+        // freshly booted host whose monotonic clock is younger than the offset.
+        let base = Instant::now();
         owners.insert(
             name.clone(),
             ResizeOwner {
                 session_id: "s1".to_string(),
-                last_seen: now - RESIZE_OWNER_STALE - Duration::from_secs(1),
+                last_seen: base,
                 rows: 24,
                 cols: 80,
             },
         );
+        let now = base + RESIZE_OWNER_STALE + Duration::from_secs(1);
 
         assert_eq!(
             plan_resize(&mut owners, &name, 30, 100, Some("s2"), now),
