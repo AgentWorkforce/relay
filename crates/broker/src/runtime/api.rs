@@ -5,6 +5,13 @@ use relaycast::{CreateObserverTokenRequest, ObserverScope};
 /// when the caller doesn't supply one.
 const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
 
+/// How long the broker waits for a worker's `write_pty_response` before it
+/// fails a PTY input ack. Keeps `PtyInputStream.send()` from hanging forever
+/// when a worker wedges or dies mid-write; the deadline sweep in `reap_tick`
+/// enforces it. Short because a confirmed PTY write is a local pipe → drainer
+/// round-trip that resolves in well under a second on a healthy worker.
+const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Scopes granted to observer tokens minted via `/api/observer-token`: broad
 /// read access to workspace activity, deliberately excluding anything
 /// write/spawn-capable (unlike the raw `rk_live_...` workspace key this
@@ -983,29 +990,49 @@ impl BrokerRuntime {
                 {
                     None => {
                         let _ =
-                            reply.send(Err(format!("agent_not_found: no worker named '{name}'")));
+                            reply.send(Err(worker_request::RequestWorkerError::WorkerNotFound(
+                                format!("no worker named '{name}'"),
+                            )));
                     }
                     Some(AgentRuntime::Headless) => {
-                        let _ = reply.send(Err(format!(
-                            "unsupported_runtime: worker '{name}' is headless; pty input is only supported on PTY workers"
-                        )));
+                        let _ = reply.send(Err(
+                            worker_request::RequestWorkerError::UnsupportedRuntime(format!(
+                                "worker '{name}' is headless; pty input is only supported on PTY workers"
+                            )),
+                        ));
                     }
                     Some(AgentRuntime::Pty) => {
+                        // Ship the write and park the reply in `pending_requests`
+                        // keyed by `request_id`. The worker replies with a
+                        // `write_pty_response` frame only after the drainer
+                        // confirms the bytes reached the child (or failed), which
+                        // the generic `*_response` routing fulfils. The deadline
+                        // sweep (`reap_tick`) and worker-teardown paths fail the
+                        // reply if the worker dies mid-write, so a client's
+                        // `send()` never hangs on a dead worker.
+                        let request_id = RequestId::new(format!("api_{}", Uuid::new_v4().simple()));
                         if let Err(err) = workers
                             .send_to_worker(
                                 &name,
                                 "write_pty",
-                                Some(RequestId::new(format!("api_{}", Uuid::new_v4().simple()))),
+                                Some(request_id.clone()),
                                 json!({ "data": data }),
                             )
                             .await
                         {
-                            let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            let _ = reply.send(Err(
+                                worker_request::RequestWorkerError::SendFailed(err.to_string()),
+                            ));
                         } else {
-                            let _ = reply.send(Ok(json!({
-                                "name": name,
-                                "bytes_written": data.len(),
-                            })));
+                            pending_requests.insert(
+                                request_id.into_string(),
+                                worker_request::PendingRequest {
+                                    kind: "write_pty".to_string(),
+                                    worker_name: name.into_string(),
+                                    reply,
+                                    deadline: Instant::now() + PTY_INPUT_ACK_TIMEOUT,
+                                },
+                            );
                         }
                     }
                 }
@@ -1410,56 +1437,169 @@ impl BrokerRuntime {
                     let _ = reply.send(Ok(mode));
                 }
             }
-            ListenApiRequest::SetInboundDeliveryMode { name, mode, reply } => {
+            ListenApiRequest::SetInboundDeliveryMode {
+                name,
+                mode,
+                expected_mode,
+                expected_revision,
+                reply,
+            } => {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
-                    let entry = delivery_states.entry(name.clone()).or_default();
-                    let previous = entry.mode;
-                    entry.mode = mode;
-                    let to_flush: Vec<PendingRelayMessage> = if previous
-                        == InboundDeliveryMode::ManualFlush
-                        && mode == InboundDeliveryMode::AutoInject
+                    // Compare-and-set guard: when the caller supplied an
+                    // `expected_mode` (detach restore) and it no longer matches
+                    // the worker's current mode, a concurrent change happened —
+                    // no-op and report the current mode with `matched: false`
+                    // rather than clobbering it. Closes the restore TOCTOU.
                     {
-                        entry.drain_pending()
+                        let entry = delivery_states.entry(name.clone()).or_default();
+                        if let Some(expected) = expected_mode {
+                            if entry.mode != expected {
+                                let current = entry.mode;
+                                let revision = entry.revision;
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    expected = expected.as_wire_str(),
+                                    current = current.as_wire_str(),
+                                    requested = mode.as_wire_str(),
+                                    "inbound delivery mode compare-and-set skipped (expected_mode mismatch)"
+                                );
+                                let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                                    mode: current,
+                                    flushed: 0,
+                                    matched: false,
+                                    revision,
+                                }));
+                                return;
+                            }
+                        }
+                        if let Some(expected) = expected_revision {
+                            if entry.revision != expected {
+                                let current = entry.mode;
+                                let revision = entry.revision;
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    expected_revision = expected,
+                                    current_revision = revision,
+                                    requested = mode.as_wire_str(),
+                                    "inbound delivery mode compare-and-set skipped (revision mismatch)"
+                                );
+                                let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                                    mode: current,
+                                    flushed: 0,
+                                    matched: false,
+                                    revision,
+                                }));
+                                return;
+                            }
+                        }
+                    }
+                    let previous = delivery_states.entry(name.clone()).or_default().mode;
+                    let transition_requires_flush = previous == InboundDeliveryMode::ManualFlush
+                        && mode == InboundDeliveryMode::AutoInject;
+                    // Deferred-ACK flush: inject and ACK only the contiguous FIFO
+                    // prefix, stopping at the first not-yet-ACKable receipt or
+                    // failed injection so held frames are never silently ACKed.
+                    let flush_result = if transition_requires_flush {
+                        tracing::info!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            "draining pending queue on manual_flush → auto_inject transition"
+                        );
+                        super::fleet::flush_pending_relay_messages(
+                            delivery_states,
+                            workers,
+                            fleet_delivery_book,
+                            fleet_control_tx,
+                            &name,
+                            delivery_retry_interval,
+                        )
+                        .await
                     } else {
-                        Vec::new()
+                        super::fleet::FlushPendingRelayResult::default()
                     };
-                    let flushed = to_flush.len();
-                    if !to_flush.is_empty() {
+                    let flushed = flush_result.flushed;
+                    if let Some(error) = flush_result.failure.as_deref() {
+                        tracing::warn!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            flushed,
+                            error,
+                            "stopped delivery-mode transition at failed pending message"
+                        );
+                    }
+                    // A partial flush leaves the worker in manual_flush so the
+                    // held frames are retried rather than silently ACKed.
+                    let actual_mode = if transition_requires_flush && flush_result.failure.is_some()
+                    {
+                        InboundDeliveryMode::ManualFlush
+                    } else {
+                        mode
+                    };
+                    let revision = {
+                        let entry = delivery_states.entry(name.clone()).or_default();
+                        entry.set_mode(actual_mode);
+                        entry.revision
+                    };
+                    if flushed > 0 {
                         tracing::info!(
                             target = "agent_relay::broker",
                             worker = %name,
                             drained = flushed,
-                            "draining pending queue on manual_flush → auto_inject transition"
+                            "drained pending queue on delivery-mode transition"
                         );
-                    }
-                    for queued in to_flush {
-                        inject_pending_relay_message(
-                            workers,
-                            pending_deliveries,
-                            &name,
-                            &queued,
-                            delivery_retry_interval,
-                        )
-                        .await;
                     }
                     tracing::info!(
                         target = "agent_relay::broker",
                         worker = %name,
                         previous_mode = previous.as_wire_str(),
-                        mode = mode.as_wire_str(),
+                        mode = actual_mode.as_wire_str(),
                         flushed,
                         "inbound delivery mode updated"
                     );
-                    if previous != mode {
+                    if previous != actual_mode {
+                        // Toggle the worker-side interactive hold across a
+                        // manual_flush boundary so worker automation (pending
+                        // injections, auto-enter, prompt auto-responders) can't
+                        // splice into a human's drive. Only PTY workers run that
+                        // automation; headless workers don't handle the frame.
+                        let entered_manual = actual_mode == InboundDeliveryMode::ManualFlush;
+                        let left_manual = previous == InboundDeliveryMode::ManualFlush;
+                        if (entered_manual || left_manual)
+                            && workers
+                                .workers
+                                .get(&name)
+                                .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                                .unwrap_or(false)
+                        {
+                            if let Err(err) = workers
+                                .send_to_worker(
+                                    &name,
+                                    "set_interactive_hold",
+                                    None,
+                                    json!({ "hold": entered_manual }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    hold = entered_manual,
+                                    error = %err,
+                                    "failed to send interactive hold to worker"
+                                );
+                            }
+                        }
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind":"agent_inbound_delivery_mode_changed",
                                 "name":&name,
                                 "previous_mode":previous.as_wire_str(),
-                                "mode":mode.as_wire_str(),
+                                "mode":actual_mode.as_wire_str(),
                             }),
                         )
                         .await;
@@ -1476,7 +1616,12 @@ impl BrokerRuntime {
                         )
                         .await;
                     }
-                    let _ = reply.send(Ok(SetInboundDeliveryModeOk { mode, flushed }));
+                    let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                        mode: actual_mode,
+                        flushed,
+                        matched: true,
+                        revision,
+                    }));
                 }
             }
             ListenApiRequest::GetPending { name, reply } => {
@@ -1494,11 +1639,16 @@ impl BrokerRuntime {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
-                    let to_flush: Vec<PendingRelayMessage> = delivery_states
-                        .get_mut(&name)
-                        .map(|state| state.drain_pending())
-                        .unwrap_or_default();
-                    let flushed = to_flush.len();
+                    let flush_result = super::fleet::flush_pending_relay_messages(
+                        delivery_states,
+                        workers,
+                        fleet_delivery_book,
+                        fleet_control_tx,
+                        &name,
+                        delivery_retry_interval,
+                    )
+                    .await;
+                    let flushed = flush_result.flushed;
                     if flushed > 0 {
                         tracing::info!(
                             target = "agent_relay::broker",
@@ -1507,15 +1657,14 @@ impl BrokerRuntime {
                             "flushing pending queue on explicit /flush"
                         );
                     }
-                    for queued in to_flush {
-                        inject_pending_relay_message(
-                            workers,
-                            pending_deliveries,
-                            &name,
-                            &queued,
-                            delivery_retry_interval,
-                        )
-                        .await;
+                    if let Some(error) = flush_result.failure.as_deref() {
+                        tracing::warn!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            flushed,
+                            error,
+                            "stopped explicit flush at failed pending message"
+                        );
                     }
                     if flushed > 0 {
                         let _ = send_event(

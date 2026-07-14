@@ -44,7 +44,7 @@ use crate::{
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
         AgentResultMcpConfig, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
-        PendingRelayMessage,
+        PendingRelayMessage, RelaycastDeliveryReceipt,
     },
 };
 

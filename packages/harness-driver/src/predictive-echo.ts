@@ -304,7 +304,8 @@ export class PredictiveEchoEngine implements PredictiveEcho {
 
   private async processServerChunk(chunk: string): Promise<void> {
     if (this.disposed) {
-      this.write(chunk);
+      // Dropped after dispose: the owning session has begun teardown and
+      // restored cooked mode, so writing here would spray output past detach.
       return;
     }
 

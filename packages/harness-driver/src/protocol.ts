@@ -64,6 +64,14 @@ export interface PtySnapshot {
   cursor: [number, number];
   /** Plain text for `format=plain`; base64-encoded ANSI bytes for `format=ansi`. */
   screen: string;
+  /**
+   * Cumulative per-worker byte offset the grid had consumed when this
+   * snapshot was captured. Correlates the snapshot with the `worker_stream`
+   * byte stream: a client can drop every buffered `worker_stream` chunk whose
+   * `offset` is `<=` this value and apply only what came after. Absent on
+   * brokers that predate stream-offset support.
+   */
+  offset?: number;
 }
 
 export interface ProtocolEnvelope<TPayload> {
@@ -266,6 +274,11 @@ export type BrokerEvent =
       name: string;
       stream: string;
       chunk: string;
+      /**
+       * Cumulative per-worker byte offset at the end of this chunk. Present
+       * for PTY workers; absent for headless workers and pre-offset brokers.
+       */
+      offset?: number;
     }
   | {
       kind: 'delivery_retry';
@@ -463,6 +476,17 @@ export type BrokerToWorker =
   | {
       type: 'resize_pty';
       payload: { rows: number; cols: number };
+    }
+  | {
+      /**
+       * Pause (`hold: true`) or resume (`hold: false`) worker-side automation
+       * while a human drives the PTY. Sent when the inbound delivery mode flips
+       * to/from `manual_flush`. While held the worker stops popping pending
+       * injections, freezes any in-flight injection, and gates its auto-enter
+       * and prompt auto-responders.
+       */
+      type: 'set_interactive_hold';
+      payload: { hold: boolean };
     };
 
 export type WorkerToBroker =
@@ -484,7 +508,7 @@ export type WorkerToBroker =
     }
   | {
       type: 'worker_stream';
-      payload: { stream: string; chunk: string };
+      payload: { stream: string; chunk: string; offset?: number };
     }
   | {
       type: 'worker_error';
