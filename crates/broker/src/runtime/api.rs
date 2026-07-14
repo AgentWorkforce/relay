@@ -1195,6 +1195,15 @@ impl BrokerRuntime {
                                             cols,
                                         },
                                     );
+                                } else if let Some(owner) = resize_owners.get_mut(&name) {
+                                    // Legacy callers do not take ownership, but
+                                    // they can still change the actual PTY size.
+                                    // Record that size without touching
+                                    // `last_seen` so the owner can restore its
+                                    // dimensions on the next re-assert instead
+                                    // of incorrectly taking the no-op path.
+                                    owner.rows = rows;
+                                    owner.cols = cols;
                                 }
                                 let _ = reply.send(Ok(json!({
                                     "name": name,

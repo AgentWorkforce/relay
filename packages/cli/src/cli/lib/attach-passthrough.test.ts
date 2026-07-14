@@ -741,6 +741,52 @@ describe('runPassthroughSession', () => {
     await sessionPromise;
   });
 
+  it('waits for the initial resize before releasing ownership on detach', async () => {
+    let finishInitialResize: ((response: Response) => void) | undefined;
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      routes: {
+        'POST /resize': async (init) => {
+          const body = JSON.parse(String(init?.body ?? '{}')) as { release?: boolean };
+          if (body.release === true) {
+            return new Response(JSON.stringify({ released: true }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Promise<Response>((resolve) => {
+            finishInitialResize = resolve;
+          });
+        },
+      },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(finishInitialResize).toBeDefined();
+
+    await signals.get('SIGINT')?.();
+    expect(
+      fetchLog.some(
+        (call) => call.url.includes('/resize/') && (call.body as { release?: boolean }).release === true
+      )
+    ).toBe(false);
+
+    finishInitialResize?.(
+      new Response(JSON.stringify({ applied: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    await sessionPromise;
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const resizeBodies = fetchLog
+      .filter((call) => call.url.includes('/resize/'))
+      .map((call) => call.body as { release?: boolean });
+    expect(resizeBodies.map((body) => body.release === true)).toEqual([false, true]);
+  });
+
   // ---- predictive-echo wiring ----
 
   it('seeds the engine with the snapshot and routes input + output through it', async () => {

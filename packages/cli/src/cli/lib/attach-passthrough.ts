@@ -618,10 +618,13 @@ export async function runPassthroughSession(
             trackResize(
               resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
                 sessionId: resizeSessionId,
-              }).then(
-                () => {},
-                () => {}
-              )
+              }).then((res) => {
+                if (!res.ok) {
+                  deps.log(
+                    `[passthrough] resize ownership re-assert failed: ${res.message ?? 'unknown error'}`
+                  );
+                }
+              })
             );
           }, reassertMs);
           reassertTimer.unref?.();
@@ -674,9 +677,11 @@ export async function runPassthroughSession(
       // transient snapshot failure nothing was painted, so apply everything.
       const pending = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
       for (const chunk of pending) applyServerOutput(chunk);
-      await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps, {
+      const initialResize = syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps, {
         sessionId: resizeSessionId,
       });
+      trackResize(initialResize);
+      await initialResize;
       if (settled) return;
       await openInputStreamAndTakeStdin();
     };

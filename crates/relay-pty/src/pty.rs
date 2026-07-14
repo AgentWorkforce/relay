@@ -300,6 +300,31 @@ fn drain_write_queue<W: Write>(
     }
 }
 
+/// Enqueue user input without treating queue admission as child activity.
+/// Keeping the watchdog counter in this helper's interface makes the invariant
+/// directly testable: only [`drain_write_queue`] may reset it after a confirmed
+/// write and flush.
+fn enqueue_user_write(
+    write_tx: &std_mpsc::SyncSender<WriteMsg>,
+    _no_pid_alive_checks: &AtomicU32,
+    bytes: Vec<u8>,
+) -> Result<oneshot::Receiver<io::Result<()>>> {
+    let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
+    match write_tx.try_send(WriteMsg::UserInput {
+        bytes,
+        ack: ack_tx,
+    }) {
+        Ok(()) => Ok(ack_rx),
+        Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
+            "pty write queue full ({} writes pending; drainer wedged behind child not reading stdin)",
+            WRITE_QUEUE_DEPTH
+        )),
+        Err(std_mpsc::TrySendError::Disconnected(_)) => Err(anyhow::anyhow!(
+            "pty write queue is closed (drainer exited)"
+        )),
+    }
+}
+
 impl PtySession {
     pub fn spawn(
         command: &str,
@@ -450,29 +475,10 @@ impl PtySession {
     /// Returns `Err` if the queue is momentarily full (retryable) or the
     /// drainer has exited (PTY teardown).
     pub fn submit_write(&self, bytes: Vec<u8>) -> Result<oneshot::Receiver<io::Result<()>>> {
-        let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
-        match self.write_tx.try_send(WriteMsg::UserInput {
-            bytes,
-            ack: ack_tx,
-        }) {
-            Ok(()) => {
-                // NB: do *not* reset the no-PID watchdog counter here. A
-                // successful enqueue only proves the queue had room, not that
-                // any byte reached the child — a wedged drainer accepts the
-                // message and never writes it. The counter is reset by the
-                // drainer once it confirms the write flushed to the PTY master
-                // (see `drain_write_queue`), so a stuck write path can no
-                // longer indefinitely defer the no-PID fallback.
-                Ok(ack_rx)
-            }
-            Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
-                "pty write queue full ({} writes pending; drainer wedged behind child not reading stdin)",
-                WRITE_QUEUE_DEPTH
-            )),
-            Err(std_mpsc::TrySendError::Disconnected(_)) => Err(anyhow::anyhow!(
-                "pty write queue is closed (drainer exited)"
-            )),
-        }
+        // NB: do *not* reset the no-PID watchdog counter here. A successful
+        // enqueue only proves the queue had room, not that any byte reached the
+        // child. The drainer resets it after the write is confirmed flushed.
+        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes)
     }
 
     /// Submit bytes and await the drainer's write result. Convenience
@@ -1115,7 +1121,7 @@ mod tests {
     // bytes that match real grid state — replacing the old hand-rolled
     // `TerminalQueryParser` that hardcoded `1;1` for CPR.
 
-    use super::{RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use super::{enqueue_user_write, RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
     use std::sync::atomic::AtomicU32;
     use std::sync::mpsc as std_mpsc;
     use std::sync::Arc;
@@ -1470,13 +1476,14 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(5));
         // A bounded queue with no drainer: the message sits unconfirmed.
         let (tx, _rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
-        let (ack_tx, _ack_rx) = oneshot::channel::<std::io::Result<()>>();
-        tx.send(WriteMsg::UserInput {
-            bytes: b"queued\n".to_vec(),
-            ack: ack_tx,
-        })
-        .expect("queue accepts the write");
-        // No drainer consumed it, so the shared counter is left as-is.
+        let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec())
+            .expect("submit path accepts the write");
+        assert!(
+            timeout(Duration::from_millis(20), ack).await.is_err(),
+            "without a drainer the write must remain unconfirmed"
+        );
+        // The real submission helper received the shared counter but did not
+        // reset it merely because the queue accepted the message.
         assert_eq!(
             counter.load(std::sync::atomic::Ordering::Relaxed),
             5,

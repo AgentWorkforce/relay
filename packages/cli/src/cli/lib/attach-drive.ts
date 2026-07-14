@@ -884,10 +884,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
             trackResize(
               resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
                 sessionId: resizeSessionId,
-              }).then(
-                () => {},
-                () => {}
-              )
+              }).then((res) => {
+                if (!res.ok) {
+                  deps.log(`[drive] resize ownership re-assert failed: ${res.message ?? 'unknown error'}`);
+                }
+              })
             );
           }, reassertMs);
           // Don't let the keep-alive timer hold the process open on its own.
@@ -942,9 +943,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // transient snapshot failure nothing was painted, so apply everything.
       const pendingChunks = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
       for (const chunk of pendingChunks) applyServerOutput(chunk);
-      await syncInitialPtySize(connection, name, state.initialLocalSize, 'drive', deps, {
+      const initialResize = syncInitialPtySize(connection, name, state.initialLocalSize, 'drive', deps, {
         sessionId: resizeSessionId,
       });
+      trackResize(initialResize);
+      await initialResize;
       if (settled) return;
       // Open the SDK input stream before taking over stdin. A failed stream
       // should not leave the user's terminal in raw mode with nowhere to

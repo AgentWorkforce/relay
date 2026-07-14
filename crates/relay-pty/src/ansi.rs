@@ -84,6 +84,13 @@ pub fn strip_ansi(text: &str) -> String {
             Some(0x20..=0x2f) => {
                 chars.next();
                 while let Some(&nc) = chars.peek() {
+                    // An interrupted/malformed intermediate sequence may be
+                    // followed by a fresh ESC. Leave it for the outer loop so
+                    // ANSI parsing restarts there instead of consuming it as
+                    // this sequence's final byte and leaking the following CSI.
+                    if nc == '\x1b' {
+                        break;
+                    }
                     chars.next();
                     if !(0x20..=0x2f).contains(&(nc as u32)) {
                         // final byte (or a stray non-intermediate) ends it
@@ -321,6 +328,8 @@ mod tests {
         assert_eq!(strip_ansi("\x1b(Btext"), "text");
         // Multi-byte designator (`ESC $ ( C`) strips all intermediates + final.
         assert_eq!(strip_ansi("\x1b$(Ctext"), "text");
+        // A fresh ESC interrupts a malformed designator and restarts parsing.
+        assert_eq!(strip_ansi("\x1b(\x1b[31mred"), "red");
     }
 
     #[test]

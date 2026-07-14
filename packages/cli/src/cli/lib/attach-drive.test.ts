@@ -1037,6 +1037,34 @@ describe('runDriveSession', () => {
     await sessionPromise;
   });
 
+  it('logs a rejected periodic resize ownership re-assert', async () => {
+    let resizeCount = 0;
+    const { deps, sockets, signals, logs } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      ownershipReassertMs: 5,
+      routes: {
+        'POST /resize': async () => {
+          resizeCount += 1;
+          if (resizeCount === 1) {
+            return new Response(JSON.stringify({ applied: true }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response('lease rejected', { status: 409 });
+        },
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(logs.some((args) => String(args[0]).includes('resize ownership re-assert failed'))).toBe(true);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
   it('skips resize forwarding when stdout is not a TTY', async () => {
     const { deps, sockets, signals, fetchLog } = createHarness({ terminalSize: null });
     const sessionPromise = runDriveSession('Alice', {}, deps);

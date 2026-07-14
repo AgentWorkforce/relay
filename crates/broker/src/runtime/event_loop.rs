@@ -5,9 +5,10 @@ use super::*;
 /// `session_id` is the client-generated id that currently owns resizing;
 /// `last_seen` timestamps its most recent resize so a crashed client that
 /// never releases can be superseded after [`RESIZE_OWNER_STALE`]. `rows`/`cols`
-/// record the last size the owner applied so a periodic same-size re-assert
-/// (the client's liveness keep-alive) can refresh `last_seen` without emitting
-/// a redundant SIGWINCH/repaint to the child.
+/// record the last size actually applied to the PTY so a periodic same-size
+/// re-assert (the client's liveness keep-alive) can refresh `last_seen` without
+/// emitting a redundant SIGWINCH/repaint to the child. Legacy unkeyed resizes
+/// update these dimensions without extending the owner's lease.
 pub(crate) struct ResizeOwner {
     pub(super) session_id: String,
     pub(super) last_seen: Instant,
@@ -395,6 +396,41 @@ mod resize_owner_tests {
             .get(&name)
             .is_some_and(|o| o.session_id == sid && o.rows == 30 && o.cols == 100);
         assert!(!owner_refresh_diff, "changed size must not be a refresh");
+    }
+
+    #[test]
+    fn legacy_resize_invalidates_owner_same_size_refresh() {
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: Instant::now(),
+                rows: 24,
+                cols: 80,
+            },
+        );
+
+        // A legacy caller applies a different size without taking ownership.
+        let legacy_seen = owners.get(&name).unwrap().last_seen;
+        let owner = owners.get_mut(&name).unwrap();
+        owner.rows = 40;
+        owner.cols = 120;
+        assert_eq!(
+            owner.last_seen, legacy_seen,
+            "legacy resize must not renew the lease"
+        );
+
+        // The owner re-asserting its former 24x80 size must now be treated as
+        // a real resize so it restores the PTY after the legacy caller.
+        let owner_refresh = owners
+            .get(&name)
+            .is_some_and(|o| o.session_id == "s1" && o.rows == 24 && o.cols == 80);
+        assert!(
+            !owner_refresh,
+            "owner must restore dimensions changed by a legacy resize"
+        );
     }
 
     #[test]
