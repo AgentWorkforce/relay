@@ -137,28 +137,63 @@ const HANDSHAKE_BACKOFF_MAX: Duration = Duration::from_secs(2);
 /// Per-attempt handshake timeout, overridable via
 /// `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` (must be > 0).
 fn handshake_attempt_timeout() -> Duration {
-    env_positive_u64("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS")
-        .map(Duration::from_millis)
-        .unwrap_or(HANDSHAKE_ATTEMPT_TIMEOUT)
+    parse_handshake_timeout(
+        std::env::var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS")
+            .ok()
+            .as_deref(),
+    )
 }
 
 /// Max handshake attempts, overridable via `AGENT_RELAY_HANDSHAKE_ATTEMPTS`
 /// (must be >= 1).
 fn handshake_max_attempts() -> u32 {
-    std::env::var("AGENT_RELAY_HANDSHAKE_ATTEMPTS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
+    parse_handshake_attempts(
+        std::env::var("AGENT_RELAY_HANDSHAKE_ATTEMPTS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Number of workspaces the broker will register during the handshake, used to
+/// scale the per-attempt deadline: `startup_session_set_with_options` registers
+/// each `RELAY_WORKSPACES_JSON` membership serially, so a healthy multi-workspace
+/// startup legitimately takes longer than a single-workspace one and must not be
+/// cut off by the single-request timeout. Falls back to 1 when unset/unparseable.
+fn configured_membership_count() -> u32 {
+    parse_membership_count(std::env::var("RELAY_WORKSPACES_JSON").ok().as_deref())
+}
+
+/// Parse the per-attempt timeout from an optional raw string (e.g. an env var),
+/// falling back to [`HANDSHAKE_ATTEMPT_TIMEOUT`] for missing/empty/invalid/zero
+/// values. Pure so it can be unit-tested without mutating process env.
+fn parse_handshake_timeout(raw: Option<&str>) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(HANDSHAKE_ATTEMPT_TIMEOUT)
+}
+
+/// Parse the max attempt count from an optional raw string (e.g. an env var),
+/// falling back to [`HANDSHAKE_MAX_ATTEMPTS`] for missing/empty/invalid/zero
+/// values. Pure so it can be unit-tested without mutating process env.
+fn parse_handshake_attempts(raw: Option<&str>) -> u32 {
+    raw.and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|&attempts| attempts >= 1)
         .unwrap_or(HANDSHAKE_MAX_ATTEMPTS)
 }
 
-/// Parse a strictly-positive `u64` from an environment variable, ignoring
-/// empty/invalid/zero values so callers fall back to their default.
-fn env_positive_u64(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|&value| value > 0)
+/// Parse the configured workspace count from an optional `RELAY_WORKSPACES_JSON`
+/// string: the length of the top-level JSON array, clamped to at least 1. Any
+/// other shape (absent, empty, non-array, unparseable) yields 1. Pure so it can
+/// be unit-tested without mutating process env.
+fn parse_membership_count(raw: Option<&str>) -> u32 {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .and_then(|value| value.as_array().map(|entries| entries.len()))
+        .and_then(|len| u32::try_from(len).ok())
+        .filter(|&count| count >= 1)
+        .unwrap_or(1)
 }
 
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
@@ -186,13 +221,22 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         ),
     );
     let auth = AuthClient::new(configured_base.clone());
-    // Bound each handshake attempt and retry transient failures/timeouts with
-    // backoff. The SDK bootstrap calls have no client-side timeout, so without
-    // this a stalled relay backend hangs startup until an external supervisor
-    // kills the broker (reported to the SDK as an opaque code-null exit). A
-    // per-attempt deadline converts that into a retryable error that usually
-    // recovers on the next attempt, all within the SDK's startup budget.
-    let attempt_timeout = handshake_attempt_timeout();
+    // Bound the handshake so a hung relay connection can't stall startup. The
+    // SDK bootstrap calls (`create_workspace` / agent registration) build a
+    // timeout-less reqwest client, so without this a stalled backend hangs
+    // startup indefinitely until an external supervisor reaps the broker
+    // (reported to the SDK as an opaque code-null exit). We ONLY retry on
+    // timeout: a returned error is a definite server response, and replaying
+    // `startup_session_set_with_options` would re-run workspace creation and
+    // agent registration from scratch — risking duplicate Relaycast resources —
+    // so returned errors surface immediately (preserving the pre-retry
+    // behavior). The residual for a timeout retry is narrow (the backend both
+    // completed the request AND failed to answer within the deadline); the
+    // per-attempt deadline is scaled by the configured workspace count so a
+    // healthy multi-workspace startup, which registers each membership serially,
+    // is not cut off mid-flight.
+    let membership_count = configured_membership_count();
+    let attempt_timeout = handshake_attempt_timeout().saturating_mul(membership_count);
     let max_attempts = handshake_max_attempts();
     let mut backoff = HANDSHAKE_BACKOFF_BASE;
     let sessions = {
@@ -209,27 +253,10 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
             )
             .await
             {
-                Ok(Ok(sessions)) => break sessions,
-                Ok(Err(error)) => {
-                    if attempt >= max_attempts {
-                        return Err(error).context(format!(
-                            "failed to initialize relaycast session after {attempt} attempt(s)"
-                        ));
-                    }
-                    tracing::warn!(
-                        attempt,
-                        max_attempts,
-                        error = %error,
-                        "relaycast startup handshake failed; retrying"
-                    );
-                    log_startup_phase(
-                        startup_debug,
-                        connect_started,
-                        format!(
-                            "handshake attempt {attempt}/{max_attempts} failed ({error}); retrying in {}ms",
-                            backoff.as_millis()
-                        ),
-                    );
+                // Success, or a definite failure from the backend: return
+                // immediately in both cases (never replay a returned error).
+                Ok(result) => {
+                    break result.context("failed to initialize relaycast session")?;
                 }
                 Err(_elapsed) => {
                     if attempt >= max_attempts {
@@ -254,10 +281,10 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
                             backoff.as_millis()
                         ),
                     );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
                 }
             }
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
         }
     };
     log_startup_phase(
@@ -369,46 +396,61 @@ timestamp='{}'
 mod tests {
     use super::*;
 
-    // Note: these two tests read/write distinct process-global env vars, so they
-    // do not race each other. Keep all assertions for a given var within one
-    // test to avoid cross-test interference under the parallel test runner.
+    // These exercise the pure parse helpers directly rather than mutating
+    // process-global env (`std::env::set_var`/`remove_var` are unsound under the
+    // parallel test runner: other threads may be reading the environment
+    // concurrently).
 
     #[test]
-    fn handshake_max_attempts_honors_env_override() {
-        std::env::remove_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS");
-        assert_eq!(handshake_max_attempts(), HANDSHAKE_MAX_ATTEMPTS);
-
-        std::env::set_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS", "0");
+    fn parse_handshake_attempts_defaults_and_overrides() {
+        assert_eq!(parse_handshake_attempts(None), HANDSHAKE_MAX_ATTEMPTS);
+        assert_eq!(parse_handshake_attempts(Some("")), HANDSHAKE_MAX_ATTEMPTS);
         assert_eq!(
-            handshake_max_attempts(),
+            parse_handshake_attempts(Some("0")),
             HANDSHAKE_MAX_ATTEMPTS,
             "zero attempts is rejected in favor of the default"
         );
-
-        std::env::set_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS", "not-a-number");
-        assert_eq!(handshake_max_attempts(), HANDSHAKE_MAX_ATTEMPTS);
-
-        std::env::set_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS", "7");
-        assert_eq!(handshake_max_attempts(), 7);
-
-        std::env::remove_var("AGENT_RELAY_HANDSHAKE_ATTEMPTS");
+        assert_eq!(
+            parse_handshake_attempts(Some("not-a-number")),
+            HANDSHAKE_MAX_ATTEMPTS
+        );
+        assert_eq!(parse_handshake_attempts(Some(" 7 ")), 7);
     }
 
     #[test]
-    fn handshake_attempt_timeout_honors_env_override() {
-        std::env::remove_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS");
-        assert_eq!(handshake_attempt_timeout(), HANDSHAKE_ATTEMPT_TIMEOUT);
-
-        std::env::set_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS", "0");
+    fn parse_handshake_timeout_defaults_and_overrides() {
+        assert_eq!(parse_handshake_timeout(None), HANDSHAKE_ATTEMPT_TIMEOUT);
+        assert_eq!(parse_handshake_timeout(Some("")), HANDSHAKE_ATTEMPT_TIMEOUT);
         assert_eq!(
-            handshake_attempt_timeout(),
+            parse_handshake_timeout(Some("0")),
             HANDSHAKE_ATTEMPT_TIMEOUT,
             "zero ms is rejected in favor of the default"
         );
+        assert_eq!(
+            parse_handshake_timeout(Some("nope")),
+            HANDSHAKE_ATTEMPT_TIMEOUT
+        );
+        assert_eq!(
+            parse_handshake_timeout(Some("1234")),
+            Duration::from_millis(1234)
+        );
+    }
 
-        std::env::set_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS", "1234");
-        assert_eq!(handshake_attempt_timeout(), Duration::from_millis(1234));
-
-        std::env::remove_var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS");
+    #[test]
+    fn parse_membership_count_scales_with_configured_workspaces() {
+        // Absent / empty / non-array / unparseable all fall back to a single
+        // workspace so the timeout is never scaled below the base.
+        assert_eq!(parse_membership_count(None), 1);
+        assert_eq!(parse_membership_count(Some("   ")), 1);
+        assert_eq!(parse_membership_count(Some("[]")), 1);
+        assert_eq!(parse_membership_count(Some("{\"a\":1}")), 1);
+        assert_eq!(parse_membership_count(Some("not json")), 1);
+        // A real multi-workspace payload scales by its array length.
+        assert_eq!(
+            parse_membership_count(Some(
+                "[{\"api_key\":\"rk_a\"},{\"api_key\":\"rk_b\"},{\"api_key\":\"rk_c\"}]"
+            )),
+            3
+        );
     }
 }
