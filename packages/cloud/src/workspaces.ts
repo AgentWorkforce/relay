@@ -27,6 +27,22 @@ type InteractiveRequestOptions = WorkspaceClientOptions & {
  */
 const SELF_HEAL_AGENT_NAME = 'cli-workspace-self-heal';
 
+/**
+ * Thrown only for a genuine non-2xx HTTP response from the workspace resolve
+ * endpoint itself (e.g. 401/403 on a rotated/invalid key) — distinguishes
+ * "the key doesn't resolve" (self-healable) from a transient transport,
+ * authentication, or response-schema error (NOT self-healable: minting a new
+ * key and overwriting the local store on a network blip or malformed
+ * response could churn a perfectly valid key). Only this error type is
+ * treated as self-healable in `resolveActiveWorkspace`.
+ */
+class WorkspaceResolveHttpError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkspaceResolveHttpError';
+  }
+}
+
 type WorkspaceTokenIssueOptions = WorkspaceClientOptions & {
   name?: string;
 };
@@ -392,7 +408,7 @@ async function resolveWorkspaceDescriptor(
     }
 
     if (!response.ok) {
-      throw buildEndpointError('Workspace resolve', endpoint, response, payload);
+      throw new WorkspaceResolveHttpError(buildEndpointError('Workspace resolve', endpoint, response, payload).message);
     }
 
     return { descriptor: normalizeActiveWorkspaceDescriptor(payload, key, apiUrl) };
@@ -448,15 +464,22 @@ export async function resolveActiveWorkspace(
   }
   const { name, entry } = active;
 
-  // A non-404/405 failure (e.g. 401/403 from a rotated/invalid key) throws
-  // out of resolveWorkspaceDescriptor instead of returning `{ lastUnsupported }`
-  // — catch it here and fold it into the same shape so self-heal below still
-  // gets a chance whenever a cached cloudWorkspaceId is available, instead of
-  // this propagating straight past the self-heal block.
+  // A non-404/405 HTTP failure from the resolve endpoint itself (e.g. 401/403
+  // from a rotated/invalid key) throws a WorkspaceResolveHttpError out of
+  // resolveWorkspaceDescriptor instead of returning `{ lastUnsupported }` —
+  // catch ONLY that typed error and fold it into the same shape so self-heal
+  // below still gets a chance. Any other error (network/transport failure,
+  // ensureAuthenticated/session failure, malformed-response schema error from
+  // normalizeActiveWorkspaceDescriptor) is NOT a "this key doesn't resolve"
+  // signal — rethrow it unchanged so a transient blip can't mint a new key
+  // and overwrite a perfectly valid one.
   const primary = await resolveWorkspaceDescriptor(entry.key, options).catch(
-    (err: unknown): { lastUnsupported: Error } => ({
-      lastUnsupported: err instanceof Error ? err : new Error(String(err)),
-    })
+    (err: unknown): { lastUnsupported: Error } => {
+      if (err instanceof WorkspaceResolveHttpError) {
+        return { lastUnsupported: err };
+      }
+      throw err;
+    }
   );
   if ('descriptor' in primary) {
     // Opportunistically cache the resolved cloud workspace id (if new/changed)

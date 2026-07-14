@@ -172,12 +172,14 @@ describe('resolveActiveWorkspace', () => {
     });
   });
 
-  it('self-heals even when the primary resolve throws a non-404 error (e.g. 401 from a rotated key)', async () => {
+  it('self-heals even when the primary resolve throws a non-404 error (e.g. 403 from a rotated key)', async () => {
     // Regression test: resolveWorkspaceDescriptor throws (doesn't return
     // `{ lastUnsupported }`) for any non-404/405 response. Before wrapping the
     // primary resolve in a catch, this propagated straight out of
     // resolveActiveWorkspace and skipped the self-heal block entirely, even
     // though a cached cloudWorkspaceId was available to retry with.
+    // (403, not 401: a 401 makes authorizedApiFetch attempt a token refresh +
+    // retry first, which is a separate concern from this test.)
     setWorkspaceKey('ops', 'rk_live_stale', undefined, 'rw_ops');
 
     const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -185,8 +187,8 @@ describe('resolveActiveWorkspace', () => {
       const method = init?.method ?? 'GET';
 
       if (method === 'GET' && url.includes('rk_live_stale')) {
-        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-          status: 401,
+        return new Response(JSON.stringify({ error: 'Forbidden' }), {
+          status: 403,
           headers: { 'content-type': 'application/json' },
         });
       }
@@ -224,6 +226,28 @@ describe('resolveActiveWorkspace', () => {
       key: 'rk_live_healed',
       cloudWorkspaceId: 'rw_ops',
     });
+  });
+
+  it('rethrows a transient transport/network error unchanged, without self-healing or touching the stored key', async () => {
+    // A network failure hitting the resolve endpoint is NOT a "this key
+    // doesn't resolve" signal — only a genuine non-2xx HTTP response from
+    // resolve itself (WorkspaceResolveHttpError) is self-healable. Treating a
+    // transient blip as self-healable would mint a new key and overwrite the
+    // local store even though the original key may still be perfectly valid.
+    setWorkspaceKey('ops', 'rk_live_ops', undefined, 'rw_ops');
+
+    const fetchSpy = vi.fn(async () => {
+      throw new TypeError('fetch failed: network error');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(resolveActiveWorkspace()).rejects.toThrow('fetch failed: network error');
+
+    // Never attempted to self-heal: no POST /join call, and the stored key is untouched.
+    expect(
+      fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    ).toBe(false);
+    expect(readWorkspaceStore().workspaces.ops).toEqual({ key: 'rk_live_ops', cloudWorkspaceId: 'rw_ops' });
   });
 
   it('falls through to the original resolve error when there is no cached cloudWorkspaceId to self-heal from', async () => {
