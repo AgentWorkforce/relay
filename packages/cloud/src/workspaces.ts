@@ -455,7 +455,7 @@ export async function resolveActiveWorkspace(
   // this propagating straight past the self-heal block.
   const primary = await resolveWorkspaceDescriptor(entry.key, options).catch(
     (err: unknown): { lastUnsupported: Error } => ({
-      lastUnsupported: err instanceof Error ? err : new Error(String(err))
+      lastUnsupported: err instanceof Error ? err : new Error(String(err)),
     })
   );
   if ('descriptor' in primary) {

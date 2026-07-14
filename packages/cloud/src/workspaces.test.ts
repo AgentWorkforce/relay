@@ -198,10 +198,7 @@ describe('resolveActiveWorkspace', () => {
         });
       }
 
-      if (
-        method === 'GET' &&
-        url === 'https://cloud.example.test/api/v1/workspaces/rk_live_healed/resolve'
-      ) {
+      if (method === 'GET' && url === 'https://cloud.example.test/api/v1/workspaces/rk_live_healed/resolve') {
         return new Response(
           JSON.stringify({
             workspace: {
@@ -223,7 +220,10 @@ describe('resolveActiveWorkspace', () => {
     const descriptor = await resolveActiveWorkspace();
 
     expect(descriptor.key).toBe('rk_live_healed');
-    expect(readWorkspaceStore().workspaces.ops).toEqual({ key: 'rk_live_healed', cloudWorkspaceId: 'rw_ops' });
+    expect(readWorkspaceStore().workspaces.ops).toEqual({
+      key: 'rk_live_healed',
+      cloudWorkspaceId: 'rw_ops',
+    });
   });
 
   it('falls through to the original resolve error when there is no cached cloudWorkspaceId to self-heal from', async () => {
