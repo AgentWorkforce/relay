@@ -18,6 +18,7 @@ Resolved PR #1253 against main, fixed five remaining PTY ownership/ANSI/watchdog
 ## Key Decisions
 
 ### Track actual PTY dimensions across legacy resizes and include initial syncs in detach barriers
+
 - **Chose:** Track actual PTY dimensions across legacy resizes and include initial syncs in detach barriers
 - **Reasoning:** This preserves legacy always-apply behavior while ensuring the keyed owner can restore its terminal, and orders ownership release after every session-keyed resize that could otherwise reclaim the lease.
 
@@ -26,7 +27,8 @@ Resolved PR #1253 against main, fixed five remaining PTY ownership/ANSI/watchdog
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Track actual PTY dimensions across legacy resizes and include initial syncs in detach barriers: Track actual PTY dimensions across legacy resizes and include initial syncs in detach barriers
 
