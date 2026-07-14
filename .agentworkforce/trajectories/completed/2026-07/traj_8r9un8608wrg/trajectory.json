@@ -10,78 +10,26 @@
   },
   "status": "completed",
   "startedAt": "2026-07-12T21:18:18.032Z",
-  "completedAt": "2026-07-13T00:56:14.721Z",
-  "agents": [
-    {
-      "name": "default",
-      "role": "lead",
-      "joinedAt": "2026-07-13T00:48:09.983Z"
-    }
-  ],
-  "chapters": [
-    {
-      "id": "chap_xcjby8ldl7z3",
-      "title": "Work",
-      "agentName": "default",
-      "startedAt": "2026-07-13T00:48:09.983Z",
-      "endedAt": "2026-07-13T00:56:14.721Z",
-      "events": [
-        {
-          "ts": 1783903689986,
-          "type": "decision",
-          "content": "Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side: Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side",
-          "raw": {
-            "question": "Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side",
-            "chosen": "Implemented broker-side compare-and-set (expected_mode) for delivery-mode restore instead of narrowing client-side",
-            "alternatives": [],
-            "reasoning": "Reviewer confirmed it's small; additive optional field, backward compatible; fully eliminates the read-then-restore TOCTOU rather than shrinking it"
-          },
-          "significance": "high"
-        }
-      ]
-    }
-  ],
+  "completedAt": "2026-07-12T22:24:12.640Z",
+  "agents": [],
+  "chapters": [],
   "retrospective": {
-    "summary": "Reordered detach reset seq (cursor-homing before alt-leave), documented alacritty scroll_region inaccessibility, replaced to_string with stack push_u16",
+    "summary": "Fixed all issue #1247 harness/PTY attach defects in 5 workstreams: stream-offset snapshot sync + subscribe-first attach, non-blocking PTY writes + ack-after-write + interactive hold, drive session robustness (signals/UTF-8/teardown/status line), snapshot terminal modes, transport reconnect guards + misc",
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "ddc34a7",
-    "39aa333",
-    "5ace33b",
-    "6a5827e",
-    "bae5c5f",
-    "b402fad",
-    "7595b34",
-    "ec895f7",
-    "3f92441",
-    "e782361",
-    "83fd860",
-    "4b46071",
-    "4b94657",
-    "ec6f64c",
-    "1c08f61",
-    "e2792f3",
-    "4ff6854",
-    "2b0ae52"
-  ],
+  "commits": ["f9da582", "1c08f61", "e2792f3", "4ff6854", "2b0ae52"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_8r9un8608wrg/trajectory.json",
-    ".agentworkforce/trajectories/completed/2026-07/traj_jeys3puo7jxe.trace.json",
-    ".agentworkforce/trajectories/completed/2026-07/traj_jeys3puo7jxe/summary.md",
-    ".agentworkforce/trajectories/completed/2026-07/traj_jeys3puo7jxe/trajectory.json",
-    ".agentworkforce/trajectories/completed/2026-07/traj_l7ybh3itrj6k/summary.md",
-    ".agentworkforce/trajectories/completed/2026-07/traj_l7ybh3itrj6k/trajectory.json",
     "CHANGELOG.md",
     "crates/broker/src/listen_api.rs",
     "crates/broker/src/protocol.rs",
     "crates/broker/src/pty_worker.rs",
     "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/headless.rs",
     "crates/broker/src/runtime/worker_events.rs",
     "crates/broker/src/worker_request.rs",
     "crates/broker/src/wrap.rs",
-    "crates/relay-pty/src/pty.rs",
     "crates/relay-pty/src/snapshot.rs",
     "packages/cli/src/cli/lib/attach-drive.test.ts",
     "packages/cli/src/cli/lib/attach-drive.ts",
@@ -94,13 +42,16 @@
     "packages/harness-driver/src/client.ts",
     "packages/harness-driver/src/predictive-echo.ts",
     "packages/harness-driver/src/protocol.ts",
-    "packages/harness-driver/src/pty-input-stream.test.ts"
+    "packages/harness-driver/src/pty-input-stream.test.ts",
+    "packages/harness-driver/src/subscribe-worker-stream.test.ts",
+    "packages/harness-driver/src/transport.test.ts",
+    "packages/harness-driver/src/transport.ts"
   ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "4a77520ac143de68e49dca6700f437a5624b3076",
-    "endRef": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16",
-    "traceId": "39cd1a20-dc93-4c1f-acf5-df0724be6fb6"
+    "endRef": "f9da58263cde1f6123f28b9ab0cb2eccbf586035",
+    "traceId": "443a7e4e-0168-4ffd-8485-e5bda87cef82"
   }
 }

@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/harness-driver` ignores callbacks from superseded event WebSockets, decodes fragmented and binary frames correctly, and reconnects with exponential backoff, preventing duplicate or dropped events during reconnect races.
+- `HarnessDriverClient.subscribeWorkerStream()` bounds each subscription buffer (default 10,000 chunks, configurable with `maxQueueSize`) and drops the oldest chunk with a one-time warning when a consumer falls behind.
+- `relay node tail --agent <headless-agent>` preserves stdout and stderr bytes, including CRLF and unterminated final chunks, instead of joining or altering output lines.
+- `agent-relay-broker` prunes stale PTY input serializers when workers exit or are released and reconciles them after broadcast lag instead of retaining entries indefinitely.
 - `agent-relay drive` and `passthrough` restore inbound delivery mode safely when setup is interrupted or detach races another session, preserving explicit holds and concurrent mode changes.
 - `agent-relay drive`, `view`, and `passthrough` preserve split UTF-8 input, stop terminal writes after detach begins, avoid status-line repaints inside partial ANSI sequences, skip status output for non-TTY streams, and bound buffered output under backpressure.
 - PTY input acks (`POST /api/input/{name}`, the input WebSocket, and the harness-driver `PtyInputStream.send()`) now resolve only after the worker confirms the keystrokes reached the child process. Failed PTY writes surface as a rejected `send()` (via a `write_pty`→`write_pty_response` round-trip with a 5s dead-worker timeout) so `agent-relay drive` predictive echo rolls back glyphs for input that never landed, instead of acking prematurely on enqueue. The `POST /api/input/{name}` response includes the worker `name` alongside `bytes_written`, matching the `HarnessDriverClient.sendInput` contract.

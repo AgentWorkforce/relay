@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "id": "39cd1a20-dc93-4c1f-acf5-df0724be6fb6",
-  "timestamp": "2026-07-13T00:56:14.774Z",
+  "id": "443a7e4e-0168-4ffd-8485-e5bda87cef82",
+  "timestamp": "2026-07-12T22:24:12.682Z",
   "trajectory": "traj_8r9un8608wrg",
   "files": [
     {
@@ -14,103 +14,8 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 50,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": ".agentworkforce/trajectories/completed/2026-07/traj_jeys3puo7jxe.trace.json",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 636,
-              "end_line": 639,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": ".agentworkforce/trajectories/completed/2026-07/traj_jeys3puo7jxe/summary.md",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 18,
-              "end_line": 29,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 32,
-              "end_line": 39,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": ".agentworkforce/trajectories/completed/2026-07/traj_jeys3puo7jxe/trajectory.json",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 54,
-              "end_line": 60,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 82,
-              "end_line": 85,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": ".agentworkforce/trajectories/completed/2026-07/traj_l7ybh3itrj6k/summary.md",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 1,
-              "end_line": 34,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": ".agentworkforce/trajectories/completed/2026-07/traj_l7ybh3itrj6k/trajectory.json",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 1,
-              "end_line": 57,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "end_line": 23,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -126,8 +31,13 @@
           "ranges": [
             {
               "start_line": 37,
-              "end_line": 56,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "end_line": 52,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            },
+            {
+              "start_line": 115,
+              "end_line": 126,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -144,47 +54,27 @@
             {
               "start_line": 85,
               "end_line": 100,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 168,
-              "end_line": 183,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 396,
+              "end_line": 403,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 258,
-              "end_line": 273,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 1613,
+              "end_line": 1654,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 1670,
-              "end_line": 1683,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 1695,
+              "end_line": 1708,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 1881,
-              "end_line": 1891,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1911,
-              "end_line": 1939,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1947,
-              "end_line": 1953,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 4535,
-              "end_line": 4553,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 4569,
-              "end_line": 4661,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 2812,
+              "end_line": 2897,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -199,19 +89,24 @@
           },
           "ranges": [
             {
-              "start_line": 517,
-              "end_line": 531,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 421,
+              "end_line": 454,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 927,
-              "end_line": 945,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 530,
+              "end_line": 544,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 990,
-              "end_line": 999,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 779,
+              "end_line": 878,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            },
+            {
+              "start_line": 1034,
+              "end_line": 1052,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -228,67 +123,42 @@
             {
               "start_line": 1,
               "end_line": 13,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 39,
-              "end_line": 45,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 79,
+              "end_line": 98,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 63,
-              "end_line": 74,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 240,
+              "end_line": 254,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 82,
-              "end_line": 101,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 378,
+              "end_line": 393,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 243,
-              "end_line": 291,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 619,
+              "end_line": 694,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 415,
-              "end_line": 439,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 1107,
+              "end_line": 1141,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 532,
-              "end_line": 564,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 1165,
+              "end_line": 1171,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 691,
-              "end_line": 766,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1179,
-              "end_line": 1213,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1225,
-              "end_line": 1239,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1259,
-              "end_line": 1268,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1291,
-              "end_line": 1431,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1825,
-              "end_line": 1893,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 1668,
+              "end_line": 1685,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -305,27 +175,49 @@
             {
               "start_line": 5,
               "end_line": 17,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 989,
-              "end_line": 1037,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 988,
+              "end_line": 1039,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 1436,
-              "end_line": 1475,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 1481,
+              "end_line": 1518,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/headless.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 39,
+              "end_line": 52,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 1508,
-              "end_line": 1545,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 259,
+              "end_line": 265,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 1563,
-              "end_line": 1573,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 280,
+              "end_line": 286,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            },
+            {
+              "start_line": 393,
+              "end_line": 420,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -342,12 +234,12 @@
             {
               "start_line": 17,
               "end_line": 23,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 327,
-              "end_line": 382,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 342,
+              "end_line": 380,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -362,19 +254,9 @@
           },
           "ranges": [
             {
-              "start_line": 131,
-              "end_line": 137,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 145,
-              "end_line": 164,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 372,
-              "end_line": 501,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 365,
+              "end_line": 443,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -389,161 +271,64 @@
           },
           "ranges": [
             {
-              "start_line": 54,
-              "end_line": 129,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 103,
+              "end_line": 115,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 173,
-              "end_line": 185,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 140,
+              "end_line": 146,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 210,
-              "end_line": 216,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 157,
+              "end_line": 165,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 227,
-              "end_line": 235,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 199,
+              "end_line": 207,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 261,
-              "end_line": 267,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 230,
+              "end_line": 238,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 269,
-              "end_line": 277,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 253,
+              "end_line": 261,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 285,
-              "end_line": 304,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 283,
+              "end_line": 291,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 309,
               "end_line": 317,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 322,
-              "end_line": 333,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 333,
+              "end_line": 341,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 335,
-              "end_line": 343,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 352,
+              "start_line": 358,
               "end_line": 366,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 371,
-              "end_line": 379,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 379,
+              "end_line": 389,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 385,
-              "end_line": 391,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 397,
-              "end_line": 405,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 410,
-              "end_line": 416,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 421,
-              "end_line": 429,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 432,
-              "end_line": 441,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 449,
-              "end_line": 457,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 460,
-              "end_line": 466,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 470,
-              "end_line": 480,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 499,
-              "end_line": 505,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 611,
-              "end_line": 655,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1003,
-              "end_line": 1021,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1023,
-              "end_line": 1057,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1550,
-              "end_line": 1559,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1596,
-              "end_line": 1605,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1695,
-              "end_line": 1704,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1772,
-              "end_line": 1871,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "crates/relay-pty/src/pty.rs",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 880,
-              "end_line": 889,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 520,
+              "end_line": 564,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -560,42 +345,37 @@
             {
               "start_line": 24,
               "end_line": 30,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 72,
               "end_line": 83,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 128,
               "end_line": 136,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 154,
-              "end_line": 225,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "end_line": 213,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 256,
-              "end_line": 317,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 244,
+              "end_line": 305,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 481,
-              "end_line": 514,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 469,
+              "end_line": 481,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 588,
-              "end_line": 749,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 835,
-              "end_line": 861,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 555,
+              "end_line": 696,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -612,67 +392,27 @@
             {
               "start_line": 217,
               "end_line": 227,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 234,
               "end_line": 240,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 245,
-              "end_line": 264,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 246,
+              "end_line": 252,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 372,
-              "end_line": 379,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 361,
+              "end_line": 368,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 422,
-              "end_line": 438,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 544,
-              "end_line": 554,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 578,
-              "end_line": 587,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 653,
-              "end_line": 688,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 698,
-              "end_line": 707,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 787,
-              "end_line": 796,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 804,
-              "end_line": 813,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 819,
-              "end_line": 830,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 969,
-              "end_line": 1149,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 904,
+              "end_line": 1061,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -687,114 +427,79 @@
           },
           "ranges": [
             {
-              "start_line": 17,
-              "end_line": 30,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 34,
+              "end_line": 52,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 37,
-              "end_line": 55,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 162,
+              "end_line": 173,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 137,
-              "end_line": 149,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 177,
+              "end_line": 184,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 172,
-              "end_line": 196,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 478,
+              "end_line": 490,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 267,
-              "end_line": 302,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 517,
+              "end_line": 534,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 390,
-              "end_line": 396,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 419,
-              "end_line": 430,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 507,
-              "end_line": 520,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 523,
-              "end_line": 535,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 540,
-              "end_line": 553,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 560,
+              "start_line": 553,
               "end_line": 577,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 591,
-              "end_line": 624,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 610,
+              "end_line": 632,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 657,
-              "end_line": 679,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 655,
+              "end_line": 668,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 702,
-              "end_line": 715,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 693,
+              "end_line": 701,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 740,
-              "end_line": 748,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 711,
+              "end_line": 727,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 758,
-              "end_line": 777,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 786,
+              "end_line": 793,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 836,
-              "end_line": 843,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 803,
+              "end_line": 811,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 853,
-              "end_line": 861,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 816,
+              "end_line": 824,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 866,
-              "end_line": 874,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 881,
+              "end_line": 923,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 877,
-              "end_line": 890,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 939,
-              "end_line": 999,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 1001,
-              "end_line": 1010,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 935,
+              "end_line": 941,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -811,52 +516,27 @@
             {
               "start_line": 224,
               "end_line": 233,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 235,
               "end_line": 241,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 246,
-              "end_line": 265,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 247,
+              "end_line": 253,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 352,
-              "end_line": 359,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 341,
+              "end_line": 348,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 497,
-              "end_line": 508,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 517,
-              "end_line": 526,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 548,
-              "end_line": 559,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 624,
-              "end_line": 630,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 640,
-              "end_line": 646,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 750,
-              "end_line": 868,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 728,
+              "end_line": 826,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -873,72 +553,72 @@
             {
               "start_line": 24,
               "end_line": 41,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 53,
               "end_line": 58,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 99,
-              "end_line": 111,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 118,
+              "end_line": 129,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 125,
-              "end_line": 149,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 133,
+              "end_line": 140,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 289,
-              "end_line": 336,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 280,
+              "end_line": 327,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 344,
-              "end_line": 356,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 335,
+              "end_line": 347,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 372,
-              "end_line": 401,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 368,
+              "end_line": 388,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 425,
-              "end_line": 443,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 412,
+              "end_line": 430,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 466,
-              "end_line": 479,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 453,
+              "end_line": 466,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 504,
-              "end_line": 512,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 491,
+              "end_line": 499,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 522,
-              "end_line": 541,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 509,
+              "end_line": 525,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 596,
-              "end_line": 603,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 580,
+              "end_line": 587,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 610,
-              "end_line": 617,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 594,
+              "end_line": 601,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 622,
-              "end_line": 629,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 606,
+              "end_line": 613,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -955,27 +635,22 @@
             {
               "start_line": 59,
               "end_line": 66,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 111,
               "end_line": 117,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 339,
-              "end_line": 351,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 368,
+              "end_line": 406,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 374,
-              "end_line": 412,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 489,
-              "end_line": 519,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 483,
+              "end_line": 513,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -992,42 +667,32 @@
             {
               "start_line": 18,
               "end_line": 25,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 67,
-              "end_line": 79,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 80,
+              "end_line": 91,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 87,
-              "end_line": 98,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 111,
+              "end_line": 117,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 113,
-              "end_line": 126,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 122,
+              "end_line": 128,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 131,
-              "end_line": 137,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 273,
+              "end_line": 286,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 282,
-              "end_line": 299,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 303,
-              "end_line": 320,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 353,
-              "end_line": 360,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 333,
+              "end_line": 340,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -1044,17 +709,12 @@
             {
               "start_line": 1,
               "end_line": 19,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 219,
-              "end_line": 256,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 298,
-              "end_line": 735,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 266,
+              "end_line": 604,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -1069,24 +729,14 @@
           },
           "ranges": [
             {
-              "start_line": 154,
-              "end_line": 211,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 214,
+              "end_line": 267,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 218,
-              "end_line": 224,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 243,
-              "end_line": 309,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
-            },
-            {
-              "start_line": 423,
-              "end_line": 778,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 381,
+              "end_line": 688,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -1101,19 +751,19 @@
           },
           "ranges": [
             {
-              "start_line": 128,
-              "end_line": 151,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 135,
+              "end_line": 153,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 685,
-              "end_line": 705,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 737,
+              "end_line": 761,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
-              "start_line": 709,
-              "end_line": 717,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "start_line": 782,
+              "end_line": 798,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -1130,7 +780,7 @@
             {
               "start_line": 304,
               "end_line": 311,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -1147,7 +797,7 @@
             {
               "start_line": 476,
               "end_line": 492,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
@@ -1164,12 +814,78 @@
             {
               "start_line": 61,
               "end_line": 77,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             },
             {
               "start_line": 154,
               "end_line": 179,
-              "revision": "ddc34a757c7cf2bcf6be47dcafbaa47946dfbf16"
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/harness-driver/src/subscribe-worker-stream.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 126,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/harness-driver/src/transport.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 226,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/harness-driver/src/transport.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 69,
+              "end_line": 79,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            },
+            {
+              "start_line": 407,
+              "end_line": 413,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            },
+            {
+              "start_line": 500,
+              "end_line": 528,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
+            },
+            {
+              "start_line": 545,
+              "end_line": 570,
+              "revision": "f9da58263cde1f6123f28b9ab0cb2eccbf586035"
             }
           ]
         }
