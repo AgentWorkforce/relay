@@ -5,6 +5,13 @@ use relaycast::{CreateObserverTokenRequest, ObserverScope};
 /// when the caller doesn't supply one.
 const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
 
+/// How long the broker waits for a worker's `write_pty_response` before it
+/// fails a PTY input ack. Keeps `PtyInputStream.send()` from hanging forever
+/// when a worker wedges or dies mid-write; the deadline sweep in `reap_tick`
+/// enforces it. Short because a confirmed PTY write is a local pipe → drainer
+/// round-trip that resolves in well under a second on a healthy worker.
+const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Scopes granted to observer tokens minted via `/api/observer-token`: broad
 /// read access to workspace activity, deliberately excluding anything
 /// write/spawn-capable (unlike the raw `rk_live_...` workspace key this
@@ -983,29 +990,49 @@ impl BrokerRuntime {
                 {
                     None => {
                         let _ =
-                            reply.send(Err(format!("agent_not_found: no worker named '{name}'")));
+                            reply.send(Err(worker_request::RequestWorkerError::WorkerNotFound(
+                                format!("no worker named '{name}'"),
+                            )));
                     }
                     Some(AgentRuntime::Headless) => {
-                        let _ = reply.send(Err(format!(
-                            "unsupported_runtime: worker '{name}' is headless; pty input is only supported on PTY workers"
-                        )));
+                        let _ = reply.send(Err(
+                            worker_request::RequestWorkerError::UnsupportedRuntime(format!(
+                                "worker '{name}' is headless; pty input is only supported on PTY workers"
+                            )),
+                        ));
                     }
                     Some(AgentRuntime::Pty) => {
+                        // Ship the write and park the reply in `pending_requests`
+                        // keyed by `request_id`. The worker replies with a
+                        // `write_pty_response` frame only after the drainer
+                        // confirms the bytes reached the child (or failed), which
+                        // the generic `*_response` routing fulfils. The deadline
+                        // sweep (`reap_tick`) and worker-teardown paths fail the
+                        // reply if the worker dies mid-write, so a client's
+                        // `send()` never hangs on a dead worker.
+                        let request_id = RequestId::new(format!("api_{}", Uuid::new_v4().simple()));
                         if let Err(err) = workers
                             .send_to_worker(
                                 &name,
                                 "write_pty",
-                                Some(RequestId::new(format!("api_{}", Uuid::new_v4().simple()))),
+                                Some(request_id.clone()),
                                 json!({ "data": data }),
                             )
                             .await
                         {
-                            let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            let _ = reply.send(Err(
+                                worker_request::RequestWorkerError::SendFailed(err.to_string()),
+                            ));
                         } else {
-                            let _ = reply.send(Ok(json!({
-                                "name": name,
-                                "bytes_written": data.len(),
-                            })));
+                            pending_requests.insert(
+                                request_id.into_string(),
+                                worker_request::PendingRequest {
+                                    kind: "write_pty".to_string(),
+                                    worker_name: name.into_string(),
+                                    reply,
+                                    deadline: Instant::now() + PTY_INPUT_ACK_TIMEOUT,
+                                },
+                            );
                         }
                     }
                 }
@@ -1453,6 +1480,38 @@ impl BrokerRuntime {
                         "inbound delivery mode updated"
                     );
                     if previous != mode {
+                        // Toggle the worker-side interactive hold across a
+                        // manual_flush boundary so worker automation (pending
+                        // injections, auto-enter, prompt auto-responders) can't
+                        // splice into a human's drive. Only PTY workers run that
+                        // automation; headless workers don't handle the frame.
+                        let entered_manual = mode == InboundDeliveryMode::ManualFlush;
+                        let left_manual = previous == InboundDeliveryMode::ManualFlush;
+                        if (entered_manual || left_manual)
+                            && workers
+                                .workers
+                                .get(&name)
+                                .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                                .unwrap_or(false)
+                        {
+                            if let Err(err) = workers
+                                .send_to_worker(
+                                    &name,
+                                    "set_interactive_hold",
+                                    None,
+                                    json!({ "hold": entered_manual }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    hold = entered_manual,
+                                    error = %err,
+                                    "failed to send interactive hold to worker"
+                                );
+                            }
+                        }
                         let _ = send_event(
                             sdk_out_tx,
                             json!({

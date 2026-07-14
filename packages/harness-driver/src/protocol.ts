@@ -476,6 +476,17 @@ export type BrokerToWorker =
   | {
       type: 'resize_pty';
       payload: { rows: number; cols: number };
+    }
+  | {
+      /**
+       * Pause (`hold: true`) or resume (`hold: false`) worker-side automation
+       * while a human drives the PTY. Sent when the inbound delivery mode flips
+       * to/from `manual_flush`. While held the worker stops popping pending
+       * injections, freezes any in-flight injection, and gates its auto-enter
+       * and prompt auto-responders.
+       */
+      type: 'set_interactive_hold';
+      payload: { hold: boolean };
     };
 
 export type WorkerToBroker =
