@@ -66,6 +66,23 @@ export interface FleetTriggerSyncClient {
 }
 
 /**
+ * Structured logger the serve runtime writes to. The shape matches
+ * `@agent-relay/utils`' `createLogger` so the CLI can inject that logger
+ * directly, but fleet depends on nothing to keep the seam a plain interface:
+ * a host may supply any sink (stdout, a file, a JSON collector).
+ *
+ * Each method takes a human message plus an optional structured `extra` bag —
+ * `{ node, capability, action, invocationId, ms, ... }` — so file/JSON adapters
+ * can key on the fields rather than parse the message.
+ */
+export interface FleetLogger {
+  debug(message: string, extra?: Record<string, unknown>): void;
+  info(message: string, extra?: Record<string, unknown>): void;
+  warn(message: string, extra?: Record<string, unknown>): void;
+  error(message: string, extra?: Record<string, unknown>): void;
+}
+
+/**
  * Options for {@link serveNode} / {@link startServeNode}.
  */
 export interface ServeNodeOptions {
@@ -86,9 +103,36 @@ export interface ServeNodeOptions {
   maxAgentsOverride?: number;
   reconnect?: boolean;
   signal?: AbortSignal;
+  /**
+   * Structured sink for lifecycle and per-invocation events. Preferred over
+   * `log`/`warn`: capability registration and every action hitting the node are
+   * emitted here with structured `extra` fields. When omitted, `log`/`warn`
+   * receive the same events as plain messages.
+   */
+  logger?: FleetLogger;
   log?: (message: string) => void;
   warn?: (message: string) => void;
   onRegistered?: (info: ReturnType<typeof nodeInfo>) => void;
+}
+
+/**
+ * Resolve a {@link FleetLogger} from the serve options. An injected `logger`
+ * wins; otherwise the legacy `log`/`warn` callbacks are adapted (info/debug →
+ * `log`, warn/error → `warn`), with a no-op fallback so callers can pass
+ * neither.
+ */
+function resolveLogger(options: ServeNodeOptions): FleetLogger {
+  if (options.logger) {
+    return options.logger;
+  }
+  const info = options.log ?? (() => undefined);
+  const warn = options.warn ?? (() => undefined);
+  return {
+    debug: (message) => info(message),
+    info: (message) => info(message),
+    warn: (message) => warn(message),
+    error: (message) => warn(message),
+  };
 }
 
 /**
@@ -138,6 +182,7 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
   const providerName = options.providerName ?? options.definition.name;
   const maxAgents = options.maxAgentsOverride ?? options.definition.maxAgents;
   const reconnect = options.reconnect ?? true;
+  const logger = resolveLogger(options);
 
   const client = new NodeProviderClient({
     ...(options.connection.baseUrl ? { baseUrl: options.connection.baseUrl } : {}),
@@ -152,7 +197,10 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     ...(reconnect ? {} : { maxReconnectAttempts: 0 }),
     onError: (error) => {
       if (!options.signal?.aborted) {
-        options.warn?.(`Fleet node error: ${errorMessage(error)}`);
+        logger.warn(`Fleet node error: ${errorMessage(error)}`, {
+          node: nodeName,
+          error: errorMessage(error),
+        });
       }
     },
   });
@@ -161,7 +209,13 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     // Both `action` and `spawn` definitions materialize as invokable `action`
     // capabilities: a `spawn:<harness>` definition shadows the node's native
     // capacity, delegating through `ctx.spawnAgent`.
-    client.capability(name, { kind: 'action' }, adaptHandler(options, name));
+    const kind = options.definition.capabilities[name]?.kind;
+    logger.debug(`Capability "${name}" registered`, {
+      node: nodeName,
+      capability: name,
+      ...(kind ? { kind } : {}),
+    });
+    client.capability(name, { kind: 'action' }, adaptHandler(options, name, logger));
   }
 
   const abort = () => {
@@ -190,11 +244,11 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     name: nodeName,
     ...(maxAgents !== undefined ? { maxAgents } : {}),
   });
-  await syncTriggers(options);
-  options.log?.(
-    `Fleet node "${nodeName}" registered provider "${providerName}" with ${
-      Object.keys(options.definition.capabilities).length
-    } capabilities.`
+  await syncTriggers(options, logger);
+  const capabilityCount = Object.keys(options.definition.capabilities).length;
+  logger.info(
+    `Fleet node "${nodeName}" registered provider "${providerName}" with ${capabilityCount} capabilities.`,
+    { node: nodeName, capabilities: capabilityCount }
   );
 
   try {
@@ -208,10 +262,37 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
  * Adapt a fleet capability handler to the engine node-provider handler contract:
  * validate the input against the capability schema (via {@link invokeNodeHandler})
  * and expose the fleet action context built from the engine handler context.
+ *
+ * Every invocation is logged invoked → completed/failed with the elapsed ms and
+ * structured `{ node, action, kind, invocationId }` fields, so a file/JSON sink
+ * can group a node's activity by node and by capability kind (spawn vs action).
  */
-function adaptHandler(options: ServeNodeOptions, name: string): NodeCapabilityHandler {
-  return (input, nodeCtx) =>
-    invokeNodeHandler(options.definition, name, input, makeContext(options, nodeCtx, name));
+function adaptHandler(options: ServeNodeOptions, name: string, logger: FleetLogger): NodeCapabilityHandler {
+  const node = options.nameOverride ?? options.definition.name;
+  const kind = options.definition.capabilities[name]?.kind;
+  const base = { node, action: name, ...(kind ? { kind } : {}) };
+  return async (input, nodeCtx) => {
+    const context = { ...base, invocationId: nodeCtx.invocationId };
+    logger.info(`Action "${name}" invoked`, context);
+    const startedAt = Date.now();
+    try {
+      const output = await invokeNodeHandler(
+        options.definition,
+        name,
+        input,
+        makeContext(options, nodeCtx, name)
+      );
+      logger.info(`Action "${name}" completed`, { ...context, ms: Date.now() - startedAt });
+      return output;
+    } catch (error) {
+      logger.warn(`Action "${name}" failed`, {
+        ...context,
+        ms: Date.now() - startedAt,
+        error: errorMessage(error),
+      });
+      throw error;
+    }
+  };
 }
 
 // The engine handler context takes wire-JSON shapes; the fleet authoring API
@@ -280,7 +361,7 @@ function buildSpawnInput(
   } as unknown as NodeSpawnInput;
 }
 
-async function syncTriggers(options: ServeNodeOptions): Promise<void> {
+async function syncTriggers(options: ServeNodeOptions, logger: FleetLogger): Promise<void> {
   const triggers = triggerSyncInputs(options.definition);
   if (triggers.length === 0 || !options.triggers) {
     return;
@@ -327,7 +408,10 @@ async function syncTriggers(options: ServeNodeOptions): Promise<void> {
       })
     );
   } catch (error) {
-    options.warn?.(`Fleet trigger sync skipped: ${errorMessage(error)}`);
+    logger.warn(`Fleet trigger sync skipped: ${errorMessage(error)}`, {
+      node: options.nameOverride ?? options.definition.name,
+      error: errorMessage(error),
+    });
   }
 }
 
@@ -350,7 +434,7 @@ function triggerSyncKey(trigger: {
     trigger.channel ?? '',
     trigger.pattern ?? '',
     String(normalizeTriggerMention(trigger.mention)),
-  ].join('\u001f');
+  ].join('');
 }
 
 function triggerEquals(

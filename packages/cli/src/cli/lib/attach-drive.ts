@@ -506,6 +506,7 @@ interface DriveSessionState {
   connection: BrokerConnection;
   name: string;
   previousMode: InboundDeliveryMode | null;
+  sessionRevision: string | null;
   initialPending: number;
   /**
    * `event_id`s already reflected in `initialPending`. The event WS replays
@@ -540,7 +541,7 @@ interface DriveSessionState {
  * exit path. Resolves with the exit code the CLI should propagate.
  */
 function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies): Promise<number> {
-  const { connection, name, previousMode, seededEventIds } = state;
+  const { connection, name, previousMode, sessionRevision, seededEventIds } = state;
 
   // Connect with a `sinceSeq` cutoff so the broker replays only events after
   // attach — historical durable events must not inflate the pending counter.
@@ -769,6 +770,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         name,
         previousMode,
         'manual_flush',
+        sessionRevision,
         'drive',
         deps
       ).finally(() => {
@@ -937,7 +939,7 @@ export async function runDriveSession(
     deps
   );
   if (!flipResult) return 1;
-  const { previousMode } = flipResult;
+  const { previousMode, sessionRevision } = flipResult;
 
   // The mode is now flipped to `manual_flush`, but the terminal is still cooked
   // and we have several awaited HTTP round-trips (pending, cutoff, snapshot,
@@ -958,7 +960,15 @@ export async function runDriveSession(
         // best effort
       }
     }
-    await restoreInboundDeliveryModeOnDetach(connection, name, previousMode, 'manual_flush', 'drive', deps);
+    await restoreInboundDeliveryModeOnDetach(
+      connection,
+      name,
+      previousMode,
+      'manual_flush',
+      sessionRevision,
+      'drive',
+      deps
+    );
     deps.exit(0);
   };
   const disposeEarlySignals = (): void => {
@@ -1000,6 +1010,7 @@ export async function runDriveSession(
       connection,
       name,
       previousMode,
+      sessionRevision,
       initialPending,
       seededEventIds,
       initialLocalSize,

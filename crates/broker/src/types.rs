@@ -196,6 +196,10 @@ pub struct InjectRequest {
 #[derive(Debug, Default)]
 pub struct InboundDeliveryState {
     pub mode: InboundDeliveryMode,
+    /// Monotonic generation advanced by every successful mode write, including
+    /// same-value writes. Detach restores compare this generation so an ABA
+    /// sequence cannot make a concurrent session look unchanged.
+    pub revision: u64,
     pub pending: std::collections::VecDeque<PendingRelayMessage>,
 }
 
@@ -248,8 +252,27 @@ impl InboundDeliveryState {
     pub fn new(mode: InboundDeliveryMode) -> Self {
         Self {
             mode,
+            revision: 0,
             pending: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Apply a mode write and advance its generation even when the enum value
+    /// is unchanged. Returning the prior mode keeps transition side effects at
+    /// the broker runtime boundary.
+    pub fn set_mode(&mut self, mode: InboundDeliveryMode) -> InboundDeliveryMode {
+        let previous = self.mode;
+        self.mode = mode;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("inbound delivery mode revision exhausted");
+        previous
+    }
+
+    /// Whether a detach restore still owns the exact mode generation it set.
+    pub fn matches_mode_guard(&self, mode: InboundDeliveryMode, revision: u64) -> bool {
+        self.mode == mode && self.revision == revision
     }
 
     /// Push a pending message, evicting the oldest entry when the
@@ -321,6 +344,20 @@ mod inbound_delivery_tests {
             queued_at_ms: 0,
             event_id: None,
         }
+    }
+
+    #[test]
+    fn mode_revision_rejects_an_aba_restore() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::AutoInject);
+        state.set_mode(InboundDeliveryMode::ManualFlush);
+        let session_revision = state.revision;
+        assert!(state.matches_mode_guard(InboundDeliveryMode::ManualFlush, session_revision));
+
+        state.set_mode(InboundDeliveryMode::AutoInject);
+        state.set_mode(InboundDeliveryMode::ManualFlush);
+
+        assert_eq!(state.mode, InboundDeliveryMode::ManualFlush);
+        assert!(!state.matches_mode_guard(InboundDeliveryMode::ManualFlush, session_revision));
     }
 
     #[test]

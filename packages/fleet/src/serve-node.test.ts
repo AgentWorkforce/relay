@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { action, defineNode, spawn } from './index.js';
-import { startServeNode, type FleetTriggerSyncClient } from './serve-node.js';
+import { startServeNode, type FleetLogger, type FleetTriggerSyncClient } from './serve-node.js';
 
 /**
  * A fake node-ws server: captures frames the client sends and lets the test
@@ -306,5 +306,105 @@ describe('serveNode', () => {
       { channel: '#deploys', pattern: undefined, mention: undefined, actionName: 'deploy', enabled: true },
     ]);
     await running.stop();
+  });
+
+  describe('structured logging', () => {
+    function recordingLogger() {
+      const entries: Array<{ level: string; message: string; extra?: Record<string, unknown> }> = [];
+      const record = (level: string) => (message: string, extra?: Record<string, unknown>) => {
+        entries.push({ level, message, ...(extra ? { extra } : {}) });
+      };
+      const logger: FleetLogger = {
+        debug: record('debug'),
+        info: record('info'),
+        warn: record('warn'),
+        error: record('error'),
+      };
+      return { logger, entries };
+    }
+
+    function loggingNode() {
+      return defineNode({
+        name: 'test-node',
+        capabilities: {
+          echo: action({ input: z.object({ value: z.string() }) }, async (input) => input),
+          explode: action({}, async () => {
+            throw new Error('boom');
+          }),
+        },
+      });
+    }
+
+    it('logs each registered capability at debug and a registration summary at info', async () => {
+      const { logger, entries } = recordingLogger();
+      const running = startServeNode({ definition: loggingNode(), connection, reconnect: false, logger });
+      const sock = socket();
+      sock.open();
+      sock.emit(acceptAll(sock.lastRegister()));
+      await flush();
+
+      const capabilities = entries.filter((entry) => entry.message.startsWith('Capability'));
+      expect(capabilities.map((entry) => entry.extra?.capability)).toEqual(['echo', 'explode']);
+      expect(capabilities.every((entry) => entry.level === 'debug')).toBe(true);
+      expect(capabilities[0]?.extra).toMatchObject({ node: 'test-node', capability: 'echo', kind: 'action' });
+
+      const summary = entries.find((entry) => entry.message.includes('with 2 capabilities'));
+      expect(summary?.level).toBe('info');
+      expect(summary?.extra).toMatchObject({ node: 'test-node', capabilities: 2 });
+
+      await running.stop();
+    });
+
+    it('logs an action invocation and its completion with a duration', async () => {
+      const { logger, entries } = recordingLogger();
+      const running = startServeNode({ definition: loggingNode(), connection, reconnect: false, logger });
+      const sock = socket();
+      sock.open();
+      sock.emit(acceptAll(sock.lastRegister()));
+      await flush();
+
+      sock.emit({
+        v: 1,
+        type: 'action.invoke',
+        invocation_id: 'inv-1',
+        action: 'echo',
+        input: { value: 'hi' },
+      });
+      await flush();
+
+      const invoked = entries.find((entry) => entry.message === 'Action "echo" invoked');
+      expect(invoked?.level).toBe('info');
+      expect(invoked?.extra).toMatchObject({
+        node: 'test-node',
+        action: 'echo',
+        kind: 'action',
+        invocationId: 'inv-1',
+      });
+
+      const completed = entries.find((entry) => entry.message === 'Action "echo" completed');
+      expect(completed?.level).toBe('info');
+      expect(completed?.extra).toMatchObject({ node: 'test-node', action: 'echo', invocationId: 'inv-1' });
+      expect(typeof completed?.extra?.ms).toBe('number');
+
+      await running.stop();
+    });
+
+    it('logs a failed action as a warning carrying the error', async () => {
+      const { logger, entries } = recordingLogger();
+      const running = startServeNode({ definition: loggingNode(), connection, reconnect: false, logger });
+      const sock = socket();
+      sock.open();
+      sock.emit(acceptAll(sock.lastRegister()));
+      await flush();
+
+      sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'inv-2', action: 'explode', input: {} });
+      await flush();
+
+      const failed = entries.find((entry) => entry.message === 'Action "explode" failed');
+      expect(failed?.level).toBe('warn');
+      expect(failed?.extra).toMatchObject({ action: 'explode', invocationId: 'inv-2', error: 'boom' });
+
+      await running.stop();
+    });
   });
 });
