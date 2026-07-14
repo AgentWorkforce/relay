@@ -19,7 +19,8 @@ Rebased PR #1098 onto main: resolved 9 conflicts, adapted local->node CLI rename
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename): Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename)
 - Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature: Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature

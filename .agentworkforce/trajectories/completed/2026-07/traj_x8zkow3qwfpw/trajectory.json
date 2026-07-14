@@ -58,9 +58,7 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "defd3305"
-  ],
+  "commits": ["defd3305"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_x8zkow3qwfpw/trajectory.json",
     "CHANGELOG.md",
