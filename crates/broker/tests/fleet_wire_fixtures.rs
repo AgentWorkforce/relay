@@ -113,6 +113,7 @@ fn fleet_wire_fixtures_round_trip_semantically() {
             assert_eq!(agent_register.agent_id, "agt_01J7FLEET000000000000101");
             assert_eq!(agent_register.token, "at_live_0123456789abcdef01234567");
             assert_eq!(agent_register.name.as_deref(), Some("codex-builder-1"));
+            assert_eq!(agent_register.delivery_ack_seq, Some(42));
         }
     }
 

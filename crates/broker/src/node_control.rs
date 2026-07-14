@@ -61,10 +61,11 @@ pub(crate) struct FleetControlConfig {
     pub(crate) session_token: Option<std::sync::Arc<std::sync::RwLock<Option<String>>>>,
 }
 
-/// Re-mints a fresh node token via `POST /v1/nodes` and rewrites the
-/// workspace-scoped cache, used to recover from a stale/rejected cached token
-/// (HTTP 401 on the node-control handshake) instead of looping forever on the
-/// same token. Mirrors the initial mint wired in `runtime::init::resolve_node_token`.
+/// Mints node tokens via `POST /v1/nodes` and maintains the workspace-scoped
+/// cache. Held by the node-control client, which uses it both for the initial
+/// mint (when no token is cached — see [`NodeTokenMinter::mint`]) and to recover
+/// from a stale/rejected cached token (HTTP 401 on the node-control handshake —
+/// see [`NodeTokenMinter::remint`]) instead of looping forever on the same token.
 #[derive(Clone)]
 pub(crate) struct NodeTokenMinter {
     pub(crate) workspace_key: String,
@@ -79,24 +80,11 @@ pub(crate) struct NodeTokenMinter {
 }
 
 impl NodeTokenMinter {
-    /// Discard the cached token for this workspace and mint a fresh one. Returns
-    /// the new token on success. On failure the caller surfaces a loud error and
-    /// backs off rather than looping on the rejected token.
-    async fn remint(&self) -> Option<String> {
-        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
-        // stale token behind for the next start.
-        if let Some(path) = self.token_path.as_deref() {
-            if let Err(error) = fs::remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %self.node_id,
-                        error = %error,
-                        "failed to clear rejected node token cache before re-mint"
-                    );
-                }
-            }
-        }
+    /// Mint a fresh node token via `POST /v1/nodes` and persist it to the
+    /// workspace-scoped cache. Returns the new token on success, or `None` after
+    /// logging the failure so the caller can back off and retry. Used for the
+    /// initial mint (no cached token) and as the shared body of [`Self::remint`].
+    async fn mint(&self) -> Option<String> {
         let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
         match mint_node_token(
             &self.workspace_key,
@@ -122,7 +110,7 @@ impl NodeTokenMinter {
                             target = "relay_broker::fleet",
                             node_id = %self.node_id,
                             error = %error,
-                            "failed to persist re-minted node token"
+                            "failed to persist minted node token"
                         );
                     }
                 }
@@ -130,7 +118,7 @@ impl NodeTokenMinter {
                     target = "relay_broker::fleet",
                     node_id = %self.node_id,
                     workspace_id = %self.workspace_id,
-                    "re-minted node token after node-control 401"
+                    "minted node token via create_node"
                 );
                 Some(token)
             }
@@ -140,11 +128,32 @@ impl NodeTokenMinter {
                     &self.node_id,
                     &self.workspace_id,
                     &error,
-                    "failed to re-mint node token after node-control 401",
+                    "failed to mint node token via create_node",
                 );
                 None
             }
         }
+    }
+
+    /// Discard the cached token for this workspace and mint a fresh one. Returns
+    /// the new token on success. On failure the caller surfaces a loud error and
+    /// backs off rather than looping on the rejected token.
+    async fn remint(&self) -> Option<String> {
+        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
+        // stale token behind for the next start.
+        if let Some(path) = self.token_path.as_deref() {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        error = %error,
+                        "failed to clear rejected node token cache before re-mint"
+                    );
+                }
+            }
+        }
+        self.mint().await
     }
 }
 
@@ -475,6 +484,7 @@ pub(crate) struct AgentRegistrationToken {
     pub(crate) name: String,
     pub(crate) agent_id: String,
     pub(crate) token: String,
+    pub(crate) delivery_ack_seq: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -514,6 +524,7 @@ pub(crate) enum DeliveryDecision {
     Duplicate { up_to_seq: u64 },
     Stale { up_to_seq: u64 },
     Gap { up_to_seq: u64 },
+    IdentityReject,
 }
 
 /// Per-agent set of recently-seen `msg_id`s, capped at a fixed size with FIFO
@@ -522,7 +533,7 @@ pub(crate) enum DeliveryDecision {
 /// receipts, action results) all share seq 0, so `msg_id`-based dedup is the
 /// only duplicate-suppression mechanism available for them; the cap is generous
 /// enough that legitimate same-frame retries are still recognized.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct SeenMsgIds {
     set: HashSet<String>,
     order: VecDeque<String>,
@@ -549,24 +560,186 @@ impl SeenMsgIds {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct AgentDeliveryCursor {
+    agent_name: String,
     up_to_seq: u64,
     seen_msg_ids: SeenMsgIds,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveAgentBinding {
+    agent_id: String,
+    authoritative: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FleetDeliveryBook {
     agents: HashMap<String, AgentDeliveryCursor>,
+    active_agent_bindings_by_name: HashMap<String, ActiveAgentBinding>,
+    active_agent_names_by_id: HashMap<String, String>,
+    retired_agent_names_by_id: HashMap<String, String>,
+    retired_agent_id_order: VecDeque<String>,
 }
 
 impl FleetDeliveryBook {
-    #[cfg(test)]
-    pub(crate) fn seed_ack(&mut self, agent: impl Into<String>, up_to_seq: u64) {
-        self.agents.entry(agent.into()).or_default().up_to_seq = up_to_seq;
+    const RETIRED_AGENT_ID_CAPACITY: usize = 512;
+
+    fn forget_retired_identity(&mut self, agent_id: &str) {
+        if self.retired_agent_names_by_id.remove(agent_id).is_some() {
+            self.retired_agent_id_order
+                .retain(|retired_id| retired_id != agent_id);
+        }
+    }
+
+    fn retire_identity(&mut self, agent_id: String, agent_name: String) {
+        self.forget_retired_identity(&agent_id);
+        while self.retired_agent_id_order.len() >= Self::RETIRED_AGENT_ID_CAPACITY {
+            if let Some(evicted) = self.retired_agent_id_order.pop_front() {
+                self.retired_agent_names_by_id.remove(&evicted);
+            }
+        }
+        self.retired_agent_names_by_id
+            .insert(agent_id.clone(), agent_name);
+        self.retired_agent_id_order.push_back(agent_id);
+    }
+
+    fn nonauthoritative_binding_conflicts(&self, agent: &str, agent_id: &str) -> bool {
+        self.active_agent_bindings_by_name
+            .get(agent)
+            .is_some_and(|binding| binding.authoritative && binding.agent_id != agent_id)
+            || self
+                .active_agent_names_by_id
+                .get(agent_id)
+                .is_some_and(|active_name| active_name != agent)
+            || self.retired_agent_names_by_id.contains_key(agent_id)
+    }
+
+    fn bind_identity(&mut self, agent: &str, agent_id: &str, authoritative: bool) -> bool {
+        if !authoritative && self.nonauthoritative_binding_conflicts(agent, agent_id) {
+            return false;
+        }
+
+        self.forget_retired_identity(agent_id);
+
+        if let Some(previous_name) = self
+            .active_agent_names_by_id
+            .get(agent_id)
+            .filter(|previous_name| previous_name.as_str() != agent)
+            .cloned()
+        {
+            if self
+                .active_agent_bindings_by_name
+                .get(&previous_name)
+                .is_some_and(|binding| binding.agent_id == agent_id)
+            {
+                self.active_agent_bindings_by_name.remove(&previous_name);
+            }
+            self.active_agent_names_by_id.remove(agent_id);
+            if let Some(cursor) = self.agents.get_mut(agent_id) {
+                cursor.agent_name = agent.to_string();
+            }
+        }
+
+        if let Some(existing) = self.active_agent_bindings_by_name.get_mut(agent) {
+            if existing.agent_id == agent_id {
+                existing.authoritative |= authoritative;
+                self.active_agent_names_by_id
+                    .insert(agent_id.to_string(), agent.to_string());
+                return true;
+            }
+        }
+
+        if let Some(previous) = self.active_agent_bindings_by_name.remove(agent) {
+            self.active_agent_names_by_id.remove(&previous.agent_id);
+            self.agents.remove(&previous.agent_id);
+            self.retire_identity(previous.agent_id, agent.to_string());
+        }
+
+        self.active_agent_bindings_by_name.insert(
+            agent.to_string(),
+            ActiveAgentBinding {
+                agent_id: agent_id.to_string(),
+                authoritative,
+            },
+        );
+        self.active_agent_names_by_id
+            .insert(agent_id.to_string(), agent.to_string());
+        true
+    }
+
+    /// Bind a name to the immutable identity confirmed by `agent.register`.
+    pub(crate) fn bind_authoritative_identity(
+        &mut self,
+        agent: impl Into<String>,
+        agent_id: impl Into<String>,
+    ) {
+        let agent = agent.into();
+        let agent_id = agent_id.into();
+        self.bind_identity(&agent, &agent_id, true);
+    }
+
+    /// Seed Relaycast's cumulative cursor after identity authority is bound.
+    pub(crate) fn seed_cursor(
+        &mut self,
+        agent: impl Into<String>,
+        agent_id: impl Into<String>,
+        up_to_seq: u64,
+    ) {
+        let agent = agent.into();
+        let agent_id = agent_id.into();
+        debug_assert!(self
+            .active_agent_bindings_by_name
+            .get(&agent)
+            .is_some_and(|binding| binding.agent_id == agent_id));
+        self.agents.insert(
+            agent_id,
+            AgentDeliveryCursor {
+                agent_name: agent,
+                up_to_seq,
+                seen_msg_ids: SeenMsgIds::default(),
+            },
+        );
+    }
+
+    fn active_up_to_seq(&self, agent: &str) -> u64 {
+        self.active_agent_bindings_by_name
+            .get(agent)
+            .and_then(|binding| self.agents.get(&binding.agent_id))
+            .map_or(0, |cursor| cursor.up_to_seq)
     }
 
     pub(crate) fn observe(&self, deliver: &Deliver) -> DeliveryDecision {
+        if self
+            .active_agent_names_by_id
+            .get(&deliver.agent_id)
+            .is_some_and(|active_name| active_name != &deliver.agent)
+        {
+            return DeliveryDecision::IdentityReject;
+        }
+
+        if let Some(retired_name) = self.retired_agent_names_by_id.get(&deliver.agent_id) {
+            if retired_name != &deliver.agent {
+                return DeliveryDecision::IdentityReject;
+            }
+            return DeliveryDecision::Stale {
+                up_to_seq: self.active_up_to_seq(&deliver.agent),
+            };
+        }
+
+        if self
+            .active_agent_bindings_by_name
+            .get(&deliver.agent)
+            .is_some_and(|binding| binding.authoritative && binding.agent_id != deliver.agent_id)
+        {
+            return DeliveryDecision::IdentityReject;
+        }
+
+        let cursor = self.agents.get(&deliver.agent_id);
+        if cursor.is_some_and(|cursor| cursor.agent_name != deliver.agent) {
+            return DeliveryDecision::IdentityReject;
+        }
+
         // `seq:0` is the engine's fan-out family (reactions, read receipts, and
         // action.completed/action.failed/action.denied results delivered to the
         // caller). These share seq 0, so they bypass the monotonic-sequence gate
@@ -574,17 +747,19 @@ impl FleetDeliveryBook {
         // suppression. The cumulative ack reports the current cursor (the engine
         // ack is monotonic, so re-acking up_to_seq for a seq-0 frame is a no-op).
         if deliver.seq == 0 {
-            let up_to_seq = self.agents.get(&deliver.agent).map_or(0, |c| c.up_to_seq);
-            if self
-                .agents
-                .get(&deliver.agent)
-                .is_some_and(|c| c.seen_msg_ids.contains(&deliver.msg_id))
-            {
-                return DeliveryDecision::Duplicate { up_to_seq };
+            if let Some(cursor) = cursor {
+                if cursor.seen_msg_ids.contains(&deliver.msg_id) {
+                    return DeliveryDecision::Duplicate {
+                        up_to_seq: cursor.up_to_seq,
+                    };
+                }
+                return DeliveryDecision::Deliver {
+                    up_to_seq: cursor.up_to_seq,
+                };
             }
-            return DeliveryDecision::Deliver { up_to_seq };
+            return DeliveryDecision::Deliver { up_to_seq: 0 };
         }
-        let Some(cursor) = self.agents.get(&deliver.agent) else {
+        let Some(cursor) = cursor else {
             return if deliver.seq == 1 {
                 DeliveryDecision::Deliver { up_to_seq: 1 }
             } else {
@@ -615,7 +790,17 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
-        let cursor = self.agents.entry(deliver.agent.clone()).or_default();
+        if !self.bind_identity(&deliver.agent, &deliver.agent_id, false) {
+            return self.active_up_to_seq(&deliver.agent);
+        }
+        let cursor = self
+            .agents
+            .entry(deliver.agent_id.clone())
+            .or_insert_with(|| AgentDeliveryCursor {
+                agent_name: deliver.agent.clone(),
+                ..AgentDeliveryCursor::default()
+            });
+        cursor.agent_name.clone_from(&deliver.agent);
         // seq:0 fan-out frames never advance the sequence cursor; they are
         // deduped purely by msg_id.
         if deliver.seq == 0 {
@@ -630,7 +815,22 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn remove_agent(&mut self, agent: &str) {
-        self.agents.remove(agent);
+        if let Some(binding) = self.active_agent_bindings_by_name.remove(agent) {
+            self.active_agent_names_by_id.remove(&binding.agent_id);
+            self.agents.remove(&binding.agent_id);
+            self.retire_identity(binding.agent_id, agent.to_string());
+        }
+        let orphaned_ids = self
+            .agents
+            .iter()
+            .filter(|(_, cursor)| cursor.agent_name == agent)
+            .map(|(agent_id, _)| agent_id.clone())
+            .collect::<Vec<_>>();
+        for agent_id in orphaned_ids {
+            self.agents.remove(&agent_id);
+            self.active_agent_names_by_id.remove(&agent_id);
+            self.retire_identity(agent_id, agent.to_string());
+        }
     }
 }
 
@@ -652,6 +852,31 @@ pub(crate) fn build_node_register(
     default_version: &str,
     resume_cursor: Option<String>,
 ) -> NodeRegister {
+    let mut capabilities = manifest
+        .capabilities
+        .iter()
+        .filter(|capability| capability.name != crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY)
+        .map(|capability| FleetCapability {
+            name: capability.name.clone(),
+            kind: capability.kind.clone(),
+            global: None,
+            queue: None,
+            metadata: capability.metadata.as_ref().map(|metadata| {
+                metadata
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            }),
+        })
+        .collect::<Vec<_>>();
+    capabilities.push(FleetCapability {
+        name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
+        kind: Some("capacity".to_string()),
+        global: None,
+        queue: None,
+        metadata: None,
+    });
+
     NodeRegister {
         v: FLEET_WIRE_VERSION,
         id: None,
@@ -665,22 +890,7 @@ pub(crate) fn build_node_register(
             .unwrap_or(default_node_id)
             .to_string(),
         provider: None,
-        capabilities: manifest
-            .capabilities
-            .iter()
-            .map(|capability| FleetCapability {
-                name: capability.name.clone(),
-                kind: capability.kind.clone(),
-                global: None,
-                queue: None,
-                metadata: capability.metadata.as_ref().map(|metadata| {
-                    metadata
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect::<BTreeMap<_, _>>()
-                }),
-            })
-            .collect(),
+        capabilities,
         max_agents: manifest.max_agents.unwrap_or(0),
         tags: manifest.tags.clone().unwrap_or_default(),
         version: manifest
@@ -905,6 +1115,53 @@ pub(crate) fn persist_node_token(
     Ok(())
 }
 
+/// Outcome of handling a control command received while the node is not yet
+/// connected to `/v1/node/ws`. `Shutdown` means the command channel closed or a
+/// `Shutdown` command arrived and the caller should return.
+enum DisconnectedCommandOutcome {
+    Handled,
+    Shutdown,
+}
+
+/// Apply a control command received while the node is disconnected, shared by the
+/// three not-yet-connected wait points (pre-registration, mint backoff, and the
+/// no-minter idle wait) so a new `FleetControlCommand` variant or state update
+/// stays consistent across them. `register_agent_error` is the reason replied to
+/// a `RegisterAgent` that can't be served yet: `node_not_registered` before the
+/// node is registered, `node_token_missing` once registered but tokenless.
+fn handle_disconnected_command(
+    command: Option<FleetControlCommand>,
+    config: &FleetControlConfig,
+    registration: &mut Option<NodeRegister>,
+    load: &mut FleetLoadSnapshot,
+    inventory: &mut Vec<InventoryAgent>,
+    register_agent_error: &str,
+) -> DisconnectedCommandOutcome {
+    match command {
+        Some(FleetControlCommand::RegisterNode {
+            manifest,
+            resume_cursor,
+        }) => {
+            load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+            *registration = Some(build_node_register(
+                &manifest,
+                &config.node_id,
+                &config.node_name,
+                &config.broker_version,
+                resume_cursor,
+            ));
+        }
+        Some(FleetControlCommand::UpdateLoad(next)) => *load = next,
+        Some(FleetControlCommand::UpdateInventory(next)) => *inventory = next,
+        Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
+            let _ = reply.send(Err(register_agent_error.to_string()));
+        }
+        Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+        Some(FleetControlCommand::Shutdown) | None => return DisconnectedCommandOutcome::Shutdown,
+    }
+    DisconnectedCommandOutcome::Handled
+}
+
 pub(crate) async fn run_node_control_client(
     mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
@@ -924,27 +1181,18 @@ pub(crate) async fn run_node_control_client(
 
     loop {
         while registration.is_none() {
-            match command_rx.recv().await {
-                Some(FleetControlCommand::RegisterNode {
-                    manifest,
-                    resume_cursor,
-                }) => {
-                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                    registration = Some(build_node_register(
-                        &manifest,
-                        &config.node_id,
-                        &config.node_name,
-                        &config.broker_version,
-                        resume_cursor,
-                    ));
-                }
-                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                Some(FleetControlCommand::Shutdown) | None => return,
-                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                    let _ = reply.send(Err("node_not_registered".to_string()));
-                }
-                Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+            if matches!(
+                handle_disconnected_command(
+                    command_rx.recv().await,
+                    &config,
+                    &mut registration,
+                    &mut load,
+                    &mut inventory,
+                    "node_not_registered",
+                ),
+                DisconnectedCommandOutcome::Shutdown
+            ) {
+                return;
             }
         }
 
@@ -955,29 +1203,81 @@ pub(crate) async fn run_node_control_client(
             .unwrap_or("")
             .is_empty()
         {
-            match command_rx.recv().await {
-                Some(FleetControlCommand::RegisterNode {
-                    manifest,
-                    resume_cursor,
-                }) => {
-                    load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                    registration = Some(build_node_register(
-                        &manifest,
-                        &config.node_id,
-                        &config.node_name,
-                        &config.broker_version,
-                        resume_cursor,
-                    ));
+            // No pre-supplied or cached token. Broker startup deliberately skips
+            // the network mint (it must not gate `/api/session` readiness), so the
+            // initial mint happens here, in the background. On success, publish the
+            // token to the shared HTTP session so `/api/session` starts reporting
+            // it, then fall through to connect. On failure, back off and retry
+            // rather than idling forever — realtime delivery self-heals once the
+            // engine is reachable.
+            if let Some(minter) = config.token_minter.as_ref() {
+                if let Some(fresh) = minter.mint().await {
+                    config.node_token = Some(fresh);
+                    if let Some(shared) = &config.session_token {
+                        if let Ok(mut guard) = shared.write() {
+                            guard.clone_from(&config.node_token);
+                        }
+                    }
+                    // A successful mint proves the engine is reachable, so reset
+                    // the backoff any earlier mint failures grew — the first
+                    // `/v1/node/ws` connect should start from the minimum delay,
+                    // not inherit a bloated one.
+                    reconnect_delay = INITIAL_RECONNECT_DELAY;
+                } else {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %config.node_id,
+                        "node token mint failed; retrying after backoff (realtime delivery pending)"
+                    );
+                    // Stay responsive during the backoff instead of a blind
+                    // sleep: a spawn's `RegisterAgent` must get an immediate
+                    // `node_token_missing` (so the caller falls back to HTTP
+                    // register) rather than blocking on the 30s register timeout,
+                    // and load/inventory updates must keep draining so the bounded
+                    // control channel can't fill during a Relaycast outage.
+                    let backoff = tokio::time::sleep(reconnect_delay);
+                    tokio::pin!(backoff);
+                    loop {
+                        tokio::select! {
+                            _ = &mut backoff => break,
+                            command = command_rx.recv() => {
+                                if matches!(
+                                    handle_disconnected_command(
+                                        command,
+                                        &config,
+                                        &mut registration,
+                                        &mut load,
+                                        &mut inventory,
+                                        "node_token_missing",
+                                    ),
+                                    DisconnectedCommandOutcome::Shutdown
+                                ) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                    continue;
                 }
-                Some(FleetControlCommand::UpdateLoad(next)) => load = next,
-                Some(FleetControlCommand::UpdateInventory(next)) => inventory = next,
-                Some(FleetControlCommand::Shutdown) | None => return,
-                Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
-                    let _ = reply.send(Err("node_token_missing".to_string()));
+            } else {
+                // No minter available (e.g. no workspace RelayCast client). Can't
+                // self-recover; wait for a token to arrive via command.
+                if matches!(
+                    handle_disconnected_command(
+                        command_rx.recv().await,
+                        &config,
+                        &mut registration,
+                        &mut load,
+                        &mut inventory,
+                        "node_token_missing",
+                    ),
+                    DisconnectedCommandOutcome::Shutdown
+                ) {
+                    return;
                 }
-                Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+                continue;
             }
-            continue;
         }
 
         let result = run_connected_once(
@@ -1368,6 +1668,7 @@ where
         name: data.name.unwrap_or_else(|| pending.name.clone()),
         agent_id: data.agent_id,
         token: data.token,
+        delivery_ack_seq: data.delivery_ack_seq,
     };
     match pending.reply.send(Ok(token.clone())) {
         Ok(()) => true,
@@ -1475,6 +1776,29 @@ mod tests {
 
     use super::*;
     use crate::fleet_wire::{ActionInvoke, ActionResultOutput, DeliveryMode};
+
+    fn seed_authoritative_cursor(
+        book: &mut FleetDeliveryBook,
+        agent: &str,
+        agent_id: &str,
+        up_to_seq: u64,
+    ) {
+        book.bind_authoritative_identity(agent, agent_id);
+        book.seed_cursor(agent, agent_id, up_to_seq);
+    }
+
+    fn test_delivery(agent: &str, agent_id: &str, seq: u64) -> Deliver {
+        Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: agent.to_string(),
+            agent_id: agent_id.to_string(),
+            delivery_id: format!("delivery-{agent_id}-{seq}"),
+            msg_id: format!("message-{agent_id}-{seq}"),
+            seq,
+            mode: DeliveryMode::Wait,
+            payload: json!({"type": "message.created", "text": "test"}),
+        }
+    }
 
     #[test]
     fn derive_node_id_is_stable_for_same_seed_and_cwd() {
@@ -1712,7 +2036,7 @@ mod tests {
     #[test]
     fn delivery_book_allows_seeded_resume_cursor() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_ack("agent-a", 42);
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 42);
         let deliver = Deliver {
             v: FLEET_WIRE_VERSION,
             agent: "agent-a".to_string(),
@@ -1729,6 +2053,240 @@ mod tests {
             DeliveryDecision::Deliver { up_to_seq: 43 }
         );
         assert_eq!(book.commit_delivered(&deliver), 43);
+    }
+
+    #[test]
+    fn delivery_book_scopes_authoritative_cursors_to_agent_identity() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
+        seed_authoritative_cursor(&mut book, "other", "agent-other", 7);
+
+        let resumed = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "shared-name".to_string(),
+            agent_id: "agent-old".to_string(),
+            delivery_id: "delivery-43".to_string(),
+            msg_id: "msg-43".to_string(),
+            seq: 43,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "resumed"}),
+        };
+        assert_eq!(
+            book.observe(&resumed),
+            DeliveryDecision::Deliver { up_to_seq: 43 }
+        );
+
+        let reused_name = Deliver {
+            agent_id: "agent-new".to_string(),
+            ..resumed.clone()
+        };
+        assert_eq!(
+            book.observe(&reused_name),
+            DeliveryDecision::IdentityReject,
+            "an authoritative identity must reject an unregistered replacement"
+        );
+
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-new", 0);
+        let replacement_first = Deliver {
+            delivery_id: "delivery-1".to_string(),
+            msg_id: "msg-1".to_string(),
+            seq: 1,
+            ..reused_name
+        };
+        assert_eq!(
+            book.observe(&replacement_first),
+            DeliveryDecision::Deliver { up_to_seq: 1 },
+            "the authoritative replacement starts from its own cursor"
+        );
+
+        let other = Deliver {
+            agent: "other".to_string(),
+            agent_id: "agent-other".to_string(),
+            delivery_id: "delivery-8".to_string(),
+            msg_id: "msg-8".to_string(),
+            seq: 8,
+            ..resumed
+        };
+        assert_eq!(
+            book.observe(&other),
+            DeliveryDecision::Deliver { up_to_seq: 8 },
+            "resumed agents recover independently"
+        );
+    }
+
+    #[test]
+    fn delivery_book_rejects_seq_one_from_replaced_identity() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
+        book.remove_agent("shared-name");
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-new", 0);
+
+        let stale = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "shared-name".to_string(),
+            agent_id: "agent-old".to_string(),
+            delivery_id: "delivery-old-1".to_string(),
+            msg_id: "msg-old-1".to_string(),
+            seq: 1,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "buffered for the old identity"}),
+        };
+        assert_eq!(
+            book.observe(&stale),
+            DeliveryDecision::Stale { up_to_seq: 0 },
+            "a buffered seq-1 frame must not reach the replacement worker"
+        );
+
+        let current = Deliver {
+            agent_id: "agent-new".to_string(),
+            delivery_id: "delivery-new-1".to_string(),
+            msg_id: "msg-new-1".to_string(),
+            ..stale
+        };
+        assert_eq!(
+            book.observe(&current),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+    }
+
+    #[test]
+    fn delivery_book_rejects_seq_zero_from_replaced_identity() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
+        book.remove_agent("shared-name");
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-new", 7);
+
+        let stale = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "shared-name".to_string(),
+            agent_id: "agent-old".to_string(),
+            delivery_id: "action-old".to_string(),
+            msg_id: "invocation-old".to_string(),
+            seq: 0,
+            mode: DeliveryMode::Wait,
+            payload: json!({"type": "action.completed"}),
+        };
+        assert_eq!(
+            book.observe(&stale),
+            DeliveryDecision::Stale { up_to_seq: 7 },
+            "a buffered seq-0 frame must not reach the replacement worker"
+        );
+
+        let current = Deliver {
+            agent_id: "agent-new".to_string(),
+            delivery_id: "action-new".to_string(),
+            msg_id: "invocation-new".to_string(),
+            ..stale
+        };
+        assert_eq!(
+            book.observe(&current),
+            DeliveryDecision::Deliver { up_to_seq: 7 }
+        );
+    }
+
+    #[test]
+    fn delivery_book_preserves_legacy_first_sequence_compatibility() {
+        let mut book = FleetDeliveryBook::default();
+        let original = test_delivery("shared-name", "legacy-old", 1);
+        assert_eq!(
+            book.observe(&original),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+        assert_eq!(book.commit_delivered(&original), 1);
+        assert!(!book.active_agent_bindings_by_name["shared-name"].authoritative);
+
+        let high_sequence = test_delivery("shared-name", "legacy-new", 43);
+        assert_eq!(
+            book.observe(&high_sequence),
+            DeliveryDecision::Gap { up_to_seq: 0 },
+            "a provisional binding must preserve the legacy gap response"
+        );
+
+        let replacement_first = test_delivery("shared-name", "legacy-new", 1);
+        assert_eq!(
+            book.observe(&replacement_first),
+            DeliveryDecision::Deliver { up_to_seq: 1 },
+            "a provisional binding must allow a legacy replacement's first frame"
+        );
+    }
+
+    #[test]
+    fn delivery_book_authoritative_binding_survives_retirement_eviction() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-old", 42);
+        book.remove_agent("shared-name");
+        seed_authoritative_cursor(&mut book, "shared-name", "agent-current", 7);
+
+        for i in 0..=FleetDeliveryBook::RETIRED_AGENT_ID_CAPACITY {
+            let name = format!("churn-{i}");
+            let agent_id = format!("churn-id-{i}");
+            seed_authoritative_cursor(&mut book, &name, &agent_id, 0);
+            book.remove_agent(&name);
+        }
+        assert!(!book.retired_agent_names_by_id.contains_key("agent-old"));
+
+        let snapshot = book.clone();
+        for seq in [0, 1] {
+            assert_eq!(
+                book.observe(&test_delivery("shared-name", "agent-old", seq)),
+                DeliveryDecision::IdentityReject
+            );
+            assert_eq!(book, snapshot, "identity rejection must not mutate state");
+        }
+    }
+
+    #[test]
+    fn delivery_book_rejects_known_ids_under_a_different_name() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "right-name", "known-id", 5);
+
+        let active_snapshot = book.clone();
+        assert_eq!(
+            book.observe(&test_delivery("wrong-name", "known-id", 0)),
+            DeliveryDecision::IdentityReject
+        );
+        assert_eq!(book, active_snapshot);
+
+        book.remove_agent("right-name");
+        let retired_snapshot = book.clone();
+        assert_eq!(
+            book.observe(&test_delivery("wrong-name", "known-id", 1)),
+            DeliveryDecision::IdentityReject
+        );
+        assert_eq!(book, retired_snapshot);
+    }
+
+    #[test]
+    fn delivery_book_nonauthoritative_commit_preserves_authority() {
+        let mut book = FleetDeliveryBook::default();
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        let first = test_delivery("agent-a", "agent-a-id", 1);
+        assert_eq!(
+            book.observe(&first),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+        assert_eq!(book.commit_delivered(&first), 1);
+        assert!(book.active_agent_bindings_by_name["agent-a"].authoritative);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "impostor-id", 1)),
+            DeliveryDecision::IdentityReject
+        );
+    }
+
+    #[test]
+    fn delivery_book_same_id_reactivation_clears_retirement() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 42);
+        book.remove_agent("agent-a");
+        assert!(book.retired_agent_names_by_id.contains_key("agent-a-id"));
+
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        assert!(!book.retired_agent_names_by_id.contains_key("agent-a-id"));
+        assert!(book.active_agent_bindings_by_name["agent-a"].authoritative);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 1)),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
     }
 
     #[test]
@@ -1783,14 +2341,45 @@ mod tests {
         book.remove_agent("agent-a");
         assert_eq!(
             book.observe(&deliver),
+            DeliveryDecision::Stale { up_to_seq: 0 }
+        );
+
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 0);
+        assert_eq!(
+            book.observe(&deliver),
             DeliveryDecision::Deliver { up_to_seq: 1 }
         );
     }
 
     #[test]
+    fn delivery_book_bounds_retired_identity_history() {
+        let mut book = FleetDeliveryBook::default();
+        for i in 0..(FleetDeliveryBook::RETIRED_AGENT_ID_CAPACITY + 10) {
+            let name = format!("agent-{i}");
+            let agent_id = format!("agent-id-{i}");
+            seed_authoritative_cursor(&mut book, &name, &agent_id, 0);
+            book.remove_agent(&name);
+        }
+
+        assert_eq!(
+            book.retired_agent_names_by_id.len(),
+            FleetDeliveryBook::RETIRED_AGENT_ID_CAPACITY
+        );
+        assert_eq!(
+            book.retired_agent_id_order.len(),
+            FleetDeliveryBook::RETIRED_AGENT_ID_CAPACITY
+        );
+        assert!(!book.retired_agent_names_by_id.contains_key("agent-id-0"));
+        assert!(book.retired_agent_names_by_id.contains_key(&format!(
+            "agent-id-{}",
+            FleetDeliveryBook::RETIRED_AGENT_ID_CAPACITY + 9
+        )));
+    }
+
+    #[test]
     fn delivery_book_surfaces_seq_zero_fanout_without_advancing_cursor() {
         let mut book = FleetDeliveryBook::default();
-        book.seed_ack("agent-a", 5);
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 5);
 
         // A seq:0 fan-out frame (e.g. action.completed) is always surfaced,
         // bypassing the monotonic-sequence gate, and acks the current cursor.
@@ -1953,6 +2542,7 @@ mod tests {
                 name: "agent-a".to_string(),
                 agent_id: "agt-1".to_string(),
                 token: "at_test".to_string(),
+                delivery_ack_seq: None,
             }
         );
     }
@@ -2023,6 +2613,16 @@ mod tests {
                 "cli".to_string(),
                 Value::String("codex".to_string())
             )]))
+        );
+        assert_eq!(
+            register.capabilities.last(),
+            Some(&FleetCapability {
+                name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
+                kind: Some("capacity".to_string()),
+                global: None,
+                queue: None,
+                metadata: None,
+            })
         );
     }
 
@@ -2189,7 +2789,8 @@ mod tests {
                     data: json!({
                         "name": "agent-a",
                         "agent_id": "agt-1",
-                        "token": "at_test"
+                        "token": "at_test",
+                        "delivery_ack_seq": 42
                     }),
                 }))
                 .unwrap(),
@@ -2244,6 +2845,7 @@ mod tests {
                 name: "agent-a".to_string(),
                 agent_id: "agt-1".to_string(),
                 token: "at_test".to_string(),
+                delivery_ack_seq: Some(42),
             }
         );
         command_tx
@@ -2259,6 +2861,102 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn node_control_client_mints_initial_token_when_none_supplied() {
+        // Broker startup no longer mints the node token on the API-readiness
+        // path; the client mints it in the background. Started with no token but
+        // a minter, it must mint via create_node, publish the token to the shared
+        // HTTP session handle, and connect.
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST).path("/v1/nodes");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "node-test",
+                    "name": "host-test",
+                    "kind": "ws",
+                    "role": "broker",
+                    "version": "broker/test",
+                    "status": "online",
+                    "live": true,
+                    "handlers_live": true,
+                    "load": 0.0,
+                    "active_agents": 0,
+                    "max_agents": 0,
+                    "created_at": "2026-06-30T00:00:00Z",
+                    "token": "nt_minted_by_client"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(None));
+
+        tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: None,
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: None,
+                }),
+                session_token: Some(session_token.clone()),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+        });
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        // Bounded: if the mint or connect path regresses, the client retries
+        // without ever emitting `Connected`, so an unbounded recv would hang the
+        // whole suite. Fail with an assertion instead.
+        let connected = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("node-control client should emit Connected within 5s")
+            .unwrap();
+        assert_eq!(connected, FleetControlEvent::Connected);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+
+        create_node.assert_hits(1);
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_minted_by_client"),
+            "the background mint must publish the token to the shared HTTP session"
+        );
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 

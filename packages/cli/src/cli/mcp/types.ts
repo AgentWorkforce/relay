@@ -1,11 +1,11 @@
-import type { RelayCast, AgentClient } from '@relaycast/sdk';
+import type { RelayAgentThinClient, RelayWorkspaceThinClient } from '@agent-relay/sdk';
 import type { ActionAuditEvent, AgentRelayActions } from '@agent-relay/sdk/actions';
 
 import type { RealtimeResourceBridge, SubscriptionManager } from './resources.js';
 
 export type AgentType = 'agent' | 'human';
-export type RelayCastLike = Pick<RelayCast, 'agents'>;
-export type AgentClientLike = AgentClient;
+export type RelayCastLike = Pick<RelayWorkspaceThinClient, 'agents'>;
+export type AgentClientLike = RelayAgentThinClient;
 
 export interface AgentRelayMcpServerOptions {
   workspaceKey?: string;

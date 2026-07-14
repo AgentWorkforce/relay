@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 
 import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
@@ -270,6 +270,9 @@ export interface UpCommandOptions {
   stateDir?: string;
   brokerName?: string;
   config?: string;
+  logFile?: string;
+  logLevel?: string;
+  logJson?: boolean;
 }
 
 /**
@@ -287,7 +290,32 @@ export function addUpCommandOptions(command: Command): Command {
       '--state-dir <path>',
       'Directory for broker state and connection files (default: .agentworkforce/relay/)'
     )
-    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)');
+    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
+    .option(
+      '--log-file <path>',
+      'Write structured node logs (capabilities registered, actions invoked/completed) to a file'
+    )
+    .option(
+      '--log-level <level>',
+      'Node log verbosity: debug | info | warn | error (default: info)',
+      parseLogLevel
+    )
+    .option('--log-json', 'Emit node logs as JSON lines instead of text');
+}
+
+const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+
+/**
+ * Validate `--log-level` at parse time (case-insensitive). Rejecting a typo here
+ * — rather than passing it through — avoids the silent failure where an
+ * unrecognized `AGENT_RELAY_LOG_LEVEL` drops every log line.
+ */
+function parseLogLevel(value: string): string {
+  const normalized = value.toLowerCase();
+  if (!(LOG_LEVELS as readonly string[]).includes(normalized)) {
+    throw new InvalidArgumentError(`Expected one of: ${LOG_LEVELS.join(', ')}.`);
+  }
+  return normalized;
 }
 
 export function registerCoreCommands(

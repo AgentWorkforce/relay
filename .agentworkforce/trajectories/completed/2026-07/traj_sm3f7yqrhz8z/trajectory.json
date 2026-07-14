@@ -1,0 +1,57 @@
+{
+  "id": "traj_sm3f7yqrhz8z",
+  "version": 1,
+  "task": {
+    "title": "Recover Fleet delivery cursor after broker restart",
+    "source": {
+      "system": "plain",
+      "id": "#1240"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-07-10T14:14:10.835Z",
+  "completedAt": "2026-07-10T14:14:38.759Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-10T14:14:16.598Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_gd2bddm2qzjw",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-10T14:14:16.598Z",
+      "endedAt": "2026-07-10T14:14:38.759Z",
+      "events": [
+        {
+          "ts": 1783692856599,
+          "type": "decision",
+          "content": "Use a negotiated server-authoritative cursor handshake: Use a negotiated server-authoritative cursor handshake",
+          "raw": {
+            "question": "Use a negotiated server-authoritative cursor handshake",
+            "chosen": "Use a negotiated server-authoritative cursor handshake",
+            "alternatives": [],
+            "reasoning": "Inferring a cursor from the first replay could skip a genuine gap, while broker-local persistence can become stale if the engine or identity changes. Relaycast returns delivery_ack_seq only after the broker advertises relay:delivery-cursor-v1; Relay keys it to agent_id and retains cursor+1 validation."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Negotiated Relaycast delivery cursors during agent registration, keyed broker cursors by immutable agent identity, retained strict gap detection, and added restart/compatibility coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "58ec87cc2699877fe5bf3b8c54a38be13504e0be",
+    "endRef": "58ec87cc2699877fe5bf3b8c54a38be13504e0be"
+  }
+}
