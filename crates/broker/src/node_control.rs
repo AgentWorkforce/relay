@@ -22,6 +22,7 @@ use crate::{
         FLEET_WIRE_VERSION,
     },
     protocol::NodeManifest,
+    types::RelaycastDeliveryReceipt,
 };
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
@@ -563,7 +564,8 @@ impl SeenMsgIds {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct AgentDeliveryCursor {
     agent_name: String,
-    up_to_seq: u64,
+    acked_up_to_seq: u64,
+    received_up_to_seq: u64,
     seen_msg_ids: SeenMsgIds,
 }
 
@@ -680,6 +682,11 @@ impl FleetDeliveryBook {
     }
 
     /// Seed Relaycast's cumulative cursor after identity authority is bound.
+    ///
+    /// The immutable `agent_id` is the key: a later agent reusing the same name
+    /// must not inherit the old identity's cumulative ACK position. The seeded
+    /// cursor initializes `received == acked` at Relaycast's authoritative
+    /// position.
     pub(crate) fn seed_cursor(
         &mut self,
         agent: impl Into<String>,
@@ -696,7 +703,8 @@ impl FleetDeliveryBook {
             agent_id,
             AgentDeliveryCursor {
                 agent_name: agent,
-                up_to_seq,
+                acked_up_to_seq: up_to_seq,
+                received_up_to_seq: up_to_seq,
                 seen_msg_ids: SeenMsgIds::default(),
             },
         );
@@ -706,7 +714,7 @@ impl FleetDeliveryBook {
         self.active_agent_bindings_by_name
             .get(agent)
             .and_then(|binding| self.agents.get(&binding.agent_id))
-            .map_or(0, |cursor| cursor.up_to_seq)
+            .map_or(0, |cursor| cursor.acked_up_to_seq)
     }
 
     pub(crate) fn observe(&self, deliver: &Deliver) -> DeliveryDecision {
@@ -750,11 +758,11 @@ impl FleetDeliveryBook {
             if let Some(cursor) = cursor {
                 if cursor.seen_msg_ids.contains(&deliver.msg_id) {
                     return DeliveryDecision::Duplicate {
-                        up_to_seq: cursor.up_to_seq,
+                        up_to_seq: cursor.acked_up_to_seq,
                     };
                 }
                 return DeliveryDecision::Deliver {
-                    up_to_seq: cursor.up_to_seq,
+                    up_to_seq: cursor.acked_up_to_seq,
                 };
             }
             return DeliveryDecision::Deliver { up_to_seq: 0 };
@@ -768,19 +776,19 @@ impl FleetDeliveryBook {
         };
         if cursor.seen_msg_ids.contains(&deliver.msg_id) {
             return DeliveryDecision::Duplicate {
-                up_to_seq: cursor.up_to_seq,
+                up_to_seq: cursor.acked_up_to_seq,
             };
         }
 
-        if deliver.seq <= cursor.up_to_seq {
+        if deliver.seq <= cursor.received_up_to_seq {
             return DeliveryDecision::Stale {
-                up_to_seq: cursor.up_to_seq,
+                up_to_seq: cursor.acked_up_to_seq,
             };
         }
 
-        if deliver.seq != cursor.up_to_seq.saturating_add(1) {
+        if deliver.seq != cursor.received_up_to_seq.saturating_add(1) {
             return DeliveryDecision::Gap {
-                up_to_seq: cursor.up_to_seq,
+                up_to_seq: cursor.acked_up_to_seq,
             };
         }
 
@@ -789,7 +797,7 @@ impl FleetDeliveryBook {
         }
     }
 
-    pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
+    pub(crate) fn commit_received(&mut self, deliver: &Deliver) -> u64 {
         if !self.bind_identity(&deliver.agent, &deliver.agent_id, false) {
             return self.active_up_to_seq(&deliver.agent);
         }
@@ -801,17 +809,71 @@ impl FleetDeliveryBook {
                 ..AgentDeliveryCursor::default()
             });
         cursor.agent_name.clone_from(&deliver.agent);
-        // seq:0 fan-out frames never advance the sequence cursor; they are
+        // seq:0 fan-out frames never advance either sequence cursor; they are
         // deduped purely by msg_id.
         if deliver.seq == 0 {
             cursor.seen_msg_ids.insert(&deliver.msg_id);
-            return cursor.up_to_seq;
+            return cursor.received_up_to_seq;
         }
-        if deliver.seq == cursor.up_to_seq.saturating_add(1) {
+        if deliver.seq == cursor.received_up_to_seq.saturating_add(1) {
             cursor.seen_msg_ids.insert(&deliver.msg_id);
-            cursor.up_to_seq = deliver.seq;
+            cursor.received_up_to_seq = deliver.seq;
         }
-        cursor.up_to_seq
+        cursor.received_up_to_seq
+    }
+
+    pub(crate) fn commit_acked_receipt(
+        &mut self,
+        receipt: &RelaycastDeliveryReceipt,
+    ) -> Option<u64> {
+        let cursor = self.agents.get_mut(receipt.agent_id.as_str())?;
+        cursor.agent_name = receipt.agent.to_string();
+        if receipt.seq == 0 {
+            cursor.seen_msg_ids.insert(receipt.msg_id.as_str());
+            return Some(cursor.acked_up_to_seq);
+        }
+        if receipt.seq != cursor.acked_up_to_seq.saturating_add(1)
+            || receipt.seq > cursor.received_up_to_seq
+        {
+            return None;
+        }
+        cursor.acked_up_to_seq = receipt.seq;
+        Some(cursor.acked_up_to_seq)
+    }
+
+    pub(crate) fn can_ack_receipt(&self, receipt: &RelaycastDeliveryReceipt) -> bool {
+        let Some(cursor) = self.agents.get(receipt.agent_id.as_str()) else {
+            return false;
+        };
+        receipt.seq == 0
+            || (receipt.seq == cursor.acked_up_to_seq.saturating_add(1)
+                && receipt.seq <= cursor.received_up_to_seq)
+    }
+
+    pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
+        self.commit_received(deliver);
+        let receipt = RelaycastDeliveryReceipt {
+            agent: deliver.agent.clone().into(),
+            agent_id: deliver.agent_id.clone().into(),
+            delivery_id: deliver.delivery_id.clone().into(),
+            msg_id: deliver.msg_id.clone().into(),
+            seq: deliver.seq,
+        };
+        self.commit_acked_receipt(&receipt)
+            .unwrap_or_else(|| self.acked_up_to_seq(&deliver.agent_id))
+    }
+
+    pub(crate) fn acked_up_to_seq(&self, agent_id: &str) -> u64 {
+        self.agents
+            .get(agent_id)
+            .map_or(0, |cursor| cursor.acked_up_to_seq)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn received_up_to_seq(&self, agent_id: &str) -> u64 {
+        self.agents
+            .get(agent_id)
+            .map_or(0, |cursor| cursor.received_up_to_seq)
     }
 
     pub(crate) fn remove_agent(&mut self, agent: &str) {
@@ -2317,6 +2379,109 @@ mod tests {
             book.observe(&deliver),
             DeliveryDecision::Duplicate { up_to_seq: 1 }
         );
+    }
+
+    #[test]
+    fn delivery_book_receives_multiple_sequences_without_acknowledging_them() {
+        let mut book = FleetDeliveryBook::default();
+        let first = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-1".to_string(),
+            msg_id: "msg-1".to_string(),
+            seq: 1,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "one"}),
+        };
+        let second = Deliver {
+            delivery_id: "delivery-2".to_string(),
+            msg_id: "msg-2".to_string(),
+            seq: 2,
+            payload: json!({"text": "two"}),
+            ..first.clone()
+        };
+
+        assert_eq!(book.commit_received(&first), 1);
+        assert_eq!(book.acked_up_to_seq("agent-a-id"), 0);
+        assert_eq!(
+            book.observe(&first),
+            DeliveryDecision::Duplicate { up_to_seq: 0 },
+            "a replayed held frame must not be queued twice or ACKed"
+        );
+        assert_eq!(
+            book.observe(&second),
+            DeliveryDecision::Deliver { up_to_seq: 2 }
+        );
+        assert_eq!(book.commit_received(&second), 2);
+        assert_eq!(book.received_up_to_seq("agent-a-id"), 2);
+        assert_eq!(book.acked_up_to_seq("agent-a-id"), 0);
+
+        let second_receipt = RelaycastDeliveryReceipt {
+            agent: "agent-a".into(),
+            agent_id: "agent-a-id".into(),
+            delivery_id: "delivery-2".into(),
+            msg_id: "msg-2".into(),
+            seq: 2,
+        };
+        assert_eq!(
+            book.commit_acked_receipt(&second_receipt),
+            None,
+            "cumulative ACK cannot skip the held first sequence"
+        );
+
+        let first_receipt = RelaycastDeliveryReceipt {
+            agent: "agent-a".into(),
+            agent_id: "agent-a-id".into(),
+            delivery_id: "delivery-1".into(),
+            msg_id: "msg-1".into(),
+            seq: 1,
+        };
+        assert_eq!(book.commit_acked_receipt(&first_receipt), Some(1));
+        assert_eq!(book.commit_acked_receipt(&second_receipt), Some(2));
+    }
+
+    #[test]
+    fn delivery_book_replays_unacked_manual_sequences_after_restart_baseline() {
+        let mut before_restart = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut before_restart, "agent-a", "agent-a-id", 42);
+        let first = Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "delivery-43".to_string(),
+            msg_id: "msg-43".to_string(),
+            seq: 43,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "held before restart"}),
+        };
+        let second = Deliver {
+            delivery_id: "delivery-44".to_string(),
+            msg_id: "msg-44".to_string(),
+            seq: 44,
+            ..first.clone()
+        };
+        before_restart.commit_received(&first);
+        before_restart.commit_received(&second);
+        assert_eq!(before_restart.received_up_to_seq("agent-a-id"), 44);
+        assert_eq!(before_restart.acked_up_to_seq("agent-a-id"), 42);
+
+        // Issue #1240 supplies this persisted ACK baseline after a real broker
+        // restart. Received-only state is intentionally volatile so Relaycast
+        // can replay every unacknowledged manual delivery.
+        let mut after_restart = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut after_restart, "agent-a", "agent-a-id", 42);
+        assert_eq!(
+            after_restart.observe(&first),
+            DeliveryDecision::Deliver { up_to_seq: 43 }
+        );
+        after_restart.commit_received(&first);
+        assert_eq!(
+            after_restart.observe(&second),
+            DeliveryDecision::Deliver { up_to_seq: 44 }
+        );
+        after_restart.commit_received(&second);
+        assert_eq!(after_restart.acked_up_to_seq("agent-a-id"), 42);
     }
 
     #[test]
