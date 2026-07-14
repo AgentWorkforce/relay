@@ -1374,8 +1374,12 @@ async fn codex_local_fallback_model(
 }
 
 async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> Option<bool> {
+    // Matches the timeout used for other subprocess spawn+output waits in this
+    // crate (see snippets.rs); 5s was tight enough to flake under CI load,
+    // where a spawn/exec can be delayed by contention rather than the process
+    // itself being slow.
     let output = timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         Command::new(resolved_cli)
             .arg("debug")
             .arg("models")

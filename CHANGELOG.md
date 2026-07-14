@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-broker` raises the timeout for detecting local Codex CLI model support from 5s to 15s, avoiding a spurious fallback away from the requested model when the CLI is slow to spawn under load.
 - `@agent-relay/harness-driver` ignores callbacks from superseded event WebSockets, decodes fragmented and binary frames correctly, and reconnects with exponential backoff, preventing duplicate or dropped events during reconnect races.
 - `HarnessDriverClient.subscribeWorkerStream()` bounds each subscription buffer (default 10,000 chunks, configurable with `maxQueueSize`) and drops the oldest chunk with a one-time warning when a consumer falls behind.
 - `relay node tail --agent <headless-agent>` preserves stdout and stderr bytes, including CRLF and unterminated final chunks, instead of joining or altering output lines.
