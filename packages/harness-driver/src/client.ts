@@ -128,6 +128,27 @@ export interface SessionInfo {
 export interface SetInboundDeliveryModeResult {
   mode: InboundDeliveryMode;
   flushed: number;
+  /**
+   * `true` when the set was applied. `false` when an expected mode or revision
+   * did not match, in which case `mode` reports the current unchanged mode.
+   * Guarded calls fail closed when a legacy broker omits this field.
+   */
+  matched: boolean;
+  /** Monotonic broker generation after the set, or `null` on a legacy broker. */
+  revision: string | null;
+}
+
+/** Options for {@link HarnessDriverClient.setInboundDeliveryMode}. */
+export interface SetInboundDeliveryModeOptions {
+  /**
+   * Compare-and-set guard: apply the new mode only if the worker's current
+   * mode still equals this value. Used by the CLI detach-restore path to avoid
+   * clobbering a concurrent mode change (a read-then-set TOCTOU). Omit for an
+   * unconditional set.
+   */
+  expectedMode?: InboundDeliveryMode;
+  /** Require the worker mode generation to still equal this decimal string. */
+  expectedRevision?: string;
 }
 
 export interface WorkerStreamSubscriptionOptions {
@@ -667,15 +688,29 @@ export class HarnessDriverClient {
 
   async setInboundDeliveryMode(
     name: string,
-    mode: InboundDeliveryMode
+    mode: InboundDeliveryMode,
+    options?: SetInboundDeliveryModeOptions
   ): Promise<SetInboundDeliveryModeResult> {
-    const result = await this.transport.request<{ mode?: unknown; flushed?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ mode }),
-      }
-    );
+    const body: {
+      mode: InboundDeliveryMode;
+      expected_mode?: InboundDeliveryMode;
+      expected_revision?: string;
+    } = { mode };
+    if (options?.expectedMode !== undefined) {
+      body.expected_mode = options.expectedMode;
+    }
+    if (options?.expectedRevision !== undefined) {
+      body.expected_revision = options.expectedRevision;
+    }
+    const result = await this.transport.request<{
+      mode?: unknown;
+      flushed?: unknown;
+      matched?: unknown;
+      revision?: unknown;
+    }>(`/api/spawned/${encodeURIComponent(name)}/delivery-mode`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
       throw new HarnessDriverProtocolError({
         code: 'invalid_response',
@@ -685,6 +720,12 @@ export class HarnessDriverClient {
     return {
       mode: result.mode,
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      // A guarded call must fail closed when a legacy broker omits `matched`.
+      matched:
+        typeof result.matched === 'boolean'
+          ? result.matched
+          : options?.expectedMode === undefined && options?.expectedRevision === undefined,
+      revision: typeof result.revision === 'string' && /^\d+$/.test(result.revision) ? result.revision : null,
     };
   }
 

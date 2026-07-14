@@ -18,6 +18,7 @@ import { getProjectPaths } from '@agent-relay/config';
 
 import {
   captureAndRenderSnapshot,
+  createBackpressureAwareWriter,
   StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
@@ -65,6 +66,13 @@ export interface ViewDependencies {
   createWebSocket: ViewWebSocketFactory;
   /** Where the PTY chunks get written. Defaults to `process.stdout.write`. */
   writeChunk: (chunk: string) => void;
+  /**
+   * Tear down the backpressure-aware writer on detach: drop its pending queue
+   * and unhook its `'drain'` listener so nothing flushes to stdout after the
+   * session settles. Defaults to the writer created in {@link withDefaults};
+   * tests that inject their own `writeChunk` can omit it (no-op).
+   */
+  disposeWriter?: () => void;
   /** Signal registration (so tests can drive SIGINT without killing the test). */
   onSignal: ViewSignalRegistrar;
   log: (...args: unknown[]) => void;
@@ -98,14 +106,14 @@ function defaultStateDir(): string {
 }
 
 function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependencies {
+  const writer = createBackpressureAwareWriter(process.stdout);
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as ViewWebSocket,
-    writeChunk: (chunk) => {
-      process.stdout.write(chunk);
-    },
+    writeChunk: writer.write,
+    disposeWriter: writer.dispose,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -266,6 +274,9 @@ export async function runViewSession(
       } catch {
         // best effort — already closed
       }
+      // Drop the writer's pending queue and unhook its drain listener so no
+      // buffered chunk flushes to stdout after detach.
+      deps.disposeWriter?.();
       resolve(code);
     };
 
@@ -275,11 +286,18 @@ export async function runViewSession(
     // Transient errors (`unavailable` / `transport_error`) are surfaced as a
     // warning and we fall through to the live stream; the agent may still
     // produce useful output even if the snapshot couldn't be served.
+    // Guard every snapshot-path write on `settled` so a Ctrl+C that lands
+    // while the snapshot HTTP fetch is in flight can't paint the snapshot
+    // after teardown has begun (the snapshot render path runs inside the
+    // awaited `captureAndRenderSnapshot`, past the WS `message` guard).
+    const guardedWrite = (chunk: string): void => {
+      if (!settled) deps.writeChunk(chunk);
+    };
     const paintSnapshotAndReconcile = async (): Promise<void> => {
       const snapshot = await deps.captureAndRenderSnapshot(
         { url: connection.url, apiKey: connection.apiKey },
         name,
-        { fetch: deps.fetch, writeChunk: deps.writeChunk }
+        { fetch: deps.fetch, writeChunk: guardedWrite }
       );
       if (settled) return;
       switch (snapshot.status) {
@@ -318,6 +336,8 @@ export async function runViewSession(
     });
 
     socket.on('message', (data) => {
+      // Stop writing output once teardown has begun (no spray past detach).
+      if (settled) return;
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
       const matched = extractMatchingChunk(text, name);

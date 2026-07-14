@@ -168,9 +168,15 @@ pub enum ListenApiRequest {
     /// On a `manual_flush → auto_inject` transition the broker drains the pending
     /// queue into the worker (via the existing inject path) before
     /// replying; `flushed` reports how many messages were injected.
+    ///
+    /// `expected_mode` and `expected_revision` are optional compare-and-set
+    /// guards. Detach restores send both so a concurrent write is detected even
+    /// when the enum value changes away and back (ABA).
     SetInboundDeliveryMode {
         name: WorkerName,
         mode: InboundDeliveryMode,
+        expected_mode: Option<InboundDeliveryMode>,
+        expected_revision: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Result<SetInboundDeliveryModeOk, DeliveryRouteError>>,
     },
     /// `GET /api/spawned/{name}/pending` — snapshot the per-worker
@@ -251,10 +257,16 @@ impl std::error::Error for AgentResultRouteError {}
 /// Reply payload for [`ListenApiRequest::SetInboundDeliveryMode`]. `flushed`
 /// is the number of pending messages drained during the transition
 /// (always `0` unless we transitioned `manual_flush → auto_inject`).
+///
+/// `matched` is `true` on an applied set. It is `false` when either compare-and-
+/// set guard misses, in which case `mode` and `revision` report the current
+/// unchanged state and `flushed` is `0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetInboundDeliveryModeOk {
     pub mode: InboundDeliveryMode,
     pub flushed: usize,
+    pub matched: bool,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1868,6 +1880,15 @@ async fn listen_api_get_inbound_delivery_mode(
 #[derive(Debug, Deserialize)]
 struct SetInboundDeliveryModePayload {
     mode: String,
+    /// Optional compare-and-set guard: when present the set is applied only if
+    /// the worker's current mode still equals this value (see the request enum
+    /// docs). Absent for unconditional sets (backward compatible).
+    #[serde(default)]
+    expected_mode: Option<String>,
+    /// Decimal string rather than a JSON number so revisions remain exact
+    /// across JavaScript clients beyond `Number.MAX_SAFE_INTEGER`.
+    #[serde(default)]
+    expected_revision: Option<String>,
 }
 
 /// `PUT /api/spawned/{name}/delivery-mode` — body
@@ -1893,12 +1914,44 @@ async fn listen_api_set_inbound_delivery_mode(
         );
     };
 
+    let expected_mode = match body.expected_mode.as_deref() {
+        None => None,
+        Some(raw) => match InboundDeliveryMode::parse(raw) {
+            Some(parsed) => Some(parsed),
+            None => {
+                return api_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "invalid_mode",
+                    format!(
+                        "unsupported expected_mode '{raw}' (expected 'auto_inject' or 'manual_flush')"
+                    ),
+                );
+            }
+        },
+    };
+
+    let expected_revision = match body.expected_revision.as_deref() {
+        None => None,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(parsed) => Some(parsed),
+            Err(_) => {
+                return api_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "invalid_revision",
+                    format!("unsupported expected_revision '{raw}' (expected an unsigned decimal string)"),
+                );
+            }
+        },
+    };
+
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::SetInboundDeliveryMode {
             name: WorkerName::new(name.clone()),
             mode,
+            expected_mode,
+            expected_revision,
             reply: reply_tx,
         })
         .await
@@ -1912,6 +1965,8 @@ async fn listen_api_set_inbound_delivery_mode(
             axum::Json(json!({
                 "mode": ok.mode.as_wire_str(),
                 "flushed": ok.flushed,
+                "matched": ok.matched,
+                "revision": ok.revision.to_string(),
             })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
@@ -4499,12 +4554,22 @@ mod auth_tests {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             match rx.recv().await {
-                Some(ListenApiRequest::SetInboundDeliveryMode { name, mode, reply }) => {
+                Some(ListenApiRequest::SetInboundDeliveryMode {
+                    name,
+                    mode,
+                    expected_mode,
+                    expected_revision,
+                    reply,
+                }) => {
                     assert_eq!(name, "worker-a");
                     assert_eq!(mode, InboundDeliveryMode::AutoInject);
+                    assert_eq!(expected_mode, None);
+                    assert_eq!(expected_revision, None);
                     let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                         mode: InboundDeliveryMode::AutoInject,
                         flushed: 3,
+                        matched: true,
+                        revision: 1,
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -4526,8 +4591,127 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "mode": "auto_inject", "flushed": 3 }));
+        assert_eq!(
+            body,
+            json!({ "mode": "auto_inject", "flushed": 3, "matched": true, "revision": "1" })
+        );
         replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_inbound_delivery_mode_route_forwards_expected_mode_for_compare_and_set() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SetInboundDeliveryMode {
+                    name,
+                    mode,
+                    expected_mode,
+                    expected_revision,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(mode, InboundDeliveryMode::AutoInject);
+                    assert_eq!(expected_mode, Some(InboundDeliveryMode::ManualFlush));
+                    assert_eq!(expected_revision, Some(7));
+                    // Simulate a compare-and-set miss: current mode differs from
+                    // `expected_mode`, so the broker no-ops and reports the
+                    // current mode with `matched: false`.
+                    let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                        mode: InboundDeliveryMode::AutoInject,
+                        flushed: 0,
+                        matched: false,
+                        revision: 8,
+                    }));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/delivery-mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "mode": "auto_inject",
+                            "expected_mode": "manual_flush",
+                            "expected_revision": "7"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(
+            body,
+            json!({ "mode": "auto_inject", "flushed": 0, "matched": false, "revision": "8" })
+        );
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_inbound_delivery_mode_route_rejects_invalid_expected_mode() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/delivery-mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "mode": "auto_inject", "expected_mode": "drive" }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_mode"));
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid expected_mode should not enqueue request"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_inbound_delivery_mode_route_rejects_invalid_expected_revision() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/delivery-mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "mode": "auto_inject", "expected_revision": "not-a-number" })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_revision"));
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid expected_revision should not enqueue request"
+        );
     }
 
     #[tokio::test]

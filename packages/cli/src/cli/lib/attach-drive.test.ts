@@ -217,6 +217,12 @@ function createHarness(opts: FetchScript = {}): {
   const initialPending = opts.initialPending ?? 0;
   const initialCurrentSeq = opts.initialCurrentSeq ?? 0;
 
+  // Stateful delivery mode: GET reflects the last successful PUT so the
+  // detach-time re-read (which only restores when the mode is still what this
+  // session set) behaves like a real broker.
+  let currentMode: 'manual_flush' | 'auto_inject' = initialMode;
+  let currentRevision = 0;
+
   const defaultRoutes: Record<string, FetchRoute> = {
     'GET /events-replay': async () =>
       new Response(JSON.stringify({ events: [], gap: false, currentSeq: initialCurrentSeq }), {
@@ -229,7 +235,7 @@ function createHarness(opts: FetchScript = {}): {
         headers: { 'Content-Type': 'application/json' },
       }),
     'GET /delivery-mode': async () =>
-      new Response(JSON.stringify({ mode: initialMode }), {
+      new Response(JSON.stringify({ mode: currentMode }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -240,11 +246,42 @@ function createHarness(opts: FetchScript = {}): {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const body = init?.body ? (JSON.parse(String(init.body)) as { mode: string }) : { mode: '' };
-      return new Response(JSON.stringify({ mode: body.mode, flushed: 0 }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as {
+            mode: string;
+            expected_mode?: string;
+            expected_revision?: string;
+          })
+        : { mode: '' };
+      // Compare-and-set: when `expected_mode` is present and no longer matches
+      // the current mode, no-op and report `matched:false` with the unchanged
+      // current mode (mirrors the real broker).
+      if (
+        (body.expected_mode !== undefined && body.expected_mode !== currentMode) ||
+        (body.expected_revision !== undefined && body.expected_revision !== String(currentRevision))
+      ) {
+        return new Response(
+          JSON.stringify({
+            mode: currentMode,
+            flushed: 0,
+            matched: false,
+            revision: String(currentRevision),
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      }
+      if (body.mode === 'manual_flush' || body.mode === 'auto_inject') currentMode = body.mode;
+      currentRevision += 1;
+      return new Response(
+        JSON.stringify({ mode: body.mode, flushed: 0, matched: true, revision: String(currentRevision) }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
     },
     'GET /pending': async () => {
       const pending = Array.from({ length: initialPending }, (_, i) => ({ event_id: `e${i}` }));
@@ -355,6 +392,8 @@ function createHarness(opts: FetchScript = {}): {
       inputStreams.push(stream);
       return stream;
     }),
+    // Immediate, deterministic status repaints in tests (no coalescing timer).
+    statusRepaintCoalesceMs: 0,
   };
 
   return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog, inputStreams };
@@ -525,10 +564,15 @@ describe('runDriveSession', () => {
     // Raw mode restored.
     expect(stdin.rawModeCalls).toEqual([true, false]);
 
-    // Last PUT /delivery-mode call should restore to 'auto_inject' (the prior mode).
+    // Last PUT /delivery-mode call should restore to 'auto_inject' (the prior
+    // mode) via a compare-and-set guarded by `expected_mode: manual_flush`.
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls).toHaveLength(2);
-    expect(modeCalls[1].body).toEqual({ mode: 'auto_inject' });
+    expect(modeCalls[1].body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
+      expected_revision: '1',
+    });
   });
 
   it('aborts before opening the WS when the broker rejects the mode flip', async () => {
@@ -558,7 +602,10 @@ describe('runDriveSession', () => {
     expect(errors[0]?.[0]).toMatch(/no agent named/);
     // Best-effort restore PUT should still have fired.
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
+    expect(modeCalls.map((c) => c.body)).toEqual([
+      { mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+    ]);
   });
 
   it('aborts and closes the WS when the worker has no PTY', async () => {
@@ -764,7 +811,10 @@ describe('runDriveSession', () => {
     expect(errors.some((args) => String(args[0]).includes('connection closed'))).toBe(true);
 
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
+    expect(modeCalls.map((c) => c.body)).toEqual([
+      { mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+    ]);
   });
 
   it('treats WebSocket errors as fatal and restores delivery mode', async () => {
@@ -778,7 +828,10 @@ describe('runDriveSession', () => {
     expect(errors.some((args) => String(args[0]).includes('WebSocket error: boom'))).toBe(true);
 
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
+    expect(modeCalls.map((c) => c.body)).toEqual([
+      { mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+    ]);
   });
 
   it('proceeds when the worker is already in manual_flush mode (re-attach scenario)', async () => {
@@ -790,8 +843,12 @@ describe('runDriveSession', () => {
     await sessionPromise;
 
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    // Restore to 'manual_flush' since that was the prior mode.
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'manual_flush' }]);
+    // Restore to 'manual_flush' since that was the prior mode, via a
+    // compare-and-set guarded by `expected_mode: manual_flush`.
+    expect(modeCalls.map((c) => c.body)).toEqual([
+      { mode: 'manual_flush' },
+      { mode: 'manual_flush', expected_mode: 'manual_flush', expected_revision: '1' },
+    ]);
   });
 
   it('exits cleanly on SIGINT', async () => {
@@ -935,5 +992,156 @@ describe('runDriveSession', () => {
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
+  });
+
+  // ---- signal safety during setup (item 1) ----
+
+  it('restores the delivery mode and exits if interrupted before the session loop starts', async () => {
+    // /pending never resolves, so the run is parked in the setup window (mode
+    // already flipped to manual_flush, terminal still cooked, session loop not
+    // yet reached). A SIGINT here must restore the prior mode and exit rather
+    // than strand the worker in manual_flush.
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      initialMode: 'auto_inject',
+      routes: {
+        'GET /pending': () => new Promise<Response>(() => undefined),
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    void sessionPromise; // parked on the hung /pending; never resolves
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+
+    // The session loop has not opened the WS yet.
+    expect(sockets).toHaveLength(0);
+    const sigint = signals.get('SIGINT');
+    expect(sigint).toBeDefined();
+    await expect(sigint?.()).rejects.toBeInstanceOf(ExitSignal);
+
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls.map((c) => c.body)).toEqual([
+      { mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+    ]);
+  });
+
+  // ---- multi-byte UTF-8 stdin (item 2) ----
+
+  it('forwards a multi-byte character split across stdin chunks intact', async () => {
+    const { deps, sockets, stdin, inputStreams } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // 'é' = 0xC3 0xA9, arriving as two separate stdin data events (routine in
+    // large pastes / IME). Naive per-chunk decoding would send U+FFFD twice.
+    stdin.type(Buffer.from([0xc3]));
+    await new Promise((resolve) => setImmediate(resolve));
+    stdin.type(Buffer.from([0xa9]));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(inputStreams[0].writes).toEqual(['é']);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  // ---- no output after teardown begins (item 3) ----
+
+  it('stops writing output once teardown has begun', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    stdin.type(Buffer.from([0x03])); // detach → settled
+    await sessionPromise;
+
+    const before = writes.length;
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'POST-DETACH' }));
+    expect(writes.includes('POST-DETACH')).toBe(false);
+    expect(writes.length).toBe(before);
+  });
+
+  // ---- status line boundary-hold (item 4) ----
+
+  it('holds the status repaint while a worker chunk ends mid escape sequence', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    const paintsBefore = writes.filter((w) => w.includes('drive Alice')).length;
+    // Chunk ends mid-CSI (ESC [) — repainting the status here would splice
+    // reverse-video controls into the agent's half-sent sequence.
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
+    expect(writes.filter((w) => w.includes('drive Alice')).length).toBe(paintsBefore);
+    // Completing the CSI lands at a boundary → the deferred repaint fires.
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
+    expect(writes.filter((w) => w.includes('drive Alice')).length).toBeGreaterThan(paintsBefore);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  // ---- non-TTY skips the status line (item 5) ----
+
+  it('skips status-line painting when stdout is not a TTY', async () => {
+    const { deps, sockets, writes, signals } = createHarness({ terminalSize: null });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'plain' }));
+    expect(writes.includes('plain')).toBe(true);
+    expect(writes.some((w) => w.includes('drive Alice'))).toBe(false);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  // ---- detach does not clobber another session's mode change (item 6) ----
+
+  it('restores via compare-and-set so a concurrent mode change is not clobbered on detach', async () => {
+    // Session flips to manual_flush (prev auto_inject). Another session changes
+    // the mode before detach, so the broker's compare-and-set (guarded by
+    // `expected_mode: manual_flush`) misses and the restore is a broker-side
+    // no-op — the concurrent change is preserved. The client no longer does a
+    // read-then-set (which had a TOCTOU); it always sends the guarded PUT.
+    const { deps, sockets, stdin, fetchLog } = createHarness({
+      initialMode: 'auto_inject',
+      routes: {
+        'PUT /delivery-mode': async (init) => {
+          const body = JSON.parse(String(init?.body ?? '{}')) as {
+            mode: string;
+            expected_mode?: string;
+            expected_revision?: string;
+          };
+          // The restore carries `expected_mode`; model a broker whose current
+          // mode was changed by another session, so the compare-and-set misses.
+          if (body.expected_mode !== undefined) {
+            return new Response(
+              JSON.stringify({ mode: 'auto_inject', flushed: 0, matched: false, revision: '2' }),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }
+            );
+          }
+          return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true, revision: '1' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    stdin.type(Buffer.from([0x03])); // detach → compare-and-set restore
+    await sessionPromise;
+
+    const putCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    // Attach flip (unconditional), then a compare-and-set restore guarded by
+    // `expected_mode`. The restore no-ops broker-side rather than clobbering.
+    expect(putCalls.map((c) => c.body)).toEqual([
+      { mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+    ]);
   });
 });

@@ -340,7 +340,7 @@ export async function switchInboundDeliveryModeOrAbort(
   targetMode: InboundDeliveryMode,
   actionPhrase: string,
   deps: { fetch: typeof globalThis.fetch; error: (...args: unknown[]) => void }
-): Promise<{ previousMode: InboundDeliveryMode | null } | null> {
+): Promise<{ previousMode: InboundDeliveryMode | null; sessionRevision: string | null } | null> {
   let previousMode: InboundDeliveryMode | null = null;
   try {
     previousMode = await createBrokerClient(connection, deps.fetch).getInboundDeliveryMode(name);
@@ -349,8 +349,8 @@ export async function switchInboundDeliveryModeOrAbort(
     // `auto_inject` in that case so the queue can't grow indefinitely.
   }
   try {
-    await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
-    return { previousMode };
+    const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
+    return { previousMode, sessionRevision: result.revision };
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     if (failure.status === 404) {
@@ -360,6 +360,373 @@ export async function switchInboundDeliveryModeOrAbort(
     }
     return null;
   }
+}
+
+/**
+ * Best-effort restore of a worker's inbound delivery mode on detach.
+ *
+ * Two hazards this guards against (see #1247):
+ *
+ *  1. Concurrent-change race — a second session attaching while this one is
+ *     active would read *this* session's mode as the "previous" one, so blindly
+ *     writing `previousMode` back on detach can clobber a change another
+ *     session/CLI made in the meantime. We restore via the broker's atomic
+ *     compare-and-set (`expectedMode: sessionMode`): the broker applies
+ *     `previousMode` only if the worker's current mode still equals what *this*
+ *     session set, and no-ops (`matched: false`) otherwise. This removes the
+ *     read-then-set TOCTOU a client-side re-read still had (a change landing
+ *     between the read and the restore PUT).
+ *  2. Failed initial read — when the pre-attach mode was never learned
+ *     (`previousMode === null`), forcing a default (`auto_inject`) would
+ *     silently cancel an explicit `agent message hold`. In that case we leave
+ *     the mode untouched and warn.
+ *
+ * The broker's monotonic mode revision closes ABA races where another session
+ * changes the mode away and back to `sessionMode` before this restore.
+ */
+export async function restoreInboundDeliveryModeOnDetach(
+  connection: BrokerConnection,
+  name: string,
+  previousMode: InboundDeliveryMode | null,
+  sessionMode: InboundDeliveryMode,
+  sessionRevision: string | null,
+  verb: string,
+  deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void }
+): Promise<void> {
+  if (previousMode === null) {
+    deps.log(
+      `[${verb}] could not restore '${name}' inbound delivery mode (pre-attach mode was unknown); leaving it unchanged`
+    );
+    return;
+  }
+  if (sessionRevision === null) {
+    deps.log(
+      `[${verb}] could not safely restore '${name}' inbound delivery mode (broker did not report a mode revision); leaving it unchanged`
+    );
+    return;
+  }
+  try {
+    // Atomic compare-and-set: restore only if both the mode and its monotonic
+    // revision still match this session's write. If another session changed it
+    // (including an ABA away-and-back), the broker no-ops.
+    const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(
+      name,
+      previousMode,
+      {
+        expectedMode: sessionMode,
+        expectedRevision: sessionRevision,
+      }
+    );
+    if (!result.matched) {
+      deps.log(
+        `[${verb}] did not restore '${name}' inbound delivery mode because another session changed it; leaving it unchanged`
+      );
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Streaming scanner that tracks whether a byte stream currently *ends* inside
+ * an incomplete ANSI escape sequence (ESC, CSI, OSC, or DCS/SOS/PM/APC string).
+ *
+ * The attach status line wraps its repaint in cursor save/restore controls;
+ * splicing that in while the agent is mid-transmission of its own CSI sequence
+ * corrupts the agent's output. Feeding every server chunk through this scanner
+ * lets the status painter hold its repaint until the stream is back at a
+ * sequence boundary. State persists across chunks (a sequence may span several
+ * `worker_stream` frames).
+ *
+ * Only ASCII control bytes drive the state machine; multi-byte UTF-8 payload
+ * bytes are printable in the ground state and never appear inside a CSI/escape
+ * sequence, so scanning UTF-16 code units is safe here.
+ */
+export class AnsiBoundaryScanner {
+  private state: 'ground' | 'esc' | 'csi' | 'osc' | 'osc_esc' | 'str' | 'str_esc' = 'ground';
+
+  push(chunk: string): void {
+    for (let i = 0; i < chunk.length; i += 1) {
+      this.step(chunk.charCodeAt(i));
+    }
+  }
+
+  reset(): void {
+    this.state = 'ground';
+  }
+
+  /** True when the stream ends at a safe boundary (not mid-sequence). */
+  get atBoundary(): boolean {
+    return this.state === 'ground';
+  }
+
+  private step(c: number): void {
+    switch (this.state) {
+      case 'ground':
+        if (c === 0x1b) this.state = 'esc';
+        return;
+      case 'esc':
+        if (c === 0x5b)
+          this.state = 'csi'; // ESC [
+        else if (c === 0x5d)
+          this.state = 'osc'; // ESC ]
+        else if (c === 0x50 || c === 0x58 || c === 0x5e || c === 0x5f)
+          this.state = 'str'; // DCS / SOS / PM / APC
+        else this.state = 'ground'; // 2-byte escape (ESC 7, ESC 8, ESC c, …)
+        return;
+      case 'csi':
+        if (c === 0x1b)
+          this.state = 'esc'; // stray ESC restarts
+        else if (c >= 0x40 && c <= 0x7e) this.state = 'ground'; // final byte ends the CSI
+        return;
+      case 'osc':
+        if (c === 0x07)
+          this.state = 'ground'; // BEL terminator
+        else if (c === 0x1b) this.state = 'osc_esc'; // possible ST (ESC \)
+        return;
+      case 'osc_esc':
+        this.state = c === 0x5c ? 'ground' : 'osc';
+        return;
+      case 'str':
+        if (c === 0x1b) this.state = 'str_esc';
+        return;
+      case 'str_esc':
+        this.state = c === 0x5c ? 'ground' : 'str';
+        return;
+    }
+  }
+}
+
+/** Options for {@link StatusLineController}. Timers are injectable for tests. */
+export interface StatusLineControllerOptions {
+  /** Produce the current status-line ANSI string. */
+  render: () => string;
+  /** Write to stdout. */
+  write: (chunk: string) => void;
+  /** When false (stdout is not a TTY) the status line is never painted. */
+  enabled: boolean;
+  /**
+   * Minimum ms between repaints. `0` paints on every request (no coalescing);
+   * a positive value coalesces bursts of per-chunk repaints into at most one
+   * paint per window, shrinking the splice/DECSC-clobber window.
+   */
+  coalesceMs: number;
+  /**
+   * Max ms to hold a repaint while output keeps ending mid escape-sequence
+   * before painting anyway (bounded residual splice risk). Default 100.
+   */
+  boundaryHoldMs?: number;
+  setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
+  now?: () => number;
+}
+
+/**
+ * Coordinates status-line repaints for the interactive attach clients.
+ *
+ * Correctness properties (see #1247):
+ *  - **Non-TTY skip** — when `enabled` is false, nothing is ever written.
+ *  - **Boundary-hold** — a repaint is deferred while the observed output ends
+ *    mid ANSI escape sequence, so the status line never splices into a
+ *    half-transmitted CSI. It paints as soon as the next chunk lands at a
+ *    boundary (or after `boundaryHoldMs` as a bounded fallback).
+ *  - **Coalescing** — repaints are rate-limited to at most one per
+ *    `coalesceMs`, shrinking the window in which our save/restore-cursor wrap
+ *    can clobber the agent's own pending DECSC.
+ *  - **Teardown-safe** — after {@link dispose} no further writes happen.
+ *
+ * Residual risk (documented): ESC 7/ESC 8 (and CSI s/u) share a single
+ * saved-cursor slot on many terminals, so a repaint landing between the
+ * agent's DECSC and DECRC can still restore to the wrong spot. Boundary-hold +
+ * coalescing shrink but do not eliminate that window.
+ */
+export class StatusLineController {
+  private readonly scanner = new AnsiBoundaryScanner();
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private timerForce = false;
+  private wantPaint = false;
+  private lastPaintAt = Number.NEGATIVE_INFINITY;
+  private disposed = false;
+
+  constructor(private readonly opts: StatusLineControllerOptions) {}
+
+  /** Record server output for boundary tracking; flush a held repaint if the
+   *  stream is now back at a sequence boundary. */
+  observeOutput(chunk: string): void {
+    if (this.disposed) return;
+    this.scanner.push(chunk);
+    if (this.wantPaint) this.flush();
+  }
+
+  /** Request a repaint (coalesced + boundary-held). */
+  request(): void {
+    if (this.disposed || !this.opts.enabled) return;
+    this.wantPaint = true;
+    this.flush();
+  }
+
+  /** Stop all painting and cancel any pending timer. */
+  dispose(): void {
+    this.disposed = true;
+    this.wantPaint = false;
+    this.clearTimer();
+  }
+
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  private flush(): void {
+    if (this.disposed || !this.wantPaint) return;
+    if (!this.scanner.atBoundary) {
+      this.arm(this.opts.boundaryHoldMs ?? 100, true);
+      return;
+    }
+    // Back at a boundary: any pending *force* (boundary-hold) timer carries the
+    // wrong deadline now — it was armed to paint mid-sequence after
+    // `boundaryHoldMs`, which would either paint later than the coalescing
+    // window needs or bypass the window entirely. Clear it so the normal
+    // coalescing logic below re-arms a plain timer for the correct remainder.
+    // A non-force (coalescing) timer already has the right deadline, so leave
+    // it in place.
+    if (this.timer && this.timerForce) this.clearTimer();
+    const elapsed = this.now() - this.lastPaintAt;
+    if (elapsed >= this.opts.coalesceMs) {
+      this.paintNow();
+    } else {
+      this.arm(this.opts.coalesceMs - elapsed, false);
+    }
+  }
+
+  private paintNow(): void {
+    this.clearTimer();
+    this.wantPaint = false;
+    this.lastPaintAt = this.now();
+    this.opts.write(this.opts.render());
+  }
+
+  private arm(ms: number, force: boolean): void {
+    if (this.timer) return;
+    this.timerForce = force;
+    const set =
+      this.opts.setTimer ??
+      ((fn, delay) => {
+        const t = setTimeout(fn, delay);
+        (t as { unref?: () => void }).unref?.();
+        return t;
+      });
+    this.timer = set(() => {
+      this.timer = null;
+      if (this.disposed || !this.wantPaint) return;
+      if (this.timerForce) this.paintNow();
+      else this.flush();
+    }, ms);
+  }
+
+  private clearTimer(): void {
+    if (this.timer) {
+      (this.opts.clearTimer ?? clearTimeout)(this.timer);
+      this.timer = null;
+    }
+  }
+}
+
+/** Minimal writable surface {@link createBackpressureAwareWriter} needs. */
+export interface BackpressureWritable {
+  write(chunk: string): boolean;
+  once(event: 'drain', listener: () => void): unknown;
+  off?(event: 'drain', listener: () => void): unknown;
+  removeListener?(event: 'drain', listener: () => void): unknown;
+}
+
+/**
+ * A backpressure-aware writer plus a teardown hook. Call the writer with each
+ * chunk; call {@link BackpressureAwareWriter.dispose} on detach to drop any
+ * still-queued chunks and unhook the pending `'drain'` listener so nothing
+ * flushes to stdout after the session tears down.
+ */
+export interface BackpressureAwareWriter {
+  /** Write a chunk, respecting backpressure. No-op after {@link dispose}. */
+  write: (chunk: string) => void;
+  /** Drop the pending queue and unhook the `'drain'` listener. Idempotent. */
+  dispose: () => void;
+}
+
+/**
+ * Default stdout writer that respects backpressure (see #1247, item 7).
+ *
+ * When the underlying stream reports saturation (`write()` returns false) we
+ * hold subsequent chunks in a bounded in-memory queue and flush them on
+ * `'drain'`, rather than letting Node's stdout buffer grow without limit under
+ * a fast agent + slow terminal.
+ *
+ * FIFO is preserved even when our own queue reaches `maxQueuedBytes`: rather
+ * than writing the overflow chunk straight through (which would jump it ahead
+ * of older queued chunks and reorder/split the PTY byte stream), we first flush
+ * the entire local queue into stdout's internal buffer — `stdout.write` buffers
+ * internally when saturated, so ignoring its return value here is safe — then
+ * write the new chunk last. Bounded extra buffering, never dropped or reordered
+ * output. Documented residual risk: under sustained overload Node's internal
+ * stdout buffer can still grow.
+ */
+export function createBackpressureAwareWriter(
+  stdout: BackpressureWritable,
+  maxQueuedBytes = 4 * 1024 * 1024
+): BackpressureAwareWriter {
+  let paused = false;
+  let disposed = false;
+  let queue: string[] = [];
+  let queuedBytes = 0;
+
+  const flushQueue = (): void => {
+    if (disposed) return;
+    while (queue.length > 0) {
+      const next = queue.shift() as string;
+      queuedBytes -= Buffer.byteLength(next, 'utf8');
+      if (!stdout.write(next)) {
+        stdout.once('drain', flushQueue);
+        return;
+      }
+    }
+    paused = false;
+  };
+
+  const write = (chunk: string): void => {
+    if (disposed) return;
+    if (paused) {
+      const bytes = Buffer.byteLength(chunk, 'utf8');
+      if (queuedBytes + bytes <= maxQueuedBytes) {
+        queue.push(chunk);
+        queuedBytes += bytes;
+        return;
+      }
+      // Queue cap hit. Preserve FIFO: flush the whole local queue into
+      // stdout's internal buffer first (write buffers internally when
+      // saturated, so the return value is intentionally ignored), then write
+      // the new chunk last so it never jumps ahead of older output.
+      for (const queued of queue) stdout.write(queued);
+      queue = [];
+      queuedBytes = 0;
+      stdout.write(chunk);
+      return;
+    }
+    if (!stdout.write(chunk)) {
+      paused = true;
+      stdout.once('drain', flushQueue);
+    }
+  };
+
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    queue = [];
+    queuedBytes = 0;
+    paused = false;
+    const off = stdout.off ?? stdout.removeListener;
+    off?.call(stdout, 'drain', flushQueue);
+  };
+
+  return { write, dispose };
 }
 
 /** Dependencies for `captureInitialSnapshot`. `captureAndRenderSnapshot`
