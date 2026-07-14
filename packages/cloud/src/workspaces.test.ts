@@ -244,9 +244,9 @@ describe('resolveActiveWorkspace', () => {
     await expect(resolveActiveWorkspace()).rejects.toThrow('fetch failed: network error');
 
     // Never attempted to self-heal: no POST /join call, and the stored key is untouched.
-    expect(
-      fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
-    ).toBe(false);
+    expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(
+      false
+    );
     expect(readWorkspaceStore().workspaces.ops).toEqual({ key: 'rk_live_ops', cloudWorkspaceId: 'rw_ops' });
   });
 

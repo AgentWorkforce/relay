@@ -408,7 +408,9 @@ async function resolveWorkspaceDescriptor(
     }
 
     if (!response.ok) {
-      throw new WorkspaceResolveHttpError(buildEndpointError('Workspace resolve', endpoint, response, payload).message);
+      throw new WorkspaceResolveHttpError(
+        buildEndpointError('Workspace resolve', endpoint, response, payload).message
+      );
     }
 
     return { descriptor: normalizeActiveWorkspaceDescriptor(payload, key, apiUrl) };
