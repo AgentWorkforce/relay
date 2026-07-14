@@ -425,6 +425,16 @@ export async function switchInboundDeliveryModeOrAbort(
 }
 
 /**
+ * Upper bound (ms) on the best-effort detach teardown — resize-ownership
+ * release and inbound-delivery-mode restore. Both are HTTP round-trips to the
+ * broker that can stall if the broker is down; the terminal must still exit
+ * promptly, so `finish()` resolves the exit code once these settle *or* this
+ * deadline elapses, whichever comes first. The broker's idle-takeover net
+ * still frees any ownership left behind.
+ */
+export const DETACH_CLEANUP_DEADLINE_MS = 2000;
+
+/**
  * Best-effort restore of a worker's inbound delivery mode on detach.
  *
  * Two hazards this guards against (see #1247):
@@ -446,16 +456,6 @@ export async function switchInboundDeliveryModeOrAbort(
  * The broker's monotonic mode revision closes ABA races where another session
  * changes the mode away and back to `sessionMode` before this restore.
  */
-/**
- * Upper bound (ms) on the best-effort detach teardown — resize-ownership
- * release and inbound-delivery-mode restore. Both are HTTP round-trips to the
- * broker that can stall if the broker is down; the terminal must still exit
- * promptly, so `finish()` resolves the exit code once these settle *or* this
- * deadline elapses, whichever comes first. The broker's idle-takeover net
- * still frees any ownership left behind.
- */
-export const DETACH_CLEANUP_DEADLINE_MS = 2000;
-
 export async function restoreInboundDeliveryModeOnDetach(
   connection: BrokerConnection,
   name: string,
