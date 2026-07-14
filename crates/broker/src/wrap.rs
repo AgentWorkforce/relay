@@ -112,6 +112,10 @@ fn buffer_and_drain_stdin<F>(
 where
     F: FnMut(&[u8]) -> bool,
 {
+    // Drain whatever the drainer will now accept before evicting anything —
+    // capacity may have freed up since the last retry, in which case there's
+    // no need to drop a chunk that could have been written successfully.
+    drain_stdin_buffer(pending, &mut submit);
     if pending.len() >= max {
         tracing::warn!(
             target: "agent_relay::worker::pty",
@@ -1098,14 +1102,23 @@ pub(crate) async fn run_wrap(
                             }
                         }
 
-                        pty_auto.handle_mcp_approval(&text, &pty).await;
-                        pty_auto.handle_bypass_permissions(&text, &pty).await;
-                        pty_auto.handle_codex_model_prompt(&text, &pty).await;
-                        pty_auto.handle_opencode_permission(&text, &pty).await;
-                        pty_auto.handle_gemini_action(&text, &pty).await;
-                        pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
-                        pty_auto.handle_gemini_trust(&text, &pty).await;
-                        pty_auto.handle_claude_trust(&text, &pty).await;
+                        // Skip auto-responders while human keystrokes are
+                        // backlogged in `stdin_pending` (the drainer queue was
+                        // full and hasn't drained them yet). Otherwise an
+                        // auto-response write submitted here could land on the
+                        // PTY FIFO ahead of keystrokes the human already typed,
+                        // since `submit_write` orders by submission, not by
+                        // when the byte was originally typed.
+                        if stdin_pending.is_empty() {
+                            pty_auto.handle_mcp_approval(&text, &pty).await;
+                            pty_auto.handle_bypass_permissions(&text, &pty).await;
+                            pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                            pty_auto.handle_opencode_permission(&text, &pty).await;
+                            pty_auto.handle_gemini_action(&text, &pty).await;
+                            pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
+                            pty_auto.handle_gemini_trust(&text, &pty).await;
+                            pty_auto.handle_claude_trust(&text, &pty).await;
+                        }
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
@@ -1539,6 +1552,12 @@ pub(crate) async fn run_wrap(
             }
 
             _ = pending_injection_interval.tick() => {
+                // Give backlogged human keystrokes priority onto the PTY FIFO
+                // over a new automated injection — see the auto-responder gate
+                // above for why.
+                if !stdin_pending.is_empty() {
+                    continue;
+                }
                 let should_block = pending_wrap_injections
                     .front()
                     .map(|pending| {
@@ -1577,7 +1596,17 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    if let Err(e) = pty.submit_write(injection.as_bytes().to_vec()) {
+                    // Submit the body and its trailing `\r` as a single write.
+                    // The Enter keystroke is mandatory for delivery — sending
+                    // it as a separate best-effort write meant a failed/lost
+                    // enqueue could still leave the delivery recorded as
+                    // injected (echo verification only checks the body).
+                    // Combining into one write also keeps the two adjacent on
+                    // the drainer FIFO, so no other writer can splice a byte
+                    // between the body and its Enter.
+                    let mut bytes = injection.as_bytes().to_vec();
+                    bytes.extend_from_slice(b"\r");
+                    if let Err(e) = pty.submit_write(bytes) {
                         tracing::warn!(
                             event_id = %pending.event_id,
                             error = %e,
@@ -1601,11 +1630,6 @@ pub(crate) async fn run_wrap(
                         is_broadcast: pending.target.starts_with('#'),
                         has_thread: false,
                     });
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    warn_on_auto_response_write(
-                        pty.submit_write(b"\r".to_vec()),
-                        "wrap_injection_enter",
-                    );
                     tracing::debug!(
                         event_id = %pending.event_id,
                         "wrap: delivery injected"
@@ -1690,7 +1714,13 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    if let Err(error) = pty.submit_write(injection.as_bytes().to_vec()) {
+                    // Combined into a single write for the same reason as the
+                    // first-attempt path above: the Enter must not be a
+                    // best-effort afterthought, and a single write can't be
+                    // spliced by another writer.
+                    let mut bytes = injection.as_bytes().to_vec();
+                    bytes.extend_from_slice(b"\r");
+                    if let Err(error) = pty.submit_write(bytes) {
                         tracing::warn!(
                             event_id = %pv.event_id,
                             error = %error,
@@ -1700,11 +1730,6 @@ pub(crate) async fn run_wrap(
                         if include_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        warn_on_auto_response_write(
-                            pty.submit_write(b"\r".to_vec()),
-                            "wrap_injection_retry_enter",
-                        );
                         tracing::debug!(
                             delivery_id = %pv.delivery_id,
                             event_id = %pv.event_id,
@@ -1717,9 +1742,13 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            // Auto-enter for stuck agents
+            // Auto-enter for stuck agents. Gated on the same backlog check as
+            // the other automation arms above — a stuck-agent nudge must not
+            // jump ahead of keystrokes the human already typed.
             _ = auto_enter_interval.tick() => {
-                pty_auto.try_auto_enter(&pty);
+                if stdin_pending.is_empty() {
+                    pty_auto.try_auto_enter(&pty);
+                }
             }
 
             // Reap child agents that have exited on their own

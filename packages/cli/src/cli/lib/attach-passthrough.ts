@@ -297,7 +297,7 @@ export async function runPassthroughSession(
     deps
   );
   if (!flipResult) return 1;
-  const { previousMode } = flipResult;
+  const { previousMode, sessionRevision } = flipResult;
 
   // The mode is now flipped to `auto_inject`. If the user had an explicit
   // `agent message hold` (manual_flush) active, killing the process with Ctrl+C
@@ -321,6 +321,7 @@ export async function runPassthroughSession(
       name,
       previousMode,
       'auto_inject',
+      sessionRevision,
       'passthrough',
       deps
     );
@@ -581,6 +582,7 @@ export async function runPassthroughSession(
         name,
         previousMode,
         'auto_inject',
+        sessionRevision,
         'passthrough',
         deps
       ).finally(() => {

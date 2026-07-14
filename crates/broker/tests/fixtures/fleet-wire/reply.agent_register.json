@@ -5,6 +5,7 @@
   "ok": true,
   "data": {
     "agent_id": "agt_01J7FLEET000000000000101",
+    "delivery_ack_seq": 42,
     "token": "at_live_0123456789abcdef01234567",
     "name": "codex-builder-1"
   }

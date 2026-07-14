@@ -224,6 +224,7 @@ function createHarness(opts: FetchScript = {}): {
   // detach-time re-read (which only restores when the mode is still what this
   // session set) behaves like a real broker.
   let currentMode: 'manual_flush' | 'auto_inject' = initialMode;
+  let currentRevision = 0;
 
   const defaultRoutes: Record<string, FetchRoute> = {
     'GET /events-replay': async () =>
@@ -249,22 +250,41 @@ function createHarness(opts: FetchScript = {}): {
         });
       }
       const body = init?.body
-        ? (JSON.parse(String(init.body)) as { mode: string; expected_mode?: string })
+        ? (JSON.parse(String(init.body)) as {
+            mode: string;
+            expected_mode?: string;
+            expected_revision?: string;
+          })
         : { mode: '' };
       // Compare-and-set: when `expected_mode` is present and no longer matches
       // the current mode, no-op and report `matched:false` with the unchanged
       // current mode (mirrors the real broker).
-      if (body.expected_mode !== undefined && body.expected_mode !== currentMode) {
-        return new Response(JSON.stringify({ mode: currentMode, flushed: 0, matched: false }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+      if (
+        (body.expected_mode !== undefined && body.expected_mode !== currentMode) ||
+        (body.expected_revision !== undefined && body.expected_revision !== String(currentRevision))
+      ) {
+        return new Response(
+          JSON.stringify({
+            mode: currentMode,
+            flushed: 0,
+            matched: false,
+            revision: String(currentRevision),
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
       }
       if (body.mode === 'manual_flush' || body.mode === 'auto_inject') currentMode = body.mode;
-      return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      currentRevision += 1;
+      return new Response(
+        JSON.stringify({ mode: body.mode, flushed: 0, matched: true, revision: String(currentRevision) }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
     },
     'GET /pending': async () => {
       const pending = Array.from({ length: initialPending }, (_, i) => ({ event_id: `e${i}` }));
@@ -554,7 +574,11 @@ describe('runDriveSession', () => {
     // mode) via a compare-and-set guarded by `expected_mode: manual_flush`.
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls).toHaveLength(2);
-    expect(modeCalls[1].body).toEqual({ mode: 'auto_inject', expected_mode: 'manual_flush' });
+    expect(modeCalls[1].body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
+      expected_revision: '1',
+    });
   });
 
   it('aborts before opening the WS when the broker rejects the mode flip', async () => {
@@ -586,7 +610,7 @@ describe('runDriveSession', () => {
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
       { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
     ]);
   });
 
@@ -795,7 +819,7 @@ describe('runDriveSession', () => {
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
       { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
     ]);
   });
 
@@ -812,7 +836,7 @@ describe('runDriveSession', () => {
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
       { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
     ]);
   });
 
@@ -829,7 +853,7 @@ describe('runDriveSession', () => {
     // compare-and-set guarded by `expected_mode: manual_flush`.
     expect(modeCalls.map((c) => c.body)).toEqual([
       { mode: 'manual_flush' },
-      { mode: 'manual_flush', expected_mode: 'manual_flush' },
+      { mode: 'manual_flush', expected_mode: 'manual_flush', expected_revision: '1' },
     ]);
   });
 
@@ -1072,7 +1096,7 @@ describe('runDriveSession', () => {
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
       { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
     ]);
   });
 
@@ -1192,16 +1216,20 @@ describe('runDriveSession', () => {
           const body = JSON.parse(String(init?.body ?? '{}')) as {
             mode: string;
             expected_mode?: string;
+            expected_revision?: string;
           };
           // The restore carries `expected_mode`; model a broker whose current
           // mode was changed by another session, so the compare-and-set misses.
           if (body.expected_mode !== undefined) {
-            return new Response(JSON.stringify({ mode: 'auto_inject', flushed: 0, matched: false }), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            });
+            return new Response(
+              JSON.stringify({ mode: 'auto_inject', flushed: 0, matched: false, revision: '2' }),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }
+            );
           }
-          return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true }), {
+          return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true, revision: '1' }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -1219,7 +1247,7 @@ describe('runDriveSession', () => {
     // `expected_mode`. The restore no-ops broker-side rather than clobbering.
     expect(putCalls.map((c) => c.body)).toEqual([
       { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush' },
+      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
     ]);
   });
 });

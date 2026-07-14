@@ -280,6 +280,7 @@ pub(super) async fn spawn_worker_from_request(
     dedup: &mut DedupCache,
     agent_spawn_count: &mut u32,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_delivery_book: &mut FleetDeliveryBook,
     node_name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
@@ -400,6 +401,7 @@ pub(super) async fn spawn_worker_from_request(
         } else {
             match super::fleet::register_node_agent_token(
                 fleet_control_tx,
+                fleet_delivery_book,
                 name.as_str(),
                 invocation_id.clone(),
                 session_ref.clone(),

@@ -227,6 +227,7 @@ function createHarness(opts: FetchScript = {}): {
   // Stateful delivery mode: GET reflects the last successful PUT so the
   // detach-time re-read behaves like a real broker.
   let currentMode: 'manual_flush' | 'auto_inject' = initialMode;
+  let currentRevision = 0;
 
   const defaultRoutes: Record<string, FetchRoute> = {
     'POST /resize': async () =>
@@ -247,22 +248,41 @@ function createHarness(opts: FetchScript = {}): {
         });
       }
       const body = init?.body
-        ? (JSON.parse(String(init.body)) as { mode: string; expected_mode?: string })
+        ? (JSON.parse(String(init.body)) as {
+            mode: string;
+            expected_mode?: string;
+            expected_revision?: string;
+          })
         : { mode: '' };
       // Compare-and-set: when `expected_mode` is present and no longer matches
       // the current mode, no-op and report `matched:false` with the unchanged
       // current mode (mirrors the real broker).
-      if (body.expected_mode !== undefined && body.expected_mode !== currentMode) {
-        return new Response(JSON.stringify({ mode: currentMode, flushed: 0, matched: false }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+      if (
+        (body.expected_mode !== undefined && body.expected_mode !== currentMode) ||
+        (body.expected_revision !== undefined && body.expected_revision !== String(currentRevision))
+      ) {
+        return new Response(
+          JSON.stringify({
+            mode: currentMode,
+            flushed: 0,
+            matched: false,
+            revision: String(currentRevision),
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
       }
       if (body.mode === 'manual_flush' || body.mode === 'auto_inject') currentMode = body.mode;
-      return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      currentRevision += 1;
+      return new Response(
+        JSON.stringify({ mode: body.mode, flushed: 0, matched: true, revision: String(currentRevision) }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
     },
     'POST /input': async () =>
       new Response(JSON.stringify({ ok: true }), {
@@ -501,7 +521,7 @@ describe('runPassthroughSession', () => {
     // `expected_mode` so a concurrent change is never clobbered.
     expect(afterDetach.map((c) => c.body)).toEqual([
       { mode: 'auto_inject' },
-      { mode: 'auto_inject', expected_mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
     expect(stdin.rawModeCalls).toEqual([true, false]);
   });
@@ -519,7 +539,7 @@ describe('runPassthroughSession', () => {
       .map((c) => c.body);
     expect(flipBodies).toEqual([
       { mode: 'auto_inject' },
-      { mode: 'manual_flush', expected_mode: 'auto_inject' },
+      { mode: 'manual_flush', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 
@@ -552,7 +572,7 @@ describe('runPassthroughSession', () => {
     const flips = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(flips.map((c) => c.body)).toEqual([
       { mode: 'auto_inject' },
-      { mode: 'auto_inject', expected_mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 
@@ -624,7 +644,10 @@ describe('runPassthroughSession', () => {
     const flips = fetchLog
       .filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'))
       .map((c) => c.body);
-    expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush', expected_mode: 'auto_inject' }]);
+    expect(flips).toEqual([
+      { mode: 'auto_inject' },
+      { mode: 'manual_flush', expected_mode: 'auto_inject', expected_revision: '1' },
+    ]);
   });
 
   it('treats WebSocket errors as fatal and restores delivery mode', async () => {
@@ -640,7 +663,10 @@ describe('runPassthroughSession', () => {
     const flips = fetchLog
       .filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'))
       .map((c) => c.body);
-    expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush', expected_mode: 'auto_inject' }]);
+    expect(flips).toEqual([
+      { mode: 'auto_inject' },
+      { mode: 'manual_flush', expected_mode: 'auto_inject', expected_revision: '1' },
+    ]);
   });
 
   it('exits cleanly on SIGINT', async () => {
@@ -838,16 +864,20 @@ describe('runPassthroughSession', () => {
           const body = JSON.parse(String(init?.body ?? '{}')) as {
             mode: string;
             expected_mode?: string;
+            expected_revision?: string;
           };
           // The restore carries `expected_mode`; model a broker whose current
           // mode was changed by another session, so the compare-and-set misses.
           if (body.expected_mode !== undefined) {
-            return new Response(JSON.stringify({ mode: 'manual_flush', flushed: 0, matched: false }), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            });
+            return new Response(
+              JSON.stringify({ mode: 'manual_flush', flushed: 0, matched: false, revision: '2' }),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }
+            );
           }
-          return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true }), {
+          return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true, revision: '1' }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -865,7 +895,7 @@ describe('runPassthroughSession', () => {
     // `expected_mode`. The restore no-ops broker-side rather than clobbering.
     expect(putCalls.map((c) => c.body)).toEqual([
       { mode: 'auto_inject' },
-      { mode: 'manual_flush', expected_mode: 'auto_inject' },
+      { mode: 'manual_flush', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 });

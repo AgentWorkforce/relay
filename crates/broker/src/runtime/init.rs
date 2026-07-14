@@ -266,34 +266,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // cached token is only reused when both match, and so a re-mint after a
     // node-control 401 rewrites the correctly-scoped cache.
     let node_base_url = configured_base.clone();
-    let node_token = resolve_node_token(
-        &node_id,
-        &node_name,
-        &broker_version,
-        &node_workspace_id,
-        &relay_workspace_key,
-        node_base_url.as_deref(),
-    )
-    .await;
-    if node_token.is_none() {
-        // Node-only delivery requires this broker to be a functioning relaycast
-        // node: without a node token it cannot open /v1/node/ws, so the engine
-        // delivers nothing and every spawned agent is effectively unreachable.
-        // This is a hard operational fault, not a benign warning. We do NOT exit
-        // (a token may arrive via env/mint later), but make the failure mode
-        // unmistakable in logs and on stderr.
-        tracing::error!(
-            node_id = %node_id,
-            "NO NODE TOKEN: this broker is NOT a functioning relaycast node (env unset, no cached token, mint failed). \
-             /v1/node/ws will not connect and realtime delivery will FAIL for every agent until a node token is available \
-             (set RELAY_NODE_TOKEN or restore connectivity so a token can be minted)."
-        );
-        eprintln!(
-            "[agent-relay] FATAL CONFIG: no node token available for node '{}'. \
-             Realtime delivery is DISABLED until RELAY_NODE_TOKEN is set or a token can be minted.",
-            node_id
-        );
-    }
+    // Resolve only the fast, local token sources here (RELAY_NODE_TOKEN override
+    // and the on-disk cache). The network mint (create_node) is deliberately NOT
+    // done on this path: it would block the broker's API readiness handoff below
+    // behind a Relaycast round-trip, delaying `/api/session` (and the CLI's
+    // "Broker started.") until the mint completes. When no token is cached, the
+    // node-control client mints one in the background (it holds the same minter)
+    // and publishes it to `session_node_token`, so realtime delivery still comes
+    // online without gating startup on it.
+    let node_token =
+        resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref());
     let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
@@ -309,14 +291,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // the broker's resolved token on the api-key-gated session so the CLI can
     // serve local config providers without a pre-enrolled RELAY_NODE_TOKEN (the
     // broker mints its own in that case). Alongside the workspace key already
-    // returned there, this stays within the local trust boundary. A shared handle
-    // (updated by the node-control re-mint path) keeps the session token current.
+    // returned there, this stays within the local trust boundary. Seeded with the
+    // cached token (if any); the node-control client writes through this shared
+    // handle when it mints (initially or after a re-mint), keeping it current.
     let session_node_token = std::sync::Arc::new(std::sync::RwLock::new(node_token.clone()));
-    // Wire a re-mint facility so a node-control 401 (stale/wrong-scoped token)
-    // discards the cached token and mints a fresh one, instead of looping
-    // forever on the rejected token. Mirrors the initial mint above. Absent when
-    // no workspace RelayCast client is available (then a 401 surfaces a hard
-    // error rather than recovering).
+    // Wire the token minter used by the node-control client both for the initial
+    // mint (when no token is cached, off the readiness path) and to recover from
+    // a node-control 401 (stale/wrong-scoped token) by discarding the cached
+    // token and minting a fresh one instead of looping forever on the rejected
+    // token. Absent when no workspace RelayCast client is available (then a 401
+    // surfaces a hard error rather than recovering).
     let token_minter = Some(crate::node_control::NodeTokenMinter {
         workspace_key: relay_workspace_key.clone(),
         workspace_id: node_workspace_id.clone(),
@@ -671,23 +655,19 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     runtime.run().await
 }
 
-/// Resolve the node token used to authenticate the `/v1/node/ws` connection.
+/// Resolve the node token used to authenticate the `/v1/node/ws` connection
+/// from the fast, local sources only, in precedence order:
 ///
-/// Precedence:
 /// 1. `RELAY_NODE_TOKEN` env override (operator-supplied; never persisted).
 /// 2. A token previously minted for this exact `node_id` and cached on disk.
-/// 3. A freshly minted token via `RelayCast::create_node` (workspace key),
-///    persisted next to the node id for reuse on the next start.
 ///
-/// Returns `None` only when no override or cache exists and minting is
-/// impossible (no relay client) or fails; the caller logs and continues without
-/// node delivery.
-async fn resolve_node_token(
+/// Returns `None` when neither exists. This never performs a network mint — that
+/// stays off the broker's API-readiness path (see the call site) and is handled
+/// in the background by the node-control client, which holds the same
+/// [`crate::node_control::NodeTokenMinter`].
+fn resolve_cached_node_token(
     node_id: &str,
-    node_name: &str,
-    broker_version: &str,
     workspace_id: &str,
-    workspace_key: &str,
     base_url: Option<&str>,
 ) -> Option<String> {
     if let Some(token) = std::env::var("RELAY_NODE_TOKEN")
@@ -706,44 +686,7 @@ async fn resolve_node_token(
         return Some(token);
     }
 
-    let request = crate::node_control::create_node_request(node_id, node_name, broker_version);
-    match crate::node_control::mint_node_token(
-        workspace_key,
-        base_url,
-        request,
-        crate::node_control::MintNodeTokenLogContext {
-            node_id,
-            workspace_id,
-        },
-    )
-    .await
-    {
-        Ok(token) => {
-            if let Some(path) = token_path.as_deref() {
-                if let Err(error) = crate::node_control::persist_node_token(
-                    path,
-                    node_id,
-                    workspace_id,
-                    base_url,
-                    &token,
-                ) {
-                    tracing::warn!(node_id = %node_id, error = %error, "failed to persist minted node token");
-                }
-            }
-            tracing::info!(node_id = %node_id, workspace_id = %workspace_id, "minted node token via create_node");
-            Some(token)
-        }
-        Err(error) => {
-            crate::node_control::log_create_node_mint_error(
-                "relay_broker::fleet",
-                node_id,
-                workspace_id,
-                &error,
-                "failed to mint node token via create_node",
-            );
-            None
-        }
-    }
+    None
 }
 
 fn callback_host_for_url(api_bind: &str, local_addr: SocketAddr) -> String {
