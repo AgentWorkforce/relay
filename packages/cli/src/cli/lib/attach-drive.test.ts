@@ -182,6 +182,9 @@ interface FetchScript {
   terminalSize?: { rows: number; cols: number } | null;
   inputStreamOpenError?: Error;
   inputStreamSendError?: Error;
+  /** Ownership re-assert interval (ms). Defaults to disabled (0) in tests so
+   *  the keep-alive timer doesn't interfere; the re-assert test sets it small. */
+  ownershipReassertMs?: number;
 }
 
 function createHarness(opts: FetchScript = {}): {
@@ -394,6 +397,9 @@ function createHarness(opts: FetchScript = {}): {
     }),
     // Immediate, deterministic status repaints in tests (no coalescing timer).
     statusRepaintCoalesceMs: 0,
+    // Disable the ownership re-assert timer by default so it can't perturb
+    // resize-count assertions; individual tests opt in with a small value.
+    ownershipReassertMs: opts.ownershipReassertMs ?? 0,
   };
 
   return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog, inputStreams };
@@ -917,7 +923,10 @@ describe('runDriveSession', () => {
 
     const resizeCalls = fetchLog.filter((call) => call.method === 'POST' && call.url.includes('/resize/'));
     expect(resizeCalls).toHaveLength(1);
-    expect(resizeCalls[0].body).toEqual({ rows: 60, cols: 200 });
+    const body = resizeCalls[0].body as { rows: number; cols: number; session_id?: string };
+    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 60, cols: 200 });
+    // The on-attach sync carries a session id for the single-resizer policy.
+    expect(body.session_id).toEqual(expect.any(String));
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
@@ -938,13 +947,17 @@ describe('runDriveSession', () => {
 
     const resizeBodies = fetchLog
       .filter((call) => call.method === 'POST' && call.url.includes('/resize/'))
-      .map((call) => call.body);
-    // First the on-attach sync, then each user-driven resize.
-    expect(resizeBodies).toEqual([
+      .map((call) => call.body as { rows: number; cols: number; session_id?: string });
+    // First the on-attach sync, then each user-driven resize. Every resize
+    // carries the same per-attach session id (single-resizer policy, #1247).
+    expect(resizeBodies.map(({ rows, cols }) => ({ rows, cols }))).toEqual([
       { rows: 30, cols: 100 },
       { rows: 50, cols: 150 },
       { rows: 24, cols: 80 },
     ]);
+    const sessionIds = new Set(resizeBodies.map((b) => b.session_id));
+    expect(sessionIds.size).toBe(1);
+    expect([...sessionIds][0]).toEqual(expect.any(String));
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
@@ -959,6 +972,97 @@ describe('runDriveSession', () => {
     await signals.get('SIGINT')?.();
     await sessionPromise;
     expect(terminal.listenerCount()).toBe(0);
+  });
+
+  it('releases resize ownership on detach with the attach session id', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // Capture the session id claimed by the on-attach resize sync.
+    const attachResize = fetchLog.find((call) => call.method === 'POST' && call.url.includes('/resize/'));
+    const sessionId = (attachResize?.body as { session_id?: string } | undefined)?.session_id;
+    expect(sessionId).toEqual(expect.any(String));
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Detach must send a release for the same session id.
+    const releaseCall = fetchLog.find(
+      (call) =>
+        call.method === 'POST' &&
+        call.url.includes('/resize/') &&
+        (call.body as { release?: boolean }).release === true
+    );
+    expect(releaseCall).toBeDefined();
+    expect((releaseCall?.body as { session_id?: string }).session_id).toBe(sessionId);
+    // A pure release carries no placeholder dimensions (#1247).
+    const releaseBody = releaseCall?.body as { rows?: number; cols?: number };
+    expect(releaseBody.rows).toBeUndefined();
+    expect(releaseBody.cols).toBeUndefined();
+  });
+
+  it('periodically re-asserts resize ownership on the same session id', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      ownershipReassertMs: 5,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // Let a couple of re-assert ticks fire without any local resize.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const activeResizes = fetchLog.filter(
+      (call) =>
+        call.method === 'POST' &&
+        call.url.includes('/resize/') &&
+        (call.body as { release?: boolean }).release !== true
+    );
+    // The on-attach sync plus at least one keep-alive re-assert.
+    expect(activeResizes.length).toBeGreaterThanOrEqual(2);
+    // Every resize (initial + re-asserts) carries the same owning session id.
+    const sessionIds = new Set(
+      activeResizes.map((call) => (call.body as { session_id?: string }).session_id)
+    );
+    expect(sessionIds.size).toBe(1);
+    // Re-asserts re-send the unchanged current size.
+    for (const call of activeResizes) {
+      expect(call.body as { rows: number; cols: number }).toMatchObject({ rows: 30, cols: 100 });
+    }
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('logs a rejected periodic resize ownership re-assert', async () => {
+    let resizeCount = 0;
+    const { deps, sockets, signals, logs } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      ownershipReassertMs: 5,
+      routes: {
+        'POST /resize': async () => {
+          resizeCount += 1;
+          if (resizeCount === 1) {
+            return new Response(JSON.stringify({ applied: true }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response('lease rejected', { status: 409 });
+        },
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(logs.some((args) => String(args[0]).includes('resize ownership re-assert failed'))).toBe(true);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
   });
 
   it('skips resize forwarding when stdout is not a TTY', async () => {

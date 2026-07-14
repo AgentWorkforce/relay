@@ -34,7 +34,7 @@ use crate::runtime::{
 };
 use crate::spawner::{spawn_env_vars, Spawner};
 use crate::util::{
-    ansi::{floor_char_boundary, strip_ansi},
+    ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
         detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
         detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
@@ -515,6 +515,31 @@ impl PtyAutoState {
         }
     }
 
+    /// Like [`update_auto_suggestion`](Self::update_auto_suggestion) but uses
+    /// `prev_tail` (the trailing bytes of the previous PTY read) *only* to
+    /// recognise a ghost-text marker pair that straddles the chunk boundary —
+    /// `\x1b[7m` at the end of the previous read and `\x1b[27m\x1b[2m` at the
+    /// start of this one. The clear/keep decision is made on `current` alone,
+    /// so a normal output chunk after the suggestion is gone clears visibility
+    /// promptly instead of being held while a stale pair lingers in the
+    /// lookbehind. `prev_tail` matching on its own is excluded so an
+    /// already-handled pair can't re-arm visibility every chunk.
+    pub(crate) fn update_auto_suggestion_windowed(&mut self, current: &str, prev_tail: &str) {
+        if !is_auto_suggestion(current)
+            && !prev_tail.is_empty()
+            && !is_auto_suggestion(prev_tail)
+            && is_auto_suggestion(&format!("{prev_tail}{current}"))
+        {
+            // Pair straddles the read boundary — arm visibility even though the
+            // current chunk alone doesn't contain the whole pair.
+            self.auto_suggestion_visible = true;
+            return;
+        }
+        // Otherwise the current chunk decides: arm on an in-chunk pair, clear on
+        // real output, leave unchanged on whitespace/ANSI-only.
+        self.update_auto_suggestion(current);
+    }
+
     pub(crate) fn update_editor_buffer(&mut self, text: &str) {
         Self::append_buf(&mut self.editor_mode_buffer, text, 2000, 1500);
     }
@@ -648,6 +673,64 @@ mod hold_tests {
         );
 
         let _ = pty.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod auto_suggestion_tests {
+    use super::*;
+
+    const OPEN: &str = "\x1b[7m"; // reverse-video (ghost text begins)
+    const CLOSE: &str = "\x1b[27m\x1b[2m"; // reverse off + dim (ghost text ends)
+
+    #[test]
+    fn pair_in_one_chunk_arms_visibility() {
+        let mut s = PtyAutoState::new();
+        s.update_auto_suggestion_windowed(&format!("{OPEN}ghost{CLOSE}"), "");
+        assert!(s.auto_suggestion_visible);
+    }
+
+    #[test]
+    fn pair_straddling_boundary_is_detected() {
+        let mut s = PtyAutoState::new();
+        // Chunk 1 ends with the opening marker; nothing arms yet.
+        s.update_auto_suggestion_windowed(&format!("prompt {OPEN}gho"), "");
+        assert!(
+            !s.auto_suggestion_visible,
+            "opening marker alone must not arm"
+        );
+        // Chunk 2 carries the closing markers; the previous tail completes the pair.
+        let tail = format!("prompt {OPEN}gho");
+        s.update_auto_suggestion_windowed(&format!("st{CLOSE}"), &tail);
+        assert!(
+            s.auto_suggestion_visible,
+            "a pair straddling the read boundary must be detected"
+        );
+    }
+
+    #[test]
+    fn normal_output_clears_even_with_stale_pair_in_tail() {
+        // The regression cubic flagged: a completed suggestion in the previous
+        // chunk's tail must NOT keep visibility armed once plain output arrives.
+        let mut s = PtyAutoState::new();
+        let stale_tail = format!("{OPEN}ghost{CLOSE}");
+        s.auto_suggestion_visible = true;
+        s.update_auto_suggestion_windowed("the user typed a real line", &stale_tail);
+        assert!(
+            !s.auto_suggestion_visible,
+            "real output must clear visibility even when a completed pair sits in the lookbehind"
+        );
+    }
+
+    #[test]
+    fn whitespace_only_chunk_leaves_visibility_unchanged() {
+        let mut s = PtyAutoState::new();
+        s.auto_suggestion_visible = true;
+        s.update_auto_suggestion_windowed("   \x1b[0m", "");
+        assert!(
+            s.auto_suggestion_visible,
+            "whitespace / ANSI-only output must not flip visibility"
+        );
     }
 }
 
@@ -942,6 +1025,21 @@ pub(crate) async fn run_wrap(
     // Pre-seeding dedup with these IDs prevents self-echo when the same message
     // arrives via WS — regardless of what identity the MCP server uses.
     let mut mcp_response_buffer = String::new();
+    // Stateful ANSI stripper for auto-suggestion detection. `is_auto_suggestion`
+    // keys on raw markers (`\x1b[7m`, `\x1b[27m\x1b[2m`); scanning each PTY read
+    // independently misses a marker split across two reads. Stitching the raw
+    // stream here holds back an incomplete trailing escape and prepends it to
+    // the next chunk so the ghost-text guard sees whole markers (#1247).
+    let mut suggestion_stripper = AnsiStripper::new();
+    // Bounded tail of the *previous* scanned chunk for ghost-text detection.
+    // `is_auto_suggestion` requires a marker *pair* (`\x1b[7m` … `\x1b[27m\x1b[2m`)
+    // in one string; when the halves land in different PTY reads, neither chunk
+    // contains both. Passing this tail alongside the new chunk to
+    // `update_auto_suggestion_windowed` lets a pair straddling the boundary be
+    // seen whole. It holds only the previous chunk's tail (not accumulated
+    // history), so a stale suggestion can't keep the guard armed.
+    let mut suggestion_prev_tail = String::new();
+    const SUGGESTION_LOOKBEHIND_MAX: usize = 512;
 
     let mut pty_auto = PtyAutoState::new();
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
@@ -1069,7 +1167,22 @@ pub(crate) async fn run_wrap(
                         pty_auto.last_output_time = Instant::now();
                         mcp_reminder_throttle.note_output_bytes(chunk.len());
 
-                        pty_auto.update_auto_suggestion(&text);
+                        // Scan the stitched raw stream so a `\x1b[7m` marker
+                        // split mid-sequence is reassembled, and pass the
+                        // previous chunk's tail so a marker *pair* straddling
+                        // the read boundary is still detected — while the
+                        // clear decision stays on the current chunk.
+                        let suggestion_scan = suggestion_stripper.feed_raw(&text);
+                        pty_auto
+                            .update_auto_suggestion_windowed(&suggestion_scan, &suggestion_prev_tail);
+                        if !suggestion_scan.is_empty() {
+                            let start = floor_char_boundary(
+                                &suggestion_scan,
+                                suggestion_scan.len().saturating_sub(SUGGESTION_LOOKBEHIND_MAX),
+                            );
+                            suggestion_prev_tail.clear();
+                            suggestion_prev_tail.push_str(&suggestion_scan[start..]);
+                        }
                         pty_auto.update_editor_buffer(&text);
                         pty_auto.reset_auto_enter_on_output(&text);
 

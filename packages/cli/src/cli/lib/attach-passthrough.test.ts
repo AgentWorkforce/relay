@@ -732,10 +732,59 @@ describe('runPassthroughSession', () => {
 
     const resizeCalls = fetchLog.filter((c) => c.method === 'POST' && c.url.includes('/resize/'));
     expect(resizeCalls).toHaveLength(1);
-    expect(resizeCalls[0].body).toEqual({ rows: 60, cols: 200 });
+    const body = resizeCalls[0].body as { rows: number; cols: number; session_id?: string };
+    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 60, cols: 200 });
+    // The on-attach sync carries a session id for the single-resizer policy.
+    expect(body.session_id).toEqual(expect.any(String));
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
+  });
+
+  it('waits for the initial resize before releasing ownership on detach', async () => {
+    let finishInitialResize: ((response: Response) => void) | undefined;
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      routes: {
+        'POST /resize': async (init) => {
+          const body = JSON.parse(String(init?.body ?? '{}')) as { release?: boolean };
+          if (body.release === true) {
+            return new Response(JSON.stringify({ released: true }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Promise<Response>((resolve) => {
+            finishInitialResize = resolve;
+          });
+        },
+      },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(finishInitialResize).toBeDefined();
+
+    await signals.get('SIGINT')?.();
+    expect(
+      fetchLog.some(
+        (call) => call.url.includes('/resize/') && (call.body as { release?: boolean }).release === true
+      )
+    ).toBe(false);
+
+    finishInitialResize?.(
+      new Response(JSON.stringify({ applied: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    await sessionPromise;
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const resizeBodies = fetchLog
+      .filter((call) => call.url.includes('/resize/'))
+      .map((call) => call.body as { release?: boolean });
+    expect(resizeBodies.map((body) => body.release === true)).toEqual([false, true]);
   });
 
   // ---- predictive-echo wiring ----

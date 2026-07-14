@@ -371,11 +371,12 @@ export async function syncInitialPtySize(
   name: string,
   localSize: { rows: number; cols: number } | null,
   verb: string,
-  deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void }
+  deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void },
+  options?: { sessionId?: string }
 ): Promise<void> {
   if (!localSize) return;
   try {
-    await createBrokerClient(connection, deps.fetch).resizePty(name, localSize.rows, localSize.cols);
+    await createBrokerClient(connection, deps.fetch).resizePty(name, localSize.rows, localSize.cols, options);
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     deps.log(
@@ -422,6 +423,16 @@ export async function switchInboundDeliveryModeOrAbort(
     return null;
   }
 }
+
+/**
+ * Upper bound (ms) on the best-effort detach teardown — resize-ownership
+ * release and inbound-delivery-mode restore. Both are HTTP round-trips to the
+ * broker that can stall if the broker is down; the terminal must still exit
+ * promptly, so `finish()` resolves the exit code once these settle *or* this
+ * deadline elapses, whichever comes first. The broker's idle-takeover net
+ * still frees any ownership left behind.
+ */
+export const DETACH_CLEANUP_DEADLINE_MS = 2000;
 
 /**
  * Best-effort restore of a worker's inbound delivery mode on detach.

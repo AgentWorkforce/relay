@@ -57,6 +57,7 @@ impl BrokerRuntime {
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
         let pending_requests = &mut self.pending_requests;
+        let resize_owners = &mut self.resize_owners;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
         let dedup = &mut self.dedup;
@@ -555,6 +556,7 @@ impl BrokerRuntime {
                             .await;
                         }
                         fail_pending_requests_for_worker(pending_requests, &name, "agent_released");
+                        resize_owners.remove(&name);
                         delivery_states.remove(&name);
                         agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);
@@ -1064,9 +1066,40 @@ impl BrokerRuntime {
                 name,
                 rows,
                 cols,
+                session_id,
+                release,
                 reply,
             } => {
-                if rows == 0 || cols == 0 {
+                // Treat an empty/whitespace session id as absent: it is not a
+                // meaningful owner key, and a shared empty-string "owner" would
+                // let unrelated clients collide. (The HTTP boundary already
+                // normalises this; belt-and-braces for other callers.)
+                let session_id = session_id.filter(|sid| !sid.trim().is_empty());
+
+                // Explicit ownership release on detach (see `resize_owners`
+                // doc on `BrokerRuntime`). A release carries the owning
+                // `session_id`; we drop ownership only if it matches, then
+                // return without touching the PTY size. A release without a
+                // session id, or from a non-owner, is a no-op. The response
+                // reports the *actual* outcome so the client can tell a real
+                // release from a no-op.
+                if release {
+                    let released = match session_id.as_deref() {
+                        Some(sid)
+                            if resize_owners
+                                .get(&name)
+                                .is_some_and(|owner| owner.session_id == sid) =>
+                        {
+                            resize_owners.remove(&name);
+                            true
+                        }
+                        _ => false,
+                    };
+                    let _ = reply.send(Ok(json!({
+                        "name": name,
+                        "released": released,
+                    })));
+                } else if rows == 0 || cols == 0 {
                     let _ =
                         reply.send(Err("invalid_dimensions: rows and cols must be >= 1".into()));
                 } else {
@@ -1085,25 +1118,93 @@ impl BrokerRuntime {
                             )));
                         }
                         Some(AgentRuntime::Pty) => {
-                            if let Err(err) = workers
-                                .send_to_worker(
-                                    &name,
-                                    "resize_pty",
-                                    Some(RequestId::new(format!(
-                                        "api_{}",
-                                        Uuid::new_v4().simple()
-                                    ))),
-                                    json!({ "rows": rows, "cols": cols }),
-                                )
-                                .await
-                            {
-                                let _ = reply.send(Err(format!("agent_not_found: {}", err)));
-                            } else {
-                                let _ = reply.send(Ok(json!({
-                                    "name": name,
-                                    "rows": rows,
-                                    "cols": cols,
-                                })));
+                            // Single-resizer policy. A resize is applied when
+                            // it carries no session id (legacy/one-shot
+                            // callers), when the requesting session already
+                            // owns the worker or claims a currently-unowned
+                            // one, or when the prior owner has gone stale
+                            // (crashed without releasing). Otherwise a second
+                            // live drive client's resize is rejected so the
+                            // two clients don't fight over the shared PTY. The
+                            // decision + ownership bookkeeping lives in
+                            // `plan_resize`/`commit_resize_ownership` so it is
+                            // unit-testable without a live worker.
+                            let now = Instant::now();
+                            match plan_resize(
+                                resize_owners,
+                                &name,
+                                rows,
+                                cols,
+                                session_id.as_deref(),
+                                now,
+                            ) {
+                                ResizeAction::Reject => {
+                                    // Not the resize owner: acknowledge without
+                                    // resizing so the client doesn't error-spam
+                                    // on every SIGWINCH.
+                                    let _ = reply.send(Ok(json!({
+                                        "name": name,
+                                        "rows": rows,
+                                        "cols": cols,
+                                        "applied": false,
+                                        "reason": "not_resize_owner",
+                                    })));
+                                }
+                                ResizeAction::Refresh => {
+                                    // Same-size owner re-assert: `plan_resize`
+                                    // already bumped `last_seen`. Do NOT re-send
+                                    // `resize_pty`, or the child would get a
+                                    // spurious SIGWINCH/repaint on every
+                                    // keep-alive.
+                                    let _ = reply.send(Ok(json!({
+                                        "name": name,
+                                        "rows": rows,
+                                        "cols": cols,
+                                        "applied": false,
+                                        "reason": "unchanged",
+                                    })));
+                                }
+                                ResizeAction::Apply => {
+                                    if let Err(err) = workers
+                                        .send_to_worker(
+                                            &name,
+                                            "resize_pty",
+                                            Some(RequestId::new(format!(
+                                                "api_{}",
+                                                Uuid::new_v4().simple()
+                                            ))),
+                                            json!({ "rows": rows, "cols": cols }),
+                                        )
+                                        .await
+                                    {
+                                        let _ =
+                                            reply.send(Err(format!("agent_not_found: {}", err)));
+                                    } else {
+                                        // Ownership is recorded only after the
+                                        // resize actually reaches the worker, so
+                                        // a failed send doesn't claim the lease.
+                                        // Re-sample the clock *after* the awaited
+                                        // send so `last_seen` (the liveness
+                                        // anchor for the stale-owner window) is
+                                        // stamped when the resize actually
+                                        // applied, not before a possibly-slow
+                                        // worker send.
+                                        commit_resize_ownership(
+                                            resize_owners,
+                                            &name,
+                                            rows,
+                                            cols,
+                                            session_id,
+                                            Instant::now(),
+                                        );
+                                        let _ = reply.send(Ok(json!({
+                                            "name": name,
+                                            "rows": rows,
+                                            "cols": cols,
+                                            "applied": true,
+                                        })));
+                                    }
+                                }
                             }
                         }
                     }

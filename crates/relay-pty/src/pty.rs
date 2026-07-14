@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Write},
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc as std_mpsc, Arc,
     },
     thread,
@@ -135,6 +135,20 @@ impl GridSize {
     }
 }
 
+/// Default number of consecutive no-PID `Ok(None)` liveness checks tolerated
+/// before a child with no discoverable PID is declared exited.
+///
+/// The watchdog polls every ~5s, so `60` is ~5 minutes. This is deliberately
+/// long: the previous value of `6` (~30s) could declare a *silently thinking*
+/// child dead mid-task (an agent CLI can go >30s with no PTY output while it
+/// reasons). Raising it is safe because a genuinely dead child is detected
+/// promptly and independently by the PTY reader hitting EOF (which closes the
+/// worker's `pty_rx` and emits `agent_exit`) — this counter is only a backstop
+/// for the rare macOS case where `try_wait` is stuck at `Ok(None)` *and* no PID
+/// is ever available *and* the reader hasn't closed. In that narrow window we
+/// prefer a several-minute grace over a 30s false positive.
+pub const DEFAULT_NO_PID_EXIT_THRESHOLD: u32 = 60;
+
 pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
     /// Single producer side of the FIFO write queue. All PTY writes —
@@ -146,9 +160,22 @@ pub struct PtySession {
     child_pid: Option<u32>,
     reaped: Arc<AtomicBool>,
     /// Counts consecutive watchdog checks where try_wait returned Ok(None)
-    /// AND we had no PID to verify with kill(0). After a threshold, we
-    /// assume the child is gone (macOS PTY quirk).
-    no_pid_alive_checks: std::sync::atomic::AtomicU32,
+    /// AND we had no PID to verify with kill(0). After
+    /// [`no_pid_exit_threshold`](Self::no_pid_exit_threshold) checks, we
+    /// assume the child is gone (macOS PTY quirk). Reset on any observed
+    /// child-side activity (PTY output, or a write the drainer has *confirmed*
+    /// actually reached the PTY master).
+    ///
+    /// Shared with the write drainer thread (`Arc`) so a confirmed write — not
+    /// a mere enqueue — resets the counter. Resetting on enqueue would let a
+    /// wedged drainer plus periodic input postpone the no-PID fallback forever
+    /// even though no byte is reaching the child.
+    no_pid_alive_checks: Arc<AtomicU32>,
+    /// Consecutive no-PID `Ok(None)` checks tolerated before declaring a
+    /// child with no discoverable PID exited. See [`has_exited`](Self::has_exited)
+    /// for the full rationale. Configurable so tests (and future tuning)
+    /// aren't pinned to the wall-clock default.
+    no_pid_exit_threshold: u32,
     /// VT100 grid kept in sync with PTY output. The reader thread
     /// advances `processor` on every chunk; queries (`screen_text`,
     /// `cursor_position`, `cell_at`) read `term` under the same lock.
@@ -225,7 +252,18 @@ fn resolve_command_path(command: &str) -> String {
     command.to_string()
 }
 
-fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<WriteMsg>) {
+/// Drain the shared write FIFO into the PTY writer.
+///
+/// `no_pid_alive_checks` is the watchdog's silence counter (shared with the
+/// [`PtySession`]). It is reset to `0` only when a user-input write is
+/// *confirmed* flushed to the PTY master — proof the write path (drainer → PTY)
+/// is actually live. Resetting on enqueue instead would let a wedged drainer
+/// plus periodic input starve the no-PID fallback indefinitely.
+fn drain_write_queue<W: Write>(
+    mut writer: W,
+    write_rx: std_mpsc::Receiver<WriteMsg>,
+    no_pid_alive_checks: Arc<AtomicU32>,
+) {
     while let Ok(msg) = write_rx.recv() {
         match msg {
             WriteMsg::Reply(bytes) => {
@@ -246,6 +284,10 @@ fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<Write
                 }
                 match writer.write_all(&bytes).and_then(|_| writer.flush()) {
                     Ok(()) => {
+                        // Confirmed child-side activity: the bytes reached the
+                        // PTY master. Only now is it safe to reset the no-PID
+                        // silence counter.
+                        no_pid_alive_checks.store(0, Ordering::Relaxed);
                         let _ = ack.send(Ok(()));
                     }
                     Err(err) => {
@@ -255,6 +297,31 @@ fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<Write
                 }
             }
         }
+    }
+}
+
+/// Enqueue user input without treating queue admission as child activity.
+/// Keeping the watchdog counter in this helper's interface makes the invariant
+/// directly testable: only [`drain_write_queue`] may reset it after a confirmed
+/// write and flush.
+fn enqueue_user_write(
+    write_tx: &std_mpsc::SyncSender<WriteMsg>,
+    _no_pid_alive_checks: &AtomicU32,
+    bytes: Vec<u8>,
+) -> Result<oneshot::Receiver<io::Result<()>>> {
+    let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
+    match write_tx.try_send(WriteMsg::UserInput {
+        bytes,
+        ack: ack_tx,
+    }) {
+        Ok(()) => Ok(ack_rx),
+        Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
+            "pty write queue full ({} writes pending; drainer wedged behind child not reading stdin)",
+            WRITE_QUEUE_DEPTH
+        )),
+        Err(std_mpsc::TrySendError::Disconnected(_)) => Err(anyhow::anyhow!(
+            "pty write queue is closed (drainer exited)"
+        )),
     }
 }
 
@@ -312,13 +379,18 @@ impl PtySession {
         let term = Arc::new(Mutex::new(Term::new(Config::default(), &size, listener)));
         let processor = Arc::new(Mutex::new(Processor::new()));
 
+        // Watchdog silence counter, shared with the drainer so a confirmed
+        // write (not a mere enqueue) resets it.
+        let no_pid_alive_checks = Arc::new(AtomicU32::new(0));
+
         // Drainer: single owner of the writer. Receives `WriteMsg`s
         // from the queue and pushes them to the PTY. Lives on a
         // std::thread so it doesn't need a tokio runtime. Exits when
         // every sender is dropped — i.e. when the listener inside
         // `term` is dropped (term goes away at PtySession drop) AND
         // the `write_tx` clone on the struct is dropped (same time).
-        thread::spawn(move || drain_write_queue(writer, write_rx));
+        let drainer_no_pid = no_pid_alive_checks.clone();
+        thread::spawn(move || drain_write_queue(writer, write_rx, drainer_no_pid));
 
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
@@ -367,7 +439,8 @@ impl PtySession {
                 child: Arc::new(Mutex::new(child)),
                 child_pid,
                 reaped: Arc::new(AtomicBool::new(false)),
-                no_pid_alive_checks: std::sync::atomic::AtomicU32::new(0),
+                no_pid_alive_checks,
+                no_pid_exit_threshold: DEFAULT_NO_PID_EXIT_THRESHOLD,
                 term,
                 processor,
                 consumed_offset,
@@ -402,20 +475,10 @@ impl PtySession {
     /// Returns `Err` if the queue is momentarily full (retryable) or the
     /// drainer has exited (PTY teardown).
     pub fn submit_write(&self, bytes: Vec<u8>) -> Result<oneshot::Receiver<io::Result<()>>> {
-        let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
-        match self.write_tx.try_send(WriteMsg::UserInput {
-            bytes,
-            ack: ack_tx,
-        }) {
-            Ok(()) => Ok(ack_rx),
-            Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
-                "pty write queue full ({} writes pending; drainer wedged behind child not reading stdin)",
-                WRITE_QUEUE_DEPTH
-            )),
-            Err(std_mpsc::TrySendError::Disconnected(_)) => Err(anyhow::anyhow!(
-                "pty write queue is closed (drainer exited)"
-            )),
-        }
+        // NB: do *not* reset the no-PID watchdog counter here. A successful
+        // enqueue only proves the queue had room, not that any byte reached the
+        // child. The drainer resets it after the write is confirmed flushed.
+        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes)
     }
 
     /// Submit bytes and await the drainer's write result. Convenience
@@ -570,13 +633,20 @@ impl PtySession {
     /// 1. `try_wait()` (waitpid with WNOHANG)
     /// 2. `kill(pid, 0)` to check process existence (Unix only)
     /// 3. Consecutive no-PID fallback: if we never obtained a PID and try_wait
-    ///    keeps returning Ok(None), after several checks we assume the child
-    ///    is gone (works around a macOS PTY quirk where portable-pty's
-    ///    `process_id()` returns None and try_wait never transitions).
+    ///    keeps returning Ok(None), after `no_pid_exit_threshold` checks
+    ///    (default ~5 minutes) we assume the child is gone (works around a
+    ///    macOS PTY quirk where portable-pty's `process_id()` returns None and
+    ///    try_wait never transitions). The counter resets on any child-side
+    ///    activity — PTY output *or* a submitted write — so a long silent
+    ///    "thinking" pause never trips it. Genuine exits are caught far sooner
+    ///    by the PTY reader hitting EOF, so this long grace has no downside.
     pub fn has_exited(&self) -> bool {
-        // Number of consecutive no-PID Ok(None) checks before we declare
-        // the child gone. At 5s watchdog interval this is ~30s.
-        const NO_PID_THRESHOLD: u32 = 6;
+        // Number of consecutive no-PID Ok(None) checks before we declare the
+        // child gone. Defaults to ~5 minutes at the 5s watchdog interval (see
+        // `DEFAULT_NO_PID_EXIT_THRESHOLD`) so a silently-thinking child is not
+        // killed mid-task; genuine exits are caught promptly by the PTY reader
+        // EOF path, independent of this counter.
+        let no_pid_threshold = self.no_pid_exit_threshold;
 
         // Fast path: already known to be reaped.
         if self.reaped.load(Ordering::Relaxed) {
@@ -663,10 +733,10 @@ impl PtySession {
             tracing::debug!(
                 target: "agent_relay::worker::pty",
                 consecutive_checks = count,
-                threshold = NO_PID_THRESHOLD,
+                threshold = no_pid_threshold,
                 "has_exited: no PID available, try_wait says Ok(None)"
             );
-            if count >= NO_PID_THRESHOLD {
+            if count >= no_pid_threshold {
                 tracing::warn!(
                     target: "agent_relay::worker::pty",
                     consecutive_checks = count,
@@ -694,6 +764,31 @@ impl PtySession {
     /// received, proving the child is still alive regardless of PID availability.
     pub fn reset_no_pid_checks(&self) {
         self.no_pid_alive_checks.store(0, Ordering::Relaxed);
+    }
+
+    /// Override the no-PID exit threshold (default
+    /// [`DEFAULT_NO_PID_EXIT_THRESHOLD`]). Primarily for tests and future
+    /// runtime tuning; lower values make the no-PID watchdog fire sooner.
+    pub fn set_no_pid_exit_threshold(&mut self, threshold: u32) {
+        self.no_pid_exit_threshold = threshold.max(1);
+    }
+
+    /// Current no-PID exit threshold (consecutive no-activity checks tolerated).
+    pub fn no_pid_exit_threshold(&self) -> u32 {
+        self.no_pid_exit_threshold
+    }
+
+    /// Current consecutive no-PID liveness-check count (test/diagnostic hook).
+    #[cfg(test)]
+    pub(crate) fn no_pid_alive_checks(&self) -> u32 {
+        self.no_pid_alive_checks.load(Ordering::Relaxed)
+    }
+
+    /// Seed the no-PID counter (test hook) to simulate accumulated silent
+    /// checks without waiting on a real watchdog interval.
+    #[cfg(test)]
+    pub(crate) fn set_no_pid_alive_checks(&self, n: u32) {
+        self.no_pid_alive_checks.store(n, Ordering::Relaxed);
     }
 
     pub fn shutdown(&self) -> Result<()> {
@@ -738,7 +833,7 @@ impl PtySession {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridSize, PtySession};
+    use super::{GridSize, PtySession, DEFAULT_NO_PID_EXIT_THRESHOLD};
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
@@ -1026,8 +1121,10 @@ mod tests {
     // bytes that match real grid state — replacing the old hand-rolled
     // `TerminalQueryParser` that hardcoded `1;1` for CPR.
 
-    use super::{RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use super::{enqueue_user_write, RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use std::sync::atomic::AtomicU32;
     use std::sync::mpsc as std_mpsc;
+    use std::sync::Arc;
     use std::time::Duration as StdDuration;
     use tokio::sync::oneshot;
 
@@ -1179,7 +1276,9 @@ mod tests {
         }
 
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
-        let drainer = std::thread::spawn(move || super::drain_write_queue(AlwaysFailWriter, rx));
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(AlwaysFailWriter, rx, Arc::new(AtomicU32::new(0)))
+        });
 
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
@@ -1214,7 +1313,9 @@ mod tests {
         }
 
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
-        let drainer = std::thread::spawn(move || super::drain_write_queue(FlushFailWriter, rx));
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(FlushFailWriter, rx, Arc::new(AtomicU32::new(0)))
+        });
 
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
@@ -1292,6 +1393,153 @@ mod tests {
             Ok(true),
             "submit_write must return an error when the queue fills, never block"
         );
+        let _ = pty.shutdown();
+    }
+
+    // ---- No-PID watchdog hardening (#1247) ----
+
+    /// The default grace before a no-PID child is declared dead must be
+    /// several minutes, not the old ~30s that could kill a silently-thinking
+    /// agent mid-task. At the 5s watchdog interval, require >= 3 minutes.
+    #[test]
+    fn default_no_pid_threshold_is_several_minutes() {
+        let seconds = DEFAULT_NO_PID_EXIT_THRESHOLD as u64 * 5;
+        assert!(
+            seconds >= 180,
+            "no-PID grace is only {seconds}s; a silent 'thinking' pause could exceed it"
+        );
+    }
+
+    /// A living child that produces no output for a long stretch must not be
+    /// declared exited by the watchdog. (`sleep` is silent for its whole run.)
+    #[tokio::test]
+    async fn silent_child_is_not_declared_exited() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        // Even simulating many accumulated silent checks — up to just below the
+        // threshold — the child is still considered alive.
+        pty.set_no_pid_alive_checks(pty.no_pid_exit_threshold() - 1);
+        assert!(
+            !pty.has_exited(),
+            "a silent but living child must not be declared exited"
+        );
+        let _ = pty.shutdown();
+    }
+
+    /// A genuinely exited child must still be detected promptly regardless of
+    /// the (now much longer) no-PID grace — try_wait/kill(0) catch it.
+    #[tokio::test]
+    async fn real_exit_is_still_detected() {
+        let (pty, _rx) = PtySession::spawn("sh", &["-c".into(), "exit 0".into()], 24, 80).unwrap();
+        let detected = timeout(Duration::from_secs(5), async {
+            loop {
+                if pty.has_exited() {
+                    break true;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert_eq!(detected, Ok(true), "a real child exit must be detected");
+        let _ = pty.shutdown();
+    }
+
+    /// A *confirmed* write is child-side activity and must reset the no-PID
+    /// silence counter, so an interactive session receiving input but emitting
+    /// no output for a while is never declared dead. The reset is driven by the
+    /// drainer once the bytes flush — awaiting the ack proves that path.
+    #[tokio::test]
+    async fn write_resets_no_pid_counter() {
+        let (pty, _rx) = PtySession::spawn("cat", &[], 24, 80).unwrap();
+        pty.set_no_pid_alive_checks(pty.no_pid_exit_threshold() - 1);
+        let ack = pty
+            .submit_write(b"hello\n".to_vec())
+            .expect("submit_write enqueues");
+        // The drainer resets the counter on confirmed write success, so wait
+        // for the ack before asserting.
+        ack.await
+            .expect("drainer acks the write")
+            .expect("write succeeds");
+        assert_eq!(
+            pty.no_pid_alive_checks(),
+            0,
+            "a confirmed write must reset the no-PID silence counter"
+        );
+        let _ = pty.shutdown();
+    }
+
+    /// A mere *enqueue* must not reset the counter: if the drainer is wedged and
+    /// never flushes, periodic input can't indefinitely defer the no-PID
+    /// fallback. This drives the *real* [`drain_write_queue`] against a writer
+    /// that blocks forever inside `write`, so the message is picked up but never
+    /// confirmed — proving the reset is gated on a confirmed write, not on
+    /// enqueue. (Asserting on a counter no drainer ever touches would pass
+    /// unconditionally and catch nothing.)
+    #[tokio::test]
+    async fn enqueue_without_confirm_does_not_reset_no_pid_counter() {
+        // Signals when the drainer has actually dequeued the message and
+        // entered `write` — so the assertion below observes the genuine
+        // "picked up but unconfirmed" state, not a race where the drainer
+        // hasn't touched the message yet (which would pass vacuously).
+        let (entered_tx, entered_rx) = std_mpsc::channel::<()>();
+        struct BlockingWriter {
+            entered: std_mpsc::Sender<()>,
+        }
+        impl std::io::Write for BlockingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                // Announce entry, then wedge: never return before the test
+                // asserts, so the write can never be confirmed.
+                let _ = self.entered.send(());
+                std::thread::sleep(StdDuration::from_secs(60));
+                Ok(0)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let counter = Arc::new(AtomicU32::new(5));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let counter_for_drainer = counter.clone();
+        let _drainer = std::thread::spawn(move || {
+            super::drain_write_queue(
+                BlockingWriter {
+                    entered: entered_tx,
+                },
+                rx,
+                counter_for_drainer,
+            )
+        });
+
+        let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec())
+            .expect("submit path accepts the write");
+        // Block until the drainer has dequeued the message and is wedged inside
+        // `write` — the write is now genuinely picked up but not confirmed.
+        entered_rx
+            .recv_timeout(StdDuration::from_secs(5))
+            .expect("drainer reaches write() with the queued message");
+        // The wedged write leaves the ack pending — never confirmed.
+        assert!(
+            timeout(Duration::from_millis(50), ack).await.is_err(),
+            "a wedged writer must leave the write unconfirmed"
+        );
+        // Because the write never confirmed+flushed, the drainer must not have
+        // reset the silence counter. If `drain_write_queue` were changed to
+        // reset on receipt instead of on confirmation, this would drop to 0.
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::Relaxed),
+            5,
+            "an unconfirmed write must not reset the silence counter"
+        );
+    }
+
+    /// The threshold is configurable and clamped to at least 1.
+    #[tokio::test]
+    async fn no_pid_threshold_is_configurable() {
+        let (mut pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        pty.set_no_pid_exit_threshold(42);
+        assert_eq!(pty.no_pid_exit_threshold(), 42);
+        pty.set_no_pid_exit_threshold(0);
+        assert_eq!(pty.no_pid_exit_threshold(), 1, "threshold clamps to >= 1");
         let _ = pty.shutdown();
     }
 }
