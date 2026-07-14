@@ -1388,10 +1388,12 @@ impl BrokerRuntime {
                     let Some(entry) = dead_letters.get(&delivery_id) else {
                         continue;
                     };
-                    // Leave entries for absent recipients in the queue —
-                    // requeueing them would only bounce straight back here
-                    // with `recipient gone` on the next maintenance tick.
-                    if !workers.has_worker(&entry.worker_name) {
+                    // Leave entries for recipients that are not running in the
+                    // queue — requeueing them would only bounce straight back
+                    // here with `recipient gone` on the next maintenance tick.
+                    // Probe liveness, not mere registration: a dead child can
+                    // still be present until the next reap sweep.
+                    if !workers.is_worker_live(&entry.worker_name) {
                         skipped.push(json!({
                             "delivery_id": delivery_id,
                             "worker_name": entry.worker_name,

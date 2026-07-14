@@ -62,6 +62,12 @@ impl PendingDeliveryStore {
     pub(crate) fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
     }
+
+    /// Re-mark the store dirty after a failed persist so the next flush retries
+    /// the write instead of silently dropping queued deliveries.
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
 }
 
 impl std::ops::Deref for PendingDeliveryStore {
@@ -785,7 +791,11 @@ pub(crate) async fn emit_delivery_attempt_outcome(
             pending,
             last_error,
         } => {
-            send_broker_event(
+            // Notify best-effort: a closed SDK channel must not (via `?`) abort
+            // before the dead-letter write below. The delivery has already been
+            // removed from the pending map, so gating the DLQ capture on the
+            // send would lose the terminally-failed delivery entirely.
+            let _ = send_broker_event(
                 sdk_out_tx,
                 BrokerEvent::MessageDeliveryFailed {
                     name: pending.worker_name.clone(),
@@ -797,7 +807,7 @@ pub(crate) async fn emit_delivery_attempt_outcome(
                     last_error: last_error.clone(),
                 },
             )
-            .await?;
+            .await;
             dead_letter_pending_delivery(sdk_out_tx, dead_letters, &pending, &last_error).await;
         }
         DeliveryAttemptOutcome::Noop => {}
@@ -836,7 +846,10 @@ pub(crate) async fn emit_dropped_delivery_failures(
     reason: &str,
 ) -> Result<()> {
     for pending in dropped {
-        send_broker_event(
+        // Notify best-effort: a send failure must not `?`-abort the loop and
+        // strand the remaining dropped deliveries out of the dead-letter store.
+        // The DLQ capture below runs regardless of the send's outcome.
+        let _ = send_broker_event(
             sdk_out_tx,
             BrokerEvent::MessageDeliveryFailed {
                 name: pending.worker_name.clone(),
@@ -848,7 +861,7 @@ pub(crate) async fn emit_dropped_delivery_failures(
                 last_error: reason.to_string(),
             },
         )
-        .await?;
+        .await;
         dead_letter_pending_delivery(sdk_out_tx, dead_letters, pending, reason).await;
     }
     Ok(())

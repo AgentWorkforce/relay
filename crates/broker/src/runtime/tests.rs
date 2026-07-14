@@ -583,9 +583,18 @@ fn redeliver_requeues_dead_letter_and_resets_retries() {
     assert!(dead_letters.is_empty(), "requeued entry leaves the DLQ");
     assert_eq!(requeued.attempts, 0, "retry count resets on redeliver");
     assert_eq!(requeued.last_error, None, "stale error clears on redeliver");
+    assert_ne!(
+        requeued.delivery.delivery_id.as_str(),
+        "del_retry",
+        "redeliver mints a fresh delivery id so late acks from the exhausted attempt cannot match"
+    );
+    assert_eq!(
+        requeued.delivery.event_id, source.delivery.event_id,
+        "event id (message identity) is preserved across redeliver"
+    );
     let pending = pending_deliveries
-        .get("del_retry")
-        .expect("requeued delivery joins the pending map");
+        .get(requeued.delivery.delivery_id.as_str())
+        .expect("requeued delivery joins the pending map under its new id");
     assert_eq!(pending.delivery.body, source.delivery.body);
     assert_eq!(pending.worker_name, source.worker_name);
     assert_eq!(
@@ -596,6 +605,87 @@ fn redeliver_requeues_dead_letter_and_resets_retries() {
     assert!(
         requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_retry").is_none(),
         "redelivering an unknown id is a no-op"
+    );
+}
+
+#[test]
+fn redeliver_survives_a_stale_ack_from_the_previous_attempt() {
+    // A delivery exhausts its retries and is dead-lettered, then redelivered.
+    let mut dead_letters = DeadLetterStore::default();
+    let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+    let mut source = make_pending_delivery("del_stale", "worker-a");
+    source.attempts = MAX_DELIVERY_RETRIES;
+    let stale_event_id = source.delivery.event_id.as_str().to_string();
+    dead_letters.push(DeadLetterEntry::from_pending(
+        &source,
+        "max delivery retries exceeded",
+    ));
+
+    let requeued = requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_stale")
+        .expect("dead letter should requeue by id");
+    let new_id = requeued.delivery.delivery_id.as_str().to_string();
+
+    // A late ACK from the exhausted attempt arrives carrying the ORIGINAL
+    // delivery id (and its event id). It must not clear the redelivered entry.
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        "del_stale",
+        Some(&stale_event_id),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_none(),
+        "a stale ack for the old id matches nothing"
+    );
+    assert!(
+        pending_deliveries.contains_key(new_id.as_str()),
+        "the redelivered entry survives the stale ack from the previous attempt"
+    );
+
+    // The genuine ack for the redelivered attempt (new id) clears it normally.
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        &new_id,
+        Some(&stale_event_id),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_some(),
+        "the current attempt's ack clears the entry"
+    );
+    assert!(pending_deliveries.is_empty());
+}
+
+#[tokio::test]
+async fn is_worker_live_gates_redeliver_skip_on_child_liveness() {
+    // The redeliver handler skips entries whose recipient is not running by
+    // probing `is_worker_live` (not mere registration), so a dead-but-present
+    // worker is reported "recipient not running" instead of being requeued and
+    // immediately bounced back to the DLQ.
+    let mut workers = make_worker_registry_with_worker("worker-a").await;
+    assert!(
+        workers.is_worker_live("worker-a"),
+        "a running child is live"
+    );
+    assert!(
+        !workers.is_worker_live("ghost"),
+        "an unregistered recipient is not live"
+    );
+
+    // Kill the child but leave it in the registry (the reap sweep hasn't run).
+    if let Some(handle) = workers.workers.get_mut("worker-a") {
+        let _ = handle.child.start_kill();
+        let _ = handle.child.wait().await;
+    }
+    assert!(
+        !workers.is_worker_live("worker-a"),
+        "a stopped child is not live, so redeliver leaves the entry in the DLQ"
+    );
+    assert!(
+        workers.has_worker("worker-a"),
+        "has_worker still reports the stopped child as present — the gap is_worker_live closes"
     );
 }
 
@@ -1819,6 +1909,18 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
     assert_eq!(frame.payload["to"], "A");
     assert_eq!(frame.payload["attempts"].as_u64(), Some(2));
     assert_eq!(frame.payload["lastError"], "worker_permanently_dead");
+
+    // The terminal failure is followed by the dead_letter_added event so
+    // consumers can track the capture, not just the failure.
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("dead_letter_added should be emitted after the failure")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.msg_type, "event");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_1");
+    assert_eq!(dead_frame.payload["reason"], "worker_permanently_dead");
+
     assert_eq!(
         dead_letters.len(),
         1,

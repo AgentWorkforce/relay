@@ -90,6 +90,12 @@ impl DedupCache {
         std::mem::take(&mut self.dirty)
     }
 
+    /// Re-mark the cache dirty after a failed persist so the next flush retries
+    /// the write instead of silently dropping duplicate protection.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     /// Snapshot live entries as wall-clock timestamps (oldest first).
     /// `now`/`now_ms` must describe the same moment on both clocks.
     pub fn to_persisted(&self, now: Instant, now_ms: u64) -> Vec<PersistedDedupEntry> {
@@ -117,7 +123,15 @@ impl DedupCache {
         let mut entries = entries;
         entries.sort_by_key(|entry| entry.inserted_at_ms);
         for entry in entries {
-            let elapsed = Duration::from_millis(now_ms.saturating_sub(entry.inserted_at_ms));
+            // A persisted timestamp ahead of `now_ms` means the wall clock
+            // moved backward since the snapshot was written. We can't compute a
+            // real age for it, and collapsing it to zero elapsed (as
+            // `saturating_sub` would) grants a fresh full-TTL window that can
+            // keep the entry deduplicated indefinitely across restarts. Drop it.
+            if entry.inserted_at_ms > now_ms {
+                continue;
+            }
+            let elapsed = Duration::from_millis(now_ms - entry.inserted_at_ms);
             if elapsed >= ttl {
                 continue;
             }
@@ -149,10 +163,32 @@ pub(crate) fn save_dedup_cache(path: &Path, cache: &DedupCache) -> anyhow::Resul
 }
 
 pub(crate) fn load_dedup_cache(path: &Path, ttl: Duration, max_entries: usize) -> DedupCache {
-    let entries: Vec<PersistedDedupEntry> = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|data| serde_json::from_str(&data).ok())
-        .unwrap_or_default();
+    // A missing file is the expected first-run case and stays silent. A read or
+    // parse failure, by contrast, silently disables duplicate protection, so
+    // surface it as a warning: pending deliveries could be replayed into workers
+    // that already processed them until the snapshot is rewritten.
+    let entries: Vec<PersistedDedupEntry> = match std::fs::read_to_string(path) {
+        Ok(data) => match serde_json::from_str(&data) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "dedup snapshot is corrupt; duplicate protection is degraded until it is rewritten"
+                );
+                Vec::new()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to read dedup snapshot; duplicate protection is degraded"
+            );
+            Vec::new()
+        }
+    };
     DedupCache::from_persisted(ttl, max_entries, entries, Instant::now(), unix_now_millis())
 }
 

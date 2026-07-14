@@ -46,8 +46,25 @@ pub(crate) struct DeadLetterStore {
 
 impl DeadLetterStore {
     pub(crate) fn new(entries: Vec<DeadLetterEntry>) -> Self {
+        let mut entries: VecDeque<DeadLetterEntry> = entries.into();
+        // The cap is a `push`-time invariant; a snapshot restored from disk
+        // bypasses `push`, so enforce it here too. Entries are oldest-first,
+        // so drop from the front to keep the newest `MAX_DEAD_LETTERS`.
+        if entries.len() > MAX_DEAD_LETTERS {
+            let evicted = entries.len() - MAX_DEAD_LETTERS;
+            tracing::warn!(
+                target = "agent_relay::broker",
+                loaded = entries.len(),
+                evicted,
+                max_dead_letters = MAX_DEAD_LETTERS,
+                "loaded dead-letter file exceeds cap — evicting oldest entries"
+            );
+            for _ in 0..evicted {
+                entries.pop_front();
+            }
+        }
         Self {
-            entries: entries.into(),
+            entries,
             dirty: false,
         }
     }
@@ -55,6 +72,12 @@ impl DeadLetterStore {
     /// Return whether the store was mutated since the last call, clearing the flag.
     pub(crate) fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// Re-mark the store dirty after a failed persist so the next flush retries
+    /// the write instead of silently dropping the durability guarantee.
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Append an entry, evicting (and returning) the oldest one when the
@@ -162,9 +185,17 @@ pub(crate) fn requeue_dead_letter(
     delivery_id: &str,
 ) -> Option<PendingDelivery> {
     let entry = dead_letters.remove(delivery_id)?;
+    // Assign a fresh delivery id for the requeued attempt. The delivery id
+    // doubles as the ack-correlation token, so reusing the original would let a
+    // late ACK from the previous (exhausted) attempt — which still carries that
+    // id — match and silently clear this redelivered entry before it is
+    // delivered. A new id makes the previous attempt's in-flight ACKs stale.
+    // The event id (message identity) is preserved.
+    let mut delivery = entry.delivery;
+    delivery.delivery_id = DeliveryId::new(format!("del_{}", Uuid::new_v4().simple()));
     let pending = PendingDelivery {
         worker_name: entry.worker_name,
-        delivery: entry.delivery,
+        delivery,
         attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: entry.queued_at_ms,

@@ -289,6 +289,23 @@ impl BrokerRuntime {
         if !self.paths.persist {
             return;
         }
+        // Persist the dead-letter store *before* pending. When a delivery is
+        // moved pending -> DLQ both stores are dirty in the same tick; writing
+        // the store that gained the entry first means a crash between the two
+        // writes leaves the delivery in both files (recoverable) rather than in
+        // neither (lost). Startup reconciliation drops the stale pending copy.
+        if dead_letters_dirty {
+            if let Err(error) = save_dead_letters(&self.paths.dead_letters, &self.dead_letters) {
+                tracing::warn!(
+                    path = %self.paths.dead_letters.display(),
+                    error = %error,
+                    "failed to persist dead letters — will retry on next flush"
+                );
+                // Preserve durability across a transient filesystem failure:
+                // keep the store dirty so the next flush re-attempts the write.
+                self.dead_letters.mark_dirty();
+            }
+        }
         if pending_dirty {
             if let Err(error) =
                 save_pending_deliveries(&self.paths.pending, &self.pending_deliveries)
@@ -296,17 +313,9 @@ impl BrokerRuntime {
                 tracing::warn!(
                     path = %self.paths.pending.display(),
                     error = %error,
-                    "failed to persist pending deliveries"
+                    "failed to persist pending deliveries — will retry on next flush"
                 );
-            }
-        }
-        if dead_letters_dirty {
-            if let Err(error) = save_dead_letters(&self.paths.dead_letters, &self.dead_letters) {
-                tracing::warn!(
-                    path = %self.paths.dead_letters.display(),
-                    error = %error,
-                    "failed to persist dead letters"
-                );
+                self.pending_deliveries.mark_dirty();
             }
         }
         if dedup_dirty {
@@ -314,8 +323,9 @@ impl BrokerRuntime {
                 tracing::warn!(
                     path = %self.paths.dedup.display(),
                     error = %error,
-                    "failed to persist dedup cache"
+                    "failed to persist dedup cache — will retry on next flush"
                 );
+                self.dedup.mark_dirty();
             }
         }
     }

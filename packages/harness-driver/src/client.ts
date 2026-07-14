@@ -1034,7 +1034,9 @@ export class HarnessDriverClient {
    * reset retry count. Pass an id for a single entry, or `{ all: true }`
    * for every entry whose recipient is currently running.
    */
-  async redeliverDeadLetters(input: { id: string } | { all: true }): Promise<RedeliverDeadLettersResponse> {
+  async redeliverDeadLetters(
+    input: { id: string; all?: never } | { id?: never; all: true }
+  ): Promise<RedeliverDeadLettersResponse> {
     return this.transport.request('/api/dead-letters/redeliver', {
       method: 'POST',
       body: JSON.stringify(input),
