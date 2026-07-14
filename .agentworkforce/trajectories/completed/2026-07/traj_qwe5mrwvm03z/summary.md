@@ -18,6 +18,7 @@ Diagnosed flaky publish smoke (broker 'code null' during handshake = hung timeou
 ## Key Decisions
 
 ### Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff
+
 - **Chose:** Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff
 - **Reasoning:** Root cause of flaky publish smoke: relaycast v6.0.0 bootstrap calls (create_workspace/lookup_workspace) use a timeout-less reqwest client; a stalled prod call hangs connect_relay, and the smoke's sleep-8 down --force reaps the hung broker, surfacing as 'code null during initial handshake'. A per-attempt tokio timeout + retry recovers in-process within the SDK's 45s budget.
 
@@ -26,7 +27,8 @@ Diagnosed flaky publish smoke (broker 'code null' during handshake = hung timeou
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff: Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff
 
