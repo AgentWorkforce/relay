@@ -104,6 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-broker` resumes Relaycast mailbox delivery at the server's authoritative per-agent ACK cursor after a broker restart, preserving strict gap detection and legacy node compatibility.
+- `agent-relay-broker` no longer acknowledges Relaycast `manual_flush` deliveries while they exist only in volatile memory; flushes ACK only an injected FIFO prefix, and full queues reject new deliveries without evicting held messages.
 - PTY snapshots (`view`/`drive`/`passthrough` attach, `GET /api/spawned/{name}/snapshot` ansi format) now capture and replay terminal modes — alt-screen, cursor visibility, application cursor keys, bracketed paste, mouse reporting, autowrap, and keypad — so attaching to a TUI no longer leaves the client terminal mis-configured (stray cursor, misbehaving arrows, broken paste). Each mode is re-emitted in both directions so an attach after a crashed session heals a terminal left in the wrong state.
 - `agent-relay view`/`drive`/`passthrough`: detaching now emits a conservative terminal reset (leave alt-screen, show cursor, disable mouse reporting + bracketed paste + application cursor keys, reset scroll region) on TTY stdout, so a driven session's replayed snapshot and live stream can't leave your shell in a broken terminal state.
 - `agent-relay drive`/`passthrough`: a `Ctrl+C` during attach setup no longer strands the worker's inbound delivery mode — an interrupt in that window can't leave the worker stuck in `manual_flush` (drive) or cancel an explicit `agent message hold` (passthrough).

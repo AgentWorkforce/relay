@@ -11,6 +11,12 @@ use crate::{
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FleetDeliverySurfaceOutcome {
+    Acknowledge,
+    HoldForManualFlush,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FleetDeliveryPlan {
     Surface,
     Acknowledge(u64),
@@ -64,7 +70,13 @@ impl BrokerRuntime {
         let decision = self.fleet_delivery_book.observe(&deliver);
         let up_to_seq = match plan_fleet_delivery(decision) {
             FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
-                Ok(()) => self.fleet_delivery_book.commit_delivered(&deliver),
+                Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
+                    self.fleet_delivery_book.commit_delivered(&deliver)
+                }
+                Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush) => {
+                    self.fleet_delivery_book.commit_received(&deliver);
+                    return;
+                }
                 Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::fleet",
@@ -102,10 +114,13 @@ impl BrokerRuntime {
     /// Surface a node `deliver` frame by branching on its payload `type`:
     /// message-class events inject into the recipient worker's PTY; reaction /
     /// read receipts are acked with a tracing log only (PTY surfacing deferred).
-    /// An `Ok` return means the delivery may be committed and acked; an `Err`
-    /// means injection failed and the ack must be withheld so the engine
-    /// redelivers.
-    async fn surface_fleet_deliver(&mut self, deliver: &Deliver) -> Result<(), anyhow::Error> {
+    /// `Acknowledge` means the delivery crossed the PTY injection boundary;
+    /// `HoldForManualFlush` means it was received into the volatile FIFO but
+    /// remains owned by Relaycast until a later successful flush.
+    async fn surface_fleet_deliver(
+        &mut self,
+        deliver: &Deliver,
+    ) -> Result<FleetDeliverySurfaceOutcome, anyhow::Error> {
         let payload_type = deliver
             .payload
             .get("type")
@@ -170,6 +185,13 @@ impl BrokerRuntime {
                         priority,
                         mode: injection_mode,
                         event_id: Some(&deliver.msg_id),
+                        relaycast_receipt: Some(RelaycastDeliveryReceipt {
+                            agent: WorkerName::from(&deliver.agent),
+                            agent_id: AgentId::from(&deliver.agent_id),
+                            delivery_id: DeliveryId::from(&deliver.delivery_id),
+                            msg_id: EventId::from(&deliver.msg_id),
+                            seq: deliver.seq,
+                        }),
                     },
                 );
                 if let Some(dropped_from) = &queue_result.evicted_from {
@@ -207,7 +229,7 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        Ok(())
+                        Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush)
                     }
                     InboundQueueOutcome::DrainNow(to_drain) => {
                         // Mirrors the HTTP send path: drain may surface older
@@ -243,11 +265,18 @@ impl BrokerRuntime {
                                 }
                             }
                         }
-                        current_result
+                        current_result.map(|()| FleetDeliverySurfaceOutcome::Acknowledge)
                     }
+                    InboundQueueOutcome::RejectedFull => anyhow::bail!(
+                        "manual delivery queue is full for '{}'; retaining Relaycast ownership",
+                        deliver.agent
+                    ),
                     InboundQueueOutcome::WorkerMissing => {
                         let relay_delivery = self.fleet_relay_delivery(deliver);
-                        self.workers.deliver(&deliver.agent, relay_delivery).await
+                        self.workers
+                            .deliver(&deliver.agent, relay_delivery)
+                            .await
+                            .map(|()| FleetDeliverySurfaceOutcome::Acknowledge)
                     }
                 }
             }
@@ -260,7 +289,7 @@ impl BrokerRuntime {
                     payload_type = %payload_type,
                     "acking node receipt/reaction delivery without PTY surfacing (deferred)"
                 );
-                Ok(())
+                Ok(FleetDeliverySurfaceOutcome::Acknowledge)
             }
             FleetDeliverySurfacing::AckUnknown => {
                 tracing::warn!(
@@ -270,7 +299,7 @@ impl BrokerRuntime {
                     payload_type = %payload_type,
                     "acking unrecognized node delivery payload type without surfacing"
                 );
-                Ok(())
+                Ok(FleetDeliverySurfaceOutcome::Acknowledge)
             }
         }
     }
@@ -516,6 +545,87 @@ impl BrokerRuntime {
         )
         .await;
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct FlushPendingRelayResult {
+    pub(super) flushed: usize,
+    pub(super) failure: Option<String>,
+}
+
+/// Inject a worker's held queue in FIFO order. A failed item and every item
+/// behind it remain queued. Relaycast ACKs advance only after the corresponding
+/// PTY write succeeds, so the emitted cursor is always an injected prefix.
+pub(super) async fn flush_pending_relay_messages(
+    delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
+    workers: &mut WorkerRegistry,
+    fleet_delivery_book: &mut FleetDeliveryBook,
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    worker_name: &WorkerName,
+    retry_interval: Duration,
+) -> FlushPendingRelayResult {
+    let mut result = FlushPendingRelayResult::default();
+
+    loop {
+        let next = delivery_states
+            .get(worker_name)
+            .and_then(|state| state.pending.front())
+            .cloned();
+        let Some(queued) = next else {
+            break;
+        };
+
+        if let Some(receipt) = queued.relaycast_receipt.as_ref() {
+            if !fleet_delivery_book.can_ack_receipt(receipt) {
+                result.failure = Some(format!(
+                    "delivery sequence {} for '{}' is not the next ACKable receipt",
+                    receipt.seq, receipt.agent
+                ));
+                break;
+            }
+        }
+
+        if let Err(error) =
+            try_inject_pending_relay_message_once(workers, worker_name, &queued, retry_interval)
+                .await
+        {
+            result.failure = Some(error.to_string());
+            break;
+        }
+
+        if let Some(receipt) = queued.relaycast_receipt.as_ref() {
+            let Some(up_to_seq) = fleet_delivery_book.commit_acked_receipt(receipt) else {
+                result.failure = Some(format!(
+                    "delivery sequence {} for '{}' could not advance the ACK cursor",
+                    receipt.seq, receipt.agent
+                ));
+                break;
+            };
+            if let Err(error) = fleet_control_tx
+                .send(FleetControlCommand::Send(delivery_ack(
+                    receipt.agent.to_string(),
+                    up_to_seq,
+                )))
+                .await
+            {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    agent = %receipt.agent,
+                    up_to_seq,
+                    error = %error,
+                    "failed to enqueue delivery ACK after manual flush"
+                );
+            }
+        }
+
+        let removed = delivery_states
+            .get_mut(worker_name)
+            .and_then(|state| state.pending.pop_front());
+        debug_assert_eq!(removed.as_ref(), Some(&queued));
+        result.flushed += 1;
+    }
+
+    result
 }
 
 /// Bind an agent to this node by sending node-control `agent.register` and
