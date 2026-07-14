@@ -4,8 +4,9 @@
   "task": {
     "title": "Harden broker startup Relaycast handshake with timeout + bounded retry"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-07-14T19:02:04.387Z",
+  "completedAt": "2026-07-14T19:09:41.418Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-07-14T19:09:16.102Z",
+      "endedAt": "2026-07-14T19:09:41.418Z",
       "events": [
         {
           "ts": 1784056156104,
@@ -35,12 +37,24 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Diagnosed flaky publish smoke (broker 'code null' during handshake = hung timeout-less create_workspace reaped by smoke's down --force) and hardened connect_relay with per-attempt timeout + bounded retry/backoff. Pushed to claude/broker-startup-readiness-nvxn8n.",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
+  "commits": [
+    "ebb47e6"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_qwe5mrwvm03z/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/runtime/session.rs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "86af7c5bc3831f9addcba1433896c2fc742b410b",
-    "endRef": "86af7c5bc3831f9addcba1433896c2fc742b410b"
+    "endRef": "ebb47e62cd13edb7dde7926a7de1f65c2c07219e",
+    "traceId": "e1f6f321-9db7-45bc-8e51-0eddb12b39fd"
   }
 }
