@@ -18,6 +18,7 @@ Merged current main into PR #1251, preserved both changelog and test additions, 
 ## Key Decisions
 
 ### Merged origin/main into the PR branch and resolved conflicts additively
+
 - **Chose:** Merged origin/main into the PR branch and resolved conflicts additively
 - **Reasoning:** Kept both independent changelog and test additions; retained the PR branch's completed trajectory and deleted the stale active copy from main
 
@@ -26,7 +27,8 @@ Merged current main into PR #1251, preserved both changelog and test additions, 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Merged origin/main into the PR branch and resolved conflicts additively: Merged origin/main into the PR branch and resolved conflicts additively
 
