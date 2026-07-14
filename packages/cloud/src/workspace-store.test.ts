@@ -54,22 +54,25 @@ describe('workspace store', () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
-  it('caches cloudWorkspaceId alongside the key and preserves it across a plain key update', () => {
+  it('caches cloudWorkspaceId only when explicitly supplied, and clears it on a plain key update', () => {
     setWorkspaceKey('ops', 'rk_ops', undefined, 'rw_ops');
     expect(resolveActiveWorkspaceEntry()).toEqual({
       name: 'ops',
       entry: { key: 'rk_ops', cloudWorkspaceId: 'rw_ops' },
     });
 
-    // A later call that only updates the key (e.g. self-heal) keeps the
-    // previously-cached cloudWorkspaceId instead of dropping it.
+    // A plain key update with no explicit cloudWorkspaceId must NOT carry the
+    // old id forward. If it did, a user repointing this alias at a different
+    // workspace via `workspace set_key`/`workspace join` could have self-heal
+    // silently rejoin the OLD workspace if the new key transiently fails to
+    // resolve, instead of surfacing the real failure.
     setWorkspaceKey('ops', 'rk_ops_rotated');
     expect(resolveActiveWorkspaceEntry()).toEqual({
       name: 'ops',
-      entry: { key: 'rk_ops_rotated', cloudWorkspaceId: 'rw_ops' },
+      entry: { key: 'rk_ops_rotated' },
     });
 
-    // An explicit new cloudWorkspaceId overrides the cached one.
+    // An explicit cloudWorkspaceId is stored as given.
     setWorkspaceKey('ops', 'rk_ops_rotated', undefined, 'rw_ops_new');
     expect(resolveActiveWorkspaceEntry()?.entry.cloudWorkspaceId).toBe('rw_ops_new');
   });

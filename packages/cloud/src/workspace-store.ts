@@ -75,11 +75,16 @@ export function setWorkspaceKey(
 ): WorkspaceStore {
   const workspaceName = validateWorkspaceName(name);
   const store = readWorkspaceStore(env);
-  const existing = store.workspaces[workspaceName];
-  const resolvedCloudWorkspaceId = cloudWorkspaceId ?? existing?.cloudWorkspaceId;
+  // Only cache cloudWorkspaceId when the caller explicitly supplies it — NOT
+  // carried forward from a prior entry. A plain key update (e.g. `workspace
+  // set_key <name> <key>` repointing an alias at a different workspace) must
+  // not silently retain the OLD cached id: if the new key transiently fails
+  // to resolve, self-heal would otherwise rejoin the old workspace instead of
+  // surfacing the failure. Callers that know the id (a fresh resolve, a
+  // fresh create, a successful join) always pass it explicitly.
   store.workspaces[workspaceName] = {
     key,
-    ...(resolvedCloudWorkspaceId ? { cloudWorkspaceId: resolvedCloudWorkspaceId } : {}),
+    ...(cloudWorkspaceId ? { cloudWorkspaceId } : {}),
   };
   store.active ??= workspaceName;
   writeWorkspaceStore(store, env);

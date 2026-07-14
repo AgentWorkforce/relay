@@ -172,6 +172,60 @@ describe('resolveActiveWorkspace', () => {
     });
   });
 
+  it('self-heals even when the primary resolve throws a non-404 error (e.g. 401 from a rotated key)', async () => {
+    // Regression test: resolveWorkspaceDescriptor throws (doesn't return
+    // `{ lastUnsupported }`) for any non-404/405 response. Before wrapping the
+    // primary resolve in a catch, this propagated straight out of
+    // resolveActiveWorkspace and skipped the self-heal block entirely, even
+    // though a cached cloudWorkspaceId was available to retry with.
+    setWorkspaceKey('ops', 'rk_live_stale', undefined, 'rw_ops');
+
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+
+      if (method === 'GET' && url.includes('rk_live_stale')) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (method === 'POST' && url === 'https://cloud.example.test/api/v1/workspaces/rw_ops/join') {
+        return new Response(JSON.stringify({ workspaceId: 'rw_ops', relaycastApiKey: 'rk_live_healed' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (
+        method === 'GET' &&
+        url === 'https://cloud.example.test/api/v1/workspaces/rk_live_healed/resolve'
+      ) {
+        return new Response(
+          JSON.stringify({
+            workspace: {
+              key: 'rk_live_healed',
+              cloudWorkspaceId: 'rw_ops',
+              relaycastWorkspaceId: 'rc_ops',
+              relayfileWorkspaceId: 'rw_ops',
+              relayauthWorkspaceId: 'rw_ops',
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const descriptor = await resolveActiveWorkspace();
+
+    expect(descriptor.key).toBe('rk_live_healed');
+    expect(readWorkspaceStore().workspaces.ops).toEqual({ key: 'rk_live_healed', cloudWorkspaceId: 'rw_ops' });
+  });
+
   it('falls through to the original resolve error when there is no cached cloudWorkspaceId to self-heal from', async () => {
     // A pure `workspace create` orphan (AgentWorkforce/relay#1260): never
     // successfully resolved, so there is nothing for self-heal to retry with.

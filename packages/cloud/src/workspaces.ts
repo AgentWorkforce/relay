@@ -243,10 +243,18 @@ async function tryPostJson(
     interactive: options.interactive,
     refreshTimeoutMs: options.refreshTimeoutMs,
   });
-  const { response } = await authorizedApiFetch(auth, endpoint, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  const { response } = await authorizedApiFetch(
+    auth,
+    endpoint,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+    {
+      interactive: options.interactive,
+      refreshTimeoutMs: options.refreshTimeoutMs,
+    }
+  );
 
   return {
     response,
@@ -440,7 +448,16 @@ export async function resolveActiveWorkspace(
   }
   const { name, entry } = active;
 
-  const primary = await resolveWorkspaceDescriptor(entry.key, options);
+  // A non-404/405 failure (e.g. 401/403 from a rotated/invalid key) throws
+  // out of resolveWorkspaceDescriptor instead of returning `{ lastUnsupported }`
+  // — catch it here and fold it into the same shape so self-heal below still
+  // gets a chance whenever a cached cloudWorkspaceId is available, instead of
+  // this propagating straight past the self-heal block.
+  const primary = await resolveWorkspaceDescriptor(entry.key, options).catch(
+    (err: unknown): { lastUnsupported: Error } => ({
+      lastUnsupported: err instanceof Error ? err : new Error(String(err))
+    })
+  );
   if ('descriptor' in primary) {
     // Opportunistically cache the resolved cloud workspace id (if new/changed)
     // so a future rotated/orphaned key can self-heal below without the caller

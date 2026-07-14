@@ -107,7 +107,7 @@ describe('registerWorkspaceCommands', () => {
     ]);
 
     expect(deps.createWorkspace).toHaveBeenCalledWith('new-ws', 'https://cloud.test');
-    expect(vi.mocked(setWorkspaceKey)).toHaveBeenCalledWith('new-ws', 'rk_live_new');
+    expect(vi.mocked(setWorkspaceKey)).toHaveBeenCalledWith('new-ws', 'rk_live_new', undefined, 'rw_new');
     expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
       name: 'new-ws',
       workspaceId: 'rw_new',

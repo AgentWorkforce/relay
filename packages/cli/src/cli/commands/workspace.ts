@@ -66,7 +66,10 @@ export function registerWorkspaceCommands(
               'Make sure you are logged in to Cloud (`agent-relay login`).'
           );
         }
-        setWorkspaceKey(name, workspace.relaycastApiKey);
+        // Cache cloudWorkspaceId immediately — don't wait for the first
+        // resolve — so self-heal is bound to the workspace just created from
+        // the start, not left unset until a later successful resolve caches it.
+        setWorkspaceKey(name, workspace.relaycastApiKey, undefined, workspace.workspaceId);
         printJson(deps, {
           name,
           workspaceId: workspace.workspaceId,
