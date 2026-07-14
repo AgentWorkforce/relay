@@ -116,6 +116,28 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertEqual(event.message?.channel?.name, "general")
     }
 
+    func testRelayEventFromNodeDeliveryExtractsDMSenderFields() {
+        // Fleet DM delivery payloads carry agent_id/agent_name directly on the
+        // message object rather than nesting a `from` object.
+        let wsEvent = Relaycast.WsEvent(type: "dm.received", payload: [
+            "conversation_id": .string("dm_1"),
+            "message": .object([
+                "id": .string("msg_dm_1"),
+                "agent_id": .string("agent_chief"),
+                "agent_name": .string("chief"),
+                "text": .string("CHIEF_LIVE_OK")
+            ]),
+            "from_name": .string("chief")
+        ])
+
+        let event = RelayEvent(wsEvent)
+        XCTAssertEqual(event.type, "dm.received")
+        XCTAssertEqual(event.message?.messageId, "msg_dm_1")
+        XCTAssertEqual(event.message?.text, "CHIEF_LIVE_OK")
+        XCTAssertEqual(event.message?.from.id, "agent_chief")
+        XCTAssertEqual(event.message?.from.name, "chief")
+    }
+
     func testRelayEventFromWsEventExtractsActionInvocationFields() {
         let wsEvent = Relaycast.WsEvent(type: "action.invoked", payload: [
             "invocation_id": .string("inv_1"),

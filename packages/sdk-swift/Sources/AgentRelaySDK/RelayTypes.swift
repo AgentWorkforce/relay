@@ -196,6 +196,10 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, text, from, channel
         case body
+        case agentId = "agent_id"
+        case agentIdCamel = "agentId"
+        case agentName = "agent_name"
+        case agentNameCamel = "agentName"
         case messageId = "message_id"
         case messageIdCamel = "messageId"
         case conversationId = "conversation_id"
@@ -217,7 +221,15 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
         text = (try? container.decode(String.self, forKey: .text))
             ?? (try? container.decode(String.self, forKey: .body))
             ?? ""
-        from = (try? container.decode(RelayMessageSender.self, forKey: .from)) ?? RelayMessageSender()
+        if let nested = try? container.decode(RelayMessageSender.self, forKey: .from) {
+            from = nested
+        } else {
+            let senderId = try container.decodeIfPresent(String.self, forKey: .agentId)
+                ?? container.decodeIfPresent(String.self, forKey: .agentIdCamel)
+            let senderName = try container.decodeIfPresent(String.self, forKey: .agentName)
+                ?? container.decodeIfPresent(String.self, forKey: .agentNameCamel)
+            from = RelayMessageSender(id: senderId, name: senderName)
+        }
         channel = try container.decodeIfPresent(RelayMessageChannelRef.self, forKey: .channel)
         conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId)
             ?? container.decodeIfPresent(String.self, forKey: .conversationIdCamel)

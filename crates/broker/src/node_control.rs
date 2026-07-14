@@ -576,6 +576,10 @@ struct ActiveAgentBinding {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FleetDeliveryBook {
     agents: HashMap<String, AgentDeliveryCursor>,
+    /// Identities registered through an engine that did not negotiate the
+    /// restart-safe cursor capability. Their first live positive sequence may
+    /// be greater than one, so it establishes the local high-water mark.
+    legacy_uncursored_agent_ids: HashSet<String>,
     active_agent_bindings_by_name: HashMap<String, ActiveAgentBinding>,
     active_agent_names_by_id: HashMap<String, String>,
     retired_agent_names_by_id: HashMap<String, String>,
@@ -653,6 +657,7 @@ impl FleetDeliveryBook {
         if let Some(previous) = self.active_agent_bindings_by_name.remove(agent) {
             self.active_agent_names_by_id.remove(&previous.agent_id);
             self.agents.remove(&previous.agent_id);
+            self.legacy_uncursored_agent_ids.remove(&previous.agent_id);
             self.retire_identity(previous.agent_id, agent.to_string());
         }
 
@@ -679,6 +684,13 @@ impl FleetDeliveryBook {
         self.bind_identity(&agent, &agent_id, true);
     }
 
+    /// Enable compatibility with engines that omit `delivery_ack_seq` from
+    /// `agent.register`. Such engines do not replay the historical prefix, so
+    /// the first live frame must be accepted even when its sequence is > 1.
+    pub(crate) fn mark_legacy_uncursored(&mut self, agent_id: impl Into<String>) {
+        self.legacy_uncursored_agent_ids.insert(agent_id.into());
+    }
+
     /// Seed Relaycast's cumulative cursor after identity authority is bound.
     pub(crate) fn seed_cursor(
         &mut self,
@@ -688,6 +700,7 @@ impl FleetDeliveryBook {
     ) {
         let agent = agent.into();
         let agent_id = agent_id.into();
+        self.legacy_uncursored_agent_ids.remove(&agent_id);
         debug_assert!(self
             .active_agent_bindings_by_name
             .get(&agent)
@@ -760,6 +773,11 @@ impl FleetDeliveryBook {
             return DeliveryDecision::Deliver { up_to_seq: 0 };
         }
         let Some(cursor) = cursor else {
+            if self.legacy_uncursored_agent_ids.contains(&deliver.agent_id) {
+                return DeliveryDecision::Deliver {
+                    up_to_seq: deliver.seq,
+                };
+            }
             return if deliver.seq == 1 {
                 DeliveryDecision::Deliver { up_to_seq: 1 }
             } else {
@@ -793,6 +811,8 @@ impl FleetDeliveryBook {
         if !self.bind_identity(&deliver.agent, &deliver.agent_id, false) {
             return self.active_up_to_seq(&deliver.agent);
         }
+        let legacy_first_positive =
+            deliver.seq > 0 && self.legacy_uncursored_agent_ids.remove(&deliver.agent_id);
         let cursor = self
             .agents
             .entry(deliver.agent_id.clone())
@@ -807,6 +827,11 @@ impl FleetDeliveryBook {
             cursor.seen_msg_ids.insert(&deliver.msg_id);
             return cursor.up_to_seq;
         }
+        if legacy_first_positive {
+            cursor.seen_msg_ids.insert(&deliver.msg_id);
+            cursor.up_to_seq = deliver.seq;
+            return cursor.up_to_seq;
+        }
         if deliver.seq == cursor.up_to_seq.saturating_add(1) {
             cursor.seen_msg_ids.insert(&deliver.msg_id);
             cursor.up_to_seq = deliver.seq;
@@ -818,6 +843,7 @@ impl FleetDeliveryBook {
         if let Some(binding) = self.active_agent_bindings_by_name.remove(agent) {
             self.active_agent_names_by_id.remove(&binding.agent_id);
             self.agents.remove(&binding.agent_id);
+            self.legacy_uncursored_agent_ids.remove(&binding.agent_id);
             self.retire_identity(binding.agent_id, agent.to_string());
         }
         let orphaned_ids = self

@@ -550,6 +550,8 @@ pub(super) async fn register_node_agent_token(
     fleet_delivery_book.bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
     if let Some(up_to_seq) = token.delivery_ack_seq {
         fleet_delivery_book.seed_cursor(token.name.clone(), token.agent_id.clone(), up_to_seq);
+    } else {
+        fleet_delivery_book.mark_legacy_uncursored(token.agent_id.clone());
     }
     Ok(token)
 }
@@ -1277,17 +1279,29 @@ mod tests {
                 delivery_ack_seq: None,
             }))
             .unwrap();
-        let delivery_book = register_handle.await.unwrap().unwrap();
+        let mut delivery_book = register_handle.await.unwrap().unwrap();
 
-        let current = test_deliver(
+        let mut current = test_deliver(
             "agent-a",
             "delivery-current",
             "message-current",
             json!({"type": "message.created"}),
         );
+        current.seq = 19;
         assert_eq!(
             delivery_book.observe(&current),
-            DeliveryDecision::Deliver { up_to_seq: 1 }
+            DeliveryDecision::Deliver { up_to_seq: 19 }
+        );
+        assert_eq!(delivery_book.commit_delivered(&current), 19);
+        let next = Deliver {
+            delivery_id: "delivery-next".to_string(),
+            msg_id: "message-next".to_string(),
+            seq: 20,
+            ..current.clone()
+        };
+        assert_eq!(
+            delivery_book.observe(&next),
+            DeliveryDecision::Deliver { up_to_seq: 20 }
         );
         let mismatch = Deliver {
             agent_id: "impostor-id".to_string(),
