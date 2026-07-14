@@ -556,7 +556,7 @@ export async function runPassthroughSession(
       // after the release lands (detach race, #1247). `teardownStdin` already
       // stopped the resize handler and re-assert timer, so nothing new is
       // enqueued past this point.
-      void (async () => {
+      const releasePromise = (async () => {
         try {
           if (outstandingResizes.size > 0) {
             await Promise.allSettled([...outstandingResizes]);
@@ -577,15 +577,23 @@ export async function runPassthroughSession(
       // Best-effort restore: re-read and only revert if the mode is still what
       // this session set, so we don't clobber another session's change or
       // force a default when the pre-attach mode was unknown.
-      void restoreInboundDeliveryModeOnDetach(
-        connection,
-        name,
-        previousMode,
-        'auto_inject',
-        sessionRevision,
-        'passthrough',
-        deps
-      ).finally(() => {
+      //
+      // Await the release alongside the restore before resolving: `resolve`
+      // typically ends the process, which aborts any still-pending fetch. The
+      // release awaits `outstandingResizes` first, so it would otherwise lose
+      // the race to the restore and be aborted, defeating the detach-race fix.
+      void Promise.allSettled([
+        releasePromise,
+        restoreInboundDeliveryModeOnDetach(
+          connection,
+          name,
+          previousMode,
+          'auto_inject',
+          sessionRevision,
+          'passthrough',
+          deps
+        ),
+      ]).finally(() => {
         resolve(code);
       });
     };

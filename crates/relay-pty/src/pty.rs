@@ -1469,25 +1469,48 @@ mod tests {
 
     /// A mere *enqueue* must not reset the counter: if the drainer is wedged and
     /// never flushes, periodic input can't indefinitely defer the no-PID
-    /// fallback. We simulate a wedged write path with a fake queue whose drainer
-    /// never runs, so the ack stays pending and the counter is untouched.
+    /// fallback. This drives the *real* [`drain_write_queue`] against a writer
+    /// that blocks forever inside `write`, so the message is picked up but never
+    /// confirmed — proving the reset is gated on a confirmed write, not on
+    /// enqueue. (Asserting on a counter no drainer ever touches would pass
+    /// unconditionally and catch nothing.)
     #[tokio::test]
     async fn enqueue_without_confirm_does_not_reset_no_pid_counter() {
+        struct BlockingWriter;
+        impl std::io::Write for BlockingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                // Simulate a wedged PTY master: never returns before the test
+                // makes its assertion, so the write can never be confirmed.
+                std::thread::sleep(StdDuration::from_secs(60));
+                Ok(0)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
         let counter = Arc::new(AtomicU32::new(5));
-        // A bounded queue with no drainer: the message sits unconfirmed.
-        let (tx, _rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let counter_for_drainer = counter.clone();
+        let _drainer = std::thread::spawn(move || {
+            super::drain_write_queue(BlockingWriter, rx, counter_for_drainer)
+        });
+
         let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec())
             .expect("submit path accepts the write");
+        // The drainer picks the message up and blocks in `write`, so the ack
+        // must stay pending — the write is never confirmed.
         assert!(
-            timeout(Duration::from_millis(20), ack).await.is_err(),
-            "without a drainer the write must remain unconfirmed"
+            timeout(Duration::from_millis(50), ack).await.is_err(),
+            "a wedged writer must leave the write unconfirmed"
         );
-        // The real submission helper received the shared counter but did not
-        // reset it merely because the queue accepted the message.
+        // Because the write never confirmed+flushed, the drainer must not have
+        // reset the silence counter. If `drain_write_queue` were changed to
+        // reset on receipt instead of on confirmation, this would drop to 0.
         assert_eq!(
             counter.load(std::sync::atomic::Ordering::Relaxed),
             5,
-            "an unconfirmed enqueue must not reset the silence counter"
+            "an unconfirmed write must not reset the silence counter"
         );
     }
 

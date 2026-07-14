@@ -47,6 +47,86 @@ pub(crate) fn resize_owner_allows(
     }
 }
 
+/// The action the `ResizePty` handler must take for a resize request, decided
+/// against the current ownership map. Extracted from the handler so the
+/// single-resizer state transitions are unit-testable without a live worker.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ResizeAction {
+    /// Requester is not the resize owner: acknowledge without resizing.
+    Reject,
+    /// Owner re-asserted its current size: `last_seen` was refreshed in place
+    /// and no SIGWINCH/repaint is needed.
+    Refresh,
+    /// Apply the resize (emit SIGWINCH). After the worker send succeeds, call
+    /// [`commit_resize_ownership`] to claim/record ownership.
+    Apply,
+}
+
+/// Evaluate a session-keyed (or legacy) resize against `resize_owners` and,
+/// for the owner-refresh case, bump `last_seen` in place. Returns the
+/// [`ResizeAction`] the handler must take. `now` is injected so the staleness
+/// window is testable.
+pub(crate) fn plan_resize(
+    resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
+    name: &WorkerName,
+    rows: u16,
+    cols: u16,
+    session_id: Option<&str>,
+    now: Instant,
+) -> ResizeAction {
+    let owner = resize_owners.get(name);
+    let owner_stale =
+        owner.is_some_and(|o| now.saturating_duration_since(o.last_seen) >= RESIZE_OWNER_STALE);
+    if !resize_owner_allows(
+        owner.map(|o| o.session_id.as_str()),
+        owner_stale,
+        session_id,
+    ) {
+        return ResizeAction::Reject;
+    }
+    // Same-size owner re-assert: refresh liveness without a redundant SIGWINCH.
+    let owner_refresh = session_id.is_some_and(|sid| {
+        resize_owners
+            .get(name)
+            .is_some_and(|o| o.session_id == sid && o.rows == rows && o.cols == cols)
+    });
+    if owner_refresh {
+        if let Some(owner) = resize_owners.get_mut(name) {
+            owner.last_seen = now;
+        }
+        return ResizeAction::Refresh;
+    }
+    ResizeAction::Apply
+}
+
+/// Record ownership after a resize is actually applied. Session-keyed resizes
+/// claim or refresh the lease; legacy (unkeyed) resizes update the recorded
+/// dimensions of an existing owner *without* renewing its lease, so the owner
+/// still restores its own size on its next re-assert.
+pub(crate) fn commit_resize_ownership(
+    resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
+    name: &WorkerName,
+    rows: u16,
+    cols: u16,
+    session_id: Option<String>,
+    now: Instant,
+) {
+    if let Some(sid) = session_id {
+        resize_owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: sid,
+                last_seen: now,
+                rows,
+                cols,
+            },
+        );
+    } else if let Some(owner) = resize_owners.get_mut(name) {
+        owner.rows = rows;
+        owner.cols = cols;
+    }
+}
+
 pub(crate) struct BrokerRuntime {
     pub(super) persist: bool,
     pub(super) broker_start: Instant,
@@ -320,45 +400,45 @@ mod resize_owner_tests {
 
     #[test]
     fn claim_reject_release_lifecycle() {
-        // Model the handler's map operations end-to-end.
+        // Drive the real handler transitions end-to-end.
         let name = WorkerName::new("w1".to_string());
         let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        let now = Instant::now();
 
-        // s1 claims the (unowned) worker.
-        assert!(resize_owner_allows(None, false, Some("s1")));
-        owners.insert(
-            name.clone(),
-            ResizeOwner {
-                session_id: "s1".to_string(),
-                last_seen: Instant::now(),
-                rows: 24,
-                cols: 80,
-            },
+        // s1 claims the (unowned) worker: Apply, then ownership is committed.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 24, 80, Some("s1"), now),
+            ResizeAction::Apply,
         );
+        commit_resize_ownership(&mut owners, &name, 24, 80, Some("s1".to_string()), now);
+        assert_eq!(owners.get(&name).unwrap().session_id, "s1");
 
         // s2 is rejected while s1 owns and is fresh.
-        let owner = owners.get(&name);
-        assert!(!resize_owner_allows(
-            owner.map(|o| o.session_id.as_str()),
-            false,
-            Some("s2"),
-        ));
+        assert_eq!(
+            plan_resize(&mut owners, &name, 30, 100, Some("s2"), now),
+            ResizeAction::Reject,
+        );
+        // Rejected requests must not perturb the owner's recorded size.
+        assert_eq!(
+            (owners[&name].rows, owners[&name].cols),
+            (24, 80),
+            "a rejected resize must not touch the owner's dimensions"
+        );
 
-        // s1 releases on detach (only its own session may clear ownership).
-        if owners.get(&name).is_some_and(|o| o.session_id == "s1") {
-            owners.remove(&name);
-        }
-        assert!(!owners.contains_key(&name));
+        // s1 releases on detach (handled by the separate release path).
+        owners.remove(&name);
 
         // Now s2 can claim the freed worker.
-        assert!(resize_owner_allows(None, false, Some("s2")));
+        assert_eq!(
+            plan_resize(&mut owners, &name, 30, 100, Some("s2"), now),
+            ResizeAction::Apply,
+        );
     }
 
     #[test]
     fn same_size_owner_reassert_refreshes_without_repaint() {
-        // Model the handler's owner-refresh no-op: the owner re-sends its
-        // current size to stay live; we refresh `last_seen` but must NOT treat
-        // it as a fresh resize (no worker send / SIGWINCH).
+        // The owner re-sends its current size to stay live: `plan_resize`
+        // must return Refresh (no worker send / SIGWINCH) and bump `last_seen`.
         let name = WorkerName::new("w1".to_string());
         let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
         let stale_seen = Instant::now() - Duration::from_secs(120);
@@ -372,65 +452,87 @@ mod resize_owner_tests {
             },
         );
 
-        // Same session, same size → owner refresh.
-        let (rows, cols, sid) = (24u16, 80u16, "s1");
-        let owner_refresh = owners
-            .get(&name)
-            .is_some_and(|o| o.session_id == sid && o.rows == rows && o.cols == cols);
-        assert!(
-            owner_refresh,
-            "same-size re-assert must be an owner refresh"
+        // Same session, same size → owner refresh with a bumped `last_seen`.
+        let now = Instant::now();
+        assert_eq!(
+            plan_resize(&mut owners, &name, 24, 80, Some("s1"), now),
+            ResizeAction::Refresh,
         );
-        if owner_refresh {
-            if let Some(o) = owners.get_mut(&name) {
-                o.last_seen = Instant::now();
-            }
-        }
         assert!(
             owners.get(&name).unwrap().last_seen > stale_seen,
             "owner refresh must bump last_seen"
         );
 
         // A *different* size from the owner is a real resize, not a refresh.
-        let owner_refresh_diff = owners
-            .get(&name)
-            .is_some_and(|o| o.session_id == sid && o.rows == 30 && o.cols == 100);
-        assert!(!owner_refresh_diff, "changed size must not be a refresh");
+        assert_eq!(
+            plan_resize(&mut owners, &name, 30, 100, Some("s1"), now),
+            ResizeAction::Apply,
+            "changed size must be a real resize, not a refresh"
+        );
     }
 
     #[test]
     fn legacy_resize_invalidates_owner_same_size_refresh() {
+        // Reviewer callout (#1253): exercise the real handler transition —
+        // keyed claim, legacy resize, then keyed re-assert — instead of
+        // reimplementing the map mutation.
         let name = WorkerName::new("w1".to_string());
         let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        let now = Instant::now();
+
+        // s1 claims at 24x80.
+        commit_resize_ownership(&mut owners, &name, 24, 80, Some("s1".to_string()), now);
+        let claimed_seen = owners.get(&name).unwrap().last_seen;
+
+        // A legacy (unkeyed) caller applies a different size. It plans as Apply
+        // and, once committed, updates the recorded dimensions *without*
+        // renewing the owner's lease.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 40, 120, None, now),
+            ResizeAction::Apply,
+        );
+        commit_resize_ownership(&mut owners, &name, 40, 120, None, now);
+        let owner = owners.get(&name).unwrap();
+        assert_eq!((owner.rows, owner.cols), (40, 120));
+        assert_eq!(
+            owner.last_seen, claimed_seen,
+            "legacy resize must not renew the lease"
+        );
+
+        // The owner re-asserting its former 24x80 size must now plan as a real
+        // resize (Apply), not a refresh, so it restores the PTY after the
+        // legacy caller changed the size out from under it.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 24, 80, Some("s1"), now),
+            ResizeAction::Apply,
+            "owner must restore dimensions changed by a legacy resize"
+        );
+    }
+
+    #[test]
+    fn stale_owner_is_taken_over_via_plan_resize() {
+        // A crashed owner (last_seen older than the stale window) is superseded
+        // by a new session's resize through the real transition helper.
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        let now = Instant::now();
         owners.insert(
             name.clone(),
             ResizeOwner {
                 session_id: "s1".to_string(),
-                last_seen: Instant::now(),
+                last_seen: now - RESIZE_OWNER_STALE - Duration::from_secs(1),
                 rows: 24,
                 cols: 80,
             },
         );
 
-        // A legacy caller applies a different size without taking ownership.
-        let legacy_seen = owners.get(&name).unwrap().last_seen;
-        let owner = owners.get_mut(&name).unwrap();
-        owner.rows = 40;
-        owner.cols = 120;
         assert_eq!(
-            owner.last_seen, legacy_seen,
-            "legacy resize must not renew the lease"
+            plan_resize(&mut owners, &name, 30, 100, Some("s2"), now),
+            ResizeAction::Apply,
+            "a newcomer may take over a stale (crashed) owner",
         );
-
-        // The owner re-asserting its former 24x80 size must now be treated as
-        // a real resize so it restores the PTY after the legacy caller.
-        let owner_refresh = owners
-            .get(&name)
-            .is_some_and(|o| o.session_id == "s1" && o.rows == 24 && o.cols == 80);
-        assert!(
-            !owner_refresh,
-            "owner must restore dimensions changed by a legacy resize"
-        );
+        commit_resize_ownership(&mut owners, &name, 30, 100, Some("s2".to_string()), now);
+        assert_eq!(owners.get(&name).unwrap().session_id, "s2");
     }
 
     #[test]

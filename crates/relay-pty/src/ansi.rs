@@ -36,13 +36,21 @@ pub fn strip_ansi(text: &str) -> String {
                 chars.next();
                 let mut param_buf = String::new();
                 while let Some(&nc) = chars.peek() {
+                    // A stray ESC aborts this CSI and restarts parsing at the
+                    // ESC (mirrors [`AnsiStripper::scan`]) so a fresh sequence
+                    // isn't swallowed as CSI parameter bytes.
+                    if nc == '\x1b' {
+                        break;
+                    }
                     chars.next();
                     if (0x40..=0x7e).contains(&(nc as u32)) {
                         // Cursor-forward: replace with spaces so CLIs that
                         // render injected text via cursor movement still
-                        // produce readable echo-detection text.
+                        // produce readable echo-detection text. Cap the count
+                        // so a pathological `ESC[<n>C` can't drive unbounded
+                        // iteration / `String` growth.
                         if nc == 'C' {
-                            let count = param_buf.parse::<usize>().unwrap_or(1);
+                            let count = param_buf.parse::<usize>().unwrap_or(1).min(ANSI_TAIL_MAX);
                             for _ in 0..count {
                                 result.push(' ');
                             }
@@ -353,6 +361,31 @@ mod tests {
     fn strip_ansi_handles_double_esc_csi() {
         // `ESC ESC [ 3 ~`: the second ESC restarts, so the whole CSI strips.
         assert_eq!(strip_ansi("\x1b\x1b[3~keep"), "keep");
+    }
+
+    #[test]
+    fn strip_ansi_caps_cursor_forward_repetition() {
+        // A pathological `ESC[<huge>C` must not drive unbounded space growth:
+        // the count is clamped to ANSI_TAIL_MAX.
+        let out = strip_ansi("\x1b[5000000Cx");
+        assert_eq!(out.len(), ANSI_TAIL_MAX + 1);
+        assert!(out.starts_with(&" ".repeat(ANSI_TAIL_MAX)));
+        assert!(out.ends_with('x'));
+        // A normal small count is untouched.
+        assert_eq!(strip_ansi("\x1b[5Cx"), "     x");
+        // Default (no param) is still a single space.
+        assert_eq!(strip_ansi("\x1b[Cx"), " x");
+    }
+
+    #[test]
+    fn strip_ansi_restarts_csi_on_stray_esc() {
+        // A fresh ESC inside a CSI parameter run aborts that sequence and
+        // restarts parsing at the ESC (mirrors AnsiStripper::scan), so the
+        // following cursor-forward is parsed on its own — `5` spaces, not the
+        // `1` the old always-consume grammar produced from a garbled param.
+        assert_eq!(strip_ansi("\x1b[3\x1b[5Cx"), "     x");
+        // The interrupting sequence can be a colour SGR too.
+        assert_eq!(strip_ansi("\x1b[3\x1b[31mred"), "red");
     }
 
     // ---- AnsiStripper (stateful streaming) ----

@@ -472,6 +472,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // reads so fragments like `3;5H` never leak into `startup_output` and
     // confuse boot-marker / prompt matching (#1247).
     let mut readiness_stripper = AnsiStripper::new();
+    // Stateful ANSI stripper for auto-suggestion detection, mirroring
+    // `suggestion_stripper` in wrap.rs. `is_auto_suggestion` keys on raw
+    // markers (`\x1b[7m`, `\x1b[27m\x1b[2m`); scanning each PTY read
+    // independently misses a marker split across two reads. Stitching the raw
+    // stream here holds back an incomplete trailing escape and prepends it to
+    // the next chunk so the ghost-text guard sees whole markers (#1247).
+    let mut suggestion_stripper = AnsiStripper::new();
     // Coalesced buffering for worker_stream emissions, tuned for
     // interactive (`drive`/`passthrough`) latency. Output flushes on a
     // leading edge — the first chunk after an idle gap goes out
@@ -957,7 +964,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             running = false;
                         }
 
-                        pty_auto.update_auto_suggestion(&text);
+                        // Scan the stitched raw stream so a `\x1b[7m` marker
+                        // split across reads is still detected.
+                        let suggestion_scan = suggestion_stripper.feed_raw(&text);
+                        pty_auto.update_auto_suggestion(&suggestion_scan);
                         pty_auto.last_output_time = Instant::now();
                         pty_auto.reset_idle_on_output();
                         pty_auto.update_editor_buffer(&text);

@@ -819,7 +819,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // PTY just after the release lands (detach race, #1247). `teardownStdin`
       // has already stopped the resize handler and re-assert timer above, so
       // no new resizes are enqueued past this point.
-      void (async () => {
+      const releasePromise = (async () => {
         try {
           if (outstandingResizes.size > 0) {
             await Promise.allSettled([...outstandingResizes]);
@@ -840,15 +840,23 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // Best-effort restore: re-read the mode and only revert if it's still
       // what this session set, so we don't leave the worker stuck in
       // manual_flush and don't clobber a change another session made.
-      void restoreInboundDeliveryModeOnDetach(
-        connection,
-        name,
-        previousMode,
-        'manual_flush',
-        sessionRevision,
-        'drive',
-        deps
-      ).finally(() => {
+      //
+      // Await the release alongside the restore before resolving: `resolve`
+      // typically ends the process, which aborts any still-pending fetch. The
+      // release awaits `outstandingResizes` first, so it would otherwise lose
+      // the race to the restore and be aborted, defeating the detach-race fix.
+      void Promise.allSettled([
+        releasePromise,
+        restoreInboundDeliveryModeOnDetach(
+          connection,
+          name,
+          previousMode,
+          'manual_flush',
+          sessionRevision,
+          'drive',
+          deps
+        ),
+      ]).finally(() => {
         resolve(code);
       });
     };
