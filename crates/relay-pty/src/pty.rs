@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Write},
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc as std_mpsc, Arc,
     },
     thread,
@@ -18,7 +18,7 @@ use alacritty_terminal::vte::ansi::Processor;
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Upper bound on queued PTY writes (both terminal-query replies from
 /// alacritty AND user/injection writes from `PtySession::write_all`).
@@ -41,13 +41,17 @@ enum WriteMsg {
     /// CPR). Best-effort: dropped if the queue is full because the
     /// listener is invoked from the parser hot path and must not block.
     Reply(Vec<u8>),
-    /// User/injection write from a `PtySession::write_all` caller. The
-    /// caller's send is **blocking** so backpressure flows back through
-    /// the worker; ordering is preserved relative to other UserInputs
-    /// and to any Replies already queued.
+    /// User/injection write submitted via `PtySession::submit_write`. The
+    /// submission is **non-blocking** (`try_send`): if the queue is full
+    /// the caller gets an error instead of parking, so the async worker
+    /// loop can keep draining PTY output and never deadlocks behind a
+    /// wedged drainer. Ordering is preserved relative to other UserInputs
+    /// and to any Replies already queued. The drainer reports the write
+    /// result over a tokio `oneshot` so async callers can await it (or
+    /// drop the receiver for fire-and-forget writes).
     UserInput {
         bytes: Vec<u8>,
-        ack: std_mpsc::Sender<io::Result<()>>,
+        ack: oneshot::Sender<io::Result<()>>,
     },
 }
 
@@ -159,6 +163,17 @@ pub struct PtySession {
     /// lock the reader uses — preventing the child's post-resize
     /// redraw from being parsed against stale grid dimensions.
     processor: Arc<Mutex<Processor>>,
+    /// Monotonic count of raw PTY bytes the reader thread has parsed into
+    /// the grid. Incremented under the same `(processor, term)` lock that
+    /// advances the parser, so a reader that snapshots the grid under that
+    /// lock observes exactly the offset corresponding to the grid state.
+    ///
+    /// This is the "stream offset" that correlates a visible-screen
+    /// snapshot with the `worker_stream` byte stream: the broker reports
+    /// this value alongside a snapshot so an attaching client can drop the
+    /// buffered stream chunks the snapshot already reflects and apply only
+    /// the ones that came after.
+    consumed_offset: Arc<AtomicU64>,
 }
 
 fn needs_sane_term_override() -> bool {
@@ -308,6 +323,8 @@ impl PtySession {
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
         let processor_clone = processor.clone();
+        let consumed_offset = Arc::new(AtomicU64::new(0));
+        let consumed_offset_reader = consumed_offset.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -328,6 +345,11 @@ impl PtySession {
                             let mut processor_guard = processor_clone.lock();
                             let mut term_guard = term_clone.lock();
                             processor_guard.advance(&mut *term_guard, &buf[..n]);
+                            // Publish the grid's consumed byte offset while
+                            // still holding the term lock, so a concurrent
+                            // snapshot reader (which also locks `term`) reads
+                            // the offset that matches the grid it renders.
+                            consumed_offset_reader.fetch_add(n as u64, Ordering::Release);
                         }
                         if tx.blocking_send(buf[..n].to_vec()).is_err() {
                             break;
@@ -348,31 +370,67 @@ impl PtySession {
                 no_pid_alive_checks: std::sync::atomic::AtomicU32::new(0),
                 term,
                 processor,
+                consumed_offset,
             },
             rx,
         ))
     }
 
-    /// Queue bytes for the PTY drainer to write. Ordering is preserved
-    /// relative to other `write_all` calls and to any pending
-    /// terminal-query replies — both go through the same FIFO.
+    /// Submit bytes to the PTY write drainer **without blocking**. Ordering
+    /// is preserved relative to other `submit_write` calls and to any
+    /// pending terminal-query replies — everything funnels through the same
+    /// FIFO, so bytes reach the PTY in submission order. Callers that need
+    /// two writes kept adjacent (e.g. an injection body and its trailing
+    /// `\r`) must submit them back-to-back with no intervening submission
+    /// from another task; because both land on the FIFO in order, no reply
+    /// or later write can splice between them.
     ///
-    /// Blocks if the queue is full (drainer wedged behind a slow PTY
-    /// write) and waits for the drainer to ack the write result. Returns
-    /// `Err` if the drainer has exited (PTY teardown) or if the underlying
-    /// PTY write/flush fails.
-    pub fn write_all(&self, bytes: &[u8]) -> Result<()> {
-        let (ack_tx, ack_rx) = std_mpsc::channel::<io::Result<()>>();
-        self.write_tx
-            .send(WriteMsg::UserInput {
-                bytes: bytes.to_vec(),
-                ack: ack_tx,
-            })
-            .map_err(|_| {
-                anyhow::anyhow!("pty write queue is closed (drainer exited before enqueue)")
-            })?;
+    /// Returns a `oneshot::Receiver` that resolves once the drainer has
+    /// written and flushed the bytes (or hit an I/O error). Await it when
+    /// the write result matters (input acks); drop it for fire-and-forget
+    /// writes (auto-responses, injection keystrokes).
+    ///
+    /// This is the async-safe replacement for the old blocking `write_all`.
+    /// The critical property: submission uses `try_send`, so a full queue —
+    /// which happens when the child stops reading its stdin and the drainer
+    /// wedges in `writer.write_all` — surfaces as an immediate `Err` instead
+    /// of parking the caller. That keeps the single-task worker select loop
+    /// free to keep draining PTY output, breaking the deadlock where a
+    /// blocked write stalled the loop, which stalled the reader thread,
+    /// which stalled the child, permanently.
+    ///
+    /// Returns `Err` if the queue is momentarily full (retryable) or the
+    /// drainer has exited (PTY teardown).
+    pub fn submit_write(&self, bytes: Vec<u8>) -> Result<oneshot::Receiver<io::Result<()>>> {
+        let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
+        match self.write_tx.try_send(WriteMsg::UserInput {
+            bytes,
+            ack: ack_tx,
+        }) {
+            Ok(()) => Ok(ack_rx),
+            Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
+                "pty write queue full ({} writes pending; drainer wedged behind child not reading stdin)",
+                WRITE_QUEUE_DEPTH
+            )),
+            Err(std_mpsc::TrySendError::Disconnected(_)) => Err(anyhow::anyhow!(
+                "pty write queue is closed (drainer exited)"
+            )),
+        }
+    }
 
-        match ack_rx.recv() {
+    /// Submit bytes and await the drainer's write result. Convenience
+    /// wrapper over [`submit_write`] for async callers that want to
+    /// confirm the write landed on the PTY.
+    ///
+    /// Prefer [`submit_write`] with a retained receiver when you must not
+    /// block the select loop between submission and confirmation — awaiting
+    /// here parks the calling task (though not other OS threads) until the
+    /// drainer acks.
+    ///
+    /// [`submit_write`]: PtySession::submit_write
+    pub async fn write_and_confirm(&self, bytes: Vec<u8>) -> Result<()> {
+        let ack_rx = self.submit_write(bytes)?;
+        match ack_rx.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err).context("failed to write queued input to pty"),
             Err(_) => Err(anyhow::anyhow!(
@@ -476,6 +534,33 @@ impl PtySession {
     pub fn with_term<R>(&self, f: impl FnOnce(&Term<RelayEventListener>) -> R) -> R {
         let term = self.term.lock();
         f(&term)
+    }
+
+    /// Like [`with_term`], but also hands the closure the grid's consumed
+    /// byte offset, read while the term lock is held. The reader thread
+    /// bumps this offset under the *same* lock immediately after advancing
+    /// the parser, so the value the closure sees corresponds exactly to the
+    /// grid state it observes — no chunk parsed into the grid is missing
+    /// from the count, and none is counted ahead of the grid.
+    ///
+    /// [`with_term`]: PtySession::with_term
+    pub fn with_term_and_offset<R>(
+        &self,
+        f: impl FnOnce(&Term<RelayEventListener>, u64) -> R,
+    ) -> R {
+        let term = self.term.lock();
+        let offset = self.consumed_offset.load(Ordering::Acquire);
+        f(&term, offset)
+    }
+
+    /// Monotonic count of raw PTY bytes parsed into the grid so far. Used to
+    /// correlate a visible-screen snapshot with the `worker_stream` byte
+    /// stream. Prefer [`with_term_and_offset`] when the value must line up
+    /// with a grid render.
+    ///
+    /// [`with_term_and_offset`]: PtySession::with_term_and_offset
+    pub fn consumed_offset(&self) -> u64 {
+        self.consumed_offset.load(Ordering::Acquire)
     }
 
     /// Check if the child process has exited without blocking.
@@ -654,6 +739,7 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     use super::{GridSize, PtySession};
+    use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::Processor;
@@ -769,6 +855,34 @@ mod tests {
         assert!(
             screen.contains("hello-grid"),
             "grid should contain echoed text, got: {screen:?}"
+        );
+        let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn consumed_offset_tracks_total_bytes_parsed_into_grid() {
+        let (pty, mut rx) = PtySession::spawn("echo", &["offset-line".into()], 24, 80).unwrap();
+        // Drain the channel to EOF (echo exits), summing the raw bytes the
+        // reader thread handed us — that must equal the grid's consumed
+        // offset once the reader has parsed everything.
+        let mut total: u64 = 0;
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            total += chunk.len() as u64;
+        }
+        // The reader increments the offset under the term lock right after
+        // advancing; give it a beat to finish the last chunk.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(total > 0, "echo should have produced output");
+        assert_eq!(
+            pty.consumed_offset(),
+            total,
+            "grid consumed offset must equal the total raw bytes streamed to the reader"
+        );
+        // `capture_with_offset` reports the same value, read under the lock.
+        let (_snap, snap_offset) = Snapshot::capture_with_offset(&pty);
+        assert_eq!(
+            snap_offset, total,
+            "snapshot offset must match consumed offset"
         );
         let _ = pty.shutdown();
     }
@@ -915,6 +1029,7 @@ mod tests {
     use super::{RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
     use std::sync::mpsc as std_mpsc;
     use std::time::Duration as StdDuration;
+    use tokio::sync::oneshot;
 
     fn drive_listener(
         rows: u16,
@@ -988,14 +1103,14 @@ mod tests {
         // no Reply splicing between two UserInputs.
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
 
-        let (ack_tx_1, _ack_rx_1) = std_mpsc::channel::<std::io::Result<()>>();
+        let (ack_tx_1, _ack_rx_1) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"injection-body".to_vec(),
             ack: ack_tx_1,
         })
         .unwrap();
         tx.send(WriteMsg::Reply(b"\x1b[0n".to_vec())).unwrap();
-        let (ack_tx_2, _ack_rx_2) = std_mpsc::channel::<std::io::Result<()>>();
+        let (ack_tx_2, _ack_rx_2) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"\r".to_vec(),
             ack: ack_tx_2,
@@ -1048,8 +1163,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn user_input_ack_reports_write_failure() {
+    #[tokio::test]
+    async fn user_input_ack_reports_write_failure() {
         struct AlwaysFailWriter;
         impl std::io::Write for AlwaysFailWriter {
             fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
@@ -1066,24 +1181,25 @@ mod tests {
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
         let drainer = std::thread::spawn(move || super::drain_write_queue(AlwaysFailWriter, rx));
 
-        let (ack_tx, ack_rx) = std_mpsc::channel::<std::io::Result<()>>();
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"should-fail\n".to_vec(),
             ack: ack_tx,
         })
         .expect("queue accepts user input");
 
-        let ack = ack_rx
-            .recv_timeout(StdDuration::from_millis(200))
-            .expect("drainer must ack user input writes");
+        let ack = tokio::time::timeout(Duration::from_millis(200), ack_rx)
+            .await
+            .expect("drainer must ack user input writes")
+            .expect("ack sender not dropped");
         assert!(ack.is_err(), "drainer write failure must be surfaced");
 
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
     }
 
-    #[test]
-    fn user_input_ack_reports_flush_failure() {
+    #[tokio::test]
+    async fn user_input_ack_reports_flush_failure() {
         struct FlushFailWriter;
         impl std::io::Write for FlushFailWriter {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -1100,19 +1216,82 @@ mod tests {
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
         let drainer = std::thread::spawn(move || super::drain_write_queue(FlushFailWriter, rx));
 
-        let (ack_tx, ack_rx) = std_mpsc::channel::<std::io::Result<()>>();
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"flush-should-fail\n".to_vec(),
             ack: ack_tx,
         })
         .expect("queue accepts user input");
 
-        let ack = ack_rx
-            .recv_timeout(StdDuration::from_millis(200))
-            .expect("drainer must ack user input writes");
+        let ack = tokio::time::timeout(Duration::from_millis(200), ack_rx)
+            .await
+            .expect("drainer must ack user input writes")
+            .expect("ack sender not dropped");
         assert!(ack.is_err(), "drainer flush failure must be surfaced");
 
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    /// `submit_write` must deliver bytes to the child and resolve its ack
+    /// receiver with `Ok(())` once the drainer has flushed them. Uses `cat`,
+    /// which echoes stdin straight back to stdout.
+    #[tokio::test]
+    async fn submit_write_delivers_and_acks() {
+        let (pty, mut rx) = PtySession::spawn("cat", &[], 24, 80).unwrap();
+        let ack = pty
+            .submit_write(b"round-trip\n".to_vec())
+            .expect("submit_write enqueues");
+        ack.await
+            .expect("drainer acks")
+            .expect("write to cat succeeds");
+
+        let mut collected = Vec::new();
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            collected.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&collected).contains("round-trip") {
+                break;
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&collected).contains("round-trip"),
+            "cat should echo the submitted bytes, got: {:?}",
+            String::from_utf8_lossy(&collected)
+        );
+        let _ = pty.shutdown();
+    }
+
+    /// Regression for the write-path deadlock: when the child stops reading
+    /// its stdin (here `cat`'s output PTY buffer backs up because we never
+    /// drain `rx`), the write queue fills and the drainer wedges. The old
+    /// blocking `write_all` parked the caller forever; `submit_write` must
+    /// instead surface a full-queue `Err` promptly so the worker loop stays
+    /// responsive. If `submit_write` ever blocked, the outer `timeout` would
+    /// fire and fail the test.
+    #[tokio::test]
+    async fn submit_write_never_blocks_when_child_stops_reading() {
+        // `sleep` never reads its stdin, so the kernel PTY input buffer fills
+        // and the drainer wedges in `writer.write_all`. We also never drain
+        // `_rx`. This is exactly the deadlock scenario from the bug report.
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+
+        let flooded = timeout(Duration::from_secs(5), async {
+            loop {
+                // Large chunks fill the kernel PTY buffer quickly, then the
+                // bounded write queue, at which point submit_write returns Err.
+                if pty.submit_write(vec![b'x'; 8192]).is_err() {
+                    return true;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+
+        assert_eq!(
+            flooded,
+            Ok(true),
+            "submit_write must return an error when the queue fills, never block"
+        );
+        let _ = pty.shutdown();
     }
 }

@@ -48,25 +48,37 @@ export interface AttachSnapshotResult {
   cols?: number;
   /** Cursor position `[row, col]`, 1-indexed, if the call succeeded. */
   cursor?: [number, number];
+  /**
+   * Cumulative per-worker byte offset the grid had consumed when the
+   * snapshot was captured. Used to reconcile the snapshot against buffered
+   * `worker_stream` chunks (drop `offset <= this`, apply the rest).
+   * `undefined` on brokers that predate stream-offset support.
+   */
+  offset?: number;
   /** Human-readable detail for error variants. */
   message?: string;
 }
 
 /**
  * Fetch a worker's current visible screen as ANSI reproduction bytes and
- * write them to the caller's output. Callers should invoke this BEFORE
- * subscribing to the WebSocket event stream so the user sees the agent's
- * current state before live deltas start arriving.
+ * write them to the caller's output.
  *
- * There is a tiny window between the snapshot capture and the live stream
- * starting in which the agent's output could be missed (≤10ms in practice).
- * Most TUI agents repaint heavily so the next update overwrites anything
- * lost; subscribe-first + buffer + drain would close the gap at the cost
- * of risking double-application of bytes that arrive in both the snapshot
- * and the buffered stream, which is the worse failure mode for TUIs.
+ * The attach clients open and subscribe to the WebSocket event stream
+ * *first*, buffer incoming `worker_stream` chunks, then call this to paint
+ * the snapshot, and finally reconcile the buffer against the snapshot's
+ * `offset` (see {@link StreamSyncBuffer}). That ordering closes the gap
+ * between the snapshot and the live stream: no output emitted around attach
+ * time is lost, and the per-worker byte offset lets the client drop exactly
+ * the chunks the snapshot already reflects so nothing is double-applied.
+ *
+ * On brokers that don't report an `offset`, the clients fall back to
+ * snapshot-authoritative behaviour (paint the snapshot, discard chunks that
+ * arrived before it), which trades a tiny gap for no duplication — the same
+ * bias the pre-offset code had.
  *
  * @returns A status describing the outcome. `ok` means the screen was
- * rendered; other variants carry a message the caller can surface.
+ * rendered; other variants carry a message the caller can surface. `offset`
+ * is populated on `ok` when the broker reports one.
  */
 export async function captureAndRenderSnapshot(
   connection: AttachSnapshotConnection,
@@ -110,6 +122,7 @@ export async function captureAndRenderSnapshot(
 
   const rows = typeof obj.rows === 'number' ? obj.rows : undefined;
   const cols = typeof obj.cols === 'number' ? obj.cols : undefined;
+  const offset = typeof obj.offset === 'number' ? obj.offset : undefined;
   const cursorRaw = Array.isArray(obj.cursor) ? obj.cursor : undefined;
   const cursor: [number, number] | undefined =
     cursorRaw &&
@@ -119,7 +132,176 @@ export async function captureAndRenderSnapshot(
       ? [cursorRaw[0], cursorRaw[1]]
       : undefined;
 
-  return { status: 'ok', rows, cols, cursor };
+  return { status: 'ok', rows, cols, cursor, offset };
+}
+
+/**
+ * Reconciles a visible-screen snapshot with the live `worker_stream` byte
+ * stream so an attaching client neither loses nor double-applies output
+ * around attach time.
+ *
+ * Usage (subscribe-first):
+ *
+ *   1. Open + subscribe the event WS. Feed every `worker_stream` chunk to
+ *      {@link push} as it arrives, applying the chunk only when `push`
+ *      returns `true`.
+ *   2. Fetch and paint the snapshot.
+ *   3. Call {@link reconcile} with the snapshot's `offset`. Apply the
+ *      returned chunks in order. From then on, `push` returns `true` for
+ *      every chunk (live pass-through).
+ *
+ * Correlation rule: the snapshot reflects every byte with offset `<=`
+ * `snapshotOffset`. A buffered chunk carries the cumulative byte offset at
+ * its *end*; if that end offset is `<=` the snapshot offset the chunk is
+ * already on screen and is dropped, otherwise it is applied.
+ *
+ * The snapshot offset is retained as a post-reconcile *watermark*: once
+ * buffering ends, {@link push} keeps suppressing any live frame whose end
+ * offset is `<=` the watermark. This closes a broker-side race — the PTY
+ * reader advances `consumed_offset` and the grid *before* the decoded chunk
+ * reaches the broadcast queue, so a chunk with `offset <= snapshotOffset`
+ * can still arrive *after* the client reconciles. Offsets are cumulative and
+ * monotonic, so the watermark drops exactly those already-painted stragglers
+ * without touching genuinely new output.
+ */
+export class StreamSyncBuffer {
+  private buffering = true;
+  private readonly buffered: Array<{ chunk: string; offset?: number }> = [];
+  /**
+   * Post-reconcile suppression watermark: the snapshot offset the grid had
+   * already painted. `undefined` until {@link reconcile} runs with a defined
+   * offset (or forever, on brokers without offset support / after
+   * {@link flushAll}), in which case no post-reconcile suppression happens.
+   */
+  private watermark: number | undefined = undefined;
+
+  /**
+   * Record a live `worker_stream` chunk. Returns `true` when the caller
+   * should apply the chunk immediately, `false` when the chunk must be held
+   * or dropped. While buffering, the chunk is retained for {@link reconcile}.
+   * After reconcile, a chunk whose end offset is `<=` the snapshot watermark
+   * is a late-arriving straggler the snapshot already painted and is
+   * suppressed (see the class docstring's race note); everything else passes
+   * through live.
+   */
+  push(chunk: string, offset: number | undefined): boolean {
+    if (this.buffering) {
+      this.buffered.push({ chunk, offset });
+      return false;
+    }
+    // Live pass-through, minus stragglers the snapshot already reflects.
+    if (this.watermark !== undefined && offset !== undefined && offset <= this.watermark) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Reconcile the buffered chunks against the painted snapshot's offset and
+   * return the chunks to apply, in order. Switches to live pass-through and
+   * arms the post-reconcile watermark (see {@link push}).
+   *
+   * When `snapshotOffset` is `undefined` (broker without offset support) all
+   * buffered chunks are discarded: they arrived before the snapshot was
+   * painted, so dropping them matches the snapshot-authoritative fallback
+   * and avoids double-painting what the snapshot already shows. No watermark
+   * is armed in that case — there is no offset to compare live frames to.
+   */
+  reconcile(snapshotOffset: number | undefined): string[] {
+    const out: string[] = [];
+    if (snapshotOffset !== undefined) {
+      for (const item of this.buffered) {
+        // Drop chunks the snapshot already reflects; apply the rest. A chunk
+        // with no offset (mixed/legacy frame) is applied rather than risk
+        // silently dropping live output.
+        if (item.offset !== undefined && item.offset <= snapshotOffset) continue;
+        out.push(item.chunk);
+      }
+    }
+    this.watermark = snapshotOffset;
+    this.buffered.length = 0;
+    this.buffering = false;
+    return out;
+  }
+
+  /**
+   * Return every buffered chunk unchanged and switch to live pass-through.
+   * Used when no snapshot was painted (transient snapshot failure): there is
+   * nothing to reconcile against, so applying everything preserves output
+   * rather than dropping the buffered live stream.
+   */
+  flushAll(): string[] {
+    const out = this.buffered.map((item) => item.chunk);
+    this.buffered.length = 0;
+    this.buffering = false;
+    return out;
+  }
+
+  /** True while chunks are still being buffered (before reconcile). */
+  get isBuffering(): boolean {
+    return this.buffering;
+  }
+}
+
+/**
+ * Conservative terminal-reset control sequence emitted on detach (see #1247).
+ *
+ * A drive/view/passthrough session paints the agent's snapshot (which now
+ * re-emits terminal modes) and then relays the live stream, either of which can
+ * leave the *local* terminal in application-cursor-keys, mouse-reporting,
+ * bracketed-paste, or alt-screen mode. Without a reset on detach the user is
+ * dropped back to their shell with arrows emitting escape codes, mouse clicks
+ * spewing coordinates, or a blank alt screen.
+ *
+ * The sequence is intentionally direction-explicit and idempotent. Ordering is
+ * load-bearing (see #1251): a few of these controls move the cursor, and
+ * `\x1b[?1049l` (leave alt screen) *restores* the main-buffer cursor that was
+ * saved on alt-screen entry. Anything that homes the cursor must therefore run
+ * *before* the alt-screen leave, or it clobbers that restored position and the
+ * next shell prompt lands at top-left. Two controls home the cursor:
+ *
+ *  - `\x1b[r` (DECSTBM scroll-region reset) homes the cursor on xterm/DEC-style
+ *    terminals. The scroll-region margins are shared terminal state, so
+ *    resetting them while still in the alt buffer heals a stale region and the
+ *    homing is harmless (the pending `?1049l` restore supersedes it).
+ *  - `\x1b[?6l` (DECOM origin-mode reset) also moves the cursor to home per the
+ *    DEC spec, so it belongs in the same pre-leave group.
+ *
+ * Everything after the alt-screen leave is position-independent (mode flags
+ * that never move the cursor): show cursor, application cursor keys off,
+ * autowrap on, every mouse-reporting mode off, bracketed paste off, numeric
+ * keypad, and a final SGR reset. Only written when stdout is a TTY, consistent
+ * with how the sessions gate raw-mode restore and the status line.
+ */
+export const LOCAL_TERMINAL_RESET_SEQUENCE =
+  // --- cursor-homing resets: must precede the alt-screen leave/restore ---
+  '\x1b[?6l' + // origin mode off (DECOM) — homes the cursor
+  '\x1b[r' + // reset scroll region to full screen (DECSTBM) — homes the cursor
+  // --- leave alt screen: restores the main-buffer cursor saved on entry ---
+  '\x1b[?1049l' + // leave alternate screen buffer
+  // --- position-independent mode resets (none move the cursor) ---
+  '\x1b[?25h' + // show cursor (DECTCEM)
+  '\x1b[?1l' + // application cursor keys off (DECCKM)
+  '\x1b[?7h' + // autowrap on (DECAWM)
+  '\x1b[?1000l' + // mouse click reporting off
+  '\x1b[?1002l' + // mouse button-event (drag) reporting off
+  '\x1b[?1003l' + // mouse any-event (motion) reporting off
+  '\x1b[?1004l' + // focus in/out reporting off
+  '\x1b[?1005l' + // UTF-8 mouse coordinates off
+  '\x1b[?1006l' + // SGR mouse coordinates off
+  '\x1b[?1007l' + // alternate scroll off
+  '\x1b[?2004l' + // bracketed paste off
+  '\x1b>' + // keypad normal (DECKPNM)
+  '\x1b[0m'; // reset SGR
+
+/**
+ * Emit {@link LOCAL_TERMINAL_RESET_SEQUENCE} to the local terminal on detach,
+ * but only when stdout is a TTY. A no-op for piped/redirected stdout so the
+ * reset never corrupts a captured log.
+ */
+export function resetLocalTerminalOnDetach(write: (chunk: string) => void, isTty: boolean): void {
+  if (!isTty) return;
+  write(LOCAL_TERMINAL_RESET_SEQUENCE);
 }
 
 /** ----- Interactive attach prep helpers ----- */
@@ -219,7 +401,7 @@ export async function switchInboundDeliveryModeOrAbort(
   targetMode: InboundDeliveryMode,
   actionPhrase: string,
   deps: { fetch: typeof globalThis.fetch; error: (...args: unknown[]) => void }
-): Promise<{ previousMode: InboundDeliveryMode | null } | null> {
+): Promise<{ previousMode: InboundDeliveryMode | null; sessionRevision: string | null } | null> {
   let previousMode: InboundDeliveryMode | null = null;
   try {
     previousMode = await createBrokerClient(connection, deps.fetch).getInboundDeliveryMode(name);
@@ -228,8 +410,8 @@ export async function switchInboundDeliveryModeOrAbort(
     // `auto_inject` in that case so the queue can't grow indefinitely.
   }
   try {
-    await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
-    return { previousMode };
+    const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
+    return { previousMode, sessionRevision: result.revision };
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     if (failure.status === 404) {
@@ -239,6 +421,373 @@ export async function switchInboundDeliveryModeOrAbort(
     }
     return null;
   }
+}
+
+/**
+ * Best-effort restore of a worker's inbound delivery mode on detach.
+ *
+ * Two hazards this guards against (see #1247):
+ *
+ *  1. Concurrent-change race — a second session attaching while this one is
+ *     active would read *this* session's mode as the "previous" one, so blindly
+ *     writing `previousMode` back on detach can clobber a change another
+ *     session/CLI made in the meantime. We restore via the broker's atomic
+ *     compare-and-set (`expectedMode: sessionMode`): the broker applies
+ *     `previousMode` only if the worker's current mode still equals what *this*
+ *     session set, and no-ops (`matched: false`) otherwise. This removes the
+ *     read-then-set TOCTOU a client-side re-read still had (a change landing
+ *     between the read and the restore PUT).
+ *  2. Failed initial read — when the pre-attach mode was never learned
+ *     (`previousMode === null`), forcing a default (`auto_inject`) would
+ *     silently cancel an explicit `agent message hold`. In that case we leave
+ *     the mode untouched and warn.
+ *
+ * The broker's monotonic mode revision closes ABA races where another session
+ * changes the mode away and back to `sessionMode` before this restore.
+ */
+export async function restoreInboundDeliveryModeOnDetach(
+  connection: BrokerConnection,
+  name: string,
+  previousMode: InboundDeliveryMode | null,
+  sessionMode: InboundDeliveryMode,
+  sessionRevision: string | null,
+  verb: string,
+  deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void }
+): Promise<void> {
+  if (previousMode === null) {
+    deps.log(
+      `[${verb}] could not restore '${name}' inbound delivery mode (pre-attach mode was unknown); leaving it unchanged`
+    );
+    return;
+  }
+  if (sessionRevision === null) {
+    deps.log(
+      `[${verb}] could not safely restore '${name}' inbound delivery mode (broker did not report a mode revision); leaving it unchanged`
+    );
+    return;
+  }
+  try {
+    // Atomic compare-and-set: restore only if both the mode and its monotonic
+    // revision still match this session's write. If another session changed it
+    // (including an ABA away-and-back), the broker no-ops.
+    const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(
+      name,
+      previousMode,
+      {
+        expectedMode: sessionMode,
+        expectedRevision: sessionRevision,
+      }
+    );
+    if (!result.matched) {
+      deps.log(
+        `[${verb}] did not restore '${name}' inbound delivery mode because another session changed it; leaving it unchanged`
+      );
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Streaming scanner that tracks whether a byte stream currently *ends* inside
+ * an incomplete ANSI escape sequence (ESC, CSI, OSC, or DCS/SOS/PM/APC string).
+ *
+ * The attach status line wraps its repaint in cursor save/restore controls;
+ * splicing that in while the agent is mid-transmission of its own CSI sequence
+ * corrupts the agent's output. Feeding every server chunk through this scanner
+ * lets the status painter hold its repaint until the stream is back at a
+ * sequence boundary. State persists across chunks (a sequence may span several
+ * `worker_stream` frames).
+ *
+ * Only ASCII control bytes drive the state machine; multi-byte UTF-8 payload
+ * bytes are printable in the ground state and never appear inside a CSI/escape
+ * sequence, so scanning UTF-16 code units is safe here.
+ */
+export class AnsiBoundaryScanner {
+  private state: 'ground' | 'esc' | 'csi' | 'osc' | 'osc_esc' | 'str' | 'str_esc' = 'ground';
+
+  push(chunk: string): void {
+    for (let i = 0; i < chunk.length; i += 1) {
+      this.step(chunk.charCodeAt(i));
+    }
+  }
+
+  reset(): void {
+    this.state = 'ground';
+  }
+
+  /** True when the stream ends at a safe boundary (not mid-sequence). */
+  get atBoundary(): boolean {
+    return this.state === 'ground';
+  }
+
+  private step(c: number): void {
+    switch (this.state) {
+      case 'ground':
+        if (c === 0x1b) this.state = 'esc';
+        return;
+      case 'esc':
+        if (c === 0x5b)
+          this.state = 'csi'; // ESC [
+        else if (c === 0x5d)
+          this.state = 'osc'; // ESC ]
+        else if (c === 0x50 || c === 0x58 || c === 0x5e || c === 0x5f)
+          this.state = 'str'; // DCS / SOS / PM / APC
+        else this.state = 'ground'; // 2-byte escape (ESC 7, ESC 8, ESC c, …)
+        return;
+      case 'csi':
+        if (c === 0x1b)
+          this.state = 'esc'; // stray ESC restarts
+        else if (c >= 0x40 && c <= 0x7e) this.state = 'ground'; // final byte ends the CSI
+        return;
+      case 'osc':
+        if (c === 0x07)
+          this.state = 'ground'; // BEL terminator
+        else if (c === 0x1b) this.state = 'osc_esc'; // possible ST (ESC \)
+        return;
+      case 'osc_esc':
+        this.state = c === 0x5c ? 'ground' : 'osc';
+        return;
+      case 'str':
+        if (c === 0x1b) this.state = 'str_esc';
+        return;
+      case 'str_esc':
+        this.state = c === 0x5c ? 'ground' : 'str';
+        return;
+    }
+  }
+}
+
+/** Options for {@link StatusLineController}. Timers are injectable for tests. */
+export interface StatusLineControllerOptions {
+  /** Produce the current status-line ANSI string. */
+  render: () => string;
+  /** Write to stdout. */
+  write: (chunk: string) => void;
+  /** When false (stdout is not a TTY) the status line is never painted. */
+  enabled: boolean;
+  /**
+   * Minimum ms between repaints. `0` paints on every request (no coalescing);
+   * a positive value coalesces bursts of per-chunk repaints into at most one
+   * paint per window, shrinking the splice/DECSC-clobber window.
+   */
+  coalesceMs: number;
+  /**
+   * Max ms to hold a repaint while output keeps ending mid escape-sequence
+   * before painting anyway (bounded residual splice risk). Default 100.
+   */
+  boundaryHoldMs?: number;
+  setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
+  now?: () => number;
+}
+
+/**
+ * Coordinates status-line repaints for the interactive attach clients.
+ *
+ * Correctness properties (see #1247):
+ *  - **Non-TTY skip** — when `enabled` is false, nothing is ever written.
+ *  - **Boundary-hold** — a repaint is deferred while the observed output ends
+ *    mid ANSI escape sequence, so the status line never splices into a
+ *    half-transmitted CSI. It paints as soon as the next chunk lands at a
+ *    boundary (or after `boundaryHoldMs` as a bounded fallback).
+ *  - **Coalescing** — repaints are rate-limited to at most one per
+ *    `coalesceMs`, shrinking the window in which our save/restore-cursor wrap
+ *    can clobber the agent's own pending DECSC.
+ *  - **Teardown-safe** — after {@link dispose} no further writes happen.
+ *
+ * Residual risk (documented): ESC 7/ESC 8 (and CSI s/u) share a single
+ * saved-cursor slot on many terminals, so a repaint landing between the
+ * agent's DECSC and DECRC can still restore to the wrong spot. Boundary-hold +
+ * coalescing shrink but do not eliminate that window.
+ */
+export class StatusLineController {
+  private readonly scanner = new AnsiBoundaryScanner();
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private timerForce = false;
+  private wantPaint = false;
+  private lastPaintAt = Number.NEGATIVE_INFINITY;
+  private disposed = false;
+
+  constructor(private readonly opts: StatusLineControllerOptions) {}
+
+  /** Record server output for boundary tracking; flush a held repaint if the
+   *  stream is now back at a sequence boundary. */
+  observeOutput(chunk: string): void {
+    if (this.disposed) return;
+    this.scanner.push(chunk);
+    if (this.wantPaint) this.flush();
+  }
+
+  /** Request a repaint (coalesced + boundary-held). */
+  request(): void {
+    if (this.disposed || !this.opts.enabled) return;
+    this.wantPaint = true;
+    this.flush();
+  }
+
+  /** Stop all painting and cancel any pending timer. */
+  dispose(): void {
+    this.disposed = true;
+    this.wantPaint = false;
+    this.clearTimer();
+  }
+
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  private flush(): void {
+    if (this.disposed || !this.wantPaint) return;
+    if (!this.scanner.atBoundary) {
+      this.arm(this.opts.boundaryHoldMs ?? 100, true);
+      return;
+    }
+    // Back at a boundary: any pending *force* (boundary-hold) timer carries the
+    // wrong deadline now — it was armed to paint mid-sequence after
+    // `boundaryHoldMs`, which would either paint later than the coalescing
+    // window needs or bypass the window entirely. Clear it so the normal
+    // coalescing logic below re-arms a plain timer for the correct remainder.
+    // A non-force (coalescing) timer already has the right deadline, so leave
+    // it in place.
+    if (this.timer && this.timerForce) this.clearTimer();
+    const elapsed = this.now() - this.lastPaintAt;
+    if (elapsed >= this.opts.coalesceMs) {
+      this.paintNow();
+    } else {
+      this.arm(this.opts.coalesceMs - elapsed, false);
+    }
+  }
+
+  private paintNow(): void {
+    this.clearTimer();
+    this.wantPaint = false;
+    this.lastPaintAt = this.now();
+    this.opts.write(this.opts.render());
+  }
+
+  private arm(ms: number, force: boolean): void {
+    if (this.timer) return;
+    this.timerForce = force;
+    const set =
+      this.opts.setTimer ??
+      ((fn, delay) => {
+        const t = setTimeout(fn, delay);
+        (t as { unref?: () => void }).unref?.();
+        return t;
+      });
+    this.timer = set(() => {
+      this.timer = null;
+      if (this.disposed || !this.wantPaint) return;
+      if (this.timerForce) this.paintNow();
+      else this.flush();
+    }, ms);
+  }
+
+  private clearTimer(): void {
+    if (this.timer) {
+      (this.opts.clearTimer ?? clearTimeout)(this.timer);
+      this.timer = null;
+    }
+  }
+}
+
+/** Minimal writable surface {@link createBackpressureAwareWriter} needs. */
+export interface BackpressureWritable {
+  write(chunk: string): boolean;
+  once(event: 'drain', listener: () => void): unknown;
+  off?(event: 'drain', listener: () => void): unknown;
+  removeListener?(event: 'drain', listener: () => void): unknown;
+}
+
+/**
+ * A backpressure-aware writer plus a teardown hook. Call the writer with each
+ * chunk; call {@link BackpressureAwareWriter.dispose} on detach to drop any
+ * still-queued chunks and unhook the pending `'drain'` listener so nothing
+ * flushes to stdout after the session tears down.
+ */
+export interface BackpressureAwareWriter {
+  /** Write a chunk, respecting backpressure. No-op after {@link dispose}. */
+  write: (chunk: string) => void;
+  /** Drop the pending queue and unhook the `'drain'` listener. Idempotent. */
+  dispose: () => void;
+}
+
+/**
+ * Default stdout writer that respects backpressure (see #1247, item 7).
+ *
+ * When the underlying stream reports saturation (`write()` returns false) we
+ * hold subsequent chunks in a bounded in-memory queue and flush them on
+ * `'drain'`, rather than letting Node's stdout buffer grow without limit under
+ * a fast agent + slow terminal.
+ *
+ * FIFO is preserved even when our own queue reaches `maxQueuedBytes`: rather
+ * than writing the overflow chunk straight through (which would jump it ahead
+ * of older queued chunks and reorder/split the PTY byte stream), we first flush
+ * the entire local queue into stdout's internal buffer — `stdout.write` buffers
+ * internally when saturated, so ignoring its return value here is safe — then
+ * write the new chunk last. Bounded extra buffering, never dropped or reordered
+ * output. Documented residual risk: under sustained overload Node's internal
+ * stdout buffer can still grow.
+ */
+export function createBackpressureAwareWriter(
+  stdout: BackpressureWritable,
+  maxQueuedBytes = 4 * 1024 * 1024
+): BackpressureAwareWriter {
+  let paused = false;
+  let disposed = false;
+  let queue: string[] = [];
+  let queuedBytes = 0;
+
+  const flushQueue = (): void => {
+    if (disposed) return;
+    while (queue.length > 0) {
+      const next = queue.shift() as string;
+      queuedBytes -= Buffer.byteLength(next, 'utf8');
+      if (!stdout.write(next)) {
+        stdout.once('drain', flushQueue);
+        return;
+      }
+    }
+    paused = false;
+  };
+
+  const write = (chunk: string): void => {
+    if (disposed) return;
+    if (paused) {
+      const bytes = Buffer.byteLength(chunk, 'utf8');
+      if (queuedBytes + bytes <= maxQueuedBytes) {
+        queue.push(chunk);
+        queuedBytes += bytes;
+        return;
+      }
+      // Queue cap hit. Preserve FIFO: flush the whole local queue into
+      // stdout's internal buffer first (write buffers internally when
+      // saturated, so the return value is intentionally ignored), then write
+      // the new chunk last so it never jumps ahead of older output.
+      for (const queued of queue) stdout.write(queued);
+      queue = [];
+      queuedBytes = 0;
+      stdout.write(chunk);
+      return;
+    }
+    if (!stdout.write(chunk)) {
+      paused = true;
+      stdout.once('drain', flushQueue);
+    }
+  };
+
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    queue = [];
+    queuedBytes = 0;
+    paused = false;
+    const off = stdout.off ?? stdout.removeListener;
+    off?.call(stdout, 'drain', flushQueue);
+  };
+
+  return { write, dispose };
 }
 
 /** Dependencies for `captureInitialSnapshot`. `captureAndRenderSnapshot`

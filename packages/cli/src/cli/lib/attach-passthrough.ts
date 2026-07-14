@@ -24,14 +24,19 @@
  */
 
 import { Buffer } from 'node:buffer';
+import { StringDecoder } from 'node:string_decoder';
 
 import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
-  captureInitialSnapshot,
+  createBackpressureAwareWriter,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  resetLocalTerminalOnDetach,
+  restoreInboundDeliveryModeOnDetach,
+  StatusLineController,
+  StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
   type AttachSnapshotConnection,
@@ -48,7 +53,6 @@ import {
   type CliPtyInputStream,
   openPtyInputStream,
   resizeWorker,
-  setInboundDeliveryMode,
   type InboundDeliveryMode,
 } from './attach-drive.js';
 import { createPredictiveEcho, type CreatePredictiveEchoOptions } from './predictive-echo-screen.js';
@@ -95,6 +99,13 @@ export interface PassthroughDependencies {
   env: NodeJS.ProcessEnv;
   createWebSocket: PassthroughWebSocketFactory;
   writeChunk: (chunk: string) => void;
+  /**
+   * Tear down the backpressure-aware writer on detach: drop its pending queue
+   * and unhook its `'drain'` listener so nothing flushes to stdout after the
+   * session settles. Defaults to the writer created in {@link withDefaults};
+   * tests that inject their own `writeChunk` can omit it (no-op).
+   */
+  disposeWriter?: () => void;
   onSignal: PassthroughSignalRegistrar;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -114,18 +125,25 @@ export interface PassthroughDependencies {
    * it (degenerate terminal). Omitted by tests that want plain pass-through.
    */
   createPredictiveEcho?: (opts: CreatePredictiveEchoOptions) => PredictiveEcho | null;
+  /**
+   * Minimum ms between status-line repaints (coalescing window). Defaults to a
+   * small positive value in production to shrink the per-chunk splice window;
+   * tests set `0` for immediate, deterministic paints.
+   */
+  statusRepaintCoalesceMs?: number;
 }
 
 function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
   const fetchFn: typeof globalThis.fetch = overrides.fetch ?? ((input, init) => fetch(input, init));
+  const writer = createBackpressureAwareWriter(process.stdout);
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as PassthroughWebSocket,
-    writeChunk: (chunk) => {
-      process.stdout.write(chunk);
-    },
+    writeChunk: writer.write,
+    disposeWriter: writer.dispose,
+    statusRepaintCoalesceMs: 40,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -167,7 +185,9 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
  *  about. No `delivery_queued` / `agent_pending_drained` — there's no
  *  queue in passthrough session, so those events (which the broker doesn't
  *  emit while the worker is in `auto_inject`) would be `other`. */
-export type PassthroughWsEvent = { kind: 'worker_stream'; chunk: string } | { kind: 'other' };
+export type PassthroughWsEvent =
+  | { kind: 'worker_stream'; chunk: string; offset?: number }
+  | { kind: 'other' };
 
 /**
  * Inspect a single WebSocket frame and classify it relative to the
@@ -186,7 +206,8 @@ export function classifyWsEvent(rawMessage: string, name: string): PassthroughWs
   if (parsed.kind === 'worker_stream') {
     const chunk = parsed.chunk;
     if (typeof chunk !== 'string') return { kind: 'other' };
-    return { kind: 'worker_stream', chunk };
+    const offset = typeof parsed.offset === 'number' ? parsed.offset : undefined;
+    return { kind: 'worker_stream', chunk, offset };
   }
   return { kind: 'other' };
 }
@@ -266,41 +287,52 @@ export async function runPassthroughSession(
     deps
   );
   if (!flipResult) return 1;
-  const { previousMode } = flipResult;
+  const { previousMode, sessionRevision } = flipResult;
 
-  // Tee the snapshot's painted bytes so we can seed the predictive-echo
-  // model with them — its cursor must match the real screen before we
-  // optimistically echo, or predicted glyphs land at the wrong position.
-  let snapshotBytes = '';
-  const captureWrite = (chunk: string): void => {
-    deps.writeChunk(chunk);
-    snapshotBytes += chunk;
-  };
-  const snapshotResult = await captureInitialSnapshot(
-    connection,
-    name,
-    previousMode,
-    'passthrough',
-    'attach to',
-    {
-      fetch: deps.fetch,
-      writeChunk: captureWrite,
-      log: deps.log,
-      error: deps.error,
-      captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
+  // The mode is now flipped to `auto_inject`. If the user had an explicit
+  // `agent message hold` (manual_flush) active, killing the process with Ctrl+C
+  // before the session loop installs its handlers would strand the worker in
+  // auto_inject, silently cancelling their hold. Register early restore-and-exit
+  // handlers immediately; the loop disposes them once its own handlers are up.
+  let earlyHandled = false;
+  const earlyCleanups: Array<() => void> = [];
+  const earlyRestore = async (): Promise<void> => {
+    if (earlyHandled) return;
+    earlyHandled = true;
+    for (const cleanup of earlyCleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // best effort
+      }
     }
-  );
-  if (!snapshotResult) return 1;
+    await restoreInboundDeliveryModeOnDetach(
+      connection,
+      name,
+      previousMode,
+      'auto_inject',
+      sessionRevision,
+      'passthrough',
+      deps
+    );
+    deps.exit(0);
+  };
+  const disposeEarlySignals = (): void => {
+    earlyHandled = true;
+    for (const cleanup of earlyCleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // best effort
+      }
+    }
+  };
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    const cleanup = deps.onSignal(signal, earlyRestore);
+    if (typeof cleanup === 'function') earlyCleanups.push(cleanup);
+  }
 
   const initialLocalSize = deps.terminal.getSize();
-  let terminalRows = pickInitialTerminalRows(initialLocalSize, snapshotResult.snapshotRows);
-
-  const paintStatus = (): void => {
-    deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }));
-  };
-  paintStatus();
-
-  await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps);
 
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};
@@ -313,11 +345,22 @@ export async function runPassthroughSession(
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
     const parser = new PassthroughKeybindParser();
+    // Stateful UTF-8 decoder for forwarded stdin — a multi-byte character split
+    // across stdin chunks would otherwise become U+FFFD. See attach-drive.ts.
+    const inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
+    // Skip the status line entirely when stdout is not a TTY (piped output).
+    const statusLineEnabled = initialLocalSize !== null;
+    // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
+    // is painted and reconciled against its per-worker offset (no lost/dup
+    // output around attach time). See StreamSyncBuffer.
+    const sync = new StreamSyncBuffer();
+    let terminalRows = pickInitialTerminalRows(initialLocalSize, undefined);
 
     // Adaptive predictive echo masks round-trip latency on remote brokers.
-    // Seeded with the snapshot so its confirmed model matches the screen.
+    // Seeded with the snapshot (after it is painted) so its confirmed model
+    // matches the screen.
     const predictiveEcho =
       deps.createPredictiveEcho?.({
         cols: initialLocalSize?.cols ?? 0,
@@ -325,9 +368,42 @@ export async function runPassthroughSession(
         write: deps.writeChunk,
         getInputSrtt: () => inputStream?.srttMs ?? null,
       }) ?? null;
-    if (predictiveEcho) {
-      void predictiveEcho.seed(snapshotBytes);
-    }
+
+    // Tee the snapshot's painted bytes so we can seed the predictive-echo
+    // model with them — its cursor must match the real screen before we
+    // optimistically echo, or predicted glyphs land at the wrong position.
+    let snapshotBytes = '';
+    // Guard the snapshot paint on `settled`: a Ctrl+C during the snapshot HTTP
+    // fetch would otherwise paint the snapshot after teardown began (the render
+    // runs inside the awaited `captureAndRenderSnapshot`, past the WS guard).
+    const captureWrite = (chunk: string): void => {
+      if (settled) return;
+      deps.writeChunk(chunk);
+      snapshotBytes += chunk;
+    };
+
+    // Boundary-held + coalesced status painter (skips non-TTY stdout).
+    const statusController = new StatusLineController({
+      render: () => renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }),
+      write: deps.writeChunk,
+      enabled: statusLineEnabled,
+      coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
+    });
+    const paintStatus = (): void => {
+      statusController.request();
+    };
+
+    // Route server output through the predictive-echo engine (which owns
+    // cursor save/restore) or straight to stdout, then repaint the status.
+    const applyServerOutput = (chunk: string): void => {
+      statusController.observeOutput(chunk);
+      if (predictiveEcho) {
+        void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
+      } else {
+        deps.writeChunk(chunk);
+        paintStatus();
+      }
+    };
 
     const resizeHandler = (): void => {
       const size = deps.terminal.getSize();
@@ -350,14 +426,19 @@ export async function runPassthroughSession(
           deps.log('[passthrough] input stream is not ready');
           return;
         }
-        void stream.send(outcome.forward.toString('utf-8')).catch((err: unknown) => {
-          if (settled) return;
-          const message = err instanceof Error ? err.message : String(err);
-          deps.log(`[passthrough] input stream send failed: ${message}`);
-          // The keystroke never reached the PTY — drop any optimistic echo
-          // for it so the screen doesn't show input the agent didn't get.
-          predictiveEcho?.rollback();
-        });
+        // Decode through the stateful UTF-8 decoder so a multi-byte character
+        // split across stdin chunks is forwarded intact rather than as U+FFFD.
+        const decoded = inputDecoder.write(outcome.forward);
+        if (decoded.length > 0) {
+          void stream.send(decoded).catch((err: unknown) => {
+            if (settled) return;
+            const message = err instanceof Error ? err.message : String(err);
+            deps.log(`[passthrough] input stream send failed: ${message}`);
+            // The keystroke never reached the PTY — drop any optimistic echo
+            // for it so the screen doesn't show input the agent didn't get.
+            predictiveEcho?.rollback();
+          });
+        }
         predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
@@ -383,6 +464,14 @@ export async function runPassthroughSession(
         if (rawModeWasSet && typeof deps.stdin.setRawMode === 'function') {
           deps.stdin.setRawMode(false);
         }
+      } catch {
+        // best effort
+      }
+      try {
+        // Heal the local terminal on detach: the snapshot + live stream may
+        // have left it in app-cursor / mouse / bracketed-paste / alt-screen
+        // mode. Gate on TTY stdout (same signal as the status line).
+        resetLocalTerminalOnDetach(deps.writeChunk, statusLineEnabled);
       } catch {
         // best effort
       }
@@ -416,6 +505,9 @@ export async function runPassthroughSession(
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
+      // Stop the status painter before restoring cooked mode so no queued
+      // repaint sprays output past detach.
+      statusController.dispose();
       for (const cleanup of cleanupSignals.splice(0)) {
         try {
           cleanup();
@@ -431,9 +523,21 @@ export async function runPassthroughSession(
       } catch {
         // best effort
       }
-      // Restore the worker's previous mode (no-op if it was already
-      // auto-inject, which is the common case).
-      void setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch).finally(() => {
+      // Drop the writer's pending queue and unhook its drain listener so no
+      // buffered chunk flushes to stdout after detach.
+      deps.disposeWriter?.();
+      // Best-effort restore: re-read and only revert if the mode is still what
+      // this session set, so we don't clobber another session's change or
+      // force a default when the pre-attach mode was unknown.
+      void restoreInboundDeliveryModeOnDetach(
+        connection,
+        name,
+        previousMode,
+        'auto_inject',
+        sessionRevision,
+        'passthrough',
+        deps
+      ).finally(() => {
         resolve(code);
       });
     };
@@ -463,30 +567,71 @@ export async function runPassthroughSession(
       }
     };
 
+    // Runs once the event WS is subscribed: paint the snapshot, seed
+    // predictive echo, reconcile buffered live output, forward the initial
+    // resize (now that we're subscribed, so its SIGWINCH repaint lands in the
+    // live stream rather than a dead zone), then take over stdin.
+    const onSubscribed = async (): Promise<void> => {
+      const snapshot = await deps.captureAndRenderSnapshot(
+        { url: connection.url, apiKey: connection.apiKey },
+        name,
+        { fetch: deps.fetch, writeChunk: captureWrite }
+      );
+      if (settled) return;
+      switch (snapshot.status) {
+        case 'ok':
+          break;
+        case 'not_found':
+          deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
+          finish(1);
+          return;
+        case 'no_pty':
+          deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to attach to`}`);
+          finish(1);
+          return;
+        case 'unavailable':
+        case 'transport_error':
+          deps.log(
+            `[passthrough] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+          );
+          break;
+      }
+      if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
+      terminalRows = pickInitialTerminalRows(initialLocalSize, snapshot.rows);
+      // Track the snapshot bytes for boundary state before the first repaint.
+      statusController.observeOutput(snapshotBytes);
+      paintStatus();
+      // Reconcile buffered chunks. On `ok`, drop what the snapshot already
+      // reflects (by offset); with no offset this drops the pre-snapshot
+      // buffer (snapshot-authoritative, matching the legacy behaviour). On a
+      // transient snapshot failure nothing was painted, so apply everything.
+      const pending = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
+      for (const chunk of pending) applyServerOutput(chunk);
+      await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps);
+      if (settled) return;
+      await openInputStreamAndTakeStdin();
+    };
+
+    // Hand off from the early restore handlers to the fuller loop handlers.
+    disposeEarlySignals();
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const cleanup = deps.onSignal(signal, () => finish(0));
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
     }
 
     socket.on('open', () => {
-      void openInputStreamAndTakeStdin();
+      void onSubscribed();
     });
 
     socket.on('message', (data) => {
+      // Drop inbound frames once teardown has begun (no output past detach).
+      if (settled) return;
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
       const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
-          if (predictiveEcho) {
-            // The engine owns pass-through (it must restore the cursor
-            // before writing server bytes when predictions are live);
-            // repaint the status line once it has flushed.
-            void predictiveEcho.onServerOutput(event.chunk).then(paintStatus, paintStatus);
-          } else {
-            deps.writeChunk(event.chunk);
-            paintStatus();
-          }
+          if (sync.push(event.chunk, event.offset)) applyServerOutput(event.chunk);
           break;
         case 'other':
           break;

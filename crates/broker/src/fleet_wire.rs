@@ -66,12 +66,39 @@ pub struct FleetCapability {
         skip_serializing_if = "Option::is_none"
     )]
     pub kind: Option<String>,
+    /// `action` capability opting into a workspace-global alias claiming this name.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub global: Option<bool>,
+    /// `action` capability opting into the offline queue when its provider is down.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub queue: Option<bool>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_presence",
         skip_serializing_if = "Option::is_none"
     )]
     pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+/// Provider identity carried on connection-scoped node frames. `name` is the
+/// provider's stable identity — persistence, capability-conflict checks, and the
+/// engine's routing key. `instance_id` is the connection epoch: re-registering
+/// the same name with a fresh instance replaces the previous attachment
+/// (reconnect), while a name whose current instance is still connected is
+/// rejected as a duplicate process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FleetProviderIdentity {
+    pub name: String,
+    pub instance_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,10 +113,24 @@ pub struct NodeRegister {
     pub id: Option<String>,
     pub name: String,
     pub node_id: String,
+    // Absent means the synthetic `default` provider; the broker always sends its
+    // own `{ name: "broker", instance_id }` identity.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider: Option<FleetProviderIdentity>,
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub tags: Vec<String>,
     pub version: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub machine_id: Option<String>,
     pub resume_cursor: Option<String>,
 }
 
@@ -103,6 +144,15 @@ pub struct NodeHeartbeat {
         skip_serializing_if = "Option::is_none"
     )]
     pub id: Option<String>,
+    // Heartbeats are provider-scoped by connection; absent means the synthetic
+    // `default` provider. The broker always sends its `{ name: "broker",
+    // instance_id }` identity, and load/active_agents/handlers_live describe it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider: Option<FleetProviderIdentity>,
     // Roster snapshot carried for liveness: lets the relaycast engine refresh
     // this node's descriptor (name/capabilities/max_agents/version) from the
     // steady-state heartbeat without waiting for a fresh node.register — e.g.
@@ -137,6 +187,14 @@ pub struct NodeDeregister {
         skip_serializing_if = "Option::is_none"
     )]
     pub id: Option<String>,
+    // Removes this provider's attachment and persisted capability set; absent
+    // means the synthetic `default` provider.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider: Option<FleetProviderIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -667,6 +725,7 @@ mod tests {
         let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            provider: None,
             name: "builder-1".to_string(),
             node_id: "node_1".to_string(),
             capabilities: vec![],
@@ -691,11 +750,17 @@ mod tests {
         let msg = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            provider: Some(super::FleetProviderIdentity {
+                name: "broker".to_string(),
+                instance_id: "inst_1".to_string(),
+            }),
             name: "builder-1".to_string(),
             node_id: "node_1".to_string(),
             capabilities: vec![FleetCapability {
                 name: "spawn:codex".to_string(),
-                kind: Some("spawn".to_string()),
+                kind: Some("capacity".to_string()),
+                global: None,
+                queue: None,
                 metadata: None,
             }],
             max_agents: 4,
@@ -711,12 +776,13 @@ mod tests {
             json!({
                 "type": "node.heartbeat",
                 "v": 1,
+                "provider": { "name": "broker", "instance_id": "inst_1" },
                 "name": "builder-1",
                 "node_id": "node_1",
                 "capabilities": [
                     {
                         "name": "spawn:codex",
-                        "kind": "spawn"
+                        "kind": "capacity"
                     }
                 ],
                 "max_agents": 4,

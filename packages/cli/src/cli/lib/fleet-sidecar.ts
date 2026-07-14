@@ -1,31 +1,58 @@
-import path from 'node:path';
-
 import { AgentRelay } from '@agent-relay/sdk';
 import type { FleetNodeDefinition, FleetTriggerSyncClient } from '@agent-relay/fleet';
-import { defineDefaultLocalNode } from '@agent-relay/fleet';
 
-import type { CoreProjectPaths, CoreTeamsConfig } from '../commands/core.js';
+import type { CoreTeamsConfig } from '../commands/core.js';
 
-/** Absolute path to the diagnostic status file a served node writes. */
-export function fleetStatusPath(paths: CoreProjectPaths): string {
-  return path.join(paths.dataDir, 'fleet-node.json');
+/**
+ * The harnesses a `node up` broker advertises `spawn:<harness>` capacity for:
+ * a built-in default set, the project's teams.json clis, and any `spawn:<harness>`
+ * definitions in a discovered node config. The CLI passes this to the broker via
+ * `AGENT_RELAY_NODE_HARNESSES` so its capacity manifest covers everything the
+ * project can spawn.
+ */
+// Mirrors the broker's built-in default (crates/broker init `DEFAULT_NODE_HARNESSES`);
+// the CLI overrides `AGENT_RELAY_NODE_HARNESSES`, so omitting one would drop the
+// broker's default capacity for it.
+const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'opencode'] as const;
+
+export function nodeCapacityHarnesses(
+  teamsConfig: CoreTeamsConfig | null,
+  definition?: FleetNodeDefinition
+): string[] {
+  const harnesses = new Set<string>(DEFAULT_HARNESSES);
+  for (const agent of teamsConfig?.agents ?? []) {
+    const cli = agent.cli?.trim();
+    if (cli) {
+      harnesses.add(cli);
+    }
+  }
+  for (const name of Object.keys(definition?.capabilities ?? {})) {
+    if (name.startsWith('spawn:')) {
+      const harness = name.slice('spawn:'.length).trim();
+      if (harness) {
+        harnesses.add(harness);
+      }
+    }
+  }
+  return [...harnesses];
 }
 
 /**
- * Build the implicit local fleet node definition that `relay node up` serves
- * alongside the broker when no explicit config file is discovered.
+ * Resolve the `AGENT_RELAY_NODE_HARNESSES` CSV the broker registers its capacity
+ * from. A pre-set value is the operator's authoritative declaration of the node's
+ * real capacity and is returned verbatim; otherwise it is computed from the project
+ * via {@link nodeCapacityHarnesses}.
  */
-export function createImplicitLocalFleetNode(input: {
-  paths: CoreProjectPaths;
-  teamsConfig?: CoreTeamsConfig | null;
-  name?: string;
-  maxAgents?: number;
-}): FleetNodeDefinition {
-  return defineDefaultLocalNode({
-    name: input.name ?? (path.basename(input.paths.projectRoot) || 'local-node'),
-    ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
-    teams: input.teamsConfig ?? null,
-  });
+export function resolveNodeCapacityHarnesses(
+  preset: string | undefined,
+  teamsConfig: CoreTeamsConfig | null,
+  definition?: FleetNodeDefinition
+): string {
+  const trimmed = preset?.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+  return nodeCapacityHarnesses(teamsConfig, definition).join(',');
 }
 
 /**

@@ -64,6 +64,14 @@ export interface PtySnapshot {
   cursor: [number, number];
   /** Plain text for `format=plain`; base64-encoded ANSI bytes for `format=ansi`. */
   screen: string;
+  /**
+   * Cumulative per-worker byte offset the grid had consumed when this
+   * snapshot was captured. Correlates the snapshot with the `worker_stream`
+   * byte stream: a client can drop every buffered `worker_stream` chunk whose
+   * `offset` is `<=` this value and apply only what came after. Absent on
+   * brokers that predate stream-offset support.
+   */
+  offset?: number;
 }
 
 export interface ProtocolEnvelope<TPayload> {
@@ -109,154 +117,6 @@ export interface NodeManifest {
   tags?: string[];
   version?: string;
 }
-
-export interface NodeSupervision {
-  argv: string[];
-  cwd: string;
-  env?: Record<string, string>;
-}
-
-export type HandlerResultPayload =
-  | { invocation_id: string; output: JsonValue; error?: never }
-  | { invocation_id: string; error: string; output?: never };
-
-type AssertHandlerResultPayload<T extends HandlerResultPayload> = T;
-type _HandlerResultAllowsOutput = AssertHandlerResultPayload<{
-  invocation_id: 'inv_123';
-  output: { ok: true };
-}>;
-type _HandlerResultAllowsNullOutput = AssertHandlerResultPayload<{
-  invocation_id: 'inv_124';
-  output: null;
-}>;
-type _HandlerResultAllowsError = AssertHandlerResultPayload<{
-  invocation_id: 'inv_125';
-  error: 'handler failed';
-}>;
-// @ts-expect-error handler_result requires either output or error.
-type _HandlerResultRejectsMissing = AssertHandlerResultPayload<{ invocation_id: 'inv_126' }>;
-// @ts-expect-error handler_result.output must be JSON and cannot serialize away.
-type _HandlerResultRejectsUndefinedOutput = AssertHandlerResultPayload<{
-  invocation_id: 'inv_127';
-  output: undefined;
-}>;
-// @ts-expect-error handler_result.output must be JSON-serializable.
-type _HandlerResultRejectsFunctionOutput = AssertHandlerResultPayload<{
-  invocation_id: 'inv_128';
-  output: () => void;
-}>;
-// @ts-expect-error handler_result cannot carry both output and error.
-type _HandlerResultRejectsBoth = AssertHandlerResultPayload<{
-  invocation_id: 'inv_129';
-  output: { ok: true };
-  error: 'handler failed';
-}>;
-// @ts-expect-error handler_result.error must be the canonical string message.
-type _HandlerResultRejectsObjectError = AssertHandlerResultPayload<{
-  invocation_id: 'inv_130';
-  error: { code: 'handler_failed' };
-}>;
-
-export type SdkToBroker =
-  | {
-      type: 'hello';
-      payload: { client_name: string; client_version: string };
-    }
-  | {
-      /** Register a fleet node sidecar with its manifest. */
-      type: 'register_node';
-      payload: { manifest: NodeManifest; supervision?: NodeSupervision };
-    }
-  | {
-      /** Advertise the action handler names implemented by this sidecar. */
-      type: 'register_handlers';
-      payload: { names: string[] };
-    }
-  | {
-      /** Sent by fleet serve on clean shutdown after which the sidecar will not be restarted; broker responds by emitting wire node.deregister and removing the sidecar from the supervision table. */
-      type: 'deregister_node';
-      payload: Record<string, never>;
-    }
-  | {
-      /** Return the output or error for a broker-initiated handler invocation. */
-      type: 'handler_result';
-      payload: HandlerResultPayload;
-    }
-  | {
-      type: 'spawn_agent';
-      payload: {
-        agent: AgentSpec;
-        initial_task?: string;
-        skip_relay_prompt?: boolean;
-        invocation_id?: string;
-      };
-    }
-  | {
-      type: 'send_message';
-      payload: {
-        to: string;
-        text: string;
-        from?: string;
-        thread_id?: string;
-        workspace_id?: string;
-        workspace_alias?: string;
-        priority?: number;
-        data?: Record<string, unknown>;
-        mode?: MessageInjectionMode;
-      };
-    }
-  | {
-      type: 'release_agent';
-      payload: { name: string; reason?: string };
-    }
-  | {
-      type: 'send_input';
-      payload: { name: string; data: string };
-    }
-  | {
-      type: 'subscribe_channels';
-      payload: { name: string; channels: string[] };
-    }
-  | {
-      type: 'unsubscribe_channels';
-      payload: { name: string; channels: string[] };
-    }
-  | {
-      type: 'set_model';
-      payload: { name: string; model: string; timeout_ms?: number };
-    }
-  | {
-      type: 'get_metrics';
-      payload: { agent?: string };
-    }
-  | {
-      type: 'list_agents';
-      payload: Record<string, never>;
-    }
-  | {
-      type: 'get_status';
-      payload: Record<string, never>;
-    }
-  | {
-      type: 'get_crash_insights';
-      payload: Record<string, never>;
-    }
-  | {
-      type: 'shutdown';
-      payload: Record<string, never>;
-    }
-  | {
-      /** Pre-register a batch of agents with Relaycast before their steps execute.
-       *  Broker warms its token cache in parallel; subsequent spawn_agent calls hit
-       *  the cache instead of waiting on individual HTTP registrations. */
-      type: 'preflight_agents';
-      payload: { agents: Array<{ name: string; cli: string }> };
-    }
-  | {
-      /** Resize a PTY agent's terminal dimensions. */
-      type: 'resize_pty';
-      payload: { name: string; rows: number; cols: number };
-    };
 
 export interface PendingDeliveryInfo {
   delivery_id: string;
@@ -414,6 +274,11 @@ export type BrokerEvent =
       name: string;
       stream: string;
       chunk: string;
+      /**
+       * Cumulative per-worker byte offset at the end of this chunk. Present
+       * for PTY workers; absent for headless workers and pre-offset brokers.
+       */
+      offset?: number;
     }
   | {
       kind: 'delivery_retry';
@@ -591,29 +456,6 @@ export type BrokerEvent =
       reason: string;
     };
 
-export type BrokerToSdk =
-  | {
-      type: 'hello_ack';
-      payload: { broker_version: string; protocol_version: number };
-    }
-  | {
-      /** Invoke a registered action handler in the fleet node sidecar. */
-      type: 'invoke_handler';
-      payload: { invocation_id: string; name: string; input: JsonValue };
-    }
-  | {
-      type: 'ok';
-      payload: { result: unknown };
-    }
-  | {
-      type: 'error';
-      payload: ProtocolError;
-    }
-  | {
-      type: 'event';
-      payload: BrokerEvent;
-    };
-
 export type BrokerToWorker =
   | {
       type: 'init_worker';
@@ -634,6 +476,17 @@ export type BrokerToWorker =
   | {
       type: 'resize_pty';
       payload: { rows: number; cols: number };
+    }
+  | {
+      /**
+       * Pause (`hold: true`) or resume (`hold: false`) worker-side automation
+       * while a human drives the PTY. Sent when the inbound delivery mode flips
+       * to/from `manual_flush`. While held the worker stops popping pending
+       * injections, freezes any in-flight injection, and gates its auto-enter
+       * and prompt auto-responders.
+       */
+      type: 'set_interactive_hold';
+      payload: { hold: boolean };
     };
 
 export type WorkerToBroker =
@@ -655,7 +508,7 @@ export type WorkerToBroker =
     }
   | {
       type: 'worker_stream';
-      payload: { stream: string; chunk: string };
+      payload: { stream: string; chunk: string; offset?: number };
     }
   | {
       type: 'worker_error';

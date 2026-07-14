@@ -61,6 +61,17 @@ class FakeWebSocket {
       Buffer.from(JSON.stringify({ type: 'pty_input_ack', name: 'agent', bytes_written: bytesWritten }))
     );
   }
+
+  /**
+   * Test helper: deliver a `pty_input_error` frame, as the broker now sends
+   * when the worker reports the PTY write failed (instead of a premature ack).
+   */
+  errorFrame(code = 'pty_write_failed', message = 'broken pipe'): void {
+    this.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'pty_input_error', code, message, retryable: false }))
+    );
+  }
 }
 
 vi.mock('ws', () => ({ default: FakeWebSocket }));
@@ -141,6 +152,26 @@ describe('PtyInputStream pipelining', () => {
 
     socket.ack(4);
     await expect(ok).resolves.toMatchObject({ bytes_written: 4 });
+  });
+
+  it('rejects the in-flight send when the worker reports a write failure', async () => {
+    // The broker now holds the ack until the PTY write is confirmed and sends a
+    // pty_input_error frame if the worker's write fails. The send() must reject
+    // (not resolve) so the CLI predictive-echo rollback runs for a keystroke
+    // that never reached the agent.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p = stream.send('x');
+    await Promise.resolve();
+    expect(socket.sends.map((s) => s.data)).toEqual(['x']);
+
+    socket.errorFrame('pty_write_failed', 'broken pipe');
+
+    await expect(p).rejects.toMatchObject({ code: 'pty_write_failed' });
+    expect(stream.closed).toBe(true);
   });
 
   it('fails all in-flight and queued frames on close', async () => {

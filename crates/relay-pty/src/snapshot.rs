@@ -24,7 +24,7 @@ use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::Term;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
 use crate::pty::PtySession;
@@ -72,6 +72,12 @@ pub struct Snapshot {
     pub cols: u16,
     pub cursor: (u16, u16),
     cells: Vec<Vec<SnapshotCell>>,
+    /// Terminal mode flags captured at the same locked point as the grid.
+    /// `to_ansi` re-emits the relevant ones so an attaching client's terminal
+    /// matches the source (alt-screen, cursor visibility, application cursor
+    /// keys, bracketed paste, mouse reporting, autowrap, keypad). `to_plain`
+    /// ignores them. Cheap `Copy` bitflags — captured by value under the lock.
+    modes: TermMode,
 }
 
 impl Snapshot {
@@ -80,6 +86,15 @@ impl Snapshot {
     /// reader thread while renderers run.
     pub fn capture(pty: &PtySession) -> Self {
         pty.with_term(Self::from_term)
+    }
+
+    /// Capture the visible screen together with the grid's consumed byte
+    /// offset, read atomically under the same term lock. The returned
+    /// offset is the position in the `worker_stream` byte stream that this
+    /// snapshot reflects: a client can drop every buffered `worker_stream`
+    /// chunk whose end offset is `<= offset` and apply only what came after.
+    pub fn capture_with_offset(pty: &PtySession) -> (Self, u64) {
+        pty.with_term_and_offset(|term, offset| (Self::from_term(term), offset))
     }
 
     /// Capture from a free-standing `Term` (used by tests and by the future
@@ -113,6 +128,9 @@ impl Snapshot {
             cols,
             cursor: (cursor_row, cursor_col),
             cells,
+            // Copy the mode flags out under the same lock as the cells so the
+            // captured modes match the captured grid exactly.
+            modes: *term.mode(),
         }
     }
 
@@ -136,25 +154,72 @@ impl Snapshot {
 
     /// ANSI bytes that redraw the captured grid on a fresh terminal.
     ///
-    /// Layout: cursor-home + erase display, then for each row emit cells
-    /// left-to-right with per-cell SGR (foreground / background / bold /
-    /// reverse / underline). After the grid we emit a CUP to place the
-    /// real cursor at the captured `(row, col)`.
+    /// Layout:
+    ///   1. Alt-screen select (before painting — see below).
+    ///   2. SGR reset + scroll-region reset + cursor-home + erase display.
+    ///   3. Per-row cells left-to-right with per-cell SGR (fg / bg / bold /
+    ///      reverse / underline).
+    ///   4. Terminal-mode re-emission (cursor visibility, application cursor
+    ///      keys, origin, autowrap, mouse reporting, bracketed paste, keypad),
+    ///      each in both directions.
+    ///   5. A CUP to place the real cursor at the captured `(row, col)`.
     ///
     /// SGR diffing is intentional: we only emit a new SGR sequence when a
     /// cell's attributes differ from the previous cell. This keeps the
     /// output reasonably compact without sacrificing correctness, and it
     /// guarantees a `\x1b[0m` reset before any transition back to default.
+    ///
+    /// Mode re-emission is unconditional and bidirectional: the snapshot is
+    /// painted onto an *unknown* client terminal state, so we emit the explicit
+    /// OFF form for modes that are disabled as well as the ON form for enabled
+    /// ones. That heals a terminal a previous (possibly crashed) session left
+    /// in the wrong mode — e.g. mouse reporting or bracketed paste stuck on.
     pub fn to_ansi(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(
-            // Cursor-home + clear + (per-cell SGR worst case) + CUP at end.
-            8 + (self.rows as usize) * (self.cols as usize) * 6 + 16,
+            // Alt-screen + resets + (per-cell SGR worst case) + mode block + CUP.
+            16 + (self.rows as usize) * (self.cols as usize) * 6 + 160,
         );
 
-        // Reset SGR, then home + erase display so the previous screen
-        // doesn't bleed through (e.g. for terminals that don't repaint
-        // every cell).
-        out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
+        // Alt-screen must be selected BEFORE painting: entering or leaving the
+        // alternate buffer clears/replaces it, which would wipe cells painted
+        // first. The captured grid *is* the source's visible screen, so when
+        // the source is in its alternate buffer we put the client there too —
+        // the attacher paints onto the alt buffer and, on detach (`?1049l`),
+        // the client's main-screen scrollback is restored intact. When the
+        // source is on the main screen we emit the leave form to heal a client
+        // left in a prior crashed session's alt buffer. We use 1049 (not bare
+        // 47) because it also saves/restores the cursor and clears the alt
+        // buffer, giving clean enter/leave semantics. The source's pre-alt
+        // main-screen contents are not part of the visible snapshot, so we do
+        // not attempt to reconstruct them.
+        if self.modes.contains(TermMode::ALT_SCREEN) {
+            out.extend_from_slice(b"\x1b[?1049h");
+        } else {
+            out.extend_from_slice(b"\x1b[?1049l");
+        }
+
+        // Reset SGR, then reset the scroll region to full screen, then home +
+        // erase display so the previous screen doesn't bleed through (e.g. for
+        // terminals that don't repaint every cell). DECSTBM (`\x1b[r`) homes
+        // the cursor, so it must precede the final CUP; resetting it here also
+        // heals a stale scroll region from a crashed session and guarantees
+        // painting happens against a full-screen coordinate system.
+        //
+        // Residual limitation (see #1251): the source's *actual* DECSTBM margins
+        // are unrecoverable here. `alacritty_terminal` 0.26 keeps `scroll_region`
+        // a private field with no public accessor — it is absent from `Term`'s
+        // public methods and from `renderable_content()` (which exposes only the
+        // grid iterator, selection, cursor, display offset, colors, and mode) —
+        // so the snapshot cannot read, let alone re-emit, the app's margins. We
+        // therefore reset to full screen unconditionally. The visible cells are
+        // still painted correctly, but an app with an *active* non-full scroll
+        // region (e.g. a pager pinning a header/footer) repaints against the
+        // wrong margins until it re-emits its own DECSTBM. Because this snapshot
+        // is a viewport cutoff, the original DECSTBM is never replayed from the
+        // stream, so relative scrolling can touch the wrong rows in that window.
+        // Full-screen reset is the least-surprising fallback; capturing margins
+        // must wait for an upstream accessor.
+        out.extend_from_slice(b"\x1b[0m\x1b[r\x1b[H\x1b[2J");
 
         let mut current = SgrState::default();
 
@@ -191,15 +256,61 @@ impl Snapshot {
             }
         }
 
-        // Reset attributes and place the cursor at the captured position so
-        // the rendered screen ends in a clean state.
+        // Reset attributes so the rendered screen ends in a clean SGR state.
         if current != SgrState::default() {
             out.extend_from_slice(b"\x1b[0m");
         }
+
+        // Re-emit terminal modes so the client matches the source. Alt-screen
+        // is already handled at the top (it must precede painting); everything
+        // below is position-independent and safe to emit after the cells but
+        // before the final CUP. Each mode is emitted in both directions.
+        self.write_modes(&mut out);
+
+        // Place the cursor at the captured position last (after DECSTBM reset
+        // and mode changes, both of which can move the cursor).
         let (cursor_row, cursor_col) = self.cursor;
         write_cup(&mut out, cursor_row.max(1), cursor_col.max(1));
 
         out
+    }
+
+    /// Append the DEC private mode set/reset sequences (plus keypad) for the
+    /// modes this renderer round-trips. Alt-screen is intentionally excluded —
+    /// it is emitted at the top of `to_ansi`, before painting.
+    fn write_modes(&self, out: &mut Vec<u8>) {
+        // Cursor visibility (DECTCEM). A TUI that hid its cursor must not leave
+        // attachers with a stray visible cursor, and vice versa.
+        write_dec_mode(out, 25, self.modes.contains(TermMode::SHOW_CURSOR));
+        // Application cursor keys (DECCKM) — arrows send SS3 vs CSI; a mismatch
+        // makes arrow keys misbehave in the driven app.
+        write_dec_mode(out, 1, self.modes.contains(TermMode::APP_CURSOR));
+        // Origin mode (DECOM). Emitted after the scroll-region reset so its
+        // effect on the final CUP is well-defined.
+        write_dec_mode(out, 6, self.modes.contains(TermMode::ORIGIN));
+        // Autowrap (DECAWM).
+        write_dec_mode(out, 7, self.modes.contains(TermMode::LINE_WRAP));
+        // Mouse reporting: X10/normal click, button-event (drag), any-event
+        // (motion), focus in/out, UTF-8 and SGR extended coordinate encodings,
+        // and alternate scroll. Emitting the OFF form heals a terminal left
+        // with mouse reporting stuck on by a crashed session.
+        write_dec_mode(out, 1000, self.modes.contains(TermMode::MOUSE_REPORT_CLICK));
+        write_dec_mode(out, 1002, self.modes.contains(TermMode::MOUSE_DRAG));
+        write_dec_mode(out, 1003, self.modes.contains(TermMode::MOUSE_MOTION));
+        write_dec_mode(out, 1004, self.modes.contains(TermMode::FOCUS_IN_OUT));
+        write_dec_mode(out, 1005, self.modes.contains(TermMode::UTF8_MOUSE));
+        write_dec_mode(out, 1006, self.modes.contains(TermMode::SGR_MOUSE));
+        write_dec_mode(out, 1007, self.modes.contains(TermMode::ALTERNATE_SCROLL));
+        // Bracketed paste (`?2004`) — paste-aware apps mishandle pastes when
+        // this doesn't match the source.
+        write_dec_mode(out, 2004, self.modes.contains(TermMode::BRACKETED_PASTE));
+        // Keypad application mode is not a DEC private mode: ESC = enables
+        // (DECKPAM), ESC > restores the numeric keypad (DECKPNM).
+        if self.modes.contains(TermMode::APP_KEYPAD) {
+            out.extend_from_slice(b"\x1b=");
+        } else {
+            out.extend_from_slice(b"\x1b>");
+        }
     }
 }
 
@@ -370,6 +481,34 @@ fn named_color_sgr(named: NamedColor, role: &ColorRole) -> Option<u16> {
     })
 }
 
+/// Append a DEC private mode set (`ESC[?<n>h`) or reset (`ESC[?<n>l`).
+fn write_dec_mode(out: &mut Vec<u8>, code: u16, enabled: bool) {
+    out.extend_from_slice(b"\x1b[?");
+    push_u16(out, code);
+    out.push(if enabled { b'h' } else { b'l' });
+}
+
+/// Append the decimal ASCII digits of `value` to `out` without heap-allocating.
+///
+/// `write_dec_mode` runs once per mode flag on every snapshot render, so the
+/// per-call `u16::to_string` allocation is pure waste. A `u16` is at most five
+/// digits (65535), so we format it into a fixed stack buffer and copy the
+/// populated tail out in one shot.
+fn push_u16(out: &mut Vec<u8>, value: u16) {
+    let mut buf = [0u8; 5];
+    let mut idx = buf.len();
+    let mut n = value;
+    loop {
+        idx -= 1;
+        buf[idx] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[idx..]);
+}
+
 /// Append an `ESC[<row>;<col>H` cursor-position command (1-indexed).
 fn write_cup(out: &mut Vec<u8>, row: u16, col: u16) {
     out.extend_from_slice(b"\x1b[");
@@ -449,8 +588,162 @@ mod tests {
         let term = parse_into(2, 5, &[b"hi"]);
         let snap = Snapshot::from_term(&term);
         let bytes = snap.to_ansi();
-        // Reset + home + erase display must be the first 12 bytes.
-        assert!(bytes.starts_with(b"\x1b[0m\x1b[H\x1b[2J"));
+        // A non-alt-screen source leaves the alt buffer first (healing a client
+        // stuck in a prior session's alt screen), then resets SGR + scroll
+        // region and clears/homes.
+        assert!(
+            bytes.starts_with(b"\x1b[?1049l\x1b[0m\x1b[r\x1b[H\x1b[2J"),
+            "got prefix {:?}",
+            &bytes[..24.min(bytes.len())]
+        );
+    }
+
+    /// Locate the byte offset of the first occurrence of `needle` in `hay`.
+    fn find_seq(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    #[test]
+    fn ansi_reemits_hidden_cursor_mode() {
+        // A TUI that hid its cursor (`?25l`) must be re-emitted so attachers
+        // don't see a stray visible cursor.
+        let term = parse_into(4, 20, &[b"\x1b[?25lhi"]);
+        let snap = Snapshot::from_term(&term);
+        let bytes = snap.to_ansi();
+        assert!(
+            find_seq(&bytes, b"\x1b[?25l").is_some(),
+            "expected ?25l in {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+
+    #[test]
+    fn ansi_reemits_enabled_modes_in_on_form() {
+        // Enable application cursor keys, bracketed paste, SGR mouse click
+        // reporting, and disable autowrap.
+        let term = parse_into(
+            4,
+            20,
+            &[b"\x1b[?1h\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l"],
+        );
+        let snap = Snapshot::from_term(&term);
+        let bytes = snap.to_ansi();
+        for needle in [
+            &b"\x1b[?1h"[..],    // application cursor keys on
+            &b"\x1b[?2004h"[..], // bracketed paste on
+            &b"\x1b[?1000h"[..], // mouse click reporting on
+            &b"\x1b[?1006h"[..], // SGR mouse on
+            &b"\x1b[?7l"[..],    // autowrap off
+        ] {
+            assert!(
+                find_seq(&bytes, needle).is_some(),
+                "expected {:?} in {:?}",
+                String::from_utf8_lossy(needle),
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn ansi_reemits_disabled_modes_in_explicit_off_form() {
+        // A default (freshly-parsed) grid has cursor visible, autowrap on, and
+        // everything else off. The renderer must emit the explicit OFF form for
+        // the disabled modes so an attach after a crashed session heals a
+        // terminal left with mouse reporting / bracketed paste / app-cursor
+        // keys stuck on.
+        let term = parse_into(4, 20, &[b"idle"]);
+        let snap = Snapshot::from_term(&term);
+        let bytes = snap.to_ansi();
+        for needle in [
+            &b"\x1b[?25h"[..],   // cursor visible (default on)
+            &b"\x1b[?1l"[..],    // application cursor keys off
+            &b"\x1b[?2004l"[..], // bracketed paste off
+            &b"\x1b[?1000l"[..], // mouse click reporting off
+            &b"\x1b[?1002l"[..], // mouse drag off
+            &b"\x1b[?1003l"[..], // mouse motion off
+            &b"\x1b[?1006l"[..], // SGR mouse off
+            &b"\x1b[?7h"[..],    // autowrap on (default)
+            &b"\x1b>"[..],       // keypad normal
+        ] {
+            assert!(
+                find_seq(&bytes, needle).is_some(),
+                "expected {:?} in {:?}",
+                String::from_utf8_lossy(needle),
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn ansi_emits_alt_screen_enter_before_clear_for_alt_source() {
+        // Switch the source into the alternate buffer, then draw. The client
+        // must enter the alt buffer BEFORE the erase-display, or entering it
+        // afterward would wipe the painted cells.
+        let term = parse_into(4, 20, &[b"\x1b[?1049hTUI"]);
+        let snap = Snapshot::from_term(&term);
+        let bytes = snap.to_ansi();
+        let enter = find_seq(&bytes, b"\x1b[?1049h").expect("alt-screen enter present");
+        let clear = find_seq(&bytes, b"\x1b[2J").expect("erase-display present");
+        assert!(
+            enter < clear,
+            "alt-screen enter ({enter}) must precede clear ({clear})"
+        );
+    }
+
+    #[test]
+    fn ansi_resets_scroll_region_before_final_cursor() {
+        // DECSTBM (`\x1b[r`) homes the cursor, so it must come before the final
+        // CUP that places the captured cursor.
+        let term = parse_into(6, 20, &[b"\x1b[3;5Hx"]);
+        let snap = Snapshot::from_term(&term);
+        let bytes = snap.to_ansi();
+        let stbm = find_seq(&bytes, b"\x1b[r").expect("scroll-region reset present");
+        // Final CUP for the captured cursor (row 3, col 6 after the 'x').
+        let cup = find_seq(&bytes, b"\x1b[3;6H").expect("final CUP present");
+        assert!(
+            stbm < cup,
+            "scroll-region reset ({stbm}) must precede final CUP ({cup})"
+        );
+    }
+
+    #[test]
+    fn ansi_round_trips_terminal_modes_through_a_fresh_term() {
+        // Modes captured on the source must survive a replay into a fresh Term.
+        let term_a = parse_into(
+            4,
+            20,
+            &[b"\x1b[?1049h\x1b[?25l\x1b[?1h\x1b[?2004h\x1b[?1006h\x1b[?1000h"],
+        );
+        let snap_a = Snapshot::from_term(&term_a);
+        let ansi = snap_a.to_ansi();
+        let term_b = parse_into(4, 20, &[&ansi]);
+        let mode_b = *term_b.mode();
+        for flag in [
+            TermMode::ALT_SCREEN,
+            TermMode::APP_CURSOR,
+            TermMode::BRACKETED_PASTE,
+            TermMode::SGR_MOUSE,
+            TermMode::MOUSE_REPORT_CLICK,
+        ] {
+            assert!(mode_b.contains(flag), "replayed term missing {flag:?}");
+        }
+        assert!(
+            !mode_b.contains(TermMode::SHOW_CURSOR),
+            "cursor should be hidden after replay"
+        );
+    }
+
+    #[test]
+    fn plain_render_ignores_terminal_modes() {
+        // `to_plain` is text-only: mode sequences must never leak into it.
+        let term = parse_into(2, 10, &[b"\x1b[?25l\x1b[?2004hhi"]);
+        let snap = Snapshot::from_term(&term);
+        let plain = snap.to_plain();
+        assert!(plain.starts_with("hi\n"), "got {plain:?}");
+        assert!(
+            !plain.contains('\x1b'),
+            "plain must not contain escapes: {plain:?}"
+        );
     }
 
     #[test]
@@ -540,6 +833,27 @@ mod tests {
             snap_b.to_plain(),
             "wide char + ASCII round-trip mismatch (spacer cell was emitted as a real space?)"
         );
+    }
+
+    #[test]
+    fn push_u16_formats_without_allocating() {
+        // Edge cases for the stack-buffer formatter used by write_dec_mode:
+        // zero, single digit, multi-digit, and the u16 maximum (5 digits).
+        for value in [0u16, 7, 25, 1000, 2004, u16::MAX] {
+            let mut out = Vec::new();
+            push_u16(&mut out, value);
+            assert_eq!(out, value.to_string().into_bytes(), "mismatch for {value}");
+        }
+    }
+
+    #[test]
+    fn write_dec_mode_emits_expected_set_and_reset_forms() {
+        let mut on = Vec::new();
+        write_dec_mode(&mut on, 2004, true);
+        assert_eq!(on, b"\x1b[?2004h");
+        let mut off = Vec::new();
+        write_dec_mode(&mut off, 25, false);
+        assert_eq!(off, b"\x1b[?25l");
     }
 
     #[test]

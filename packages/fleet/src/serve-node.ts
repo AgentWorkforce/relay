@@ -1,20 +1,8 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
-import {
-  PROTOCOL_VERSION,
-  type BrokerToSdk,
-  type JsonValue,
-  type NodeSupervision,
-  type ProtocolEnvelope,
-  type SdkToBroker,
-} from '@agent-relay/harness-driver/protocol';
-import WebSocket, { type RawData } from 'ws';
+import { NodeProviderClient, type NodeCapabilityHandler, type NodeHandlerContext } from '@relaycast/sdk';
 
 import {
   invokeNodeHandler,
   nodeInfo,
-  nodeManifest,
   triggerSyncInputs,
   type FleetActionContext,
   type FleetNodeDefinition,
@@ -22,31 +10,18 @@ import {
   type FleetSpawnAgentInput,
 } from './index.js';
 
-type SdkFrame<TType extends SdkToBroker['type']> = Extract<SdkToBroker, { type: TType }>;
-type SdkPayload<TType extends SdkToBroker['type']> = SdkFrame<TType>['payload'];
-type BrokerFrame = ProtocolEnvelope<unknown> & { type: BrokerToSdk['type']; payload: unknown };
-
-/** Client version reported in the broker `hello` handshake. */
-const FLEET_CLIENT_VERSION = '8.6.0';
-
 /**
- * Broker connection coordinates for a served fleet node.
+ * Engine connection coordinates for a served node. All providers on a node share
+ * the node's `nt_live_` token; the served definition attaches as its own provider
+ * directly to the engine, alongside the broker provider.
  */
-export interface FleetBrokerConnection {
-  url: string;
-  apiKey?: string;
-}
-
-/**
- * Diagnostic status snapshot persisted to `statusPath` while a node is served.
- */
-export interface FleetSidecarStatus {
-  node: string;
-  pid: number;
-  brokerUrl: string;
-  connected: boolean;
-  handlers: string[];
-  updatedAt: string;
+export interface NodeEngineConnection {
+  /** Engine base URL (e.g. `https://cast.agentrelay.com`). */
+  baseUrl?: string;
+  /** The node's shared `nt_live_` token. */
+  nodeToken: string;
+  /** The enrolled node id this provider attaches to. */
+  nodeId: string;
 }
 
 /**
@@ -91,25 +66,73 @@ export interface FleetTriggerSyncClient {
 }
 
 /**
+ * Structured logger the serve runtime writes to. The shape matches
+ * `@agent-relay/utils`' `createLogger` so the CLI can inject that logger
+ * directly, but fleet depends on nothing to keep the seam a plain interface:
+ * a host may supply any sink (stdout, a file, a JSON collector).
+ *
+ * Each method takes a human message plus an optional structured `extra` bag —
+ * `{ node, capability, action, invocationId, ms, ... }` — so file/JSON adapters
+ * can key on the fields rather than parse the message.
+ */
+export interface FleetLogger {
+  debug(message: string, extra?: Record<string, unknown>): void;
+  info(message: string, extra?: Record<string, unknown>): void;
+  warn(message: string, extra?: Record<string, unknown>): void;
+  error(message: string, extra?: Record<string, unknown>): void;
+}
+
+/**
  * Options for {@link serveNode} / {@link startServeNode}.
  */
 export interface ServeNodeOptions {
   definition: FleetNodeDefinition;
-  connection: FleetBrokerConnection;
+  connection: NodeEngineConnection;
+  /**
+   * Provider identity name for this served definition, distinct from the broker
+   * provider ("broker") on the same node. Defaults to the definition name.
+   */
+  providerName?: string;
   /**
    * Optional trigger reconciliation client. When provided and the definition
    * declares triggers, the node's triggers are synced on registration.
    */
   triggers?: FleetTriggerSyncClient;
+  /** Node name override (the target others address); defaults to the definition name. */
   nameOverride?: string;
   maxAgentsOverride?: number;
-  supervision?: NodeSupervision;
-  statusPath?: string;
   reconnect?: boolean;
   signal?: AbortSignal;
+  /**
+   * Structured sink for lifecycle and per-invocation events. Preferred over
+   * `log`/`warn`: capability registration and every action hitting the node are
+   * emitted here with structured `extra` fields. When omitted, `log`/`warn`
+   * receive the same events as plain messages.
+   */
+  logger?: FleetLogger;
   log?: (message: string) => void;
   warn?: (message: string) => void;
-  onRegistered?: (manifest: ReturnType<typeof nodeManifest>) => void;
+  onRegistered?: (info: ReturnType<typeof nodeInfo>) => void;
+}
+
+/**
+ * Resolve a {@link FleetLogger} from the serve options. An injected `logger`
+ * wins; otherwise the legacy `log`/`warn` callbacks are adapted (info/debug →
+ * `log`, warn/error → `warn`), with a no-op fallback so callers can pass
+ * neither.
+ */
+function resolveLogger(options: ServeNodeOptions): FleetLogger {
+  if (options.logger) {
+    return options.logger;
+  }
+  const info = options.log ?? (() => undefined);
+  const warn = options.warn ?? (() => undefined);
+  return {
+    debug: (message) => info(message),
+    info: (message) => info(message),
+    warn: (message) => warn(message),
+    error: (message) => warn(message),
+  };
 }
 
 /**
@@ -120,34 +143,9 @@ export interface RunningNode {
   done: Promise<void>;
 }
 
-const RECONNECT_BASE_DELAY_MS = 500;
-const RECONNECT_MAX_DELAY_MS = 5_000;
-
 /**
- * Read a persisted fleet node status file.
- * @param statusPath - Path to the JSON status file written by a served node.
- * @returns The parsed status, or `null` when missing or malformed.
- */
-export function readFleetSidecarStatus(statusPath: string): FleetSidecarStatus | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as Partial<FleetSidecarStatus>;
-    if (
-      typeof parsed.node === 'string' &&
-      typeof parsed.pid === 'number' &&
-      typeof parsed.brokerUrl === 'string' &&
-      typeof parsed.connected === 'boolean' &&
-      Array.isArray(parsed.handlers)
-    ) {
-      return parsed as FleetSidecarStatus;
-    }
-  } catch {
-    // Missing or malformed status files are treated as no served node.
-  }
-  return null;
-}
-
-/**
- * Start serving a fleet node in the background with reconnect handling.
+ * Start serving a fleet node in the background. The underlying
+ * {@link NodeProviderClient} reconnects with backoff on unexpected drops.
  * @param options - Node serving options.
  * @returns A handle to stop the node and await completion.
  */
@@ -169,249 +167,201 @@ export function startServeNode(options: ServeNodeOptions): RunningNode {
 }
 
 /**
- * Serve a fleet node against a broker, dispatching handler invocations until the
- * abort signal fires. Reconnects with exponential backoff unless disabled.
+ * Serve a fleet node against the engine, dispatching capability invocations until
+ * the abort signal fires. Registers the definition's capabilities as a provider
+ * on the node and executes their invokes via the handler context helpers.
  * @param options - Node serving options.
  */
 export async function serveNode(options: ServeNodeOptions): Promise<void> {
+  // An already-aborted signal never fires an 'abort' event, so the stop hook
+  // below would not run — return before allocating/connecting the client.
+  if (options.signal?.aborted) {
+    return;
+  }
+  const nodeName = options.nameOverride ?? options.definition.name;
+  const providerName = options.providerName ?? options.definition.name;
+  const maxAgents = options.maxAgentsOverride ?? options.definition.maxAgents;
   const reconnect = options.reconnect ?? true;
-  let attempt = 0;
-  while (!options.signal?.aborted) {
-    try {
-      await runNodeConnection(options);
-      attempt = 0;
-      if (!reconnect) {
-        return;
-      }
-    } catch (error) {
-      writeStatus(options, false);
-      if (!reconnect || options.signal?.aborted) {
-        throw error;
-      }
-      options.warn?.(`Fleet node disconnected: ${errorMessage(error)}; reconnecting`);
-    }
+  const logger = resolveLogger(options);
 
-    attempt += 1;
-    await delay(
-      Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1)),
-      options.signal
-    );
+  const client = new NodeProviderClient({
+    ...(options.connection.baseUrl ? { baseUrl: options.connection.baseUrl } : {}),
+    nodeToken: options.connection.nodeToken,
+    nodeId: options.connection.nodeId,
+    nodeName,
+    provider: { name: providerName },
+    ...(maxAgents !== undefined ? { maxAgents } : {}),
+    ...(options.definition.tags ? { tags: [...options.definition.tags] } : {}),
+    ...(options.definition.version ? { version: options.definition.version } : {}),
+    // A drop during shutdown is expected; only surface a real error otherwise.
+    ...(reconnect ? {} : { maxReconnectAttempts: 0 }),
+    onError: (error) => {
+      if (!options.signal?.aborted) {
+        logger.warn(`Fleet node error: ${errorMessage(error)}`, {
+          node: nodeName,
+          error: errorMessage(error),
+        });
+      }
+    },
+  });
+
+  for (const name of Object.keys(options.definition.capabilities)) {
+    // Both `action` and `spawn` definitions materialize as invokable `action`
+    // capabilities: a `spawn:<harness>` definition shadows the node's native
+    // capacity, delegating through `ctx.spawnAgent`.
+    const kind = options.definition.capabilities[name]?.kind;
+    logger.debug(`Capability "${name}" registered`, {
+      node: nodeName,
+      capability: name,
+      ...(kind ? { kind } : {}),
+    });
+    client.capability(name, { kind: 'action' }, adaptHandler(options, name, logger));
+  }
+
+  const abort = () => {
+    void client.stop();
+  };
+  options.signal?.addEventListener('abort', abort, { once: true });
+
+  const servePromise = client.serve();
+  try {
+    await client.whenRegistered();
+  } catch (error) {
+    options.signal?.removeEventListener('abort', abort);
+    if (options.signal?.aborted) {
+      return;
+    }
+    // A non-abort registration failure leaves serve()'s promise pending and the
+    // socket open; stop the client before surfacing the error.
+    await client.stop();
+    throw error;
+  }
+
+  // Report the effective identity the provider registered with, not the raw
+  // definition — name/maxAgents overrides change what actually attached.
+  options.onRegistered?.({
+    ...nodeInfo(options.definition),
+    name: nodeName,
+    ...(maxAgents !== undefined ? { maxAgents } : {}),
+  });
+  await syncTriggers(options, logger);
+  const capabilityCount = Object.keys(options.definition.capabilities).length;
+  logger.info(
+    `Fleet node "${nodeName}" registered provider "${providerName}" with ${capabilityCount} capabilities.`,
+    { node: nodeName, capabilities: capabilityCount }
+  );
+
+  try {
+    await servePromise;
+  } finally {
+    options.signal?.removeEventListener('abort', abort);
   }
 }
 
 /**
- * Build a node supervision descriptor from process argv/cwd/env, filtering the
- * environment to a safe allowlist.
- * @param input - Process argv, working directory, and environment.
- * @returns A supervision descriptor for broker-managed restarts.
+ * Adapt a fleet capability handler to the engine node-provider handler contract:
+ * validate the input against the capability schema (via {@link invokeNodeHandler})
+ * and expose the fleet action context built from the engine handler context.
+ *
+ * Every invocation is logged invoked → completed/failed with the elapsed ms and
+ * structured `{ node, action, kind, invocationId }` fields, so a file/JSON sink
+ * can group a node's activity by node and by capability kind (spawn vs action).
  */
-export function buildNodeSupervision(input: {
-  argv: string[];
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-}): NodeSupervision {
-  return {
-    argv: [...input.argv],
-    cwd: input.cwd,
-    env: supervisionEnv(input.env),
+function adaptHandler(options: ServeNodeOptions, name: string, logger: FleetLogger): NodeCapabilityHandler {
+  const node = options.nameOverride ?? options.definition.name;
+  const kind = options.definition.capabilities[name]?.kind;
+  const base = { node, action: name, ...(kind ? { kind } : {}) };
+  return async (input, nodeCtx) => {
+    const context = { ...base, invocationId: nodeCtx.invocationId };
+    logger.info(`Action "${name}" invoked`, context);
+    const startedAt = Date.now();
+    try {
+      const output = await invokeNodeHandler(
+        options.definition,
+        name,
+        input,
+        makeContext(options, nodeCtx, name)
+      );
+      logger.info(`Action "${name}" completed`, { ...context, ms: Date.now() - startedAt });
+      return output;
+    } catch (error) {
+      logger.warn(`Action "${name}" failed`, {
+        ...context,
+        ms: Date.now() - startedAt,
+        error: errorMessage(error),
+      });
+      throw error;
+    }
   };
 }
 
-function runNodeConnection(options: ServeNodeOptions): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const url = fleetWsUrl(options.connection.url);
-    const headers: Record<string, string> = {};
-    if (options.connection.apiKey) {
-      headers['X-API-Key'] = options.connection.apiKey;
-    }
+// The engine handler context takes wire-JSON shapes; the fleet authoring API
+// carries looser `unknown`-valued records. These aliases pin the exact SDK
+// parameter types so the boundary coercion is a single explicit cast.
+type NodeMessageInput = Parameters<NodeHandlerContext['sendMessage']>[0];
+type NodeSpawnInput = Parameters<NodeHandlerContext['spawnAgent']>[0];
 
-    const ws = new WebSocket(url, { headers });
-    const pending = new Map<
-      string,
-      {
-        resolve: (value: unknown) => void;
-        reject: (error: Error) => void;
-      }
-    >();
-    let requestSeq = 0;
-    let settled = false;
-    let nodeRegistered = false;
-
-    const settle = (fn: typeof resolve | typeof reject, value?: unknown) => {
-      if (settled) return;
-      settled = true;
-      for (const pendingRequest of pending.values()) {
-        pendingRequest.reject(new Error('fleet node connection closed'));
-      }
-      pending.clear();
-      writeStatus(options, false);
-      fn(value as never);
-    };
-
-    const sendRequest = <TType extends SdkToBroker['type']>(
-      type: TType,
-      payload: SdkPayload<TType>
-    ): Promise<unknown> => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        return Promise.reject(new Error('fleet node websocket is not open'));
-      }
-      const requestId = `fleet_${Date.now()}_${++requestSeq}`;
-      const frame: ProtocolEnvelope<SdkPayload<TType>> = {
-        v: PROTOCOL_VERSION,
-        type,
-        request_id: requestId,
-        payload,
-      };
-      return new Promise((requestResolve, requestReject) => {
-        pending.set(requestId, { resolve: requestResolve, reject: requestReject });
-        ws.send(JSON.stringify(frame), (error) => {
-          if (!error) return;
-          pending.delete(requestId);
-          requestReject(error);
-        });
-      });
-    };
-
-    const sendHandlerResult = async (invocationId: string, output: unknown, error?: unknown) => {
-      const payload: SdkPayload<'handler_result'> = error
-        ? { invocation_id: invocationId, error: errorMessage(error) }
-        : { invocation_id: invocationId, output: (output ?? null) as JsonValue };
-      await sendRequest('handler_result', payload);
-    };
-
-    const handleInvoke = async (payload: Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']) => {
-      const ctx = createActionContext(options, sendRequest, payload.invocation_id);
-      // Only a handler failure may be reported as a handler error; a failure to
-      // SEND the result (e.g. socket closed mid-flight) must propagate to the
-      // caller's catch instead of misreporting a successful invocation.
-      let output: unknown;
-      let invokeError: unknown;
-      try {
-        output = await invokeNodeHandler(options.definition, payload.name, payload.input, ctx);
-      } catch (error) {
-        invokeError = error;
-      }
-      await sendHandlerResult(payload.invocation_id, output, invokeError);
-    };
-
-    const close = async () => {
-      if (ws.readyState === WebSocket.OPEN && nodeRegistered) {
-        await sendRequest('deregister_node', {}).catch(() => undefined);
-      }
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
-      }
-    };
-
-    const abort = () => {
-      close().finally(() => settle(resolve));
-    };
-
-    options.signal?.addEventListener('abort', abort, { once: true });
-
-    ws.on('open', () => {
-      void (async () => {
-        const manifest = nodeManifest(options.definition, {
-          name: options.nameOverride,
-          maxAgents: options.maxAgentsOverride,
-        });
-        await sendRequest('hello', {
-          client_name: '@agent-relay/fleet',
-          client_version: FLEET_CLIENT_VERSION,
-        });
-        await sendRequest('register_node', {
-          manifest,
-          ...(options.supervision ? { supervision: options.supervision } : {}),
-        });
-        nodeRegistered = true;
-        await sendRequest('register_handlers', {
-          names: Object.keys(options.definition.capabilities),
-        });
-        writeStatus(options, true);
-        options.onRegistered?.(manifest);
-        await syncTriggers(options);
-        options.log?.(
-          `Fleet node "${manifest.name}" registered with ${manifest.capabilities.length} capabilities.`
-        );
-      })().catch((error) => {
-        close().finally(() => settle(reject, error));
-      });
-    });
-
-    ws.on('message', (data) => {
-      const frame = parseBrokerFrame(data);
-      if (!frame) return;
-      if (frame.request_id && pending.has(frame.request_id)) {
-        const pendingRequest = pending.get(frame.request_id);
-        pending.delete(frame.request_id);
-        if (!pendingRequest) return;
-        if (frame.type === 'error') {
-          pendingRequest.reject(frameError(frame.payload));
-        } else {
-          pendingRequest.resolve(readOkResult(frame.payload));
-        }
-        return;
-      }
-      if (frame.type === 'invoke_handler') {
-        void handleInvoke(frame.payload as Extract<BrokerToSdk, { type: 'invoke_handler' }>['payload']).catch(
-          (error) => options.warn?.(errorMessage(error))
-        );
-      }
-    });
-
-    ws.on('close', () => {
-      options.signal?.removeEventListener('abort', abort);
-      settle(resolve);
-    });
-    ws.on('error', (error) => {
-      options.signal?.removeEventListener('abort', abort);
-      settle(reject, error);
-    });
-  });
-}
-
-function createActionContext(
+function makeContext(
   options: ServeNodeOptions,
-  sendRequest: <TType extends SdkToBroker['type']>(
-    type: TType,
-    payload: SdkPayload<TType>
-  ) => Promise<unknown>,
-  invocationId?: string
+  nodeCtx: NodeHandlerContext,
+  capabilityName: string
 ): FleetActionContext {
   const info = nodeInfo(options.definition);
+  const fromDefault = options.nameOverride ?? options.definition.name;
+  // A `spawn:<harness>` shadow delegates to that harness's native capacity. The
+  // harness identity lives in the capability name, not the handler's transformed
+  // `cli` (which is the executable to run — for a stub, an arbitrary command), so
+  // carry it as the delegated spawn's capacity key.
+  const shadowedHarness = capabilityName.startsWith('spawn:')
+    ? capabilityName.slice('spawn:'.length)
+    : undefined;
   return {
     node: {
       ...info,
       ...(options.nameOverride ? { name: options.nameOverride } : {}),
       ...(options.maxAgentsOverride !== undefined ? { maxAgents: options.maxAgentsOverride } : {}),
     },
-    invocationId,
+    invocationId: nodeCtx.invocationId,
     relay: {
-      sendMessage: (input: FleetRelaySendMessageInput) =>
-        sendRequest('send_message', {
-          to: input.to,
-          text: input.text,
-          from: input.from ?? options.nameOverride ?? options.definition.name,
-          ...(input.threadId ? { thread_id: input.threadId } : {}),
-          ...(input.workspaceId ? { workspace_id: input.workspaceId } : {}),
-          ...(input.workspaceAlias ? { workspace_alias: input.workspaceAlias } : {}),
-          ...(input.mode ? { mode: input.mode } : {}),
-          ...(input.data ? { data: input.data } : {}),
+      sendMessage: (message: FleetRelaySendMessageInput) =>
+        nodeCtx.sendMessage({
+          to: channelName(message.to),
+          from: message.from ?? fromDefault,
+          text: message.text,
+          ...(message.mode ? { mode: message.mode } : {}),
+          ...(message.data ? { data: message.data as NodeMessageInput['data'] } : {}),
         }),
     },
-    spawnAgent: (input: FleetSpawnAgentInput) =>
-      sendRequest('spawn_agent', {
-        agent: input.agent,
-        ...(input.initialTask !== undefined ? { initial_task: input.initialTask } : {}),
-        skip_relay_prompt: input.skipRelayPrompt ?? false,
-        ...((input.invocationId ?? invocationId)
-          ? { invocation_id: input.invocationId ?? invocationId }
-          : {}),
-      }),
+    spawnAgent: (spawn: FleetSpawnAgentInput) =>
+      nodeCtx.spawnAgent(buildSpawnInput(spawn, nodeCtx.invocationId, shadowedHarness)),
   };
 }
 
-async function syncTriggers(options: ServeNodeOptions): Promise<void> {
+/**
+ * Shape a fleet spawn request as the engine `node.spawn` input. Spawn fields are
+ * flattened to the top level so the broker's spawn executor reads `name`/`cli`/
+ * `task`. The engine's capacity placement keys on `capability` — the harness a
+ * `spawn:<harness>` shadow delegates to — which is distinct from the executable
+ * `cli` when the shadow's harness command isn't itself the harness name.
+ */
+function buildSpawnInput(
+  spawn: FleetSpawnAgentInput,
+  fallbackInvocationId?: string,
+  shadowedHarness?: string
+): NodeSpawnInput {
+  // Fall back to the handler's own invocation id so a custom handler that calls
+  // ctx.spawnAgent without an explicit id keeps the tracing/reply correlation.
+  const invocationId = spawn.invocationId ?? fallbackInvocationId;
+  return {
+    ...spawn.agent,
+    ...(spawn.initialTask !== undefined ? { task: spawn.initialTask } : {}),
+    skip_relay_prompt: spawn.skipRelayPrompt ?? false,
+    ...(invocationId ? { invocation_id: invocationId } : {}),
+    ...(shadowedHarness ? { capability: shadowedHarness } : {}),
+  } as unknown as NodeSpawnInput;
+}
+
+async function syncTriggers(options: ServeNodeOptions, logger: FleetLogger): Promise<void> {
   const triggers = triggerSyncInputs(options.definition);
   if (triggers.length === 0 || !options.triggers) {
     return;
@@ -458,7 +408,10 @@ async function syncTriggers(options: ServeNodeOptions): Promise<void> {
       })
     );
   } catch (error) {
-    options.warn?.(`Fleet trigger sync skipped: ${errorMessage(error)}`);
+    logger.warn(`Fleet trigger sync skipped: ${errorMessage(error)}`, {
+      node: options.nameOverride ?? options.definition.name,
+      error: errorMessage(error),
+    });
   }
 }
 
@@ -481,7 +434,7 @@ function triggerSyncKey(trigger: {
     trigger.channel ?? '',
     trigger.pattern ?? '',
     String(normalizeTriggerMention(trigger.mention)),
-  ].join('\u001f');
+  ].join('');
 }
 
 function triggerEquals(
@@ -509,77 +462,6 @@ function triggerEquals(
   );
 }
 
-function parseBrokerFrame(data: RawData): BrokerFrame | null {
-  try {
-    const text = Array.isArray(data) ? Buffer.concat(data).toString('utf8') : data.toString();
-    return JSON.parse(text) as BrokerFrame;
-  } catch {
-    return null;
-  }
-}
-
-function readOkResult(payload: unknown): unknown {
-  return payload && typeof payload === 'object' && 'result' in payload
-    ? (payload as { result?: unknown }).result
-    : payload;
-}
-
-function frameError(payload: unknown): Error {
-  if (payload && typeof payload === 'object') {
-    const record = payload as { code?: unknown; message?: unknown };
-    const message = typeof record.message === 'string' ? record.message : 'fleet node request failed';
-    const error = new Error(message);
-    error.name = typeof record.code === 'string' ? record.code : 'FleetNodeError';
-    return error;
-  }
-  return new Error('fleet node request failed');
-}
-
-function fleetWsUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '').replace(/^http/, 'ws')}/api/fleet/ws`;
-}
-
-function writeStatus(options: ServeNodeOptions, connected: boolean): void {
-  if (!options.statusPath) {
-    return;
-  }
-  const status: FleetSidecarStatus = {
-    node: options.nameOverride ?? options.definition.name,
-    pid: process.pid,
-    brokerUrl: options.connection.url,
-    connected,
-    handlers: Object.keys(options.definition.capabilities),
-    updatedAt: new Date().toISOString(),
-  };
-  try {
-    fs.mkdirSync(path.dirname(options.statusPath), { recursive: true });
-    fs.writeFileSync(options.statusPath, JSON.stringify(status, null, 2));
-  } catch {
-    // Status is diagnostic only.
-  }
-}
-
-function supervisionEnv(env: NodeJS.ProcessEnv): Record<string, string> {
-  const keys = [
-    'AGENT_RELAY_DATA_DIR',
-    'AGENT_RELAY_STATE_DIR',
-    'AGENT_RELAY_HOME',
-    'RELAY_WORKSPACE_KEY',
-    'RELAY_API_KEY',
-    'RELAY_BASE_URL',
-    'RELAY_NODE_TOKEN',
-    'PATH',
-    'HOME',
-    'SHELL',
-  ];
-  return Object.fromEntries(
-    keys.flatMap((key) => {
-      const value = env[key];
-      return value ? [[key, value]] : [];
-    })
-  );
-}
-
 function anySignal(signals: AbortSignal[]): AbortSignal {
   if (signals.length === 1) {
     return signals[0]!;
@@ -596,24 +478,12 @@ function anySignal(signals: AbortSignal[]): AbortSignal {
   return controller.signal;
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    // Detach the abort listener when the timer fires normally — the reconnect
-    // loop calls delay() repeatedly against the same signal, and leaked
-    // listeners would accumulate across reconnects.
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+// The node-provider message route posts to a channel by its bare name; the fleet
+// authoring convention addresses channels with a leading `#` (e.g. `#general`),
+// matching how the broker addresses channels workspace-wide. Strip the prefix so
+// `sendMessage({ to: '#general' })` reaches channel `general`.
+function channelName(to: string): string {
+  return to.startsWith('#') ? to.slice(1) : to;
 }
 
 function errorMessage(error: unknown): string {

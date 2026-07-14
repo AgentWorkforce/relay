@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{
-    de::{self, Deserializer},
-    Deserialize, Serialize, Serializer,
-};
+use serde::{de::Deserializer, Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{
@@ -263,111 +260,6 @@ pub struct NodeManifest {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeSupervision {
-    pub argv: Vec<String>,
-    pub cwd: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub env: Option<HashMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restart_policy: Option<RestartPolicy>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HandlerResult {
-    pub invocation_id: String,
-    pub result: HandlerResultPayload,
-}
-
-impl Serialize for HandlerResult {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        HandlerResultWire::from(self).serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for HandlerResult {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        HandlerResultWire::deserialize(deserializer)?
-            .try_into()
-            .map_err(de::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HandlerResultWire {
-    pub invocation_id: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_presence",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub output: Option<Value>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_presence",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub error: Option<String>,
-}
-
-fn deserialize_optional_presence<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
-
-impl From<&HandlerResult> for HandlerResultWire {
-    fn from(value: &HandlerResult) -> Self {
-        match &value.result {
-            HandlerResultPayload::Output { output } => Self {
-                invocation_id: value.invocation_id.clone(),
-                output: Some(output.clone()),
-                error: None,
-            },
-            HandlerResultPayload::Error { error } => Self {
-                invocation_id: value.invocation_id.clone(),
-                output: None,
-                error: Some(error.clone()),
-            },
-        }
-    }
-}
-
-impl TryFrom<HandlerResultWire> for HandlerResult {
-    type Error = String;
-
-    fn try_from(value: HandlerResultWire) -> Result<Self, Self::Error> {
-        let result = match (value.output, value.error) {
-            (Some(output), None) => HandlerResultPayload::Output { output },
-            (None, Some(error)) => HandlerResultPayload::Error { error },
-            _ => {
-                return Err("handler_result must include exactly one of output or error".to_string())
-            }
-        };
-
-        Ok(Self {
-            invocation_id: value.invocation_id,
-            result,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum HandlerResultPayload {
-    Output { output: Value },
-    Error { error: String },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageInjectionMode {
@@ -403,86 +295,6 @@ pub struct ProtocolEnvelope<T> {
     #[serde(default)]
     pub request_id: Option<RequestId>,
     pub payload: T,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
-pub enum SdkToBroker {
-    Hello {
-        client_name: String,
-        client_version: String,
-    },
-    SpawnAgent {
-        agent: Box<AgentSpec>,
-        #[serde(default)]
-        invocation_id: Option<String>,
-        #[serde(default)]
-        initial_task: Option<String>,
-        #[serde(default)]
-        skip_relay_prompt: bool,
-    },
-    RegisterNode {
-        manifest: NodeManifest,
-        #[serde(default)]
-        supervision: Option<NodeSupervision>,
-    },
-    DeregisterNode {},
-    RegisterHandlers {
-        names: Vec<String>,
-    },
-    HandlerResult(HandlerResult),
-    SendInput {
-        name: WorkerName,
-        data: String,
-    },
-    SendMessage {
-        to: MessageTarget,
-        text: String,
-        #[serde(default)]
-        from: Option<String>,
-        #[serde(default)]
-        thread_id: Option<ThreadId>,
-        #[serde(default)]
-        workspace_id: Option<WorkspaceId>,
-        #[serde(default)]
-        workspace_alias: Option<WorkspaceAlias>,
-        #[serde(default)]
-        priority: Option<u8>,
-        #[serde(default)]
-        mode: MessageInjectionMode,
-    },
-    ReleaseAgent {
-        name: WorkerName,
-    },
-    SubscribeChannels {
-        name: WorkerName,
-        channels: Vec<ChannelName>,
-    },
-    UnsubscribeChannels {
-        name: WorkerName,
-        channels: Vec<ChannelName>,
-    },
-    ListAgents {},
-    Shutdown {},
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
-pub enum BrokerToSdk {
-    HelloAck {
-        broker_version: String,
-        protocol_version: u32,
-    },
-    InvokeHandler {
-        invocation_id: String,
-        name: String,
-        input: Value,
-    },
-    Ok {
-        result: Value,
-    },
-    Error(ProtocolError),
-    Event(BrokerEvent),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -548,6 +360,11 @@ pub enum BrokerEvent {
         name: WorkerName,
         stream: String,
         chunk: String,
+        /// Cumulative per-worker byte offset at the end of this chunk. Lets
+        /// attaching clients correlate the live stream with a snapshot.
+        /// Absent for headless workers (no VT grid).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     DeliveryRetry {
         name: WorkerName,
@@ -604,21 +421,34 @@ pub enum BrokerEvent {
         #[serde(rename = "lastError")]
         last_error: String,
     },
+    // NOTE: these typed variants mirror the ad-hoc `json!({"kind": ...})`
+    // frames actually emitted in `runtime/worker_events.rs` and
+    // `runtime/fleet.rs` (and the TS shapes in
+    // `packages/harness-driver/src/protocol.ts`) — field names/presence
+    // must match what's really on the wire, not just what reads nicely here.
     DeliveryQueued {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
     },
     DeliveryInjected {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
     },
     DeliveryActive {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
     },
     DeliveryAck {
+        name: WorkerName,
         delivery_id: DeliveryId,
-        agent: WorkerName,
+        event_id: EventId,
     },
     AclDenied {
         name: WorkerName,
@@ -700,6 +530,15 @@ pub enum BrokerToWorker {
         rows: u16,
         cols: u16,
     },
+    /// Pause (`hold = true`) or resume (`hold = false`) worker-side
+    /// automation while a human drives the PTY. Sent when the inbound
+    /// delivery mode flips to/from `manual_flush`. While held, the worker
+    /// stops popping pending injections, freezes any in-flight injection,
+    /// and gates its auto-enter and prompt auto-responders so they cannot
+    /// splice keystrokes into the human's typing.
+    SetInteractiveHold {
+        hold: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -725,6 +564,10 @@ pub enum WorkerToBroker {
     WorkerStream {
         stream: String,
         chunk: String,
+        /// Cumulative per-worker byte offset at the end of this chunk (the
+        /// count of raw PTY bytes the worker has parsed into its grid).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     WorkerError(ProtocolError),
     WorkerExited {
@@ -741,7 +584,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessHarnessDriver,
+        AgentRuntime, AgentSpec, BrokerEvent, BrokerToWorker, HeadlessHarnessDriver,
         HeadlessProvider, MessageInjectionMode, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, WorkerToBroker, PROTOCOL_VERSION,
     };
@@ -769,157 +612,6 @@ mod tests {
         assert_eq!(decoded.v, PROTOCOL_VERSION);
         assert_eq!(decoded.msg_type, "spawn_agent");
         assert_eq!(decoded.request_id.as_deref(), Some("req_1"));
-    }
-
-    #[test]
-    fn sdk_spawn_agent_accepts_invocation_id() {
-        use super::SdkToBroker;
-
-        let decoded: SdkToBroker = serde_json::from_value(json!({
-            "type": "spawn_agent",
-            "payload": {
-                "invocation_id": "inv-1",
-                "agent": {
-                    "name": "Worker1",
-                    "runtime": "pty",
-                    "cli": "codex"
-                }
-            }
-        }))
-        .unwrap();
-
-        match decoded {
-            SdkToBroker::SpawnAgent {
-                invocation_id,
-                agent,
-                ..
-            } => {
-                assert_eq!(invocation_id.as_deref(), Some("inv-1"));
-                assert_eq!(agent.name.as_str(), "Worker1");
-            }
-            other => panic!("expected spawn_agent, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sdk_deregister_node_frame_round_trips() {
-        use super::SdkToBroker;
-
-        let decoded: SdkToBroker = serde_json::from_value(json!({
-            "type": "deregister_node",
-            "payload": {}
-        }))
-        .unwrap();
-
-        assert!(matches!(decoded, SdkToBroker::DeregisterNode {}));
-    }
-
-    #[test]
-    fn sdk_register_node_capability_metadata_requires_object() {
-        use super::SdkToBroker;
-
-        let decoded: SdkToBroker = serde_json::from_value(json!({
-            "type": "register_node",
-            "payload": {
-                "manifest": {
-                    "name": "node-a",
-                    "capabilities": [{
-                        "name": "run:test",
-                        "kind": "action",
-                        "metadata": {"suite": "unit"}
-                    }]
-                }
-            }
-        }))
-        .unwrap();
-
-        match decoded {
-            SdkToBroker::RegisterNode { manifest, .. } => {
-                assert_eq!(
-                    manifest.capabilities[0]
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.get("suite")),
-                    Some(&Value::String("unit".to_string()))
-                );
-            }
-            other => panic!("expected register_node, got {other:?}"),
-        }
-
-        assert!(serde_json::from_value::<SdkToBroker>(json!({
-            "type": "register_node",
-            "payload": {
-                "manifest": {
-                    "name": "node-a",
-                    "capabilities": [{
-                        "name": "run:test",
-                        "metadata": ["not", "an", "object"]
-                    }]
-                }
-            }
-        }))
-        .is_err());
-    }
-
-    #[test]
-    fn sdk_handler_result_round_trips_output_and_error() {
-        use super::{HandlerResult, HandlerResultPayload, SdkToBroker};
-
-        let output = SdkToBroker::HandlerResult(HandlerResult {
-            invocation_id: "inv_1".to_string(),
-            result: HandlerResultPayload::Output {
-                output: json!({"ok": true}),
-            },
-        });
-        let encoded = serde_json::to_string(&output).unwrap();
-        assert!(encoded.contains("\"output\""));
-        assert!(!encoded.contains("\"error\""));
-        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, output);
-
-        let error = SdkToBroker::HandlerResult(HandlerResult {
-            invocation_id: "inv_2".to_string(),
-            result: HandlerResultPayload::Error {
-                error: "handler_failed".to_string(),
-            },
-        });
-        let encoded = serde_json::to_string(&error).unwrap();
-        assert!(encoded.contains("\"error\""));
-        assert!(!encoded.contains("\"output\""));
-        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, error);
-    }
-
-    #[test]
-    fn sdk_handler_result_requires_exactly_one_result_field() {
-        use super::SdkToBroker;
-
-        let missing = json!({
-            "type": "handler_result",
-            "payload": {
-                "invocation_id": "inv_1"
-            }
-        });
-        assert!(serde_json::from_value::<SdkToBroker>(missing).is_err());
-
-        let ambiguous = json!({
-            "type": "handler_result",
-            "payload": {
-                "invocation_id": "inv_2",
-                "output": null,
-                "error": "handler_failed"
-            }
-        });
-        assert!(serde_json::from_value::<SdkToBroker>(ambiguous).is_err());
-
-        let non_string_error = json!({
-            "type": "handler_result",
-            "payload": {
-                "invocation_id": "inv_3",
-                "error": {"code": "handler_failed"}
-            }
-        });
-        assert!(serde_json::from_value::<SdkToBroker>(non_string_error).is_err());
     }
 
     #[test]
@@ -973,7 +665,7 @@ mod tests {
 
     #[test]
     fn broker_event_round_trip() {
-        let event = BrokerToSdk::Event(BrokerEvent::AgentSpawned {
+        let event = BrokerEvent::AgentSpawned {
             name: "Worker2".into(),
             runtime: AgentRuntime::Headless,
             provider: Some(HeadlessProvider::Claude),
@@ -983,9 +675,9 @@ mod tests {
             session_id: None,
             pid: None,
             source: None,
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
 
@@ -1014,76 +706,170 @@ mod tests {
 
     #[test]
     fn broker_event_delivery_verified_round_trip() {
-        let event = BrokerToSdk::Event(BrokerEvent::DeliveryVerified {
+        let event = BrokerEvent::DeliveryVerified {
             name: "Worker1".into(),
             delivery_id: "del_v2".into(),
             event_id: "evt_v2".into(),
             verification: None,
             reason: None,
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
         assert!(
             !encoded.contains("verification"),
             "absent verification must not appear on the wire"
         );
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
 
     #[test]
     fn broker_event_delivery_verified_timeout_fallback_round_trip() {
-        let event = BrokerToSdk::Event(BrokerEvent::DeliveryVerified {
+        let event = BrokerEvent::DeliveryVerified {
             name: "Worker1".into(),
             delivery_id: "del_v3".into(),
             event_id: "evt_v3".into(),
             verification: Some("timeout_fallback".into()),
             reason: Some("echo not detected within 5s window".into()),
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
 
     #[test]
     fn agent_result_event_round_trip_with_metadata() {
-        let event = BrokerToSdk::Event(BrokerEvent::AgentResult {
+        let event = BrokerEvent::AgentResult {
             name: "Worker1".into(),
             result_id: "res_42".into(),
             data: json!({"answer": 42}),
             final_result: true,
             metadata: Some(json!({"latency_ms": 123})),
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
         // The `final_result` field MUST serialize as `final` per the SDK wire contract.
         assert!(encoded.contains("\"final\":true"));
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
 
     #[test]
     fn agent_result_event_round_trip_without_metadata() {
-        let event = BrokerToSdk::Event(BrokerEvent::AgentResult {
+        let event = BrokerEvent::AgentResult {
             name: "Worker2".into(),
             result_id: "res_7".into(),
             data: json!("partial"),
             final_result: false,
             metadata: None,
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
 
     #[test]
     fn broker_event_delivery_failed_round_trip() {
-        let event = BrokerToSdk::Event(BrokerEvent::DeliveryFailed {
+        let event = BrokerEvent::DeliveryFailed {
             name: "Worker1".into(),
             delivery_id: "del_f2".into(),
             event_id: "evt_f2".into(),
             reason: "max retries exceeded".into(),
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    // The `DeliveryQueued`/`DeliveryInjected`/`DeliveryActive`/`DeliveryAck`
+    // typed variants below are not currently constructed by the runtime
+    // (the broker emits equivalent ad-hoc `json!({"kind": ...})` frames in
+    // `runtime/worker_events.rs`/`runtime/fleet.rs` instead), but they must
+    // stay wire-compatible with those ad-hoc frames and with the TS union in
+    // `packages/harness-driver/src/protocol.ts` so the first real use
+    // doesn't silently emit events clients drop.
+
+    #[test]
+    fn broker_event_delivery_queued_round_trip() {
+        let event = BrokerEvent::DeliveryQueued {
+            name: "Worker1".into(),
+            delivery_id: "del_q1".into(),
+            event_id: "evt_q1".into(),
+            timestamp: Some(1_700_000_000_000),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_queued");
+        assert_eq!(value["name"], "Worker1");
+        assert_eq!(value["delivery_id"], "del_q1");
+        assert_eq!(value["event_id"], "evt_q1");
+        assert_eq!(value["timestamp"], 1_700_000_000_000i64);
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_queued_omits_absent_timestamp() {
+        let event = BrokerEvent::DeliveryQueued {
+            name: "Worker1".into(),
+            delivery_id: "del_q2".into(),
+            event_id: "evt_q2".into(),
+            timestamp: None,
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert!(
+            !encoded.contains("timestamp"),
+            "absent timestamp must not appear on the wire"
+        );
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_injected_round_trip() {
+        let event = BrokerEvent::DeliveryInjected {
+            name: "Worker1".into(),
+            delivery_id: "del_i1".into(),
+            event_id: "evt_i1".into(),
+            timestamp: Some(1_700_000_001_000),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_injected");
+        assert_eq!(value["name"], "Worker1");
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_active_round_trip() {
+        let event = BrokerEvent::DeliveryActive {
+            name: "Worker1".into(),
+            delivery_id: "del_a1".into(),
+            event_id: "evt_a1".into(),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_active");
+        assert_eq!(value["name"], "Worker1");
+        assert_eq!(value["delivery_id"], "del_a1");
+        assert_eq!(value["event_id"], "evt_a1");
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_ack_round_trip() {
+        let event = BrokerEvent::DeliveryAck {
+            name: "Worker1".into(),
+            delivery_id: "del_ak1".into(),
+            event_id: "evt_ak1".into(),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["kind"], "delivery_ack");
+        assert_eq!(value["name"], "Worker1");
+        assert_eq!(value["delivery_id"], "del_ak1");
+        assert_eq!(value["event_id"], "evt_ak1");
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
 
@@ -1249,54 +1035,75 @@ mod tests {
     }
 
     #[test]
-    fn sdk_subscribe_channels_round_trip() {
-        use super::SdkToBroker;
-        let msg = SdkToBroker::SubscribeChannels {
-            name: "Worker1".into(),
-            channels: vec!["ops".into(), "alerts".into()],
-        };
+    fn broker_to_worker_set_interactive_hold_round_trip() {
+        let msg = BrokerToWorker::SetInteractiveHold { hold: true };
         let encoded = serde_json::to_string(&msg).unwrap();
-        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, msg);
-
         let raw: Value = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(raw["type"], "subscribe_channels");
-    }
-
-    #[test]
-    fn sdk_unsubscribe_channels_round_trip() {
-        use super::SdkToBroker;
-        let msg = SdkToBroker::UnsubscribeChannels {
-            name: "Worker1".into(),
-            channels: vec!["ops".into()],
-        };
-        let encoded = serde_json::to_string(&msg).unwrap();
-        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
+        // Wire tag must be snake_case and match the worker-side string match arm
+        // in `pty_worker.rs` and `packages/harness-driver/src/protocol.ts`.
+        assert_eq!(raw["type"], "set_interactive_hold");
+        assert_eq!(raw["payload"]["hold"], true);
+        let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, msg);
-
-        let raw: Value = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(raw["type"], "unsubscribe_channels");
     }
 
     #[test]
     fn broker_event_channel_subscribed_round_trip() {
-        let event = BrokerToSdk::Event(BrokerEvent::ChannelSubscribed {
+        let event = BrokerEvent::ChannelSubscribed {
             name: "Worker1".into(),
             channels: vec!["ops".into(), "alerts".into()],
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, event);
     }
 
     #[test]
     fn broker_event_channel_unsubscribed_round_trip() {
-        let event = BrokerToSdk::Event(BrokerEvent::ChannelUnsubscribed {
+        let event = BrokerEvent::ChannelUnsubscribed {
             name: "Worker1".into(),
             channels: vec!["ops".into()],
-        });
+        };
         let encoded = serde_json::to_string(&event).unwrap();
-        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_worker_stream_carries_offset_when_present() {
+        let event = BrokerEvent::WorkerStream {
+            name: "Worker1".into(),
+            stream: "stdout".to_string(),
+            chunk: "hello".to_string(),
+            offset: Some(42),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw.get("offset").and_then(Value::as_u64), Some(42));
+        let decoded: BrokerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_worker_stream_omits_offset_when_absent() {
+        // Headless workers (no VT grid) and pre-offset brokers don't set it;
+        // the field must be omitted from the wire, and absence must decode
+        // back to `None`.
+        let event = BrokerEvent::WorkerStream {
+            name: "Worker1".into(),
+            stream: "stdout".to_string(),
+            chunk: "hi".to_string(),
+            offset: None,
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert!(
+            raw.get("offset").is_none(),
+            "offset must be omitted when None"
+        );
+        // A frame with no `offset` key decodes to `None` (backward compatible).
+        let legacy = r#"{"kind":"worker_stream","name":"Worker1","stream":"stdout","chunk":"hi"}"#;
+        let decoded: BrokerEvent = serde_json::from_str(legacy).unwrap();
         assert_eq!(decoded, event);
     }
 }
