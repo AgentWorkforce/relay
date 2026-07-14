@@ -172,14 +172,31 @@ struct RelayRestClient: Sendable {
     /// time left. Statuses outside `inFlightStatuses` that are not one of the
     /// known terminal states fail fast with `action_failed`.
     func invokeAction(_ name: String, input: JSONValue, timeout: TimeInterval, pollInterval: TimeInterval) async throws -> JSONValue {
+        try await invokeAction(name, onNode: nil, input: input, timeout: timeout, pollInterval: pollInterval)
+    }
+
+    /// Invoke an action through a specific Relay node. Node-addressed actions
+    /// are used when the capability is provided by the node itself rather than
+    /// by an agent-level global alias.
+    func invokeAction(_ name: String, onNode node: String?, input: JSONValue, timeout: TimeInterval, pollInterval: TimeInterval) async throws -> JSONValue {
         let actionName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !actionName.isEmpty else {
             throw RelayError.protocolError(code: "invalid_action_name", message: "Action name cannot be empty", retryable: false)
         }
 
         let encodedName = Self.encodePathSegment(actionName)
+        let invokePath: String
+        if let node {
+            let nodeName = node.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !nodeName.isEmpty else {
+                throw RelayError.protocolError(code: "invalid_node_name", message: "Node name cannot be empty", retryable: false)
+            }
+            invokePath = "/v1/nodes/\(Self.encodePathSegment(nodeName))/actions/\(encodedName)/invoke"
+        } else {
+            invokePath = "/v1/actions/\(encodedName)/invoke"
+        }
         let ack: ActionInvokeAck = try await post(
-            "/v1/actions/\(encodedName)/invoke",
+            invokePath,
             body: ActionInvokeRequestBody(input: input),
             requestTimeout: max(timeout, Self.minRequestTimeout)
         )

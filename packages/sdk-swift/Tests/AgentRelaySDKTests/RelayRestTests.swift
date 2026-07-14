@@ -154,6 +154,33 @@ final class RelayRestTests: XCTestCase {
         XCTAssertEqual(decoded, .object(["input": .object(["message": .string("hi")])]))
     }
 
+    func testInvokeNodeActionUsesNodeAddressedRoute() async throws {
+        StubURLProtocol.store.enqueue(StubResponse(json: """
+        {"ok":true,"data":{"invocation_id":"inv_node","action_name":"chief.message",
+         "handler_node_id":"node_1","input":{"text":"hello"},
+         "status":"dispatched","created_at":"2026-07-14T10:00:00Z"}}
+        """))
+        StubURLProtocol.store.enqueue(StubResponse(json: """
+        {"ok":true,"data":{"invocation_id":"inv_node","action_name":"chief.message",
+         "caller_id":"agent_1","caller_name":"console","input":{"text":"hello"},
+         "output":null,"status":"completed","error":null,
+         "duration_ms":1,"completed_at":"2026-07-14T10:00:01Z"}}
+        """))
+
+        let output = try await client.invokeAction(
+            "chief.message",
+            onNode: "chief-node",
+            input: .object(["text": .string("hello")]),
+            timeout: 5,
+            pollInterval: 0.01
+        )
+        XCTAssertEqual(output, .null)
+
+        let requests = StubURLProtocol.store.recordedRequests()
+        XCTAssertEqual(requests[0].url?.path, "/v1/nodes/chief-node/actions/chief.message/invoke")
+        XCTAssertEqual(requests[1].url?.path, "/v1/actions/chief.message/invocations/inv_node")
+    }
+
     func testInvokeActionFailedStatusThrowsActionFailed() async {
         StubURLProtocol.store.enqueue(StubResponse(json: """
         {"ok":true,"data":{"invocation_id":"inv_2","action_name":"demo.echo",

@@ -292,6 +292,13 @@ public final class AgentClient: @unchecked Sendable {
         try await rest.invokeAction(name, input: input, timeout: timeout, pollInterval: pollInterval)
     }
 
+    /// Invoke an action exposed by a specific Relay node and wait for its
+    /// completion. This bypasses agent-level action alias resolution while
+    /// preserving the same invocation polling semantics as `invokeAction`.
+    public func invokeAction(_ name: String, onNode node: String, input: JSONValue = .object([:]), timeout: TimeInterval = 30, pollInterval: TimeInterval = 0.4) async throws -> JSONValue {
+        try await rest.invokeAction(name, onNode: node, input: input, timeout: timeout, pollInterval: pollInterval)
+    }
+
     /// Fetch recent messages for a channel, oldest-first.
     ///
     /// A leading `#` is accepted and stripped (`"#general"` and `"general"`
