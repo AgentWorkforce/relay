@@ -165,6 +165,7 @@ pub(super) async fn release_worker_locally(
     telemetry: &TelemetryClient,
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    dead_letters: &mut DeadLetterStore,
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
@@ -193,8 +194,13 @@ pub(super) async fn release_worker_locally(
                                 sdk_out_tx,
                                 json!({"kind":"delivery_dropped","name":name,"count":dropped.len(),"reason":"agent_released"}),
                             ).await;
-                let _ =
-                    emit_dropped_delivery_failures(sdk_out_tx, &dropped, "agent_released").await;
+                let _ = emit_dropped_delivery_failures(
+                    sdk_out_tx,
+                    dead_letters,
+                    &dropped,
+                    "agent_released",
+                )
+                .await;
             }
             fail_pending_requests_for_worker(pending_requests, &name, "relaycast_release");
             delivery_states.remove(&name);

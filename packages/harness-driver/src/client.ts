@@ -27,6 +27,8 @@ import type {
   BrokerStats,
   BrokerStatus,
   CrashInsightsResponse,
+  DeadLettersResponse,
+  RedeliverDeadLettersResponse,
   PendingRelayMessage,
   PtySnapshot,
   InboundDeliveryMode,
@@ -1020,6 +1022,25 @@ export class HarnessDriverClient {
 
   async getCrashInsights(): Promise<CrashInsightsResponse> {
     return this.transport.request('/api/crash-insights');
+  }
+
+  /** List terminally-failed deliveries retained in the broker's dead-letter queue. */
+  async getDeadLetters(): Promise<DeadLettersResponse> {
+    return this.transport.request('/api/dead-letters');
+  }
+
+  /**
+   * Requeue dead-letter entries through the normal delivery path with a
+   * reset retry count. Pass an id for a single entry, or `{ all: true }`
+   * for every entry whose recipient is currently running.
+   */
+  async redeliverDeadLetters(
+    input: { id: string; all?: never } | { id?: never; all: true }
+  ): Promise<RedeliverDeadLettersResponse> {
+    return this.transport.request('/api/dead-letters/redeliver', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────
