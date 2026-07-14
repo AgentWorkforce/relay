@@ -340,7 +340,7 @@ export async function switchInboundDeliveryModeOrAbort(
   targetMode: InboundDeliveryMode,
   actionPhrase: string,
   deps: { fetch: typeof globalThis.fetch; error: (...args: unknown[]) => void }
-): Promise<{ previousMode: InboundDeliveryMode | null } | null> {
+): Promise<{ previousMode: InboundDeliveryMode | null; sessionRevision: string | null } | null> {
   let previousMode: InboundDeliveryMode | null = null;
   try {
     previousMode = await createBrokerClient(connection, deps.fetch).getInboundDeliveryMode(name);
@@ -349,8 +349,8 @@ export async function switchInboundDeliveryModeOrAbort(
     // `auto_inject` in that case so the queue can't grow indefinitely.
   }
   try {
-    await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
-    return { previousMode };
+    const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
+    return { previousMode, sessionRevision: result.revision };
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     if (failure.status === 404) {
@@ -381,14 +381,15 @@ export async function switchInboundDeliveryModeOrAbort(
  *     silently cancel an explicit `agent message hold`. In that case we leave
  *     the mode untouched and warn.
  *
- * A full ownership/lease protocol is out of scope; this is the pragmatic
- * "don't clobber someone else, don't force a default" version.
+ * The broker's monotonic mode revision closes ABA races where another session
+ * changes the mode away and back to `sessionMode` before this restore.
  */
 export async function restoreInboundDeliveryModeOnDetach(
   connection: BrokerConnection,
   name: string,
   previousMode: InboundDeliveryMode | null,
   sessionMode: InboundDeliveryMode,
+  sessionRevision: string | null,
   verb: string,
   deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void }
 ): Promise<void> {
@@ -398,13 +399,29 @@ export async function restoreInboundDeliveryModeOnDetach(
     );
     return;
   }
+  if (sessionRevision === null) {
+    deps.log(
+      `[${verb}] could not safely restore '${name}' inbound delivery mode (broker did not report a mode revision); leaving it unchanged`
+    );
+    return;
+  }
   try {
-    // Atomic compare-and-set: restore `previousMode` only if the mode is still
-    // what this session set. If another session changed it, the broker no-ops
-    // (`matched: false`) rather than clobbering their change.
-    await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, previousMode, {
-      expectedMode: sessionMode,
-    });
+    // Atomic compare-and-set: restore only if both the mode and its monotonic
+    // revision still match this session's write. If another session changed it
+    // (including an ABA away-and-back), the broker no-ops.
+    const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(
+      name,
+      previousMode,
+      {
+        expectedMode: sessionMode,
+        expectedRevision: sessionRevision,
+      }
+    );
+    if (!result.matched) {
+      deps.log(
+        `[${verb}] did not restore '${name}' inbound delivery mode because another session changed it; leaving it unchanged`
+      );
+    }
   } catch {
     // best-effort
   }

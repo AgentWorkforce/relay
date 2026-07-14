@@ -1441,6 +1441,7 @@ impl BrokerRuntime {
                 name,
                 mode,
                 expected_mode,
+                expected_revision,
                 reply,
             } => {
                 if !workers.has_worker(&name) {
@@ -1467,12 +1468,32 @@ impl BrokerRuntime {
                                 mode: current,
                                 flushed: 0,
                                 matched: false,
+                                revision: entry.revision,
                             }));
                             return;
                         }
                     }
-                    let previous = entry.mode;
-                    entry.mode = mode;
+                    if let Some(expected) = expected_revision {
+                        if entry.revision != expected {
+                            let current = entry.mode;
+                            tracing::info!(
+                                target = "agent_relay::broker",
+                                worker = %name,
+                                expected_revision = expected,
+                                current_revision = entry.revision,
+                                requested = mode.as_wire_str(),
+                                "inbound delivery mode compare-and-set skipped (revision mismatch)"
+                            );
+                            let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                                mode: current,
+                                flushed: 0,
+                                matched: false,
+                                revision: entry.revision,
+                            }));
+                            return;
+                        }
+                    }
+                    let previous = entry.set_mode(mode);
                     let to_flush: Vec<PendingRelayMessage> = if previous
                         == InboundDeliveryMode::ManualFlush
                         && mode == InboundDeliveryMode::AutoInject
@@ -1568,6 +1589,7 @@ impl BrokerRuntime {
                         mode,
                         flushed,
                         matched: true,
+                        revision: entry.revision,
                     }));
                 }
             }
