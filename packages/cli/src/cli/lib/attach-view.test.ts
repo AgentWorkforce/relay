@@ -225,10 +225,31 @@ describe('InputReportModeFilter', () => {
     expect(filter.push('[31mred')).toBe('\x1b[31mred');
   });
 
-  it('gives up on pathologically long unterminated CSIs instead of holding forever', () => {
+  it('gives up on pathologically long unterminated non-private CSIs instead of holding forever', () => {
     const filter = new InputReportModeFilter();
-    const longCsi = '\x1b[' + '1;'.repeat(64);
+    const longCsi = '\x1b[' + '1;'.repeat(200);
     expect(filter.push(longCsi)).toBe(longCsi);
+  });
+
+  it('holds and filters a large batched private-mode set split across frames', () => {
+    // A full private-mode init batches visual + input-report modes and can
+    // still split before the final `h`; the whole set must be held so the
+    // input-report modes are stripped while the visual ones survive.
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1049;1000;1002;1003;1004;1006;1007;1015;1016;2004;25')).toBe('');
+    expect(filter.push(';47h')).toBe('\x1b[?1049;25;47h');
+  });
+
+  it('drops an over-long partial private-mode set instead of flushing it', () => {
+    // If a private-mode set overruns the hold cap, flushing the partial
+    // `CSI ? …` prefix would let a later chunk's `h` complete it locally and
+    // re-enable the input-report modes this filter exists to strip. Drop it.
+    const filter = new InputReportModeFilter();
+    const longPrivate = '\x1b[?' + '1000;'.repeat(80);
+    expect(longPrivate.length).toBeGreaterThan(256);
+    expect(filter.push(longPrivate)).toBe('');
+    // The completing `h` arriving next must not resurrect the sequence.
+    expect(filter.push('h')).toBe('h');
   });
 
   it('drops a held partial sequence on reset', () => {

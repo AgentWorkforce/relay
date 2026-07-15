@@ -253,10 +253,21 @@ const INPUT_REPORT_MODES: ReadonlySet<number> = new Set([
 ]);
 
 /** Longest escape-sequence prefix the filter will hold across chunk
- *  boundaries before giving up and passing it through verbatim. Any DECSET
- *  we care about is far shorter; the cap bounds memory and latency if an
- *  agent stalls mid-way through a pathological CSI. */
-const MAX_HELD_SEQUENCE_LENGTH = 64;
+ *  boundaries before giving up on it. Any DECSET we care about is far
+ *  shorter — even a full private-mode init that batches every mode stays well
+ *  under this — so the cap only bites on a pathological CSI (an agent that
+ *  stalls mid-sequence), where it bounds memory and latency. Beyond the cap an
+ *  incomplete private-mode (`CSI ? …`) prefix is dropped rather than flushed,
+ *  so a later chunk's final `h` can't re-enable an input-report mode on the
+ *  local terminal; any other CSI is passed through verbatim. */
+const MAX_HELD_SEQUENCE_LENGTH = 256;
+
+/** An incomplete private-mode CSI (`CSI ? …`) that is still only parameter
+ *  bytes — digits and `;` with no final byte yet. Flushing a prefix like this
+ *  is unsafe: a later chunk's `h` would complete it locally and re-enable the
+ *  very input-report modes this filter strips, so an over-long one is dropped
+ *  instead of passed through. */
+const PARTIAL_PRIVATE_MODE = /^\x1b\[\?[0-9;]*$/;
 
 /**
  * Streaming filter that removes input-report DECSET *enables* from a PTY
@@ -316,9 +327,12 @@ export class InputReportModeFilter {
         const tail = data.slice(esc);
         if (tail.length <= MAX_HELD_SEQUENCE_LENGTH) {
           this.held = tail; // incomplete CSI — hold until the next chunk
-        } else {
-          out += tail; // pathologically long — give up filtering it
+        } else if (!PARTIAL_PRIVATE_MODE.test(tail)) {
+          out += tail; // pathologically long non-private CSI — give up filtering it
         }
+        // else: an over-long incomplete private-mode prefix. Drop it — flushing
+        // the partial `CSI ? …` would let the next frame's final `h` re-enable
+        // an input-report mode locally, the exact spray this filter prevents.
         break;
       }
       out += filterCompleteCsi(data.slice(esc, j + 1));
