@@ -97,9 +97,27 @@ actor RelayHTTP: RelayHTTPClient {
             basePath = String(basePath.dropLast("/ws".count))
         }
 
-        let normalizedPath = path.hasPrefix("/") ? path : "/" + path
-        components.path = basePath + normalizedPath
-        components.query = nil
+        // Split any query the caller embedded in `path` (e.g.
+        // `/api/metrics?agent=foo`) so it survives onto the resolved URL —
+        // assigning it via `components.path` would percent-encode the `?`.
+        // A base-URL query (e.g. a stale `?token=`) is still dropped.
+        let rawPath: String
+        let rawQuery: String?
+        if let separator = path.firstIndex(of: "?") {
+            rawPath = String(path[..<separator])
+            rawQuery = String(path[path.index(after: separator)...])
+        } else {
+            rawPath = path
+            rawQuery = nil
+        }
+
+        let normalizedPath = rawPath.hasPrefix("/") ? rawPath : "/" + rawPath
+        // Callers percent-encode dynamic path segments (agent names) before
+        // building `path`, so assign via `percentEncodedPath` — assigning to
+        // `.path` would re-encode the `%` and double-escape names containing
+        // spaces or `/`, addressing the wrong worker.
+        components.percentEncodedPath = basePath + normalizedPath
+        components.percentEncodedQuery = rawQuery
         components.fragment = nil
         return components.url
     }
