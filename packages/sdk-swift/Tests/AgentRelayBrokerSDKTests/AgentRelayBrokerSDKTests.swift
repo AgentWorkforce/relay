@@ -109,6 +109,36 @@ private func jsonObject(_ data: Data) throws -> [String: Any] {
 }
 
 final class AgentRelayBrokerSDKTests: XCTestCase {
+    private enum AsyncTestTimeout: Error {
+        case exceeded
+    }
+
+    private func waitUntil(_ predicate: @escaping () async -> Bool) async throws {
+        for _ in 0..<2_000 {
+            if await predicate() { return }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("Timed out waiting for async condition")
+        throw AsyncTestTimeout.exceeded
+    }
+
+    private func withTimeout<T: Sendable>(
+        _ operation: @escaping @Sendable () async -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                throw AsyncTestTimeout.exceeded
+            }
+            guard let result = try await group.next() else {
+                throw AsyncTestTimeout.exceeded
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
     func testAgentRelayBrokerClientInit() {
         let client = AgentRelayBrokerClient(apiKey: "rk_test_key")
         XCTAssertEqual(client.apiKey, "rk_test_key")
@@ -236,13 +266,16 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         let core = BrokerCore(apiKey: "rk_test", transport: transport, http: MockRelayHTTP())
         let channel = Channel(name: "ops", core: core)
         let recorder = BrokerChannelRecorder()
+        let eventStream = channel.events
         let readTask = Task {
-            for await event in channel.events {
+            for await event in eventStream {
                 await recorder.append(event)
             }
         }
 
         try await channel.subscribe()
+        let countsAfterSubscribe = await core.continuationCounts()
+        XCTAssertEqual(countsAfterSubscribe.channels, 1)
         try await channel.subscribe()
         await transport.emit(
             """
@@ -269,6 +302,152 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         events = await recorder.all()
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.body, "hello")
+    }
+
+    func testCancellingPublicStreamsRemovesContinuationsAcrossEpochs() async throws {
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: MockRelayHTTP())
+        let client = AgentRelayBrokerClient(
+            core: core,
+            apiKey: "rk_test",
+            baseURL: URL(string: "http://localhost:3889")!
+        )
+
+        for _ in 0..<20 {
+            let eventTask = Task { for await _ in client.brokerEvents {} }
+            let inboundTask = Task { for await _ in client.inboundMessages {} }
+            let stateTask = Task { for await _ in client.connectionState {} }
+            try await waitUntil {
+                let counts = await core.continuationCounts()
+                return counts.brokerEvents == 1 && counts.inbound == 1 && counts.connectionState == 1
+            }
+
+            eventTask.cancel()
+            inboundTask.cancel()
+            stateTask.cancel()
+            _ = await (eventTask.value, inboundTask.value, stateTask.value)
+            try await waitUntil {
+                let counts = await core.continuationCounts()
+                return counts.brokerEvents == 0 && counts.inbound == 0 && counts.connectionState == 0
+            }
+        }
+    }
+
+    func testJoinOnlyChannelDoesNotRegisterEventContinuation() async throws {
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: MockRelayHTTP())
+        let channel = Channel(name: "ops", core: core)
+
+        try await channel.subscribe()
+        try await channel.subscribe()
+
+        let counts = await core.continuationCounts()
+        XCTAssertEqual(counts.channels, 0)
+    }
+
+    func testTerminationBeforeRegistrationDoesNotResurrectContinuation() async throws {
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: MockRelayHTTP())
+        let id = UUID()
+        var continuationRef: AsyncStream<BrokerEvent>.Continuation?
+        _ = AsyncStream<BrokerEvent> { continuationRef = $0 }
+
+        let continuation = try XCTUnwrap(continuationRef)
+        let generation = core.streamLifecycle.snapshot()
+        await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await core.registerBrokerEventContinuation(continuation, id: id, generation: generation)
+        }.value
+
+        let counts = await core.continuationCounts()
+        XCTAssertEqual(counts.brokerEvents, 0)
+    }
+
+    func testRegistrationFromBeforeDisconnectCannotResurrectStream() async throws {
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: MockRelayHTTP())
+        let id = UUID()
+        let staleGeneration = core.streamLifecycle.snapshot()
+        var continuationRef: AsyncStream<BrokerEvent>.Continuation?
+        let stream = AsyncStream<BrokerEvent> { continuationRef = $0 }
+
+        await core.disconnect()
+        await core.registerBrokerEventContinuation(try XCTUnwrap(continuationRef), id: id, generation: staleGeneration)
+
+        let first = try await withTimeout { await stream.first(where: { _ in true }) }
+        XCTAssertNil(first)
+        let counts = await core.continuationCounts()
+        XCTAssertEqual(counts.brokerEvents, 0)
+    }
+
+    func testDisconnectIsIdempotentAndFinishesLiveStreams() async throws {
+        let transport = MockRelayTransport()
+        let core = BrokerCore(apiKey: "rk_test", transport: transport, http: MockRelayHTTP())
+        let channel = Channel(name: "ops", core: core)
+        let task = Task { for await _ in channel.events {} }
+        try await waitUntil { await core.continuationCounts().channels == 1 }
+
+        await core.disconnect()
+        await core.disconnect()
+        _ = await task.value
+
+        let counts = await core.continuationCounts()
+        XCTAssertEqual(counts.channels, 0)
+    }
+
+    func testDisconnectDoesNotLeaveEmptyChannelRegistries() async throws {
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: MockRelayHTTP())
+
+        for epoch in 0..<20 {
+            let channel = Channel(name: "ops-\(epoch)", core: core)
+            let task = Task { for await _ in channel.events {} }
+            try await waitUntil { await core.continuationCounts().channels == 1 }
+
+            await core.disconnect()
+            _ = await task.value
+            try await waitUntil {
+                let counts = await core.continuationCounts()
+                return counts.channels == 0 && counts.channelRegistries == 0
+            }
+        }
+    }
+
+    func testEventAndConnectionStateBuffersDropOldestValues() async throws {
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: MockRelayHTTP())
+        let client = AgentRelayBrokerClient(
+            core: core,
+            apiKey: "rk_test",
+            baseURL: URL(string: "http://localhost:3889")!
+        )
+        let eventStream = client.brokerEvents
+        let stateStream = client.connectionState
+        try await waitUntil {
+            let counts = await core.continuationCounts()
+            return counts.brokerEvents == 1 && counts.connectionState == 1
+        }
+
+        for index in 0..<300 {
+            await core.routeBrokerEvent(.unknown(kind: "event.\(index)", rawJSON: nil))
+        }
+        await core.notifyConnectionState(.connected)
+        await core.notifyConnectionState(.disconnected)
+
+        let eventKinds = try await withTimeout {
+            var eventIterator = eventStream.makeAsyncIterator()
+            var kinds: [String] = []
+            for _ in 0..<256 {
+                guard case .unknown(let kind, _)? = await eventIterator.next() else { break }
+                kinds.append(kind)
+            }
+            return kinds
+        }
+        XCTAssertEqual(eventKinds.count, 256)
+        XCTAssertEqual(eventKinds.first, "event.44")
+        XCTAssertEqual(eventKinds.last, "event.299")
+
+        let state = try await withTimeout {
+            var stateIterator = stateStream.makeAsyncIterator()
+            return await stateIterator.next()
+        }
+        guard case .disconnected? = state else {
+            return XCTFail("Expected only the newest connection state")
+        }
     }
 
     // MARK: - Broker control & observability

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   extractMatchingChunk,
+  InputReportModeFilter,
   resolveViewBrokerConnection,
   runViewSession,
   toWsUrl,
@@ -167,6 +168,95 @@ describe('extractMatchingChunk', () => {
   it('keeps empty chunks (server sends them to signal flushes)', () => {
     const raw = JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: '' });
     expect(extractMatchingChunk(raw, 'Alice')).toEqual({ chunk: '', offset: undefined });
+  });
+});
+
+describe('InputReportModeFilter', () => {
+  it('passes escape-free text through untouched (fast path)', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('plain text\r\n')).toBe('plain text\r\n');
+  });
+
+  it('strips mouse-tracking and SGR-encoding enables', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('before\x1b[?1000hafter')).toBe('beforeafter');
+    expect(filter.push('\x1b[?1002h\x1b[?1003h\x1b[?1006h')).toBe('');
+  });
+
+  it('strips focus, alternate-scroll, and bracketed-paste enables', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1004h\x1b[?1007h\x1b[?2004h')).toBe('');
+  });
+
+  it('keeps the matching disables so mode resets pass through', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1000l\x1b[?2004l')).toBe('\x1b[?1000l\x1b[?2004l');
+  });
+
+  it('keeps other DECSET enables (alt screen, cursor show) verbatim', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1049h\x1b[?25h\x1b[?1h')).toBe('\x1b[?1049h\x1b[?25h\x1b[?1h');
+  });
+
+  it('rewrites multi-mode sets, keeping only the non-report modes', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1002;25h')).toBe('\x1b[?25h');
+    expect(filter.push('\x1b[?1002;1006h')).toBe('');
+    expect(filter.push('\x1b[?25;1049h')).toBe('\x1b[?25;1049h');
+  });
+
+  it('passes non-DECSET CSIs, SGR colors, and 2-byte escapes through', () => {
+    const filter = new InputReportModeFilter();
+    const bytes = '\x1b[2J\x1b[H\x1b[31;1mRED\x1b[0m\x1b7\x1b8\x1b]0;title\x07';
+    expect(filter.push(bytes)).toBe(bytes);
+  });
+
+  it('filters a DECSET split across chunk boundaries', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('hi\x1b[?10')).toBe('hi');
+    expect(filter.push('06h there')).toBe(' there');
+  });
+
+  it('holds a bare trailing ESC and reassembles it with the next chunk', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('ok\x1b')).toBe('ok');
+    expect(filter.push('[?1000hrest')).toBe('rest');
+    expect(filter.push('ok\x1b')).toBe('ok');
+    expect(filter.push('[31mred')).toBe('\x1b[31mred');
+  });
+
+  it('gives up on pathologically long unterminated non-private CSIs instead of holding forever', () => {
+    const filter = new InputReportModeFilter();
+    const longCsi = '\x1b[' + '1;'.repeat(200);
+    expect(filter.push(longCsi)).toBe(longCsi);
+  });
+
+  it('holds and filters a large batched private-mode set split across frames', () => {
+    // A full private-mode init batches visual + input-report modes and can
+    // still split before the final `h`; the whole set must be held so the
+    // input-report modes are stripped while the visual ones survive.
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1049;1000;1002;1003;1004;1006;1007;1015;1016;2004;25')).toBe('');
+    expect(filter.push(';47h')).toBe('\x1b[?1049;25;47h');
+  });
+
+  it('drops an over-long partial private-mode set instead of flushing it', () => {
+    // If a private-mode set overruns the hold cap, flushing the partial
+    // `CSI ? …` prefix would let a later chunk's `h` complete it locally and
+    // re-enable the input-report modes this filter exists to strip. Drop it.
+    const filter = new InputReportModeFilter();
+    const longPrivate = '\x1b[?' + '1000;'.repeat(80);
+    expect(longPrivate.length).toBeGreaterThan(256);
+    expect(filter.push(longPrivate)).toBe('');
+    // The completing `h` arriving next must not resurrect the sequence.
+    expect(filter.push('h')).toBe('h');
+  });
+
+  it('drops a held partial sequence on reset', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?10')).toBe('');
+    filter.reset();
+    expect(filter.push('normal')).toBe('normal');
   });
 });
 
@@ -353,6 +443,38 @@ describe('runViewSession', () => {
     await sessionPromise;
     // Snapshot painted first, then only the post-offset chunk applied.
     expect(writes).toEqual([snapshotBytes, 'afterSnap']);
+  });
+
+  it('strips input-report mode enables from snapshot and live output', async () => {
+    // A viewed TUI (or the snapshot's mode replay) enabling mouse tracking
+    // must not reach the local terminal: view never consumes the reports the
+    // terminal would start sending, so they'd echo as `^[[<35;22;25M` garbage
+    // over cooked stdin. Visual modes and the disables still pass through.
+    const { deps, writes, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotChunk: '\x1b[?1049h\x1b[?1000h\x1b[?1006hSCREEN',
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    await settle();
+    expect(writes).toEqual(['\x1b[?1049hSCREEN']);
+
+    // Live enable split across two worker_stream frames is still stripped.
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'out\x1b[?10' })
+    );
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: '02hmore' })
+    );
+    socket.emit('close', 1000, Buffer.from(''));
+
+    await sessionPromise;
+    expect(writes).toEqual(['\x1b[?1049hSCREEN', 'out', 'more']);
   });
 
   it('exits cleanly on SIGINT without surfacing an error', async () => {
