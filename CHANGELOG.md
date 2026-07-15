@@ -9,13 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
 - `agent-relay drive` (and `agent new`, which attaches in drive mode) gains an in-band `Ctrl+]` toggle that flips the driven agent between held (`manual_flush`) and live (`auto_inject`) inbound delivery, draining the parked queue into the PTY; the status line shows the current mode, the pending count, and the toggle hint.
 
 ### Fixed
 
 - `agent-relay node agent message flush` now actually injects the queued messages while a drive session is attached: the broker sends a one-shot `flush_injections` frame that exempts the flushed backlog from the drive-mode interactive hold, instead of parking it in a second frozen queue until detach. Without this (and the `Ctrl+]` toggle above), an agent being driven could never receive a relay message — replies to anything it sent sat invisible until the human detached.
 - `agent-relay drive` no longer zeroes its pending counter on a partial flush; the undrained remainder stays counted in the status line.
+
+## [10.3.0] - 2026-07-15
+
+### Added
+
+- `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
+
+### Fixed
+
+- `agent-relay agent attach --mode view` strips mouse-tracking, focus-reporting, alternate-scroll, and bracketed-paste enables from the viewed agent's output, so watching an agent whose TUI uses the mouse no longer sprays `^[[<35;22;25M`-style escape sequences over the read-only viewer.
+- `AgentRelaySDK` and `AgentRelayBrokerSDK` (Swift) release cancelled async-stream consumers, bound event buffering, and avoid creating channel event queues for join-only subscriptions, preventing reconnect-driven memory growth.
 - `agent-relay-broker` retries the Codex model-detection spawn (`codex debug models`) on `ExecutableFileBusy` (`ETXTBSY`), so a concurrent `fork`/`exec` race under load no longer aborts detection and spuriously falls back away from the requested model.
 - `agent-relay-broker` bounds each initial Relaycast startup handshake attempt and retries on timeout with backoff (per-attempt deadline scaled by the configured workspace count), so a stalled backend connection no longer hangs `agent-relay node up`/`init` until an external supervisor kills the broker (which surfaced as an opaque "broker exited with code null during initial handshake"). Returned errors are surfaced immediately rather than replayed. Tunable via `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` and `AGENT_RELAY_HANDSHAKE_ATTEMPTS`.
 

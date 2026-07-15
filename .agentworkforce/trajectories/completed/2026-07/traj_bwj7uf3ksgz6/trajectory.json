@@ -1,0 +1,65 @@
+{
+  "id": "traj_bwj7uf3ksgz6",
+  "version": 1,
+  "task": {
+    "title": "Fix Swift AsyncStream continuation leaks for issue 1266"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T10:39:35.461Z",
+  "completedAt": "2026-07-15T10:53:40.411Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T10:45:05.763Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vvjmcd71cc1k",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T10:45:05.763Z",
+      "endedAt": "2026-07-15T10:53:40.411Z",
+      "events": [
+        {
+          "ts": 1784112305764,
+          "type": "decision",
+          "content": "Use token-keyed bounded AsyncStream registries in both Swift SDKs: Use token-keyed bounded AsyncStream registries in both Swift SDKs",
+          "raw": {
+            "question": "Use token-keyed bounded AsyncStream registries in both Swift SDKs",
+            "chosen": "Use token-keyed bounded AsyncStream registries in both Swift SDKs",
+            "alternatives": [],
+            "reasoning": "Stable UUIDs plus termination tombstones close cancellation-before-registration races; bufferingNewest(256) bounds event/message queues, bufferingNewest(1) bounds state, and lazy channel streams avoid join-only queues."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784112604320,
+          "type": "decision",
+          "content": "Fence Swift stream registration with disconnect generations: Fence Swift stream registration with disconnect generations",
+          "raw": {
+            "question": "Fence Swift stream registration with disconnect generations",
+            "chosen": "Fence Swift stream registration with disconnect generations",
+            "alternatives": [],
+            "reasoning": "Claude review identified tombstone growth and post-disconnect registration resurrection. Cancel-aware registration tasks eliminate termination tombstones, while a lock-protected generation invalidated at disconnect rejects actor tasks scheduled by older stream epochs."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed Swift SDK AsyncStream continuation leaks with cancellation cleanup, bounded buffers, lazy channel streams, disconnect generation fencing, and 129 passing regression tests",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bd1531aaea1bdb442c6c6c02498dc032cd0aecf6",
+    "endRef": "bd1531aaea1bdb442c6c6c02498dc032cd0aecf6"
+  }
+}
