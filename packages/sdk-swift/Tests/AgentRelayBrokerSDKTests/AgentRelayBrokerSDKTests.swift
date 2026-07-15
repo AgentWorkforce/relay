@@ -10,20 +10,40 @@ private actor MockRelayHTTP: RelayHTTPClient {
     }
 
     private var requests: [Request] = []
+    private var responses: [String: Data] = [:]
+    private var nextError: RelayError?
+
+    /// Stub the response body returned for an exact request `path`.
+    func setResponse(_ json: String, for path: String) {
+        responses[path] = Data(json.utf8)
+    }
+
+    /// Make the next request throw the given protocol error.
+    func setNextError(_ error: RelayError) {
+        nextError = error
+    }
 
     func post(path: String, body: Data?) async throws -> Data {
         requests.append(Request(method: "POST", path: path, body: body))
-        return Data()
+        return try respond(for: path)
     }
 
     func delete(path: String, body: Data?) async throws -> Data {
         requests.append(Request(method: "DELETE", path: path, body: body))
-        return Data()
+        return try respond(for: path)
     }
 
     func get(path: String) async throws -> Data {
         requests.append(Request(method: "GET", path: path, body: nil))
-        return Data()
+        return try respond(for: path)
+    }
+
+    private func respond(for path: String) throws -> Data {
+        if let error = nextError {
+            nextError = nil
+            throw error
+        }
+        return responses[path] ?? Data()
     }
 
     func allRequests() -> [Request] {
@@ -249,5 +269,283 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         events = await recorder.all()
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.body, "hello")
+    }
+
+    // MARK: - Broker control & observability
+
+    func testResolveAPIURLPreservesEmbeddedQuery() {
+        let url = RelayHTTP.resolveAPIURL(
+            baseURL: URL(string: "http://localhost:3889")!,
+            path: "/api/spawned/worker-a/snapshot?format=ansi"
+        )
+        XCTAssertEqual(url?.absoluteString, "http://localhost:3889/api/spawned/worker-a/snapshot?format=ansi")
+    }
+
+    func testSendMessagePayloadEncodesFullParityFields() throws {
+        let payload = SendMessagePayload(
+            to: "Builder",
+            text: "Please continue",
+            from: "Lead",
+            threadId: "thread-1",
+            workspaceId: "workspace-1",
+            workspaceAlias: "default",
+            priority: 5,
+            data: ["ticket": .string("ENG-123")],
+            mode: .steer
+        )
+        let object = try jsonObject(try JSONEncoder().encode(payload))
+        XCTAssertEqual(object["thread_id"] as? String, "thread-1")
+        XCTAssertEqual(object["workspace_id"] as? String, "workspace-1")
+        XCTAssertEqual(object["workspace_alias"] as? String, "default")
+        XCTAssertEqual(object["mode"] as? String, "steer")
+        XCTAssertEqual((object["data"] as? [String: Any])?["ticket"] as? String, "ENG-123")
+    }
+
+    func testListAgentsUnwrapsAgentsAndDecodesWireKeys() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            """
+            { "agents": [{
+              "name": "Builder",
+              "runtime": "pty",
+              "cli": "codex",
+              "sessionId": "ses_1",
+              "channels": ["dev"],
+              "last_activity_ms": 42,
+              "context_budget_pct": 12.5,
+              "current_state": "blocked_on_send"
+            }] }
+            """,
+            for: "/api/spawned"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let agents = try await core.listAgents()
+
+        XCTAssertEqual(agents.count, 1)
+        XCTAssertEqual(agents.first?.name, "Builder")
+        // The broker emits `sessionId` in camelCase, not `session_id`.
+        XCTAssertEqual(agents.first?.sessionId, "ses_1")
+        XCTAssertEqual(agents.first?.lastActivityMs, 42)
+        XCTAssertEqual(agents.first?.contextBudgetPct, 12.5)
+        XCTAssertEqual(agents.first?.currentState, .blockedOnSend)
+    }
+
+    func testSendInputPostsToInputEndpoint() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "name": "Worker1", "bytes_written": 5 }"#, for: "/api/input/Worker1")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.sendInput(name: "Worker1", data: "hello")
+
+        let requests = await http.allRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/api/input/Worker1")
+        XCTAssertEqual(try jsonObject(try XCTUnwrap(request.body))["data"] as? String, "hello")
+        XCTAssertEqual(result.bytesWritten, 5)
+    }
+
+    func testResizePtyUsesResizeEndpointAndOmitsNilDimensions() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "name": "Worker1", "released": true }"#, for: "/api/resize/Worker1")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.resizePty(name: "Worker1", rows: nil, cols: nil, sessionId: "sess-1", release: true)
+
+        let requests = await http.allRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.path, "/api/resize/Worker1")
+        let body = try jsonObject(try XCTUnwrap(request.body))
+        XCTAssertEqual(body["session_id"] as? String, "sess-1")
+        XCTAssertEqual(body["release"] as? Bool, true)
+        XCTAssertNil(body["rows"])
+        XCTAssertNil(body["cols"])
+        XCTAssertEqual(result.released, true)
+    }
+
+    func testSnapshotBuildsFormatQuery() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            #"{ "format": "ansi", "rows": 24, "cols": 80, "cursor": [1, 2], "screen": "AA==", "offset": 99 }"#,
+            for: "/api/spawned/Worker1/snapshot?format=ansi"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let snapshot = try await core.snapshot(name: "Worker1", format: .ansi)
+
+        let requests = await http.allRequests()
+        XCTAssertEqual(requests.first?.path, "/api/spawned/Worker1/snapshot?format=ansi")
+        XCTAssertEqual(snapshot.format, .ansi)
+        XCTAssertEqual(snapshot.cursor, [1, 2])
+        XCTAssertEqual(snapshot.offset, 99)
+    }
+
+    func testSendMessageDecodesResult() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "event_id": "evt_1", "targets": ["Builder"] }"#, for: "/api/send")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.sendMessage(SendMessagePayload(to: "Builder", text: "hi", mode: .wait))
+
+        let requests = await http.allRequests()
+        XCTAssertEqual(requests.first?.path, "/api/send")
+        XCTAssertEqual(result.eventId, "evt_1")
+        XCTAssertEqual(result.targets, ["Builder"])
+    }
+
+    func testSendMessageSwallowsUnsupportedOperation() async throws {
+        let http = MockRelayHTTP()
+        await http.setNextError(.protocolError(code: "unsupported_operation", message: "n/a", retryable: false))
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.sendMessage(SendMessagePayload(to: "Builder", text: "hi"))
+
+        XCTAssertEqual(result.eventId, "unsupported_operation")
+        XCTAssertTrue(result.targets.isEmpty)
+    }
+
+    func testSetModelPostsBody() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "name": "Worker1", "model": "opus", "success": true }"#, for: "/api/spawned/Worker1/model")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.setModel(name: "Worker1", model: "opus", timeoutMs: 2000)
+
+        let requests = await http.allRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.path, "/api/spawned/Worker1/model")
+        let body = try jsonObject(try XCTUnwrap(request.body))
+        XCTAssertEqual(body["model"] as? String, "opus")
+        XCTAssertEqual(body["timeout_ms"] as? Int, 2000)
+        XCTAssertTrue(result.success)
+    }
+
+    func testSubscribeChannelsPostsChannels() async throws {
+        let http = MockRelayHTTP()
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        try await core.subscribeChannels(name: "Worker1", channels: ["dev", "ops"])
+
+        let requests = await http.allRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.path, "/api/spawned/Worker1/subscribe")
+        XCTAssertEqual(try jsonObject(try XCTUnwrap(request.body))["channels"] as? [String], ["dev", "ops"])
+    }
+
+    func testGetMetricsBuildsAgentQuery() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            #"{ "agents": [{ "name": "Worker1", "pid": 10, "memory_bytes": 2048, "uptime_secs": 30 }] }"#,
+            for: "/api/metrics?agent=Worker1"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let metrics = try await core.getMetrics(agent: "Worker1")
+
+        let requests = await http.allRequests()
+        XCTAssertEqual(requests.first?.path, "/api/metrics?agent=Worker1")
+        XCTAssertEqual(metrics.agents.first?.memoryBytes, 2048)
+        XCTAssertEqual(metrics.agents.first?.uptimeSecs, 30)
+    }
+
+    func testGetStatusDecodesParityFields() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            """
+            {
+              "agent_count": 1,
+              "agents": [{
+                "name": "Builder", "runtime": "pty", "cli": "codex", "channels": ["dev"],
+                "last_activity_ms": 42, "context_budget_pct": 12.5, "current_state": "blocked_on_send"
+              }],
+              "pending_delivery_count": 1,
+              "pending_deliveries": [{
+                "delivery_id": "del_1", "worker_name": "Builder", "event_id": "evt_1", "attempts": 2
+              }]
+            }
+            """,
+            for: "/api/status"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let status = try await core.getStatus()
+
+        XCTAssertEqual(status.agentCount, 1)
+        XCTAssertEqual(status.agents.first?.currentState, .blockedOnSend)
+        XCTAssertEqual(status.pendingDeliveries.first?.deliveryId, "del_1")
+        XCTAssertEqual(status.pendingDeliveries.first?.workerName, "Builder")
+    }
+
+    func testGetCrashInsightsDecodesBrokerShape() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            """
+            {
+              "total_crashes": 2,
+              "health_score": 80,
+              "recent": [{
+                "agent_name": "Builder", "exit_code": 137, "timestamp": 1700,
+                "uptime_secs": 12, "category": "oom", "description": "Exit code 137 (likely OOM killed)"
+              }],
+              "patterns": [{ "category": "oom", "count": 2, "agents": ["Builder"] }]
+            }
+            """,
+            for: "/api/crash-insights"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let insights = try await core.getCrashInsights()
+
+        XCTAssertEqual(insights.totalCrashes, 2)
+        XCTAssertEqual(insights.healthScore, 80)
+        XCTAssertEqual(insights.recent.first?.agentName, "Builder")
+        XCTAssertEqual(insights.recent.first?.exitCode, 137)
+        XCTAssertEqual(insights.recent.first?.category, .oom)
+        XCTAssertEqual(insights.patterns.first?.count, 2)
+        XCTAssertEqual(insights.patterns.first?.agents, ["Builder"])
+    }
+
+    func testPreflightSkipsRequestWhenEmpty() async throws {
+        let http = MockRelayHTTP()
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.preflight(agents: [])
+
+        let requests = await http.allRequests()
+        XCTAssertEqual(result.queued, 0)
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testPreflightPostsAgents() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "queued": 2 }"#, for: "/api/preflight")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.preflight(agents: [
+            PreflightAgent(name: "A", cli: "codex"),
+            PreflightAgent(name: "B", cli: "claude")
+        ])
+
+        let requests = await http.allRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.path, "/api/preflight")
+        let agents = try jsonObject(try XCTUnwrap(request.body))["agents"] as? [[String: Any]]
+        XCTAssertEqual(agents?.count, 2)
+        XCTAssertEqual(agents?.first?["cli"] as? String, "codex")
+        XCTAssertEqual(result.queued, 2)
+    }
+
+    func testRenewLeaseDecodes() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "renewed": true, "expires_in_secs": 600 }"#, for: "/api/session/renew")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.renewLease()
+
+        let requests = await http.allRequests()
+        XCTAssertEqual(requests.first?.path, "/api/session/renew")
+        XCTAssertTrue(result.renewed)
+        XCTAssertEqual(result.expiresInSecs, 600)
     }
 }

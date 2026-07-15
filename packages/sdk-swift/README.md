@@ -181,6 +181,17 @@ import AgentRelayBrokerSDK
 
 let broker = AgentRelayBrokerClient(apiKey: "local")
 try await broker.spawnAgent(AgentSpec(name: "worker", runtime: .headless, provider: .claude))
+
+// Broker control & observability (parity with the TS harness driver):
+let agents = try await broker.listAgents()
+try await broker.sendInput(name: "worker", data: "yes\n")
+let snapshot = try await broker.snapshot(name: "worker", format: .plain)
+try await broker.setModel(name: "worker", model: "claude-opus-4-8")
+let status = try await broker.getStatus()
+let metrics = try await broker.getMetrics()
+let insights = try await broker.getCrashInsights()
+try await broker.preflight(agents: [PreflightAgent(name: "worker", cli: "claude")])
+try await broker.renewLease()
 ```
 
 ## API
@@ -217,5 +228,18 @@ try await broker.spawnAgent(AgentSpec(name: "worker", runtime: .headless, provid
   - `spawnAgent(_:initialTask:skipRelayPrompt:)`
   - `releaseAgent(name:reason:)`
   - `registerOrRotate(name:)`
+  - `listAgents()`
+  - `sendInput(name:data:)`
+  - `resizePty(name:rows:cols:sessionId:release:)`
+  - `flushPending(name:)`
+  - `snapshot(name:format:)`
+  - `sendMessage(to:text:from:threadId:workspaceId:workspaceAlias:priority:data:mode:)`
+  - `setModel(name:model:timeoutMs:)`
+  - `subscribeChannels(name:channels:)` / `unsubscribeChannels(name:channels:)`
+  - `getStatus()`
+  - `getMetrics(agent:)`
+  - `getCrashInsights()`
+  - `preflight(agents:)`
+  - `renewLease()`
   - `brokerEvents`
   - `inboundMessages`

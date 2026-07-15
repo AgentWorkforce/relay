@@ -177,12 +177,35 @@ public struct SendMessagePayload: Codable, Sendable {
     public var workspaceAlias: String?
     public var priority: Int?
     public var data: [String: JSONValue]?
+    public var mode: RelayMessageMode?
 
     enum CodingKeys: String, CodingKey {
-        case to, text, from, priority, data
+        case to, text, from, priority, data, mode
         case threadId = "thread_id"
         case workspaceId = "workspace_id"
         case workspaceAlias = "workspace_alias"
+    }
+
+    public init(
+        to: String,
+        text: String,
+        from: String? = nil,
+        threadId: String? = nil,
+        workspaceId: String? = nil,
+        workspaceAlias: String? = nil,
+        priority: Int? = nil,
+        data: [String: JSONValue]? = nil,
+        mode: RelayMessageMode? = nil
+    ) {
+        self.to = to
+        self.text = text
+        self.from = from
+        self.threadId = threadId
+        self.workspaceId = workspaceId
+        self.workspaceAlias = workspaceAlias
+        self.priority = priority
+        self.data = data
+        self.mode = mode
     }
 }
 
@@ -397,6 +420,324 @@ public struct AgentIdleEvent: Codable, Sendable { public var kind: String = "age
 public struct AgentRestartingEvent: Codable, Sendable { public var kind: String = "agent_restarting"; public var name: String; public var code: Int?; public var signal: String?; public var restartCount: Int; public var delayMs: Int; enum CodingKeys: String, CodingKey { case kind, name, code, signal; case restartCount = "restart_count"; case delayMs = "delay_ms" } }
 public struct AgentRestartedEvent: Codable, Sendable { public var kind: String = "agent_restarted"; public var name: String; public var restartCount: Int; enum CodingKeys: String, CodingKey { case kind, name; case restartCount = "restart_count" } }
 public struct AgentPermanentlyDeadEvent: Codable, Sendable { public var kind: String = "agent_permanently_dead"; public var name: String; public var reason: String }
+
+// MARK: - Broker control & observability
+
+/// Injection mode for a Relay message. `wait` queues the message and injects it
+/// when the target agent is idle; `steer` interrupts the agent immediately.
+public enum RelayMessageMode: String, Codable, Sendable {
+    case wait
+    case steer
+}
+
+/// Compatibility alias mirroring the harness-driver `MessageInjectionMode` name.
+public typealias MessageInjectionMode = RelayMessageMode
+
+/// Rendering format for a PTY snapshot.
+public enum SnapshotFormat: String, Codable, Sendable {
+    case plain
+    case ansi
+}
+
+/// Coarse activity state the broker reports for a worker.
+public enum AgentCurrentState: String, Codable, Sendable {
+    case working
+    case idle
+    case blockedOnSend = "blocked_on_send"
+}
+
+/// Classification the broker assigns to a crash.
+public enum CrashCategory: String, Codable, Sendable {
+    case oom
+    case segfault
+    case error
+    case signal
+    case unknown
+}
+
+/// One entry from `GET /api/spawned`.
+public struct ListAgent: Codable, Sendable {
+    public var name: String
+    public var runtime: AgentRuntime
+    public var provider: HeadlessProvider?
+    public var cli: String?
+    public var model: String?
+    public var sessionId: String?
+    public var team: String?
+    public var channels: [String]
+    public var parent: String?
+    public var pid: Int?
+    public var lastActivityAt: String?
+    public var lastActivityMs: Int?
+    public var contextBudgetPct: Double?
+    public var currentState: AgentCurrentState?
+
+    // The broker emits `sessionId` in camelCase but the activity/state fields in
+    // snake_case (see crates/broker/src/worker.rs::list), so map only those.
+    enum CodingKeys: String, CodingKey {
+        case name, runtime, provider, cli, model, sessionId, team, channels, parent, pid
+        case lastActivityAt = "last_activity_at"
+        case lastActivityMs = "last_activity_ms"
+        case contextBudgetPct = "context_budget_pct"
+        case currentState = "current_state"
+    }
+}
+
+/// Result of `POST /api/input/{name}`.
+public struct SendInputResult: Codable, Sendable {
+    public var name: String
+    public var bytesWritten: Int
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case bytesWritten = "bytes_written"
+    }
+}
+
+/// Result of `POST /api/resize/{name}`.
+public struct ResizePtyResult: Codable, Sendable {
+    public var name: String
+    public var rows: Int?
+    public var cols: Int?
+    public var applied: Bool?
+    public var released: Bool?
+}
+
+/// Result of `POST /api/spawned/{name}/flush`.
+public struct FlushResult: Codable, Sendable {
+    public var flushed: Int
+}
+
+/// A PTY screen snapshot (`GET /api/spawned/{name}/snapshot`).
+public struct PtySnapshot: Codable, Sendable {
+    public var format: SnapshotFormat
+    public var rows: Int
+    public var cols: Int
+    /// `[row, col]` cursor position.
+    public var cursor: [Int]
+    /// Plain text for `format=plain`; base64-encoded ANSI bytes for `format=ansi`.
+    public var screen: String
+    /// Cumulative worker byte offset consumed when captured; absent on older brokers.
+    public var offset: Int?
+}
+
+/// Result of `POST /api/send`.
+public struct SendMessageResult: Codable, Sendable {
+    public var eventId: String
+    public var targets: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case eventId = "event_id"
+        case targets
+    }
+}
+
+/// Result of `POST /api/spawned/{name}/model`.
+public struct ModelUpdateResult: Codable, Sendable {
+    public var name: String
+    public var model: String
+    public var success: Bool
+}
+
+/// One agent's process metrics from `GET /api/metrics`.
+public struct ProcessAgentMetrics: Codable, Sendable {
+    public var name: String
+    public var pid: Int
+    public var memoryBytes: Int
+    public var uptimeSecs: Int
+
+    enum CodingKeys: String, CodingKey {
+        case name, pid
+        case memoryBytes = "memory_bytes"
+        case uptimeSecs = "uptime_secs"
+    }
+}
+
+/// Broker-level aggregate metrics.
+public struct BrokerStats: Codable, Sendable {
+    public var uptimeSecs: Int
+    public var totalAgentsSpawned: Int
+    public var totalCrashes: Int
+    public var totalRestarts: Int
+    public var activeAgents: Int
+
+    enum CodingKeys: String, CodingKey {
+        case uptimeSecs = "uptime_secs"
+        case totalAgentsSpawned = "total_agents_spawned"
+        case totalCrashes = "total_crashes"
+        case totalRestarts = "total_restarts"
+        case activeAgents = "active_agents"
+    }
+}
+
+/// Response of `GET /api/metrics`.
+public struct MetricsResponse: Codable, Sendable {
+    public var agents: [ProcessAgentMetrics]
+    public var broker: BrokerStats?
+}
+
+/// A queued-but-undelivered relay message tracked by the broker.
+public struct PendingDeliveryInfo: Codable, Sendable {
+    public var deliveryId: String
+    public var workerName: String
+    public var eventId: String
+    public var from: String?
+    public var to: String?
+    public var attempts: Int
+    public var queuedAtMs: Int?
+    public var ageMs: Int?
+    public var lastError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case from, to, attempts
+        case deliveryId = "delivery_id"
+        case workerName = "worker_name"
+        case eventId = "event_id"
+        case queuedAtMs = "queued_at_ms"
+        case ageMs = "age_ms"
+        case lastError = "last_error"
+    }
+}
+
+/// One authenticated workspace within `BrokerAuthStatus`.
+public struct BrokerAuthWorkspace: Codable, Sendable {
+    public var workspaceId: String
+    public var workspaceAlias: String?
+    public var selfName: String
+    public var selfAgentId: String
+    public var authenticated: Bool
+    public var `default`: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case authenticated
+        case `default`
+        case workspaceId = "workspace_id"
+        case workspaceAlias = "workspace_alias"
+        case selfName = "self_name"
+        case selfAgentId = "self_agent_id"
+    }
+}
+
+/// Relaycast auth summary in `BrokerStatus`.
+public struct BrokerAuthStatus: Codable, Sendable {
+    public var authenticated: Bool
+    public var workspaceCount: Int
+    public var defaultWorkspaceId: String?
+    public var workspaces: [BrokerAuthWorkspace]
+
+    enum CodingKeys: String, CodingKey {
+        case authenticated, workspaces
+        case workspaceCount = "workspace_count"
+        case defaultWorkspaceId = "default_workspace_id"
+    }
+}
+
+/// One agent entry within `BrokerStatus`.
+public struct BrokerStatusAgent: Codable, Sendable {
+    public var name: String
+    public var runtime: AgentRuntime
+    public var provider: HeadlessProvider?
+    public var cli: String?
+    public var model: String?
+    public var team: String?
+    public var channels: [String]
+    public var parent: String?
+    public var pid: Int?
+    public var lastActivityAt: String?
+    public var lastActivityMs: Int?
+    public var contextBudgetPct: Double?
+    public var currentState: AgentCurrentState?
+
+    enum CodingKeys: String, CodingKey {
+        case name, runtime, provider, cli, model, team, channels, parent, pid
+        case lastActivityAt = "last_activity_at"
+        case lastActivityMs = "last_activity_ms"
+        case contextBudgetPct = "context_budget_pct"
+        case currentState = "current_state"
+    }
+}
+
+/// Response of `GET /api/status`.
+public struct BrokerStatus: Codable, Sendable {
+    public var agentCount: Int
+    public var agents: [BrokerStatusAgent]
+    public var pendingDeliveryCount: Int
+    public var pendingDeliveries: [PendingDeliveryInfo]
+    public var auth: BrokerAuthStatus?
+
+    enum CodingKeys: String, CodingKey {
+        case agents, auth
+        case agentCount = "agent_count"
+        case pendingDeliveryCount = "pending_delivery_count"
+        case pendingDeliveries = "pending_deliveries"
+    }
+}
+
+/// A single crash record from `GET /api/crash-insights`.
+public struct CrashRecord: Codable, Sendable {
+    public var agentName: String
+    public var exitCode: Int?
+    public var signal: String?
+    public var timestamp: Int
+    public var uptimeSecs: Int
+    public var category: CrashCategory
+    public var description: String
+
+    enum CodingKeys: String, CodingKey {
+        case signal, timestamp, category, description
+        case agentName = "agent_name"
+        case exitCode = "exit_code"
+        case uptimeSecs = "uptime_secs"
+    }
+}
+
+/// A grouped crash pattern within `CrashInsightsResponse`.
+public struct CrashPattern: Codable, Sendable {
+    public var category: CrashCategory
+    public var count: Int
+    public var agents: [String]
+}
+
+/// Response of `GET /api/crash-insights`.
+public struct CrashInsightsResponse: Codable, Sendable {
+    public var totalCrashes: Int
+    public var recent: [CrashRecord]
+    public var patterns: [CrashPattern]
+    public var healthScore: Int
+
+    enum CodingKeys: String, CodingKey {
+        case recent, patterns
+        case totalCrashes = "total_crashes"
+        case healthScore = "health_score"
+    }
+}
+
+/// One agent descriptor for `POST /api/preflight`.
+public struct PreflightAgent: Codable, Sendable {
+    public var name: String
+    public var cli: String
+
+    public init(name: String, cli: String) {
+        self.name = name
+        self.cli = cli
+    }
+}
+
+/// Result of `POST /api/preflight`.
+public struct PreflightResult: Codable, Sendable {
+    public var queued: Int
+}
+
+/// Result of `POST /api/session/renew`.
+public struct RenewLeaseResult: Codable, Sendable {
+    public var renewed: Bool
+    public var expiresInSecs: Int
+
+    enum CodingKeys: String, CodingKey {
+        case renewed
+        case expiresInSecs = "expires_in_secs"
+    }
+}
 
 public enum JSONValue: Codable, Sendable {
     case string(String)

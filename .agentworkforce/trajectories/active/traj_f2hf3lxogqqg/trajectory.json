@@ -1,0 +1,50 @@
+{
+  "id": "traj_f2hf3lxogqqg",
+  "version": 1,
+  "task": {
+    "title": "Port PR #1103 Swift broker-parity helpers onto new AgentRelayBrokerSDK module",
+    "source": {
+      "system": "plain",
+      "id": "PR-1103"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-07-15T01:22:22.487Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T01:26:52.477Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_6oq6er9im6ex",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T01:26:52.477Z",
+      "events": [
+        {
+          "ts": 1784078812479,
+          "type": "decision",
+          "content": "Port PR #1103 onto AgentRelayBrokerSDK module, correcting wire bugs: Port PR #1103 onto AgentRelayBrokerSDK module, correcting wire bugs",
+          "raw": {
+            "question": "Port PR #1103 onto AgentRelayBrokerSDK module, correcting wire bugs",
+            "chosen": "Port PR #1103 onto AgentRelayBrokerSDK module, correcting wire bugs",
+            "alternatives": [],
+            "reasoning": "PR targeted the retired monolithic AgentRelaySDK. Verified real broker routes in crates/broker/src/listen_api.rs and TS driver packages/harness-driver/src/client.ts: sendInput=/api/input/{name}, resizePty=/api/resize/{name} (PR had /api/spawned/{name}/...), listAgents returns {agents:[]}, ListAgent.sessionId is camelCase wire key, and crash-insight types differ from PR's guesses (agent_name/exit_code/timestamp/uptime_secs/category/description + health_score)."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "64c874e4fab9f55522dc8c95acfe7ab69737712c",
+    "endRef": "64c874e4fab9f55522dc8c95acfe7ab69737712c"
+  }
+}
