@@ -165,9 +165,7 @@ function createEmbeddedDependencies(
   const env = { ...(runtime.env ?? dependencyOverrides.env ?? process.env) };
   const embeddedGetProjectPaths: CoreDependencies['getProjectPaths'] | undefined =
     dependencyOverrides.getProjectPaths ??
-    (isolatedEnvProvided
-      ? () => getProjectPaths(env.AGENT_RELAY_PROJECT ?? process.cwd()) as unknown as CoreProjectPaths
-      : undefined);
+    (isolatedEnvProvided ? () => getProjectPaths(undefined, env) as unknown as CoreProjectPaths : undefined);
   const createRelay: CoreDependencies['createRelay'] =
     dependencyOverrides.createRelay ??
     ((cwd, apiPort, brokerName, verbose) =>

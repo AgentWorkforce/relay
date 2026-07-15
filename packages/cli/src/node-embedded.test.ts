@@ -300,6 +300,44 @@ describe('embedded node lifecycle', () => {
     }
   });
 
+  it('retains upward project-marker discovery when the isolated env has no override', async () => {
+    const projectRoot = makeTempRoot();
+    const nested = path.join(projectRoot, 'packages', 'nested');
+    const stateDir = path.join(projectRoot, '.agentworkforce', 'relay');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, 'package.json'), '{}');
+    fs.writeFileSync(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({
+        url: 'http://127.0.0.1:65534',
+        port: 65534,
+        api_key: 'test',
+        pid: process.pid,
+      })
+    );
+    const originalCwd = process.cwd();
+    const originalHostProject = process.env.AGENT_RELAY_PROJECT;
+    delete process.env.AGENT_RELAY_PROJECT;
+    process.chdir(nested);
+    const resolvedProjectRoot = path.resolve(process.cwd(), '..', '..');
+
+    try {
+      const result = await statusEmbeddedNode({ waitFor: '0.001' }, { env: {} });
+
+      expect(result.output).toContainEqual({ level: 'info', message: 'Status: STARTING' });
+      expect(result.output).toContainEqual({
+        level: 'info',
+        message: `Project: ${resolvedProjectRoot}`,
+      });
+      expect(result).toMatchObject({ ok: false, code: 1 });
+    } finally {
+      process.chdir(originalCwd);
+      if (originalHostProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = originalHostProject;
+    }
+  });
+
   it('resolves the bundled MCP helper beside the package CLI instead of the host script', async () => {
     const projectRoot = makeTempRoot();
     const { overrides } = successfulLifecycleOverrides(projectRoot);

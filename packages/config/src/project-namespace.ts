@@ -30,10 +30,13 @@ function hashPath(projectPath: string): string {
  * 1. AGENT_RELAY_PROJECT environment variable (for worktrees/subprojects)
  * 2. Find project root by looking for markers (.git, package.json, etc.)
  */
-export function findProjectRoot(startDir: string = process.cwd()): string {
+export function findProjectRoot(
+  startDir: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env
+): string {
   // Allow explicit override for worktrees and subprojects
-  if (process.env.AGENT_RELAY_PROJECT) {
-    return path.resolve(process.env.AGENT_RELAY_PROJECT);
+  if (env.AGENT_RELAY_PROJECT) {
+    return path.resolve(env.AGENT_RELAY_PROJECT);
   }
 
   let current = path.resolve(startDir);
@@ -72,8 +75,8 @@ export interface ProjectPaths {
   projectId: string;
 }
 
-export function getProjectPaths(projectRoot?: string): ProjectPaths {
-  const root = projectRoot ?? findProjectRoot();
+export function getProjectPaths(projectRoot?: string, env: NodeJS.ProcessEnv = process.env): ProjectPaths {
+  const root = projectRoot ?? findProjectRoot(process.cwd(), env);
   const projectId = hashPath(root);
   // Store data in project-local .agentworkforce/relay/ directory
   const dataDir = path.join(root, PROJECT_DATA_DIR);
