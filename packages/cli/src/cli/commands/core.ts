@@ -189,6 +189,10 @@ export async function createDefaultRelay(
     binaryArgs,
     brokerName,
     env,
+    // An explicit runtime environment belongs to an embedder and must be the
+    // broker child's complete base environment. The terminal CLI omits this
+    // override and retains normal process.env inheritance.
+    ...(runtime.env !== undefined ? { parentEnv: env } : {}),
     preferConnect: apiPort > 0,
     ...(verbose
       ? {

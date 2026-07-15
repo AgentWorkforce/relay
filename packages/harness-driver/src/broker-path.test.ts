@@ -77,6 +77,16 @@ describe('broker binary path resolution', () => {
     expect(getBrokerBinaryPath()).toBe(path.resolve(agentRelayBin));
   });
 
+  it('uses an explicit isolated env instead of host binary overrides', async () => {
+    const hostBinary = makeExecutable('host-broker');
+    const embeddedBinary = makeExecutable('embedded-broker');
+    process.env.AGENT_RELAY_BIN = hostBinary;
+
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+
+    expect(getBrokerBinaryPath({ AGENT_RELAY_BIN: embeddedBinary })).toBe(path.resolve(embeddedBinary));
+  });
+
   it('resolves the broker from the platform optional dependency package', async () => {
     const pkgName = `@agent-relay/broker-${process.platform}-${process.arch}`;
     const ext = process.platform === 'win32' ? '.exe' : '';
@@ -125,6 +135,7 @@ describe('broker binary path resolution', () => {
       {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        env: process.env,
       }
     );
   });

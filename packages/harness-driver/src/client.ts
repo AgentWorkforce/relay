@@ -290,14 +290,16 @@ export class HarnessDriverClient {
    *
    * @param cwd — project directory (default: process.cwd())
    * @param connectionPath — explicit path to connection.json (overrides cwd)
+   * @param env — environment used to resolve AGENT_RELAY_STATE_DIR (default: process.env)
    */
   static connect(options?: {
     cwd?: string;
     connectionPath?: string;
+    env?: NodeJS.ProcessEnv;
     eventBus?: EventBus<HarnessDriverEvents>;
   }): HarnessDriverClient {
     const cwd = options?.cwd ?? process.cwd();
-    const stateDir = process.env.AGENT_RELAY_STATE_DIR;
+    const stateDir = (options?.env ?? process.env).AGENT_RELAY_STATE_DIR;
     const connPath =
       options?.connectionPath ??
       path.join(stateDir ?? path.join(cwd, '.agentworkforce/relay'), 'connection.json');
@@ -347,9 +349,11 @@ export class HarnessDriverClient {
    */
   static async spawn(options?: RuntimeSpawnOptions): Promise<HarnessDriverClient> {
     const onStep = options?.onStep;
+    const parentEnv = options?.parentEnv ?? process.env;
+    const resolutionEnv = { ...parentEnv, ...options?.env };
     let binaryPath = options?.binaryPath;
     if (!binaryPath) {
-      const resolved = getBrokerBinaryPath();
+      const resolved = getBrokerBinaryPath(resolutionEnv);
       if (!resolved) {
         throw new Error(formatBrokerNotFoundError());
       }
@@ -357,7 +361,7 @@ export class HarnessDriverClient {
     }
     onStep?.(`Resolved broker binary: ${binaryPath}`);
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
-    const { cwd, timeoutMs, args, env } = buildBrokerSpawnConfig(options, apiKey);
+    const { cwd, timeoutMs, args, env } = buildBrokerSpawnConfig(options, apiKey, parentEnv);
     const stderrLines: string[] = [];
     const stdoutLines: string[] = [];
 

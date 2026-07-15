@@ -78,6 +78,8 @@ it wants Relay to shut down. Embedded startup is foreground-only;
 `background: true` returns a structured code-2 failure because detached mode
 belongs to the process-oriented CLI. Use `downEmbeddedNode` and
 `statusEmbeddedNode` when controlling a broker through its persisted state.
+When `runtime.env` is supplied, that cloned environment is authoritative for
+broker binary lookup, state lookup, and the spawned broker process.
 
 ## Packages
 

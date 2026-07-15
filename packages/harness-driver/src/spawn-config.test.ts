@@ -83,4 +83,28 @@ describe('buildBrokerSpawnConfig', () => {
       '/tmp/relay-state',
     ]);
   });
+
+  it('does not reintroduce host-only variables when an isolated parent env is supplied', () => {
+    const hostOnlyKey = 'AGENT_RELAY_TEST_HOST_ONLY';
+    const originalHostOnly = process.env[hostOnlyKey];
+    process.env[hostOnlyKey] = 'host-secret';
+    const parentEnv = { EMBEDDED_ONLY: '1' } as NodeJS.ProcessEnv;
+
+    try {
+      const config = buildBrokerSpawnConfig(
+        {
+          cwd: '/tmp/my-project',
+          env: parentEnv,
+          parentEnv,
+        },
+        'br_test'
+      );
+
+      expect(config.env.EMBEDDED_ONLY).toBe('1');
+      expect(config.env[hostOnlyKey]).toBeUndefined();
+    } finally {
+      if (originalHostOnly === undefined) delete process.env[hostOnlyKey];
+      else process.env[hostOnlyKey] = originalHostOnly;
+    }
+  });
 });

@@ -63,8 +63,7 @@ export interface EmbeddedNodeHandle {
 }
 
 export type EmbeddedNodeStartResult =
-  | (EmbeddedNodeCommandSuccess & { handle: EmbeddedNodeHandle })
-  | EmbeddedNodeCommandFailure;
+  (EmbeddedNodeCommandSuccess & { handle: EmbeddedNodeHandle }) | EmbeddedNodeCommandFailure;
 
 /** A distinguishable replacement for the CLI's process-terminating exit dependency. */
 export class BrokerLifecycleExitError extends Error {
@@ -119,9 +118,10 @@ function createOutputRecorder(runtime: EmbeddedNodeRuntimeOptions): OutputRecord
     resultFrom: (error?: unknown): EmbeddedNodeCommandResult => {
       const snapshot = output.map((entry) => ({ ...entry }));
       if (error === undefined) {
-        const reportedError = snapshot.find((entry) => entry.level === 'error');
-        if (!reportedError) return { ok: true, code: 0, output: snapshot };
-        return { ok: false, code: 1, message: reportedError.message, output: snapshot };
+        // The lifecycle promise is authoritative. Output can include routine
+        // diagnostics on stderr and must never turn a clean completion into a
+        // failure after the fact.
+        return { ok: true, code: 0, output: snapshot };
       }
       const code = error instanceof BrokerLifecycleExitError ? error.code : 1;
       if (code === 0) return { ok: true, code: 0, output: snapshot };
@@ -149,7 +149,7 @@ function createEmbeddedDependencies(
       createDefaultRelay(cwd, apiPort, brokerName, verbose, {
         env,
         onStep: (message) => recorder.emit('info', [`[agent-relay][verbose] ${message}`]),
-        onStderr: (line) => recorder.emit('error', [`[broker] ${line}`]),
+        onStderr: (line) => recorder.emit('info', [`[broker] ${line}`]),
       }));
 
   return withDefaults({

@@ -186,9 +186,9 @@ function getSourceCheckoutBinaryPaths(ext: string): string[] {
  *
  * @returns Absolute path to the broker binary, or null if not found
  */
-export function getBrokerBinaryPath(): string | null {
+export function getBrokerBinaryPath(env: NodeJS.ProcessEnv = process.env): string | null {
   const ext = process.platform === 'win32' ? '.exe' : '';
-  const override = process.env.BROKER_BINARY_PATH ?? process.env.AGENT_RELAY_BIN;
+  const override = env.BROKER_BINARY_PATH ?? env.AGENT_RELAY_BIN;
 
   if (override) {
     const resolvedOverride = resolve(override);
@@ -223,6 +223,7 @@ export function getBrokerBinaryPath(): string | null {
     const result = execFileSync(cmd, [BROKER_NAME], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      env,
     }).trim();
     if (result) {
       return result.split(/\r?\n/u)[0].trim();

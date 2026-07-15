@@ -50,7 +50,7 @@
     "@agent-relay/cloud": "10.2.0",
     "@agent-relay/config": "10.2.0",
     "@agent-relay/fleet": "10.2.0",
-    "@agent-relay/harness-driver": "10.2.0",
+    "@agent-relay/harness-driver": "10.3.0",
     "@agent-relay/sdk": "10.2.0",
     "@agent-relay/utils": "10.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0",

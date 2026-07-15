@@ -7,6 +7,8 @@ export interface CreateRuntimeClientOptions {
   binaryArgs?: BrokerInitArgs;
   brokerName?: string;
   env?: NodeJS.ProcessEnv;
+  /** Base environment inherited by the broker child. Defaults to process.env. */
+  parentEnv?: NodeJS.ProcessEnv;
   preferConnect?: boolean;
   /** Forward broker stderr lines to this callback (e.g. for `--verbose`). */
   onStderr?: (line: string) => void;
@@ -33,20 +35,26 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
   const {
     cwd,
     channels = ['general'],
-    binaryPath = process.env.AGENT_RELAY_BIN,
+    binaryPath: configuredBinaryPath,
     binaryArgs,
     brokerName,
-    env = process.env,
+    env: configuredEnv,
+    parentEnv,
     preferConnect = false,
     onStderr,
     onStep,
   } = options;
+  const env = configuredEnv ?? process.env;
+  const binaryPath = configuredBinaryPath ?? env.AGENT_RELAY_BIN;
 
   if (preferConnect) {
     try {
       // Await so an async connect rejection is caught here, not leaked to the
       // caller — otherwise the fallback spawn below never runs.
-      return await HarnessDriverClient.connect({ cwd });
+      return await HarnessDriverClient.connect({
+        cwd,
+        ...(configuredEnv !== undefined ? { env } : {}),
+      });
     } catch {
       // Fall through to spawning a fresh broker.
     }
@@ -59,6 +67,7 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     channels,
     cwd,
     env: env as Record<string, string>,
+    ...(parentEnv ? { parentEnv } : {}),
     onStderr,
     onStep,
   });
