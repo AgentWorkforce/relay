@@ -524,11 +524,26 @@ public struct PtySnapshot: Codable, Sendable {
 /// Result of `POST /api/send`.
 public struct SendMessageResult: Codable, Sendable {
     public var eventId: String
+    /// The broker's `/api/send` success response does not include a `targets`
+    /// field (see `crates/broker/src/runtime/api.rs`), so this decodes as an
+    /// empty array when absent. It is retained for parity with the TS driver's
+    /// `{ event_id, targets }` result shape.
     public var targets: [String]
 
     enum CodingKeys: String, CodingKey {
         case eventId = "event_id"
         case targets
+    }
+
+    public init(eventId: String, targets: [String] = []) {
+        self.eventId = eventId
+        self.targets = targets
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.eventId = try container.decode(String.self, forKey: .eventId)
+        self.targets = try container.decodeIfPresent([String].self, forKey: .targets) ?? []
     }
 }
 

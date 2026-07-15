@@ -394,6 +394,22 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         XCTAssertEqual(result.targets, ["Builder"])
     }
 
+    func testSendMessageDecodesBrokerSuccessWithoutTargets() async throws {
+        // The broker's real /api/send success response omits `targets`
+        // (crates/broker/src/runtime/api.rs); decoding must not throw.
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            #"{ "success": true, "event_id": "http_abc", "relaycast_published": true, "local": false, "workspace_id": "ws_1", "workspace_alias": "default" }"#,
+            for: "/api/send"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.sendMessage(SendMessagePayload(to: "Builder", text: "hi"))
+
+        XCTAssertEqual(result.eventId, "http_abc")
+        XCTAssertTrue(result.targets.isEmpty)
+    }
+
     func testSendMessageSwallowsUnsupportedOperation() async throws {
         let http = MockRelayHTTP()
         await http.setNextError(.protocolError(code: "unsupported_operation", message: "n/a", retryable: false))
