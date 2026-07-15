@@ -18,9 +18,7 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [
-    "9d238e2"
-  ],
+  "commits": ["9d238e2"],
   "filesChanged": [
     "packages/cli/src/cost/pricing.ts",
     "packages/cli/src/cost/tracker.test.ts",
