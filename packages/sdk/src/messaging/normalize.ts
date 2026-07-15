@@ -747,7 +747,11 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
         agentName: str(record, 'agent_name') ?? '',
         readAt: opt(str(record, 'read_at')),
       });
-    // Canonical reaction event plus the legacy split pair.
+    // Canonical reaction event plus the legacy split pair. The engine's raw
+    // workspace-stream frames and the durable event log (observer mode) carry
+    // reactions as a single `message.reacted` type with an `action` field;
+    // higher-level clients split it into `reaction.added`/`reaction.removed`
+    // before we see it. All three land here.
     case 'message.reacted':
     case 'reaction.added':
     case 'reaction.removed':
