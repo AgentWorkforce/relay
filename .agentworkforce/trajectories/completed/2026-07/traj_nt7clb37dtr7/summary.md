@@ -18,6 +18,7 @@ Merged current main into PR 1268, composed broker parity additions with stream l
 ## Key Decisions
 
 ### Compose broker parity APIs with stream lifecycle registries
+
 - **Chose:** Compose broker parity APIs with stream lifecycle registries
 - **Reasoning:** Current main added independent decoding/path helpers and control/observability tests; PR 1268 added UUID continuation registries and lifecycle tests. Keeping both preserves all behavior, with connection-state fan-out continuing through registry values.
 
@@ -26,6 +27,7 @@ Merged current main into PR 1268, composed broker parity additions with stream l
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Compose broker parity APIs with stream lifecycle registries: Compose broker parity APIs with stream lifecycle registries
