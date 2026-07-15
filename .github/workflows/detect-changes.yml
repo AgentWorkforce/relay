@@ -26,6 +26,12 @@ on:
         description: 'True when the Swift SDK (packages/sdk-swift/, Package.swift) or CI config changed'
         value: ${{ jobs.changes.outputs.sdk_swift_changed }}
 
+# Read-only: listFiles needs pull-requests read, compareCommits needs
+# contents read. Never inherit broader caller permissions.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   changes:
     name: Detect change scope
@@ -50,10 +56,14 @@ jobs:
                   pull_number: context.payload.pull_request.number,
                   per_page: 100,
                 });
-                files = changed.map((file) => file.filename);
+                // Renames classify BOTH paths: removing the old location can
+                // affect a domain the new location doesn't.
+                files = changed.flatMap((file) =>
+                  [file.filename, file.previous_filename].filter(Boolean)
+                );
                 // listFiles caps at 3000 entries; at the cap the list may be
                 // truncated.
-                if (files.length >= 3000) unknownScope = true;
+                if (changed.length >= 3000) unknownScope = true;
               } else if (context.eventName === 'push') {
                 const comparison = await github.rest.repos.compareCommits({
                   owner: context.repo.owner,
@@ -61,10 +71,13 @@ jobs:
                   base: context.payload.before,
                   head: context.sha,
                 });
-                files = (comparison.data.files || []).map((file) => file.filename);
+                const changedFiles = comparison.data.files || [];
+                files = changedFiles.flatMap((file) =>
+                  [file.filename, file.previous_filename].filter(Boolean)
+                );
                 // compareCommits caps the file list at 300 entries; at the cap
                 // the list may be truncated.
-                if (files.length >= 300) unknownScope = true;
+                if (changedFiles.length >= 300) unknownScope = true;
               } else {
                 unknownScope = true;
               }
