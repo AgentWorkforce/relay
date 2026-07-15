@@ -112,7 +112,11 @@ actor RelayHTTP: RelayHTTPClient {
         }
 
         let normalizedPath = rawPath.hasPrefix("/") ? rawPath : "/" + rawPath
-        components.path = basePath + normalizedPath
+        // Callers percent-encode dynamic path segments (agent names) before
+        // building `path`, so assign via `percentEncodedPath` — assigning to
+        // `.path` would re-encode the `%` and double-escape names containing
+        // spaces or `/`, addressing the wrong worker.
+        components.percentEncodedPath = basePath + normalizedPath
         components.percentEncodedQuery = rawQuery
         components.fragment = nil
         return components.url

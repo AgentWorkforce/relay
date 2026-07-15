@@ -281,6 +281,27 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         XCTAssertEqual(url?.absoluteString, "http://localhost:3889/api/spawned/worker-a/snapshot?format=ansi")
     }
 
+    func testResolveAPIURLDoesNotDoubleEncodePathSegments() {
+        // A pre-encoded segment (agent name "Worker 1" -> "Worker%201") must
+        // survive as a single encoding layer, not become "Worker%2520 1".
+        let url = RelayHTTP.resolveAPIURL(
+            baseURL: URL(string: "http://localhost:3889")!,
+            path: "/api/input/Worker%201"
+        )
+        XCTAssertEqual(url?.absoluteString, "http://localhost:3889/api/input/Worker%201")
+    }
+
+    func testSendInputEncodesSpacedAgentNameOnce() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "name": "Worker 1", "bytes_written": 1 }"#, for: "/api/input/Worker%201")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        _ = try await core.sendInput(name: "Worker 1", data: "x")
+
+        let requests = await http.allRequests()
+        XCTAssertEqual(requests.first?.path, "/api/input/Worker%201")
+    }
+
     func testSendMessagePayloadEncodesFullParityFields() throws {
         let payload = SendMessagePayload(
             to: "Builder",
@@ -472,7 +493,7 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
             {
               "agent_count": 1,
               "agents": [{
-                "name": "Builder", "runtime": "pty", "cli": "codex", "channels": ["dev"],
+                "name": "Builder", "runtime": "pty", "cli": "codex", "sessionId": "ses_9", "channels": ["dev"],
                 "last_activity_ms": 42, "context_budget_pct": 12.5, "current_state": "blocked_on_send"
               }],
               "pending_delivery_count": 1,
@@ -489,6 +510,7 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
 
         XCTAssertEqual(status.agentCount, 1)
         XCTAssertEqual(status.agents.first?.currentState, .blockedOnSend)
+        XCTAssertEqual(status.agents.first?.sessionId, "ses_9")
         XCTAssertEqual(status.pendingDeliveries.first?.deliveryId, "del_1")
         XCTAssertEqual(status.pendingDeliveries.first?.workerName, "Builder")
     }

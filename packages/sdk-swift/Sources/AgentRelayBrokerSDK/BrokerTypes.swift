@@ -648,12 +648,17 @@ public struct BrokerAuthStatus: Codable, Sendable {
 }
 
 /// One agent entry within `BrokerStatus`.
+///
+/// `/api/status` and `/api/spawned` share the broker's `workers.list()`
+/// serialization, so this mirrors `ListAgent` — including the camelCase
+/// `sessionId` wire key.
 public struct BrokerStatusAgent: Codable, Sendable {
     public var name: String
     public var runtime: AgentRuntime
     public var provider: HeadlessProvider?
     public var cli: String?
     public var model: String?
+    public var sessionId: String?
     public var team: String?
     public var channels: [String]
     public var parent: String?
@@ -664,7 +669,7 @@ public struct BrokerStatusAgent: Codable, Sendable {
     public var currentState: AgentCurrentState?
 
     enum CodingKeys: String, CodingKey {
-        case name, runtime, provider, cli, model, team, channels, parent, pid
+        case name, runtime, provider, cli, model, sessionId, team, channels, parent, pid
         case lastActivityAt = "last_activity_at"
         case lastActivityMs = "last_activity_ms"
         case contextBudgetPct = "context_budget_pct"
