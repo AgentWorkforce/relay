@@ -63,7 +63,8 @@ export interface EmbeddedNodeHandle {
 }
 
 export type EmbeddedNodeStartResult =
-  (EmbeddedNodeCommandSuccess & { handle: EmbeddedNodeHandle }) | EmbeddedNodeCommandFailure;
+  | (EmbeddedNodeCommandSuccess & { handle: EmbeddedNodeHandle })
+  | EmbeddedNodeCommandFailure;
 
 /** A distinguishable replacement for the CLI's process-terminating exit dependency. */
 export class BrokerLifecycleExitError extends Error {
