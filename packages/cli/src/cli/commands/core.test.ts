@@ -528,6 +528,9 @@ describe('registerCoreCommands', () => {
       expect(readProjectWorkspaceKey(stateDir)).toBeUndefined();
     } finally {
       nodeFs.rmSync(stateDir, { recursive: true, force: true });
+      // The key is written to the real default project dir; clean it up so it
+      // doesn't leak into other tests running in this process.
+      nodeFs.rmSync('/tmp/project/.agentworkforce/relay/workspace-key.json', { force: true });
     }
   });
 

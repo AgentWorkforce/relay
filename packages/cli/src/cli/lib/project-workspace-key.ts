@@ -70,15 +70,16 @@ export function writeProjectWorkspaceKey(dataDir: string, workspaceKey: string |
     fd = fs.openSync(tmp, 'wx', 0o600);
   }
   try {
-    fs.writeSync(fd, data);
-  } finally {
-    fs.closeSync(fd);
-  }
-  // openSync's mode is masked by umask; enforce owner-only before publishing.
-  fs.chmodSync(tmp, 0o600);
-  try {
+    try {
+      fs.writeSync(fd, data);
+    } finally {
+      fs.closeSync(fd);
+    }
+    // openSync's mode is masked by umask; enforce owner-only before publishing.
+    fs.chmodSync(tmp, 0o600);
     fs.renameSync(tmp, file);
   } catch (err) {
+    // Never leave a partial temp file behind, whichever step failed.
     fs.rmSync(tmp, { force: true });
     throw err;
   }
