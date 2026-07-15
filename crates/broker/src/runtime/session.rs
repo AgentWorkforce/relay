@@ -106,6 +106,31 @@ pub(crate) fn apply_exit_after_task_instruction(task: Option<String>) -> String 
     }
 }
 
+/// Resolve a spawn request's effective `exit_after_task` lifecycle flag from its
+/// `spawn_mode` selector and any explicit `exit_after_task` boolean.
+///
+/// Shared by the local HTTP spawn API and the engine-dispatched node spawn so
+/// task-exit semantics are identical on both paths: a `spawn_mode` of
+/// `task_exit`/`single_shot` — or an explicit `exit_after_task: true` — makes
+/// the agent exit once its task is done; `interactive`/absent keeps it running.
+/// An unrecognized `spawn_mode` is rejected with a caller-facing message.
+pub(crate) fn resolve_exit_after_task(
+    spawn_mode: Option<&str>,
+    exit_after_task: Option<bool>,
+) -> Result<bool, String> {
+    let normalized = spawn_mode.map(|value| value.trim().to_ascii_lowercase());
+    let spawn_mode_exit_after_task = match normalized.as_deref() {
+        None | Some("") | Some("interactive") => false,
+        Some("task_exit" | "task-exit" | "single_shot" | "single-shot") => true,
+        Some(other) => {
+            return Err(format!(
+                "unsupported spawnMode '{other}' (expected 'interactive' or 'task_exit')"
+            ));
+        }
+    };
+    Ok(exit_after_task.unwrap_or(false) || spawn_mode_exit_after_task)
+}
+
 pub(crate) struct RelaySessionOptions<'a> {
     pub(crate) paths: &'a RuntimePaths,
     pub(crate) requested_name: &'a str,

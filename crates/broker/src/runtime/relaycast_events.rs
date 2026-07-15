@@ -265,7 +265,9 @@ pub(super) async fn release_worker_locally(
 /// directly via `action.invoke`. The spawn fields (`cli`, `task`, `channel`,
 /// `model`) previously came off the typed event payload and are now passed in;
 /// `ws_value` is retained for `harnessConfig`/token extraction exactly as
-/// before. `control_dedup_key` carries the firehose control dedup key so the
+/// before. `exit_after_task` carries the resolved task-exit lifecycle so an
+/// engine-dispatched spawn exits after its task identically to a local HTTP
+/// spawn. `control_dedup_key` carries the firehose control dedup key so the
 /// local spawn-echo dedup behaves identically.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn spawn_worker_from_request(
@@ -274,6 +276,7 @@ pub(super) async fn spawn_worker_from_request(
     task: Option<String>,
     channel: Option<String>,
     model: Option<String>,
+    exit_after_task: bool,
     ws_value: &Value,
     workspace_id: &WorkspaceId,
     control_dedup_key: Option<&str>,
@@ -383,7 +386,14 @@ pub(super) async fn spawn_worker_from_request(
         channels: channels.clone(),
         restart_policy: None,
     };
-    let mut effective_task = normalize_initial_task(task.clone());
+    // Mirror the local HTTP spawn path (`runtime/api.rs`): a task-exit spawn
+    // appends the clean-exit contract to the initial task so the agent exits
+    // once it is done instead of idling forever.
+    let mut effective_task = if exit_after_task {
+        Some(apply_exit_after_task_instruction(task.clone()))
+    } else {
+        normalize_initial_task(task.clone())
+    };
 
     // Pre-register an agent token for every spawned worker.
     // The Agent Relay MCP server needs RELAY_AGENT_TOKEN +
