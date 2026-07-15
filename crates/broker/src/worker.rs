@@ -1412,10 +1412,7 @@ async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> O
     // fallback away from the requested model instead of a genuine "unsupported" result.
     let output = timeout(
         Duration::from_secs(15),
-        Command::new(resolved_cli)
-            .arg("debug")
-            .arg("models")
-            .output(),
+        codex_debug_models_output(resolved_cli),
     )
     .await
     .ok()?
@@ -1426,6 +1423,43 @@ async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> O
     }
 
     codex_models_json_contains_model(&output.stdout, model)
+}
+
+/// Spawn `codex debug models`, retrying briefly on `ExecutableFileBusy`
+/// (`ETXTBSY`, "Text file busy").
+///
+/// On Linux a concurrent `fork`/`exec` in another thread can transiently hold a
+/// writable file descriptor to an executable that was just written, so `execve`
+/// of a freshly written binary can spuriously fail with `ETXTBSY`. This is a
+/// well-known race in multithreaded programs that spawn subprocesses (and shows
+/// up in this crate's parallel test suite, where each test writes and immediately
+/// execs a fake `codex` script). Retry a few times with a short backoff before
+/// giving up; all attempts stay within the caller's spawn timeout budget.
+///
+/// Matched via the portable `std::io::ErrorKind::ExecutableFileBusy` rather than
+/// a raw `libc::ETXTBSY` so the code stays correct on non-Unix targets (the
+/// broker also builds for Windows), where the errno is absent and this condition
+/// simply never fires.
+async fn codex_debug_models_output(resolved_cli: &str) -> std::io::Result<std::process::Output> {
+    const MAX_ATTEMPTS: u32 = 5;
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match Command::new(resolved_cli)
+            .arg("debug")
+            .arg("models")
+            .output()
+            .await
+        {
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt < MAX_ATTEMPTS =>
+            {
+                tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt))).await;
+            }
+            other => return other,
+        }
+    }
 }
 
 fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
