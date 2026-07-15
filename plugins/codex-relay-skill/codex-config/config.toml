@@ -6,4 +6,4 @@ features.codex_hooks = true
 [mcp_servers.agent-relay]
 command = "npx"
 args = ["-y", "agent-relay", "mcp"]
-env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://gateway.relaycast.dev", RELAY_AGENT_TYPE = "agent" }
+env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://cast.agentrelay.com", RELAY_AGENT_TYPE = "agent" }

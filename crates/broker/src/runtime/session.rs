@@ -15,7 +15,7 @@ pub(crate) struct RelayWorkspace {
 }
 
 pub(crate) struct RelaySession {
-    pub(crate) http_base: String,
+    pub(crate) configured_base: Option<String>,
     pub(crate) default_workspace_id: Option<WorkspaceId>,
     pub(crate) workspaces: Vec<RelayWorkspace>,
     pub(crate) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
@@ -93,13 +93,17 @@ pub(crate) async fn handle_startup_api_connection(mut stream: tokio::net::TcpStr
 
 /// Build the standard env-var array passed to every spawned child agent.
 pub(crate) fn normalize_initial_task(task: Option<String>) -> Option<String> {
-    task.and_then(|value| {
-        if value.trim().is_empty() {
-            None
-        } else {
-            Some(value)
-        }
-    })
+    task.filter(|value| !value.trim().is_empty())
+}
+
+const EXIT_AFTER_TASK_INSTRUCTION: &str = "## Post-task exit\n\
+When the requested task is fully complete and you have reported the final outcome, output `/exit` on its own line so the Agent Relay harness exits cleanly. Do not output `/exit` before the task is complete.";
+
+pub(crate) fn apply_exit_after_task_instruction(task: Option<String>) -> String {
+    match normalize_initial_task(task) {
+        Some(task) => format!("{task}\n\n{EXIT_AFTER_TASK_INSTRUCTION}"),
+        None => EXIT_AFTER_TASK_INSTRUCTION.to_string(),
+    }
 }
 
 pub(crate) struct RelaySessionOptions<'a> {
@@ -113,15 +117,115 @@ pub(crate) struct RelaySessionOptions<'a> {
     pub(crate) runtime_cwd: &'a Path,
 }
 
+/// Default per-attempt timeout for the initial Relaycast handshake
+/// (`startup_session_set_with_options`). The underlying SDK bootstrap calls
+/// (`create_workspace` / agent registration) build a timeout-less reqwest
+/// client, so a stalled connection to the relay backend would otherwise hang
+/// startup indefinitely — long enough for an external supervisor (the CLI's
+/// `down --force`, a test watchdog) to reap the broker, which surfaces to the
+/// SDK as an opaque "broker exited with code null during initial handshake".
+/// Bounding each attempt turns that hang into a fast, retryable error.
+const HANDSHAKE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default number of handshake attempts (initial try + retries) before giving
+/// up. Kept well within the SDK's 45s startup budget at the default timeout so
+/// a transient blip recovers in-process instead of failing startup.
+const HANDSHAKE_MAX_ATTEMPTS: u32 = 4;
+/// Base backoff between handshake attempts; doubles each retry, capped.
+const HANDSHAKE_BACKOFF_BASE: Duration = Duration::from_millis(250);
+const HANDSHAKE_BACKOFF_MAX: Duration = Duration::from_secs(2);
+
+/// Per-attempt handshake timeout, overridable via
+/// `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` (must be > 0).
+fn handshake_attempt_timeout() -> Duration {
+    parse_handshake_timeout(
+        std::env::var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Max handshake attempts, overridable via `AGENT_RELAY_HANDSHAKE_ATTEMPTS`
+/// (must be >= 1).
+fn handshake_max_attempts() -> u32 {
+    parse_handshake_attempts(
+        std::env::var("AGENT_RELAY_HANDSHAKE_ATTEMPTS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Number of workspaces the broker will register during the handshake, used to
+/// scale the per-attempt deadline: `startup_session_set_with_options` registers
+/// each `RELAY_WORKSPACES_JSON` membership serially, so a healthy multi-workspace
+/// startup legitimately takes longer than a single-workspace one and must not be
+/// cut off by the single-request timeout. Falls back to 1 when unset/unparseable.
+fn configured_membership_count() -> u32 {
+    parse_membership_count(std::env::var("RELAY_WORKSPACES_JSON").ok().as_deref())
+}
+
+/// Parse the per-attempt timeout from an optional raw string (e.g. an env var),
+/// falling back to [`HANDSHAKE_ATTEMPT_TIMEOUT`] for missing/empty/invalid/zero
+/// values. Pure so it can be unit-tested without mutating process env.
+fn parse_handshake_timeout(raw: Option<&str>) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(HANDSHAKE_ATTEMPT_TIMEOUT)
+}
+
+/// Parse the max attempt count from an optional raw string (e.g. an env var),
+/// falling back to [`HANDSHAKE_MAX_ATTEMPTS`] for missing/empty/invalid/zero
+/// values. Pure so it can be unit-tested without mutating process env.
+fn parse_handshake_attempts(raw: Option<&str>) -> u32 {
+    raw.and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|&attempts| attempts >= 1)
+        .unwrap_or(HANDSHAKE_MAX_ATTEMPTS)
+}
+
+/// Parse the number of configured memberships from an optional
+/// `RELAY_WORKSPACES_JSON` string, mirroring how `load_workspace_sources_from_env`
+/// (in `relaycast/auth.rs`) interprets the same value: a top-level JSON array, an
+/// object with a `memberships` array, or a bare single-membership object (count
+/// 1). The result is clamped to at least 1; anything absent/empty/unparseable
+/// also yields 1. Pure so it can be unit-tested without mutating process env.
+fn parse_membership_count(raw: Option<&str>) -> u32 {
+    let count = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .map(|value| {
+            if let Some(entries) = value.as_array() {
+                entries.len()
+            } else if let Some(entries) = value
+                .get("memberships")
+                .and_then(serde_json::Value::as_array)
+            {
+                entries.len()
+            } else {
+                // A bare object is treated as a single membership, matching
+                // `load_workspace_sources_from_env`'s `vec![value]` fallback.
+                1
+            }
+        })
+        .and_then(|len| u32::try_from(len).ok())
+        .unwrap_or(1);
+    count.max(1)
+}
+
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let startup_debug = startup_debug_enabled();
     let connect_started = Instant::now();
-    let http_base = std::env::var("RELAYCAST_BASE_URL")
+    let configured_base: Option<String> = std::env::var("RELAYCAST_BASE_URL")
         .ok()
         .or_else(|| std::env::var("RELAY_BASE_URL").ok())
-        .unwrap_or_else(|| DEFAULT_RELAYCAST_BASE_URL.to_string());
-    let ws_base = std::env::var("RELAYCAST_WS_URL")
-        .unwrap_or_else(|_| derive_ws_base_url_from_http(&http_base));
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    // WS override (rare); else the SDK derives wss from the base.
+    let configured_ws: Option<String> = std::env::var("RELAYCAST_WS_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| configured_base.clone());
 
     log_startup_phase(
         startup_debug,
@@ -132,15 +236,73 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
             opts.channels.join(",")
         ),
     );
-    let auth = AuthClient::new(http_base.clone());
-    let sessions = auth
-        .startup_session_set_with_options(
-            Some(opts.requested_name),
-            opts.strict_name,
-            opts.agent_type,
-        )
-        .await
-        .context("failed to initialize relaycast session")?;
+    let auth = AuthClient::new(configured_base.clone());
+    // Bound the handshake so a hung relay connection can't stall startup. The
+    // SDK bootstrap calls (`create_workspace` / agent registration) build a
+    // timeout-less reqwest client, so without this a stalled backend hangs
+    // startup indefinitely until an external supervisor reaps the broker
+    // (reported to the SDK as an opaque code-null exit). We ONLY retry on
+    // timeout: a returned error is a definite server response, and replaying
+    // `startup_session_set_with_options` would re-run workspace creation and
+    // agent registration from scratch — risking duplicate Relaycast resources —
+    // so returned errors surface immediately (preserving the pre-retry
+    // behavior). The residual for a timeout retry is narrow (the backend both
+    // completed the request AND failed to answer within the deadline); the
+    // per-attempt deadline is scaled by the configured workspace count so a
+    // healthy multi-workspace startup, which registers each membership serially,
+    // is not cut off mid-flight.
+    let membership_count = configured_membership_count();
+    let attempt_timeout = handshake_attempt_timeout().saturating_mul(membership_count);
+    let max_attempts = handshake_max_attempts();
+    let mut backoff = HANDSHAKE_BACKOFF_BASE;
+    let sessions = {
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            match timeout(
+                attempt_timeout,
+                auth.startup_session_set_with_options(
+                    Some(opts.requested_name),
+                    opts.strict_name,
+                    opts.agent_type,
+                ),
+            )
+            .await
+            {
+                // Success, or a definite failure from the backend: return
+                // immediately in both cases (never replay a returned error).
+                Ok(result) => {
+                    break result.context("failed to initialize relaycast session")?;
+                }
+                Err(_elapsed) => {
+                    if attempt >= max_attempts {
+                        anyhow::bail!(
+                            "relaycast startup handshake timed out after {attempt} attempt(s) of {}ms each; \
+                             the relay backend was unreachable or too slow to complete registration",
+                            attempt_timeout.as_millis()
+                        );
+                    }
+                    tracing::warn!(
+                        attempt,
+                        max_attempts,
+                        timeout_ms = attempt_timeout.as_millis() as u64,
+                        "relaycast startup handshake timed out; retrying"
+                    );
+                    log_startup_phase(
+                        startup_debug,
+                        connect_started,
+                        format!(
+                            "handshake attempt {attempt}/{max_attempts} timed out after {}ms; retrying in {}ms",
+                            attempt_timeout.as_millis(),
+                            backoff.as_millis()
+                        ),
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
+                }
+            }
+        }
+    };
     log_startup_phase(
         startup_debug,
         connect_started,
@@ -202,8 +364,8 @@ timestamp='{}'
         "MultiWorkspaceSession::new begin",
     );
     let mut multi = MultiWorkspaceSession::new(
-        http_base.clone(),
-        ws_base,
+        configured_base.clone(),
+        configured_ws,
         auth,
         sessions,
         opts.channels,
@@ -239,9 +401,83 @@ timestamp='{}'
         .collect();
 
     Ok(RelaySession {
-        http_base,
+        configured_base,
         default_workspace_id,
         workspaces,
         ws_inbound_rx: multi.inbound_rx,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These exercise the pure parse helpers directly rather than mutating
+    // process-global env (`std::env::set_var`/`remove_var` are unsound under the
+    // parallel test runner: other threads may be reading the environment
+    // concurrently).
+
+    #[test]
+    fn parse_handshake_attempts_defaults_and_overrides() {
+        assert_eq!(parse_handshake_attempts(None), HANDSHAKE_MAX_ATTEMPTS);
+        assert_eq!(parse_handshake_attempts(Some("")), HANDSHAKE_MAX_ATTEMPTS);
+        assert_eq!(
+            parse_handshake_attempts(Some("0")),
+            HANDSHAKE_MAX_ATTEMPTS,
+            "zero attempts is rejected in favor of the default"
+        );
+        assert_eq!(
+            parse_handshake_attempts(Some("not-a-number")),
+            HANDSHAKE_MAX_ATTEMPTS
+        );
+        assert_eq!(parse_handshake_attempts(Some(" 7 ")), 7);
+    }
+
+    #[test]
+    fn parse_handshake_timeout_defaults_and_overrides() {
+        assert_eq!(parse_handshake_timeout(None), HANDSHAKE_ATTEMPT_TIMEOUT);
+        assert_eq!(parse_handshake_timeout(Some("")), HANDSHAKE_ATTEMPT_TIMEOUT);
+        assert_eq!(
+            parse_handshake_timeout(Some("0")),
+            HANDSHAKE_ATTEMPT_TIMEOUT,
+            "zero ms is rejected in favor of the default"
+        );
+        assert_eq!(
+            parse_handshake_timeout(Some("nope")),
+            HANDSHAKE_ATTEMPT_TIMEOUT
+        );
+        assert_eq!(
+            parse_handshake_timeout(Some("1234")),
+            Duration::from_millis(1234)
+        );
+    }
+
+    #[test]
+    fn parse_membership_count_scales_with_configured_workspaces() {
+        // Absent / empty / empty-array / unparseable all fall back to a single
+        // workspace so the timeout is never scaled below the base.
+        assert_eq!(parse_membership_count(None), 1);
+        assert_eq!(parse_membership_count(Some("   ")), 1);
+        assert_eq!(parse_membership_count(Some("[]")), 1);
+        assert_eq!(parse_membership_count(Some("not json")), 1);
+        // A bare single-membership object counts as one (matching
+        // load_workspace_sources_from_env's `vec![value]` fallback).
+        assert_eq!(parse_membership_count(Some("{\"api_key\":\"rk_a\"}")), 1);
+        // Top-level array form scales by its length.
+        assert_eq!(
+            parse_membership_count(Some(
+                "[{\"api_key\":\"rk_a\"},{\"api_key\":\"rk_b\"},{\"api_key\":\"rk_c\"}]"
+            )),
+            3
+        );
+        // Object-with-`memberships`-array form also scales by array length.
+        assert_eq!(
+            parse_membership_count(Some(
+                "{\"memberships\":[{\"api_key\":\"rk_a\"},{\"api_key\":\"rk_b\"}],\"default_workspace_id\":\"ws_a\"}"
+            )),
+            2
+        );
+        // An empty `memberships` array clamps to the single-workspace minimum.
+        assert_eq!(parse_membership_count(Some("{\"memberships\":[]}")), 1);
+    }
 }

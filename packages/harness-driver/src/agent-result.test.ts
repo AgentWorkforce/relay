@@ -154,6 +154,44 @@ describe('SpawnedAgentHandle lifecycle helpers', () => {
   });
 });
 
+describe('HarnessDriverClient spawn serialization', () => {
+  it('forwards task-exit spawn options to the broker', async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(JSON.stringify({ name: 'worker', runtime: 'pty' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const client = new HarnessDriverClient({
+      baseUrl: 'http://127.0.0.1:3889',
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await client.spawnPty({
+      name: 'worker',
+      cli: 'codex',
+      task: 'Ship it',
+      spawnMode: 'task_exit',
+      exitAfterTask: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:3889/api/spawn',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.any(String),
+      })
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+      name: 'worker',
+      cli: 'codex',
+      task: 'Ship it',
+      spawnMode: 'task_exit',
+      exitAfterTask: true,
+    });
+  });
+});
+
 // ── agentResultSchema coercion ─────────────────────────────────────────────
 
 function createSpawnCapture() {

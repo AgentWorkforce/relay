@@ -29,7 +29,7 @@ const ORCHESTRATOR_HARNESS_ENV: &str = "AGENT_RELAY_ORCHESTRATOR_HARNESS";
 /// treated the same as "unset" so an accidentally-blank secret doesn't trip
 /// us into trying to talk to PostHog with an invalid key.
 fn posthog_api_key() -> Option<&'static str> {
-    POSTHOG_API_KEY.and_then(|k| if k.is_empty() { None } else { Some(k) })
+    POSTHOG_API_KEY.filter(|k| !k.is_empty())
 }
 
 const FIRST_RUN_NOTICE: &str = "\
@@ -43,7 +43,7 @@ Run `agent-relay telemetry disable` to opt out.";
 /// Telemetry events emitted by the broker at key lifecycle points.
 ///
 /// Schema aligns with the TypeScript definitions in
-/// `packages/telemetry/src/events.ts` — when you add or change a field here,
+/// `packages/cli/src/cli/telemetry/events.ts` — when you add or change a field here,
 /// update that file too so dashboards stay coherent across the CLI/broker
 /// boundary.
 pub enum TelemetryEvent {
@@ -98,7 +98,6 @@ pub enum TelemetryEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionSource {
     HumanCli,
-    HumanDashboard,
     Agent,
     Protocol,
 }
@@ -107,7 +106,6 @@ impl ActionSource {
     fn as_str(&self) -> &'static str {
         match self {
             Self::HumanCli => "human_cli",
-            Self::HumanDashboard => "human_dashboard",
             Self::Agent => "agent",
             Self::Protocol => "protocol",
         }
@@ -821,7 +819,6 @@ mod tests {
     #[test]
     fn action_source_serializes_to_snake_case_strings() {
         assert_eq!(ActionSource::HumanCli.as_str(), "human_cli");
-        assert_eq!(ActionSource::HumanDashboard.as_str(), "human_dashboard");
         assert_eq!(ActionSource::Agent.as_str(), "agent");
         assert_eq!(ActionSource::Protocol.as_str(), "protocol");
     }
@@ -831,14 +828,14 @@ mod tests {
         let event = TelemetryEvent::AgentSpawn {
             cli: "claude".into(),
             runtime: "pty".into(),
-            spawn_source: ActionSource::HumanDashboard,
+            spawn_source: ActionSource::HumanCli,
             has_task: true,
             is_shadow: false,
         };
         let props = event.properties();
         assert_eq!(props["cli"], "claude");
         assert_eq!(props["runtime"], "pty");
-        assert_eq!(props["spawn_source"], "human_dashboard");
+        assert_eq!(props["spawn_source"], "human_cli");
         assert_eq!(props["has_task"], true);
         assert_eq!(props["is_shadow"], false);
     }
@@ -941,13 +938,13 @@ mod tests {
         // it from a test. What we can guarantee is the wrapper's contract:
         // a `Some("")` from `option_env!` must round-trip to `None` so the
         // disabled path takes over. Verify that contract on a synthetic
-        // `Option<&str>` matching the same `and_then` shape.
+        // `Option<&str>` matching the same `filter` shape.
         let synthetic: Option<&str> = Some("");
-        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        let normalized = synthetic.filter(|k| !k.is_empty());
         assert!(normalized.is_none());
 
         let synthetic: Option<&str> = Some("phc_abc");
-        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        let normalized = synthetic.filter(|k| !k.is_empty());
         assert_eq!(normalized, Some("phc_abc"));
     }
 }

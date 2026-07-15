@@ -1,0 +1,281 @@
+{
+  "version": "1.0.0",
+  "id": "35467489-5fde-46b4-b686-b372747b0eb9",
+  "timestamp": "2026-06-19T00:16:10.852Z",
+  "trajectory": "traj_h4wj3doqp0ra",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_h4wj3doqp0ra/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 70,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/agent-relay-mcp.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 4,
+              "end_line": 44,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            },
+            {
+              "start_line": 79,
+              "end_line": 84,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            },
+            {
+              "start_line": 284,
+              "end_line": 289,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            },
+            {
+              "start_line": 352,
+              "end_line": 357,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            },
+            {
+              "start_line": 536,
+              "end_line": 542,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/broker-dashboard.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 570,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/broker-lifecycle.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            },
+            {
+              "start_line": 10,
+              "end_line": 24,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            },
+            {
+              "start_line": 275,
+              "end_line": 280,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            },
+            {
+              "start_line": 700,
+              "end_line": 705,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/action-schema.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 157,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/action-tools.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 151,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/inbox.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 56,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/messaging-tools.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 428,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/resources.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 209,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/telemetry.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 216,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/tool-results.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 52,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/tool-shapes.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 17,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 44,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/mcp/workspace.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 48,
+              "revision": "afdc289bdcd2b7de860699df39dd0df5eec94d99"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

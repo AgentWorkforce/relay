@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 
 import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
@@ -16,7 +16,6 @@ import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
-const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
 
 type ExitFn = (code: number) => never;
 
@@ -84,8 +83,12 @@ type UpdateInfo = {
 export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
-  createRelay: (cwd: string, apiPort?: number, brokerName?: string) => CoreRelay | Promise<CoreRelay>;
-  findDashboardBinary: () => string | null;
+  createRelay: (
+    cwd: string,
+    apiPort?: number,
+    brokerName?: string,
+    verbose?: boolean
+  ) => CoreRelay | Promise<CoreRelay>;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
@@ -103,7 +106,6 @@ export interface CoreDependencies {
   onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => void;
   holdOpen: () => Promise<void>;
   isPortInUse: (port: number) => Promise<boolean>;
-  findBrokerApiPort: () => Promise<number>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -140,70 +142,12 @@ function resolveCliVersion(fileSystem: CoreFileSystem): string {
   }
 }
 
-function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
-  // Allow explicit override via env var (for local development)
-  const envOverride = process.env.RELAY_DASHBOARD_BINARY;
-  if (envOverride && fileSystem.existsSync(envOverride)) {
-    return envOverride;
-  }
-
-  // In local multi-repo workspaces, prefer a sibling relay-dashboard build when available.
-  // Only when RELAY_LOCAL_DEV is set — otherwise the installed binary should win so
-  // users don't accidentally run a stale dev build.
-  if (process.env.RELAY_LOCAL_DEV === '1') {
-    const siblingWorkspaceBuild = path.resolve(
-      process.cwd(),
-      '..',
-      'relay-dashboard',
-      'packages',
-      'dashboard-server',
-      'dist',
-      'start.js'
-    );
-    if (fileSystem.existsSync(siblingWorkspaceBuild)) {
-      return siblingWorkspaceBuild;
-    }
-  }
-
-  const binaryName = 'relay-dashboard-server';
-  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-
-  const searchPaths = [
-    path.join(homeDir, '.local', 'bin', binaryName),
-    path.join(homeDir, '.agentworkforce/relay', 'bin', binaryName),
-    path.join('/usr/local/bin', binaryName),
-  ];
-
-  for (const candidate of searchPaths) {
-    try {
-      if (!fileSystem.existsSync(candidate)) {
-        continue;
-      }
-      fileSystem.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching.
-    }
-  }
-
-  const envPath = process.env.PATH || '';
-  for (const dir of envPath.split(path.delimiter)) {
-    const candidate = path.join(dir, binaryName);
-    try {
-      if (!fileSystem.existsSync(candidate)) {
-        continue;
-      }
-      fileSystem.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching.
-    }
-  }
-
-  return null;
-}
-
-async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string): Promise<CoreRelay> {
+async function createDefaultRelay(
+  cwd: string,
+  apiPort = 0,
+  brokerName?: string,
+  verbose = false
+): Promise<CoreRelay> {
   const binaryArgs: BrokerInitArgs = {};
   if (apiPort > 0) {
     binaryArgs.persist = true;
@@ -218,6 +162,12 @@ async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string)
     binaryArgs,
     brokerName,
     preferConnect: apiPort > 0,
+    ...(verbose
+      ? {
+          onStep: (message: string) => console.error(`[agent-relay][verbose] ${message}`),
+          onStderr: (line: string) => console.error(`[broker] ${line}`),
+        }
+      : {}),
   });
 
   const relay: CoreRelay = {
@@ -240,7 +190,7 @@ async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string)
   return relay;
 }
 
-function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
+export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
     existsSync: fs.existsSync,
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
@@ -259,7 +209,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     loadTeamsConfig: (projectRoot: string) =>
       (loadTeamsConfig(projectRoot) as unknown as CoreTeamsConfig | null) ?? null,
     createRelay: createDefaultRelay,
-    findDashboardBinary: () => findDashboardBinaryDefault(fileSystem),
     spawnProcess: (command, args, options) =>
       spawnProcess(command, args, options as Parameters<typeof spawnProcess>[2]) as unknown as SpawnedProcess,
     execCommand: async (command: string) => {
@@ -307,38 +256,34 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     warn: (...args: unknown[]) => console.warn(...args),
-    findBrokerApiPort: async () => {
-      const dp = Number.parseInt(process.env.AGENT_RELAY_DASHBOARD_PORT ?? '3888', 10);
-      const startPort = (Number.isFinite(dp) ? dp : 3888) + 1;
-      for (let i = 0; i < 25; i++) {
-        const port = startPort + i;
-        if (port > 65535) break;
-        try {
-          const res = await fetch(`http://localhost:${port}/health`);
-          if (res.ok) return port;
-        } catch {
-          // Not responding, keep scanning.
-        }
-      }
-      return 0;
-    },
     exit: defaultExit,
     ...overrides,
   };
 }
 
-export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
-  const deps = withDefaults(overrides);
+/** Options accepted by the `up` command action (shared by `local`/`node`). */
+export interface UpCommandOptions {
+  spawn?: boolean;
+  background?: boolean;
+  verbose?: boolean;
+  workspaceKey?: string;
+  stateDir?: string;
+  brokerName?: string;
+  config?: string;
+  logFile?: string;
+  logLevel?: string;
+  logJson?: boolean;
+}
 
-  program
-    .command('up')
-    .description('Start broker with web dashboard')
-    .option('--no-dashboard', 'Disable web dashboard')
-    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+/**
+ * Attach the shared `up` broker options to a command. `node up` adds `--config`
+ * on top of these; `local up` uses them as-is.
+ */
+export function addUpCommandOptions(command: Command): Command {
+  return command
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
-    .option('--foreground', 'Run --no-dashboard attached to this terminal')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
     .option(
@@ -346,21 +291,47 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
       'Directory for broker state and connection files (default: .agentworkforce/relay/)'
     )
     .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
-    .action(
-      async (options: {
-        dashboard?: boolean;
-        port?: string;
-        spawn?: boolean;
-        background?: boolean;
-        foreground?: boolean;
-        verbose?: boolean;
-        workspaceKey?: string;
-        stateDir?: string;
-        brokerName?: string;
-      }) => {
+    .option(
+      '--log-file <path>',
+      'Write structured node logs (capabilities registered, actions invoked/completed) to a file'
+    )
+    .option(
+      '--log-level <level>',
+      'Node log verbosity: debug | info | warn | error (default: info)',
+      parseLogLevel
+    )
+    .option('--log-json', 'Emit node logs as JSON lines instead of text');
+}
+
+const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+
+/**
+ * Validate `--log-level` at parse time (case-insensitive). Rejecting a typo here
+ * — rather than passing it through — avoids the silent failure where an
+ * unrecognized `AGENT_RELAY_LOG_LEVEL` drops every log line.
+ */
+function parseLogLevel(value: string): string {
+  const normalized = value.toLowerCase();
+  if (!(LOG_LEVELS as readonly string[]).includes(normalized)) {
+    throw new InvalidArgumentError(`Expected one of: ${LOG_LEVELS.join(', ')}.`);
+  }
+  return normalized;
+}
+
+export function registerCoreCommands(
+  program: Command,
+  overrides: Partial<CoreDependencies> = {},
+  opts: { includeUp?: boolean } = {}
+): void {
+  const deps = withDefaults(overrides);
+
+  if (opts.includeUp !== false) {
+    addUpCommandOptions(program.command('up').description('Start the local broker')).action(
+      async (options: UpCommandOptions) => {
         await runUpCommand(options, deps);
       }
     );
+  }
 
   program
     .command('down')
@@ -399,6 +370,79 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         client?.disconnect();
       }
     });
+
+  program
+    .command('deadletters')
+    .description('List terminally-failed deliveries retained in the broker dead-letter queue')
+    .option('--json', 'Output raw JSON')
+    .action(async (options: { json?: boolean }) => {
+      let client: HarnessDriverClient | undefined;
+      try {
+        client = HarnessDriverClient.connect({ cwd: process.cwd() });
+        const result = await client.getDeadLetters();
+        if (options.json) {
+          deps.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (result.count === 0) {
+          deps.log('No dead-letter deliveries.');
+          return;
+        }
+        for (const entry of result.dead_letters) {
+          deps.log(
+            `${entry.delivery_id}  recipient=${entry.worker_name}  from=${entry.from}  ` +
+              `age=${formatAgeMs(entry.age_ms)}  attempts=${entry.attempts}  reason=${entry.reason}`
+          );
+        }
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      } finally {
+        client?.disconnect();
+      }
+    });
+
+  program
+    .command('redeliver [id]')
+    .description('Requeue dead-letter deliveries through the normal delivery path')
+    .option('--all', 'Redeliver every dead-letter entry')
+    .action(async (id: string | undefined, options: { all?: boolean }) => {
+      if (Boolean(id) === Boolean(options.all)) {
+        deps.error('Provide exactly one of <id> or --all.');
+        deps.exit(1);
+      }
+      let client: HarnessDriverClient | undefined;
+      try {
+        client = HarnessDriverClient.connect({ cwd: process.cwd() });
+        const result = await client.redeliverDeadLetters(id ? { id } : { all: true });
+        for (const entry of result.redelivered) {
+          deps.log(`Redelivered ${entry.delivery_id} to ${entry.worker_name}`);
+        }
+        for (const entry of result.skipped) {
+          deps.warn(`Skipped ${entry.delivery_id} (${entry.worker_name}): ${entry.reason}`);
+        }
+        if (result.redelivered.length === 0 && result.skipped.length === 0) {
+          deps.log('No dead-letter deliveries to redeliver.');
+        }
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      } finally {
+        client?.disconnect();
+      }
+    });
+}
+
+/** Render a millisecond age as a compact human-readable duration. */
+function formatAgeMs(ageMs: number): string {
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ''}`;
+  const days = Math.floor(hours / 24);
+  return `${days}d${hours % 24 ? `${hours % 24}h` : ''}`;
 }
 
 /**

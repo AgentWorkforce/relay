@@ -18,6 +18,9 @@ import { getProjectPaths } from '@agent-relay/config';
 
 import {
   captureAndRenderSnapshot,
+  createBackpressureAwareWriter,
+  resetLocalTerminalOnDetach,
+  StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
@@ -64,6 +67,13 @@ export interface ViewDependencies {
   createWebSocket: ViewWebSocketFactory;
   /** Where the PTY chunks get written. Defaults to `process.stdout.write`. */
   writeChunk: (chunk: string) => void;
+  /**
+   * Tear down the backpressure-aware writer on detach: drop its pending queue
+   * and unhook its `'drain'` listener so nothing flushes to stdout after the
+   * session settles. Defaults to the writer created in {@link withDefaults};
+   * tests that inject their own `writeChunk` can omit it (no-op).
+   */
+  disposeWriter?: () => void;
   /** Signal registration (so tests can drive SIGINT without killing the test). */
   onSignal: ViewSignalRegistrar;
   log: (...args: unknown[]) => void;
@@ -77,6 +87,12 @@ export interface ViewDependencies {
     agentName: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
+  /**
+   * True when stdout is an interactive terminal. Gates the on-detach terminal
+   * reset so a piped/redirected `view` never writes reset controls into the
+   * captured log. Defaults to `Boolean(process.stdout.isTTY)`.
+   */
+  stdoutIsTty: boolean;
 }
 
 function readConnectionFileFromDisk(stateDir: string): unknown {
@@ -97,14 +113,14 @@ function defaultStateDir(): string {
 }
 
 function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependencies {
+  const writer = createBackpressureAwareWriter(process.stdout);
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as ViewWebSocket,
-    writeChunk: (chunk) => {
-      process.stdout.write(chunk);
-    },
+    writeChunk: writer.write,
+    disposeWriter: writer.dispose,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -115,6 +131,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     exit: defaultExit,
     fetch: (input, init) => fetch(input, init),
     captureAndRenderSnapshot,
+    stdoutIsTty: Boolean(process.stdout.isTTY),
     ...overrides,
   };
 }
@@ -178,15 +195,22 @@ export function toWsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/^http/, 'ws')}/ws`;
 }
 
+/** A matched `worker_stream` chunk plus its per-worker byte offset (absent on
+ *  brokers that predate stream-offset support). */
+export interface MatchedChunk {
+  chunk: string;
+  offset?: number;
+}
+
 /**
  * Inspect a single WebSocket message and, if it's a `worker_stream` event for
- * the requested agent, return the raw chunk string. Returns `null` for events
- * that don't match (other kinds, other agents, malformed JSON, etc.) so the
- * caller can ignore them.
+ * the requested agent, return the raw chunk string plus its stream offset.
+ * Returns `null` for events that don't match (other kinds, other agents,
+ * malformed JSON, etc.) so the caller can ignore them.
  *
  * Exported for unit testing the filter in isolation from any WebSocket.
  */
-export function extractMatchingChunk(rawMessage: string, agentName: string): string | null {
+export function extractMatchingChunk(rawMessage: string, agentName: string): MatchedChunk | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawMessage);
@@ -198,7 +222,8 @@ export function extractMatchingChunk(rawMessage: string, agentName: string): str
   if (parsed.name !== agentName) return null;
   const chunk = parsed.chunk;
   if (typeof chunk !== 'string') return null;
-  return chunk;
+  const offset = typeof parsed.offset === 'number' ? parsed.offset : undefined;
+  return { chunk, offset };
 }
 
 /**
@@ -229,35 +254,6 @@ export async function runViewSession(
     return 1;
   }
 
-  // Render the agent's current screen before the live stream begins, so
-  // the user sees what's there instead of staring at a blank terminal
-  // until the agent happens to produce more output. Hard errors
-  // (`not_found` / `no_pty`) abort — there's nothing meaningful to view.
-  // Transient errors (`unavailable` / `transport_error`) are surfaced as
-  // a warning and we fall through to the live stream; the agent may
-  // still produce useful output even if the snapshot couldn't be served.
-  const snapshot = await deps.captureAndRenderSnapshot(
-    { url: connection.url, apiKey: connection.apiKey },
-    name,
-    { fetch: deps.fetch, writeChunk: deps.writeChunk }
-  );
-  switch (snapshot.status) {
-    case 'ok':
-      break;
-    case 'not_found':
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
-      return 1;
-    case 'no_pty':
-      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to view`}`);
-      return 1;
-    case 'unavailable':
-    case 'transport_error':
-      deps.log(
-        `[view] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
-      );
-      break;
-  }
-
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};
   if (connection.apiKey) {
@@ -267,6 +263,10 @@ export async function runViewSession(
   return new Promise<number>((resolve) => {
     let settled = false;
     const cleanupSignals: Array<() => void> = [];
+    // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
+    // is painted and reconciled, so no output around attach time is lost and
+    // (via per-worker offsets) none is double-applied. See StreamSyncBuffer.
+    const sync = new StreamSyncBuffer();
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
@@ -282,7 +282,63 @@ export async function runViewSession(
       } catch {
         // best effort — already closed
       }
+      try {
+        // Heal the local terminal: a replayed snapshot re-emits terminal modes
+        // (alt-screen, mouse reporting, bracketed paste, ...) that would
+        // otherwise linger after the viewer detaches. TTY stdout only.
+        // Must run before disposeWriter — the writer no-ops once disposed.
+        resetLocalTerminalOnDetach(deps.writeChunk, deps.stdoutIsTty);
+      } catch {
+        // best effort
+      }
+      // Drop the writer's pending queue and unhook its drain listener so no
+      // buffered chunk flushes to stdout after detach.
+      deps.disposeWriter?.();
       resolve(code);
+    };
+
+    // Render the agent's current screen once the WS is subscribed, then
+    // reconcile the buffered live chunks against it. Hard errors
+    // (`not_found` / `no_pty`) abort — there's nothing meaningful to view.
+    // Transient errors (`unavailable` / `transport_error`) are surfaced as a
+    // warning and we fall through to the live stream; the agent may still
+    // produce useful output even if the snapshot couldn't be served.
+    // Guard every snapshot-path write on `settled` so a Ctrl+C that lands
+    // while the snapshot HTTP fetch is in flight can't paint the snapshot
+    // after teardown has begun (the snapshot render path runs inside the
+    // awaited `captureAndRenderSnapshot`, past the WS `message` guard).
+    const guardedWrite = (chunk: string): void => {
+      if (!settled) deps.writeChunk(chunk);
+    };
+    const paintSnapshotAndReconcile = async (): Promise<void> => {
+      const snapshot = await deps.captureAndRenderSnapshot(
+        { url: connection.url, apiKey: connection.apiKey },
+        name,
+        { fetch: deps.fetch, writeChunk: guardedWrite }
+      );
+      if (settled) return;
+      switch (snapshot.status) {
+        case 'ok':
+          for (const chunk of sync.reconcile(snapshot.offset)) deps.writeChunk(chunk);
+          return;
+        case 'not_found':
+          deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
+          finish(1);
+          return;
+        case 'no_pty':
+          deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to view`}`);
+          finish(1);
+          return;
+        case 'unavailable':
+        case 'transport_error':
+          deps.log(
+            `[view] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+          );
+          // No snapshot painted — apply everything buffered so far rather
+          // than dropping live output we already received.
+          for (const chunk of sync.flushAll()) deps.writeChunk(chunk);
+          return;
+      }
     };
 
     const socket = deps.createWebSocket(wsUrl, headers);
@@ -292,12 +348,18 @@ export async function runViewSession(
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
     }
 
+    socket.on('open', () => {
+      void paintSnapshotAndReconcile();
+    });
+
     socket.on('message', (data) => {
+      // Stop writing output once teardown has begun (no spray past detach).
+      if (settled) return;
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
-      const chunk = extractMatchingChunk(text, name);
-      if (chunk !== null) {
-        deps.writeChunk(chunk);
+      const matched = extractMatchingChunk(text, name);
+      if (matched !== null && sync.push(matched.chunk, matched.offset)) {
+        deps.writeChunk(matched.chunk);
       }
     });
 

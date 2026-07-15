@@ -79,7 +79,7 @@ const PASSTHROUGH_KEYS = new Set([
 ]);
 
 function toSnakeKey(key: string): string {
-  return key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
+  return key.replace(/[A-Z]/g, (char, index: number) => (index > 0 ? '_' : '') + char.toLowerCase());
 }
 
 function toWire(value: unknown): unknown {
@@ -240,10 +240,14 @@ const WireChannelReadStatusSchema = ChannelReadStatusSchema.partial();
 
 const WireSearchResultSchema = SearchMessageResultSchema.partial();
 
+// Delivery statuses reported by the legacy `api.relaycast.dev` engine
+// (the `@relaycast/types` 3.x lifecycle names not carried into 6.x).
+const LegacyDeliveryStatusSchema = z.enum(['accepted', 'deferred']);
+
 // A delivery ledger row, optionally carrying its embedded message payload
 // (`DeliveryItem`) — transitions return the bare row.
 const WireDeliverySchema = DeliverySchema.partial().extend({
-  status: DeliveryStatusSchema.optional().catch(undefined),
+  status: z.union([DeliveryStatusSchema, LegacyDeliveryStatusSchema]).optional().catch(undefined),
   message: DeliveryMessageSchema.partial().nullable().optional(),
 });
 
@@ -521,18 +525,26 @@ export function normalizeChannelReadStatus(input: unknown): RelayChannelReadStat
 }
 
 // Canonical durable delivery statuses mapped onto relay inbox states:
-// `accepted` means queued for the recipient; the ledger has no `read` state.
-// Typed against `DeliveryStatus` so a new canonical status fails to compile
-// here until it is mapped.
-const INBOX_STATE_BY_DELIVERY_STATUS: Record<DeliveryStatus, InboxItemState> = {
-  accepted: 'queued',
+// the terminal `acked` surfaces as `read` and `dead_lettered` as `failed`;
+// a deferred 6.x row stays `queued` with a future `available_at`. Typed
+// against `DeliveryStatus` so a new canonical status fails to compile here
+// until it is mapped. Legacy `api.relaycast.dev` statuses map alongside.
+const INBOX_STATE_BY_DELIVERY_STATUS: Record<
+  DeliveryStatus | z.infer<typeof LegacyDeliveryStatusSchema>,
+  InboxItemState
+> = {
+  queued: 'queued',
   delivered: 'delivered',
-  deferred: 'deferred',
+  acked: 'read',
   failed: 'failed',
+  dead_lettered: 'failed',
+  // Legacy 3.x lifecycle names.
+  accepted: 'queued',
+  deferred: 'deferred',
 };
 
 export function normalizeInboxItemState(value: string | undefined): InboxItemState {
-  const status = DeliveryStatusSchema.safeParse(value);
+  const status = z.union([DeliveryStatusSchema, LegacyDeliveryStatusSchema]).safeParse(value);
   return status.success ? INBOX_STATE_BY_DELIVERY_STATUS[status.data] : 'queued';
 }
 

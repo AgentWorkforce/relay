@@ -1,9 +1,19 @@
 import type { Command } from 'commander';
+import { InvalidArgumentError } from 'commander';
+import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey, switchWorkspace } from '../lib/workspace-store.js';
 
 export type WorkspaceCommandDependencies = SdkCommandDeps;
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError('Expected a positive integer.');
+  }
+  return parsed;
+}
 
 export function registerWorkspaceCommands(
   program: Command,
@@ -11,6 +21,36 @@ export function registerWorkspaceCommands(
 ): void {
   const deps = withSdkDefaults(overrides);
   const group = program.command('workspace').description('Create and switch between workspaces');
+
+  group
+    .command('active')
+    .description('Show the active canonical cloud workspace')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Output the active workspace as JSON')
+    .option(
+      '--refresh-timeout <milliseconds>',
+      'Timeout for refreshing the cloud session',
+      parsePositiveInteger
+    )
+    .action(async (options: { apiUrl?: string; json?: boolean; refreshTimeout?: number }) => {
+      await runSdk(deps, async () => {
+        const workspace = await resolveActiveWorkspace({
+          apiUrl: options.apiUrl,
+          interactive: false,
+          refreshTimeoutMs: options.refreshTimeout,
+        });
+
+        if (options.json) {
+          printJson(deps, workspace);
+          return;
+        }
+
+        deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
+        deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
+        deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
+        deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
+      });
+    });
 
   group
     .command('create')

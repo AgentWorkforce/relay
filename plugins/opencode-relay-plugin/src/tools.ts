@@ -1,5 +1,16 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 
+import {
+  RelayCast,
+  RelayError,
+  type AgentClient,
+  type DeliveryItem,
+  type DmMessage,
+  type InboxResponse,
+  type MessageWithMeta,
+  type RelayCastOptions,
+} from '@relaycast/sdk';
+
 import type { RelayMessage, RelayState } from './index.js';
 
 export interface ToolSchemaProperty {
@@ -52,20 +63,34 @@ export interface RelayDismissInput {
 
 export type EmptyInput = Record<string, never>;
 export type Message = RelayMessage;
-export type RelayAPIResponse = Record<string, unknown>;
 export type SpawnLike = (command: string, args?: readonly string[], options?: SpawnOptions) => ChildProcess;
+
+/** Constructs the workspace-scoped SDK client. Overridable in tests. */
+export type RelayCastFactory = (options: RelayCastOptions) => RelayCast;
 
 export interface ToolDependencies {
   spawn?: SpawnLike;
+  createRelayCast?: RelayCastFactory;
 }
+
+const defaultCreateRelayCast: RelayCastFactory = (options) => new RelayCast(options);
 
 function isConnected(state: RelayState): state is RelayState & {
   agentName: string;
   workspace: string;
   token: string;
   connected: true;
+  relay: RelayCast;
+  agent: AgentClient;
 } {
-  return state.connected && state.agentName !== null && state.workspace !== null && state.token !== null;
+  return (
+    state.connected &&
+    state.agentName !== null &&
+    state.workspace !== null &&
+    state.token !== null &&
+    state.relay !== null &&
+    state.agent !== null
+  );
 }
 
 export function assertConnected(state: RelayState): asserts state is RelayState & {
@@ -73,36 +98,286 @@ export function assertConnected(state: RelayState): asserts state is RelayState 
   workspace: string;
   token: string;
   connected: true;
+  relay: RelayCast;
+  agent: AgentClient;
 } {
   if (!isConnected(state)) {
     throw new Error('Not connected to Relay. Call relay_connect first.');
   }
 }
 
-export async function relaycastAPI(
-  state: RelayState,
-  endpoint: string,
-  body: Record<string, unknown>
-): Promise<RelayAPIResponse> {
-  const res = await fetch(`${normalizeBaseUrl(state.apiBaseUrl)}/${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${state.token}`,
-    },
-    body: JSON.stringify(body),
-  });
+/**
+ * Per-conversation/channel cap on how many unread messages we hydrate when the
+ * summary reports more than one unread item. Keeps a single idle poll bounded.
+ */
+const MAX_UNREAD_FETCH = 50;
 
-  if (!res.ok) {
-    throw new Error(`Relay API error: ${res.status} ${await res.text()}`);
+/**
+ * Upper bound on how many delivery-ledger items we scan per drain when matching
+ * surfaced messages to their durable delivery rows. The engine returns the
+ * non-terminal queue (queued + delivered) which is naturally small, but cap it
+ * so a single poll never fans out unboundedly.
+ */
+const MAX_DELIVERY_SCAN = 200;
+
+/**
+ * Hard cap on {@link RelayState.seenMessageIds}. The watermark only needs to
+ * cover messages the engine might still re-surface; older ids are safe to evict
+ * because the delivery ledger has already acked them server-side. Keeping the
+ * most-recent N ids bounds memory over a long-lived session.
+ */
+export const MAX_SEEN_MESSAGE_IDS = 2_000;
+
+/**
+ * Record `id` as seen, bounding the set with FIFO eviction so it cannot grow
+ * unboundedly. `Set` preserves insertion order, so the first entries are the
+ * oldest; we evict from the front once over the cap.
+ */
+export function rememberSeen(seen: Set<string>, id: string, max = MAX_SEEN_MESSAGE_IDS): void {
+  if (seen.has(id)) {
+    return;
+  }
+  seen.add(id);
+  while (seen.size > max) {
+    const oldest = seen.values().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    seen.delete(oldest);
+  }
+}
+
+/**
+ * Drain surfaced messages from the durable delivery ledger so they stop being
+ * replayed across restarts. The engine models inbox delivery as a per-agent
+ * ledger keyed by `deliveryId`; each row carries the underlying `messageId`.
+ * We list the non-terminal queue, match it to the message ids we just surfaced,
+ * and `ackDelivery` each match (transitioning it to `acked` server-side).
+ *
+ * This is the real server-side drain (it survives restarts), unlike a read
+ * receipt which does not change delivery state. Best-effort: any failure leaves
+ * the local `seenMessageIds` watermark as the backstop against re-injection.
+ */
+async function ackSurfacedDeliveries(agent: AgentClient, messageIds: Set<string>): Promise<void> {
+  if (messageIds.size === 0) {
+    return;
+  }
+  let deliveries: DeliveryItem[];
+  try {
+    deliveries = await agent.deliveries({ limit: MAX_DELIVERY_SCAN });
+  } catch {
+    return;
+  }
+  if (!Array.isArray(deliveries)) {
+    return;
+  }
+  const toAck = deliveries.filter(
+    (delivery) => delivery?.id && delivery?.messageId && messageIds.has(delivery.messageId)
+  );
+  await Promise.all(
+    toAck.map(async (delivery) => {
+      try {
+        await agent.ackDelivery(delivery.id);
+      } catch {
+        // Best-effort: the local watermark already prevents re-injection.
+      }
+    })
+  );
+}
+
+/**
+ * Flatten an engine inbox *summary* payload into the flat message list the
+ * plugin's UX is built around. `/v1/inbox` has no `messages` array; the
+ * message-like items are channel `mentions` and the `lastMessage` of each
+ * unread DM conversation.
+ *
+ * This is summary-only: it cannot recover earlier unread DMs (when
+ * `unreadCount > 1`) or unread channel posts that did not mention us. Use
+ * {@link collectInboxMessages} to hydrate those from the messages APIs.
+ *
+ * Defensive against a null/partial payload: the engine contract guarantees the
+ * arrays, but treat anything missing or non-array as empty rather than throwing
+ * inside an idle poll.
+ */
+export function inboxToMessages(inbox: InboxResponse | null | undefined): RelayMessage[] {
+  const messages: RelayMessage[] = [];
+
+  const mentions = Array.isArray(inbox?.mentions) ? inbox.mentions : [];
+  for (const mention of mentions) {
+    messages.push({
+      id: mention.id,
+      from: mention.agentName,
+      text: mention.text,
+      channel: mention.channelName,
+      ts: mention.createdAt,
+    });
   }
 
-  return (await res.json()) as RelayAPIResponse;
+  const unreadDms = Array.isArray(inbox?.unreadDms) ? inbox.unreadDms : [];
+  for (const dm of unreadDms) {
+    if (!dm.lastMessage) {
+      continue;
+    }
+    messages.push({
+      id: dm.lastMessage.id,
+      from: dm.from,
+      text: dm.lastMessage.text,
+      ts: dm.lastMessage.createdAt,
+    });
+  }
+
+  return messages;
+}
+
+/** Best-effort hydration of a multi-message DM conversation's unread tail. */
+async function fetchUnreadDmMessages(
+  agent: AgentClient,
+  conversationId: string,
+  from: string,
+  unreadCount: number
+): Promise<RelayMessage[]> {
+  const limit = Math.min(unreadCount, MAX_UNREAD_FETCH);
+  let dmMessages: DmMessage[];
+  try {
+    dmMessages = await agent.dms.messages(conversationId, { limit });
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(dmMessages)) {
+    return [];
+  }
+  // `dms.messages` returns newest-first; take the unread tail and restore
+  // chronological order so multi-message instructions read top-to-bottom.
+  return dmMessages
+    .slice(0, limit)
+    .reverse()
+    .map((message) => ({
+      id: message.id,
+      from: message.agentName ?? from,
+      text: message.text,
+      ts: message.createdAt,
+    }));
+}
+
+/** Best-effort hydration of unread posts in a channel we are not mentioned in. */
+async function fetchUnreadChannelMessages(
+  agent: AgentClient,
+  channelName: string,
+  unreadCount: number
+): Promise<RelayMessage[]> {
+  const limit = Math.min(unreadCount, MAX_UNREAD_FETCH);
+  let channelMessages: MessageWithMeta[];
+  try {
+    channelMessages = await agent.messages(channelName, { limit });
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(channelMessages)) {
+    return [];
+  }
+  return channelMessages
+    .slice(0, limit)
+    .reverse()
+    .map((message) => ({
+      id: message.id,
+      from: message.agentName,
+      text: message.text,
+      channel: channelName,
+      ts: message.createdAt,
+    }));
+}
+
+/**
+ * Build the flat, ordered list of *new* inbox messages and drain them, faithfully
+ * replicating the old `/inbox/check` queue behavior on top of the read-only
+ * engine inbox summary:
+ *
+ *  - Channel `mentions` and unread-DM `lastMessage`s come straight from the
+ *    summary (as in {@link inboxToMessages}).
+ *  - Multi-message DM conversations (`unreadCount > 1`) and unread channel posts
+ *    that did not mention us are hydrated from the DM / channel message APIs so
+ *    earlier instructions and non-mention channel traffic are not dropped.
+ *  - Every surfaced message is drained: recorded in `state.seenMessageIds`
+ *    (so it is never re-injected within this session) and acked on the durable
+ *    delivery ledger (best-effort) so it stops being replayed server-side,
+ *    including across restarts.
+ */
+export async function collectInboxMessages(
+  agent: AgentClient,
+  inbox: InboxResponse | null | undefined,
+  seen: Set<string>
+): Promise<RelayMessage[]> {
+  const collected: RelayMessage[] = [];
+  const seenInBatch = new Set<string>();
+
+  const push = (message: RelayMessage): void => {
+    if (!message.id || seenInBatch.has(message.id)) {
+      return;
+    }
+    seenInBatch.add(message.id);
+    collected.push(message);
+  };
+
+  const mentions = Array.isArray(inbox?.mentions) ? inbox.mentions : [];
+  for (const mention of mentions) {
+    push({
+      id: mention.id,
+      from: mention.agentName,
+      text: mention.text,
+      channel: mention.channelName,
+      ts: mention.createdAt,
+    });
+  }
+
+  const unreadDms = Array.isArray(inbox?.unreadDms) ? inbox.unreadDms : [];
+  for (const dm of unreadDms) {
+    if ((dm.unreadCount ?? 0) > 1 && dm.conversationId) {
+      const hydrated = await fetchUnreadDmMessages(agent, dm.conversationId, dm.from, dm.unreadCount);
+      if (hydrated.length > 0) {
+        for (const message of hydrated) {
+          push(message);
+        }
+        continue;
+      }
+    }
+    if (dm.lastMessage) {
+      push({
+        id: dm.lastMessage.id,
+        from: dm.from,
+        text: dm.lastMessage.text,
+        ts: dm.lastMessage.createdAt,
+      });
+    }
+  }
+
+  const unreadChannels = Array.isArray(inbox?.unreadChannels) ? inbox.unreadChannels : [];
+  for (const channel of unreadChannels) {
+    if (!channel.channelName || (channel.unreadCount ?? 0) <= 0) {
+      continue;
+    }
+    const hydrated = await fetchUnreadChannelMessages(agent, channel.channelName, channel.unreadCount);
+    for (const message of hydrated) {
+      push(message);
+    }
+  }
+
+  // Drain: drop anything already surfaced, then watermark + ack the rest on the
+  // durable delivery ledger so it survives restarts.
+  const fresh = collected.filter((message) => !seen.has(message.id));
+  for (const message of fresh) {
+    rememberSeen(seen, message.id);
+  }
+  await ackSurfacedDeliveries(agent, new Set(fresh.map((message) => message.id)));
+
+  return fresh;
 }
 
 export function createRelayConnectTool(
-  state: RelayState
+  state: RelayState,
+  dependencies: ToolDependencies = {}
 ): ToolDefinition<RelayConnectInput, { ok: true; name: string; workspace: string }> {
+  const createRelayCast = dependencies.createRelayCast ?? defaultCreateRelayCast;
+
   return {
     name: 'relay_connect',
     description: 'Connect to an Agent Relay workspace. Call this first.',
@@ -125,28 +400,30 @@ export function createRelayConnectTool(
         throw new Error('Invalid workspace key. Get one at relaycast.dev');
       }
 
-      const res = await fetch(`${normalizeBaseUrl(state.apiBaseUrl)}/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace, name, cli: 'opencode' }),
-      });
+      const relay = createRelayCast({ apiKey: workspace, baseUrl: state.apiBaseUrl });
 
-      if (!res.ok) {
-        if (res.status === 401 || res.status === 403) {
+      let token: string | undefined;
+      try {
+        // Register (or rotate) this agent identity in the workspace and obtain
+        // its agent token; this is the SDK equivalent of the old /register call.
+        const registration = await relay.registerOrRotate({ name });
+        token = registration?.token;
+      } catch (error) {
+        if (isAuthError(error)) {
           throw new Error('Invalid workspace key. Get one at relaycast.dev');
         }
-
-        throw new Error(`Relay API error: ${res.status} ${await res.text()}`);
+        throw error;
       }
 
-      const data = (await res.json()) as { token?: unknown };
-      if (typeof data.token !== 'string' || data.token.length === 0) {
+      if (typeof token !== 'string' || token.length === 0) {
         throw new Error('Relay API error: register response missing token');
       }
 
       state.workspace = workspace;
       state.agentName = name;
-      state.token = data.token;
+      state.token = token;
+      state.relay = relay;
+      state.agent = relay.as(token);
       state.connected = true;
 
       return {
@@ -174,7 +451,7 @@ export function createRelaySendTool(
     },
     async handler({ to, text }) {
       assertConnected(state);
-      await relaycastAPI(state, 'dm/send', { to, text });
+      await state.agent.dm(to, text);
       return { sent: true, to };
     },
   };
@@ -189,8 +466,8 @@ export function createRelayInboxTool(
     schema: { type: 'object', properties: {} },
     async handler() {
       assertConnected(state);
-      const data = await relaycastAPI(state, 'inbox/check', {});
-      const messages = Array.isArray(data.messages) ? (data.messages as Message[]) : [];
+      const inbox = await state.agent.inbox();
+      const messages = await collectInboxMessages(state.agent, inbox, state.seenMessageIds);
       return { count: messages.length, messages };
     },
   };
@@ -203,8 +480,8 @@ export function createRelayAgentsTool(state: RelayState): ToolDefinition<EmptyIn
     schema: { type: 'object', properties: {} },
     async handler() {
       assertConnected(state);
-      const data = await relaycastAPI(state, 'agent/list', {});
-      return { agents: Array.isArray(data.agents) ? data.agents : [] };
+      const agents = await state.relay.agents.list();
+      return { agents };
     },
   };
 }
@@ -225,7 +502,7 @@ export function createRelayPostTool(
     },
     async handler({ channel, text }) {
       assertConnected(state);
-      await relaycastAPI(state, 'message/post', { channel, text });
+      await state.agent.post(channel, text);
       return { posted: true, channel };
     },
   };
@@ -261,10 +538,13 @@ export function createRelaySpawnTool(
     async handler({ name, task, dir, model }) {
       assertConnected(state);
 
-      await relaycastAPI(state, 'agent/add', {
+      // Register the worker identity in the workspace so it shows up on the
+      // relay before the local OpenCode process bootstraps and connects.
+      // (The engine's agents.spawn requires a fixed cli enum that excludes
+      // "opencode", so we register the identity and spawn the process locally.)
+      await state.relay.agents.registerOrGet({
         name,
-        cli: 'opencode',
-        task,
+        metadata: { cli: 'opencode', task },
       });
 
       const systemPrompt = [
@@ -343,7 +623,7 @@ export function createRelayDismissTool(
         agent.process.kill('SIGTERM');
       }
 
-      await relaycastAPI(state, 'agent/remove', { name });
+      await state.relay.agents.delete(name);
       state.spawned.delete(name);
       return { dismissed: true, name };
     },
@@ -363,7 +643,7 @@ export function createRelayTools(
   ToolDefinition<RelayDismissInput, { dismissed: true; name: string }>,
 ] {
   return [
-    createRelayConnectTool(state),
+    createRelayConnectTool(state, dependencies),
     createRelaySendTool(state),
     createRelayInboxTool(state),
     createRelayAgentsTool(state),
@@ -383,8 +663,15 @@ export function registerTools(
   }
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
-  let end = baseUrl.length;
-  while (end > 0 && baseUrl[end - 1] === '/') end--;
-  return end === baseUrl.length ? baseUrl : baseUrl.slice(0, end);
+function isAuthError(error: unknown): boolean {
+  if (error instanceof RelayError) {
+    return (
+      error.status === 401 ||
+      error.status === 403 ||
+      error.code === 'unauthorized' ||
+      error.code === 'agent_token_invalid' ||
+      error.code === 'workspace_mismatch'
+    );
+  }
+  return false;
 }

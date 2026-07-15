@@ -15,10 +15,13 @@ const workspacePackages = [
   'cloud',
   'config',
   'events',
+  'fleet',
   'gateway',
   'github-primitive',
+  'harness-driver',
   'harnesses',
   'hooks',
+  'integration-prompts',
   'memory',
   'policy',
   'runtime',
@@ -60,6 +63,7 @@ export default defineConfig({
     setupFiles: [path.resolve(__dirname, './vitest.setup.ts')],
     include: [
       'tests/fixtures/**/*.test.ts',
+      'tests/integration/broker/evals/**/*.unit.test.ts',
       'packages/**/src/**/*.test.ts',
       'packages/**/src/**/*.test.tsx',
       'packages/**/tests/**/*.test.ts',
@@ -85,7 +89,6 @@ export default defineConfig({
         // actually unit-test here.
         'packages/cloud/src/workflows.ts',
         'packages/cloud/src/api-client.ts',
-        'packages/telemetry/**',
       ],
       // Thresholds recalibrated for Vitest 4's AST-aware V8 coverage
       // remapping, which reports a few points lower than v3 on the same

@@ -1,5 +1,3 @@
-import type { DeliveryStatus } from '@relaycast/types';
-
 import type { RelayMessage } from '../messaging/index.js';
 import type { Unsubscribe } from '../capabilities.js';
 import type {
@@ -29,8 +27,11 @@ export interface InjectionContext {
 }
 
 export interface InjectionResult {
-  /** Canonical durable-delivery status reported by the adapter. */
-  status: DeliveryStatus;
+  /**
+   * Delivery-receipt status reported by the adapter — the harness receipt
+   * lifecycle (`MessageReceipt`), not the server ledger's `DeliveryStatus`.
+   */
+  status: MessageReceipt['status'];
   injectionId?: string;
   availableAt?: string;
   reason?: string;

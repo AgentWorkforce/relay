@@ -34,7 +34,7 @@ use crate::runtime::{
 };
 use crate::spawner::{spawn_env_vars, Spawner};
 use crate::util::{
-    ansi::{floor_char_boundary, strip_ansi},
+    ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
         detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
         detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
@@ -53,6 +53,80 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
+
+/// Warn (without retrying) when a one-shot auto-response keystroke can't be
+/// enqueued to the PTY write drainer. These prompts — MCP approval, trust
+/// dialogs, model-picker dismissals, auto-enter nudges, escape dismissals — are
+/// best-effort: a full/wedged queue means the child isn't draining its stdin
+/// anyway, and the responder re-fires on the next matching output. `submit_write`
+/// used to be a blocking `write_all`; the non-blocking form returns an ack
+/// receiver whose enqueue error was silently dropped by `let _ =`. Surface it in
+/// the log so a wedged drainer is diagnosable instead of invisible.
+pub(crate) fn warn_on_auto_response_write<T>(result: Result<T>, context: &str) {
+    if let Err(error) = result {
+        tracing::warn!(
+            target: "agent_relay::worker::pty",
+            context = %context,
+            error = %error,
+            "auto-response pty write failed"
+        );
+    }
+}
+
+/// Cap on buffered human stdin chunks awaiting a full PTY write queue. Beyond
+/// this the child is clearly not reading its stdin, so the oldest chunk is
+/// dropped (with a warning) rather than growing memory without bound.
+const STDIN_PENDING_MAX_CHUNKS: usize = 1024;
+
+/// Submit as many buffered stdin chunks as the drainer will accept, in FIFO
+/// order, stopping at the first chunk `submit` rejects (queue full). `submit`
+/// returns `true` when the chunk was accepted. Returns `true` if chunks remain
+/// buffered — the caller should arm a retry deadline — and `false` once fully
+/// drained. Ordering is always preserved: a rejected chunk stays at the front.
+fn drain_stdin_buffer<F>(pending: &mut VecDeque<Vec<u8>>, submit: &mut F) -> bool
+where
+    F: FnMut(&[u8]) -> bool,
+{
+    while let Some(front) = pending.front() {
+        if submit(front) {
+            pending.pop_front();
+        } else {
+            break;
+        }
+    }
+    !pending.is_empty()
+}
+
+/// Append a new stdin chunk to the FIFO retry buffer, dropping the oldest chunk
+/// (with a warning) if `max` is exceeded, then drain what the drainer accepts.
+/// Returns `true` if chunks remain buffered after draining. This is the
+/// back-pressure path for human keystrokes: `submit_write` is non-blocking and
+/// returns `Err` on a full queue, so rather than dropping keystrokes we buffer
+/// and retry while preserving order.
+fn buffer_and_drain_stdin<F>(
+    pending: &mut VecDeque<Vec<u8>>,
+    data: Vec<u8>,
+    max: usize,
+    mut submit: F,
+) -> bool
+where
+    F: FnMut(&[u8]) -> bool,
+{
+    // Drain whatever the drainer will now accept before evicting anything —
+    // capacity may have freed up since the last retry, in which case there's
+    // no need to drop a chunk that could have been written successfully.
+    drain_stdin_buffer(pending, &mut submit);
+    if pending.len() >= max {
+        tracing::warn!(
+            target: "agent_relay::worker::pty",
+            pending = pending.len(),
+            "stdin retry buffer full; dropping oldest keystroke chunk (child not reading stdin)"
+        );
+        pending.pop_front();
+    }
+    pending.push_back(data);
+    drain_stdin_buffer(pending, &mut submit)
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingWrapInjection {
@@ -103,6 +177,13 @@ pub(crate) struct PtyAutoState {
     pub(crate) last_output_time: Instant,
     // Idle detection (edge-triggered)
     pub(crate) is_idle: bool,
+    /// When true, a human is driving the PTY (inbound delivery mode is
+    /// `manual_flush`). All prompt auto-responders and the stuck-agent
+    /// auto-enter are gated off so they cannot press keys while the human
+    /// types. Reset to `false` on release. Only ever set in the broker/worker
+    /// split (`pty_worker`); `run_wrap` leaves it `false` since that mode is
+    /// itself a live human passthrough where auto-responses are wanted.
+    pub(crate) interactive_hold: bool,
 }
 
 impl PtyAutoState {
@@ -133,6 +214,7 @@ impl PtyAutoState {
             editor_mode_buffer: String::new(),
             last_output_time: Instant::now(),
             is_idle: false,
+            interactive_hold: false,
         }
     }
 
@@ -149,6 +231,9 @@ impl PtyAutoState {
     /// Supports full match (header + option) and partial-match timeout (5s fallback).
     /// Handles edge cases where prompt text fragments across reads.
     pub(crate) async fn handle_mcp_approval(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if self.mcp_approved {
             return;
         }
@@ -180,7 +265,7 @@ impl PtyAutoState {
         if full_match || timeout_approval {
             self.mcp_approved = true;
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"a");
+            warn_on_auto_response_write(pty.submit_write(b"a".to_vec()), "mcp_approval");
             self.mcp_detection_buffer.clear();
             self.mcp_partial_match_since = None;
         }
@@ -188,6 +273,9 @@ impl PtyAutoState {
 
     /// Detect and approve bypass-permissions prompts in PTY output.
     pub(crate) async fn handle_bypass_permissions(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         let in_cooldown = self
             .last_bypass_perms_send
             .map(|t| t.elapsed() < BYPASS_PERMS_COOLDOWN)
@@ -201,11 +289,20 @@ impl PtyAutoState {
                 self.last_bypass_perms_send = Some(Instant::now());
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 if is_bypass_selection_menu(&clean) {
-                    let _ = pty.write_all(b"\x1b[B");
+                    warn_on_auto_response_write(
+                        pty.submit_write(b"\x1b[B".to_vec()),
+                        "bypass_permissions_down",
+                    );
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    let _ = pty.write_all(b"\r");
+                    warn_on_auto_response_write(
+                        pty.submit_write(b"\r".to_vec()),
+                        "bypass_permissions_enter",
+                    );
                 } else {
-                    let _ = pty.write_all(b"y\n");
+                    warn_on_auto_response_write(
+                        pty.submit_write(b"y\n".to_vec()),
+                        "bypass_permissions_confirm",
+                    );
                 }
                 self.bypass_perms_buffer.clear();
             }
@@ -216,6 +313,9 @@ impl PtyAutoState {
 
     /// Detect and dismiss Codex model upgrade prompts by selecting "Use existing model".
     pub(crate) async fn handle_codex_model_prompt(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if self.codex_model_prompt_handled {
             return;
         }
@@ -226,9 +326,9 @@ impl PtyAutoState {
             tracing::info!("Detected Codex model upgrade prompt, selecting 'Use existing model'");
             self.codex_model_prompt_handled = true;
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"\x1b[B"); // Down arrow → option 2
+            warn_on_auto_response_write(pty.submit_write(b"\x1b[B".to_vec()), "codex_model_down"); // Down arrow → option 2
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = pty.write_all(b"\r"); // Enter to confirm
+            warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "codex_model_enter"); // Enter to confirm
             self.codex_model_buffer.clear();
         }
     }
@@ -236,6 +336,9 @@ impl PtyAutoState {
     /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
     /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
     pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         let in_cooldown = self
             .last_opencode_perm_approval
             .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
@@ -250,9 +353,15 @@ impl PtyAutoState {
                 );
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // Arrow down to "Yes, and always allow medium impact commands"
-                let _ = pty.write_all(b"\x1b[B");
+                warn_on_auto_response_write(
+                    pty.submit_write(b"\x1b[B".to_vec()),
+                    "opencode_permission_down",
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let _ = pty.write_all(b"\r");
+                warn_on_auto_response_write(
+                    pty.submit_write(b"\r".to_vec()),
+                    "opencode_permission_enter",
+                );
                 self.opencode_perm_buffer.clear();
                 self.last_opencode_perm_approval = Some(Instant::now());
             }
@@ -263,6 +372,9 @@ impl PtyAutoState {
 
     /// Detect and auto-approve Gemini "Action Required" permission prompts.
     pub(crate) async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         let in_cooldown = self
             .last_gemini_action_approval
             .map(|t| t.elapsed() < GEMINI_ACTION_COOLDOWN)
@@ -274,7 +386,7 @@ impl PtyAutoState {
             if has_header && has_allow_option {
                 tracing::info!("Detected Gemini 'Action Required' prompt, auto-approving with '2'");
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let _ = pty.write_all(b"2\n");
+                warn_on_auto_response_write(pty.submit_write(b"2\n".to_vec()), "gemini_action");
                 self.gemini_action_buffer.clear();
                 self.last_gemini_action_approval = Some(Instant::now());
             }
@@ -286,6 +398,9 @@ impl PtyAutoState {
     /// Detect and auto-approve Gemini "Modify Trust Level" folder trust prompts.
     /// The menu shows "Trust this folder" pre-selected as option 1, so we just press Enter.
     pub(crate) async fn handle_gemini_trust(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if !self.gemini_trust_handled {
             Self::append_buf(&mut self.gemini_trust_buffer, text, 2500, 2000);
             let clean = strip_ansi(&self.gemini_trust_buffer);
@@ -296,7 +411,7 @@ impl PtyAutoState {
                 );
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // Option 1 "Trust this folder" is pre-selected, just press Enter
-                let _ = pty.write_all(b"\r");
+                warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "gemini_trust");
                 self.gemini_trust_buffer.clear();
                 self.gemini_trust_handled = true;
             }
@@ -307,6 +422,9 @@ impl PtyAutoState {
     /// to open the trust menu. The existing `handle_gemini_trust` will then pick up the
     /// interactive "Modify Trust Level" prompt that appears in response.
     pub(crate) async fn handle_gemini_untrusted_banner(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if !self.gemini_untrusted_handled {
             Self::append_buf(&mut self.gemini_untrusted_buffer, text, 2500, 2000);
             let clean = strip_ansi(&self.gemini_untrusted_buffer);
@@ -315,7 +433,10 @@ impl PtyAutoState {
                     "Detected Gemini 'untrusted folder' banner, sending /permissions command"
                 );
                 tokio::time::sleep(Duration::from_millis(300)).await;
-                let _ = pty.write_all(b"/permissions\n");
+                warn_on_auto_response_write(
+                    pty.submit_write(b"/permissions\n".to_vec()),
+                    "gemini_untrusted_permissions",
+                );
                 self.gemini_untrusted_buffer.clear();
                 self.gemini_untrusted_handled = true;
                 // Reset trust handler so it can pick up the resulting "Modify Trust Level" menu
@@ -329,6 +450,9 @@ impl PtyAutoState {
     /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
     /// so we just press Enter to confirm.
     pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold {
+            return;
+        }
         if !self.claude_trust_handled {
             Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
             let clean = strip_ansi(&self.claude_trust_buffer);
@@ -337,7 +461,7 @@ impl PtyAutoState {
                 tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // "Yes, I trust this folder" is pre-selected (option 1), press Enter
-                let _ = pty.write_all(b"\r");
+                warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "claude_trust");
                 self.claude_trust_buffer.clear();
                 self.claude_trust_handled = true;
             }
@@ -347,6 +471,11 @@ impl PtyAutoState {
     /// Send an enter keystroke if the agent appears stuck after injection.
     /// Uses exponential backoff: 10s → 15s → 25s → 40s → 60s.
     pub(crate) fn try_auto_enter(&mut self, pty: &PtySession) {
+        // Suppressed while a human drives: pressing Enter here would submit the
+        // human's half-typed input.
+        if self.interactive_hold {
+            return;
+        }
         if let Some(injection_time) = self.last_injection_time {
             let backoff_multiplier = match self.auto_enter_retry_count {
                 0 => 1.0,
@@ -371,7 +500,7 @@ impl PtyAutoState {
                 && !self.auto_suggestion_visible
                 && self.auto_enter_retry_count < MAX_AUTO_ENTER_RETRIES
             {
-                let _ = pty.write_all(b"\r");
+                warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "auto_enter");
                 self.last_auto_enter_time = Some(Instant::now());
                 self.auto_enter_retry_count += 1;
             }
@@ -384,6 +513,31 @@ impl PtyAutoState {
         } else if !strip_ansi(text).trim().is_empty() {
             self.auto_suggestion_visible = false;
         }
+    }
+
+    /// Like [`update_auto_suggestion`](Self::update_auto_suggestion) but uses
+    /// `prev_tail` (the trailing bytes of the previous PTY read) *only* to
+    /// recognise a ghost-text marker pair that straddles the chunk boundary —
+    /// `\x1b[7m` at the end of the previous read and `\x1b[27m\x1b[2m` at the
+    /// start of this one. The clear/keep decision is made on `current` alone,
+    /// so a normal output chunk after the suggestion is gone clears visibility
+    /// promptly instead of being held while a stale pair lingers in the
+    /// lookbehind. `prev_tail` matching on its own is excluded so an
+    /// already-handled pair can't re-arm visibility every chunk.
+    pub(crate) fn update_auto_suggestion_windowed(&mut self, current: &str, prev_tail: &str) {
+        if !is_auto_suggestion(current)
+            && !prev_tail.is_empty()
+            && !is_auto_suggestion(prev_tail)
+            && is_auto_suggestion(&format!("{prev_tail}{current}"))
+        {
+            // Pair straddles the read boundary — arm visibility even though the
+            // current chunk alone doesn't contain the whole pair.
+            self.auto_suggestion_visible = true;
+            return;
+        }
+        // Otherwise the current chunk decides: arm on an in-chunk pair, clear on
+        // real output, leave unchanged on whitespace/ANSI-only.
+        self.update_auto_suggestion(current);
     }
 
     pub(crate) fn update_editor_buffer(&mut self, text: &str) {
@@ -480,6 +634,103 @@ mod idle_tests {
         assert!(!state.is_idle);
         state.reset_idle_on_output();
         assert!(!state.is_idle);
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    /// While an interactive hold is active, `try_auto_enter` must not press
+    /// Enter (which would submit a human driver's half-typed input). Releasing
+    /// the hold resumes normal behaviour. We observe the effect via
+    /// `auto_enter_retry_count`, which only increments when a `\r` is actually
+    /// submitted.
+    #[tokio::test]
+    async fn interactive_hold_suppresses_and_resumes_auto_enter() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        let mut state = PtyAutoState::new();
+        // Arrange conditions under which auto-enter WOULD fire: an injection
+        // happened and both the injection and the last output are well past the
+        // required silence window, with no cooldown, editor, or suggestion.
+        state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+        state.last_output_time = Instant::now() - Duration::from_secs(120);
+
+        // Held: no keystroke.
+        state.interactive_hold = true;
+        state.try_auto_enter(&pty);
+        assert_eq!(
+            state.auto_enter_retry_count, 0,
+            "auto-enter must be suppressed while interactive hold is active"
+        );
+
+        // Released: resumes and fires.
+        state.interactive_hold = false;
+        state.try_auto_enter(&pty);
+        assert_eq!(
+            state.auto_enter_retry_count, 1,
+            "auto-enter must resume once the hold is released"
+        );
+
+        let _ = pty.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod auto_suggestion_tests {
+    use super::*;
+
+    const OPEN: &str = "\x1b[7m"; // reverse-video (ghost text begins)
+    const CLOSE: &str = "\x1b[27m\x1b[2m"; // reverse off + dim (ghost text ends)
+
+    #[test]
+    fn pair_in_one_chunk_arms_visibility() {
+        let mut s = PtyAutoState::new();
+        s.update_auto_suggestion_windowed(&format!("{OPEN}ghost{CLOSE}"), "");
+        assert!(s.auto_suggestion_visible);
+    }
+
+    #[test]
+    fn pair_straddling_boundary_is_detected() {
+        let mut s = PtyAutoState::new();
+        // Chunk 1 ends with the opening marker; nothing arms yet.
+        s.update_auto_suggestion_windowed(&format!("prompt {OPEN}gho"), "");
+        assert!(
+            !s.auto_suggestion_visible,
+            "opening marker alone must not arm"
+        );
+        // Chunk 2 carries the closing markers; the previous tail completes the pair.
+        let tail = format!("prompt {OPEN}gho");
+        s.update_auto_suggestion_windowed(&format!("st{CLOSE}"), &tail);
+        assert!(
+            s.auto_suggestion_visible,
+            "a pair straddling the read boundary must be detected"
+        );
+    }
+
+    #[test]
+    fn normal_output_clears_even_with_stale_pair_in_tail() {
+        // The regression cubic flagged: a completed suggestion in the previous
+        // chunk's tail must NOT keep visibility armed once plain output arrives.
+        let mut s = PtyAutoState::new();
+        let stale_tail = format!("{OPEN}ghost{CLOSE}");
+        s.auto_suggestion_visible = true;
+        s.update_auto_suggestion_windowed("the user typed a real line", &stale_tail);
+        assert!(
+            !s.auto_suggestion_visible,
+            "real output must clear visibility even when a completed pair sits in the lookbehind"
+        );
+    }
+
+    #[test]
+    fn whitespace_only_chunk_leaves_visibility_unchanged() {
+        let mut s = PtyAutoState::new();
+        s.auto_suggestion_visible = true;
+        s.update_auto_suggestion_windowed("   \x1b[0m", "");
+        assert!(
+            s.auto_suggestion_visible,
+            "whitespace / ANSI-only output must not flip visibility"
+        );
     }
 }
 
@@ -667,7 +918,7 @@ pub(crate) async fn run_wrap(
     tracing::debug!("connected to relaycast");
 
     let RelaySession {
-        http_base,
+        configured_base,
         default_workspace_id,
         workspaces,
         mut ws_inbound_rx,
@@ -702,7 +953,7 @@ pub(crate) async fn run_wrap(
     }
     .cloned()
     .context("no relay workspace available for wrap mode")?;
-    let child_base_url = http_base.clone();
+    let child_base_url = configured_base.clone();
     let child_workspaces_json = serde_json::to_string(
         &workspaces
             .iter()
@@ -774,6 +1025,21 @@ pub(crate) async fn run_wrap(
     // Pre-seeding dedup with these IDs prevents self-echo when the same message
     // arrives via WS — regardless of what identity the MCP server uses.
     let mut mcp_response_buffer = String::new();
+    // Stateful ANSI stripper for auto-suggestion detection. `is_auto_suggestion`
+    // keys on raw markers (`\x1b[7m`, `\x1b[27m\x1b[2m`); scanning each PTY read
+    // independently misses a marker split across two reads. Stitching the raw
+    // stream here holds back an incomplete trailing escape and prepends it to
+    // the next chunk so the ghost-text guard sees whole markers (#1247).
+    let mut suggestion_stripper = AnsiStripper::new();
+    // Bounded tail of the *previous* scanned chunk for ghost-text detection.
+    // `is_auto_suggestion` requires a marker *pair* (`\x1b[7m` … `\x1b[27m\x1b[2m`)
+    // in one string; when the halves land in different PTY reads, neither chunk
+    // contains both. Passing this tail alongside the new chunk to
+    // `update_auto_suggestion_windowed` lets a pair straddling the boundary be
+    // seen whole. It holds only the previous chunk's tail (not accumulated
+    // history), so a stale suggestion can't keep the guard armed.
+    let mut suggestion_prev_tail = String::new();
+    const SUGGESTION_LOOKBEHIND_MAX: usize = 512;
 
     let mut pty_auto = PtyAutoState::new();
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
@@ -836,6 +1102,19 @@ pub(crate) async fn run_wrap(
     let mut running = true;
     let mut stdout = tokio::io::stdout();
 
+    // Human keystrokes waiting to reach the PTY. `submit_write` is
+    // non-blocking: when the drainer's bounded queue is full (child briefly not
+    // reading stdin) it returns `Err` instead of parking the loop. The old
+    // blocking `write_all` back-pressured the terminal; dropping the write here
+    // would silently swallow keystrokes. Instead we buffer in FIFO order and
+    // retry on a short deadline, so ordering is preserved and nothing is lost
+    // during a transient stall. Bounded so a permanently wedged child can't grow
+    // this without limit — the oldest chunk is dropped with a warning if the cap
+    // is hit (at which point the child is not consuming input anyway).
+    let mut stdin_pending: VecDeque<Vec<u8>> = VecDeque::new();
+    let mut stdin_retry_deadline: Option<tokio::time::Instant> = None;
+    const STDIN_RETRY_INTERVAL: Duration = Duration::from_millis(4);
+
     while running {
         tokio::select! {
             // Ctrl-C
@@ -843,9 +1122,35 @@ pub(crate) async fn run_wrap(
                 running = false;
             }
 
-            // Stdin → PTY (passthrough)
+            // Stdin → PTY (passthrough). Append in FIFO order, then drain what
+            // the drainer will accept. On a full queue the remainder stays
+            // buffered and the retry-deadline arm below flushes it, so
+            // keystrokes are never dropped or reordered under back-pressure.
             Some(data) = stdin_rx.recv() => {
-                let _ = pty.write_all(&data);
+                let backlogged = buffer_and_drain_stdin(
+                    &mut stdin_pending,
+                    data,
+                    STDIN_PENDING_MAX_CHUNKS,
+                    |bytes| pty.submit_write(bytes.to_vec()).is_ok(),
+                );
+                stdin_retry_deadline = backlogged
+                    .then(|| tokio::time::Instant::now() + STDIN_RETRY_INTERVAL);
+            }
+
+            // Retry draining buffered stdin once the child accepts writes again.
+            // Parks on `pending()` (never wakes) whenever nothing is buffered.
+            _ = async {
+                match stdin_retry_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            }, if stdin_retry_deadline.is_some() => {
+                let backlogged = drain_stdin_buffer(
+                    &mut stdin_pending,
+                    &mut |bytes| pty.submit_write(bytes.to_vec()).is_ok(),
+                );
+                stdin_retry_deadline = backlogged
+                    .then(|| tokio::time::Instant::now() + STDIN_RETRY_INTERVAL);
             }
 
             // PTY output → stdout (passthrough) + auto-responses
@@ -862,7 +1167,22 @@ pub(crate) async fn run_wrap(
                         pty_auto.last_output_time = Instant::now();
                         mcp_reminder_throttle.note_output_bytes(chunk.len());
 
-                        pty_auto.update_auto_suggestion(&text);
+                        // Scan the stitched raw stream so a `\x1b[7m` marker
+                        // split mid-sequence is reassembled, and pass the
+                        // previous chunk's tail so a marker *pair* straddling
+                        // the read boundary is still detected — while the
+                        // clear decision stays on the current chunk.
+                        let suggestion_scan = suggestion_stripper.feed_raw(&text);
+                        pty_auto
+                            .update_auto_suggestion_windowed(&suggestion_scan, &suggestion_prev_tail);
+                        if !suggestion_scan.is_empty() {
+                            let start = floor_char_boundary(
+                                &suggestion_scan,
+                                suggestion_scan.len().saturating_sub(SUGGESTION_LOOKBEHIND_MAX),
+                            );
+                            suggestion_prev_tail.clear();
+                            suggestion_prev_tail.push_str(&suggestion_scan[start..]);
+                        }
                         pty_auto.update_editor_buffer(&text);
                         pty_auto.reset_auto_enter_on_output(&text);
 
@@ -886,14 +1206,23 @@ pub(crate) async fn run_wrap(
                             }
                         }
 
-                        pty_auto.handle_mcp_approval(&text, &pty).await;
-                        pty_auto.handle_bypass_permissions(&text, &pty).await;
-                        pty_auto.handle_codex_model_prompt(&text, &pty).await;
-                        pty_auto.handle_opencode_permission(&text, &pty).await;
-                        pty_auto.handle_gemini_action(&text, &pty).await;
-                        pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
-                        pty_auto.handle_gemini_trust(&text, &pty).await;
-                        pty_auto.handle_claude_trust(&text, &pty).await;
+                        // Skip auto-responders while human keystrokes are
+                        // backlogged in `stdin_pending` (the drainer queue was
+                        // full and hasn't drained them yet). Otherwise an
+                        // auto-response write submitted here could land on the
+                        // PTY FIFO ahead of keystrokes the human already typed,
+                        // since `submit_write` orders by submission, not by
+                        // when the byte was originally typed.
+                        if stdin_pending.is_empty() {
+                            pty_auto.handle_mcp_approval(&text, &pty).await;
+                            pty_auto.handle_bypass_permissions(&text, &pty).await;
+                            pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                            pty_auto.handle_opencode_permission(&text, &pty).await;
+                            pty_auto.handle_gemini_action(&text, &pty).await;
+                            pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
+                            pty_auto.handle_gemini_trust(&text, &pty).await;
+                            pty_auto.handle_claude_trust(&text, &pty).await;
+                        }
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
@@ -1059,7 +1388,7 @@ pub(crate) async fn run_wrap(
                                     let env_vars = spawn_env_vars(
                                         &params.name,
                                         &workspace_child_api_key,
-                                        &child_base_url,
+                                        child_base_url.as_deref(),
                                         &channels,
                                         Some(&child_workspaces_json),
                                         default_workspace_id.as_deref(),
@@ -1327,6 +1656,12 @@ pub(crate) async fn run_wrap(
             }
 
             _ = pending_injection_interval.tick() => {
+                // Give backlogged human keystrokes priority onto the PTY FIFO
+                // over a new automated injection — see the auto-responder gate
+                // above for why.
+                if !stdin_pending.is_empty() {
+                    continue;
+                }
                 let should_block = pending_wrap_injections
                     .front()
                     .map(|pending| {
@@ -1344,7 +1679,10 @@ pub(crate) async fn run_wrap(
                             event_id = %pending.event_id,
                             "auto-suggestion visible; sending Escape to dismiss before injection"
                         );
-                        let _ = pty.write_all(b"\x1b");
+                        warn_on_auto_response_write(
+                            pty.submit_write(b"\x1b".to_vec()),
+                            "wrap_injection_escape_dismiss",
+                        );
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         pty_auto.auto_suggestion_visible = false;
                     }
@@ -1362,7 +1700,17 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
+                    // Submit the body and its trailing `\r` as a single write.
+                    // The Enter keystroke is mandatory for delivery — sending
+                    // it as a separate best-effort write meant a failed/lost
+                    // enqueue could still leave the delivery recorded as
+                    // injected (echo verification only checks the body).
+                    // Combining into one write also keeps the two adjacent on
+                    // the drainer FIFO, so no other writer can splice a byte
+                    // between the body and its Enter.
+                    let mut bytes = injection.as_bytes().to_vec();
+                    bytes.extend_from_slice(b"\r");
+                    if let Err(e) = pty.submit_write(bytes) {
                         tracing::warn!(
                             event_id = %pending.event_id,
                             error = %e,
@@ -1386,8 +1734,6 @@ pub(crate) async fn run_wrap(
                         is_broadcast: pending.target.starts_with('#'),
                         has_thread: false,
                     });
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
                     tracing::debug!(
                         event_id = %pending.event_id,
                         "wrap: delivery injected"
@@ -1472,7 +1818,13 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    if let Err(error) = pty.write_all(injection.as_bytes()) {
+                    // Combined into a single write for the same reason as the
+                    // first-attempt path above: the Enter must not be a
+                    // best-effort afterthought, and a single write can't be
+                    // spliced by another writer.
+                    let mut bytes = injection.as_bytes().to_vec();
+                    bytes.extend_from_slice(b"\r");
+                    if let Err(error) = pty.submit_write(bytes) {
                         tracing::warn!(
                             event_id = %pv.event_id,
                             error = %error,
@@ -1482,8 +1834,6 @@ pub(crate) async fn run_wrap(
                         if include_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        let _ = pty.write_all(b"\r");
                         tracing::debug!(
                             delivery_id = %pv.delivery_id,
                             event_id = %pv.event_id,
@@ -1496,9 +1846,13 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            // Auto-enter for stuck agents
+            // Auto-enter for stuck agents. Gated on the same backlog check as
+            // the other automation arms above — a stuck-agent nudge must not
+            // jump ahead of keystrokes the human already typed.
             _ = auto_enter_interval.tick() => {
-                pty_auto.try_auto_enter(&pty);
+                if stdin_pending.is_empty() {
+                    pty_auto.try_auto_enter(&pty);
+                }
             }
 
             // Reap child agents that have exited on their own
@@ -1556,4 +1910,100 @@ pub(crate) async fn run_wrap(
 
     eprintln!("\r\n[agent-relay] session ended");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{buffer_and_drain_stdin, drain_stdin_buffer, STDIN_PENDING_MAX_CHUNKS};
+    use std::collections::VecDeque;
+
+    #[test]
+    fn stdin_drains_in_order_when_queue_accepts() {
+        let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
+        let mut delivered: Vec<Vec<u8>> = Vec::new();
+        for chunk in [b"a".to_vec(), b"bc".to_vec(), b"d".to_vec()] {
+            let backlogged =
+                buffer_and_drain_stdin(&mut pending, chunk, STDIN_PENDING_MAX_CHUNKS, |bytes| {
+                    delivered.push(bytes.to_vec());
+                    true
+                });
+            assert!(!backlogged, "nothing should remain buffered when accepted");
+        }
+        assert!(pending.is_empty());
+        assert_eq!(
+            delivered,
+            vec![b"a".to_vec(), b"bc".to_vec(), b"d".to_vec()]
+        );
+    }
+
+    #[test]
+    fn stdin_buffers_in_fifo_order_when_queue_full_then_flushes() {
+        // Model a full queue: reject everything while the child stalls, then
+        // accept once it drains. Order must be preserved end to end.
+        let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
+        let inputs = [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()];
+
+        // Queue is full: every submit is rejected, so all chunks buffer in order
+        // and the caller is told to keep retrying.
+        for chunk in inputs.iter().cloned() {
+            let backlogged =
+                buffer_and_drain_stdin(&mut pending, chunk, STDIN_PENDING_MAX_CHUNKS, |_| false);
+            assert!(backlogged, "rejected chunk must stay buffered for retry");
+        }
+        assert_eq!(pending.len(), 3);
+
+        // Child starts reading again: drain accepts everything, in FIFO order.
+        let mut delivered: Vec<Vec<u8>> = Vec::new();
+        let backlogged = drain_stdin_buffer(&mut pending, &mut |bytes| {
+            delivered.push(bytes.to_vec());
+            true
+        });
+        assert!(!backlogged);
+        assert!(pending.is_empty());
+        assert_eq!(delivered, inputs.to_vec());
+    }
+
+    #[test]
+    fn stdin_partial_drain_preserves_remaining_order() {
+        // Accept the first chunk, reject the rest — the rejected chunks stay at
+        // the front in order for the next retry.
+        let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
+        pending.push_back(b"first".to_vec());
+        pending.push_back(b"second".to_vec());
+        pending.push_back(b"third".to_vec());
+
+        let mut delivered: Vec<Vec<u8>> = Vec::new();
+        let mut accept_one = true;
+        let backlogged = drain_stdin_buffer(&mut pending, &mut |bytes| {
+            if accept_one {
+                accept_one = false;
+                delivered.push(bytes.to_vec());
+                true
+            } else {
+                false
+            }
+        });
+        assert!(backlogged);
+        assert_eq!(delivered, vec![b"first".to_vec()]);
+        assert_eq!(
+            pending.iter().cloned().collect::<Vec<_>>(),
+            vec![b"second".to_vec(), b"third".to_vec()]
+        );
+    }
+
+    #[test]
+    fn stdin_buffer_drops_oldest_when_bound_exceeded() {
+        // With a tiny bound and a stalled queue, the oldest chunk is dropped so
+        // memory stays bounded; the newest keystrokes survive in order.
+        let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
+        let max = 2;
+        for chunk in [b"1".to_vec(), b"2".to_vec(), b"3".to_vec()] {
+            buffer_and_drain_stdin(&mut pending, chunk, max, |_| false);
+        }
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            pending.iter().cloned().collect::<Vec<_>>(),
+            vec![b"2".to_vec(), b"3".to_vec()]
+        );
+    }
 }

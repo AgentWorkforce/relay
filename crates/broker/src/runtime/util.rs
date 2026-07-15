@@ -237,6 +237,11 @@ pub(crate) fn delivery_retry_interval() -> Duration {
     Duration::from_millis(ms.max(50))
 }
 
+// No longer called from production code — the HTTP/sidecar send path
+// (runtime/api.rs) no longer attempts direct local delivery, so there's
+// nothing left to bound with a "local delivery" timeout. Kept (with its
+// env-var override still covered by unit tests) rather than deleted.
+#[allow(dead_code)]
 pub(crate) fn http_api_local_delivery_timeout() -> Duration {
     let ms = std::env::var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS")
         .ok()
@@ -250,6 +255,18 @@ pub(crate) fn http_api_relaycast_send_timeout() -> Duration {
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS);
+    Duration::from_millis(ms.max(500))
+}
+
+// Deliberately separate from `http_api_relaycast_send_timeout`: observer-token
+// minting is a distinct Relaycast SDK call from the `/api/send` publish path,
+// with its own latency characteristics, so it gets its own tunable timeout
+// rather than being coupled to send-path tuning.
+pub(crate) fn http_api_observer_token_timeout() -> Duration {
+    let ms = std::env::var("AGENT_RELAY_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS);
     Duration::from_millis(ms.max(500))
 }
 

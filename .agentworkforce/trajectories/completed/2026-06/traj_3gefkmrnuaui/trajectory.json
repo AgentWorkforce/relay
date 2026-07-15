@@ -1,0 +1,53 @@
+{
+  "id": "traj_3gefkmrnuaui",
+  "version": 1,
+  "task": {
+    "title": "Review PR #1129 in AgentWorkforce/relay"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-14T12:24:16.526Z",
+  "completedAt": "2026-06-14T12:35:08.895Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-14T12:30:58.862Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ejjcwc558qvd",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-14T12:30:58.862Z",
+      "endedAt": "2026-06-14T12:35:08.895Z",
+      "events": [
+        {
+          "ts": 1781440258862,
+          "type": "decision",
+          "content": "Auto-fix malformed Markdown emphasis in tracked trajectory summary: Auto-fix malformed Markdown emphasis in tracked trajectory summary",
+          "raw": {
+            "question": "Auto-fix malformed Markdown emphasis in tracked trajectory summary",
+            "chosen": "Auto-fix malformed Markdown emphasis in tracked trajectory summary",
+            "alternatives": [],
+            "reasoning": "CodeRabbit reported MD037 in a changed Markdown file; replacing malformed tool-token markup with inline code is mechanical and non-semantic."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reviewed PR #1129 task-exit spawn changes; applied one mechanical Markdown lint fix; left validated semantic API/schema issues as review findings; Node typecheck/build/test/lint/prettier passed, Rust unavailable locally because Cargo is not installed.",
+    "approach": "Standard approach",
+    "confidence": 0.82
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6241d92ee11facb6a50cfb11c4608dd024d55ab7",
+    "endRef": "6241d92ee11facb6a50cfb11c4608dd024d55ab7"
+  }
+}

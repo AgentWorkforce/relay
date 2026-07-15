@@ -18,26 +18,37 @@ agent-relay message post --channel general --text "hello"
 agent-relay workspace list
 ```
 
-## Local broker
+## This machine's node
 
-The `local` command group manages the broker on your machine and the agents it runs:
+The `node` command group manages the broker on your machine and the agents it runs:
 
 ```bash
-agent-relay local up
-agent-relay local status
-agent-relay local down
+agent-relay node up                          # serves an auto-discovered agent-relay.{ts,js,…} node file,
+                                             # or the implicit local node from teams.json
+agent-relay node up --config ./my-node.ts    # serve a specific defineNode(...) file
+agent-relay node status
+agent-relay node down
 
-agent-relay local run workflows/my-workflow.ts
-agent-relay local logs <run-id> --follow
-agent-relay local sync <run-id>
+agent-relay node workflow run workflows/my-workflow.ts
+agent-relay node workflow logs <run-id> --follow
+agent-relay node workflow sync <run-id>
 
-agent-relay local agent new claude          # spawn + attach
-agent-relay local agent list
-agent-relay local agent attach <name> --mode view
-agent-relay local agent release <name>
+agent-relay node agent new claude            # spawn + attach
+agent-relay node agent list
+agent-relay node agent attach <name> --mode view
+agent-relay node agent release <name>
 ```
 
-Local workflow runs use Relayflows for YAML, TypeScript, and Python workflow files.
+To run as a Cloud-managed node, first redeem a one-time enrollment token, then start the node:
+
+```bash
+agent-relay cloud enroll --token ocl_node_enr_...
+agent-relay node up
+```
+
+`local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).
+
+Node workflow runs use Relayflows for YAML, TypeScript, and Python workflow files.
 
 Hosted equivalents live under `agent-relay cloud …`.
 

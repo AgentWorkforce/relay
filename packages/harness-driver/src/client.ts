@@ -15,7 +15,6 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { actionSchemaToJsonSchema, type ActionSchema } from '@agent-relay/sdk/actions';
 import {
   BrokerTransport,
   HarnessDriverProtocolError,
@@ -28,14 +27,14 @@ import type {
   BrokerStats,
   BrokerStatus,
   CrashInsightsResponse,
-  HeadlessProvider,
+  DeadLettersResponse,
+  RedeliverDeadLettersResponse,
   PendingRelayMessage,
   PtySnapshot,
   InboundDeliveryMode,
   SnapshotFormat,
 } from './protocol.js';
 import type {
-  AgentTransport,
   SpawnAgentResult,
   SpawnCliInput,
   SpawnHeadlessInput,
@@ -56,6 +55,26 @@ import type {
 } from './lifecycle-hooks.js';
 import { buildBrokerSpawnConfig, type RuntimeSpawnOptions } from './spawn-config.js';
 export type { BrokerInitArgs, BrokerSpawnConfig, RuntimeSpawnOptions } from './spawn-config.js';
+import {
+  applySpawnPatch,
+  buildSpawnCliBody,
+  buildSpawnPtyBody,
+  isBundledHeadlessCli,
+  resolveSpawnTransport,
+} from './spawn-request.js';
+import {
+  cloneBrokerExitInfo,
+  drainBrokerStdioAfterStartup,
+  formatBrokerStartupError,
+  isProcessRunning,
+  pushBufferedLine,
+  waitForApiUrl,
+  waitForExit,
+  type BrokerExitInfo,
+} from './broker-process.js';
+// Re-exported so `export * from './client.js'` keeps BrokerExitInfo on the
+// public surface after it moved into the broker-process module.
+export type { BrokerExitInfo } from './broker-process.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -74,17 +93,6 @@ export interface HarnessDriverClientOptions {
    * hooks fired here.
    */
   eventBus?: EventBus<HarnessDriverEvents>;
-}
-
-export interface BrokerExitInfo {
-  /** Exit code, or null when the process was killed by signal. */
-  code: number | null;
-  /** Terminating signal, or null when the process exited normally. */
-  signal: NodeJS.Signals | null;
-  /** PID of the managed broker process that exited. */
-  pid: number | undefined;
-  /** Recent stderr lines captured from the managed broker process. */
-  recentStderr: string[];
 }
 
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
@@ -107,7 +115,14 @@ export interface SessionInfo {
   broker_version: string;
   protocol_version: number;
   workspace_key?: string;
+  relay_base_url?: string;
   default_workspace_id?: string;
+  /** The node id the broker registered as; capability providers attach here. */
+  node_id?: string;
+  /** The node's name (the target others address). */
+  node_name?: string;
+  /** The node's shared token, so local providers attach without pre-enrollment. */
+  node_token?: string;
   mode: string;
   uptime_secs: number;
 }
@@ -115,6 +130,27 @@ export interface SessionInfo {
 export interface SetInboundDeliveryModeResult {
   mode: InboundDeliveryMode;
   flushed: number;
+  /**
+   * `true` when the set was applied. `false` when an expected mode or revision
+   * did not match, in which case `mode` reports the current unchanged mode.
+   * Guarded calls fail closed when a legacy broker omits this field.
+   */
+  matched: boolean;
+  /** Monotonic broker generation after the set, or `null` on a legacy broker. */
+  revision: string | null;
+}
+
+/** Options for {@link HarnessDriverClient.setInboundDeliveryMode}. */
+export interface SetInboundDeliveryModeOptions {
+  /**
+   * Compare-and-set guard: apply the new mode only if the worker's current
+   * mode still equals this value. Used by the CLI detach-restore path to avoid
+   * clobbering a concurrent mode change (a read-then-set TOCTOU). Omit for an
+   * unconditional set.
+   */
+  expectedMode?: InboundDeliveryMode;
+  /** Require the worker mode generation to still equal this decimal string. */
+  expectedRevision?: string;
 }
 
 export interface WorkerStreamSubscriptionOptions {
@@ -122,120 +158,36 @@ export interface WorkerStreamSubscriptionOptions {
   stream?: string;
   /** Sequence offset to pass to the broker event stream when connecting. */
   sinceSeq?: number;
+  /**
+   * Maximum number of unconsumed chunks buffered when the caller isn't
+   * pulling from the iterator as fast as events arrive. Once the cap is hit,
+   * the oldest buffered chunk is dropped to make room for the newest one (a
+   * slow/paused consumer trades completeness for bounded memory rather than
+   * growing without limit). A single warning is logged the first time this
+   * happens per subscription.
+   *
+   * Normalized to a finite positive integer: non-finite (`NaN`/`Infinity`),
+   * zero, or negative values are ignored and fall back to the default rather
+   * than silently disabling the bound. Default: 10000.
+   */
+  maxQueueSize?: number;
 }
 
-interface BrokerStartupDebugContext {
-  binaryPath: string;
-  args: string[];
-  cwd: string;
-  stdoutLines: string[];
-  stderrLines: string[];
+const DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE = 10_000;
+
+/**
+ * Coerce a caller-supplied `maxQueueSize` to a finite positive integer. A
+ * non-finite, zero, or negative value would defeat the buffer bound entirely
+ * (`queue.length >= NaN` is always false), so those fall back to the default.
+ */
+function normalizeMaxQueueSize(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
+  }
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
 }
 
 type BrokerExitListener = (info: BrokerExitInfo) => void;
-
-function isBundledHeadlessCli(value: string): value is HeadlessProvider {
-  return value === 'claude' || value === 'opencode';
-}
-
-function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
-  if (input.transport) return input.transport;
-  if (input.harnessConfig) return input.harnessConfig.runtime;
-  return input.cli === 'opencode' ? 'headless' : 'pty';
-}
-
-/**
- * Coerce an `agentResultSchema` into the plain JSON Schema the broker accepts.
- * Raw JSON Schema (object or boolean) passes through unchanged; zod-style
- * validators are converted via the SDK's actions coercion helper.
- */
-function resolveAgentResultSchema(
-  schema: SpawnPtyInput['agentResultSchema']
-): Record<string, unknown> | boolean | undefined {
-  if (schema === undefined || typeof schema === 'boolean') return schema;
-  return actionSchemaToJsonSchema(schema as ActionSchema);
-}
-
-/**
- * Serialize a {@link SpawnPtyInput} for the broker `/api/spawn` endpoint.
- * Factored out of {@link HarnessDriverClient.spawnPty} so the same shape can
- * be applied to the post-`beforeAgentSpawn` resolved input.
- */
-function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
-  return {
-    name: input.name,
-    cli: input.cli,
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    args: input.args ?? [],
-    ...(input.task !== undefined ? { task: input.task } : {}),
-    channels: input.channels ?? [],
-    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-    ...(input.team !== undefined ? { team: input.team } : {}),
-    ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-    ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-    ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-    ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
-    ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-    ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-    ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-    ...(input.agentResultSchema !== undefined
-      ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
-      : {}),
-  };
-}
-
-function buildSpawnCliBody(input: SpawnCliInput, transport: AgentTransport): Record<string, unknown> {
-  return {
-    name: input.name,
-    cli: input.cli,
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    args: input.args ?? [],
-    ...(input.task !== undefined ? { task: input.task } : {}),
-    channels: input.channels ?? [],
-    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-    ...(input.team !== undefined ? { team: input.team } : {}),
-    ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-    ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-    ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-    ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
-    ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-    ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-    ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-    ...(input.agentResultSchema !== undefined
-      ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
-      : {}),
-    transport,
-  };
-}
-
-function applySpawnPatch<TInput extends SpawnPtyInput | SpawnCliInput>(
-  input: TInput,
-  patch: SpawnPatch
-): TInput {
-  if (Object.hasOwn(patch, 'args')) input.args = patch.args;
-  if (Object.hasOwn(patch, 'channels')) input.channels = patch.channels;
-  if (Object.hasOwn(patch, 'task')) input.task = patch.task;
-  if (Object.hasOwn(patch, 'model')) input.model = patch.model;
-  if (Object.hasOwn(patch, 'team')) input.team = patch.team;
-  if (Object.hasOwn(patch, 'agentToken')) input.agentToken = patch.agentToken;
-  if (Object.hasOwn(patch, 'harnessConfig')) input.harnessConfig = patch.harnessConfig;
-  return input;
-}
-
-function isProcessRunning(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
 
 // ── Client ─────────────────────────────────────────────────────────────
 
@@ -394,6 +346,7 @@ export class HarnessDriverClient {
    * 6. Starts event stream + lease renewal
    */
   static async spawn(options?: RuntimeSpawnOptions): Promise<HarnessDriverClient> {
+    const onStep = options?.onStep;
     let binaryPath = options?.binaryPath;
     if (!binaryPath) {
       const resolved = getBrokerBinaryPath();
@@ -402,11 +355,13 @@ export class HarnessDriverClient {
       }
       binaryPath = resolved;
     }
+    onStep?.(`Resolved broker binary: ${binaryPath}`);
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
     const { cwd, timeoutMs, args, env } = buildBrokerSpawnConfig(options, apiKey);
     const stderrLines: string[] = [];
     const stdoutLines: string[] = [];
 
+    onStep?.(`Spawning broker process: ${binaryPath} ${args.join(' ')}`);
     const child = spawn(binaryPath, args, {
       cwd,
       env,
@@ -430,6 +385,7 @@ export class HarnessDriverClient {
       stdoutLines,
       stderrLines,
     });
+    onStep?.(`Broker API listening at ${baseUrl}`);
     drainBrokerStdioAfterStartup(child);
 
     const client = new HarnessDriverClient({
@@ -472,21 +428,37 @@ export class HarnessDriverClient {
     // the broker exits later (e.g. on normal shutdown).
     brokerExited.catch(() => {});
 
+    onStep?.('Waiting for broker session handshake...');
     let session: SessionInfo | undefined;
-    for (let attempt = 0; attempt < 10; attempt++) {
+    // The Relaycast handshake can take many seconds on a cold or slow network,
+    // during which the startup-only API answers 503. Poll for the full startup
+    // budget (`timeoutMs`) rather than a fixed attempt count so a slow-but-
+    // healthy handshake isn't misreported as a spawn failure. The `brokerExited`
+    // race still surfaces a dead broker immediately, so this only extends how
+    // long we wait on a broker that is alive and warming up.
+    const handshakeDeadline = Date.now() + timeoutMs;
+    for (let attempt = 0; ; attempt++) {
       try {
         session = await Promise.race([client.getSession(), brokerExited]);
         break;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const is503 = message.includes('503') || message.includes('Service Unavailable');
-        if (!is503 || attempt >= 9) throw err;
+        // The broker's startup-only API returns a structured 503
+        // (`http_503`) while it warms up. Prefer the typed fields over the
+        // formatted message, which the broker is free to customize.
+        const is503 =
+          err instanceof HarnessDriverProtocolError
+            ? err.status === 503 || err.code === 'http_503'
+            : /503|Service Unavailable/.test(err instanceof Error ? err.message : String(err));
+        if (!is503 || Date.now() >= handshakeDeadline) throw err;
+        onStep?.(`Broker still starting (handshake attempt ${attempt + 1}), retrying in 1s...`);
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
+    onStep?.(`Broker handshake complete (workspace: ${session?.workspace_key ?? 'unknown'})`);
 
     if (!client.brokerExitInfo) {
       client.connectEvents();
+      onStep?.('Event stream connected.');
 
       // Renew the owner lease so the broker doesn't auto-shutdown
       client.leaseTimer = setInterval(() => {
@@ -719,14 +691,33 @@ export class HarnessDriverClient {
     return this.transport.openInputStream(name, options);
   }
 
+  /**
+   * Resize a worker's PTY.
+   *
+   * Under the broker's single-resizer policy (#1247) an attach client should
+   * pass a stable `sessionId` so only one client owns the shared PTY size at a
+   * time; on detach it sends `release: true` to hand ownership back. Calls
+   * without `sessionId` are always applied (legacy behaviour), so the extra
+   * options are fully backward compatible.
+   *
+   * `rows`/`cols` are optional so a pure ownership release (`release: true`)
+   * can omit them entirely rather than sending placeholder dimensions — the
+   * broker defaults them and skips the resize on a release.
+   */
   async resizePty(
     name: string,
-    rows: number,
-    cols: number
-  ): Promise<{ name: string; rows: number; cols: number }> {
+    rows?: number,
+    cols?: number,
+    options?: { sessionId?: string; release?: boolean }
+  ): Promise<{ name: string; rows?: number; cols?: number; applied?: boolean; released?: boolean }> {
     return this.transport.request(`/api/resize/${encodeURIComponent(name)}`, {
       method: 'POST',
-      body: JSON.stringify({ rows, cols }),
+      body: JSON.stringify({
+        ...(rows !== undefined ? { rows } : {}),
+        ...(cols !== undefined ? { cols } : {}),
+        ...(options?.sessionId ? { session_id: options.sessionId } : {}),
+        ...(options?.release ? { release: true } : {}),
+      }),
     });
   }
 
@@ -745,15 +736,29 @@ export class HarnessDriverClient {
 
   async setInboundDeliveryMode(
     name: string,
-    mode: InboundDeliveryMode
+    mode: InboundDeliveryMode,
+    options?: SetInboundDeliveryModeOptions
   ): Promise<SetInboundDeliveryModeResult> {
-    const result = await this.transport.request<{ mode?: unknown; flushed?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ mode }),
-      }
-    );
+    const body: {
+      mode: InboundDeliveryMode;
+      expected_mode?: InboundDeliveryMode;
+      expected_revision?: string;
+    } = { mode };
+    if (options?.expectedMode !== undefined) {
+      body.expected_mode = options.expectedMode;
+    }
+    if (options?.expectedRevision !== undefined) {
+      body.expected_revision = options.expectedRevision;
+    }
+    const result = await this.transport.request<{
+      mode?: unknown;
+      flushed?: unknown;
+      matched?: unknown;
+      revision?: unknown;
+    }>(`/api/spawned/${encodeURIComponent(name)}/delivery-mode`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
       throw new HarnessDriverProtocolError({
         code: 'invalid_response',
@@ -763,6 +768,12 @@ export class HarnessDriverClient {
     return {
       mode: result.mode,
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      // A guarded call must fail closed when a legacy broker omits `matched`.
+      matched:
+        typeof result.matched === 'boolean'
+          ? result.matched
+          : options?.expectedMode === undefined && options?.expectedRevision === undefined,
+      revision: typeof result.revision === 'string' && /^\d+$/.test(result.revision) ? result.revision : null,
     };
   }
 
@@ -787,12 +798,53 @@ export class HarnessDriverClient {
     );
   }
 
+  /**
+   * Current durable-event sequence number. An attaching client uses this as
+   * the `sinceSeq` cutoff when opening the live event WS so the broker does
+   * not replay historical durable events (e.g. old `delivery_queued`
+   * frames) that would otherwise inflate a freshly-seeded pending counter.
+   *
+   * Requests with `sinceSeq` set beyond everything retained so the response
+   * carries only the cutoff, not a payload of replayed events. Returns `0`
+   * on brokers that predate the `currentSeq` field.
+   */
+  async currentEventSeq(): Promise<number> {
+    const body = await this.transport.request<{ currentSeq?: number }>(
+      `/api/events/replay?sinceSeq=${Number.MAX_SAFE_INTEGER}`
+    );
+    return typeof body.currentSeq === 'number' ? body.currentSeq : 0;
+  }
+
+  /**
+   * Subscribe to live `worker_stream` chunks for a worker as an async
+   * iterable of strings.
+   *
+   * Backpressure policy: each iterator buffers chunks the caller hasn't
+   * consumed yet, bounded by `options.maxQueueSize` (default 10000). Once
+   * the buffer is full, the oldest buffered chunk is dropped to make room
+   * for the newest one and a single warning is logged — a slow or paused
+   * consumer trades completeness for bounded memory rather than growing
+   * without limit.
+   *
+   * @param name - The worker's name.
+   * @param options - Stream filter, replay cutoff, and queue size.
+   * @returns An async iterable yielding stream chunks.
+   */
   subscribeWorkerStream(name: string, options: WorkerStreamSubscriptionOptions = {}): AsyncIterable<string> {
     this.connectEvents(options.sinceSeq);
+    const maxQueueSize = normalizeMaxQueueSize(options.maxQueueSize);
+    let didWarnQueueOverflow = false;
 
     return {
       [Symbol.asyncIterator]: () => {
+        // Ring-style buffer: `queue` is the backing array and `head` is the
+        // index of the oldest live chunk. Dropping or consuming the oldest
+        // chunk advances `head` (O(1)) instead of `Array.prototype.shift()`
+        // (O(n)) — under sustained overload at the cap every chunk would
+        // otherwise pay an O(n) memmove. The dead prefix is reclaimed by
+        // `compactQueue` amortized O(1).
         const queue: string[] = [];
+        let head = 0;
         let pending:
           | {
               resolve: (result: IteratorResult<string>) => void;
@@ -800,6 +852,26 @@ export class HarnessDriverClient {
             }
           | undefined;
         let done = false;
+
+        const compactQueue = (): void => {
+          if (head === 0) {
+            return;
+          }
+          if (head >= queue.length) {
+            // Fully drained — reset so the backing array is reused from the
+            // front rather than growing without bound.
+            queue.length = 0;
+            head = 0;
+            return;
+          }
+          // Only pay the O(n) splice once the dead prefix has grown to at
+          // least half the backing array (past a small floor), keeping the
+          // per-chunk cost amortized O(1).
+          if (head >= 32 && head * 2 >= queue.length) {
+            queue.splice(0, head);
+            head = 0;
+          }
+        };
 
         const unsubscribe = this.onEvent((event) => {
           if (
@@ -814,6 +886,19 @@ export class HarnessDriverClient {
             pending = undefined;
             resolve({ done: false, value: event.chunk });
             return;
+          }
+          // Drop-oldest: a consumer that isn't pulling fast enough trades
+          // completeness for bounded memory rather than buffering forever.
+          if (queue.length - head >= maxQueueSize) {
+            queue[head] = undefined as unknown as string; // release reference
+            head += 1;
+            compactQueue();
+            if (!didWarnQueueOverflow) {
+              didWarnQueueOverflow = true;
+              console.error(
+                `[agent-relay] subscribeWorkerStream(${JSON.stringify(name)}) queue exceeded ${maxQueueSize} buffered chunks; dropping oldest chunks. The consumer is not reading fast enough.`
+              );
+            }
           }
           queue.push(event.chunk);
         });
@@ -831,8 +916,12 @@ export class HarnessDriverClient {
 
         return {
           next(): Promise<IteratorResult<string>> {
-            if (queue.length > 0) {
-              return Promise.resolve({ done: false, value: queue.shift() as string });
+            if (queue.length - head > 0) {
+              const value = queue[head];
+              queue[head] = undefined as unknown as string; // release reference
+              head += 1;
+              compactQueue();
+              return Promise.resolve({ done: false, value });
             }
             if (done) {
               return Promise.resolve({ done: true, value: undefined as never });
@@ -935,6 +1024,25 @@ export class HarnessDriverClient {
     return this.transport.request('/api/crash-insights');
   }
 
+  /** List terminally-failed deliveries retained in the broker's dead-letter queue. */
+  async getDeadLetters(): Promise<DeadLettersResponse> {
+    return this.transport.request('/api/dead-letters');
+  }
+
+  /**
+   * Requeue dead-letter entries through the normal delivery path with a
+   * reset retry count. Pass an id for a single entry, or `{ all: true }`
+   * for every entry whose recipient is currently running.
+   */
+  async redeliverDeadLetters(
+    input: { id: string; all?: never } | { id?: never; all: true }
+  ): Promise<RedeliverDeadLettersResponse> {
+    return this.transport.request('/api/dead-letters/redeliver', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────
 
   async preflight(agents: Array<{ name: string; cli: string }>): Promise<{ queued: number }> {
@@ -1030,164 +1138,7 @@ export class HarnessDriverClient {
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-/**
- * Parse the API URL from the broker's stdout. The broker prints:
- *   [agent-relay] API listening on http://{bind}:{port}
- * Returns the full URL (e.g. "http://127.0.0.1:3889").
- */
-async function waitForApiUrl(
-  child: ChildProcess,
-  timeoutMs: number,
-  debug: BrokerStartupDebugContext
-): Promise<string> {
-  const { createInterface } = await import('node:readline');
-
-  return new Promise<string>((resolve, reject) => {
-    if (!child.stdout) {
-      reject(new Error('Broker stdout not available'));
-      return;
-    }
-
-    let resolved = false;
-    const rl = createInterface({ input: child.stdout });
-
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        rl.close();
-        child.kill('SIGTERM');
-        reject(
-          new Error(
-            formatBrokerStartupError(`Broker did not report API port within ${timeoutMs}ms`, child, debug)
-          )
-        );
-      }
-    }, timeoutMs);
-
-    child.on('exit', (code) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        reject(
-          new Error(
-            formatBrokerStartupError(
-              `Broker process exited with code ${code} before becoming ready`,
-              child,
-              debug
-            )
-          )
-        );
-      }
-    });
-
-    child.on('error', (err) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        reject(new Error(formatBrokerStartupError(`Failed to start broker: ${err.message}`, child, debug)));
-      }
-    });
-
-    rl.on('line', (line) => {
-      if (resolved) return;
-      pushBufferedLine(debug.stdoutLines, line);
-
-      const match = line.match(/API listening on (https?:\/\/[^\s]+)/);
-      if (match) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        resolve(match[1]);
-      }
-    });
-  });
-}
-
-function drainBrokerStdioAfterStartup(child: ChildProcess): void {
-  // Drain both stdout AND stderr after startup so high-volume broker
-  // diagnostics/events cannot fill either pipe and block the broker process.
-  // Stderr also has a readline consumer above for line buffering/onStderr; this
-  // raw drain is intentionally no-op and exists only to keep the stream flowing
-  // if that consumer is changed or removed later.
-  for (const stream of [child.stdout, child.stderr]) {
-    if (!stream) continue;
-    stream.on('data', () => {});
-    stream.resume();
-  }
-}
-
 /** @internal Test-only hooks; not part of the public SDK API. */
 export const __clientTestInternals = {
   drainBrokerStdioAfterStartup,
 };
-
-function pushBufferedLine(lines: string[], line: string): void {
-  lines.push(line);
-  if (lines.length > 40) {
-    lines.splice(0, lines.length - 40);
-  }
-}
-
-function cloneBrokerExitInfo(info: BrokerExitInfo): BrokerExitInfo {
-  return {
-    ...info,
-    recentStderr: [...info.recentStderr],
-  };
-}
-
-function formatBrokerStartupError(
-  message: string,
-  child: ChildProcess,
-  debug: BrokerStartupDebugContext
-): string {
-  const details = [
-    `pid=${child.pid ?? 'unknown'}`,
-    `cwd=${debug.cwd}`,
-    `command=${formatCommand(debug.binaryPath, debug.args)}`,
-    `stdout_tail=${formatBufferedLines(debug.stdoutLines)}`,
-    `stderr_tail=${formatBufferedLines(debug.stderrLines)}`,
-  ];
-  return `${message} (${details.join('; ')})`;
-}
-
-function formatBufferedLines(lines: string[]): string {
-  if (lines.length === 0) {
-    return '<empty>';
-  }
-  return lines
-    .slice(-8)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .join(' | ');
-}
-
-function formatCommand(binaryPath: string, args: string[]): string {
-  const render = [binaryPath, ...args].map((value) => {
-    if (/^[A-Za-z0-9_./:@=-]+$/u.test(value)) {
-      return value;
-    }
-    return JSON.stringify(value);
-  });
-  return render.join(' ');
-}
-
-function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (child.exitCode !== null) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      resolve();
-    }, timeoutMs);
-    child.on('exit', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-}

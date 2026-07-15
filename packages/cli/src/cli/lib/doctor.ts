@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
 import { HarnessDriverClient, type BrokerStatus } from '@agent-relay/harness-driver';
+import { readNodeDeliveryStatus } from './broker-lifecycle.js';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -236,6 +237,15 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
       : 'No authenticated Relaycast workspace reported by broker';
     const pending = typedStatus.pending_deliveries ?? [];
     const stuck = pending.filter((delivery) => (delivery.age_ms ?? 0) >= 10_000 || delivery.last_error);
+    const nodeDelivery = readNodeDeliveryStatus(typedStatus);
+    const nodeDeliveryOk = Boolean(nodeDelivery?.tokenPresent && nodeDelivery.connected);
+    const nodeDeliveryMessage = !nodeDelivery
+      ? 'Node delivery status unavailable'
+      : nodeDelivery.connected
+        ? 'Node delivery connected'
+        : nodeDelivery.tokenPresent
+          ? 'Node token present, but /v1/node/ws is disconnected'
+          : 'No node token; /v1/node/ws cannot connect';
     return [
       ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
@@ -247,6 +257,14 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
         name: 'Broker auth',
         ok: true,
         message: authMessage,
+      },
+      {
+        name: 'Node delivery',
+        ok: nodeDeliveryOk,
+        message: nodeDeliveryMessage,
+        remediation: !nodeDeliveryOk
+          ? 'Check broker logs for create_node/node token errors; realtime injection requires an active /v1/node/ws connection.'
+          : undefined,
       },
       {
         name: 'Outbound queues',
