@@ -108,7 +108,8 @@ jobs:
               (/\.mdx?$/i.test(file) && !file.includes('/'));
 
             const rustChanged =
-              unknownScope || files.some((file) => isRust(file) || isCi(file));
+              unknownScope ||
+              files.some((file) => (isRust(file) && !isInert(file)) || isCi(file));
             const nodeChanged =
               unknownScope || files.some((file) => !isSwift(file) && !isInert(file));
             const sdkSwiftChanged =
