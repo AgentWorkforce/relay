@@ -31,24 +31,26 @@ export function withSdkDefaults(overrides: Partial<SdkCommandDeps> = {}): SdkCom
 
 /** Add the common workspace/token/base-url options to a command. */
 export function addSdkOptions(command: Command): Command {
-  return command
-    .option(
-      '--workspace-key <key>',
-      'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)'
-    )
-    .option('--wk <key>', 'Alias for --workspace-key')
-    .option('--token <token>', 'Agent token (defaults to RELAY_AGENT_TOKEN)')
-    .option('--base-url <url>', 'Override the API base URL (defaults to RELAY_BASE_URL)')
-    // Fold the `--wk` alias into `workspaceKey` before the action runs, so every
-    // downstream reader (`sdkOptionsFromOpts`, integration's `explicitWorkspaceKey`,
-    // etc.) sees a single canonical option regardless of which spelling was used.
-    // An explicit `--workspace-key` always wins over `--wk`.
-    .hook('preAction', (thisCommand) => {
-      const opts = thisCommand.opts();
-      if (typeof opts.wk === 'string' && opts.wk.trim() && !opts.workspaceKey) {
-        thisCommand.setOptionValue('workspaceKey', opts.wk);
-      }
-    });
+  return (
+    command
+      .option(
+        '--workspace-key <key>',
+        'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)'
+      )
+      .option('--wk <key>', 'Alias for --workspace-key')
+      .option('--token <token>', 'Agent token (defaults to RELAY_AGENT_TOKEN)')
+      .option('--base-url <url>', 'Override the API base URL (defaults to RELAY_BASE_URL)')
+      // Fold the `--wk` alias into `workspaceKey` before the action runs, so every
+      // downstream reader (`sdkOptionsFromOpts`, integration's `explicitWorkspaceKey`,
+      // etc.) sees a single canonical option regardless of which spelling was used.
+      // An explicit `--workspace-key` always wins over `--wk`.
+      .hook('preAction', (thisCommand) => {
+        const opts = thisCommand.opts();
+        if (typeof opts.wk === 'string' && opts.wk.trim() && !opts.workspaceKey) {
+          thisCommand.setOptionValue('workspaceKey', opts.wk);
+        }
+      })
+  );
 }
 
 export function sdkOptionsFromOpts(opts: Record<string, unknown>): SdkClientOptions {

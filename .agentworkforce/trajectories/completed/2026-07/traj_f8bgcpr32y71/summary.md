@@ -18,6 +18,7 @@ Added --wk alias for --workspace-key via preAction hook in addSdkOptions
 ## Key Decisions
 
 ### Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions
+
 - **Chose:** Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions
 - **Reasoning:** Single choke point normalizes the alias for every reader; Commander v12 can't alias two long flags to one attribute
 
@@ -26,6 +27,7 @@ Added --wk alias for --workspace-key via preAction hook in addSdkOptions
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions: Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions

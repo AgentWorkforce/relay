@@ -65,9 +65,9 @@ describe('sdk client option resolution', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_project_broker');
 
     expect(resolveWorkspaceKey({ workspaceKey: 'rk_flag', env: { AGENT_RELAY_HOME: dir } })).toBe('rk_flag');
-    expect(
-      resolveWorkspaceKey({ env: { RELAY_WORKSPACE_KEY: 'rk_env', AGENT_RELAY_HOME: dir } })
-    ).toBe('rk_env');
+    expect(resolveWorkspaceKey({ env: { RELAY_WORKSPACE_KEY: 'rk_env', AGENT_RELAY_HOME: dir } })).toBe(
+      'rk_env'
+    );
   });
 
   it('falls back to the global active workspace when no CWD broker key is recorded', () => {

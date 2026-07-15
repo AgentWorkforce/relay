@@ -18,6 +18,7 @@ up persists project workspace key; CWD resolution; --wk on up
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Persist workspace key per-project on up; resolve below flag/env above global store: Persist workspace key per-project on up; resolve below flag/env above global store
