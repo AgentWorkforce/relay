@@ -50,7 +50,7 @@
     }
   ],
   "retrospective": {
-    "summary": "Merged origin/main into PR #1099 branch, adapted SDK type derivation to @relaycast/types 6.0.2, fixed toSnakeKey leading-underscore bug from review, replied to both Gemini comments. All checks green: sdk 120 tests, root 1211 tests, typecheck, build, prettier.",
+    "summary": "Merged origin/main into PR #1099 branch, adapted SDK type derivation to @relaycast/types 6.0.2, fixed toSnakeKey leading-underscore bug from review, replied to both Gemini comments. All checks green: sdk 120 tests, root 1211 tests, typecheck, build, prettier. Note: this trajectory was recorded retroactively — the described work was already committed in merge commit 10e023e before `trail start` ran, so the trace window opened and closed at that same HEAD. That is why startRef==endRef==10e023e and commits/filesChanged are empty (no commit occurred inside the window); see commit 10e023e for the actual diff.",
     "approach": "Standard approach",
     "confidence": 0.85
   },

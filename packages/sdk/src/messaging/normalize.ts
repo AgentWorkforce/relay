@@ -85,7 +85,10 @@ function toSnakeKey(key: string): string {
 function toWire(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(toWire);
   if (!isRecord(value)) return value;
-  const out: UnknownRecord = {};
+  // Null-prototype output: an untrusted `__proto__` key (own on JSON.parse'd
+  // payloads) stays an ordinary data property instead of hijacking the
+  // prototype and feeding inherited fields to downstream reads.
+  const out: UnknownRecord = Object.create(null) as UnknownRecord;
   for (const [key, val] of Object.entries(value)) {
     const snake = toSnakeKey(key);
     out[snake] = PASSTHROUGH_KEYS.has(snake) ? val : toWire(val);

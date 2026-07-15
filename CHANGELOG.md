@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `@agent-relay/sdk` messaging and delivery types now derive from the canonical `@relaycast/types` schemas: `Relay*` types index into the wire contract, `normalize.ts` validates payloads with canonical-derived zod schemas at the boundary instead of probing snake/camel field variants, and the inbox/delivery state unions (`InboxItemState`, `InjectionResult.status`) build on the canonical `DeliveryStatus` instead of redeclaring it — wire-contract changes now surface as compile errors instead of silent drift.
+- `@agent-relay/sdk` messaging and delivery types now derive from the canonical `@relaycast/types` schemas: `Relay*` types index into the wire contract, `normalize.ts` validates payloads with canonical-derived zod schemas at the boundary instead of probing snake/camel field variants, and `InboxItemState` builds on canonical `DeliveryStatus`, while `InjectionResult.status` derives from the adapter receipt lifecycle (`MessageReceipt`) — wire-contract changes now surface as compile errors instead of silent drift.
 
 ### Fixed
 

@@ -562,6 +562,19 @@ describe('RelaycastMessagingClient', () => {
     expect(agentClient.disconnect).toHaveBeenCalled();
   });
 
+  it('does not let an own __proto__ payload key leak inherited event fields', () => {
+    // JSON.parse produces an own (not prototype) `__proto__` key; without a
+    // null-prototype wire object it would hijack the output prototype and let
+    // an inherited `type: "open"` classify the event as `connected`.
+    const payload = JSON.parse('{"__proto__": {"type": "open"}}') as unknown;
+
+    const event = normalizeMessagingEvent(payload);
+
+    // The inherited `type` must not be observed: the event stays `unknown`
+    // with no `sourceType` rather than classifying as `connected`.
+    expect(event).toEqual({ type: 'unknown', raw: payload });
+  });
+
   it('surfaces unsupported durable delivery capabilities as explicit stubs', async () => {
     const client = new RelaycastMessagingClient({ relaycast: createWorkspace() });
 
