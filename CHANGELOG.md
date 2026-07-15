@@ -11,10 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay drive` (and `agent new`, which attaches in drive mode) gains an in-band `Ctrl+]` toggle that flips the driven agent between held (`manual_flush`) and live (`auto_inject`) inbound delivery, draining the parked queue into the PTY; the status line shows the current mode, the pending count, and the toggle hint.
 
+### Changed
+
+- `@agent-relay/sdk` messaging and delivery types now derive from the canonical `@relaycast/types` schemas: `Relay*` types index into the wire contract, `normalize.ts` validates payloads with canonical-derived zod schemas at the boundary instead of probing snake/camel field variants, and `InboxItemState` builds on canonical `DeliveryStatus`, while `InjectionResult.status` derives from the adapter receipt lifecycle (`MessageReceipt`) — wire-contract changes now surface as compile errors instead of silent drift.
+
 ### Fixed
 
 - `agent-relay node agent message flush` now actually injects the queued messages while a drive session is attached: the broker sends a one-shot `flush_injections` frame that exempts the flushed backlog from the drive-mode interactive hold, instead of parking it in a second frozen queue until detach. Without this (and the `Ctrl+]` toggle above), an agent being driven could never receive a relay message — replies to anything it sent sat invisible until the human detached.
 - `agent-relay drive` no longer zeroes its pending counter on a partial flush; the undrained remainder stays counted in the status line.
+- `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
+
+## [10.4.0] - 2026-07-15
+
+### Added
+
+- `--wk <key>` is a shorthand for `--workspace-key` on every SDK-backed `agent-relay` command (`fleet nodes`, `workspace`, `integration`, `webhook`, …) and on `up`/`node up`; an explicit `--workspace-key` still wins when both are passed.
+- `agent-relay up` records the workspace it joins (passed via `--workspace-key`/`--wk` or auto-minted) in the project data dir, and SDK-backed commands run in that directory now resolve that workspace key ahead of the machine-global active workspace, so `fleet nodes`/`node …` in a project reflect the broker's actual workspace. An explicit `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` still overrides it. `fleet nodes` prints a stderr note when the key was inferred from that project record, so a stale broker workspace is visible rather than silent.
+
+### Changed
+
+- `agent-relay-broker` injects messages into a CLI with escape-aware paced writes — one VT control sequence (CSI/SS3/OSC), UTF-8 codepoint, or byte at a time with a small gap between them — instead of one bulk write, reducing dropped or batched leading characters during injection. Tunable via `RELAY_INJECT_RATE_MS` (default `5`; `0` restores the single bulk write).
+>>>>>>> origin/main
 
 ## [10.3.0] - 2026-07-15
 

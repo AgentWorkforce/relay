@@ -49,6 +49,24 @@ struct PendingWorkerInjection {
     queued_at: Instant,
 }
 
+/// Default per-atom gap for escape-aware paced injection, in milliseconds.
+/// Overridable at runtime via `RELAY_INJECT_RATE_MS`; `0` disables pacing and
+/// restores the single bulk write. Kept small because a full injection
+/// (envelope plus an optional MCP reminder) can span a few hundred atoms and
+/// the gap multiplies across every one.
+const DEFAULT_INJECT_RATE_MS: u64 = 5;
+
+/// Resolve the injection pacing gap from `RELAY_INJECT_RATE_MS`, falling back to
+/// [`DEFAULT_INJECT_RATE_MS`]. A value of `0` disables pacing so the body is
+/// written in one shot, exactly as it was before paced injection landed.
+fn inject_rate_from_env() -> Duration {
+    let ms = std::env::var("RELAY_INJECT_RATE_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_INJECT_RATE_MS);
+    Duration::from_millis(ms)
+}
+
 /// Stage of an in-flight injection's paced write sequence. Each stage is
 /// separated from the next by a short TUI-pacing delay. Rather than blocking
 /// the worker select loop with `sleep().await` between stages (which stalled
@@ -417,6 +435,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    // Per-atom gap for escape-aware paced injection writes, resolved once at
+    // worker start. `Duration::ZERO` (via `RELAY_INJECT_RATE_MS=0`) restores
+    // the historical single bulk write.
+    let inject_rate = inject_rate_from_env();
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
@@ -1389,20 +1411,24 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
-                        // Submit the body and its trailing `\r` as a single write
-                        // and hold the ack. `PtySession::submit_write` documents
-                        // that adjacent writes must be submitted back-to-back
-                        // with no intervening submission from another task to
-                        // stay adjacent on the drainer FIFO — a separate Enter
-                        // write left a window (between this ack and the next
-                        // stage) where another writer (a passthrough keystroke,
-                        // an auto-responder) could splice in ahead of the `\r`.
-                        // A single write has no such window. Finalization (emit
-                        // `delivery_injected`, queue echo verification) still
-                        // waits for this ack in the injection-ack arm.
+                        // Submit the body and its trailing `\r` as a single
+                        // paced write and hold the ack. `submit_write_paced`
+                        // emits one escape-aware atom (CSI/SS3/OSC sequence,
+                        // UTF-8 codepoint, or plain byte) at a time with
+                        // `inject_rate` between them, so the child receives the
+                        // injection spread across reads instead of one blob it
+                        // may batch or drop leading characters from. The whole
+                        // payload — body atoms plus the trailing `\r` — is one
+                        // queue entry, so nothing (a passthrough keystroke, an
+                        // auto-responder, a terminal-query reply) can splice
+                        // between the body and its Enter. With `inject_rate` of
+                        // zero this is exactly the old single bulk write.
+                        // Finalization (emit `delivery_injected`, queue echo
+                        // verification) still waits for this ack in the
+                        // injection-ack arm.
                         let mut bytes = injection.clone().into_bytes();
                         bytes.extend_from_slice(b"\r");
-                        match pty.submit_write(bytes) {
+                        match pty.submit_write_paced(bytes, inject_rate) {
                             Ok(ack_rx) => {
                                 inj.injection_text = Some(injection);
                                 inj.stage = InjectionStage::Finalize;

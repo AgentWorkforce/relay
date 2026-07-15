@@ -4,6 +4,7 @@ import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { withDefaults, type CoreDependencies } from './core.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { redactSecrets } from '../lib/redact.js';
+import { resolveWorkspaceKeyWithSource } from '../lib/sdk-client.js';
 import {
   addSdkOptions,
   printJson,
@@ -68,6 +69,7 @@ export function registerFleetCommands(
       .option('--name <name>', 'Filter by node name')
   ).action(async (options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
+      warnIfInferredFromProjectBroker(options, deps.warn);
       const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
       printJson(deps.sdk, {
         nodes: await relay.nodes.list({
@@ -124,6 +126,33 @@ export function registerFleetCommands(
       deps.exit(1);
     }
   });
+}
+
+/**
+ * Warn (on stderr, so it never pollutes the JSON on stdout) when the workspace
+ * key was inferred from the local broker's project record rather than named
+ * explicitly. That key is whatever `agent-relay up` last joined in this
+ * directory, which can be stale — surfacing it lets the operator override with
+ * `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY` if the roster looks wrong.
+ * Resolution errors are swallowed: the SDK call below reports the real failure.
+ */
+function warnIfInferredFromProjectBroker(
+  options: Record<string, unknown>,
+  warn: (...args: unknown[]) => void
+): void {
+  let source: string;
+  try {
+    source = resolveWorkspaceKeyWithSource(sdkOptionsFromOpts(options)).source;
+  } catch {
+    return;
+  }
+  if (source === 'project') {
+    warn(
+      'Note: using the workspace key `agent-relay up` recorded in this directory. ' +
+        'If the local broker has since joined a different workspace, pass --workspace-key/--wk ' +
+        'or set RELAY_WORKSPACE_KEY to override.'
+    );
+  }
 }
 
 async function runFleetStatus(
