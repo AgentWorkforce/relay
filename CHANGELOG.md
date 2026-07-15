@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Changed
+
+- `@agent-relay/sdk` messaging and delivery types now derive from the canonical `@relaycast/types` schemas: `Relay*` types index into the wire contract, `normalize.ts` validates payloads with canonical-derived zod schemas at the boundary instead of probing snake/camel field variants, and `InboxItemState` builds on canonical `DeliveryStatus`, while `InjectionResult.status` derives from the adapter receipt lifecycle (`MessageReceipt`) — wire-contract changes now surface as compile errors instead of silent drift.
+
+### Fixed
+
+- `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
 
 ## [10.4.0] - 2026-07-15
 

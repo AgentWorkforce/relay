@@ -27,7 +27,11 @@ export interface InjectionContext {
 }
 
 export interface InjectionResult {
-  status: 'accepted' | 'delivered' | 'deferred' | 'failed';
+  /**
+   * Delivery-receipt status reported by the adapter — the harness receipt
+   * lifecycle (`MessageReceipt`), not the server ledger's `DeliveryStatus`.
+   */
+  status: MessageReceipt['status'];
   injectionId?: string;
   availableAt?: string;
   reason?: string;
