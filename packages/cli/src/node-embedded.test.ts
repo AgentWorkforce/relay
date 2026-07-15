@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoreDependencies, CoreRelay } from './cli/commands/core.js';
 import { startEmbeddedNodeWithDependencies } from './cli/lib/node-embedded.js';
-import { startEmbeddedNode, statusEmbeddedNode } from './node-embedded.js';
+import { downEmbeddedNode, startEmbeddedNode, statusEmbeddedNode } from './node-embedded.js';
 
 vi.mock('./cli/lib/reflex-capture.js', () => ({
   startReflexCapture: () => ({ stop: vi.fn(async () => undefined) }),
@@ -169,6 +169,42 @@ describe('embedded node lifecycle', () => {
       ok: false,
       code: 1,
       message: '--wait-for must be a non-negative number of seconds.',
+    });
+  });
+
+  it('reports a non-throwing down-command shutdown error as failure', async () => {
+    const processPidBefore = process.pid;
+    const stateDir = makeTempRoot();
+    const fakeBrokerPid = 2_000_000_000;
+    fs.writeFileSync(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({
+        url: 'http://127.0.0.1:3889',
+        port: 3889,
+        api_key: 'test',
+        pid: fakeBrokerPid,
+      })
+    );
+    const realKill = process.kill.bind(process);
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === fakeBrokerPid && signal === 0) return true;
+      if (pid === fakeBrokerPid && signal === 'SIGTERM') {
+        throw new Error('denied embedded shutdown');
+      }
+      return realKill(pid, signal);
+    });
+
+    const result = await downEmbeddedNode({ stateDir });
+
+    expect(process.pid).toBe(processPidBefore);
+    expect(result).toMatchObject({
+      ok: false,
+      code: 1,
+      message: 'Error stopping broker: denied embedded shutdown',
+    });
+    expect(result.output).toContainEqual({
+      level: 'error',
+      message: 'Error stopping broker: denied embedded shutdown',
     });
   });
 

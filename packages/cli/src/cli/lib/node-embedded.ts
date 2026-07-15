@@ -119,10 +119,13 @@ function createOutputRecorder(runtime: EmbeddedNodeRuntimeOptions): OutputRecord
     resultFrom: (error?: unknown): EmbeddedNodeCommandResult => {
       const snapshot = output.map((entry) => ({ ...entry }));
       if (error === undefined) {
-        // The lifecycle promise is authoritative. Output can include routine
-        // diagnostics on stderr and must never turn a clean completion into a
-        // failure after the fact.
-        return { ok: true, code: 0, output: snapshot };
+        // Some lifecycle commands report operational failures through
+        // deps.error and return normally (notably down). Broker stderr is
+        // recorded as neutral info below, so only lifecycle error output
+        // participates in this fallback result inference.
+        const reportedError = snapshot.find((entry) => entry.level === 'error');
+        if (!reportedError) return { ok: true, code: 0, output: snapshot };
+        return { ok: false, code: 1, message: reportedError.message, output: snapshot };
       }
       const code = error instanceof BrokerLifecycleExitError ? error.code : 1;
       if (code === 0) return { ok: true, code: 0, output: snapshot };
