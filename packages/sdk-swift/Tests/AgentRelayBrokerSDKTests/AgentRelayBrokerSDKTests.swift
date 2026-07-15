@@ -352,6 +352,21 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         XCTAssertEqual(agents.first?.currentState, .blockedOnSend)
     }
 
+    func testListAgentsDecodesUnknownCurrentStateAsUnrecognized() async throws {
+        // A future broker state must degrade to `.unrecognized`, not fail the
+        // whole listAgents() decode.
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            #"{ "agents": [{ "name": "W", "runtime": "pty", "channels": [], "current_state": "hibernating" }] }"#,
+            for: "/api/spawned"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let agents = try await core.listAgents()
+
+        XCTAssertEqual(agents.first?.currentState, .unrecognized)
+    }
+
     func testSendInputPostsToInputEndpoint() async throws {
         let http = MockRelayHTTP()
         await http.setResponse(#"{ "name": "Worker1", "bytes_written": 5 }"#, for: "/api/input/Worker1")
@@ -468,6 +483,32 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         let request = try XCTUnwrap(requests.first)
         XCTAssertEqual(request.path, "/api/spawned/Worker1/subscribe")
         XCTAssertEqual(try jsonObject(try XCTUnwrap(request.body))["channels"] as? [String], ["dev", "ops"])
+    }
+
+    func testUnsubscribeChannelsPostsChannels() async throws {
+        let http = MockRelayHTTP()
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        try await core.unsubscribeChannels(name: "Worker1", channels: ["dev", "ops"])
+
+        let requests = await http.allRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.path, "/api/spawned/Worker1/unsubscribe")
+        XCTAssertEqual(try jsonObject(try XCTUnwrap(request.body))["channels"] as? [String], ["dev", "ops"])
+    }
+
+    func testFlushPendingPostsAndDecodesResult() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(#"{ "flushed": 3 }"#, for: "/api/spawned/Worker1/flush")
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.flushPending(name: "Worker1")
+
+        let requests = await http.allRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/api/spawned/Worker1/flush")
+        XCTAssertEqual(result.flushed, 3)
     }
 
     func testGetMetricsBuildsAgentQuery() async throws {

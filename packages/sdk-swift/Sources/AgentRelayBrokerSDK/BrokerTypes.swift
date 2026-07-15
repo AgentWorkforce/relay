@@ -440,19 +440,39 @@ public enum SnapshotFormat: String, Codable, Sendable {
 }
 
 /// Coarse activity state the broker reports for a worker.
+///
+/// Decodes unknown broker-emitted values to `.unrecognized` rather than
+/// throwing, so a newer broker state doesn't fail the whole `listAgents()`/
+/// `getStatus()` response.
 public enum AgentCurrentState: String, Codable, Sendable {
     case working
     case idle
     case blockedOnSend = "blocked_on_send"
+    case unrecognized
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AgentCurrentState(rawValue: raw) ?? .unrecognized
+    }
 }
 
 /// Classification the broker assigns to a crash.
+///
+/// `unknown` is a real broker category; `unrecognized` is the decode fallback
+/// for a value this SDK predates, so a newer category doesn't fail the whole
+/// `getCrashInsights()` response.
 public enum CrashCategory: String, Codable, Sendable {
     case oom
     case segfault
     case error
     case signal
     case unknown
+    case unrecognized
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = CrashCategory(rawValue: raw) ?? .unrecognized
+    }
 }
 
 /// One entry from `GET /api/spawned`.
