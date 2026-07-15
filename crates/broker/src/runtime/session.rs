@@ -182,18 +182,34 @@ fn parse_handshake_attempts(raw: Option<&str>) -> u32 {
         .unwrap_or(HANDSHAKE_MAX_ATTEMPTS)
 }
 
-/// Parse the configured workspace count from an optional `RELAY_WORKSPACES_JSON`
-/// string: the length of the top-level JSON array, clamped to at least 1. Any
-/// other shape (absent, empty, non-array, unparseable) yields 1. Pure so it can
-/// be unit-tested without mutating process env.
+/// Parse the number of configured memberships from an optional
+/// `RELAY_WORKSPACES_JSON` string, mirroring how `load_workspace_sources_from_env`
+/// (in `relaycast/auth.rs`) interprets the same value: a top-level JSON array, an
+/// object with a `memberships` array, or a bare single-membership object (count
+/// 1). The result is clamped to at least 1; anything absent/empty/unparseable
+/// also yields 1. Pure so it can be unit-tested without mutating process env.
 fn parse_membership_count(raw: Option<&str>) -> u32 {
-    raw.map(str::trim)
+    let count = raw
+        .map(str::trim)
         .filter(|value| !value.is_empty())
         .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
-        .and_then(|value| value.as_array().map(|entries| entries.len()))
+        .map(|value| {
+            if let Some(entries) = value.as_array() {
+                entries.len()
+            } else if let Some(entries) = value
+                .get("memberships")
+                .and_then(serde_json::Value::as_array)
+            {
+                entries.len()
+            } else {
+                // A bare object is treated as a single membership, matching
+                // `load_workspace_sources_from_env`'s `vec![value]` fallback.
+                1
+            }
+        })
         .and_then(|len| u32::try_from(len).ok())
-        .filter(|&count| count >= 1)
-        .unwrap_or(1)
+        .unwrap_or(1);
+    count.max(1)
 }
 
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
@@ -438,19 +454,30 @@ mod tests {
 
     #[test]
     fn parse_membership_count_scales_with_configured_workspaces() {
-        // Absent / empty / non-array / unparseable all fall back to a single
+        // Absent / empty / empty-array / unparseable all fall back to a single
         // workspace so the timeout is never scaled below the base.
         assert_eq!(parse_membership_count(None), 1);
         assert_eq!(parse_membership_count(Some("   ")), 1);
         assert_eq!(parse_membership_count(Some("[]")), 1);
-        assert_eq!(parse_membership_count(Some("{\"a\":1}")), 1);
         assert_eq!(parse_membership_count(Some("not json")), 1);
-        // A real multi-workspace payload scales by its array length.
+        // A bare single-membership object counts as one (matching
+        // load_workspace_sources_from_env's `vec![value]` fallback).
+        assert_eq!(parse_membership_count(Some("{\"api_key\":\"rk_a\"}")), 1);
+        // Top-level array form scales by its length.
         assert_eq!(
             parse_membership_count(Some(
                 "[{\"api_key\":\"rk_a\"},{\"api_key\":\"rk_b\"},{\"api_key\":\"rk_c\"}]"
             )),
             3
         );
+        // Object-with-`memberships`-array form also scales by array length.
+        assert_eq!(
+            parse_membership_count(Some(
+                "{\"memberships\":[{\"api_key\":\"rk_a\"},{\"api_key\":\"rk_b\"}],\"default_workspace_id\":\"ws_a\"}"
+            )),
+            2
+        );
+        // An empty `memberships` array clamps to the single-workspace minimum.
+        assert_eq!(parse_membership_count(Some("{\"memberships\":[]}")), 1);
     }
 }
