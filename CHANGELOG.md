@@ -5,11 +5,7 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
-
-### Added
-
-- `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
+## [Unreleased - Patch]
 
 ### Changed
 
@@ -18,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
+
+## [10.3.0] - 2026-07-15
+
+### Added
+
+- `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
+
+### Fixed
+
+- `agent-relay agent attach --mode view` strips mouse-tracking, focus-reporting, alternate-scroll, and bracketed-paste enables from the viewed agent's output, so watching an agent whose TUI uses the mouse no longer sprays `^[[<35;22;25M`-style escape sequences over the read-only viewer.
 - `AgentRelaySDK` and `AgentRelayBrokerSDK` (Swift) release cancelled async-stream consumers, bound event buffering, and avoid creating channel event queues for join-only subscriptions, preventing reconnect-driven memory growth.
 - `agent-relay-broker` retries the Codex model-detection spawn (`codex debug models`) on `ExecutableFileBusy` (`ETXTBSY`), so a concurrent `fork`/`exec` race under load no longer aborts detection and spuriously falls back away from the requested model.
 - `agent-relay-broker` bounds each initial Relaycast startup handshake attempt and retries on timeout with backoff (per-attempt deadline scaled by the configured workspace count), so a stalled backend connection no longer hangs `agent-relay node up`/`init` until an external supervisor kills the broker (which surfaced as an opaque "broker exited with code null during initial handshake"). Returned errors are surfaced immediately rather than replayed. Tunable via `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` and `AGENT_RELAY_HANDSHAKE_ATTEMPTS`.
