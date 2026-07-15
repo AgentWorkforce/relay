@@ -516,6 +516,20 @@ describe('KeybindParser', () => {
     expect(Array.from(out.forward)).toEqual([0x61, 0x07, 0x62]);
     expect(out.actions).toEqual(['detach']);
   });
+
+  it('intercepts Ctrl+] as toggle-delivery without forwarding it', () => {
+    const p = new KeybindParser();
+    const out = p.feed(Buffer.from([0x61, 0x1d, 0x62])); // a, Ctrl+], b
+    expect(Array.from(out.forward)).toEqual([0x61, 0x62]);
+    expect(out.actions).toEqual(['toggle-delivery']);
+  });
+
+  it('keeps scanning for detach after a toggle-delivery byte', () => {
+    const p = new KeybindParser();
+    const out = p.feed(Buffer.from([0x1d, 0x61, 0x03, 0x62]));
+    expect(Array.from(out.forward)).toEqual([0x61]);
+    expect(out.actions).toEqual(['toggle-delivery', 'detach']);
+  });
 });
 
 describe('renderStatusLine', () => {
@@ -525,6 +539,14 @@ describe('renderStatusLine', () => {
     expect(out).toContain('delivery=manual_flush');
     expect(out).toContain('pending=3');
     expect(out).toContain('Ctrl+C detach');
+  });
+
+  it('hints Ctrl+] deliver while holding and Ctrl+] hold while live', () => {
+    const held = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 1 });
+    expect(held).toContain('Ctrl+] deliver');
+    const live = renderStatusLine({ name: 'Alice', mode: 'auto_inject', pending: 0 });
+    expect(live).toContain('delivery=auto_inject');
+    expect(live).toContain('Ctrl+] hold');
   });
 
   it('uses save/restore cursor + reverse video so the agent screen is preserved', () => {
@@ -660,6 +682,112 @@ describe('runDriveSession', () => {
     expect(writes.filter((w) => w.includes('pending=0')).length).toBeGreaterThan(0);
 
     stdin.type(Buffer.from([0x03])); // Ctrl+C → detach
+    await sessionPromise;
+  });
+
+  it('keeps the remainder counted when a drain event reports a partial count', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }));
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e2' }));
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e3' }));
+    expect(writes.some((w) => w.includes('pending=3'))).toBe(true);
+
+    // A failed injection stops a flush mid-queue: only 2 of 3 drained.
+    writes.length = 0;
+    socket.emit('message', jsonMessage({ kind: 'agent_pending_drained', name: 'Alice', count: 2 }));
+    expect(writes.some((w) => w.includes('pending=1'))).toBe(true);
+
+    stdin.type(Buffer.from([0x03])); // Ctrl+C → detach
+    await sessionPromise;
+  });
+
+  it('toggles delivery to auto_inject on Ctrl+], re-holds on a second press, and restores from the latest revision on detach', async () => {
+    const { deps, sockets, writes, stdin, fetchLog, inputStreams } = createHarness({
+      initialMode: 'auto_inject',
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // First Ctrl+] — go live: CAS from this session's attach flip (rev 1).
+    stdin.type(Buffer.from([0x1d]));
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    let modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls).toHaveLength(2);
+    expect(modeCalls[1].body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
+      expected_revision: '1',
+    });
+    expect(writes.some((w) => w.includes('delivery=auto_inject') && w.includes('Ctrl+] hold'))).toBe(true);
+
+    // Second Ctrl+] — back to hold: CAS from the toggled state (rev 2).
+    stdin.type(Buffer.from([0x1d]));
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls).toHaveLength(3);
+    expect(modeCalls[2].body).toEqual({
+      mode: 'manual_flush',
+      expected_mode: 'auto_inject',
+      expected_revision: '2',
+    });
+
+    // The control byte itself must never reach the PTY.
+    expect(inputStreams[0].writes.join('')).not.toContain('\x1d');
+
+    // Detach: restore CASes against the session's LAST write (rev 3), not the
+    // attach-time revision.
+    stdin.type(Buffer.from([0x03]));
+    const code = await sessionPromise;
+    expect(code).toBe(0);
+    modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls).toHaveLength(4);
+    expect(modeCalls[3].body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
+      expected_revision: '3',
+    });
+  });
+
+  it('adopts the broker-reported mode when the toggle compare-and-set mismatches', async () => {
+    let putCalls = 0;
+    const { deps, sockets, writes, stdin, fetchLog, logs } = createHarness({
+      routes: {
+        'PUT /delivery-mode': async () => {
+          putCalls += 1;
+          // Attach flip succeeds; the toggle loses the CAS race to an
+          // out-of-band change and reports the current (unchanged) state.
+          const body =
+            putCalls === 1
+              ? { mode: 'manual_flush', flushed: 0, matched: true, revision: '1' }
+              : { mode: 'manual_flush', flushed: 0, matched: false, revision: '7' };
+          return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    stdin.type(Buffer.from([0x1d]));
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(logs.some((args) => String(args[0]).includes('changed by another session'))).toBe(true);
+    // Still holding — and the next toggle CASes from the adopted revision.
+    expect(writes.some((w) => w.includes('delivery=manual_flush'))).toBe(true);
+    stdin.type(Buffer.from([0x1d]));
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls[2]?.body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
+      expected_revision: '7',
+    });
+
+    stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
 

@@ -3,13 +3,19 @@
  *
  * Attaches to a running agent, flips it into `manual_flush` inbound delivery mode so the
  * broker parks new relay messages in a per-worker queue, and forwards your
- * keystrokes to the worker's PTY. Message queue control is deliberately out of
- * band: use `local agent message flush`, `local agent message hold`, and
- * `local agent message auto`
- * from another terminal instead of terminal control chords that agent TUIs may
- * intercept. `Ctrl+C` detaches, restores the worker's previous inbound delivery
- * mode, and leaves the agent running under the broker — `drive` never kills the
- * worker.
+ * keystrokes to the worker's PTY. Parked messages are surfaced in the status
+ * line (`pending=N`) and released in-band with `Ctrl+]`, which toggles the
+ * worker between `manual_flush` (hold) and `auto_inject` (deliver): flipping to
+ * `auto_inject` drains the queue into the PTY and lets later messages inject
+ * live while you watch — without it, a driven agent can never receive relay
+ * messages (the reply to anything you ask it to send sits parked until detach).
+ * The out-of-band commands `local agent message flush`, `local agent message
+ * hold`, and `local agent message auto` still work from another terminal; note
+ * that a bare `flush` while a drive session holds the worker in `manual_flush`
+ * only hands the queue to the PTY worker, whose injections stay frozen by the
+ * interactive hold until the mode leaves `manual_flush`. `Ctrl+C` detaches,
+ * restores the worker's previous inbound delivery mode, and leaves the agent
+ * running under the broker — `drive` never kills the worker.
  *
  * Sequence of operations on attach (subscribe-first, so no output around
  * attach time is lost and none is double-painted):
@@ -477,14 +483,20 @@ export interface KeybindOutcome {
   actions: KeybindAction[];
 }
 
-export type KeybindAction = 'detach';
+export type KeybindAction = 'detach' | 'toggle-delivery';
 
 /**
- * Parser for the one local control byte drive keeps: `Ctrl+C` detaches.
+ * Parser for the two local control bytes drive keeps: `Ctrl+C` detaches and
+ * `Ctrl+]` toggles inbound delivery between hold and live injection.
  *
  * Semantics:
  *   - `Ctrl+C` (0x03)    → emit `detach`, never forwarded.
+ *   - `Ctrl+]` (0x1D)    → emit `toggle-delivery`, never forwarded.
  *   - Every other byte, including Ctrl+B and Ctrl+G, is forwarded to the agent.
+ *
+ * Neither byte can appear inside a multi-byte UTF-8 sequence (continuation
+ * bytes are ≥ 0x80) or a keyboard escape sequence, so scanning raw bytes is
+ * safe.
  */
 export class KeybindParser {
   /** Process one chunk; returns bytes to forward + actions to take. */
@@ -496,6 +508,10 @@ export class KeybindParser {
       if (byte === 0x03 /* Ctrl+C */) {
         actions.push('detach');
         break;
+      }
+      if (byte === 0x1d /* Ctrl+] */) {
+        actions.push('toggle-delivery');
+        continue;
       }
       forward.push(byte);
     }
@@ -527,7 +543,12 @@ export function renderStatusLine(opts: {
   rows?: number;
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
-  const text = `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | Ctrl+C detach]`;
+  // The Ctrl+] hint names the action the NEXT press performs: in manual_flush
+  // it delivers (drains the parked queue and goes live); in auto_inject it
+  // re-holds. Without the hint, a parked message is invisible beyond the
+  // pending counter and a driven agent looks like it never receives replies.
+  const toggleHint = opts.mode === 'manual_flush' ? 'Ctrl+] deliver' : 'Ctrl+] hold';
+  const text = `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`;
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
@@ -575,7 +596,7 @@ interface DriveSessionState {
  * exit path. Resolves with the exit code the CLI should propagate.
  */
 function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies): Promise<number> {
-  const { connection, name, previousMode, sessionRevision, seededEventIds } = state;
+  const { connection, name, previousMode, seededEventIds } = state;
 
   // Connect with a `sinceSeq` cutoff so the broker replays only events after
   // attach — historical durable events must not inflate the pending counter.
@@ -607,6 +628,12 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     // Periodic ownership re-assert timer (see `ownershipReassertMs`).
     let reassertTimer: ReturnType<typeof setInterval> | null = null;
     let pending = state.initialPending;
+    // This session's last-known inbound delivery mode and its broker revision.
+    // The attach flip set `manual_flush`; `Ctrl+]` toggles it mid-session, and
+    // the detach restore compare-and-sets against whatever this session last
+    // wrote so an out-of-band change is never clobbered.
+    let currentMode: InboundDeliveryMode = 'manual_flush';
+    let currentRevision = state.sessionRevision;
     let terminalRows = pickInitialTerminalRows(state.initialLocalSize, undefined);
     const parser = new KeybindParser();
     // Stateful UTF-8 decoder for forwarded stdin. Decoding each raw stdin chunk
@@ -653,7 +680,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     // is mid escape-sequence (no splicing into a half-sent CSI), rate-limits
     // per-chunk repaints, and skips painting entirely on a non-TTY stdout.
     const statusController = new StatusLineController({
-      render: () => renderStatusLine({ name, mode: 'manual_flush', pending, rows: terminalRows }),
+      render: () => renderStatusLine({ name, mode: currentMode, pending, rows: terminalRows }),
       write: deps.writeChunk,
       enabled: statusLineEnabled,
       coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
@@ -701,6 +728,50 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       paintStatus();
     };
 
+    // In-band delivery toggle (`Ctrl+]`). Flips the worker between
+    // `manual_flush` (messages park so nothing splices into the human's
+    // typing) and `auto_inject` (the parked queue drains into the PTY and
+    // later messages inject live). Without this, an agent being driven can
+    // never receive a relay message — the reply to anything the human asks it
+    // to send just sits in the queue until detach.
+    //
+    // Guarded compare-and-set against this session's last-known revision: if
+    // another session or CLI changed the mode out-of-band, the broker no-ops
+    // and reports the current mode/revision, which we adopt (the next press
+    // toggles from the adopted state). Pending-counter updates come from the
+    // broker's `agent_pending_drained` event, not from this response, so the
+    // count is never double-subtracted.
+    let deliveryToggleInFlight = false;
+    const toggleDeliveryMode = async (): Promise<void> => {
+      if (deliveryToggleInFlight || settled) return;
+      deliveryToggleInFlight = true;
+      try {
+        const target: InboundDeliveryMode = currentMode === 'manual_flush' ? 'auto_inject' : 'manual_flush';
+        const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(
+          name,
+          target,
+          currentRevision !== null
+            ? { expectedMode: currentMode, expectedRevision: currentRevision }
+            : undefined
+        );
+        if (settled) return;
+        if (!result.matched) {
+          deps.log(`[drive] delivery mode was changed by another session; now ${result.mode}`);
+        }
+        currentMode = result.mode;
+        if (result.revision !== null) {
+          currentRevision = result.revision;
+        }
+        paintStatus();
+      } catch (err: unknown) {
+        if (settled) return;
+        const failure = mapBrokerSdkFailure(err);
+        deps.log(`[drive] could not toggle delivery mode: ${failure.message ?? 'unknown error'}`);
+      } finally {
+        deliveryToggleInFlight = false;
+      }
+    };
+
     // ---- stdin handling ----
     const stdinDataHandler = (chunk: Buffer): void => {
       const outcome = parser.feed(chunk);
@@ -734,6 +805,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           case 'detach':
             finish(0);
             return;
+          case 'toggle-delivery':
+            void toggleDeliveryMode();
+            break;
         }
       }
     };
@@ -852,12 +926,16 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // once they settle or after DETACH_CLEANUP_DEADLINE_MS, whichever first.
       const cleanup = Promise.allSettled([
         releasePromise,
+        // Compare-and-set against this session's LAST write (`Ctrl+]` may have
+        // toggled the mode and bumped the revision since the attach flip) so
+        // the restore still matches after an in-session toggle but never
+        // clobbers an out-of-band change.
         restoreInboundDeliveryModeOnDetach(
           connection,
           name,
           previousMode,
-          'manual_flush',
-          sessionRevision,
+          currentMode,
+          currentRevision,
           'drive',
           deps
         ),
@@ -1010,7 +1088,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           paintStatus();
           break;
         case 'agent_pending_drained':
-          pending = 0;
+          // Subtract the drained count when the broker reports one: a partial
+          // drain (a failed injection stops the flush mid-queue) leaves the
+          // remainder parked, and zeroing the counter would hide it. A legacy
+          // frame without a count still zeroes.
+          pending = typeof event.count === 'number' ? Math.max(0, pending - event.count) : 0;
           paintStatus();
           break;
         case 'other':

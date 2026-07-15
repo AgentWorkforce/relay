@@ -1863,6 +1863,32 @@ impl BrokerRuntime {
                         )
                         .await;
                     }
+                    // The flush above only hands the queue to the PTY worker;
+                    // while a drive session holds the worker in `manual_flush`
+                    // its interactive hold freezes injection pops, so without
+                    // this frame an explicit flush would sit invisibly in the
+                    // worker's queue until detach. Sent unconditionally for
+                    // PTY workers (a no-op without a hold, and it also
+                    // releases messages a *previous* flush left frozen, which
+                    // is why it isn't gated on `flushed > 0`).
+                    if workers
+                        .workers
+                        .get(&name)
+                        .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                        .unwrap_or(false)
+                    {
+                        if let Err(err) = workers
+                            .send_to_worker(&name, "flush_injections", None, json!({}))
+                            .await
+                        {
+                            tracing::warn!(
+                                target = "agent_relay::broker",
+                                worker = %name,
+                                error = %err,
+                                "failed to send flush_injections to worker"
+                            );
+                        }
+                    }
                     let _ = reply.send(Ok(flushed));
                 }
             }
