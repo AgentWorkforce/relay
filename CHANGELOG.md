@@ -9,13 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
 - `@agent-relay/sdk` observer mode: `new AgentRelay({ observerToken })` streams `relay.addListener(...)` read-only from the workspace observer plane — the durable event log is REST-backfilled and merged with the live stream, deduped and ordered by `seq`, with `sinceSeq`/`onCursor` options to persist and resume the cursor across restarts. Degrades to live-only against engines without the backfill endpoint; `workspace.register()`/`reconnect()` throw in observer mode (observer tokens are read-only).
+
+### Changed
+
+- `@agent-relay/sdk` messaging and delivery types now derive from the canonical `@relaycast/types` schemas: `Relay*` types index into the wire contract, `normalize.ts` validates payloads with canonical-derived zod schemas at the boundary instead of probing snake/camel field variants, and `InboxItemState` builds on canonical `DeliveryStatus`, while `InjectionResult.status` derives from the adapter receipt lifecycle (`MessageReceipt`) — wire-contract changes now surface as compile errors instead of silent drift.
 
 ### Fixed
 
 - `@agent-relay/sdk` `relay.addListener(...)` on a workspace-key client now receives channel messages, DMs, and thread replies by streaming through registered agent clients (`workspace.register`/`reconnect`) over the node transport, deduplicating events delivered to multiple locally-registered agents; previously listeners silently received nothing. Listener connect failures now surface through `onError` instead of being swallowed, and a listener with no registered agent warns after 10s.
 - `agent-relay-broker` now mutes the default/extra channels it joins for its own broker-self agent, so channel messages stop writing delivery rows to that identity's permanently-offline implicit node (they previously queued until TTL expiry on every message). Muting is best-effort and never fails startup.
+- `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
+
+## [10.4.0] - 2026-07-15
+
+### Added
+
+- `--wk <key>` is a shorthand for `--workspace-key` on every SDK-backed `agent-relay` command (`fleet nodes`, `workspace`, `integration`, `webhook`, …) and on `up`/`node up`; an explicit `--workspace-key` still wins when both are passed.
+- `agent-relay up` records the workspace it joins (passed via `--workspace-key`/`--wk` or auto-minted) in the project data dir, and SDK-backed commands run in that directory now resolve that workspace key ahead of the machine-global active workspace, so `fleet nodes`/`node …` in a project reflect the broker's actual workspace. An explicit `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` still overrides it. `fleet nodes` prints a stderr note when the key was inferred from that project record, so a stale broker workspace is visible rather than silent.
+
+### Changed
+
+- `agent-relay-broker` injects messages into a CLI with escape-aware paced writes — one VT control sequence (CSI/SS3/OSC), UTF-8 codepoint, or byte at a time with a small gap between them — instead of one bulk write, reducing dropped or batched leading characters during injection. Tunable via `RELAY_INJECT_RATE_MS` (default `5`; `0` restores the single bulk write).
+
+## [10.3.0] - 2026-07-15
+
+### Added
+
+- `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
+
+### Fixed
+
 - `agent-relay agent attach --mode view` strips mouse-tracking, focus-reporting, alternate-scroll, and bracketed-paste enables from the viewed agent's output, so watching an agent whose TUI uses the mouse no longer sprays `^[[<35;22;25M`-style escape sequences over the read-only viewer.
 - `AgentRelaySDK` and `AgentRelayBrokerSDK` (Swift) release cancelled async-stream consumers, bound event buffering, and avoid creating channel event queues for join-only subscriptions, preventing reconnect-driven memory growth.
 - `agent-relay-broker` retries the Codex model-detection spawn (`codex debug models`) on `ExecutableFileBusy` (`ETXTBSY`), so a concurrent `fork`/`exec` race under load no longer aborts detection and spuriously falls back away from the requested model.

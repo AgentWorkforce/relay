@@ -8,6 +8,7 @@ use std::{
         mpsc as std_mpsc, Arc,
     },
     thread,
+    time::Duration,
 };
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -51,8 +52,128 @@ enum WriteMsg {
     /// drop the receiver for fire-and-forget writes).
     UserInput {
         bytes: Vec<u8>,
+        /// Per-atom pacing gap. `Duration::ZERO` writes the whole payload
+        /// in one `write_all` (the historical behavior). A non-zero value
+        /// selects **escape-aware paced** writing: the drainer emits one VT
+        /// atom — a CSI/SS3/OSC control sequence, or one UTF-8 codepoint, or
+        /// one plain byte — per `write_all`+`flush`, sleeping `pace` between
+        /// atoms so bytes reach the child spread across multiple `read()`s
+        /// instead of a single blob. The whole payload stays a single
+        /// `WriteMsg`, so no reply or later write can splice between its
+        /// atoms. The sleeps run on the drainer thread, never on an async
+        /// task.
+        pace: Duration,
         ack: oneshot::Sender<io::Result<()>>,
     },
+}
+
+/// Length of the next indivisible write "atom" at the front of `bytes`.
+///
+/// A port of headless-terminal's `escapeSeqEnd`
+/// ([montanaflynn/headless-terminal], `internal/session/session.go`). Paced
+/// writing must never split a VT control sequence or a multi-byte UTF-8
+/// codepoint across the inter-atom sleep — doing so would corrupt arrow keys,
+/// modified function keys, OSC strings, or wide characters as they arrive at
+/// the child. This returns how many leading bytes form the next atom:
+///
+/// - **CSI** (`ESC [` … final `0x40..=0x7e`): the whole control sequence,
+///   including parameter (`0x30..=0x3f`) and intermediate (`0x20..=0x2f`)
+///   bytes.
+/// - **SS3** (`ESC O` + one final byte): 3 bytes.
+/// - **OSC** (`ESC ]` … terminated by `BEL` or `ST` = `ESC \`): through the
+///   terminator.
+/// - **Other two-byte escapes** (e.g. `ESC ESC`): 2 bytes.
+/// - **UTF-8 lead byte**: the full 2/3/4-byte codepoint.
+/// - **Anything else** (ASCII, `\r`, control bytes, stray continuation
+///   bytes): 1 byte.
+///
+/// A sequence truncated by the end of `bytes` returns the remaining length, so
+/// the final atom is emitted as-is rather than looping forever. `bytes` must be
+/// non-empty.
+///
+/// [montanaflynn/headless-terminal]: https://github.com/montanaflynn/headless-terminal
+fn next_atom_end(bytes: &[u8]) -> usize {
+    debug_assert!(
+        !bytes.is_empty(),
+        "next_atom_end requires a non-empty slice"
+    );
+    let len = bytes.len();
+    if bytes[0] != 0x1b {
+        return utf8_seq_len(bytes);
+    }
+    // Lone trailing ESC — can't classify without the next byte; emit as-is.
+    if len < 2 {
+        return 1;
+    }
+    match bytes[1] {
+        // CSI: params/intermediates (0x20..=0x3f) then a final byte (0x40..=0x7e).
+        b'[' => {
+            let mut i = 2;
+            while i < len && (0x20..=0x3f).contains(&bytes[i]) {
+                i += 1;
+            }
+            if i < len {
+                i += 1; // consume the final byte
+            }
+            i
+        }
+        // SS3: ESC O + exactly one final byte.
+        b'O' => 3.min(len),
+        // OSC: string terminated by BEL (0x07) or ST (ESC \).
+        b']' => {
+            let mut i = 2;
+            while i < len {
+                if bytes[i] == 0x07 {
+                    return i + 1;
+                }
+                if bytes[i] == 0x1b && i + 1 < len && bytes[i + 1] == b'\\' {
+                    return i + 2;
+                }
+                i += 1;
+            }
+            len
+        }
+        // Any other escape (ESC ESC, ESC <letter>, …) is a two-byte atom.
+        _ => 2,
+    }
+}
+
+/// Byte length of the UTF-8 codepoint (or single byte) at the front of `bytes`,
+/// clamped to what is actually present. A stray continuation byte or invalid
+/// lead byte yields 1 so paced writing always makes forward progress.
+fn utf8_seq_len(bytes: &[u8]) -> usize {
+    let lead = bytes[0];
+    let width = if lead < 0x80 {
+        1
+    } else if lead >= 0xf0 {
+        4
+    } else if lead >= 0xe0 {
+        3
+    } else if lead >= 0xc0 {
+        2
+    } else {
+        1 // continuation byte with no lead — emit alone
+    };
+    width.min(bytes.len())
+}
+
+/// Write `bytes` to `writer` one escape-aware atom at a time, flushing after
+/// each and sleeping `pace` between atoms (never after the last). The sleep
+/// runs on the calling (drainer) thread — the whole point is to hand the child
+/// its input in small, well-timed pieces rather than one blob it may batch or
+/// partially drop. Errors short-circuit, matching `write_all`.
+fn write_paced<W: Write>(writer: &mut W, bytes: &[u8], pace: Duration) -> io::Result<()> {
+    let mut i = 0;
+    while i < bytes.len() {
+        let end = i + next_atom_end(&bytes[i..]);
+        writer.write_all(&bytes[i..end])?;
+        writer.flush()?;
+        i = end;
+        if i < bytes.len() {
+            thread::sleep(pace);
+        }
+    }
+    Ok(())
 }
 
 /// Forwards alacritty's terminal events back to the PTY's stdin so the
@@ -277,12 +398,17 @@ fn drain_write_queue<W: Write>(
                     break;
                 }
             }
-            WriteMsg::UserInput { bytes, ack } => {
+            WriteMsg::UserInput { bytes, pace, ack } => {
                 if bytes.is_empty() {
                     let _ = ack.send(Ok(()));
                     continue;
                 }
-                match writer.write_all(&bytes).and_then(|_| writer.flush()) {
+                let result = if pace.is_zero() {
+                    writer.write_all(&bytes).and_then(|_| writer.flush())
+                } else {
+                    write_paced(&mut writer, &bytes, pace)
+                };
+                match result {
                     Ok(()) => {
                         // Confirmed child-side activity: the bytes reached the
                         // PTY master. Only now is it safe to reset the no-PID
@@ -308,10 +434,12 @@ fn enqueue_user_write(
     write_tx: &std_mpsc::SyncSender<WriteMsg>,
     _no_pid_alive_checks: &AtomicU32,
     bytes: Vec<u8>,
+    pace: Duration,
 ) -> Result<oneshot::Receiver<io::Result<()>>> {
     let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
     match write_tx.try_send(WriteMsg::UserInput {
         bytes,
+        pace,
         ack: ack_tx,
     }) {
         Ok(()) => Ok(ack_rx),
@@ -478,7 +606,38 @@ impl PtySession {
         // NB: do *not* reset the no-PID watchdog counter here. A successful
         // enqueue only proves the queue had room, not that any byte reached the
         // child. The drainer resets it after the write is confirmed flushed.
-        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes)
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            Duration::ZERO,
+        )
+    }
+
+    /// Submit bytes for **escape-aware paced** delivery to the child. Identical
+    /// to [`submit_write`] except the drainer emits one VT atom / UTF-8
+    /// codepoint per write, sleeping `pace` between atoms (see
+    /// [`WriteMsg::UserInput`]). A `pace` of [`Duration::ZERO`] is exactly
+    /// [`submit_write`] — a single bulk write — so callers can carry a
+    /// configurable rate and disable pacing by passing zero.
+    ///
+    /// Pacing spreads a payload the child would otherwise receive as one blob
+    /// across multiple reads, which avoids a class of CLIs batching or dropping
+    /// leading characters when input arrives faster than they read it. The
+    /// entire payload remains one queue entry, so its atoms — and a trailing
+    /// `\r` appended to it — stay adjacent on the FIFO with nothing splicing
+    /// between them. The trade-off: while a paced write is in flight the drainer
+    /// is busy for roughly `atoms * pace`, delaying any queued terminal-query
+    /// replies for that window. Injection happens while the child waits on
+    /// input (not mid-query), so keep `pace` small and the payloads bounded.
+    ///
+    /// [`submit_write`]: PtySession::submit_write
+    pub fn submit_write_paced(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+    ) -> Result<oneshot::Receiver<io::Result<()>>> {
+        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace)
     }
 
     /// Submit bytes and await the drainer's write result. Convenience
@@ -1203,6 +1362,7 @@ mod tests {
         let (ack_tx_1, _ack_rx_1) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"injection-body".to_vec(),
+            pace: Duration::ZERO,
             ack: ack_tx_1,
         })
         .unwrap();
@@ -1210,6 +1370,7 @@ mod tests {
         let (ack_tx_2, _ack_rx_2) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"\r".to_vec(),
+            pace: Duration::ZERO,
             ack: ack_tx_2,
         })
         .unwrap();
@@ -1283,6 +1444,7 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"should-fail\n".to_vec(),
+            pace: Duration::ZERO,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1320,6 +1482,7 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"flush-should-fail\n".to_vec(),
+            pace: Duration::ZERO,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1510,7 +1673,7 @@ mod tests {
             )
         });
 
-        let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec())
+        let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec(), Duration::ZERO)
             .expect("submit path accepts the write");
         // Block until the drainer has dequeued the message and is wedged inside
         // `write` — the write is now genuinely picked up but not confirmed.
@@ -1541,5 +1704,172 @@ mod tests {
         pty.set_no_pid_exit_threshold(0);
         assert_eq!(pty.no_pid_exit_threshold(), 1, "threshold clamps to >= 1");
         let _ = pty.shutdown();
+    }
+
+    // ---- Escape-aware paced injection (#801) ----
+
+    #[test]
+    fn next_atom_end_plain_ascii_and_control_are_one_byte() {
+        assert_eq!(super::next_atom_end(b"hello"), 1);
+        assert_eq!(super::next_atom_end(b"\r"), 1);
+        assert_eq!(super::next_atom_end(b"\n"), 1);
+    }
+
+    #[test]
+    fn next_atom_end_keeps_csi_sequence_atomic() {
+        // Up arrow: ESC [ A.
+        assert_eq!(super::next_atom_end(b"\x1b[A"), 3);
+        // Modified key with params + separators: ESC [ 1 ; 5 A.
+        assert_eq!(super::next_atom_end(b"\x1b[1;5A"), 6);
+        // Only the sequence is one atom; trailing text is a separate atom.
+        assert_eq!(super::next_atom_end(b"\x1b[0mX"), 4);
+    }
+
+    #[test]
+    fn next_atom_end_keeps_ss3_sequence_atomic() {
+        // SS3 (application cursor mode): ESC O A.
+        assert_eq!(super::next_atom_end(b"\x1bOA"), 3);
+        assert_eq!(super::next_atom_end(b"\x1bOFtail"), 3);
+    }
+
+    #[test]
+    fn next_atom_end_keeps_osc_sequence_atomic() {
+        // OSC set-title terminated by BEL (index 9 → length 10).
+        assert_eq!(super::next_atom_end(b"\x1b]0;title\x07after"), 10);
+        // OSC terminated by ST (ESC \).
+        assert_eq!(super::next_atom_end(b"\x1b]0;t\x1b\\x"), 7);
+    }
+
+    #[test]
+    fn next_atom_end_two_byte_escape() {
+        // ESC ESC (steer prefix) is a two-byte atom.
+        assert_eq!(super::next_atom_end(b"\x1b\x1b"), 2);
+        // ESC <letter> that isn't [ / O / ] is also two bytes.
+        assert_eq!(super::next_atom_end(b"\x1bMrest"), 2);
+    }
+
+    #[test]
+    fn next_atom_end_multibyte_utf8_stays_whole() {
+        assert_eq!(super::next_atom_end("é".as_bytes()), 2);
+        assert_eq!(super::next_atom_end("€".as_bytes()), 3);
+        assert_eq!(super::next_atom_end("😀".as_bytes()), 4);
+    }
+
+    #[test]
+    fn next_atom_end_truncated_sequences_make_progress() {
+        // Sequences cut off by end-of-buffer return the remainder so the pacer
+        // emits them as-is rather than spinning forever.
+        assert_eq!(super::next_atom_end(b"\x1b"), 1);
+        assert_eq!(super::next_atom_end(b"\x1b["), 2);
+        assert_eq!(super::next_atom_end(b"\x1bO"), 2);
+        // Truncated 4-byte UTF-8 lead clamps to what's present.
+        assert_eq!(super::next_atom_end(&[0xf0, 0x9f]), 2);
+        // A stray continuation byte advances by one.
+        assert_eq!(super::next_atom_end(&[0x9f, 0x98]), 1);
+    }
+
+    /// The core requirement from #801: a payload mixing CSI / SS3 / OSC escape
+    /// sequences, a two-byte `ESC ESC`, and multi-byte UTF-8 must be written
+    /// one whole atom per `write` call — never split mid-sequence — while
+    /// reproducing the original bytes exactly and in order.
+    #[test]
+    fn write_paced_emits_atoms_without_splitting_sequences() {
+        use std::sync::Mutex as StdMutex;
+
+        // Records each `write` call separately. `write_all` calls `write` once
+        // per atom because this writer consumes the whole slice each call, so a
+        // recorded chunk == one atom handed to `write_paced`.
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // plain, CSI (with params), SS3, OSC+BEL, ESC ESC, plain, 😀, CR.
+        let payload = b"hi\x1b[1;5A\x1bOB\x1b]0;t\x07\x1b\x1bX\xf0\x9f\x98\x80\r".to_vec();
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let mut writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        // Zero pace keeps the test instant; it still walks the atom loop.
+        super::write_paced(&mut writer, &payload, StdDuration::ZERO).unwrap();
+
+        let chunks = chunks.lock().unwrap().clone();
+        let flat: Vec<u8> = chunks.iter().flatten().copied().collect();
+        assert_eq!(
+            flat, payload,
+            "paced write must reproduce the payload bytes in order"
+        );
+        let expected: Vec<Vec<u8>> = vec![
+            b"h".to_vec(),
+            b"i".to_vec(),
+            b"\x1b[1;5A".to_vec(),
+            b"\x1bOB".to_vec(),
+            b"\x1b]0;t\x07".to_vec(),
+            b"\x1b\x1b".to_vec(),
+            b"X".to_vec(),
+            "😀".as_bytes().to_vec(),
+            b"\r".to_vec(),
+        ];
+        assert_eq!(
+            chunks, expected,
+            "each write call must be exactly one escape-aware atom"
+        );
+    }
+
+    /// A paced `WriteMsg::UserInput` routed through the real drainer must
+    /// deliver every byte and ack success, proving the pacing branch is wired
+    /// end-to-end (not just the standalone helper).
+    #[tokio::test]
+    async fn drainer_paced_user_input_delivers_and_acks() {
+        use std::sync::Mutex as StdMutex;
+        struct CollectWriter {
+            out: Arc<StdMutex<Vec<u8>>>,
+        }
+        impl std::io::Write for CollectWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.out.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let out = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = CollectWriter { out: out.clone() };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"go\x1b[A\r".to_vec(),
+            pace: StdDuration::from_millis(1),
+            ack: ack_tx,
+        })
+        .expect("queue accepts paced user input");
+
+        let ack = tokio::time::timeout(Duration::from_secs(2), ack_rx)
+            .await
+            .expect("drainer acks paced write")
+            .expect("ack sender not dropped");
+        assert!(ack.is_ok(), "paced write must succeed");
+        assert_eq!(
+            out.lock().unwrap().as_slice(),
+            b"go\x1b[A\r",
+            "paced write must deliver every byte in order"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
     }
 }

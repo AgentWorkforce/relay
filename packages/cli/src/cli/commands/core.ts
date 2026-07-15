@@ -280,27 +280,38 @@ export interface UpCommandOptions {
  * on top of these; `local up` uses them as-is.
  */
 export function addUpCommandOptions(command: Command): Command {
-  return command
-    .option('--spawn', 'Force spawn all agents from teams.json')
-    .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
-    .option('--background', 'Run broker in the background (detached)')
-    .option('--verbose', 'Enable verbose logging')
-    .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
-    .option(
-      '--state-dir <path>',
-      'Directory for broker state and connection files (default: .agentworkforce/relay/)'
-    )
-    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
-    .option(
-      '--log-file <path>',
-      'Write structured node logs (capabilities registered, actions invoked/completed) to a file'
-    )
-    .option(
-      '--log-level <level>',
-      'Node log verbosity: debug | info | warn | error (default: info)',
-      parseLogLevel
-    )
-    .option('--log-json', 'Emit node logs as JSON lines instead of text');
+  return (
+    command
+      .option('--spawn', 'Force spawn all agents from teams.json')
+      .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
+      .option('--background', 'Run broker in the background (detached)')
+      .option('--verbose', 'Enable verbose logging')
+      .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
+      .option('--wk <key>', 'Alias for --workspace-key')
+      .option(
+        '--state-dir <path>',
+        'Directory for broker state and connection files (default: .agentworkforce/relay/)'
+      )
+      .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
+      .option(
+        '--log-file <path>',
+        'Write structured node logs (capabilities registered, actions invoked/completed) to a file'
+      )
+      .option(
+        '--log-level <level>',
+        'Node log verbosity: debug | info | warn | error (default: info)',
+        parseLogLevel
+      )
+      .option('--log-json', 'Emit node logs as JSON lines instead of text')
+      // Fold the `--wk` alias into `workspaceKey` before the action runs, matching
+      // the SDK commands' `addSdkOptions`. An explicit `--workspace-key` wins.
+      .hook('preAction', (thisCommand) => {
+        const opts = thisCommand.opts();
+        if (typeof opts.wk === 'string' && opts.wk.trim() && !opts.workspaceKey) {
+          thisCommand.setOptionValue('workspaceKey', opts.wk);
+        }
+      })
+  );
 }
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;

@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/evals",
-  "version": "10.2.0",
+  "version": "10.4.0",
   "description": "Agent Relay eval harness — scenario runner, broker harness, and scoring utilities for testing relay-connected agents",
   "type": "module",
   "main": "dist/index.js",
@@ -68,8 +68,8 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "10.2.0",
-    "@agent-relay/integration-prompts": "10.2.0"
+    "@agent-relay/harness-driver": "10.4.0",
+    "@agent-relay/integration-prompts": "10.4.0"
   },
   "publishConfig": {
     "access": "public"
