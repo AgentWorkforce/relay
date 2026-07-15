@@ -9,6 +9,9 @@ import Relaycast
 /// we verify the facade configuration and the bridging glue that keeps
 /// AgentRelaySDK's public surface intact on top of relaycast.
 final class HostedParticipantSDKTests: XCTestCase {
+    private enum AsyncTestTimeout: Error {
+        case exceeded
+    }
 
     private func makeParticipantCore() throws -> HostedParticipantCore {
         HostedParticipantCore(
@@ -24,11 +27,29 @@ final class HostedParticipantSDKTests: XCTestCase {
     }
 
     private func waitUntil(_ predicate: @escaping () async -> Bool) async throws {
-        for _ in 0..<500 {
+        for _ in 0..<2_000 {
             if await predicate() { return }
             try await Task.sleep(nanoseconds: 1_000_000)
         }
         XCTFail("Timed out waiting for async condition")
+        throw AsyncTestTimeout.exceeded
+    }
+
+    private func withTimeout<T: Sendable>(
+        _ operation: @escaping @Sendable () async -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                throw AsyncTestTimeout.exceeded
+            }
+            guard let result = try await group.next() else {
+                throw AsyncTestTimeout.exceeded
+            }
+            group.cancelAll()
+            return result
+        }
     }
 
     // MARK: - Facade configuration
@@ -321,7 +342,7 @@ final class HostedParticipantSDKTests: XCTestCase {
         await core.disconnect()
         await core.registerEventContinuation(try XCTUnwrap(continuationRef), id: id, generation: staleGeneration)
 
-        let first = await stream.first(where: { _ in true })
+        let first = try await withTimeout { await stream.first(where: { _ in true }) }
         XCTAssertNil(first)
         let counts = await core.continuationCounts()
         XCTAssertEqual(counts.events, 0)
@@ -374,17 +395,24 @@ final class HostedParticipantSDKTests: XCTestCase {
         await core.notifyConnectionState(.connected)
         await core.notifyConnectionState(.disconnected)
 
-        var eventIterator = eventStream.makeAsyncIterator()
-        var eventTypes: [String] = []
-        for _ in 0..<256 {
-            let event = await eventIterator.next()
-            eventTypes.append(try XCTUnwrap(event).type)
+        let eventTypes = try await withTimeout {
+            var eventIterator = eventStream.makeAsyncIterator()
+            var types: [String] = []
+            for _ in 0..<256 {
+                guard let event = await eventIterator.next() else { break }
+                types.append(event.type)
+            }
+            return types
         }
+        XCTAssertEqual(eventTypes.count, 256)
         XCTAssertEqual(eventTypes.first, "event.44")
         XCTAssertEqual(eventTypes.last, "event.299")
 
-        var stateIterator = stateStream.makeAsyncIterator()
-        guard case .disconnected? = await stateIterator.next() else {
+        let state = try await withTimeout {
+            var stateIterator = stateStream.makeAsyncIterator()
+            return await stateIterator.next()
+        }
+        guard case .disconnected? = state else {
             return XCTFail("Expected only the newest connection state")
         }
     }

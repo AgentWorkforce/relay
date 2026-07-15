@@ -531,20 +531,28 @@ public final class AgentClient: @unchecked Sendable {
 public final class RelayChannel: @unchecked Sendable {
     public let name: String
     private let core: HostedParticipantCore
+    private let streamRegistrations = StreamRegistrationTasks()
 
     /// Channel delivery is registered only when the stream is requested.
     /// Slow consumers retain at most the newest 256 events.
+    ///
+    /// Request this stream before calling ``subscribe()`` when events emitted
+    /// immediately after subscription must be retained. `subscribe()` waits
+    /// for every stream requested up to that point to finish registering.
     public var events: AsyncStream<RelayChannelEvent> {
         let id = UUID()
         let core = self.core
         let name = self.name
+        let streamRegistrations = self.streamRegistrations
         let generation = core.streamLifecycle.snapshot()
         return AsyncStream<RelayChannelEvent>(bufferingPolicy: .bufferingNewest(256)) { continuation in
             let registrationTask = Task {
                 await core.registerChannelContinuation(continuation, id: id, generation: generation, for: name)
             }
+            streamRegistrations.insert(registrationTask, id: id)
             continuation.onTermination = { @Sendable _ in
                 registrationTask.cancel()
+                streamRegistrations.remove(id: id)
                 Task { await core.unregisterChannelContinuation(id: id, for: name) }
             }
         }
@@ -556,6 +564,9 @@ public final class RelayChannel: @unchecked Sendable {
     }
 
     public func subscribe() async throws {
+        for registrationTask in streamRegistrations.takeAll() {
+            await registrationTask.value
+        }
         try await core.subscribe(channel: name)
     }
 
@@ -607,6 +618,31 @@ final class StreamLifecycle: @unchecked Sendable {
         lock.lock()
         generation &+= 1
         lock.unlock()
+    }
+}
+
+private final class StreamRegistrationTasks: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+
+    func insert(_ task: Task<Void, Never>, id: UUID) {
+        lock.lock()
+        tasks[id] = task
+        lock.unlock()
+    }
+
+    func remove(id: UUID) {
+        lock.lock()
+        tasks.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    func takeAll() -> [Task<Void, Never>] {
+        lock.lock()
+        defer { lock.unlock() }
+        let pending = Array(tasks.values)
+        tasks.removeAll()
+        return pending
     }
 }
 
@@ -760,11 +796,7 @@ actor HostedParticipantCore {
         let channel = Self.normalizeChannel(channel)
         guard var registry = channelContinuations[channel] else { return }
         registry.unregister(id: id)
-        if registry.count == 0 {
-            channelContinuations.removeValue(forKey: channel)
-        } else {
-            channelContinuations[channel] = registry
-        }
+        channelContinuations[channel] = registry.count > 0 ? registry : nil
     }
 
     func registerInboundMessageContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, id: UUID, generation: UInt64) {
@@ -1000,8 +1032,10 @@ actor HostedParticipantCore {
             continuation.yield(message)
         }
         if let channel = message.channel {
-            for continuation in channelContinuations[Self.normalizeChannel(channel)]?.continuations ?? [:].values {
-                continuation.yield(message)
+            if let continuations = channelContinuations[Self.normalizeChannel(channel)]?.continuations {
+                for continuation in continuations {
+                    continuation.yield(message)
+                }
             }
         }
     }

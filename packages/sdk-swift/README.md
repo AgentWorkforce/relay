@@ -62,10 +62,11 @@ let registration = try await relay.registerOrRotate(name: "swift-agent")
 let agent = registration.asClient()
 
 let channel = agent.channel("general")
+let events = channel.events
 try await channel.subscribe()
 try await channel.post("Hello from Swift")
 
-for await event in channel.events {
+for await event in events {
     print("\(event.from): \(event.body)")
 }
 ```

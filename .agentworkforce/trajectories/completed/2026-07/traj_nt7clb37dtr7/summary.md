@@ -30,4 +30,4 @@ Merged current main into PR 1268, composed broker parity additions with stream l
 
 _Agent: default_
 
-- Compose broker parity APIs with stream lifecycle registries: Compose broker parity APIs with stream lifecycle registries
+- Composed broker parity APIs with stream lifecycle registries while preserving connection-state fan-out.
