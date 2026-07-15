@@ -164,7 +164,14 @@ function readRepoKeys(node: Record<string, unknown>): string[] | undefined {
   const direct = readStringArray(node, 'repoKeys') ?? readStringArray(node, 'repo_keys');
   if (direct) return direct;
   const repoPaths = readRecord(node, 'repoPaths', 'repo_paths');
-  return repoPaths ? Object.keys(repoPaths).filter(Boolean) : undefined;
+  if (repoPaths) return Object.keys(repoPaths).filter(Boolean);
+  // Registration carries repo advertisement as `repo:<key>` tags (the engine
+  // roster row has no dedicated repo field), so placement reads them here.
+  const tagged = readStringArray(node, 'tags')
+    ?.filter((tag) => tag.startsWith('repo:'))
+    .map((tag) => tag.slice('repo:'.length))
+    .filter(Boolean);
+  return tagged && tagged.length > 0 ? tagged : undefined;
 }
 
 export function toRelayNodeCapability(raw: unknown): RelayNodeCapability {
