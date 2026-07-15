@@ -746,19 +746,54 @@ pub struct PanicReporter {
 
 impl PanicReporter {
     /// Synchronously emit a `broker_panic` event for the given source location.
-    /// `location` is a compile-time `file:line` — never the panic message, which
-    /// can contain user data.
+    /// `location` is a sanitized compile-time `file:line` — never the panic
+    /// message, which can contain user data.
     fn report(&self, location: &str) {
-        let mut props = self.common.clone();
-        props.insert("panic_location".to_string(), json!(location));
+        // Serialize through the shared event contract so the event name and
+        // payload can't drift from `TelemetryEvent`/the TypeScript schema.
+        let event = TelemetryEvent::BrokerPanic {
+            location: location.to_string(),
+        };
+        let mut props = event.properties();
+        if let Some(obj) = props.as_object_mut() {
+            for (key, value) in &self.common {
+                obj.insert(key.clone(), value.clone());
+            }
+        }
         let capture = PostHogCapture {
             api_key: self.api_key.clone(),
-            event: "broker_panic".to_string(),
+            event: event.name().to_string(),
             distinct_id: self.distinct_id.clone(),
-            properties: Value::Object(props),
+            properties: props,
         };
         send_capture_blocking(capture);
     }
+}
+
+/// Reduce a panic source path to a PII-safe form before it leaves the process.
+///
+/// `PanicHookInfo::location().file()` is the path as passed to rustc. First-party
+/// workspace code compiles with repo-relative paths (`crates/broker/src/...`),
+/// which are safe. A panic inside a dependency can instead carry an absolute
+/// path such as `/home/<user>/.cargo/registry/.../src/lib.rs`, which embeds the
+/// OS username. Strip a leading home-directory prefix (replacing it with `~`) so
+/// no username leaks; if an absolute path remains outside the home dir, keep only
+/// the file name so no machine-specific directory structure is reported.
+fn sanitize_panic_file(file: &str, home: Option<&str>) -> String {
+    if let Some(rest) = home
+        .filter(|h| !h.is_empty())
+        .and_then(|h| file.strip_prefix(h))
+    {
+        return format!("~{rest}");
+    }
+    if std::path::Path::new(file).is_absolute() {
+        return std::path::Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+    }
+    file.to_string()
 }
 
 /// Best-effort synchronous POST used only from the panic hook, where the shared
@@ -803,11 +838,18 @@ fn send_capture_blocking(capture: PostHogCapture) {
 /// reporter from [`TelemetryClient::panic_reporter`]; a no-op reporter isn't
 /// built when telemetry is disabled, so callers simply skip installation then.
 pub fn install_panic_hook(reporter: PanicReporter) {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let location = info
             .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .map(|l| {
+                format!(
+                    "{}:{}",
+                    sanitize_panic_file(l.file(), home.as_deref()),
+                    l.line()
+                )
+            })
             .unwrap_or_else(|| "unknown".to_string());
         // A panic inside the panic hook aborts the process, so guard the
         // telemetry send — a failed report must never mask the real panic.
@@ -922,6 +964,40 @@ mod tests {
         // could leak user data.
         let obj = props.as_object().expect("object props");
         assert_eq!(obj.len(), 1, "unexpected extra props: {obj:?}");
+    }
+
+    #[test]
+    fn sanitize_panic_file_keeps_relative_paths() {
+        // First-party workspace code is already repo-relative — leave it intact.
+        assert_eq!(
+            sanitize_panic_file("crates/broker/src/telemetry.rs", Some("/home/alice")),
+            "crates/broker/src/telemetry.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_strips_home_prefix() {
+        // A dependency panic under the home dir must not leak the username.
+        assert_eq!(
+            sanitize_panic_file(
+                "/home/alice/.cargo/registry/src/index/tokio-1.0/src/lib.rs",
+                Some("/home/alice")
+            ),
+            "~/.cargo/registry/src/index/tokio-1.0/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_reduces_other_absolute_paths_to_basename() {
+        // Absolute path outside the home dir (and no home known) → file name only.
+        assert_eq!(
+            sanitize_panic_file("/opt/build/secret-dir/src/lib.rs", None),
+            "lib.rs"
+        );
+        assert_eq!(
+            sanitize_panic_file("/opt/build/secret-dir/src/lib.rs", Some("/home/alice")),
+            "lib.rs"
+        );
     }
 
     #[test]
