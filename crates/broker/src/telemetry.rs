@@ -84,6 +84,13 @@ pub enum TelemetryEvent {
         exit_code: Option<i32>,
         lifetime_seconds: u64,
     },
+    /// The broker process itself panicked. Emitted synchronously from the
+    /// panic hook (see [`install_panic_hook`]). PII-safe by construction — it
+    /// carries only the compile-time source location, never the panic message.
+    BrokerPanic {
+        /// Source location of the panic as `file:line`.
+        location: String,
+    },
     MessageSend {
         is_broadcast: bool,
         has_thread: bool,
@@ -121,6 +128,7 @@ impl TelemetryEvent {
             Self::AgentSpawn { .. } => "agent_spawn",
             Self::AgentRelease { .. } => "agent_release",
             Self::AgentCrash { .. } => "agent_crash",
+            Self::BrokerPanic { .. } => "broker_panic",
             Self::MessageSend { .. } => "message_send",
             Self::CliCommandRun { .. } => "cli_command_run",
         }
@@ -169,6 +177,9 @@ impl TelemetryEvent {
                 "cli": cli,
                 "exit_code": exit_code,
                 "lifetime_seconds": lifetime_seconds,
+            }),
+            Self::BrokerPanic { location } => json!({
+                "panic_location": location,
             }),
             Self::MessageSend {
                 is_broadcast,
@@ -619,32 +630,8 @@ impl TelemetryClient {
         };
 
         let mut props = event.properties();
-        // Merge common properties. Version identification mirrors the
-        // TypeScript `CommonProperties` shape so dashboards can filter on
-        // `cli_version` / `sdk_version` / `broker_version` independent of
-        // which component emitted the event. `agent_relay_version` is kept
-        // as a back-compat alias that mirrors `broker_version` here.
         if let Some(obj) = props.as_object_mut() {
-            let broker_version = crate::util::version::broker_version();
-            obj.insert("app".to_string(), json!("broker"));
-            obj.insert("surface".to_string(), json!("broker"));
-            obj.insert(
-                "orchestrator_harness".to_string(),
-                json!(self.orchestrator_harness.as_str()),
-            );
-            obj.insert("agent_relay_version".to_string(), json!(broker_version));
-            obj.insert("broker_version".to_string(), json!(broker_version));
-            if let Some(ref v) = self.cli_version {
-                obj.insert("cli_version".to_string(), json!(v));
-            }
-            if let Some(ref v) = self.sdk_version {
-                obj.insert("sdk_version".to_string(), json!(v));
-            }
-            obj.insert("os".to_string(), json!(std::env::consts::OS));
-            if let Some(ref v) = self.os_version {
-                obj.insert("os_version".to_string(), json!(v));
-            }
-            obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+            obj.append(&mut self.common_properties());
         }
 
         // `posthog_api_key()` is guaranteed `Some` here — `TelemetryClient::new`
@@ -662,6 +649,53 @@ impl TelemetryClient {
 
         // Send is non-blocking; ignore errors (channel closed = shutting down).
         let _ = tx.send(capture);
+    }
+
+    /// Common properties merged onto every event. Version identification
+    /// mirrors the TypeScript `CommonProperties` shape so dashboards can filter
+    /// on `cli_version` / `sdk_version` / `broker_version` independent of which
+    /// component emitted the event. `agent_relay_version` is kept as a
+    /// back-compat alias that mirrors `broker_version` here.
+    fn common_properties(&self) -> serde_json::Map<String, Value> {
+        let mut obj = serde_json::Map::new();
+        let broker_version = crate::util::version::broker_version();
+        obj.insert("app".to_string(), json!("broker"));
+        obj.insert("surface".to_string(), json!("broker"));
+        obj.insert(
+            "orchestrator_harness".to_string(),
+            json!(self.orchestrator_harness.as_str()),
+        );
+        obj.insert("agent_relay_version".to_string(), json!(broker_version));
+        obj.insert("broker_version".to_string(), json!(broker_version));
+        if let Some(ref v) = self.cli_version {
+            obj.insert("cli_version".to_string(), json!(v));
+        }
+        if let Some(ref v) = self.sdk_version {
+            obj.insert("sdk_version".to_string(), json!(v));
+        }
+        obj.insert("os".to_string(), json!(std::env::consts::OS));
+        if let Some(ref v) = self.os_version {
+            obj.insert("os_version".to_string(), json!(v));
+        }
+        obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+        obj
+    }
+
+    /// Build a [`PanicReporter`] snapshot for use in a `std::panic` hook, or
+    /// `None` when telemetry is disabled (so callers install nothing). The
+    /// snapshot owns everything needed to emit `broker_panic` synchronously,
+    /// since the async sender loop and tokio runtime may already be gone by the
+    /// time the process panics.
+    pub fn panic_reporter(&self) -> Option<PanicReporter> {
+        if !self.enabled {
+            return None;
+        }
+        let api_key = posthog_api_key()?.to_string();
+        Some(PanicReporter {
+            api_key,
+            distinct_id: self.distinct_id.clone(),
+            common: self.common_properties(),
+        })
     }
 
     /// Flush pending events and shut down the background sender.
@@ -694,6 +728,94 @@ impl TelemetryClient {
         }
         true
     }
+}
+
+// ---------------------------------------------------------------------------
+// Panic reporting
+// ---------------------------------------------------------------------------
+
+/// Owned snapshot of everything needed to synchronously emit a `broker_panic`
+/// event from a `std::panic` hook. Built via [`TelemetryClient::panic_reporter`]
+/// while the client is alive, then captured by the panic hook closure so the
+/// event can be sent even after the async sender loop has stopped.
+pub struct PanicReporter {
+    api_key: String,
+    distinct_id: String,
+    common: serde_json::Map<String, Value>,
+}
+
+impl PanicReporter {
+    /// Synchronously emit a `broker_panic` event for the given source location.
+    /// `location` is a compile-time `file:line` — never the panic message, which
+    /// can contain user data.
+    fn report(&self, location: &str) {
+        let mut props = self.common.clone();
+        props.insert("panic_location".to_string(), json!(location));
+        let capture = PostHogCapture {
+            api_key: self.api_key.clone(),
+            event: "broker_panic".to_string(),
+            distinct_id: self.distinct_id.clone(),
+            properties: Value::Object(props),
+        };
+        send_capture_blocking(capture);
+    }
+}
+
+/// Best-effort synchronous POST used only from the panic hook, where the shared
+/// async sender loop can't be relied on. Runs on a freshly-spawned OS thread
+/// with its own current-thread runtime so it's safe even when the panic
+/// originated on a tokio worker thread (creating a runtime inside a runtime
+/// thread would itself panic). The reqwest client timeout bounds how long the
+/// thread — and therefore process teardown — can wait on the network.
+fn send_capture_blocking(capture: PostHogCapture) {
+    let handle = std::thread::Builder::new()
+        .name("broker-panic-telemetry".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+            runtime.block_on(async {
+                let client = match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(3))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let url = format!("{}/capture/", POSTHOG_HOST);
+                let _ = client.post(&url).json(&capture).send().await;
+            });
+        });
+    // Wait for the send to finish (bounded by the reqwest timeout above) so the
+    // event has a chance to leave the process before it unwinds or aborts.
+    if let Ok(handle) = handle {
+        let _ = handle.join();
+    }
+}
+
+/// Install a process-global panic hook that emits a PII-safe `broker_panic`
+/// telemetry event before delegating to the previously-installed hook (so the
+/// default message/backtrace still prints). Call once during startup with the
+/// reporter from [`TelemetryClient::panic_reporter`]; a no-op reporter isn't
+/// built when telemetry is disabled, so callers simply skip installation then.
+pub fn install_panic_hook(reporter: PanicReporter) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+        // A panic inside the panic hook aborts the process, so guard the
+        // telemetry send — a failed report must never mask the real panic.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reporter.report(&location);
+        }));
+        previous(info);
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +885,9 @@ mod tests {
                 exit_code: Some(1),
                 lifetime_seconds: 10,
             },
+            TelemetryEvent::BrokerPanic {
+                location: "crates/broker/src/wrap.rs:1862".into(),
+            },
             TelemetryEvent::MessageSend {
                 is_broadcast: true,
                 has_thread: false,
@@ -780,6 +905,37 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn broker_panic_event_is_pii_safe() {
+        let event = TelemetryEvent::BrokerPanic {
+            location: "crates/broker/src/wrap.rs:42".into(),
+        };
+        assert_eq!(event.name(), "broker_panic");
+        let props = event.properties();
+        assert_eq!(
+            props["panic_location"],
+            json!("crates/broker/src/wrap.rs:42")
+        );
+        // Only the source location is carried — no message/payload key that
+        // could leak user data.
+        let obj = props.as_object().expect("object props");
+        assert_eq!(obj.len(), 1, "unexpected extra props: {obj:?}");
+    }
+
+    #[test]
+    fn disabled_client_reports_no_panic_reporter() {
+        let client = TelemetryClient {
+            enabled: false,
+            distinct_id: String::new(),
+            tx: None,
+            cli_version: None,
+            sdk_version: None,
+            os_version: None,
+            orchestrator_harness: UNKNOWN_ORCHESTRATOR_HARNESS.to_string(),
+        };
+        assert!(client.panic_reporter().is_none());
     }
 
     #[test]

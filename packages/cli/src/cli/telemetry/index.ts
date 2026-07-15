@@ -38,6 +38,7 @@ export type {
   AgentSpawnEvent,
   AgentReleaseEvent,
   AgentCrashEvent,
+  BrokerPanicEvent,
   MessageSendEvent,
   CliCommandRunEvent,
   CliCommandCompleteEvent,

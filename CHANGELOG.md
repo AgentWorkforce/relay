@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay-broker` reports a PII-safe `broker_panic` telemetry event from a process-wide panic hook, capturing only the compile-time `panic_location` (`file:line`) — never the panic message — so broker crashes are visible alongside the existing agent-crash signal.
 - `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
 
 ### Fixed
