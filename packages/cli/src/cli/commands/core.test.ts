@@ -1,6 +1,10 @@
 import { Command } from 'commander';
+import nodeFs from 'node:fs';
 import os from 'node:os';
+import nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
@@ -498,6 +502,33 @@ describe('registerCoreCommands', () => {
     expect(deps.env.AGENT_RELAY_STATE_DIR).toBe(stateDir);
     expect(deps.log).toHaveBeenCalledWith('Broker started.');
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
+  });
+
+  it('up --state-dir records the workspace key in the default project dir, not the state dir', async () => {
+    // SDK commands (fleet nodes, …) read the key from the default project data
+    // dir and never accept --state-dir, so a redirected broker state dir must
+    // NOT be where the key lands — otherwise those commands miss it.
+    const stateDir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-statedir-'));
+    const relay = createRelayMock({ workspaceKey: 'rk_statedir_regression' });
+    const { program } = createHarness({ relay });
+
+    try {
+      const exitCode = await runCommand(program, [
+        'up',
+        '--state-dir',
+        stateDir,
+        '--workspace-key',
+        'rk_statedir_regression',
+      ]);
+
+      expect(exitCode).toBeUndefined();
+      // Persisted at the default project data dir (the harness's mocked path)…
+      expect(readProjectWorkspaceKey('/tmp/project/.agentworkforce/relay')).toBe('rk_statedir_regression');
+      // …and NOT in the redirected state dir.
+      expect(readProjectWorkspaceKey(stateDir)).toBeUndefined();
+    } finally {
+      nodeFs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('up --background re-execs a Bun standalone binary without adding its virtual entrypoint', async () => {

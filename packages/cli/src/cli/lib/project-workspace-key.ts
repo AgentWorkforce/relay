@@ -41,13 +41,45 @@ export function readProjectWorkspaceKey(dataDir: string): string | undefined {
  * Persist the workspace key for this project's data dir with owner-only
  * permissions (matching `connection.json`). A blank key is ignored so a broker
  * that never resolved a key does not clobber a previously recorded one.
+ *
+ * The write is atomic and symlink-safe: the payload is written to a fresh,
+ * exclusively-created temp file (so a pre-planted symlink at the temp path
+ * cannot redirect it) and then `rename`d over the destination. `rename` never
+ * follows a symlink at the destination and is atomic on POSIX, so a concurrent
+ * reader sees either the old or the new complete file — never a truncated one,
+ * and never an attacker-chosen target.
  */
 export function writeProjectWorkspaceKey(dataDir: string, workspaceKey: string | undefined): void {
   const key = workspaceKey?.trim();
   if (!key) return;
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = projectWorkspaceKeyPath(dataDir);
+  const tmp = `${file}.tmp.${process.pid}`;
   const payload: ProjectWorkspaceKeyFile = { workspaceKey: key };
-  fs.writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+  const data = `${JSON.stringify(payload, null, 2)}\n`;
+
+  // 'wx' == O_CREAT | O_EXCL: create a brand-new regular file, failing (rather
+  // than following a symlink or truncating an existing file) if anything is
+  // already at the temp path. A stale temp from a crashed run is removed first.
+  let fd: number;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    fs.rmSync(tmp, { force: true });
+    fd = fs.openSync(tmp, 'wx', 0o600);
+  }
+  try {
+    fs.writeSync(fd, data);
+  } finally {
+    fs.closeSync(fd);
+  }
+  // openSync's mode is masked by umask; enforce owner-only before publishing.
+  fs.chmodSync(tmp, 0o600);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
 }

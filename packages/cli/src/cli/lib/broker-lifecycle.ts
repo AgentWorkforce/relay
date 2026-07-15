@@ -1078,6 +1078,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   ensureBundledAgentRelayMcpCommand(deps);
 
   const paths = deps.getProjectPaths();
+  // The stable, default project data dir (`.agentworkforce/relay/`) captured
+  // BEFORE any --state-dir override below. SDK-backed commands resolve the
+  // recorded workspace key from this default location (they don't accept
+  // --state-dir), so the key must be persisted here even when broker state is
+  // redirected elsewhere.
+  const projectWorkspaceKeyDataDir = paths.dataDir;
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1255,11 +1261,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log('Broker started.');
 
     // Record the workspace this broker joined (explicitly passed or auto-minted)
-    // in the project data dir, so later SDK commands in this CWD resolve it
-    // instead of the machine-global active workspace. Persistence must never
-    // abort startup, so a write failure is swallowed.
+    // in the DEFAULT project data dir (not any --state-dir override), so later
+    // SDK commands in this CWD resolve it instead of the machine-global active
+    // workspace. Persistence must never abort startup, so a write failure is
+    // swallowed.
     try {
-      writeProjectWorkspaceKey(paths.dataDir, relay.workspaceKey ?? undefined);
+      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined);
     } catch {
       // best-effort: a broker that came up should stay up even if the key file
       // can't be written (read-only dir, etc.).

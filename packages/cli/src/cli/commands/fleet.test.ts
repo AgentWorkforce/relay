@@ -191,7 +191,20 @@ describe('fleet command support', () => {
     expect(nodes.list).toHaveBeenCalledTimes(1);
   });
 
-  it('fleet nodes does not warn when the workspace key is passed explicitly', async () => {
+  it('fleet nodes does not warn when an explicit key overrides a recorded project key', async () => {
+    // A recorded project key IS present (the same context that makes the sibling
+    // test warn); the explicit --wk must take precedence and suppress the advisory.
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-proj-'));
+    const saved = {
+      project: process.env.AGENT_RELAY_PROJECT,
+      ws: process.env.RELAY_WORKSPACE_KEY,
+      api: process.env.RELAY_API_KEY,
+    };
+    process.env.AGENT_RELAY_PROJECT = projectRoot;
+    delete process.env.RELAY_WORKSPACE_KEY;
+    delete process.env.RELAY_API_KEY;
+    writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_project_broker');
+
     const warnings: string[] = [];
     const nodes = { list: vi.fn(async () => []) };
     const program = new Command();
@@ -210,9 +223,18 @@ describe('fleet command support', () => {
       error: () => undefined,
     });
 
-    await program.parseAsync(['fleet', 'nodes', '--wk', 'rk_live_alias'], { from: 'user' });
+    try {
+      await program.parseAsync(['fleet', 'nodes', '--wk', 'rk_live_alias'], { from: 'user' });
+    } finally {
+      if (saved.project === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = saved.project;
+      if (saved.ws !== undefined) process.env.RELAY_WORKSPACE_KEY = saved.ws;
+      if (saved.api !== undefined) process.env.RELAY_API_KEY = saved.api;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
 
     expect(warnings).toEqual([]);
+    expect(nodes.list).toHaveBeenCalledTimes(1);
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {
