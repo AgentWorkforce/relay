@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "10.2.0",
+  "version": "10.3.0",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
@@ -21,6 +21,10 @@
     "./mcp": {
       "types": "./dist/cli/agent-relay-mcp.d.ts",
       "import": "./dist/cli/agent-relay-mcp.js"
+    },
+    "./node-embedded": {
+      "types": "./dist/node-embedded.d.ts",
+      "import": "./dist/node-embedded.js"
     },
     "./package.json": "./package.json"
   },

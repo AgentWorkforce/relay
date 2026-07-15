@@ -16,7 +16,7 @@ import {
 } from './node-definition-loader.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 
-type UpOptions = {
+export type UpOptions = {
   spawn?: boolean;
   background?: boolean;
   verbose?: boolean;
@@ -41,7 +41,7 @@ type UpOptions = {
   logJson?: boolean;
 };
 
-type DownOptions = {
+export type DownOptions = {
   force?: boolean;
   all?: boolean;
   timeout?: string;
@@ -61,6 +61,8 @@ const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
 // `/api/session` when serving a capability definition without an explicit
 // RELAY_NODE_TOKEN.
 const NODE_TOKEN_WAIT_MS = 15_000;
+
+export type StatusOptions = { stateDir?: string; waitFor?: string };
 
 export interface BrokerConnection {
   url: string;
@@ -504,7 +506,7 @@ async function startNodeCapabilityProviders(
           // flag, keep the prior behavior: the registration summary via log, warnings
           // via warn.
           ...(nodeLoggingEnabled(options)
-            ? { logger: createLogger('fleet') }
+            ? { logger: deps.createNodeLogger?.('fleet') ?? createLogger('fleet') }
             : { warn: (message) => deps.warn(message), log: (message) => deps.log(message) }),
         })
       );
@@ -565,7 +567,10 @@ function startPythonNodeProvider(
     ...(credentials.baseUrl ? { RELAY_BASE_URL: credentials.baseUrl } : {}),
   };
   try {
-    const child = deps.spawnProcess(python, [configPath], { stdio: 'inherit', env });
+    const child = deps.spawnProcess(python, [configPath], {
+      stdio: deps.pythonProviderStdio ?? 'inherit',
+      env,
+    });
     deps.log(
       `Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
     );
@@ -1452,10 +1457,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
   }
 }
 
-export async function runStatusCommand(
-  deps: CoreDependencies,
-  options?: { stateDir?: string; waitFor?: string }
-): Promise<void> {
+export async function runStatusCommand(deps: CoreDependencies, options?: StatusOptions): Promise<void> {
   const paths = deps.getProjectPaths();
   if (options?.stateDir) {
     paths.dataDir = path.resolve(options.stateDir);

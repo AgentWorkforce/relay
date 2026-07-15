@@ -21,6 +21,12 @@
     // the compiled CLI inline the declaration files and lose every workspace
     // export at runtime (e.g. `local up` → "Fleet local node skipped").
   },
-  "include": ["src/index.ts", "src/cli/index.ts", "src/cli/bootstrap.ts", "src/cli/agent-relay-mcp.ts"],
+  "include": [
+    "src/index.ts",
+    "src/node-embedded.ts",
+    "src/cli/index.ts",
+    "src/cli/bootstrap.ts",
+    "src/cli/agent-relay-mcp.ts"
+  ],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }
