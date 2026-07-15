@@ -5,14 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [10.3.0] - 2026-07-15
+## [Unreleased - Minor]
 
 ### Added
 
 - `--wk <key>` is a shorthand for `--workspace-key` on every SDK-backed `agent-relay` command (`fleet nodes`, `workspace`, `integration`, `webhook`, …) and on `up`/`node up`; an explicit `--workspace-key` still wins when both are passed.
 - `agent-relay up` records the workspace it joins (passed via `--workspace-key`/`--wk` or auto-minted) in the project data dir, and SDK-backed commands run in that directory now resolve that workspace key ahead of the machine-global active workspace, so `fleet nodes`/`node …` in a project reflect the broker's actual workspace. An explicit `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` still overrides it. `fleet nodes` prints a stderr note when the key was inferred from that project record, so a stale broker workspace is visible rather than silent.
+
+## [10.3.0] - 2026-07-15
+
+### Added
+
 - `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
 
 ### Fixed
