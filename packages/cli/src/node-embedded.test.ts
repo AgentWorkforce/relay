@@ -176,9 +176,10 @@ describe('embedded node lifecycle', () => {
   it('reports a non-throwing down-command shutdown error as failure', async () => {
     const processPidBefore = process.pid;
     const stateDir = makeTempRoot();
+    const connectionPath = path.join(stateDir, 'connection.json');
     const fakeBrokerPid = 2_000_000_000;
     fs.writeFileSync(
-      path.join(stateDir, 'connection.json'),
+      connectionPath,
       JSON.stringify({
         url: 'http://127.0.0.1:3889',
         port: 3889,
@@ -207,6 +208,68 @@ describe('embedded node lifecycle', () => {
       level: 'error',
       message: 'Error stopping broker: denied embedded shutdown',
     });
+    expect(fs.existsSync(connectionPath)).toBe(true);
+  });
+
+  it('reports graceful shutdown timeout as failure and retains live-broker state', async () => {
+    const stateDir = makeTempRoot();
+    const connectionPath = path.join(stateDir, 'connection.json');
+    const fakeBrokerPid = 2_000_000_001;
+    fs.writeFileSync(
+      connectionPath,
+      JSON.stringify({
+        url: 'http://127.0.0.1:3889',
+        port: 3889,
+        api_key: 'test',
+        pid: fakeBrokerPid,
+      })
+    );
+    const realKill = process.kill.bind(process);
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === fakeBrokerPid && (signal === 0 || signal === 'SIGTERM')) return true;
+      return realKill(pid, signal);
+    });
+
+    const result = await downEmbeddedNode({ stateDir, timeout: '1' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 1,
+      message: 'Graceful shutdown timed out after 1ms. Use --force to kill.',
+    });
+    expect(fs.existsSync(connectionPath)).toBe(true);
+  });
+
+  it('reports failed forced shutdown and retains live-broker state', async () => {
+    const stateDir = makeTempRoot();
+    const connectionPath = path.join(stateDir, 'connection.json');
+    const fakeBrokerPid = 2_000_000_002;
+    fs.writeFileSync(
+      connectionPath,
+      JSON.stringify({
+        url: 'http://127.0.0.1:3889',
+        port: 3889,
+        api_key: 'test',
+        pid: fakeBrokerPid,
+      })
+    );
+    const realKill = process.kill.bind(process);
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === fakeBrokerPid && (signal === 0 || signal === 'SIGTERM')) return true;
+      if (pid === fakeBrokerPid && signal === 'SIGKILL') {
+        throw new Error('denied forced embedded shutdown');
+      }
+      return realKill(pid, signal);
+    });
+
+    const result = await downEmbeddedNode({ force: true, stateDir, timeout: '1' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 1,
+      message: 'Error force stopping broker: denied forced embedded shutdown',
+    });
+    expect(fs.existsSync(connectionPath)).toBe(true);
   });
 
   it('resolves project paths from the isolated env instead of the host env', async () => {
