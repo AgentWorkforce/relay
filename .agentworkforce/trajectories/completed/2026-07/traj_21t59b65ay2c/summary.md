@@ -18,10 +18,12 @@ Merged origin/main into PR #1099 branch, adapted SDK type derivation to @relayca
 ## Key Decisions
 
 ### Adapted canonical type derivation to @relaycast/types 6.x instead of pinning 3.x
+
 - **Chose:** Adapted canonical type derivation to @relaycast/types 6.x instead of pinning 3.x
 - **Reasoning:** Main upgraded @relaycast/sdk to ^6.0.0 whose ledger renamed the delivery lifecycle (accepted->queued, deferred dropped, acked/dead_lettered added) and moved spawn/release off the WS event contract; kept public relay unions unchanged by mapping acked->read and dead_lettered->failed, keeping legacy 3.x statuses parseable, and deriving InjectionResult.status from MessageReceipt
 
 ### Kept agent_name-first participant mapping, fixed doc comment instead of swapping to agent_id
+
 - **Chose:** Kept agent_name-first participant mapping, fixed doc comment instead of swapping to agent_id
 - **Reasoning:** Pre-refactor behavior preferred names and relay addresses agents by name; canonical rows only carry agent_id so orders are equivalent on canonical engines
 
@@ -30,7 +32,8 @@ Merged origin/main into PR #1099 branch, adapted SDK type derivation to @relayca
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Adapted canonical type derivation to @relaycast/types 6.x instead of pinning 3.x: Adapted canonical type derivation to @relaycast/types 6.x instead of pinning 3.x
 - Kept agent_name-first participant mapping, fixed doc comment instead of swapping to agent_id: Kept agent_name-first participant mapping, fixed doc comment instead of swapping to agent_id
