@@ -1,5 +1,7 @@
 use super::*;
-use relaycast::{CreateObserverTokenRequest, ObserverScope, ObserverToken, RelayError};
+use relaycast::{
+    CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
+};
 
 /// Default name recorded on observer tokens minted via `/api/observer-token`
 /// when the caller doesn't supply one.
@@ -76,6 +78,31 @@ fn is_observer_token_name_conflict(error: &anyhow::Error) -> bool {
         .is_some_and(|relay_error| relay_error.code() == Some("observer_token_name_conflict"))
 }
 
+/// True if `scopes` is exactly the read-only set `/api/observer-token`
+/// grants (`default_observer_token_scopes`), order-independent. Used to
+/// confirm a pre-existing token about to be rotated actually matches the
+/// endpoint's contract rather than carrying a wider or narrower grant.
+fn observer_token_scopes_match_default(scopes: &[ObserverScope]) -> bool {
+    let expected = default_observer_token_scopes();
+    scopes.len() == expected.len() && expected.iter().all(|scope| scopes.contains(scope))
+}
+
+/// True if `filters` imposes no narrowing — i.e. it matches the unfiltered
+/// visibility the create path always requests (`filters: None`). A
+/// pre-existing token under the same name but with channel/DM/agent/event
+/// filters would hand the caller a *more restricted* view than
+/// `/api/observer-token` promises, so it must not be silently rotated and
+/// returned.
+fn observer_token_filters_are_unrestricted(filters: &ObserverTokenFilters) -> bool {
+    filters.channel_ids.is_empty()
+        && filters.channel_names.is_empty()
+        && filters.include_dms.is_none()
+        && filters.dm_conversation_ids.is_empty()
+        && filters.agent_ids.is_empty()
+        && filters.event_types.is_empty()
+        && filters.created_after.is_none()
+}
+
 /// Mint an observer token named `token_name` for the workspace reachable
 /// via `http_client`, falling back to recovering a pre-existing token if
 /// creation fails because a token under that name already exists
@@ -84,49 +111,60 @@ fn is_observer_token_name_conflict(error: &anyhow::Error) -> bool {
 /// in advance whether a previous mint already claimed that name, so without
 /// this fallback, repeat minting would fail outright forever.
 ///
-/// The initial create call is bounded by `timeout_duration`. If the
-/// list+rotate fallback is triggered, it gets its own fresh
-/// `timeout_duration` window (rather than sharing whatever budget the
-/// create call already spent), so it can't block the caller indefinitely
-/// either.
+/// The whole sequence — the create call *and*, if triggered, the list+rotate
+/// recovery — shares a single `timeout_duration` budget. Granting the
+/// fallback its own fresh window instead would let a conflict surfaced near
+/// the end of the create window push total latency toward `2 ×
+/// timeout_duration`, past the outer HTTP handler deadline
+/// (`LISTEN_API_SEND_TIMEOUT`); the handler would then report `broker
+/// request timed out` to the caller and drop this task's eventual reply.
 pub(crate) async fn mint_or_recover_observer_token(
     http_client: &RelaycastHttpClient,
     token_name: &str,
     timeout_duration: Duration,
 ) -> Result<ObserverTokenMintOutcome, ObserverTokenMintError> {
-    match timeout(
-        timeout_duration,
-        http_client.create_observer_token(CreateObserverTokenRequest {
-            name: token_name.to_string(),
-            scopes: default_observer_token_scopes(),
-            description: None,
-            filters: None,
-            expires_at: None,
-        }),
-    )
-    .await
-    {
-        Ok(Ok(observer_token)) => Ok(ObserverTokenMintOutcome::Created(observer_token)),
-        Ok(Err(error)) if is_observer_token_name_conflict(&error) => {
-            recover_observer_token_after_name_conflict(
-                http_client,
-                token_name,
-                timeout_duration,
-                error,
-            )
+    let result = timeout(timeout_duration, async {
+        match http_client
+            .create_observer_token(CreateObserverTokenRequest {
+                name: token_name.to_string(),
+                scopes: default_observer_token_scopes(),
+                description: None,
+                filters: None,
+                expires_at: None,
+            })
             .await
+        {
+            Ok(observer_token) => Ok(ObserverTokenMintOutcome::Created(observer_token)),
+            Err(error) if is_observer_token_name_conflict(&error) => {
+                recover_observer_token_after_name_conflict(http_client, token_name, error).await
+            }
+            Err(error) => Err(ObserverTokenMintError::Failed(format!(
+                "Failed to create observer token: {error}"
+            ))),
         }
-        Ok(Err(error)) => Err(ObserverTokenMintError::Failed(format!(
-            "Failed to create observer token: {error}"
-        ))),
+    })
+    .await;
+
+    match result {
+        Ok(outcome) => outcome,
         Err(_) => Err(ObserverTokenMintError::TimedOut),
     }
 }
 
 /// Fallback for `create_observer_token` failing with
 /// `observer_token_name_conflict`: list existing observer tokens for the
-/// workspace, find the one named `token_name`, and rotate it to obtain
-/// fresh, usable raw token material.
+/// workspace, find the one named `token_name` that matches this endpoint's
+/// contract, and rotate it to obtain fresh, usable raw token material. Runs
+/// within the caller's shared timeout budget (see
+/// `mint_or_recover_observer_token`).
+///
+/// **Contract check:** only a token whose scopes are exactly
+/// `default_observer_token_scopes()` and whose filters impose no narrowing
+/// is eligible. A same-named token minted manually or by older code with
+/// broader scopes (or restrictive filters) is *not* rotated, because doing so
+/// would hand the caller credentials with more (or less) access than
+/// `/api/observer-token` advertises; the original conflict error propagates
+/// instead so the mismatch surfaces rather than being silently papered over.
 ///
 /// **Behavioral note:** the raw token originally minted under this name was
 /// never persisted anywhere the broker can read it back, so rotating is the
@@ -137,32 +175,44 @@ pub(crate) async fn mint_or_recover_observer_token(
 /// re-caches it), but any *other* holder of the previous raw value for this
 /// name silently loses access when this path is taken.
 ///
-/// If no existing token matches `token_name` despite the conflict error
-/// (e.g. a race with a concurrent revoke), the original conflict error is
-/// propagated as-is rather than panicking or synthesizing a misleading
-/// response.
+/// If no eligible token matches despite the conflict error (a scope/filter
+/// mismatch, or a race with a concurrent revoke), the original conflict
+/// error is propagated as-is rather than panicking or synthesizing a
+/// misleading response.
 async fn recover_observer_token_after_name_conflict(
     http_client: &RelaycastHttpClient,
     token_name: &str,
-    timeout_duration: Duration,
     conflict_error: anyhow::Error,
 ) -> Result<ObserverTokenMintOutcome, ObserverTokenMintError> {
-    let fallback = timeout(timeout_duration, async move {
-        let existing = http_client.list_observer_tokens().await?;
-        let matched = existing
-            .into_iter()
-            .find(|candidate| candidate.name == token_name)
-            .ok_or(conflict_error)?;
-        http_client.rotate_observer_token(&matched.id).await
-    })
-    .await;
+    let existing = match http_client.list_observer_tokens().await {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            return Err(ObserverTokenMintError::Failed(format!(
+                "Failed to recover existing observer token via list+rotate: {error}"
+            )));
+        }
+    };
 
-    match fallback {
-        Ok(Ok(observer_token)) => Ok(ObserverTokenMintOutcome::RecoveredViaRotate(observer_token)),
-        Ok(Err(error)) => Err(ObserverTokenMintError::Failed(format!(
-            "Failed to create observer token: {error}"
+    let matched = existing.into_iter().find(|candidate| {
+        candidate.name == token_name
+            && observer_token_scopes_match_default(&candidate.scopes)
+            && observer_token_filters_are_unrestricted(&candidate.filters)
+    });
+    let Some(matched) = matched else {
+        // No token matches the endpoint's contract (mismatched scopes/filters,
+        // or the named token vanished in a race with a concurrent revoke).
+        // Propagate the original conflict rather than rotating a token we
+        // can't vouch for.
+        return Err(ObserverTokenMintError::Failed(format!(
+            "Failed to create observer token: {conflict_error}"
+        )));
+    };
+
+    match http_client.rotate_observer_token(&matched.id).await {
+        Ok(observer_token) => Ok(ObserverTokenMintOutcome::RecoveredViaRotate(observer_token)),
+        Err(error) => Err(ObserverTokenMintError::Failed(format!(
+            "Failed to recover existing observer token via list+rotate: {error}"
         ))),
-        Err(_) => Err(ObserverTokenMintError::TimedOut),
     }
 }
 

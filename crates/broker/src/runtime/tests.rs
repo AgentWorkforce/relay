@@ -3441,12 +3441,31 @@ fn default_observer_token_scopes_are_read_only_and_exclude_unneeded_scopes() {
 // the list+rotate fallback that makes repeat minting succeed anyway.
 // ---------------------------------------------------------------------------
 
-fn observer_token_json(id: &str, name: &str, token: Option<&str>) -> serde_json::Value {
+/// The default read-only scope set `/api/observer-token` grants, as the
+/// serialized `scopes` array relaycast returns. Kept in sync with
+/// `default_observer_token_scopes()`; a token must carry exactly this set to
+/// be eligible for the list+rotate recovery path.
+const DEFAULT_OBSERVER_SCOPES_JSON: &[&str] = &[
+    "stream:read",
+    "messages:read",
+    "threads:read",
+    "dms:read",
+    "channels:read",
+    "activity:read",
+    "agents:read",
+];
+
+fn observer_token_json_scoped(
+    id: &str,
+    name: &str,
+    token: Option<&str>,
+    scopes: &[&str],
+) -> serde_json::Value {
     json!({
         "id": id,
         "name": name,
         "description": null,
-        "scopes": ["stream:read"],
+        "scopes": scopes,
         "filters": {},
         "status": "active",
         "expires_at": null,
@@ -3456,6 +3475,13 @@ fn observer_token_json(id: &str, name: &str, token: Option<&str>) -> serde_json:
         "last_used_at": null,
         "token": token,
     })
+}
+
+/// An observer token carrying the exact default scope set (i.e. one this
+/// endpoint would itself have minted), so the recovery path's scope/filter
+/// contract check accepts it.
+fn observer_token_json(id: &str, name: &str, token: Option<&str>) -> serde_json::Value {
+    observer_token_json_scoped(id, name, token, DEFAULT_OBSERVER_SCOPES_JSON)
 }
 
 fn observer_token_name_conflict_body() -> serde_json::Value {
@@ -3639,6 +3665,69 @@ async fn observer_token_conflict_without_matching_name_propagates_original_error
 }
 
 #[tokio::test]
+async fn observer_token_conflict_with_scope_mismatch_propagates_original_error() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    // A token under the attempted name exists, but it was minted with a
+    // different (here: narrower) scope set than `/api/observer-token` grants.
+    // Rotating it would hand the caller credentials whose access doesn't match
+    // the endpoint contract, so the recovery path must reject it and propagate
+    // the original conflict instead.
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": [observer_token_json_scoped(
+                "ot_existing",
+                "pear-dashboard-observer",
+                None,
+                &["stream:read"],
+            )],
+        }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let result =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await;
+
+    match result {
+        Err(ObserverTokenMintError::Failed(message)) => {
+            assert!(
+                message.contains("observer_token_name_conflict"),
+                "expected the original conflict error to propagate on scope mismatch, got: {message}"
+            );
+        }
+        _ => panic!(
+            "expected the original conflict error to propagate when the existing token's \
+             scopes don't match the endpoint contract, got a different outcome"
+        ),
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    // The existing token's scopes don't match, so it must never be rotated.
+    rotate_mock.assert_hits(0);
+}
+
+#[tokio::test]
 async fn observer_token_fallback_respects_the_supplied_timeout() {
     use httpmock::{
         Method::{GET, POST},
@@ -3651,8 +3740,12 @@ async fn observer_token_fallback_respects_the_supplied_timeout() {
         then.status(409)
             .json_body(observer_token_name_conflict_body());
     });
-    // Slower than the timeout passed below, so the list+rotate fallback
-    // itself must be bounded rather than left to hang indefinitely.
+    // The create above returns its 409 immediately, so the shared budget is
+    // effectively spent inside this list call. The 300ms delay is well above
+    // the 200ms budget, so the fallback must be cancelled by the timeout
+    // rather than left to hang. (200ms — not a few ms — so the near-instant
+    // create can't itself trip the deadline on a slow CI runner and turn this
+    // into a flaky pre-fallback timeout.)
     let list_mock = server.mock(|when, then| {
         when.method(GET).path("/v1/observer-tokens");
         then.status(200)
@@ -3675,7 +3768,7 @@ async fn observer_token_fallback_respects_the_supplied_timeout() {
     let result = mint_or_recover_observer_token(
         &client,
         "pear-dashboard-observer",
-        Duration::from_millis(50),
+        Duration::from_millis(200),
     )
     .await;
 
