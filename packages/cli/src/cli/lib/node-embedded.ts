@@ -227,9 +227,12 @@ export async function startEmbeddedNodeWithDependencies(
   runtime: EmbeddedNodeRuntimeOptions = {},
   dependencyOverrides: Partial<CoreDependencies> = {}
 ): Promise<EmbeddedNodeStartResult> {
+  // Read background exactly once: an accessor/proxy must not change the value
+  // between the ownership check and the options forwarded to runUpCommand.
+  const { background: requestedBackground, ...foregroundOptions } = options as UpOptions;
   // Match runUpCommand's truthiness check exactly so untyped JavaScript
   // callers cannot bypass embedded ownership with values such as "true" or 1.
-  if ((options as { background?: unknown }).background) {
+  if (requestedBackground) {
     return unsupportedBackgroundResult(runtime);
   }
 
@@ -246,7 +249,15 @@ export async function startEmbeddedNodeWithDependencies(
     dependencyOverrides
   );
 
-  const commandCompletion = runUpCommand({ ...options, discoverConfig: true }, deps).then(
+  const commandCompletion = runUpCommand(
+    {
+      ...foregroundOptions,
+      discoverConfig: true,
+      // Keep foreground ownership authoritative for the entire lifecycle.
+      background: false,
+    },
+    deps
+  ).then(
     () => recorder.resultFrom(),
     (error) => recorder.resultFrom(error)
   );

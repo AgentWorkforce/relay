@@ -160,6 +160,35 @@ describe('embedded node lifecycle', () => {
     }
   );
 
+  it('keeps foreground ownership authoritative when a background getter changes value', async () => {
+    const projectRoot = makeTempRoot();
+    const { overrides } = successfulLifecycleOverrides(projectRoot);
+    const spawnProcess = vi.fn(() => {
+      throw new Error('detached spawn must not be reached');
+    });
+    let backgroundReads = 0;
+    const options = {} as Record<string, unknown>;
+    Object.defineProperty(options, 'background', {
+      enumerable: true,
+      get: () => {
+        backgroundReads += 1;
+        return backgroundReads > 1;
+      },
+    });
+
+    const result = await startEmbeddedNodeWithDependencies(
+      options as never,
+      {},
+      { ...overrides, spawnProcess }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(backgroundReads).toBe(1);
+    expect(spawnProcess).not.toHaveBeenCalled();
+    await expect(result.handle.stop()).resolves.toMatchObject({ ok: true, code: 0 });
+  });
+
   it('converts status-command exits into structured failures', async () => {
     const processPidBefore = process.pid;
 
