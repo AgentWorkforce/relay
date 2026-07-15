@@ -9,6 +9,7 @@ import type {
   HeadlessProvider,
   MessageInjectionMode,
   RestartPolicy,
+  SpawnMode,
 } from './protocol.js';
 import type { ResolvedHarnessConfig } from './harness.js';
 
@@ -21,7 +22,6 @@ export type JsonSchema = Record<string, unknown> | boolean;
  * the spawn request reaches the broker, matching the actions surface.
  */
 export type AgentResultSchema = JsonSchema | ZodLikeSchema<unknown> | SafeParseSchema;
-export type SpawnMode = 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
 
 export interface SpawnPtyInput {
   name: string;
