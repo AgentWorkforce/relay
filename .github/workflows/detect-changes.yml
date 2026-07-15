@@ -93,7 +93,9 @@ jobs:
               file.startsWith('packages/sdk-swift/') || file === 'Package.swift';
             const isRust = (file) =>
               file.startsWith('crates/') ||
-              ['Cargo.toml', 'Cargo.lock', 'Cross.toml'].includes(file);
+              file.startsWith('.cargo/') ||
+              file.endsWith('.rs') ||
+              ['Cargo.toml', 'Cargo.lock', 'Cross.toml', 'rust-toolchain', 'rust-toolchain.toml'].includes(file);
             // Files no build, test, or lint job consumes.
             const isInert = (file) =>
               file.startsWith('web/') ||
