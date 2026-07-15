@@ -4,7 +4,12 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { resolveAgentToken, resolveBaseUrl, resolveWorkspaceKey } from './sdk-client.js';
+import {
+  resolveAgentToken,
+  resolveBaseUrl,
+  resolveWorkspaceKey,
+  resolveWorkspaceKeyWithSource,
+} from './sdk-client.js';
 import { setWorkspaceKey } from './workspace-store.js';
 import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
@@ -68,6 +73,31 @@ describe('sdk client option resolution', () => {
   it('falls back to the global active workspace when no CWD broker key is recorded', () => {
     setWorkspaceKey('ops', 'rk_global');
     expect(resolveWorkspaceKey({ env: { AGENT_RELAY_HOME: dir } })).toBe('rk_global');
+  });
+
+  it('reports the source each workspace key was resolved from', () => {
+    setWorkspaceKey('ops', 'rk_global');
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_project_broker');
+
+    expect(
+      resolveWorkspaceKeyWithSource({ workspaceKey: 'rk_flag', env: { AGENT_RELAY_HOME: dir } })
+    ).toEqual({ key: 'rk_flag', source: 'flag' });
+    expect(
+      resolveWorkspaceKeyWithSource({ env: { RELAY_WORKSPACE_KEY: 'rk_env', AGENT_RELAY_HOME: dir } })
+    ).toEqual({ key: 'rk_env', source: 'env' });
+    // No flag/env → the CWD broker key, reported as 'project'.
+    expect(resolveWorkspaceKeyWithSource({ env: { AGENT_RELAY_HOME: dir } })).toEqual({
+      key: 'rk_project_broker',
+      source: 'project',
+    });
+  });
+
+  it('reports the global store as the source when no CWD broker key exists', () => {
+    setWorkspaceKey('ops', 'rk_global');
+    expect(resolveWorkspaceKeyWithSource({ env: { AGENT_RELAY_HOME: dir } })).toEqual({
+      key: 'rk_global',
+      source: 'store',
+    });
   });
 
   it('trims optional base URL and agent token values', () => {

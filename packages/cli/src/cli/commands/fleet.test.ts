@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -26,6 +30,7 @@ vi.mock('@agent-relay/harness-driver', () => ({
 }));
 
 import { registerFleetCommands } from './fleet.js';
+import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 describe('fleet command support', () => {
   it.each([
@@ -139,6 +144,75 @@ describe('fleet command support', () => {
       token: undefined,
       baseUrl: undefined,
     });
+  });
+
+  it('fleet nodes warns when the workspace key is inferred from the project broker', async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-proj-'));
+    const saved = {
+      project: process.env.AGENT_RELAY_PROJECT,
+      ws: process.env.RELAY_WORKSPACE_KEY,
+      api: process.env.RELAY_API_KEY,
+    };
+    process.env.AGENT_RELAY_PROJECT = projectRoot;
+    delete process.env.RELAY_WORKSPACE_KEY;
+    delete process.env.RELAY_API_KEY;
+    writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_project_broker');
+
+    const warnings: string[] = [];
+    const nodes = { list: vi.fn(async () => []) };
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    try {
+      await program.parseAsync(['fleet', 'nodes'], { from: 'user' });
+    } finally {
+      if (saved.project === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = saved.project;
+      if (saved.ws !== undefined) process.env.RELAY_WORKSPACE_KEY = saved.ws;
+      if (saved.api !== undefined) process.env.RELAY_API_KEY = saved.api;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+
+    // The warning is advisory only — the roster is still fetched and printed.
+    expect(warnings.join('\n')).toMatch(/recorded in this directory/);
+    expect(nodes.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('fleet nodes does not warn when the workspace key is passed explicitly', async () => {
+    const warnings: string[] = [];
+    const nodes = { list: vi.fn(async () => []) };
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', '--wk', 'rk_live_alias'], { from: 'user' });
+
+    expect(warnings).toEqual([]);
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {

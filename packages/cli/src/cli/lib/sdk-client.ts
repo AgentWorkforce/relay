@@ -21,24 +21,36 @@ function trimOrUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
+/** Where a resolved workspace key came from, in precedence order. */
+export type WorkspaceKeySource = 'flag' | 'env' | 'project' | 'store';
+
+/**
+ * Resolve the workspace key and report which source it came from. Precedence:
+ * explicit flag → `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` env → the key the local
+ * broker in this CWD was started with (`relay up`) → the machine-global active
+ * workspace. Callers use the source to warn when the key was inferred from the
+ * project broker rather than named explicitly.
+ */
+export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
+  key: string;
+  source: WorkspaceKeySource;
+} {
   const e = env(options);
-  const key =
-    trimOrUndefined(options.workspaceKey) ??
-    trimOrUndefined(e.RELAY_WORKSPACE_KEY) ??
-    trimOrUndefined(e.RELAY_API_KEY) ??
-    // The workspace the local broker in this CWD was started with (`relay up
-    // --workspace-key/--wk`), so commands run alongside a project broker resolve
-    // its workspace rather than the machine-global active workspace. Ranked
-    // above the global store but below an explicit flag/env override.
-    trimOrUndefined(projectWorkspaceKey()) ??
-    trimOrUndefined(activeWorkspaceKey(e));
-  if (!key) {
-    throw new Error(
-      'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
-    );
-  }
-  return key;
+  const flag = trimOrUndefined(options.workspaceKey);
+  if (flag) return { key: flag, source: 'flag' };
+  const envKey = trimOrUndefined(e.RELAY_WORKSPACE_KEY) ?? trimOrUndefined(e.RELAY_API_KEY);
+  if (envKey) return { key: envKey, source: 'env' };
+  const project = trimOrUndefined(projectWorkspaceKey());
+  if (project) return { key: project, source: 'project' };
+  const store = trimOrUndefined(activeWorkspaceKey(e));
+  if (store) return { key: store, source: 'store' };
+  throw new Error(
+    'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
+  );
+}
+
+export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
+  return resolveWorkspaceKeyWithSource(options).key;
 }
 
 /**
