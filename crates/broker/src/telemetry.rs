@@ -781,8 +781,13 @@ impl PanicReporter {
 /// the file name so no machine-specific directory structure is reported.
 fn sanitize_panic_file(file: &str, home: Option<&str>) -> String {
     if let Some(rest) = home
+        .map(|h| h.trim_end_matches(['/', '\\']))
         .filter(|h| !h.is_empty())
         .and_then(|h| file.strip_prefix(h))
+        // Require a path-component boundary after the home prefix so a sibling
+        // dir like `/home/alice2` isn't mistaken for `/home/alice` (which would
+        // leak the `2` — i.e. a different username).
+        .filter(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
     {
         return format!("~{rest}");
     }
@@ -984,6 +989,21 @@ mod tests {
                 Some("/home/alice")
             ),
             "~/.cargo/registry/src/index/tokio-1.0/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_requires_home_path_boundary() {
+        // A sibling dir sharing the home string prefix must NOT be treated as
+        // home (`/home/alice2` != `/home/alice`) — it would leak `alice2`.
+        assert_eq!(
+            sanitize_panic_file("/home/alice2/secret/lib.rs", Some("/home/alice")),
+            "lib.rs"
+        );
+        // Exact home dir maps to `~`, trailing separators on home are ignored.
+        assert_eq!(
+            sanitize_panic_file("/home/alice/x/lib.rs", Some("/home/alice/")),
+            "~/x/lib.rs"
         );
     }
 
