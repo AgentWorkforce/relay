@@ -167,6 +167,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
     pub(super) pending_deliveries: PendingDeliveryStore,
+    pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     /// Per-worker PTY resize ownership (single-resizer policy, see #1247).
@@ -270,26 +271,62 @@ impl BrokerRuntime {
                 }
             }
 
-            self.flush_pending_deliveries();
+            self.flush_persisted_stores();
         }
 
         self.shutdown_runtime().await
     }
 
-    /// Persist pending deliveries whenever the map was mutated by the event
-    /// just handled. Keeps the on-disk snapshot in lockstep with the
-    /// in-memory map so a crash between maintenance ticks cannot lose
-    /// queued deliveries.
-    fn flush_pending_deliveries(&mut self) {
-        if !self.pending_deliveries.take_dirty() || !self.paths.persist {
+    /// Persist pending deliveries, dead letters, and the dedup cache whenever
+    /// they were mutated by the event just handled. Keeps the on-disk
+    /// snapshots in lockstep with the in-memory state so a crash between
+    /// maintenance ticks cannot lose queued deliveries, dead letters, or
+    /// already-seen event ids.
+    fn flush_persisted_stores(&mut self) {
+        let pending_dirty = self.pending_deliveries.take_dirty();
+        let dead_letters_dirty = self.dead_letters.take_dirty();
+        let dedup_dirty = self.dedup.take_dirty();
+        if !self.paths.persist {
             return;
         }
-        if let Err(error) = save_pending_deliveries(&self.paths.pending, &self.pending_deliveries) {
-            tracing::warn!(
-                path = %self.paths.pending.display(),
-                error = %error,
-                "failed to persist pending deliveries"
-            );
+        // Persist the dead-letter store *before* pending. When a delivery is
+        // moved pending -> DLQ both stores are dirty in the same tick; writing
+        // the store that gained the entry first means a crash between the two
+        // writes leaves the delivery in both files (recoverable) rather than in
+        // neither (lost). Startup reconciliation drops the stale pending copy.
+        if dead_letters_dirty {
+            if let Err(error) = save_dead_letters(&self.paths.dead_letters, &self.dead_letters) {
+                tracing::warn!(
+                    path = %self.paths.dead_letters.display(),
+                    error = %error,
+                    "failed to persist dead letters — will retry on next flush"
+                );
+                // Preserve durability across a transient filesystem failure:
+                // keep the store dirty so the next flush re-attempts the write.
+                self.dead_letters.mark_dirty();
+            }
+        }
+        if pending_dirty {
+            if let Err(error) =
+                save_pending_deliveries(&self.paths.pending, &self.pending_deliveries)
+            {
+                tracing::warn!(
+                    path = %self.paths.pending.display(),
+                    error = %error,
+                    "failed to persist pending deliveries — will retry on next flush"
+                );
+                self.pending_deliveries.mark_dirty();
+            }
+        }
+        if dedup_dirty {
+            if let Err(error) = crate::dedup::save_dedup_cache(&self.paths.dedup, &self.dedup) {
+                tracing::warn!(
+                    path = %self.paths.dedup.display(),
+                    error = %error,
+                    "failed to persist dedup cache — will retry on next flush"
+                );
+                self.dedup.mark_dirty();
+            }
         }
     }
 
@@ -353,6 +390,20 @@ impl BrokerRuntime {
             self.paths.persist,
             &self.pending_deliveries,
         );
+        persist_dead_letters_on_shutdown(
+            &self.paths.dead_letters,
+            self.paths.persist,
+            &self.dead_letters,
+        );
+        if self.paths.persist {
+            if let Err(error) = crate::dedup::save_dedup_cache(&self.paths.dedup, &self.dedup) {
+                tracing::warn!(
+                    path = %self.paths.dedup.display(),
+                    error = %error,
+                    "failed to persist dedup cache during shutdown"
+                );
+            }
+        }
         self.workers.shutdown_all().await?;
 
         // Clean up state and connection files on graceful shutdown

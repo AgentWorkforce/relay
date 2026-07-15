@@ -38,16 +38,17 @@ use super::{
     emit_delivery_attempt_outcome, emit_dropped_delivery_failures, ensure_ephemeral_paths,
     extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
     http_api_relaycast_send_timeout, is_relaycast_self_control_target,
-    is_unknown_worker_error_message, load_pending_deliveries, mark_delivery_read_ack,
-    mark_delivery_read_ack_with_timeout, normalize_channel, normalize_initial_task,
-    normalize_sender, parse_sort_key_from_raw_timestamp, persist_pending_on_shutdown,
-    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token, resolve_workspace,
-    retry_pending_delivery, seed_supplied_agent_token, send_broker_event,
-    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
-    synthetic_delivery_read_ack_reason, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
-    InboundQueueOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
-    RelayWorkspace, TypedThreadMessage, MAX_DELIVERY_RETRIES,
+    is_unknown_worker_error_message, load_dead_letters, load_pending_deliveries,
+    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, normalize_channel,
+    normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
+    persist_dead_letters_on_shutdown, persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
+    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
+    relaycast_ws_spawn_token, requeue_dead_letter, resolve_workspace, retry_pending_delivery,
+    save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
+    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason, AgentRuntime,
+    DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
+    PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider, RelayWorkspace,
+    TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -516,6 +517,319 @@ fn pending_delivery_store_tracks_mutations() {
     assert!(store.take_dirty(), "mutation via DerefMut marks dirty");
 }
 
+fn make_dead_letter(delivery_id: &str, worker: &str, reason: &str) -> DeadLetterEntry {
+    DeadLetterEntry::from_pending(&make_pending_delivery(delivery_id, worker), reason)
+}
+
+#[test]
+fn dead_letter_store_caps_size_and_evicts_oldest() {
+    let mut store = DeadLetterStore::default();
+    for index in 0..MAX_DEAD_LETTERS {
+        assert!(
+            store
+                .push(make_dead_letter(&format!("del_{index}"), "worker-a", "x"))
+                .is_none(),
+            "no eviction below the cap"
+        );
+    }
+    assert_eq!(store.len(), MAX_DEAD_LETTERS);
+
+    let evicted = store
+        .push(make_dead_letter("del_overflow", "worker-a", "x"))
+        .expect("push past the cap evicts the oldest entry");
+    assert_eq!(evicted.delivery.delivery_id, DeliveryId::new("del_0"));
+    assert_eq!(store.len(), MAX_DEAD_LETTERS, "store stays at the cap");
+    assert!(store.get("del_0").is_none(), "oldest entry is gone");
+    assert!(store.get("del_overflow").is_some(), "newest entry is kept");
+}
+
+#[test]
+fn dead_letter_store_trims_oversized_load_and_marks_dirty() {
+    // A snapshot larger than the cap (older version, manual edit, or a bug)
+    // must be bounded on load, keeping the newest MAX_DEAD_LETTERS entries.
+    let oversized: Vec<DeadLetterEntry> = (0..MAX_DEAD_LETTERS + 5)
+        .map(|index| make_dead_letter(&format!("del_{index}"), "worker-a", "x"))
+        .collect();
+    let mut store = DeadLetterStore::new(oversized);
+
+    assert_eq!(
+        store.len(),
+        MAX_DEAD_LETTERS,
+        "oversized load is trimmed to cap"
+    );
+    assert!(
+        store.get("del_0").is_none(),
+        "oldest over-cap entries are dropped"
+    );
+    assert!(
+        store
+            .get(&format!("del_{}", MAX_DEAD_LETTERS + 4))
+            .is_some(),
+        "newest entries are kept"
+    );
+    assert!(
+        store.take_dirty(),
+        "trimming an oversized load marks the store dirty so the next flush rewrites the capped file"
+    );
+
+    // A within-cap load must not spuriously mark the store dirty.
+    let mut small = DeadLetterStore::new(vec![make_dead_letter("del_a", "worker-a", "x")]);
+    assert!(!small.take_dirty(), "a within-cap load stays clean");
+}
+
+#[test]
+fn dead_letter_store_tracks_mutations() {
+    let mut store = DeadLetterStore::default();
+    assert!(!store.take_dirty(), "fresh store starts clean");
+
+    store.push(make_dead_letter("del_1", "worker-a", "recipient gone"));
+    assert!(store.take_dirty(), "push marks the store dirty");
+    assert!(!store.take_dirty(), "take_dirty clears the flag");
+
+    assert!(store.get("del_1").is_some());
+    assert!(!store.take_dirty(), "reads stay clean");
+
+    assert!(store.remove("del_missing").is_none());
+    assert!(
+        !store.take_dirty(),
+        "removing a missing id is not a mutation"
+    );
+
+    assert!(store.remove("del_1").is_some());
+    assert!(store.take_dirty(), "remove marks the store dirty");
+}
+
+#[test]
+fn redeliver_requeues_dead_letter_and_resets_retries() {
+    let mut dead_letters = DeadLetterStore::default();
+    let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+    let mut source = make_pending_delivery("del_retry", "worker-a");
+    source.attempts = MAX_DELIVERY_RETRIES;
+    source.last_error = Some("max delivery retries exceeded".to_string());
+    dead_letters.push(DeadLetterEntry::from_pending(
+        &source,
+        "max delivery retries exceeded",
+    ));
+
+    let requeued = requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_retry")
+        .expect("dead letter should requeue by id");
+
+    assert!(dead_letters.is_empty(), "requeued entry leaves the DLQ");
+    assert_eq!(requeued.attempts, 0, "retry count resets on redeliver");
+    assert_eq!(requeued.last_error, None, "stale error clears on redeliver");
+    assert_ne!(
+        requeued.delivery.delivery_id.as_str(),
+        "del_retry",
+        "redeliver mints a fresh delivery id so late acks from the exhausted attempt cannot match"
+    );
+    assert_eq!(
+        requeued.delivery.event_id, source.delivery.event_id,
+        "event id (message identity) is preserved across redeliver"
+    );
+    let pending = pending_deliveries
+        .get(requeued.delivery.delivery_id.as_str())
+        .expect("requeued delivery joins the pending map under its new id");
+    assert_eq!(pending.delivery.body, source.delivery.body);
+    assert_eq!(pending.worker_name, source.worker_name);
+    assert_eq!(
+        pending.queued_at_ms, source.queued_at_ms,
+        "original queue time is preserved for age reporting"
+    );
+
+    assert!(
+        requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_retry").is_none(),
+        "redelivering an unknown id is a no-op"
+    );
+}
+
+#[test]
+fn redeliver_survives_a_stale_ack_from_the_previous_attempt() {
+    // A delivery exhausts its retries and is dead-lettered, then redelivered.
+    let mut dead_letters = DeadLetterStore::default();
+    let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+    let mut source = make_pending_delivery("del_stale", "worker-a");
+    source.attempts = MAX_DELIVERY_RETRIES;
+    let stale_event_id = source.delivery.event_id.as_str().to_string();
+    dead_letters.push(DeadLetterEntry::from_pending(
+        &source,
+        "max delivery retries exceeded",
+    ));
+
+    let requeued = requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_stale")
+        .expect("dead letter should requeue by id");
+    let new_id = requeued.delivery.delivery_id.as_str().to_string();
+
+    // A late ACK from the exhausted attempt arrives carrying the ORIGINAL
+    // delivery id (and its event id). It must not clear the redelivered entry.
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        "del_stale",
+        Some(&stale_event_id),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_none(),
+        "a stale ack for the old id matches nothing"
+    );
+    assert!(
+        pending_deliveries.contains_key(new_id.as_str()),
+        "the redelivered entry survives the stale ack from the previous attempt"
+    );
+
+    // The genuine ack for the redelivered attempt (new id) clears it normally.
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        &new_id,
+        Some(&stale_event_id),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_some(),
+        "the current attempt's ack clears the entry"
+    );
+    assert!(pending_deliveries.is_empty());
+}
+
+// `is_worker_live` only probes child liveness on Unix (`kill(pid, 0)`); the
+// `cfg(not(unix))` implementation always returns `true`, so the stopped-child
+// assertion below is Unix-specific.
+#[cfg(unix)]
+#[tokio::test]
+async fn is_worker_live_gates_redeliver_skip_on_child_liveness() {
+    // The redeliver handler skips entries whose recipient is not running by
+    // probing `is_worker_live` (not mere registration), so a dead-but-present
+    // worker is reported "recipient not running" instead of being requeued and
+    // immediately bounced back to the DLQ.
+    let mut workers = make_worker_registry_with_worker("worker-a").await;
+    assert!(
+        workers.is_worker_live("worker-a"),
+        "a running child is live"
+    );
+    assert!(
+        !workers.is_worker_live("ghost"),
+        "an unregistered recipient is not live"
+    );
+
+    // Kill the child but leave it in the registry (the reap sweep hasn't run).
+    if let Some(handle) = workers.workers.get_mut("worker-a") {
+        let _ = handle.child.start_kill();
+        let _ = handle.child.wait().await;
+    }
+    assert!(
+        !workers.is_worker_live("worker-a"),
+        "a stopped child is not live, so redeliver leaves the entry in the DLQ"
+    );
+    assert!(
+        workers.has_worker("worker-a"),
+        "has_worker still reports the stopped child as present — the gap is_worker_live closes"
+    );
+}
+
+#[test]
+fn dead_letters_round_trip_persistence() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("dead-letters.json");
+    let mut store = DeadLetterStore::default();
+    store.push(make_dead_letter("del_a", "worker-a", "recipient gone"));
+    store.push(make_dead_letter("del_b", "worker-b", "worker_exited"));
+
+    save_dead_letters(&path, &store).expect("dead letters should save");
+
+    let reloaded = DeadLetterStore::new(load_dead_letters(&path));
+    assert_eq!(reloaded.len(), 2);
+    let entry = reloaded.get("del_a").expect("entry reloads by id");
+    assert_eq!(entry.worker_name, WorkerName::from("worker-a"));
+    assert_eq!(entry.reason, "recipient gone");
+    assert_eq!(entry.delivery.event_id, EventId::new("evt_del_a"));
+    assert!(entry.failed_at_ms > 0, "failure timestamp survives reload");
+}
+
+#[test]
+fn shutdown_persists_dead_letters_and_removes_empty_file() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("dead-letters.json");
+
+    let mut store = DeadLetterStore::default();
+    store.push(make_dead_letter("del_keep", "worker-a", "worker_exited"));
+    persist_dead_letters_on_shutdown(&path, true, &store);
+    assert_eq!(
+        DeadLetterStore::new(load_dead_letters(&path)).len(),
+        1,
+        "dead letters survive shutdown"
+    );
+
+    persist_dead_letters_on_shutdown(&path, true, &DeadLetterStore::default());
+    assert!(!path.exists(), "empty store removes the file");
+
+    let mut store = DeadLetterStore::default();
+    store.push(make_dead_letter("del_lost", "worker-a", "worker_exited"));
+    persist_dead_letters_on_shutdown(&path, false, &store);
+    assert!(!path.exists(), "persistence disabled writes nothing");
+}
+
+#[tokio::test]
+async fn retry_exhaustion_dead_letters_instead_of_discarding() {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut exhausted = make_pending_delivery("del_exhausted", "ghost");
+    exhausted.attempts = MAX_DELIVERY_RETRIES;
+    exhausted.last_error = Some("failed writing frame".to_string());
+    let mut pending_deliveries =
+        HashMap::from([(DeliveryId::new("del_exhausted"), exhausted.clone())]);
+
+    let outcome = retry_pending_delivery(
+        &DeliveryId::new("del_exhausted"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("exhausted retries should classify as terminal failure");
+
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &DeliveryId::new("del_exhausted"),
+        true,
+        outcome,
+    )
+    .await
+    .expect("terminal outcome should emit");
+
+    assert!(
+        pending_deliveries.is_empty(),
+        "entry leaves the pending map"
+    );
+    let entry = dead_letters
+        .get("del_exhausted")
+        .expect("exhausted delivery is retained in the dead-letter store");
+    assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
+    assert_eq!(entry.reason, "failed writing frame");
+    assert_eq!(entry.delivery.body, exhausted.delivery.body);
+
+    let failed_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("message_delivery_failed should emit")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(failed_frame.payload["kind"], "message_delivery_failed");
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("dead_letter_added should emit")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_exhausted");
+    assert_eq!(dead_frame.payload["reason"], "failed writing frame");
+}
+
 #[tokio::test]
 async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
     let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
@@ -557,18 +871,21 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
     .await
     .expect("retry should classify missing recipient");
 
-    assert_eq!(
-        outcome,
+    match outcome {
         DeliveryAttemptOutcome::Failed {
-            worker_name: WorkerName::from("ghost"),
-            delivery_id: DeliveryId::new("del_gone"),
-            event_id: EventId::new("evt_gone"),
-            from: "Lead".to_string(),
-            to: MessageTarget::new("Worker"),
-            attempts: 3,
-            last_error: "recipient gone".to_string(),
+            pending,
+            last_error,
+        } => {
+            assert_eq!(pending.worker_name, WorkerName::from("ghost"));
+            assert_eq!(pending.delivery.delivery_id, DeliveryId::new("del_gone"));
+            assert_eq!(pending.delivery.event_id, EventId::new("evt_gone"));
+            assert_eq!(pending.delivery.from, "Lead");
+            assert_eq!(pending.delivery.target, MessageTarget::new("Worker"));
+            assert_eq!(pending.attempts, 3);
+            assert_eq!(last_error, "recipient gone");
         }
-    );
+        other => panic!("missing recipient should fail terminally, got {other:?}"),
+    }
     assert!(
         pending_deliveries.is_empty(),
         "terminal failed deliveries are removed so they cannot retry forever"
@@ -625,8 +942,11 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         )
         .await
         {
-            Ok(outcome @ DeliveryAttemptOutcome::Failed { attempts, .. }) => {
-                assert_eq!(attempts, MAX_DELIVERY_RETRIES);
+            Ok(outcome @ DeliveryAttemptOutcome::Failed { .. }) => {
+                let DeliveryAttemptOutcome::Failed { ref pending, .. } = outcome else {
+                    unreachable!();
+                };
+                assert_eq!(pending.attempts, MAX_DELIVERY_RETRIES);
                 // Some platforms can accept a final pipe write after the child exits,
                 // so terminal failure may arrive on the immediate post-cap check.
                 assert!(
@@ -672,9 +992,16 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     );
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
-    emit_delivery_attempt_outcome(&sdk_out_tx, &DeliveryId::new("del_blip"), true, outcome)
-        .await
-        .expect("failed outcome should emit to sdk_out_tx");
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &DeliveryId::new("del_blip"),
+        true,
+        outcome,
+    )
+    .await
+    .expect("failed outcome should emit to sdk_out_tx");
 
     let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
         .await
@@ -700,6 +1027,21 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         frame.payload.get("last_error").is_none(),
         "wire event should use the typed lastError field only"
     );
+
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("terminal failure should also emit dead_letter_added")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_blip");
+    assert_eq!(
+        dead_letters.len(),
+        1,
+        "terminal failure is retained in the dead-letter store, not discarded"
+    );
+    let entry = dead_letters.get("del_blip").expect("dead letter by id");
+    assert_eq!(entry.delivery.body, "transient auth blip");
+    assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
 }
 
 #[tokio::test]
@@ -1581,10 +1923,16 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
         last_error: Some("previous blip".to_string()),
     };
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
 
-    emit_dropped_delivery_failures(&sdk_out_tx, &[pending], "worker_permanently_dead")
-        .await
-        .expect("dropped delivery failure should emit");
+    emit_dropped_delivery_failures(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &[pending],
+        "worker_permanently_dead",
+    )
+    .await
+    .expect("dropped delivery failure should emit");
 
     let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
         .await
@@ -1599,6 +1947,27 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
     assert_eq!(frame.payload["to"], "A");
     assert_eq!(frame.payload["attempts"].as_u64(), Some(2));
     assert_eq!(frame.payload["lastError"], "worker_permanently_dead");
+
+    // The terminal failure is followed by the dead_letter_added event so
+    // consumers can track the capture, not just the failure.
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("dead_letter_added should be emitted after the failure")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.msg_type, "event");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_1");
+    assert_eq!(dead_frame.payload["reason"], "worker_permanently_dead");
+
+    assert_eq!(
+        dead_letters.len(),
+        1,
+        "dropped deliveries are retained in the dead-letter store"
+    );
+    assert_eq!(
+        dead_letters.get("del_1").expect("dead letter by id").reason,
+        "worker_permanently_dead"
+    );
 }
 
 #[test]

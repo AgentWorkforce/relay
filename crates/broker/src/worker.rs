@@ -211,6 +211,39 @@ impl WorkerRegistry {
         self.workers.contains_key(name)
     }
 
+    /// True when a worker is registered AND its child process is still alive.
+    /// Registration alone (`has_worker`) can lag a dead child until the periodic
+    /// `reap_exited` sweep removes it, so callers that must not act on a
+    /// dead-but-present worker (e.g. dead-letter redelivery) probe liveness with
+    /// a non-blocking `kill(pid, 0)`, mirroring the reap sweep.
+    pub(crate) fn is_worker_live(&self, name: &str) -> bool {
+        let Some(handle) = self.workers.get(name) else {
+            return false;
+        };
+        #[cfg(unix)]
+        {
+            match handle.child.id() {
+                // Safety: kill(pid, 0) is a POSIX-safe probe that checks process
+                // existence without sending a signal. ESRCH => the process is gone.
+                Some(pid) => {
+                    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
+                    if ret == -1 {
+                        std::io::Error::last_os_error().raw_os_error().unwrap_or(0) != libc::ESRCH
+                    } else {
+                        true
+                    }
+                }
+                // `id()` returns None once the child has been waited/reaped.
+                None => false,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = handle;
+            true
+        }
+    }
+
     /// True when a worker named `name` exists and either has no recorded
     /// workspace or belongs to `workspace_id`. Gates sender impersonation on
     /// Relaycast publish: a worker attached to workspace A must not be

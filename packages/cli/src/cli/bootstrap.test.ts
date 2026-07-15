@@ -9,6 +9,8 @@ const expectedLeafCommands = [
   'node down',
   'node status',
   'node metrics',
+  'node deadletters',
+  'node redeliver',
   'node tail',
   'node agent list',
   'node agent spawn',
