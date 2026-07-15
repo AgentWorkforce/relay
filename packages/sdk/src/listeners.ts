@@ -51,6 +51,12 @@ export type RelayErrorHook = (error: unknown, context: RelayErrorContext) => voi
 /** Default reporting for handler errors when no `onError` hook is registered. */
 export function logRelayHandlerError(error: unknown, context: RelayErrorContext): void {
   const where = context.action ? `action "${context.action}"` : `"${context.selector ?? 'unknown'}"`;
+  // A named `operation` (e.g. `connect`) is a wiring/transport failure, not a
+  // user handler throwing — word it so the two are distinguishable at a glance.
+  if (context.operation) {
+    console.warn(`[agent-relay] ${context.source} ${context.operation} for ${where} failed:`, error);
+    return;
+  }
   console.warn(`[agent-relay] ${context.source} handler for ${where} threw:`, error);
 }
 
@@ -657,6 +663,7 @@ export function createListenerHub(
     } catch (error) {
       makeReporter(context, {
         source: 'listener',
+        operation: 'connect',
         selector: typeof selector === 'string' ? selector : 'predicate',
       })(error);
     }

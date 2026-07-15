@@ -19,6 +19,17 @@ export interface ObserverLiveStream {
 }
 
 /**
+ * Strip trailing `/` characters in linear time. A regex like `/\/+$/` is a
+ * polynomial-ReDoS hazard on attacker-influenced strings (CodeQL flags it), so
+ * we walk the tail explicitly instead.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* '/' */) end -= 1;
+  return value.slice(0, end);
+}
+
+/**
  * Build the observer stream URL. The scheme is always `wss:` except for
  * loopback hosts (local self-hosted engines), and the URL never carries the
  * token — authentication travels in the `Authorization` header where the
@@ -29,7 +40,7 @@ function observerWsUrl(baseUrl: string, opts: { includeToken?: string } = {}): s
   const url = new URL(baseUrl);
   const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
   url.protocol = url.protocol === 'http:' && loopback ? 'ws:' : 'wss:';
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}/v1/ws`;
+  url.pathname = `${stripTrailingSlashes(url.pathname)}/v1/ws`;
   if (opts.includeToken !== undefined) {
     url.searchParams.set('token', opts.includeToken);
   }
@@ -37,24 +48,39 @@ function observerWsUrl(baseUrl: string, opts: { includeToken?: string } = {}): s
 }
 
 /**
+ * Whether the current runtime is Node.js. Node's `undici` WebSocket accepts an
+ * `Authorization` header via its constructor-options extension, so Node never
+ * needs to fall back to the token-in-URL convention — keeping the token out of
+ * request lines and access logs.
+ */
+function isNodeRuntime(): boolean {
+  return typeof process !== 'undefined' && !!(process as { versions?: { node?: string } }).versions?.node;
+}
+
+/**
  * Raw observer WebSocket with capped-backoff auto-reconnect. Uses the global
- * `WebSocket` (Node >= 21 and all browsers). Frames are parsed as JSON and
- * handed to `on.any` handlers verbatim, preserving the top-level `seq`.
+ * `WebSocket` (Node >= 22, all browsers), or an injected implementation for
+ * runtimes without one (e.g. Node < 22 with the `ws` package). Frames are
+ * parsed as JSON and handed to `on.any` handlers verbatim, preserving the
+ * top-level `seq`.
  *
  * Authentication: the token is sent as an `Authorization: Bearer` header via
  * the Node (undici) constructor options extension, keeping it out of the URL.
- * Runtimes whose `WebSocket` rejects or ignores constructor options — browsers,
- * per the WHATWG signature — are detected (constructor throw, or a close
- * before the first open on the header attempt) and downgraded once to the
- * server's `?token=` query convention.
+ * Only browser-like runtimes, whose `WebSocket` rejects or silently ignores
+ * constructor options per the WHATWG signature, fall back to the server's
+ * `?token=` query convention — and only after the constructor throws or two
+ * consecutive header attempts close before ever opening, so a single transient
+ * network blip on Node can never trigger a persistent token-in-URL downgrade.
  */
 function createRawObserverStream(
   baseUrl: string,
   token: string,
-  report: (error: unknown) => void
+  report: (error: unknown) => void,
+  webSocketImpl?: typeof WebSocket
 ): ObserverLiveStream {
   const anyHandlers = new Set<(event: unknown) => void>();
   const openHandlers = new Set<() => void>();
+  const nodeRuntime = isNodeRuntime();
   let socket: WebSocket | undefined;
   let closed = false;
   let attempts = 0;
@@ -63,6 +89,8 @@ function createRawObserverStream(
   let everOpened = false;
   /** Downgrade flag: the runtime cannot send headers, use the query token. */
   let useQueryToken = false;
+  /** Consecutive header-auth attempts that closed before opening (browser probe). */
+  let headerCloseStreak = 0;
 
   const scheduleReconnect = (delayOverrideMs?: number): void => {
     if (closed || timer !== undefined) return;
@@ -93,11 +121,14 @@ function createRawObserverStream(
 
   const open = (): void => {
     if (closed || socket) return;
-    const WebSocketImpl = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+    const WebSocketImpl = webSocketImpl ?? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
     if (!WebSocketImpl) {
       report(
         new Error(
-          'No global WebSocket implementation available for the observer stream (Node >= 21 or a browser is required).'
+          'No WebSocket implementation available for the observer stream. Node exposes a ' +
+            'global `WebSocket` only from v22; on earlier supported runtimes (Node >= 20.9) ' +
+            'install one as `globalThis.WebSocket` (e.g. the `ws` package) or pass ' +
+            '`webSocketImpl`/`createLiveStream` to observer mode.'
         )
       );
       return;
@@ -116,6 +147,7 @@ function createRawObserverStream(
       attempts = 0;
       everOpened = true;
       openedHere = true;
+      headerCloseStreak = 0;
       for (const handler of openHandlers) handler();
     };
     ws.onmessage = (message: MessageEvent) => {
@@ -127,21 +159,44 @@ function createRawObserverStream(
       }
       for (const handler of anyHandlers) handler(frame);
     };
-    ws.onclose = () => {
+    ws.onclose = (event?: { code?: number; reason?: string; wasClean?: boolean }) => {
       if (socket === ws) socket = undefined;
-      // A close before the first successful open on a header-auth attempt
-      // means the runtime accepted the options object but ignored the
-      // headers (auth rejected): downgrade to the query token and retry
-      // immediately, once.
+      if (closed) return; // Intentional teardown owns its own cleanup.
+      // A close before the first successful open on a header-auth attempt can
+      // mean the runtime accepted the options object but ignored the headers
+      // (browsers). Only browser-like runtimes downgrade to the query token,
+      // and only after two such probe closes — a Node runtime keeps header
+      // auth (and never leaks the token into the URL) even across transient
+      // failures.
       if (!useQueryToken && !everOpened && !openedHere) {
-        useQueryToken = true;
-        scheduleReconnect(0);
-        return;
+        if (!nodeRuntime) {
+          headerCloseStreak += 1;
+          if (headerCloseStreak >= 2) {
+            useQueryToken = true;
+            scheduleReconnect(0);
+            return;
+          }
+          scheduleReconnect(0);
+          return;
+        }
+      }
+      // Surface abnormal closures so invalid tokens / server rejections are not
+      // hidden behind a silent reconnect loop; clean closes (code 1000) stay quiet.
+      const code = event?.code;
+      const clean = event?.wasClean === true || code === 1000;
+      if (!clean) {
+        report(
+          new Error(
+            `observer WebSocket closed unexpectedly${
+              code !== undefined ? ` (code ${code}${event?.reason ? `: ${event.reason}` : ''})` : ''
+            }`
+          )
+        );
       }
       scheduleReconnect();
     };
     ws.onerror = () => {
-      // The close handler owns reconnection.
+      // Abnormal closures are reported in onclose; onerror carries no extra detail.
     };
   };
 
@@ -197,14 +252,27 @@ export interface ObserverEventSourceOptions {
   onError?: (error: unknown) => void;
   /** Live stream factory override for tests. Defaults to a raw observer WebSocket. */
   createLiveStream?: () => ObserverLiveStream;
+  /**
+   * WebSocket implementation for the default live stream. Defaults to
+   * `globalThis.WebSocket`. Supply this (or a global polyfill such as the `ws`
+   * package) on runtimes without a native `WebSocket` (e.g. Node < 22).
+   */
+  webSocketImpl?: typeof WebSocket;
   /** Fetch override for tests. Defaults to the global `fetch`. */
   fetch?: typeof globalThis.fetch;
   /** REST backfill page size. The server caps pages at 500 events. */
   backfillPageSize?: number;
+  /**
+   * Per-request timeout for each backfill page fetch, in milliseconds. A stalled
+   * backfill would otherwise buffer live frames indefinitely; on timeout the
+   * source degrades to live-only. Defaults to 30s.
+   */
+  backfillTimeoutMs?: number;
 }
 
 const DEFAULT_BASE_URL = 'https://cast.agentrelay.com';
 const MAX_BACKFILL_PAGE_SIZE = 500;
+const DEFAULT_BACKFILL_TIMEOUT_MS = 30_000;
 
 /** One raw event frame from the durable workspace event log. */
 interface BackfillEventRow {
@@ -275,14 +343,16 @@ function parseBackfillEvents(payload: unknown): {
  * @returns An events surface suitable as an event fan-in source.
  */
 export function createObserverEventSource(options: ObserverEventSourceOptions): RelayMessagingEventsSurface {
-  const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const baseUrl = stripTrailingSlashes(options.baseUrl ?? DEFAULT_BASE_URL);
   const pageSize = Math.min(
     Math.max(options.backfillPageSize ?? MAX_BACKFILL_PAGE_SIZE, 1),
     MAX_BACKFILL_PAGE_SIZE
   );
   const fetchImpl = options.fetch ?? globalThis.fetch;
+  const backfillTimeoutMs = options.backfillTimeoutMs ?? DEFAULT_BACKFILL_TIMEOUT_MS;
   const createLiveStream =
-    options.createLiveStream ?? (() => createRawObserverStream(baseUrl, options.observerToken, report));
+    options.createLiveStream ??
+    (() => createRawObserverStream(baseUrl, options.observerToken, report, options.webSocketImpl));
 
   const handlers = new Map<string, Set<(event: RelayMessagingEvent) => void | Promise<void>>>();
 
@@ -290,6 +360,7 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
   let cursor = options.sinceSeq ?? 0;
   let live: ObserverLiveStream | undefined;
   let offLive: (() => void) | undefined;
+  let offOpen: (() => void) | undefined;
   /** Raw live frames received while the backfill is still running, in arrival order. */
   let pending: unknown[] = [];
   let backfillDone = false;
@@ -358,12 +429,20 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
     backfillDone = true;
     const buffered = pending;
     pending = [];
-    buffered.sort((a, b) => {
-      const seqA = readSeq(a);
-      const seqB = readSeq(b);
-      return seqA !== undefined && seqB !== undefined ? seqA - seqB : 0;
-    });
-    for (const raw of buffered) deliver(raw);
+    // Order seq-stamped frames among themselves; seq-less frames keep their
+    // arrival slot. Sorting the whole array with a comparator that returns 0
+    // for any pair involving a seq-less frame is not a total order (a higher
+    // seq could sort ahead of a lower one across a seq-less gap and advance the
+    // cursor past it), so we sort the sequenced frames out-of-band and splice
+    // them back into the seq-less skeleton.
+    const sequenced = buffered
+      .map((raw) => ({ raw, seq: readSeq(raw) }))
+      .filter((item): item is { raw: unknown; seq: number } => item.seq !== undefined)
+      .sort((a, b) => a.seq - b.seq);
+    let nextSequenced = 0;
+    for (const raw of buffered) {
+      deliver(readSeq(raw) === undefined ? raw : sequenced[nextSequenced++].raw);
+    }
   };
 
   const backfillPage = async (
@@ -372,9 +451,20 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
     { events: BackfillEventRow[]; latestSeq: number; nextSince: number | undefined } | undefined
   > => {
     const url = `${baseUrl}/v1/workspace/events?since=${since}&limit=${pageSize}`;
-    const response = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${options.observerToken}` },
-    });
+    // Bound each page fetch so a hung backfill endpoint can't buffer live frames
+    // forever; on timeout the caller degrades to live-only.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), backfillTimeoutMs);
+    (timeout as { unref?: () => void }).unref?.();
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        headers: { Authorization: `Bearer ${options.observerToken}` },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     // Older engines have no durable event log; observer mode then works
     // live-only and the cursor advances from seq-stamped live frames.
     if (response.status === 404) return undefined;
@@ -406,8 +496,18 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
         }
         if (cursor >= page.latestSeq) break;
         // No progress this page (older engine without next_since returning
-        // only hidden rows): stop rather than loop forever.
-        if (cursor <= before) break;
+        // only hidden rows): stop rather than loop forever, but surface it —
+        // historical events after this point may never be backfilled.
+        if (cursor <= before) {
+          report(
+            new Error(
+              `observer backfill stopped early: engine returned no visible events and no next_since ` +
+                `cursor at seq ${cursor} (latest ${page.latestSeq}); historical events past this ` +
+                `point may be skipped. Upgrade the engine for next_since-based scoped backfill.`
+            )
+          );
+          break;
+        }
       }
     } catch (error) {
       if (epoch !== startedEpoch) return;
@@ -431,7 +531,7 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
         // log: on every reopen after the first, buffer live frames again and
         // re-backfill from the cursor to close the gap.
         let hadOpen = false;
-        live.on.open?.(() => {
+        offOpen = live.on.open?.(() => {
           if (hadOpen) {
             backfillDone = false;
             void runBackfill();
@@ -440,6 +540,20 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
         });
         live.connect();
       } catch (error) {
+        // A partially initialized stream would make later connect() calls
+        // return early (live is set) and never retry. Tear it down so a fresh
+        // stream can be built on the next connect().
+        offLive?.();
+        offLive = undefined;
+        offOpen?.();
+        offOpen = undefined;
+        const stream = live;
+        live = undefined;
+        try {
+          stream?.disconnect();
+        } catch {
+          // Best-effort cleanup after a failed live-stream initialization.
+        }
         report(error);
         // With no live stream, backfilled events are all we can deliver;
         // don't hold them hostage in the buffer.
@@ -453,6 +567,8 @@ export function createObserverEventSource(options: ObserverEventSourceOptions): 
       pending = [];
       offLive?.();
       offLive = undefined;
+      offOpen?.();
+      offOpen = undefined;
       const stream = live;
       live = undefined;
       if (stream) {

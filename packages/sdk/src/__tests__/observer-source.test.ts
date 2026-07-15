@@ -329,6 +329,133 @@ describe('createObserverEventSource', () => {
     expect(messageIds(received)).toEqual(['m1']);
   });
 
+  it('orders a seq-less frame between out-of-order seq frames without dropping either', async () => {
+    // Regression: a non-total sort could let a higher seq advance the cursor
+    // before a lower seq buffered behind a seq-less frame was delivered.
+    const live = createFakeLiveStream();
+    let releaseBackfill!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseBackfill = resolve;
+    });
+    const rows = [logRow(1, 'm1'), logRow(2, 'm2')];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      await gate;
+      const url = new URL(String(input));
+      const since = Number(url.searchParams.get('since') ?? '0');
+      return jsonResponse(
+        rows.filter((row) => (row.seq as number) > since),
+        2
+      );
+    }) as unknown as typeof fetch;
+
+    const source = createObserverEventSource({
+      observerToken: 'ot_live_test',
+      baseUrl: 'https://api.example.test',
+      createLiveStream: () => live.stream,
+      fetch: fetchImpl,
+    });
+    const received = collect(source);
+
+    source.connect();
+    // Arrival order: seq 4, then a seq-less frame, then seq 3.
+    live.emit(liveFrame('m4', 4));
+    live.emit(liveFrame('m-live-only'));
+    live.emit(liveFrame('m3', 3));
+
+    releaseBackfill();
+    await settle();
+
+    // seq 3 is delivered (not dropped by seq 4 advancing the cursor first), the
+    // seq-less frame keeps its arrival slot, and everything arrives seq-ordered.
+    expect(messageIds(received)).toEqual(['m1', 'm2', 'm3', 'm-live-only', 'm4']);
+  });
+
+  it('surfaces a warning instead of silently skipping when a scoped backfill makes no progress', async () => {
+    // Older engine: a fully filtered page returns no visible events, no
+    // next_since, and latest_seq still ahead — the loop must stop AND warn.
+    const live = createFakeLiveStream();
+    const fetchImpl = vi.fn(async () => jsonResponse([], 5)) as unknown as typeof fetch;
+    const onError = vi.fn();
+
+    createObserverEventSource({
+      observerToken: 'ot_live_test',
+      baseUrl: 'https://api.example.test',
+      createLiveStream: () => live.stream,
+      fetch: fetchImpl,
+      onError,
+    }).connect();
+    await settle();
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String(onError.mock.calls[0][0])).toContain('observer backfill stopped early');
+  });
+
+  it('degrades to live-only when a backfill page hangs past the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const live = createFakeLiveStream();
+      const onError = vi.fn();
+      // Never resolves on its own; rejects when the source aborts the request.
+      const fetchImpl = vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          })
+      ) as unknown as typeof fetch;
+
+      const source = createObserverEventSource({
+        observerToken: 'ot_live_test',
+        baseUrl: 'https://api.example.test',
+        createLiveStream: () => live.stream,
+        fetch: fetchImpl,
+        backfillTimeoutMs: 50,
+        onError,
+      });
+      const received = collect(source);
+
+      source.connect();
+      live.emit(liveFrame('m1', 1)); // buffered while the backfill hangs
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      // Buffer flushed to live-only delivery after the abort.
+      expect(messageIds(received)).toEqual(['m1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries the live stream after a connect-time failure', async () => {
+    // A throw during live-stream setup must clear `live` so the next connect()
+    // builds a fresh stream instead of returning early.
+    const good = createFakeLiveStream();
+    let attempt = 0;
+    const onError = vi.fn();
+    const source = createObserverEventSource({
+      observerToken: 'ot_live_test',
+      baseUrl: 'https://api.example.test',
+      fetch: createBackfillFetch([]),
+      onError,
+      createLiveStream: () => {
+        attempt += 1;
+        if (attempt === 1) throw new Error('live boom');
+        return good.stream;
+      },
+    });
+    const received = collect(source);
+
+    source.connect();
+    await settle();
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    source.connect(); // must retry, not no-op
+    await settle();
+    expect(good.stream.connect).toHaveBeenCalledTimes(1);
+
+    good.emit(liveFrame('m1', 1));
+    expect(messageIds(received)).toEqual(['m1']);
+  });
+
   it('disconnect stops the live stream; reconnect backfills from the cursor', async () => {
     const live = createFakeLiveStream();
     const fetchImpl = createBackfillFetch([logRow(1, 'm1'), logRow(2, 'm2')]);
@@ -382,6 +509,50 @@ describe('AgentRelay observer mode', () => {
     await expect(relay.workspace.reconnect({ apiToken: 'rat_test' })).rejects.toThrow(
       /observer tokens are read-only; use a workspace key to register agents/
     );
+  });
+
+  it('keeps the token out of the URL on Node and reports abnormal closes', async () => {
+    // Security regression guard: a pre-open close on Node (which supports header
+    // auth) must not permanently downgrade to a `?token=` URL, and abnormal
+    // closes must surface through onError rather than looping silently.
+    const sockets: Array<{ url: string; options: unknown; onclose: ((e?: unknown) => void) | null }> = [];
+    class FakeWebSocket {
+      url: string;
+      options: unknown;
+      onopen: (() => void) | null = null;
+      onmessage: ((message: { data: string }) => void) | null = null;
+      onclose: ((e?: unknown) => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn();
+      constructor(url: string, options?: unknown) {
+        this.url = url;
+        this.options = options;
+        sockets.push(this);
+      }
+    }
+    const onError = vi.fn();
+    const source = createObserverEventSource({
+      observerToken: 'ot_live_secret',
+      baseUrl: 'https://api.example.test',
+      fetch: createBackfillFetch([]),
+      webSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+      onError,
+    });
+    source.connect();
+    await settle();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].url).toBe('wss://api.example.test/v1/ws');
+    expect(sockets[0].options).toEqual({ headers: { authorization: 'Bearer ot_live_secret' } });
+
+    // Socket closes abnormally before ever opening.
+    sockets[0].onclose?.({ code: 1006, wasClean: false });
+
+    expect(onError).toHaveBeenCalled();
+    expect(String(onError.mock.calls[0][0])).toContain('closed unexpectedly');
+    // No token was ever leaked into a URL, on this or any reconnect socket.
+    expect(sockets.every((socket) => !socket.url.includes('token='))).toBe(true);
+    await source.disconnect();
   });
 
   it('streams observer events through relay.addListener', async () => {
