@@ -553,6 +553,13 @@ pub enum BrokerToWorker {
     SetInteractiveHold {
         hold: bool,
     },
+    /// One-shot request to inject the worker's currently-queued pending
+    /// injections even while an interactive hold is active. Sent by the
+    /// broker on an explicit `POST /api/spawned/{name}/flush` so a human who
+    /// asked for the backlog gets it injected immediately instead of it
+    /// sitting frozen until the drive session detaches. Deliveries that
+    /// arrive after the flush stay parked under the hold as usual.
+    FlushInjections {},
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1057,6 +1064,18 @@ mod tests {
         // in `pty_worker.rs` and `packages/harness-driver/src/protocol.ts`.
         assert_eq!(raw["type"], "set_interactive_hold");
         assert_eq!(raw["payload"]["hold"], true);
+        let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn broker_to_worker_flush_injections_round_trip() {
+        let msg = BrokerToWorker::FlushInjections {};
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        // Wire tag must be snake_case and match the worker-side string match arm
+        // in `pty_worker.rs` and `packages/harness-driver/src/protocol.ts`.
+        assert_eq!(raw["type"], "flush_injections");
         let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, msg);
     }

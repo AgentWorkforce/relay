@@ -528,6 +528,18 @@ export type BrokerToWorker =
        */
       type: 'set_interactive_hold';
       payload: { hold: boolean };
+    }
+  | {
+      /**
+       * One-shot request to inject the worker's currently-queued pending
+       * injections even while an interactive hold is active. Sent by the
+       * broker on an explicit `POST /api/spawned/{name}/flush` so a human who
+       * asked for the backlog gets it injected immediately instead of it
+       * sitting frozen until the drive session detaches. Deliveries that
+       * arrive after the flush stay parked under the hold as usual.
+       */
+      type: 'flush_injections';
+      payload: Record<string, never>;
     };
 
 export type WorkerToBroker =

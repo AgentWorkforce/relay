@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay drive` (and `agent new`, which attaches in drive mode) gains an in-band `Ctrl+]` toggle that flips the driven agent between held (`manual_flush`) and live (`auto_inject`) inbound delivery, draining the parked queue into the PTY; the status line shows the current mode, the pending count, and the toggle hint.
 - `@agent-relay/sdk` observer mode: `new AgentRelay({ observerToken })` streams `relay.addListener(...)` read-only from the workspace observer plane — the durable event log is REST-backfilled and merged with the live stream, deduped and ordered by `seq`, with `sinceSeq`/`onCursor` options to persist and resume the cursor across restarts. Degrades to live-only against engines without the backfill endpoint; `workspace.register()`/`reconnect()` throw in observer mode (observer tokens are read-only).
 
 ### Changed
@@ -17,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay node agent message flush` now actually injects the queued messages while a drive session is attached: the broker sends a one-shot `flush_injections` frame that exempts the flushed backlog from the drive-mode interactive hold, instead of parking it in a second frozen queue until detach. Without this (and the `Ctrl+]` toggle above), an agent being driven could never receive a relay message — replies to anything it sent sat invisible until the human detached.
+- `agent-relay drive` no longer zeroes its pending counter on a partial flush; the undrained remainder stays counted in the status line.
 - `@agent-relay/sdk` `relay.addListener(...)` on a workspace-key client now receives channel messages, DMs, and thread replies by streaming through registered agent clients (`workspace.register`/`reconnect`) over the node transport, deduplicating events delivered to multiple locally-registered agents; previously listeners silently received nothing. Listener connect failures now surface through `onError` instead of being swallowed, and a listener with no registered agent warns after 10s.
 - `agent-relay-broker` now mutes the default/extra channels it joins for its own broker-self agent, so channel messages stop writing delivery rows to that identity's permanently-offline implicit node (they previously queued until TTL expiry on every message). Muting is best-effort and never fails startup.
 - `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
@@ -31,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `agent-relay-broker` injects messages into a CLI with escape-aware paced writes — one VT control sequence (CSI/SS3/OSC), UTF-8 codepoint, or byte at a time with a small gap between them — instead of one bulk write, reducing dropped or batched leading characters during injection. Tunable via `RELAY_INJECT_RATE_MS` (default `5`; `0` restores the single bulk write).
+  > > > > > > > origin/main
 
 ## [10.3.0] - 2026-07-15
 
