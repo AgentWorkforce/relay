@@ -121,3 +121,10 @@ jobs:
 
       - name: Test
         run: swift test
+
+      # Consumers that depend on this repo by git URL resolve the ROOT
+      # Package.swift, which must mirror the package manifest — build it too
+      # so a root-manifest change can't ship broken.
+      - name: Build root manifest
+        working-directory: ${{ github.workspace }}
+        run: swift build

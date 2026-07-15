@@ -51,6 +51,9 @@ jobs:
                   per_page: 100,
                 });
                 files = changed.map((file) => file.filename);
+                // listFiles caps at 3000 entries; at the cap the list may be
+                // truncated.
+                if (files.length >= 3000) unknownScope = true;
               } else if (context.eventName === 'push') {
                 const comparison = await github.rest.repos.compareCommits({
                   owner: context.repo.owner,
@@ -85,6 +88,7 @@ jobs:
               file.startsWith('specs/') ||
               file.startsWith('.claude/') ||
               file.startsWith('.agentworkforce/') ||
+              file.startsWith('.agents/') ||
               file === 'LICENSE' ||
               (/\.mdx?$/i.test(file) && !file.includes('/'));
 
