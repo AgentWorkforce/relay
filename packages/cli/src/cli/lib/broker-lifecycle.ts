@@ -15,6 +15,7 @@ import {
   loadNodeDefinition,
 } from './node-definition-loader.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
+import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -1252,6 +1253,17 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log('Mode: broker (stdio)');
     deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
+
+    // Record the workspace this broker joined (explicitly passed or auto-minted)
+    // in the project data dir, so later SDK commands in this CWD resolve it
+    // instead of the machine-global active workspace. Persistence must never
+    // abort startup, so a write failure is swallowed.
+    try {
+      writeProjectWorkspaceKey(paths.dataDir, relay.workspaceKey ?? undefined);
+    } catch {
+      // best-effort: a broker that came up should stay up even if the key file
+      // can't be written (read-only dir, etc.).
+    }
 
     vlog(deps, options.verbose, 'Starting node capability providers (if any)...');
     nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodeDefinition);

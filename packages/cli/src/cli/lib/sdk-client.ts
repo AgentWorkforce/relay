@@ -1,6 +1,8 @@
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import { getProjectPaths } from '@agent-relay/config';
 
 import { activeWorkspaceKey } from './workspace-store.js';
+import { readProjectWorkspaceKey } from './project-workspace-key.js';
 
 /** Options shared by the SDK-backed (Relaycast) CLI command groups. */
 export interface SdkClientOptions {
@@ -25,6 +27,11 @@ export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
     trimOrUndefined(options.workspaceKey) ??
     trimOrUndefined(e.RELAY_WORKSPACE_KEY) ??
     trimOrUndefined(e.RELAY_API_KEY) ??
+    // The workspace the local broker in this CWD was started with (`relay up
+    // --workspace-key/--wk`), so commands run alongside a project broker resolve
+    // its workspace rather than the machine-global active workspace. Ranked
+    // above the global store but below an explicit flag/env override.
+    trimOrUndefined(projectWorkspaceKey()) ??
     trimOrUndefined(activeWorkspaceKey(e));
   if (!key) {
     throw new Error(
@@ -32,6 +39,19 @@ export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
     );
   }
   return key;
+}
+
+/**
+ * Read the workspace key recorded by `relay up` for the current project
+ * directory, or `undefined` when there is none / the project root cannot be
+ * resolved. Never throws — a resolution failure just falls through.
+ */
+function projectWorkspaceKey(): string | undefined {
+  try {
+    return readProjectWorkspaceKey(getProjectPaths().dataDir);
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {

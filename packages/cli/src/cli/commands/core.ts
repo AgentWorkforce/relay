@@ -286,6 +286,7 @@ export function addUpCommandOptions(command: Command): Command {
     .option('--background', 'Run broker in the background (detached)')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
+    .option('--wk <key>', 'Alias for --workspace-key')
     .option(
       '--state-dir <path>',
       'Directory for broker state and connection files (default: .agentworkforce/relay/)'
@@ -300,7 +301,15 @@ export function addUpCommandOptions(command: Command): Command {
       'Node log verbosity: debug | info | warn | error (default: info)',
       parseLogLevel
     )
-    .option('--log-json', 'Emit node logs as JSON lines instead of text');
+    .option('--log-json', 'Emit node logs as JSON lines instead of text')
+    // Fold the `--wk` alias into `workspaceKey` before the action runs, matching
+    // the SDK commands' `addSdkOptions`. An explicit `--workspace-key` wins.
+    .hook('preAction', (thisCommand) => {
+      const opts = thisCommand.opts();
+      if (typeof opts.wk === 'string' && opts.wk.trim() && !opts.workspaceKey) {
+        thisCommand.setOptionValue('workspaceKey', opts.wk);
+      }
+    });
 }
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;

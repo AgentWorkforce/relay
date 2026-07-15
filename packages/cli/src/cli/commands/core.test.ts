@@ -1175,6 +1175,21 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_custom');
   });
 
+  it('up --wk is an alias for --workspace-key', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock({ workspaceKey: 'rk_live_alias' });
+    const { program, deps } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up', '--wk', 'rk_live_alias']);
+
+    expect(exitCode).toBeUndefined();
+    // The alias is folded into workspaceKey, so the broker sees the same env the
+    // explicit flag would have set.
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
+    expect(env.RELAY_API_KEY).toBe('rk_live_alias');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_alias');
+  });
+
   it('up without --workspace-key does not set workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = {};
     const relay = createRelayMock();
