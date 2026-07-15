@@ -200,7 +200,9 @@ export async function startEmbeddedNodeWithDependencies(
   runtime: EmbeddedNodeRuntimeOptions = {},
   dependencyOverrides: Partial<CoreDependencies> = {}
 ): Promise<EmbeddedNodeStartResult> {
-  if ((options as UpOptions).background === true) {
+  // Match runUpCommand's truthiness check exactly so untyped JavaScript
+  // callers cannot bypass embedded ownership with values such as "true" or 1.
+  if ((options as { background?: unknown }).background) {
     return unsupportedBackgroundResult(runtime);
   }
 

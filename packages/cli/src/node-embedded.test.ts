@@ -128,23 +128,36 @@ describe('embedded node lifecycle', () => {
     expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
   });
 
-  it('rejects detached background ownership before running the CLI lifecycle', async () => {
-    const result = await startEmbeddedNode({ background: true } as never);
+  it.each([true, 'true', 1])(
+    'rejects truthy detached background ownership (%j) before running the CLI lifecycle',
+    async (background) => {
+      const projectRoot = makeTempRoot();
+      const { overrides } = successfulLifecycleOverrides(projectRoot);
+      const spawnProcess = vi.fn(() => {
+        throw new Error('detached spawn must not be reached');
+      });
+      const result = await startEmbeddedNodeWithDependencies(
+        { background } as never,
+        {},
+        { ...overrides, spawnProcess }
+      );
 
-    expect(result).toEqual({
-      ok: false,
-      code: 2,
-      message:
-        'Embedded node startup does not support background mode; omit `background` and own the returned lifecycle handle.',
-      output: [
-        {
-          level: 'error',
-          message:
-            'Embedded node startup does not support background mode; omit `background` and own the returned lifecycle handle.',
-        },
-      ],
-    });
-  });
+      expect(result).toEqual({
+        ok: false,
+        code: 2,
+        message:
+          'Embedded node startup does not support background mode; omit `background` and own the returned lifecycle handle.',
+        output: [
+          {
+            level: 'error',
+            message:
+              'Embedded node startup does not support background mode; omit `background` and own the returned lifecycle handle.',
+          },
+        ],
+      });
+      expect(spawnProcess).not.toHaveBeenCalled();
+    }
+  );
 
   it('converts status-command exits into structured failures', async () => {
     const processPidBefore = process.pid;
