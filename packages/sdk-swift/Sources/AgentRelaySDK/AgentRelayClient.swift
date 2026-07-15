@@ -476,21 +476,54 @@ public final class AgentClient: @unchecked Sendable {
         try await rest.dmHistory(with: agent, limit: limit, before: before)
     }
 
+    /// Realtime events. If the consumer falls behind, the oldest event is
+    /// dropped so that at most the newest 256 events are buffered.
     public var events: AsyncStream<RelayEvent> {
-        AsyncStream<RelayEvent> { continuation in
-            Task { await core.registerEventContinuation(continuation) }
+        let id = UUID()
+        let core = self.core
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<RelayEvent>(bufferingPolicy: .bufferingNewest(256)) { continuation in
+            let registrationTask = Task {
+                await core.registerEventContinuation(continuation, id: id, generation: generation)
+            }
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                Task { await core.unregisterEventContinuation(id: id) }
+            }
         }
     }
 
+    /// Inbound messages. If the consumer falls behind, the oldest message is
+    /// dropped so that at most the newest 256 messages are buffered.
     public var inboundMessages: AsyncStream<RelayChannelEvent> {
-        AsyncStream<RelayChannelEvent> { continuation in
-            Task { await core.registerInboundMessageContinuation(continuation) }
+        let id = UUID()
+        let core = self.core
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<RelayChannelEvent>(bufferingPolicy: .bufferingNewest(256)) { continuation in
+            let registrationTask = Task {
+                await core.registerInboundMessageContinuation(continuation, id: id, generation: generation)
+            }
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                Task { await core.unregisterInboundMessageContinuation(id: id) }
+            }
         }
     }
 
+    /// Connection changes are latest-state-only: an unread state is replaced
+    /// when a newer state arrives, so at most one value is buffered.
     public var connectionState: AsyncStream<ConnectionStateChange> {
-        AsyncStream<ConnectionStateChange> { continuation in
-            Task { await core.registerConnectionStateContinuation(continuation) }
+        let id = UUID()
+        let core = self.core
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<ConnectionStateChange>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let registrationTask = Task {
+                await core.registerConnectionStateContinuation(continuation, id: id, generation: generation)
+            }
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                Task { await core.unregisterConnectionStateContinuation(id: id) }
+            }
         }
     }
 }
@@ -498,23 +531,31 @@ public final class AgentClient: @unchecked Sendable {
 public final class RelayChannel: @unchecked Sendable {
     public let name: String
     private let core: HostedParticipantCore
-    private let continuationRef: AsyncStream<RelayChannelEvent>.Continuation?
-    public let events: AsyncStream<RelayChannelEvent>
+
+    /// Channel delivery is registered only when the stream is requested.
+    /// Slow consumers retain at most the newest 256 events.
+    public var events: AsyncStream<RelayChannelEvent> {
+        let id = UUID()
+        let core = self.core
+        let name = self.name
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<RelayChannelEvent>(bufferingPolicy: .bufferingNewest(256)) { continuation in
+            let registrationTask = Task {
+                await core.registerChannelContinuation(continuation, id: id, generation: generation, for: name)
+            }
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                Task { await core.unregisterChannelContinuation(id: id, for: name) }
+            }
+        }
+    }
 
     init(name: String, core: HostedParticipantCore) {
         self.name = name
         self.core = core
-        var continuation: AsyncStream<RelayChannelEvent>.Continuation?
-        self.events = AsyncStream<RelayChannelEvent> { incoming in
-            continuation = incoming
-        }
-        self.continuationRef = continuation
     }
 
     public func subscribe() async throws {
-        if let continuationRef {
-            await core.registerChannelContinuation(continuationRef, for: name)
-        }
         try await core.subscribe(channel: name)
     }
 
@@ -530,12 +571,52 @@ private struct RegisteredAction: Sendable {
     let handler: RelayActionHandler
 }
 
+private struct ContinuationRegistry<Element: Sendable> {
+    typealias Continuation = AsyncStream<Element>.Continuation
+
+    private(set) var active: [UUID: Continuation] = [:]
+
+    var count: Int { active.count }
+    var continuations: Dictionary<UUID, Continuation>.Values { active.values }
+
+    mutating func register(_ continuation: Continuation, id: UUID) {
+        active[id] = continuation
+    }
+
+    mutating func unregister(id: UUID) {
+        active.removeValue(forKey: id)
+    }
+
+    mutating func finishAll() {
+        for continuation in active.values { continuation.finish() }
+        active.removeAll()
+    }
+}
+
+final class StreamLifecycle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+
+    func snapshot() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
+    func advance() {
+        lock.lock()
+        generation &+= 1
+        lock.unlock()
+    }
+}
+
 /// Higher-level glue kept ON TOP of the relaycast engine SDK: the
 /// action-dispatch loop, channel-event normalization into `RelayChannelEvent`,
 /// AsyncStream fan-out, and subscription bookkeeping. The realtime socket and
 /// HTTP calls are delegated to the wrapped `Relaycast.AgentClient` /
 /// `Relaycast.RelayCast`.
 actor HostedParticipantCore {
+    nonisolated let streamLifecycle = StreamLifecycle()
     /// How the per-agent engine is obtained. `.ready` is used by `reconnect`,
     /// which already has a live engine; `.deferred` builds the engine lazily via
     /// `relay.asAgent(token)` on first connect so that `asAgent`/configuration
@@ -558,10 +639,10 @@ actor HostedParticipantCore {
     private var connected = false
     private var listenersInstalled = false
     private var subscribedChannels: Set<String> = []
-    private var channelContinuations: [String: [AsyncStream<RelayChannelEvent>.Continuation]] = [:]
-    private var inboundMessageContinuations: [AsyncStream<RelayChannelEvent>.Continuation] = []
-    private var eventContinuations: [AsyncStream<RelayEvent>.Continuation] = []
-    private var connectionStateContinuations: [AsyncStream<ConnectionStateChange>.Continuation] = []
+    private var channelContinuations: [String: ContinuationRegistry<RelayChannelEvent>] = [:]
+    private var inboundMessageContinuations = ContinuationRegistry<RelayChannelEvent>()
+    private var eventContinuations = ContinuationRegistry<RelayEvent>()
+    private var connectionStateContinuations = ContinuationRegistry<ConnectionStateChange>()
     private var actionHandlers: [String: RegisteredAction] = [:]
     private var unsubscribeHandlers: [() -> Void] = []
 
@@ -640,6 +721,9 @@ actor HostedParticipantCore {
     }
 
     func disconnect() async {
+        // Invalidate registrations scheduled before this disconnect, including
+        // tasks that have not reached the actor yet.
+        streamLifecycle.advance()
         // Only tear down an engine that was actually built/connected; building
         // one here just to disconnect it would be pointless (and could throw).
         if let resolvedEngine {
@@ -654,32 +738,79 @@ actor HostedParticipantCore {
         eventPump?.cancel()
         eventPump = nil
         notifyConnectionState(.disconnected)
-        for continuations in channelContinuations.values {
-            for continuation in continuations { continuation.finish() }
+        for key in channelContinuations.keys {
+            channelContinuations[key]?.finishAll()
         }
         channelContinuations.removeAll()
-        for continuation in inboundMessageContinuations { continuation.finish() }
-        inboundMessageContinuations.removeAll()
-        for continuation in eventContinuations { continuation.finish() }
-        eventContinuations.removeAll()
-        for continuation in connectionStateContinuations { continuation.finish() }
-        connectionStateContinuations.removeAll()
+        inboundMessageContinuations.finishAll()
+        eventContinuations.finishAll()
+        connectionStateContinuations.finishAll()
     }
 
-    func registerChannelContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, for channel: String) {
-        channelContinuations[Self.normalizeChannel(channel), default: []].append(continuation)
+    func registerChannelContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, id: UUID, generation: UInt64, for channel: String) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        let channel = Self.normalizeChannel(channel)
+        channelContinuations[channel, default: ContinuationRegistry()].register(continuation, id: id)
     }
 
-    func registerInboundMessageContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation) {
-        inboundMessageContinuations.append(continuation)
+    func unregisterChannelContinuation(id: UUID, for channel: String) {
+        let channel = Self.normalizeChannel(channel)
+        guard var registry = channelContinuations[channel] else { return }
+        registry.unregister(id: id)
+        if registry.count == 0 {
+            channelContinuations.removeValue(forKey: channel)
+        } else {
+            channelContinuations[channel] = registry
+        }
     }
 
-    func registerEventContinuation(_ continuation: AsyncStream<RelayEvent>.Continuation) {
-        eventContinuations.append(continuation)
+    func registerInboundMessageContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, id: UUID, generation: UInt64) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        inboundMessageContinuations.register(continuation, id: id)
     }
 
-    func registerConnectionStateContinuation(_ continuation: AsyncStream<ConnectionStateChange>.Continuation) {
-        connectionStateContinuations.append(continuation)
+    func unregisterInboundMessageContinuation(id: UUID) {
+        inboundMessageContinuations.unregister(id: id)
+    }
+
+    func registerEventContinuation(_ continuation: AsyncStream<RelayEvent>.Continuation, id: UUID, generation: UInt64) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        eventContinuations.register(continuation, id: id)
+    }
+
+    func unregisterEventContinuation(id: UUID) {
+        eventContinuations.unregister(id: id)
+    }
+
+    func registerConnectionStateContinuation(_ continuation: AsyncStream<ConnectionStateChange>.Continuation, id: UUID, generation: UInt64) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        connectionStateContinuations.register(continuation, id: id)
+    }
+
+    func unregisterConnectionStateContinuation(id: UUID) {
+        connectionStateContinuations.unregister(id: id)
+    }
+
+    func continuationCounts() -> (channels: Int, channelRegistries: Int, inbound: Int, events: Int, connectionState: Int) {
+        (
+            channels: channelContinuations.values.reduce(0) { $0 + $1.count },
+            channelRegistries: channelContinuations.count,
+            inbound: inboundMessageContinuations.count,
+            events: eventContinuations.count,
+            connectionState: connectionStateContinuations.count
+        )
     }
 
     func subscribe(channel: String) async throws {
@@ -850,8 +981,8 @@ actor HostedParticipantCore {
 
     // MARK: - Event routing (glue kept on top of the engine)
 
-    private func routeEvent(_ event: RelayEvent) {
-        for continuation in eventContinuations {
+    func routeEvent(_ event: RelayEvent) {
+        for continuation in eventContinuations.continuations {
             continuation.yield(event)
         }
 
@@ -865,11 +996,11 @@ actor HostedParticipantCore {
         }
 
         guard let message = channelEvent(from: event) else { return }
-        for continuation in inboundMessageContinuations {
+        for continuation in inboundMessageContinuations.continuations {
             continuation.yield(message)
         }
         if let channel = message.channel {
-            for continuation in channelContinuations[Self.normalizeChannel(channel)] ?? [] {
+            for continuation in channelContinuations[Self.normalizeChannel(channel)]?.continuations ?? [:].values {
                 continuation.yield(message)
             }
         }
@@ -1005,8 +1136,8 @@ actor HostedParticipantCore {
         return ["value": .string(output)]
     }
 
-    private func notifyConnectionState(_ state: ConnectionStateChange) {
-        for continuation in connectionStateContinuations {
+    func notifyConnectionState(_ state: ConnectionStateChange) {
+        for continuation in connectionStateContinuations.continuations {
             continuation.yield(state)
         }
     }

@@ -10,6 +10,27 @@ import Relaycast
 /// AgentRelaySDK's public surface intact on top of relaycast.
 final class HostedParticipantSDKTests: XCTestCase {
 
+    private func makeParticipantCore() throws -> HostedParticipantCore {
+        HostedParticipantCore(
+            engineSource: .deferred(
+                relayResult: Result { try Relaycast.RelayCast(options: Relaycast.RelayCastOptions(apiKey: "rk_test")) },
+                token: "at_test"
+            ),
+            agentId: "a1",
+            agentName: "alice",
+            token: "at_test",
+            baseURL: URL(string: "https://cast.agentrelay.com")!
+        )
+    }
+
+    private func waitUntil(_ predicate: @escaping () async -> Bool) async throws {
+        for _ in 0..<500 {
+            if await predicate() { return }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("Timed out waiting for async condition")
+    }
+
     // MARK: - Facade configuration
 
     func testClientInitDefaultsToHostedGateway() {
@@ -229,5 +250,142 @@ final class HostedParticipantSDKTests: XCTestCase {
         let handle = ActionHandle(name: "echo") { }
         XCTAssertEqual(handle.name, "echo")
         await handle.unregister()
+    }
+
+    // MARK: - AsyncStream lifecycle
+
+    func testCancellingPublicStreamsRemovesContinuationsAcrossEpochs() async throws {
+        let core = try makeParticipantCore()
+        let client = AgentClient(core: core, id: "a1", name: "alice", token: "at_test")
+
+        for _ in 0..<20 {
+            let eventTask = Task { for await _ in client.events {} }
+            let inboundTask = Task { for await _ in client.inboundMessages {} }
+            let stateTask = Task { for await _ in client.connectionState {} }
+
+            try await waitUntil {
+                let counts = await core.continuationCounts()
+                return counts.events == 1 && counts.inbound == 1 && counts.connectionState == 1
+            }
+
+            eventTask.cancel()
+            inboundTask.cancel()
+            stateTask.cancel()
+            _ = await (eventTask.value, inboundTask.value, stateTask.value)
+
+            try await waitUntil {
+                let counts = await core.continuationCounts()
+                return counts.events == 0 && counts.inbound == 0 && counts.connectionState == 0
+            }
+        }
+    }
+
+    func testChannelDoesNotRegisterUntilEventsAreRequested() async throws {
+        let core = try makeParticipantCore()
+        let channel = RelayChannel(name: "ops", core: core)
+        let initialCounts = await core.continuationCounts()
+        XCTAssertEqual(initialCounts.channels, 0)
+
+        let task = Task { for await _ in channel.events {} }
+        try await waitUntil { await core.continuationCounts().channels == 1 }
+
+        task.cancel()
+        _ = await task.value
+        try await waitUntil { await core.continuationCounts().channels == 0 }
+    }
+
+    func testTerminationBeforeRegistrationDoesNotResurrectContinuation() async throws {
+        let core = try makeParticipantCore()
+        let id = UUID()
+        var continuationRef: AsyncStream<RelayEvent>.Continuation?
+        _ = AsyncStream<RelayEvent> { continuationRef = $0 }
+
+        let continuation = try XCTUnwrap(continuationRef)
+        let generation = core.streamLifecycle.snapshot()
+        await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await core.registerEventContinuation(continuation, id: id, generation: generation)
+        }.value
+
+        let counts = await core.continuationCounts()
+        XCTAssertEqual(counts.events, 0)
+    }
+
+    func testRegistrationFromBeforeDisconnectCannotResurrectStream() async throws {
+        let core = try makeParticipantCore()
+        let id = UUID()
+        let staleGeneration = core.streamLifecycle.snapshot()
+        var continuationRef: AsyncStream<RelayEvent>.Continuation?
+        let stream = AsyncStream<RelayEvent> { continuationRef = $0 }
+
+        await core.disconnect()
+        await core.registerEventContinuation(try XCTUnwrap(continuationRef), id: id, generation: staleGeneration)
+
+        let first = await stream.first(where: { _ in true })
+        XCTAssertNil(first)
+        let counts = await core.continuationCounts()
+        XCTAssertEqual(counts.events, 0)
+    }
+
+    func testDisconnectIsIdempotentAndFinishesLiveStreams() async throws {
+        let core = try makeParticipantCore()
+        let client = AgentClient(core: core, id: "a1", name: "alice", token: "at_test")
+        let task = Task { for await _ in client.events {} }
+        try await waitUntil { await core.continuationCounts().events == 1 }
+
+        await client.disconnect()
+        await client.disconnect()
+        _ = await task.value
+
+        let counts = await core.continuationCounts()
+        XCTAssertEqual(counts.events, 0)
+    }
+
+    func testDisconnectDoesNotLeaveEmptyChannelRegistries() async throws {
+        let core = try makeParticipantCore()
+
+        for epoch in 0..<20 {
+            let channel = RelayChannel(name: "ops-\(epoch)", core: core)
+            let task = Task { for await _ in channel.events {} }
+            try await waitUntil { await core.continuationCounts().channels == 1 }
+
+            await core.disconnect()
+            _ = await task.value
+            try await waitUntil {
+                let counts = await core.continuationCounts()
+                return counts.channels == 0 && counts.channelRegistries == 0
+            }
+        }
+    }
+
+    func testEventAndConnectionStateBuffersDropOldestValues() async throws {
+        let core = try makeParticipantCore()
+        let client = AgentClient(core: core, id: "a1", name: "alice", token: "at_test")
+        let eventStream = client.events
+        let stateStream = client.connectionState
+        try await waitUntil {
+            let counts = await core.continuationCounts()
+            return counts.events == 1 && counts.connectionState == 1
+        }
+
+        for index in 0..<300 {
+            await core.routeEvent(RelayEvent(type: "event.\(index)"))
+        }
+        await core.notifyConnectionState(.connected)
+        await core.notifyConnectionState(.disconnected)
+
+        var eventIterator = eventStream.makeAsyncIterator()
+        var eventTypes: [String] = []
+        for _ in 0..<256 {
+            let event = await eventIterator.next()
+            eventTypes.append(try XCTUnwrap(event).type)
+        }
+        XCTAssertEqual(eventTypes.first, "event.44")
+        XCTAssertEqual(eventTypes.last, "event.299")
+
+        var stateIterator = stateStream.makeAsyncIterator()
+        guard case .disconnected? = await stateIterator.next() else {
+            return XCTFail("Expected only the newest connection state")
+        }
     }
 }
