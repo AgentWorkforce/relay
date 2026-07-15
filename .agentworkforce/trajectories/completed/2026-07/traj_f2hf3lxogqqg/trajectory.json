@@ -8,8 +8,9 @@
       "id": "PR-1103"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-07-15T01:22:22.487Z",
+  "completedAt": "2026-07-15T01:36:17.011Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-07-15T01:26:52.477Z",
+      "endedAt": "2026-07-15T01:36:17.011Z",
       "events": [
         {
           "ts": 1784078812479,
@@ -39,12 +41,28 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Ported PR #1103 broker parity onto AgentRelayBrokerSDK: 13 broker control/observability methods + Codable types, corrected wire bugs (endpoints, listAgents envelope, sessionId camelCase, crash types), query-preserving resolveAPIURL, 18 new tests, README + changelog. Pushed to claude/pr-1103-review-5bqm37.",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
+  "commits": [
+    "6e305632"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_f2hf3lxogqqg/trajectory.json",
+    "CHANGELOG.md",
+    "packages/sdk-swift/README.md",
+    "packages/sdk-swift/Sources/AgentRelayBrokerSDK/AgentRelayBrokerClient.swift",
+    "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerHTTP.swift",
+    "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerTypes.swift",
+    "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests/AgentRelayBrokerSDKTests.swift"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "64c874e4fab9f55522dc8c95acfe7ab69737712c",
-    "endRef": "64c874e4fab9f55522dc8c95acfe7ab69737712c"
+    "endRef": "6e3056320105b6e7e0cf5b874cae7a6734618292",
+    "traceId": "a1c3b4f5-1906-4b3f-9f60-789df4be59e8"
   }
 }

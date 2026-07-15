@@ -1,0 +1,157 @@
+{
+  "version": "1.0.0",
+  "id": "a1c3b4f5-1906-4b3f-9f60-789df4be59e8",
+  "timestamp": "2026-07-15T01:36:17.057Z",
+  "trajectory": "traj_f2hf3lxogqqg",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_f2hf3lxogqqg/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 50,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 181,
+              "end_line": 197,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            },
+            {
+              "start_line": 228,
+              "end_line": 245,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelayBrokerSDK/AgentRelayBrokerClient.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 122,
+              "end_line": 205,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            },
+            {
+              "start_line": 230,
+              "end_line": 255,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            },
+            {
+              "start_line": 299,
+              "end_line": 342,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            },
+            {
+              "start_line": 430,
+              "end_line": 555,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerHTTP.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 97,
+              "end_line": 119,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerTypes.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 177,
+              "end_line": 212,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            },
+            {
+              "start_line": 421,
+              "end_line": 744,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests/AgentRelayBrokerSDKTests.swift",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 10,
+              "end_line": 49,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            },
+            {
+              "start_line": 270,
+              "end_line": 551,
+              "revision": "6e3056320105b6e7e0cf5b874cae7a6734618292"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
