@@ -798,6 +798,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     );
                                 }
                                 pty_auto.interactive_hold = hold;
+                                // A hold boundary invalidates any outstanding
+                                // flush exemption: entering a hold must freeze
+                                // everything (a pre-hold flush was consent to
+                                // inject while NOT driving, not through a later
+                                // drive), and after a release the exemption is
+                                // moot. Without this, a large backlog flushed
+                                // before a drive attach could keep injecting
+                                // into the human's session.
+                                hold_exempt_injections = 0;
+                                if let Some(inj) = active_injection.as_mut() {
+                                    inj.hold_exempt = false;
+                                }
                             }
                             "flush_injections" => {
                                 // Explicit flush (`POST /api/spawned/{name}/flush`):
@@ -805,15 +817,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // grant the currently-queued injections (and any
                                 // frozen in-flight one) a one-shot exemption from
                                 // the interactive hold. Later deliveries keep
-                                // parking under the hold as usual. A no-op when
-                                // nothing is queued or no hold is active (pops
-                                // drain the allowance either way).
-                                let backlog = pending_worker_injections.len();
-                                hold_exempt_injections = hold_exempt_injections.max(backlog);
-                                if let Some(inj) = active_injection.as_mut() {
-                                    inj.hold_exempt = true;
-                                }
+                                // parking under the hold as usual. Granted ONLY
+                                // while a hold is actually active — without one,
+                                // injections pop normally and an exemption
+                                // recorded now could pierce a hold that starts
+                                // before a slow backlog finishes draining.
                                 if pty_auto.interactive_hold {
+                                    let backlog = pending_worker_injections.len();
+                                    hold_exempt_injections = hold_exempt_injections.max(backlog);
+                                    if let Some(inj) = active_injection.as_mut() {
+                                        inj.hold_exempt = true;
+                                    }
                                     tracing::info!(
                                         target: "agent_relay::worker::pty",
                                         worker = %worker_name,

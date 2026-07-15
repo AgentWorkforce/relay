@@ -18,11 +18,9 @@ Drive mode no longer black-holes inbound relay messages: Ctrl+] toggles held/liv
 ## Key Decisions
 
 ### Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing
-- **Chose:** Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing
 - **Reasoning:** Three parallel investigations (relay broker, relaycast engine, relaycast-cloud) showed the reply was persisted and a delivery row created; the deterministic drop is local: drive attach flips the worker to manual_flush and #1249's interactive hold freezes injection pops, so a driven agent can never receive messages. Cross-node engine/cloud routing was ruled out for this repro (the kjg-lead->claude direction worked).
 
 ### Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default
-- **Chose:** Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default
 - **Reasoning:** The manual_flush-during-drive hold is deliberate (anti-splice, merged 2 days prior in #1249). Ctrl+] gives an in-band, human-initiated release using existing mode-transition plumbing (drain + set_interactive_hold false), and a one-shot flush_injections worker frame makes 'agent message flush' actually inject through the hold instead of parking messages in a second frozen queue.
 
 ---
@@ -32,5 +30,5 @@ Drive mode no longer black-holes inbound relay messages: Ctrl+] toggles held/liv
 ### 1. Work
 *Agent: default*
 
-- Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing: Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing
-- Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default: Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default
+- Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing
+- Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default

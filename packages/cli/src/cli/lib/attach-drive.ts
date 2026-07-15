@@ -10,12 +10,13 @@
  * live while you watch — without it, a driven agent can never receive relay
  * messages (the reply to anything you ask it to send sits parked until detach).
  * The out-of-band commands `local agent message flush`, `local agent message
- * hold`, and `local agent message auto` still work from another terminal; note
- * that a bare `flush` while a drive session holds the worker in `manual_flush`
- * only hands the queue to the PTY worker, whose injections stay frozen by the
- * interactive hold until the mode leaves `manual_flush`. `Ctrl+C` detaches,
- * restores the worker's previous inbound delivery mode, and leaves the agent
- * running under the broker — `drive` never kills the worker.
+ * hold`, and `local agent message auto` still work from another terminal: a
+ * bare `flush` during a drive session injects the queued backlog immediately
+ * (the broker follows the handoff with a one-shot `flush_injections` frame
+ * that exempts it from the interactive hold) while leaving the mode — and the
+ * parking of later messages — unchanged. `Ctrl+C` detaches, restores the
+ * worker's previous inbound delivery mode, and leaves the agent running under
+ * the broker — `drive` never kills the worker.
  *
  * Sequence of operations on attach (subscribe-first, so no output around
  * attach time is lost and none is double-painted):
@@ -741,35 +742,49 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     // toggles from the adopted state). Pending-counter updates come from the
     // broker's `agent_pending_drained` event, not from this response, so the
     // count is never double-subtracted.
-    let deliveryToggleInFlight = false;
-    const toggleDeliveryMode = async (): Promise<void> => {
-      if (deliveryToggleInFlight || settled) return;
-      deliveryToggleInFlight = true;
-      try {
-        const target: InboundDeliveryMode = currentMode === 'manual_flush' ? 'auto_inject' : 'manual_flush';
-        const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(
-          name,
-          target,
-          currentRevision !== null
-            ? { expectedMode: currentMode, expectedRevision: currentRevision }
-            : undefined
-        );
-        if (settled) return;
-        if (!result.matched) {
-          deps.log(`[drive] delivery mode was changed by another session; now ${result.mode}`);
+    // In-flight toggle request, if any. `finish()` awaits it before the
+    // detach restore so a quick Ctrl+] → Ctrl+C can't restore against a
+    // stale mode/revision while the toggle PUT is still changing broker
+    // state — the session's `currentMode`/`currentRevision` are updated even
+    // when teardown began mid-request, precisely so the restore CASes
+    // against what this session actually last wrote.
+    let deliveryToggleInFlight: Promise<void> | null = null;
+    const toggleDeliveryMode = (): Promise<void> => {
+      if (deliveryToggleInFlight) return deliveryToggleInFlight;
+      if (settled) return Promise.resolve();
+      const run = async (): Promise<void> => {
+        try {
+          const target: InboundDeliveryMode = currentMode === 'manual_flush' ? 'auto_inject' : 'manual_flush';
+          // Always guard on the session's last-known mode; add the revision
+          // when the broker reports one. A legacy broker without revisions
+          // still gets mode-level CAS instead of an unconditional write.
+          const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(
+            name,
+            target,
+            {
+              expectedMode: currentMode,
+              ...(currentRevision !== null ? { expectedRevision: currentRevision } : {}),
+            }
+          );
+          currentMode = result.mode;
+          if (result.revision !== null) {
+            currentRevision = result.revision;
+          }
+          if (settled) return;
+          if (!result.matched) {
+            deps.log(`[drive] delivery mode was changed by another session; now ${result.mode}`);
+          }
+          paintStatus();
+        } catch (err: unknown) {
+          if (settled) return;
+          const failure = mapBrokerSdkFailure(err);
+          deps.log(`[drive] could not toggle delivery mode: ${failure.message ?? 'unknown error'}`);
         }
-        currentMode = result.mode;
-        if (result.revision !== null) {
-          currentRevision = result.revision;
-        }
-        paintStatus();
-      } catch (err: unknown) {
-        if (settled) return;
-        const failure = mapBrokerSdkFailure(err);
-        deps.log(`[drive] could not toggle delivery mode: ${failure.message ?? 'unknown error'}`);
-      } finally {
-        deliveryToggleInFlight = false;
-      }
+      };
+      deliveryToggleInFlight = run().finally(() => {
+        deliveryToggleInFlight = null;
+      });
+      return deliveryToggleInFlight;
     };
 
     // ---- stdin handling ----
@@ -929,16 +944,28 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         // Compare-and-set against this session's LAST write (`Ctrl+]` may have
         // toggled the mode and bumped the revision since the attach flip) so
         // the restore still matches after an in-session toggle but never
-        // clobbers an out-of-band change.
-        restoreInboundDeliveryModeOnDetach(
-          connection,
-          name,
-          previousMode,
-          currentMode,
-          currentRevision,
-          'drive',
-          deps
-        ),
+        // clobbers an out-of-band change. Await any in-flight toggle first —
+        // a quick Ctrl+] → Ctrl+C must not restore against the pre-toggle
+        // mode/revision while the toggle PUT is still landing — and read
+        // `currentMode`/`currentRevision` only after it settles.
+        (async () => {
+          if (deliveryToggleInFlight) {
+            try {
+              await deliveryToggleInFlight;
+            } catch {
+              // best effort — restore proceeds with the latest known state
+            }
+          }
+          await restoreInboundDeliveryModeOnDetach(
+            connection,
+            name,
+            previousMode,
+            currentMode,
+            currentRevision,
+            'drive',
+            deps
+          );
+        })(),
       ]);
       let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
       const deadline = new Promise<void>((res) => {

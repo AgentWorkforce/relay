@@ -791,6 +791,64 @@ describe('runDriveSession', () => {
     await sessionPromise;
   });
 
+  it('awaits an in-flight toggle before the detach restore so a quick Ctrl+] then Ctrl+C restores from the toggled state', async () => {
+    const { deps, sockets, stdin, fetchLog } = createHarness({ initialMode: 'auto_inject' });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // Toggle and detach back-to-back, with no event-loop turns in between —
+    // the toggle PUT is still in flight when finish() runs.
+    stdin.type(Buffer.from([0x1d]));
+    stdin.type(Buffer.from([0x03]));
+    const code = await sessionPromise;
+    expect(code).toBe(0);
+
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls).toHaveLength(3);
+    // The toggle landed (rev 1 → 2)…
+    expect(modeCalls[1].body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
+      expected_revision: '1',
+    });
+    // …and the restore CASed against the POST-toggle state, not the stale
+    // attach-time revision.
+    expect(modeCalls[2].body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'auto_inject',
+      expected_revision: '2',
+    });
+  });
+
+  it('keeps the expectedMode guard when a legacy broker reports no revision', async () => {
+    const { deps, sockets, stdin, fetchLog } = createHarness({
+      routes: {
+        // Legacy broker: applies the mode but never reports a revision.
+        'PUT /delivery-mode': async (init) => {
+          const body = init?.body ? (JSON.parse(String(init.body)) as { mode: string }) : { mode: '' };
+          return new Response(JSON.stringify({ mode: body.mode, flushed: 0, matched: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    stdin.type(Buffer.from([0x1d]));
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    // The toggle is still mode-guarded — never an unconditional write.
+    expect(modeCalls[1]?.body).toEqual({
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
+    });
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
   it('connects the event WS with the durable-event sinceSeq cutoff', async () => {
     // The cutoff stops the broker replaying historical durable events (old
     // delivery_queued frames) that would otherwise inflate the pending
