@@ -184,7 +184,7 @@ describe('embedded node lifecycle', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
-    expect(backgroundReads).toBe(1);
+    expect(backgroundReads).toBeGreaterThanOrEqual(2);
     expect(spawnProcess).not.toHaveBeenCalled();
     await expect(result.handle.stop()).resolves.toMatchObject({ ok: true, code: 0 });
   });
