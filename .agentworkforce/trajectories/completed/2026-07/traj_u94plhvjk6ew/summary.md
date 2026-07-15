@@ -18,6 +18,7 @@ Merged current origin/main into PR 1268, retained all Unreleased patch changelog
 ## Key Decisions
 
 ### Keep all Unreleased patch changelog entries
+
 - **Chose:** Keep all Unreleased patch changelog entries
 - **Reasoning:** The only merge conflict combined independent user-visible fixes from PR 1268 and current main, all at patch impact, so no entry should be dropped.
 
@@ -26,6 +27,7 @@ Merged current origin/main into PR 1268, retained all Unreleased patch changelog
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Keep all Unreleased patch changelog entries: Keep all Unreleased patch changelog entries

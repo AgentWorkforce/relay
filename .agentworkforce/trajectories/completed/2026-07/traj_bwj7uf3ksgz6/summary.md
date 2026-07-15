@@ -18,10 +18,12 @@ Fixed Swift SDK AsyncStream continuation leaks with cancellation cleanup, bounde
 ## Key Decisions
 
 ### Use token-keyed bounded AsyncStream registries in both Swift SDKs
+
 - **Chose:** Use token-keyed bounded AsyncStream registries in both Swift SDKs
 - **Reasoning:** Stable UUIDs plus termination tombstones close cancellation-before-registration races; bufferingNewest(256) bounds event/message queues, bufferingNewest(1) bounds state, and lazy channel streams avoid join-only queues.
 
 ### Fence Swift stream registration with disconnect generations
+
 - **Chose:** Fence Swift stream registration with disconnect generations
 - **Reasoning:** Claude review identified tombstone growth and post-disconnect registration resurrection. Cancel-aware registration tasks eliminate termination tombstones, while a lock-protected generation invalidated at disconnect rejects actor tasks scheduled by older stream epochs.
 
@@ -30,7 +32,8 @@ Fixed Swift SDK AsyncStream continuation leaks with cancellation cleanup, bounde
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use token-keyed bounded AsyncStream registries in both Swift SDKs: Use token-keyed bounded AsyncStream registries in both Swift SDKs
 - Fence Swift stream registration with disconnect generations: Fence Swift stream registration with disconnect generations
