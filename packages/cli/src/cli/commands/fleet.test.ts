@@ -80,6 +80,67 @@ describe('fleet command support', () => {
     });
   });
 
+  it('fleet nodes accepts --wk as an alias for --workspace-key', async () => {
+    const nodes = { list: vi.fn(async () => []) };
+    const createWorkspaceRelay = vi.fn(() => ({ nodes }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', '--wk', 'rk_live_alias'], { from: 'user' });
+
+    // The alias is folded into workspaceKey before the action resolves the client.
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_alias',
+      token: undefined,
+      baseUrl: undefined,
+    });
+    expect(nodes.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('fleet nodes prefers an explicit --workspace-key over --wk', async () => {
+    const nodes = { list: vi.fn(async () => []) };
+    const createWorkspaceRelay = vi.fn(() => ({ nodes }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      ['fleet', 'nodes', '--workspace-key', 'rk_live_explicit', '--wk', 'rk_live_alias'],
+      { from: 'user' }
+    );
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_explicit',
+      token: undefined,
+      baseUrl: undefined,
+    });
+  });
+
   it('fleet status output redacts the node token and workspace key from the session', async () => {
     const logs: string[] = [];
     const nodes = { list: vi.fn(async () => [{ name: 'live-node', status: 'online', capabilities: [] }]) };

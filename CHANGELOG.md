@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every SDK-backed `agent-relay` command (`fleet nodes`, `workspace`, `integration`, `webhook`, …) accepts `--wk <key>` as a shorthand for `--workspace-key`; an explicit `--workspace-key` still wins when both are passed.
 - `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
 
 ### Fixed
