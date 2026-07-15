@@ -343,12 +343,15 @@ impl RelaycastHttpClient {
                 metadata: None,
             };
             match agent_client.ensure_joined_channel(request).await {
-                Ok(outcome) => tracing::info!(
-                    channel = %outcome.name,
-                    created = outcome.created,
-                    joined = outcome.joined,
-                    "ensured default channel membership"
-                ),
+                Ok(outcome) => {
+                    tracing::info!(
+                        channel = %outcome.name,
+                        created = outcome.created,
+                        joined = outcome.joined,
+                        "ensured default channel membership"
+                    );
+                    mute_self_channel(&agent_client, &outcome.name).await;
+                }
                 Err(error) => {
                     tracing::warn!(channel = %name, error = %error, "failed to ensure default channel membership");
                 }
@@ -385,12 +388,15 @@ impl RelaycastHttpClient {
                 metadata: None,
             };
             match agent_client.ensure_joined_channel(request).await {
-                Ok(outcome) => tracing::info!(
-                    channel = %outcome.name,
-                    created = outcome.created,
-                    joined = outcome.joined,
-                    "ensured extra channel membership"
-                ),
+                Ok(outcome) => {
+                    tracing::info!(
+                        channel = %outcome.name,
+                        created = outcome.created,
+                        joined = outcome.joined,
+                        "ensured extra channel membership"
+                    );
+                    mute_self_channel(&agent_client, &outcome.name).await;
+                }
                 Err(error) => {
                     tracing::warn!(channel = %name, error = %error, "failed to ensure extra channel membership");
                 }
@@ -570,6 +576,25 @@ impl RelaycastHttpClient {
         }
 
         self.send_dm_with_mode(to, text, mode, from).await
+    }
+}
+
+/// Mute a channel for the broker-self agent, best-effort.
+///
+/// The broker-self identity lives on an implicit direct node that never
+/// connects, so every channel message fanned out to it writes a delivery row
+/// that queues forever and churns through TTL expiry. The engine's channel
+/// delivery fan-out skips muted members (mentions still deliver), so muting
+/// the broker-self membership stops those dead-letter rows at the source.
+/// Failures only log a warning — muting is an optimization and must never
+/// fail startup.
+async fn mute_self_channel(agent_client: &AgentClient, channel: &str) {
+    if let Err(error) = agent_client.mute_channel(channel).await {
+        tracing::warn!(
+            channel = %channel,
+            error = %error,
+            "failed to mute channel for broker-self agent; channel deliveries will queue for its offline node"
+        );
     }
 }
 

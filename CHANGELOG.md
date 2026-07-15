@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `@agent-relay/sdk` observer mode: `new AgentRelay({ observerToken })` streams `relay.addListener(...)` read-only from the workspace observer plane — the durable event log is REST-backfilled and merged with the live stream, deduped and ordered by `seq`, with `sinceSeq`/`onCursor` options to persist and resume the cursor across restarts. Degrades to live-only against engines without the backfill endpoint; `workspace.register()`/`reconnect()` throw in observer mode (observer tokens are read-only).
 
 ### Changed
 
@@ -13,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/sdk` `relay.addListener(...)` on a workspace-key client now receives channel messages, DMs, and thread replies by streaming through registered agent clients (`workspace.register`/`reconnect`) over the node transport, deduplicating events delivered to multiple locally-registered agents; previously listeners silently received nothing. Listener connect failures now surface through `onError` instead of being swallowed, and a listener with no registered agent warns after 10s.
+- `agent-relay-broker` now mutes the default/extra channels it joins for its own broker-self agent, so channel messages stop writing delivery rows to that identity's permanently-offline implicit node (they previously queued until TTL expiry on every message). Muting is best-effort and never fails startup.
 - `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
 
 ## [10.4.0] - 2026-07-15
