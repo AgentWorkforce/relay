@@ -1,4 +1,13 @@
-import { createDefaultRelay, withDefaults, type CoreDependencies } from '../commands/core.js';
+import { fileURLToPath } from 'node:url';
+
+import { getProjectPaths } from '@agent-relay/config';
+
+import {
+  createDefaultRelay,
+  withDefaults,
+  type CoreDependencies,
+  type CoreProjectPaths,
+} from '../commands/core.js';
 import {
   runDownCommand,
   runStatusCommand,
@@ -76,6 +85,9 @@ export class BrokerLifecycleExitError extends Error {
 
 type SignalHandler = () => void | Promise<void>;
 
+const MAX_BUFFERED_OUTPUT_ENTRIES = 1_000;
+const OUTPUT_TRIM_BATCH_SIZE = 250;
+
 interface OutputRecorder {
   emit(level: EmbeddedNodeOutputLevel, args: unknown[]): void;
   snapshot(): EmbeddedNodeOutput[];
@@ -111,6 +123,9 @@ function createOutputRecorder(runtime: EmbeddedNodeRuntimeOptions): OutputRecord
   const emit = (level: EmbeddedNodeOutputLevel, args: unknown[]): void => {
     const entry = { level, message: args.map(formatOutputArg).join(' ') } satisfies EmbeddedNodeOutput;
     output.push(entry);
+    if (output.length > MAX_BUFFERED_OUTPUT_ENTRIES) {
+      output.splice(0, OUTPUT_TRIM_BATCH_SIZE);
+    }
     runtime.onOutput?.(entry);
   };
   return {
@@ -146,7 +161,13 @@ function createEmbeddedDependencies(
   releaseHold: Deferred<void>,
   dependencyOverrides: Partial<CoreDependencies>
 ): CoreDependencies {
+  const isolatedEnvProvided = runtime.env !== undefined || dependencyOverrides.env !== undefined;
   const env = { ...(runtime.env ?? dependencyOverrides.env ?? process.env) };
+  const embeddedGetProjectPaths: CoreDependencies['getProjectPaths'] | undefined =
+    dependencyOverrides.getProjectPaths ??
+    (isolatedEnvProvided
+      ? () => getProjectPaths(env.AGENT_RELAY_PROJECT ?? process.cwd()) as unknown as CoreProjectPaths
+      : undefined);
   const createRelay: CoreDependencies['createRelay'] =
     dependencyOverrides.createRelay ??
     ((cwd, apiPort, brokerName, verbose) =>
@@ -158,7 +179,11 @@ function createEmbeddedDependencies(
 
   return withDefaults({
     ...dependencyOverrides,
+    ...(embeddedGetProjectPaths ? { getProjectPaths: embeddedGetProjectPaths } : {}),
     env,
+    // Resolve relative to this package, never process.argv[1] (the embedding
+    // host's entry script), so the matching bundled MCP helper is discoverable.
+    cliScript: dependencyOverrides.cliScript ?? fileURLToPath(new URL('../index.js', import.meta.url)),
     createRelay,
     log: (...args) => recorder.emit('info', args),
     warn: (...args) => recorder.emit('warn', args),

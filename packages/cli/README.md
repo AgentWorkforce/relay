@@ -80,6 +80,8 @@ belongs to the process-oriented CLI. Use `downEmbeddedNode` and
 `statusEmbeddedNode` when controlling a broker through its persisted state.
 When `runtime.env` is supplied, that cloned environment is authoritative for
 broker binary lookup, state lookup, and the spawned broker process.
+`onOutput` streams every entry; returned result snapshots retain the most recent
+1,000 entries so a long-lived host does not accumulate an unbounded log array.
 
 ## Packages
 

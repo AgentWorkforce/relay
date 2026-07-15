@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoreDependencies, CoreRelay } from './cli/commands/core.js';
@@ -206,6 +207,56 @@ describe('embedded node lifecycle', () => {
       level: 'error',
       message: 'Error stopping broker: denied embedded shutdown',
     });
+  });
+
+  it('resolves project paths from the isolated env instead of the host env', async () => {
+    const hostProject = makeTempRoot();
+    const embeddedProject = makeTempRoot();
+    const hostStateDir = path.join(hostProject, '.agentworkforce', 'relay');
+    fs.mkdirSync(hostStateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(hostStateDir, 'connection.json'),
+      JSON.stringify({
+        url: 'http://127.0.0.1:3889',
+        port: 3889,
+        api_key: 'test',
+        pid: process.pid,
+      })
+    );
+    const originalHostProject = process.env.AGENT_RELAY_PROJECT;
+    process.env.AGENT_RELAY_PROJECT = hostProject;
+
+    try {
+      const result = await statusEmbeddedNode({}, { env: { AGENT_RELAY_PROJECT: embeddedProject } });
+
+      expect(result).toMatchObject({ ok: true, code: 0 });
+      expect(result.output).toContainEqual({ level: 'info', message: 'Status: STOPPED' });
+    } finally {
+      if (originalHostProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = originalHostProject;
+    }
+  });
+
+  it('resolves the bundled MCP helper beside the package CLI instead of the host script', async () => {
+    const projectRoot = makeTempRoot();
+    const { overrides } = successfulLifecycleOverrides(projectRoot);
+    const checkedPaths: string[] = [];
+    const realFs = overrides.fs!;
+    overrides.fs = {
+      ...realFs,
+      existsSync: (filePath) => {
+        checkedPaths.push(filePath);
+        return realFs.existsSync(filePath);
+      },
+    };
+    delete overrides.cliScript;
+
+    const started = await startEmbeddedNodeWithDependencies({}, {}, overrides);
+
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error(started.message);
+    expect(checkedPaths).toContain(fileURLToPath(new URL('./cli/agent-relay-mcp.js', import.meta.url)));
+    await started.handle.stop();
   });
 
   it('keeps all 14 lifecycle exits behind the injected dependency boundary', () => {
