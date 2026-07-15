@@ -267,6 +267,7 @@ const MAX_HELD_SEQUENCE_LENGTH = 256;
  *  is unsafe: a later chunk's `h` would complete it locally and re-enable the
  *  very input-report modes this filter strips, so an over-long one is dropped
  *  instead of passed through. */
+// eslint-disable-next-line no-control-regex -- intentionally matching a raw ESC byte in PTY output
 const PARTIAL_PRIVATE_MODE = /^\x1b\[\?[0-9;]*$/;
 
 /**
@@ -351,6 +352,7 @@ export class InputReportModeFilter {
 /** Rewrite one complete CSI sequence: strip input-report modes from a
  *  DECSET enable, pass every other CSI through verbatim. */
 function filterCompleteCsi(sequence: string): string {
+  // eslint-disable-next-line no-control-regex -- intentionally matching a raw ESC byte in PTY output
   const match = /^\x1b\[\?([0-9;]+)h$/.exec(sequence);
   if (!match) return sequence;
   const kept = match[1].split(';').filter((mode) => !INPUT_REPORT_MODES.has(Number(mode)));
