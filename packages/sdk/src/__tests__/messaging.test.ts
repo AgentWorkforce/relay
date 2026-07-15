@@ -437,17 +437,21 @@ describe('RelaycastMessagingClient', () => {
 
     // Nodes advertise serviceable repos as `repo:<key>` tags; placement's repo
     // filter reads them through repoKeys when no dedicated field is present.
-    expect(toRelayNode({
-      name: 'builder-4',
-      status: 'online',
-      tags: ['factory', 'repo:AgentWorkforce/factory', 'repo:relay'],
-    }).repoKeys).toEqual(['AgentWorkforce/factory', 'relay']);
-    expect(toRelayNode({
-      name: 'builder-5',
-      status: 'online',
-      repo_keys: ['explicit'],
-      tags: ['repo:ignored-when-explicit'],
-    }).repoKeys).toEqual(['explicit']);
+    expect(
+      toRelayNode({
+        name: 'builder-4',
+        status: 'online',
+        tags: ['factory', 'repo:AgentWorkforce/factory', 'repo:relay'],
+      }).repoKeys
+    ).toEqual(['AgentWorkforce/factory', 'relay']);
+    expect(
+      toRelayNode({
+        name: 'builder-5',
+        status: 'online',
+        repo_keys: ['explicit'],
+        tags: ['repo:ignored-when-explicit'],
+      }).repoKeys
+    ).toEqual(['explicit']);
     expect(toRelayNode({ name: 'builder-6', tags: ['factory'] }).repoKeys).toBeUndefined();
 
     await expect(client.nodes.get('builder-2')).resolves.toMatchObject({
