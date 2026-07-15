@@ -109,6 +109,15 @@ export interface CoreDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
+  /** Stdio ownership for the optional Python node-provider child. */
+  pythonProviderStdio?: 'inherit' | 'ignore';
+  /** Optional structured logger factory for long-lived node capability providers. */
+  createNodeLogger?: (component: string) => {
+    debug: (message: string, extra?: Record<string, unknown>) => void;
+    info: (message: string, extra?: Record<string, unknown>) => void;
+    warn: (message: string, extra?: Record<string, unknown>) => void;
+    error: (message: string, extra?: Record<string, unknown>) => void;
+  };
   exit: ExitFn;
 }
 
@@ -142,18 +151,36 @@ function resolveCliVersion(fileSystem: CoreFileSystem): string {
   }
 }
 
-async function createDefaultRelay(
+export interface CoreRelayRuntimeOptions {
+  /** Environment inherited by the broker process. Defaults to process.env for the CLI. */
+  env?: NodeJS.ProcessEnv;
+  /** Human-readable broker startup step sink used by embedders. */
+  onStep?: (message: string) => void;
+  /** Broker stderr sink used by embedders. */
+  onStderr?: (line: string) => void;
+}
+
+/**
+ * Construct the production relay client used by `up`.
+ *
+ * The optional runtime overrides let an in-process host isolate environment
+ * and output ownership. The normal CLI deliberately omits them and retains
+ * its existing process.env / console behavior.
+ */
+export async function createDefaultRelay(
   cwd: string,
   apiPort = 0,
   brokerName?: string,
-  verbose = false
+  verbose = false,
+  runtime: CoreRelayRuntimeOptions = {}
 ): Promise<CoreRelay> {
   const binaryArgs: BrokerInitArgs = {};
   if (apiPort > 0) {
     binaryArgs.persist = true;
     binaryArgs.apiPort = apiPort;
   }
-  const stateDir = process.env.AGENT_RELAY_STATE_DIR;
+  const env = runtime.env ?? process.env;
+  const stateDir = env.AGENT_RELAY_STATE_DIR;
   if (stateDir) {
     binaryArgs.stateDir = stateDir;
   }
@@ -161,11 +188,16 @@ async function createDefaultRelay(
     cwd,
     binaryArgs,
     brokerName,
+    env,
+    // An explicit runtime environment belongs to an embedder and must be the
+    // broker child's complete base environment. The terminal CLI omits this
+    // override and retains normal process.env inheritance.
+    ...(runtime.env !== undefined ? { parentEnv: env } : {}),
     preferConnect: apiPort > 0,
     ...(verbose
       ? {
-          onStep: (message: string) => console.error(`[agent-relay][verbose] ${message}`),
-          onStderr: (line: string) => console.error(`[broker] ${line}`),
+          onStep: runtime.onStep ?? ((message: string) => console.error(`[agent-relay][verbose] ${message}`)),
+          onStderr: runtime.onStderr ?? ((line: string) => console.error(`[broker] ${line}`)),
         }
       : {}),
   });

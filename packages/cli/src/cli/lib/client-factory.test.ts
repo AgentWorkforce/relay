@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const spawnSpy = vi.fn();
 const connectSpy = vi.fn();
@@ -26,6 +26,8 @@ vi.mock('@agent-relay/harness-driver', () => {
 
 import { createRuntimeClient, spawnAgentWithClient } from './client-factory.js';
 
+const originalEnv = { ...process.env };
+
 describe('client-factory', () => {
   beforeEach(() => {
     spawnSpy.mockClear();
@@ -33,6 +35,11 @@ describe('client-factory', () => {
     mockSpawnedClient.spawnPty.mockClear();
     mockConnectedClient.spawnPty.mockClear();
     delete process.env.AGENT_RELAY_BIN;
+    delete process.env.AGENT_RELAY_STATE_DIR;
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
   });
 
   it('builds HarnessDriverClient with defaults', async () => {
@@ -69,6 +76,28 @@ describe('client-factory', () => {
     );
   });
 
+  it('resolves the broker binary from the isolated env instead of the host env', async () => {
+    process.env.AGENT_RELAY_BIN = '/host/agent-relay-broker';
+    const env = {
+      AGENT_RELAY_BIN: '/embedded/agent-relay-broker',
+      EMBEDDED_ONLY: '1',
+    } as NodeJS.ProcessEnv;
+
+    await createRuntimeClient({
+      cwd: '/tmp/project',
+      env,
+      parentEnv: env,
+    });
+
+    expect(spawnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binaryPath: '/embedded/agent-relay-broker',
+        env,
+        parentEnv: env,
+      })
+    );
+  });
+
   it('prefers connecting to an existing broker when requested', async () => {
     const client = await createRuntimeClient({
       cwd: '/tmp/project',
@@ -78,6 +107,20 @@ describe('client-factory', () => {
     expect(connectSpy).toHaveBeenCalledWith({ cwd: '/tmp/project' });
     expect(spawnSpy).not.toHaveBeenCalled();
     expect(client).toBe(mockConnectedClient);
+  });
+
+  it('resolves an existing broker connection from the isolated env', async () => {
+    process.env.AGENT_RELAY_STATE_DIR = '/host/state';
+    const env = { AGENT_RELAY_STATE_DIR: '/embedded/state' } as NodeJS.ProcessEnv;
+
+    await createRuntimeClient({
+      cwd: '/tmp/project',
+      env,
+      preferConnect: true,
+    });
+
+    expect(connectSpy).toHaveBeenCalledWith({ cwd: '/tmp/project', env });
+    expect(spawnSpy).not.toHaveBeenCalled();
   });
 
   it('spawns through spawnPty', async () => {

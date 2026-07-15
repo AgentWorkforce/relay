@@ -52,6 +52,37 @@ Node workflow runs use Relayflows for YAML, TypeScript, and Python workflow file
 
 Hosted equivalents live under `agent-relay cloud …`.
 
+## Embedded node lifecycle
+
+Long-lived Node.js hosts can start the same foreground broker lifecycle without
+letting the CLI own `process.exit`, global signal handlers, `process.env`, or
+console output:
+
+```ts
+import { startEmbeddedNode } from 'agent-relay/node-embedded';
+
+const started = await startEmbeddedNode(
+  { config: '/absolute/path/to/agent-relay.mjs' },
+  { onOutput: ({ level, message }) => hostLogger[level](message) }
+);
+if (!started.ok) {
+  throw new Error(started.message);
+}
+
+process.once('SIGTERM', () => void started.handle.stop('SIGTERM'));
+await started.handle.completion;
+```
+
+The host owns signal forwarding and calls the idempotent `handle.stop()` when
+it wants Relay to shut down. Embedded startup is foreground-only;
+`background: true` returns a structured code-2 failure because detached mode
+belongs to the process-oriented CLI. Use `downEmbeddedNode` and
+`statusEmbeddedNode` when controlling a broker through its persisted state.
+When `runtime.env` is supplied, that cloned environment is authoritative for
+broker binary lookup, state lookup, and the spawned broker process.
+`onOutput` streams every entry; returned result snapshots retain the most recent
+1,000 entries so a long-lived host does not accumulate an unbounded log array.
+
 ## Packages
 
 - `@agent-relay/sdk`: messaging, delivery contracts, and actions.

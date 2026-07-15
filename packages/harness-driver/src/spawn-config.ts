@@ -29,6 +29,11 @@ export interface RuntimeSpawnOptions {
   cwd?: string;
   /** Environment variables for the broker process. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Base environment inherited by the broker process. Defaults to process.env.
+   * Embedders can supply an isolated base without changing CLI behavior.
+   */
+  parentEnv?: NodeJS.ProcessEnv;
   /** Forward broker stderr to this callback. */
   onStderr?: (line: string) => void;
   /** Forward human-readable startup step markers to this callback (e.g. for `--verbose`). */
@@ -84,7 +89,7 @@ function nonEmptyString(value: string | undefined): string | undefined {
 export function buildBrokerSpawnConfig(
   options: RuntimeSpawnOptions | undefined,
   apiKey: string,
-  parentEnv: NodeJS.ProcessEnv = process.env
+  parentEnv: NodeJS.ProcessEnv = options?.parentEnv ?? process.env
 ): BrokerSpawnConfig {
   const cwd = options?.cwd ?? process.cwd();
   const brokerName =

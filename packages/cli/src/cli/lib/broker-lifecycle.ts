@@ -16,7 +16,7 @@ import {
 } from './node-definition-loader.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 
-type UpOptions = {
+export type UpOptions = {
   spawn?: boolean;
   background?: boolean;
   verbose?: boolean;
@@ -41,7 +41,7 @@ type UpOptions = {
   logJson?: boolean;
 };
 
-type DownOptions = {
+export type DownOptions = {
   force?: boolean;
   all?: boolean;
   timeout?: string;
@@ -61,6 +61,8 @@ const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
 // `/api/session` when serving a capability definition without an explicit
 // RELAY_NODE_TOKEN.
 const NODE_TOKEN_WAIT_MS = 15_000;
+
+export type StatusOptions = { stateDir?: string; waitFor?: string };
 
 export interface BrokerConnection {
   url: string;
@@ -504,7 +506,7 @@ async function startNodeCapabilityProviders(
           // flag, keep the prior behavior: the registration summary via log, warnings
           // via warn.
           ...(nodeLoggingEnabled(options)
-            ? { logger: createLogger('fleet') }
+            ? { logger: deps.createNodeLogger?.('fleet') ?? createLogger('fleet') }
             : { warn: (message) => deps.warn(message), log: (message) => deps.log(message) }),
         })
       );
@@ -565,7 +567,10 @@ function startPythonNodeProvider(
     ...(credentials.baseUrl ? { RELAY_BASE_URL: credentials.baseUrl } : {}),
   };
   try {
-    const child = deps.spawnProcess(python, [configPath], { stdio: 'inherit', env });
+    const child = deps.spawnProcess(python, [configPath], {
+      stdio: deps.pythonProviderStdio ?? 'inherit',
+      env,
+    });
     deps.log(
       `Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
     );
@@ -616,13 +621,25 @@ function readBrokerPid(dataDir: string, _deps: CoreDependencies): number | null 
   return conn?.pid ?? null;
 }
 
-function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
+type ProcessLiveness = 'running' | 'stopped' | 'unknown';
+
+function getProcessLiveness(pid: number, deps: CoreDependencies): ProcessLiveness {
   try {
     deps.killProcess(pid, 0);
-    return true;
-  } catch {
-    return false;
+    return 'running';
+  } catch (err: unknown) {
+    return errorCode(err) === 'ESRCH' ? 'stopped' : 'unknown';
   }
+}
+
+function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
+  return getProcessLiveness(pid, deps) === 'running';
+}
+
+function isProcessConfirmedStopped(pid: number, deps: CoreDependencies): boolean {
+  // EPERM and other probe failures do not prove the process exited. Only
+  // ESRCH is authoritative enough to permit deleting its lifecycle state.
+  return getProcessLiveness(pid, deps) === 'stopped';
 }
 
 type ProcessInfo = {
@@ -805,6 +822,21 @@ async function waitForProcessExit(pid: number, timeoutMs: number, deps: CoreDepe
     await deps.sleep(100);
   }
   return false;
+}
+
+async function waitForConfirmedProcessExit(
+  pid: number,
+  timeoutMs: number,
+  deps: CoreDependencies
+): Promise<boolean> {
+  const startedAt = deps.now();
+  while (deps.now() - startedAt < timeoutMs) {
+    if (isProcessConfirmedStopped(pid, deps)) {
+      return true;
+    }
+    await deps.sleep(100);
+  }
+  return isProcessConfirmedStopped(pid, deps);
 }
 
 async function recoverHalfStartedBroker(
@@ -1411,9 +1443,14 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     return;
   }
 
-  if (!isProcessRunning(pid, deps)) {
+  const initialLiveness = getProcessLiveness(pid, deps);
+  if (initialLiveness === 'stopped') {
     cleanupBrokerFiles(paths, deps);
     deps.log('Cleaned up stale state (process was not running)');
+    return;
+  }
+  if (initialLiveness === 'unknown') {
+    deps.error(`Unable to determine whether broker process ${pid} is running; retaining state.`);
     return;
   }
 
@@ -1421,7 +1458,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     deps.log(`Stopping broker (pid: ${pid})...`);
     deps.killProcess(pid, 'SIGTERM');
 
-    const exited = await waitForProcessExit(pid, timeout, deps);
+    let exited = await waitForConfirmedProcessExit(pid, timeout, deps);
     if (!exited) {
       // eslint-disable-next-line max-depth
       if (options.force) {
@@ -1429,16 +1466,30 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
         // eslint-disable-next-line max-depth
         try {
           deps.killProcess(pid, 'SIGKILL');
-          await waitForProcessExit(pid, 2000, deps);
-        } catch {
-          // Ignore kill errors.
+        } catch (err: unknown) {
+          // ESRCH means the process won the race and exited before SIGKILL.
+          // Any other failure must retain state unless a strict liveness probe
+          // independently confirms the process is gone.
+          // eslint-disable-next-line max-depth
+          if (errorCode(err) !== 'ESRCH' && !isProcessConfirmedStopped(pid, deps)) {
+            deps.error(`Error force stopping broker: ${toErrorMessage(err)}`);
+            return;
+          }
+        }
+        exited = await waitForConfirmedProcessExit(pid, 2000, deps);
+        // eslint-disable-next-line max-depth
+        if (!exited) {
+          deps.error(`Forced shutdown failed; broker process ${pid} is still running.`);
+          return;
         }
       } else {
-        deps.log(`Graceful shutdown timed out after ${timeout}ms. Use --force to kill.`);
+        deps.error(`Graceful shutdown timed out after ${timeout}ms. Use --force to kill.`);
         return;
       }
     }
 
+    // State is control authority for down/status. Never remove it until an
+    // ESRCH-backed probe has confirmed the broker process exited.
     cleanupBrokerFiles(paths, deps);
     deps.log('Stopped');
   } catch (err: unknown) {
@@ -1452,10 +1503,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
   }
 }
 
-export async function runStatusCommand(
-  deps: CoreDependencies,
-  options?: { stateDir?: string; waitFor?: string }
-): Promise<void> {
+export async function runStatusCommand(deps: CoreDependencies, options?: StatusOptions): Promise<void> {
   const paths = deps.getProjectPaths();
   if (options?.stateDir) {
     paths.dataDir = path.resolve(options.stateDir);

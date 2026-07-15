@@ -823,10 +823,12 @@ describe('registerCoreCommands', () => {
       [runtimePath]: '',
     });
 
+    const lifecycleEvents: string[] = [];
     let running = true;
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0 || signal === undefined) {
         if (!running) {
+          lifecycleEvents.push('exit-confirmed');
           const err = new Error('not running') as Error & { code?: string };
           err.code = 'ESRCH';
           throw err;
@@ -834,8 +836,14 @@ describe('registerCoreCommands', () => {
         return;
       }
       if (signal === 'SIGTERM') {
+        lifecycleEvents.push('sigterm');
         running = false;
       }
+    });
+    const unlinkSync = fs.unlinkSync;
+    fs.unlinkSync = vi.fn((filePath: string) => {
+      lifecycleEvents.push(`cleanup:${filePath}`);
+      unlinkSync(filePath);
     });
 
     const { program } = createHarness({ fs, killImpl });
@@ -847,6 +855,10 @@ describe('registerCoreCommands', () => {
     expect(fs.unlinkSync).toHaveBeenCalledWith(connectionPath);
     expect(fs.unlinkSync).toHaveBeenCalledWith(relaySockPath);
     expect(fs.unlinkSync).toHaveBeenCalledWith(runtimePath);
+    expect(lifecycleEvents.indexOf('exit-confirmed')).toBeGreaterThan(lifecycleEvents.indexOf('sigterm'));
+    expect(lifecycleEvents.indexOf(`cleanup:${connectionPath}`)).toBeGreaterThan(
+      lifecycleEvents.indexOf('exit-confirmed')
+    );
   });
 
   it('down reports not running when connection metadata is missing', async () => {
