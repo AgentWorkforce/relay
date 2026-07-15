@@ -7,6 +7,10 @@ use serde::{
 use serde_json::Value;
 
 pub const FLEET_WIRE_VERSION: FleetWireVersion = FleetWireVersion;
+/// Node capability that negotiates `delivery_ack_seq` in `agent.register`
+/// replies. It is declared as capacity so older engines never materialize it
+/// as an invokable action.
+pub const DELIVERY_CURSOR_CAPABILITY: &str = "relay:delivery-cursor-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FleetWireVersion;
@@ -62,12 +66,39 @@ pub struct FleetCapability {
         skip_serializing_if = "Option::is_none"
     )]
     pub kind: Option<String>,
+    /// `action` capability opting into a workspace-global alias claiming this name.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub global: Option<bool>,
+    /// `action` capability opting into the offline queue when its provider is down.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub queue: Option<bool>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_presence",
         skip_serializing_if = "Option::is_none"
     )]
     pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+/// Provider identity carried on connection-scoped node frames. `name` is the
+/// provider's stable identity — persistence, capability-conflict checks, and the
+/// engine's routing key. `instance_id` is the connection epoch: re-registering
+/// the same name with a fresh instance replaces the previous attachment
+/// (reconnect), while a name whose current instance is still connected is
+/// rejected as a duplicate process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FleetProviderIdentity {
+    pub name: String,
+    pub instance_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,10 +113,24 @@ pub struct NodeRegister {
     pub id: Option<String>,
     pub name: String,
     pub node_id: String,
+    // Absent means the synthetic `default` provider; the broker always sends its
+    // own `{ name: "broker", instance_id }` identity.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider: Option<FleetProviderIdentity>,
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub tags: Vec<String>,
     pub version: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub machine_id: Option<String>,
     pub resume_cursor: Option<String>,
 }
 
@@ -99,6 +144,15 @@ pub struct NodeHeartbeat {
         skip_serializing_if = "Option::is_none"
     )]
     pub id: Option<String>,
+    // Heartbeats are provider-scoped by connection; absent means the synthetic
+    // `default` provider. The broker always sends its `{ name: "broker",
+    // instance_id }` identity, and load/active_agents/handlers_live describe it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider: Option<FleetProviderIdentity>,
     // Roster snapshot carried for liveness: lets the relaycast engine refresh
     // this node's descriptor (name/capabilities/max_agents/version) from the
     // steady-state heartbeat without waiting for a fresh node.register — e.g.
@@ -133,6 +187,14 @@ pub struct NodeDeregister {
         skip_serializing_if = "Option::is_none"
     )]
     pub id: Option<String>,
+    // Removes this provider's attachment and persisted capability set; absent
+    // means the synthetic `default` provider.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider: Option<FleetProviderIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,6 +515,15 @@ pub struct AgentRegisterReplyData {
         skip_serializing_if = "Option::is_none"
     )]
     pub name: Option<String>,
+    /// Relaycast's authoritative cumulative delivery cursor for this agent.
+    /// Present only when the node advertised the cursor-handshake capability;
+    /// absent keeps replies compatible with older engines.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub delivery_ack_seq: Option<u64>,
 }
 
 pub fn validate_agent_register_reply_data(
@@ -654,6 +725,7 @@ mod tests {
         let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            provider: None,
             name: "builder-1".to_string(),
             node_id: "node_1".to_string(),
             capabilities: vec![],
@@ -678,11 +750,17 @@ mod tests {
         let msg = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            provider: Some(super::FleetProviderIdentity {
+                name: "broker".to_string(),
+                instance_id: "inst_1".to_string(),
+            }),
             name: "builder-1".to_string(),
             node_id: "node_1".to_string(),
             capabilities: vec![FleetCapability {
                 name: "spawn:codex".to_string(),
-                kind: Some("spawn".to_string()),
+                kind: Some("capacity".to_string()),
+                global: None,
+                queue: None,
                 metadata: None,
             }],
             max_agents: 4,
@@ -698,12 +776,13 @@ mod tests {
             json!({
                 "type": "node.heartbeat",
                 "v": 1,
+                "provider": { "name": "broker", "instance_id": "inst_1" },
                 "name": "builder-1",
                 "node_id": "node_1",
                 "capabilities": [
                     {
                         "name": "spawn:codex",
-                        "kind": "spawn"
+                        "kind": "capacity"
                     }
                 ],
                 "max_agents": 4,
@@ -850,7 +929,8 @@ mod tests {
             "data": {
                 "agent_id": "agt_1",
                 "token": "at_live_1",
-                "name": "codex-builder-1"
+                "name": "codex-builder-1",
+                "delivery_ack_seq": 42
             }
         }))
         .unwrap();
@@ -859,6 +939,7 @@ mod tests {
         assert_eq!(data.agent_id, "agt_1");
         assert_eq!(data.token, "at_live_1");
         assert_eq!(data.name.as_deref(), Some("codex-builder-1"));
+        assert_eq!(data.delivery_ack_seq, Some(42));
 
         let without_name = validate_agent_register_reply_data(&json!({
             "agent_id": "agt_1",
@@ -866,6 +947,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(without_name.name, None);
+        assert_eq!(without_name.delivery_ack_seq, None);
 
         let missing_token = json!({
             "agent_id": "agt_1",

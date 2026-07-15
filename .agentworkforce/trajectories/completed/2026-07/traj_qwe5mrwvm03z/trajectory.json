@@ -1,0 +1,58 @@
+{
+  "id": "traj_qwe5mrwvm03z",
+  "version": 1,
+  "task": {
+    "title": "Harden broker startup Relaycast handshake with timeout + bounded retry"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-14T19:02:04.387Z",
+  "completedAt": "2026-07-14T19:09:41.418Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-14T19:09:16.102Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_uwgs6e31c16d",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-14T19:09:16.102Z",
+      "endedAt": "2026-07-14T19:09:41.418Z",
+      "events": [
+        {
+          "ts": 1784056156104,
+          "type": "decision",
+          "content": "Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff: Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff",
+          "raw": {
+            "question": "Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff",
+            "chosen": "Wrap broker startup Relaycast handshake in per-attempt timeout + bounded retry with backoff",
+            "alternatives": [],
+            "reasoning": "Root cause of flaky publish smoke: relaycast v6.0.0 bootstrap calls (create_workspace/lookup_workspace) use a timeout-less reqwest client; a stalled prod call hangs connect_relay, and the smoke's sleep-8 down --force reaps the hung broker, surfacing as 'code null during initial handshake'. A per-attempt tokio timeout + retry recovers in-process within the SDK's 45s budget."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Diagnosed flaky publish smoke (broker 'code null' during handshake = hung timeout-less create_workspace reaped by smoke's down --force) and hardened connect_relay with per-attempt timeout + bounded retry/backoff. Pushed to claude/broker-startup-readiness-nvxn8n.",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
+  "commits": ["ebb47e6"],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_qwe5mrwvm03z/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/runtime/session.rs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "86af7c5bc3831f9addcba1433896c2fc742b410b",
+    "endRef": "ebb47e62cd13edb7dde7926a7de1f65c2c07219e",
+    "traceId": "e1f6f321-9db7-45bc-8e51-0eddb12b39fd"
+  }
+}

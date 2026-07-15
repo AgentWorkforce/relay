@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::listen_api::{
-    broadcast_if_relevant, listen_api_router, DeliveryRouteError, FleetSidecarFrameResponse,
-    ListenApiConfig, ListenApiRequest, SetInboundDeliveryModeOk,
+    broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
+    ListenApiRequest, SetInboundDeliveryModeOk,
 };
 use crate::util::ansi::floor_char_boundary;
 
@@ -29,14 +29,11 @@ use crate::{
         AgentId, ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
         WorkspaceAlias, WorkspaceId,
     },
-    node_control::{
-        FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot,
-        HandlerDispatchState,
-    },
+    node_control::{FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot},
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
         HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, NodeManifest,
-        NodeSupervision, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
+        ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
         format_worker_preregistration_error, registration_retry_after_secs,
@@ -44,11 +41,10 @@ use crate::{
         RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
-    supervisor::{RestartDecision, RestartPolicy},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
         AgentResultMcpConfig, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
-        PendingRelayMessage,
+        PendingRelayMessage, RelaycastDeliveryReceipt,
     },
 };
 
@@ -71,6 +67,7 @@ static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = On
 mod api;
 mod app_server;
 mod connection;
+mod dead_letter;
 mod delivery;
 mod event_loop;
 mod fleet;
@@ -93,6 +90,7 @@ mod worker_events;
 pub(crate) use api::{default_observer_token_scopes, resolve_workspace};
 pub(crate) use app_server::*;
 pub(crate) use connection::*;
+pub(crate) use dead_letter::*;
 pub(crate) use delivery::*;
 pub(crate) use event_loop::*;
 pub(crate) use headless::*;

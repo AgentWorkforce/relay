@@ -11,3 +11,4 @@ export {
   RelaycastMessagingClient,
   type RelaycastMessagingOptions,
 } from './relaycast.js';
+export * from './thin-client.js';

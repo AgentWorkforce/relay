@@ -50,12 +50,18 @@ extension JSONValue {
 
 extension RelayError {
     /// Map a relaycast `RelayError` onto AgentRelaySDK's `RelayError` so callers
-    /// continue to see the existing error surface.
+    /// continue to see the existing error surface. This mapping is
+    /// intentionally literal (no guessing from `statusCode`): a bare 409 means
+    /// different things on different endpoints (agent name conflict, channel
+    /// already exists, duplicate trigger, ...), and only the caller that knows
+    /// which operation it invoked can disambiguate that. See
+    /// `HostedWorkspaceCore.registrationConflictAwareError(_:)` for the one
+    /// place (agent registration) where a 409 does unambiguously mean
+    /// `"agent_already_exists"`.
     init(_ error: Relaycast.RelayError) {
         switch error {
-        case .api(let code, let message, let statusCode, let retryable):
-            let normalizedCode = statusCode == 409 ? "agent_already_exists" : code
-            self = .protocolError(code: normalizedCode, message: message, retryable: retryable)
+        case .api(let code, let message, _, let retryable):
+            self = .protocolError(code: code, message: message, retryable: retryable)
         case .transport(let message, _, let retryable, _):
             self = .protocolError(code: "transport_error", message: message, retryable: retryable)
         case .invalidRequest(let message):

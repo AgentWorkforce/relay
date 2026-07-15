@@ -1,0 +1,69 @@
+{
+  "id": "traj_cbx77hjzvdaz",
+  "version": 1,
+  "task": {
+    "title": "Fix manual-flush Relaycast ACK durability",
+    "source": {
+      "system": "plain",
+      "id": "#1241"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-07-10T14:15:30.303Z",
+  "completedAt": "2026-07-10T14:15:39.949Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-10T14:15:35.758Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xdlfc8rczkfx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-10T14:15:35.758Z",
+      "endedAt": "2026-07-10T14:15:39.949Z",
+      "events": [
+        {
+          "ts": 1783692935759,
+          "type": "decision",
+          "content": "Split delivery progress into received and ACKed cursors: Split delivery progress into received and ACKed cursors",
+          "raw": {
+            "question": "Split delivery progress into received and ACKed cursors",
+            "chosen": "Split delivery progress into received and ACKed cursors",
+            "alternatives": [],
+            "reasoning": "Manual-flush must accept multiple contiguous Relaycast sequences without cumulatively acknowledging volatile queue entries; duplicates and gaps therefore report only the ACKed cursor, while successful enqueue advances received state."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1783692935760,
+          "type": "decision",
+          "content": "Reject the newest delivery when the manual queue is full: Reject the newest delivery when the manual queue is full",
+          "raw": {
+            "question": "Reject the newest delivery when the manual queue is full",
+            "chosen": "Reject the newest delivery when the manual queue is full",
+            "alternatives": [],
+            "reasoning": "Evicting an already-held delivery could discard the only actionable copy after a later cumulative ACK. Atomic rejection leaves the FIFO unchanged, does not advance received or ACKed state, and preserves Relaycast ownership for replay."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed #1241 by separating received and ACKed delivery cursors, retaining Relaycast receipts through manual flush, rejecting full queues without eviction, and ACKing only successfully injected FIFO prefixes. Verified focused cursor, replay, overflow, success, and failure regressions; cargo fmt check passed; full broker library suite passed 672 tests with 4 ignored.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "3cfe0bf69bb24ad966b58ed288813bb3a7ef1a73",
+    "endRef": "3cfe0bf69bb24ad966b58ed288813bb3a7ef1a73"
+  }
+}

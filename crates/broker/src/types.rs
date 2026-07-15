@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{
-    AgentId, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
+    AgentId, DeliveryId, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
 };
 use crate::protocol::MessageInjectionMode;
 
@@ -93,6 +93,20 @@ pub struct PendingRelayMessage {
     /// telemetry / dedup parity with the auto-inject path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<EventId>,
+    /// Relaycast delivery metadata for messages received over node control.
+    /// Manual-flush messages retain this receipt until PTY injection so the
+    /// broker can advance the cumulative ACK only across an injected prefix.
+    #[serde(skip)]
+    pub relaycast_receipt: Option<RelaycastDeliveryReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelaycastDeliveryReceipt {
+    pub agent: WorkerName,
+    pub agent_id: AgentId,
+    pub delivery_id: DeliveryId,
+    pub msg_id: EventId,
+    pub seq: u64,
 }
 
 fn default_priority() -> u8 {
@@ -196,6 +210,10 @@ pub struct InjectRequest {
 #[derive(Debug, Default)]
 pub struct InboundDeliveryState {
     pub mode: InboundDeliveryMode,
+    /// Monotonic generation advanced by every successful mode write, including
+    /// same-value writes. Detach restores compare this generation so an ABA
+    /// sequence cannot make a concurrent session look unchanged.
+    pub revision: u64,
     pub pending: std::collections::VecDeque<PendingRelayMessage>,
 }
 
@@ -248,8 +266,27 @@ impl InboundDeliveryState {
     pub fn new(mode: InboundDeliveryMode) -> Self {
         Self {
             mode,
+            revision: 0,
             pending: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Apply a mode write and advance its generation even when the enum value
+    /// is unchanged. Returning the prior mode keeps transition side effects at
+    /// the broker runtime boundary.
+    pub fn set_mode(&mut self, mode: InboundDeliveryMode) -> InboundDeliveryMode {
+        let previous = self.mode;
+        self.mode = mode;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("inbound delivery mode revision exhausted");
+        previous
+    }
+
+    /// Whether a detach restore still owns the exact mode generation it set.
+    pub fn matches_mode_guard(&self, mode: InboundDeliveryMode, revision: u64) -> bool {
+        self.mode == mode && self.revision == revision
     }
 
     /// Push a pending message, evicting the oldest entry when the
@@ -320,7 +357,22 @@ mod inbound_delivery_tests {
             mode: MessageInjectionMode::Wait,
             queued_at_ms: 0,
             event_id: None,
+            relaycast_receipt: None,
         }
+    }
+
+    #[test]
+    fn mode_revision_rejects_an_aba_restore() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::AutoInject);
+        state.set_mode(InboundDeliveryMode::ManualFlush);
+        let session_revision = state.revision;
+        assert!(state.matches_mode_guard(InboundDeliveryMode::ManualFlush, session_revision));
+
+        state.set_mode(InboundDeliveryMode::AutoInject);
+        state.set_mode(InboundDeliveryMode::ManualFlush);
+
+        assert_eq!(state.mode, InboundDeliveryMode::ManualFlush);
+        assert!(!state.matches_mode_guard(InboundDeliveryMode::ManualFlush, session_revision));
     }
 
     #[test]
@@ -363,6 +415,7 @@ mod inbound_delivery_tests {
             mode: MessageInjectionMode::Steer,
             queued_at_ms: 123_456,
             event_id: Some(EventId::new("evt_xyz")),
+            relaycast_receipt: None,
         };
         let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
         state.accept_inbound(queued.clone());

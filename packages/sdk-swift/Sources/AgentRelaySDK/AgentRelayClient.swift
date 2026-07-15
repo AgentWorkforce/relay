@@ -5,6 +5,8 @@ import Relaycast
 /// engine SDK (`Relaycast`): registration, reconnect, workspace lookup, channel
 /// posting, DMs, action handling, and the realtime event stream are all served
 /// by `Relaycast.RelayCast` / `Relaycast.AgentClient` / `Relaycast.WsClient`.
+/// Outbound action invocation and message history are served directly over the
+/// hosted REST API by the internal `RelayRestClient`.
 ///
 /// The public surface (types, method signatures, AsyncStream APIs) is preserved
 /// so existing callers keep working; only the transport implementation changed.
@@ -52,6 +54,46 @@ public final class AgentRelay: @unchecked Sendable {
 
     public func workspaceInfo() async throws -> JSONValue {
         try await core.workspaceInfo()
+    }
+
+    /// Consolidated workspace facade (#1156): `register`/`reconnect`/`info`/
+    /// `update`/`delete` in one place, mirroring the TS SDK `relay.workspace`.
+    public var workspace: RelayWorkspace {
+        RelayWorkspace(relay: self)
+    }
+
+    /// Create a hosted workspace and return an `AgentRelay` bound to its key.
+    /// Mirrors the TS SDK `AgentRelay.createWorkspace(...)`.
+    public static func createWorkspace(name: String, baseURL: URL? = nil) async throws -> AgentRelay {
+        let resolved = resolveBaseURL(from: baseURL)
+        do {
+            let response = try await Relaycast.RelayCast.createWorkspace(
+                name,
+                options: Relaycast.WorkspaceBootstrapOptions(baseURL: resolved.absoluteString)
+            )
+            guard let apiKey = response.apiKey, !apiKey.isEmpty else {
+                throw RelayError.protocolError(
+                    code: "workspace_missing_key",
+                    message: "Workspace created, but the response did not include a workspace key.",
+                    retryable: false
+                )
+            }
+            return AgentRelay(workspaceKey: apiKey, baseURL: resolved)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
+    func workspaceInfoDetail() async throws -> RelayWorkspaceInfo {
+        try await core.workspaceInfoDetail()
+    }
+
+    func workspaceUpdate(_ input: RelayUpdateWorkspaceInput) async throws -> RelayWorkspaceInfo {
+        try await core.workspaceUpdate(input)
+    }
+
+    func workspaceDelete() async throws {
+        try await core.workspaceDelete()
     }
 
     private static func resolveBaseURL(from baseURL: URL?) -> URL {
@@ -108,7 +150,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
             )
             return makeRegistration(created)
         } catch let error as Relaycast.RelayError {
-            throw RelayError(error)
+            throw Self.registrationConflictAwareError(error)
         }
     }
 
@@ -120,8 +162,20 @@ final class HostedWorkspaceCore: @unchecked Sendable {
             )
             return makeRegistration(created)
         } catch let error as Relaycast.RelayError {
-            throw RelayError(error)
+            throw Self.registrationConflictAwareError(error)
         }
+    }
+
+    /// Agent registration is the one operation where a bare HTTP 409 is
+    /// unambiguous: it means the requested agent name is already taken. Every
+    /// other relaycast call bridges through the generic, non-guessing
+    /// `RelayError(_:)` mapping instead, since a 409 elsewhere (channel,
+    /// trigger, node, webhook, ...) means a different kind of conflict.
+    static func registrationConflictAwareError(_ error: Relaycast.RelayError) -> RelayError {
+        if case .api(_, let message, let statusCode, let retryable) = error, statusCode == 409 {
+            return .protocolError(code: "agent_already_exists", message: message, retryable: retryable)
+        }
+        return RelayError(error)
     }
 
     func reconnect(apiToken: String) async throws -> AgentClient {
@@ -146,6 +200,36 @@ final class HostedWorkspaceCore: @unchecked Sendable {
         do {
             let workspace = try await relay.workspace.info()
             return Self.workspaceJSON(workspace)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
+    func workspaceInfoDetail() async throws -> RelayWorkspaceInfo {
+        let relay = try relayCast()
+        do {
+            return RelayWorkspaceInfo(try await relay.workspace.info())
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
+    func workspaceUpdate(_ input: RelayUpdateWorkspaceInput) async throws -> RelayWorkspaceInfo {
+        let relay = try relayCast()
+        do {
+            let workspace = try await relay.workspace.update(
+                Relaycast.UpdateWorkspaceRequest(name: input.name, systemPrompt: input.systemPrompt)
+            )
+            return RelayWorkspaceInfo(workspace)
+        } catch let error as Relaycast.RelayError {
+            throw RelayError(error)
+        }
+    }
+
+    func workspaceDelete() async throws {
+        let relay = try relayCast()
+        do {
+            try await relay.workspace.delete()
         } catch let error as Relaycast.RelayError {
             throw RelayError(error)
         }
@@ -209,6 +293,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
 
 public final class AgentClient: @unchecked Sendable {
     private let core: HostedParticipantCore
+    private let rest: RelayRestClient
     public let id: String
     public let name: String
     public let token: String
@@ -217,6 +302,10 @@ public final class AgentClient: @unchecked Sendable {
 
     init(core: HostedParticipantCore, id: String, name: String, token: String) {
         self.core = core
+        // Outbound action invocation and message history are served directly
+        // over the hosted REST API (agent-token auth), independent of the
+        // realtime engine held by `core`.
+        self.rest = RelayRestClient(baseURL: core.baseURL, token: token)
         self.id = id
         self.name = name
         self.token = token
@@ -234,12 +323,82 @@ public final class AgentClient: @unchecked Sendable {
         RelayChannel(name: name, core: core)
     }
 
-    public func post(to channel: String, message: String) async throws {
-        try await core.post(channel: channel, text: message)
+    public func post(to channel: String, message: String, attachments: [RelayAttachmentInput] = []) async throws {
+        try await core.post(channel: channel, text: message, attachments: attachments.map { $0.fileId })
     }
 
-    public func dm(to agentName: String, message: String) async throws {
-        try await core.dm(to: agentName, text: message)
+    public func dm(to agentName: String, message: String, attachments: [RelayAttachmentInput] = []) async throws {
+        try await core.dm(to: agentName, text: message, attachments: attachments.map { $0.fileId })
+    }
+
+    // MARK: - Rich facades (#1150–#1158)
+
+    /// Message threads: fetch a thread or post a reply.
+    public var threads: RelayThreads { RelayThreads(core: core) }
+
+    /// Unread inbox summary plus delivery ack/fail/defer.
+    public var inbox: RelayInboxService { RelayInboxService(core: core) }
+
+    /// Durable per-recipient delivery ledger.
+    public var deliveries: RelayDeliveries { RelayDeliveries(core: core) }
+
+    /// Rich channels facade: list/get/create/update/archive/join/leave/invite/members/mute/unmute.
+    public var channels: RelayChannels { RelayChannels(core: core) }
+
+    /// Rich agents facade: list/get/me/update/delete/presence.
+    public var agents: RelayAgents { RelayAgents(core: core) }
+
+    /// Fleet nodes: list/get/bind/unbind.
+    public var nodes: RelayNodes { RelayNodes(core: core) }
+
+    /// Message triggers: list/create/update/delete.
+    public var triggers: RelayTriggers { RelayTriggers(core: core) }
+
+    /// Inbound webhooks and outbound event subscriptions.
+    public var integrations: RelayIntegrations { RelayIntegrations(core: core) }
+
+    /// File uploads for message attachments (#1144).
+    public var files: RelayFiles { RelayFiles(core: core) }
+
+    /// Workspace admin available to an agent-scoped client (info/update/delete).
+    public var workspace: RelayWorkspaceAdmin { RelayWorkspaceAdmin(core: core) }
+
+    // MARK: - Typed listener hub (#1159)
+
+    /// Subscribe to realtime events by selector (exact `message.created`,
+    /// wildcard `message.*`/`*`, or a predicate). The returned token
+    /// unsubscribes on `cancel()`. Complements the `events` AsyncStream.
+    @discardableResult
+    public func addListener(_ selector: RelayEventSelector, handler: @escaping RelayEventHandler) async -> RelayListenerToken {
+        let core = self.core
+        let id = await core.registerTypedListener(selector: selector, once: false, handler: handler)
+        return RelayListenerToken(
+            onCancel: { Task { await core.removeTypedListener(id) } },
+            onCancelAsync: { await core.removeTypedListener(id) }
+        )
+    }
+
+    /// Like `addListener`, but auto-unsubscribes after the first matching event.
+    @discardableResult
+    public func once(_ selector: RelayEventSelector, handler: @escaping RelayEventHandler) async -> RelayListenerToken {
+        let core = self.core
+        let id = await core.registerTypedListener(selector: selector, once: true, handler: handler)
+        return RelayListenerToken(
+            onCancel: { Task { await core.removeTypedListener(id) } },
+            onCancelAsync: { await core.removeTypedListener(id) }
+        )
+    }
+
+    /// Register a hook that receives typed-listener handler errors. Returns a
+    /// token whose `cancel()` removes the hook.
+    @discardableResult
+    public func onError(_ hook: @escaping RelayErrorHook) async -> RelayListenerToken {
+        let core = self.core
+        let id = await core.registerErrorHook(hook)
+        return RelayListenerToken(
+            onCancel: { Task { await core.removeErrorHook(id) } },
+            onCancelAsync: { await core.removeErrorHook(id) }
+        )
     }
 
     public func registerAction(
@@ -256,21 +415,115 @@ public final class AgentClient: @unchecked Sendable {
         )
     }
 
+    /// Invoke a relay action registered by another agent and wait for its
+    /// output.
+    ///
+    /// Two-phase async RPC: `POST /v1/actions/{name}/invoke` returns an ack
+    /// (without the output), then the invocation record is polled until it
+    /// reaches a terminal status. Polling keeps the call deterministic and
+    /// does not require the realtime socket to be connected; listening for
+    /// the WS `action.completed` event instead is a future latency
+    /// optimization.
+    ///
+    /// - Parameters:
+    ///   - name: Registered action name. May contain dots (e.g.
+    ///     `deploy.staging`); dots are preserved in the request path.
+    ///   - input: JSON object passed to the action handler.
+    ///   - timeout: Maximum time to wait for completion, measured on a
+    ///     monotonic clock. The budget also bounds each underlying HTTP
+    ///     request and clamps the final poll sleep, so a large `pollInterval`
+    ///     cannot extend the wait past the deadline.
+    ///   - pollInterval: Delay between invocation-status polls.
+    /// - Returns: The action output, or `.null` when the action completed
+    ///   without output.
+    /// - Throws: `RelayError.protocolError` with code `action_failed` /
+    ///   `action_denied` when the invocation fails, is denied, or reports an
+    ///   unknown terminal status; `RelayError.timeout` when `timeout` elapses
+    ///   first.
+    public func invokeAction(_ name: String, input: JSONValue = .object([:]), timeout: TimeInterval = 30, pollInterval: TimeInterval = 0.4) async throws -> JSONValue {
+        try await rest.invokeAction(name, input: input, timeout: timeout, pollInterval: pollInterval)
+    }
+
+    /// Fetch recent messages for a channel, oldest-first.
+    ///
+    /// A leading `#` is accepted and stripped (`"#general"` and `"general"`
+    /// are equivalent). The wire does not guarantee ordering, so results are
+    /// stably sorted ascending by timestamp.
+    ///
+    /// - Parameters:
+    ///   - channel: Channel name, with or without a leading `#`.
+    ///   - limit: Maximum number of messages to fetch.
+    ///   - before: Only fetch messages older than this message id.
+    /// - Returns: Channel messages as `RelayChannelEvent`s (`channel` is the
+    ///   normalized channel name; `rawEvent` is `nil` for history rows).
+    public func channelHistory(_ channel: String, limit: Int = 50, before: String? = nil) async throws -> [RelayChannelEvent] {
+        try await rest.channelHistory(channel: channel, limit: limit, before: before)
+    }
+
+    /// Fetch the 1:1 DM history with a named agent, oldest-first.
+    ///
+    /// The conversation is resolved via `GET /v1/dm/conversations` first
+    /// (there is no single-shot endpoint); when no 1:1 conversation with the
+    /// agent exists yet, an empty array is returned rather than an error.
+    ///
+    /// - Parameters:
+    ///   - agent: Agent name, with or without a leading `@`.
+    ///   - limit: Maximum number of messages to fetch.
+    ///   - before: Only fetch messages older than this message id.
+    /// - Returns: DM messages as `RelayChannelEvent`s (`channel` and
+    ///   `threadId` are `nil`; `rawEvent` is `nil` for history rows).
+    public func dmHistory(with agent: String, limit: Int = 50, before: String? = nil) async throws -> [RelayChannelEvent] {
+        try await rest.dmHistory(with: agent, limit: limit, before: before)
+    }
+
+    /// Realtime events. If the consumer falls behind, the oldest event is
+    /// dropped so that at most the newest 256 events are buffered.
     public var events: AsyncStream<RelayEvent> {
-        AsyncStream<RelayEvent> { continuation in
-            Task { await core.registerEventContinuation(continuation) }
+        let id = UUID()
+        let core = self.core
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<RelayEvent>(bufferingPolicy: .bufferingNewest(256)) { continuation in
+            let registrationTask = Task {
+                await core.registerEventContinuation(continuation, id: id, generation: generation)
+            }
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                Task { await core.unregisterEventContinuation(id: id) }
+            }
         }
     }
 
+    /// Inbound messages. If the consumer falls behind, the oldest message is
+    /// dropped so that at most the newest 256 messages are buffered.
     public var inboundMessages: AsyncStream<RelayChannelEvent> {
-        AsyncStream<RelayChannelEvent> { continuation in
-            Task { await core.registerInboundMessageContinuation(continuation) }
+        let id = UUID()
+        let core = self.core
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<RelayChannelEvent>(bufferingPolicy: .bufferingNewest(256)) { continuation in
+            let registrationTask = Task {
+                await core.registerInboundMessageContinuation(continuation, id: id, generation: generation)
+            }
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                Task { await core.unregisterInboundMessageContinuation(id: id) }
+            }
         }
     }
 
+    /// Connection changes are latest-state-only: an unread state is replaced
+    /// when a newer state arrives, so at most one value is buffered.
     public var connectionState: AsyncStream<ConnectionStateChange> {
-        AsyncStream<ConnectionStateChange> { continuation in
-            Task { await core.registerConnectionStateContinuation(continuation) }
+        let id = UUID()
+        let core = self.core
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<ConnectionStateChange>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let registrationTask = Task {
+                await core.registerConnectionStateContinuation(continuation, id: id, generation: generation)
+            }
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                Task { await core.unregisterConnectionStateContinuation(id: id) }
+            }
         }
     }
 }
@@ -278,22 +531,41 @@ public final class AgentClient: @unchecked Sendable {
 public final class RelayChannel: @unchecked Sendable {
     public let name: String
     private let core: HostedParticipantCore
-    private let continuationRef: AsyncStream<RelayChannelEvent>.Continuation?
-    public let events: AsyncStream<RelayChannelEvent>
+    private let streamRegistrations = StreamRegistrationTasks()
+
+    /// Channel delivery is registered only when the stream is requested.
+    /// Slow consumers retain at most the newest 256 events.
+    ///
+    /// Request this stream before calling ``subscribe()`` when events emitted
+    /// immediately after subscription must be retained. `subscribe()` waits
+    /// for every stream requested up to that point to finish registering.
+    public var events: AsyncStream<RelayChannelEvent> {
+        let id = UUID()
+        let core = self.core
+        let name = self.name
+        let streamRegistrations = self.streamRegistrations
+        let generation = core.streamLifecycle.snapshot()
+        return AsyncStream<RelayChannelEvent>(bufferingPolicy: .bufferingNewest(256)) { continuation in
+            let registrationTask = Task {
+                await core.registerChannelContinuation(continuation, id: id, generation: generation, for: name)
+            }
+            streamRegistrations.insert(registrationTask, id: id)
+            continuation.onTermination = { @Sendable _ in
+                registrationTask.cancel()
+                streamRegistrations.remove(id: id)
+                Task { await core.unregisterChannelContinuation(id: id, for: name) }
+            }
+        }
+    }
 
     init(name: String, core: HostedParticipantCore) {
         self.name = name
         self.core = core
-        var continuation: AsyncStream<RelayChannelEvent>.Continuation?
-        self.events = AsyncStream<RelayChannelEvent> { incoming in
-            continuation = incoming
-        }
-        self.continuationRef = continuation
     }
 
     public func subscribe() async throws {
-        if let continuationRef {
-            await core.registerChannelContinuation(continuationRef, for: name)
+        for registrationTask in streamRegistrations.takeAll() {
+            await registrationTask.value
         }
         try await core.subscribe(channel: name)
     }
@@ -310,12 +582,77 @@ private struct RegisteredAction: Sendable {
     let handler: RelayActionHandler
 }
 
+private struct ContinuationRegistry<Element: Sendable> {
+    typealias Continuation = AsyncStream<Element>.Continuation
+
+    private(set) var active: [UUID: Continuation] = [:]
+
+    var count: Int { active.count }
+    var continuations: Dictionary<UUID, Continuation>.Values { active.values }
+
+    mutating func register(_ continuation: Continuation, id: UUID) {
+        active[id] = continuation
+    }
+
+    mutating func unregister(id: UUID) {
+        active.removeValue(forKey: id)
+    }
+
+    mutating func finishAll() {
+        for continuation in active.values { continuation.finish() }
+        active.removeAll()
+    }
+}
+
+final class StreamLifecycle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+
+    func snapshot() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
+    func advance() {
+        lock.lock()
+        generation &+= 1
+        lock.unlock()
+    }
+}
+
+private final class StreamRegistrationTasks: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+
+    func insert(_ task: Task<Void, Never>, id: UUID) {
+        lock.lock()
+        tasks[id] = task
+        lock.unlock()
+    }
+
+    func remove(id: UUID) {
+        lock.lock()
+        tasks.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    func takeAll() -> [Task<Void, Never>] {
+        lock.lock()
+        defer { lock.unlock() }
+        let pending = Array(tasks.values)
+        tasks.removeAll()
+        return pending
+    }
+}
+
 /// Higher-level glue kept ON TOP of the relaycast engine SDK: the
 /// action-dispatch loop, channel-event normalization into `RelayChannelEvent`,
 /// AsyncStream fan-out, and subscription bookkeeping. The realtime socket and
 /// HTTP calls are delegated to the wrapped `Relaycast.AgentClient` /
 /// `Relaycast.RelayCast`.
 actor HostedParticipantCore {
+    nonisolated let streamLifecycle = StreamLifecycle()
     /// How the per-agent engine is obtained. `.ready` is used by `reconnect`,
     /// which already has a live engine; `.deferred` builds the engine lazily via
     /// `relay.asAgent(token)` on first connect so that `asAgent`/configuration
@@ -338,12 +675,18 @@ actor HostedParticipantCore {
     private var connected = false
     private var listenersInstalled = false
     private var subscribedChannels: Set<String> = []
-    private var channelContinuations: [String: [AsyncStream<RelayChannelEvent>.Continuation]] = [:]
-    private var inboundMessageContinuations: [AsyncStream<RelayChannelEvent>.Continuation] = []
-    private var eventContinuations: [AsyncStream<RelayEvent>.Continuation] = []
-    private var connectionStateContinuations: [AsyncStream<ConnectionStateChange>.Continuation] = []
+    private var channelContinuations: [String: ContinuationRegistry<RelayChannelEvent>] = [:]
+    private var inboundMessageContinuations = ContinuationRegistry<RelayChannelEvent>()
+    private var eventContinuations = ContinuationRegistry<RelayEvent>()
+    private var connectionStateContinuations = ContinuationRegistry<ConnectionStateChange>()
     private var actionHandlers: [String: RegisteredAction] = [:]
     private var unsubscribeHandlers: [() -> Void] = []
+
+    // Typed listener hub (#1159): registrations keyed by id, plus error hooks.
+    // Declared `internal` (not `private`) so the hub methods in
+    // `RelayListeners.swift` can register/dispatch across files.
+    var typedListeners: [UUID: TypedListenerRegistration] = [:]
+    var listenerErrorHooks: [UUID: RelayErrorHook] = [:]
 
     // Serialized inbound-event pipeline. The engine delivers events in order
     // from a single receive loop; we yield them (synchronously, FIFO) into this
@@ -362,8 +705,9 @@ actor HostedParticipantCore {
     }
 
     /// Resolve (and cache) the relaycast `RelayCast` engine wrapper. Surfaces
-    /// configuration errors as `RelayError`.
-    private func relayCast() throws -> Relaycast.RelayCast {
+    /// configuration errors as `RelayError`. Internal so the rich facade
+    /// services (`RelayFacades.swift`) can reach workspace-scoped endpoints.
+    func relayCast() throws -> Relaycast.RelayCast {
         if let resolvedRelay { return resolvedRelay }
         switch engineSource {
         case .ready(_, let relay):
@@ -382,7 +726,8 @@ actor HostedParticipantCore {
 
     /// Resolve (and cache) the per-agent engine, building it lazily for the
     /// `.deferred` source. Surfaces `asAgent`/configuration errors as `RelayError`.
-    private func engine() throws -> Relaycast.AgentClient {
+    /// Internal so the rich facade services can reach agent-scoped endpoints.
+    func engine() throws -> Relaycast.AgentClient {
         if let resolvedEngine { return resolvedEngine }
         switch engineSource {
         case .ready(let engine, _):
@@ -412,6 +757,9 @@ actor HostedParticipantCore {
     }
 
     func disconnect() async {
+        // Invalidate registrations scheduled before this disconnect, including
+        // tasks that have not reached the actor yet.
+        streamLifecycle.advance()
         // Only tear down an engine that was actually built/connected; building
         // one here just to disconnect it would be pointless (and could throw).
         if let resolvedEngine {
@@ -426,32 +774,75 @@ actor HostedParticipantCore {
         eventPump?.cancel()
         eventPump = nil
         notifyConnectionState(.disconnected)
-        for continuations in channelContinuations.values {
-            for continuation in continuations { continuation.finish() }
+        for key in channelContinuations.keys {
+            channelContinuations[key]?.finishAll()
         }
         channelContinuations.removeAll()
-        for continuation in inboundMessageContinuations { continuation.finish() }
-        inboundMessageContinuations.removeAll()
-        for continuation in eventContinuations { continuation.finish() }
-        eventContinuations.removeAll()
-        for continuation in connectionStateContinuations { continuation.finish() }
-        connectionStateContinuations.removeAll()
+        inboundMessageContinuations.finishAll()
+        eventContinuations.finishAll()
+        connectionStateContinuations.finishAll()
     }
 
-    func registerChannelContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, for channel: String) {
-        channelContinuations[Self.normalizeChannel(channel), default: []].append(continuation)
+    func registerChannelContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, id: UUID, generation: UInt64, for channel: String) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        let channel = Self.normalizeChannel(channel)
+        channelContinuations[channel, default: ContinuationRegistry()].register(continuation, id: id)
     }
 
-    func registerInboundMessageContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation) {
-        inboundMessageContinuations.append(continuation)
+    func unregisterChannelContinuation(id: UUID, for channel: String) {
+        let channel = Self.normalizeChannel(channel)
+        guard var registry = channelContinuations[channel] else { return }
+        registry.unregister(id: id)
+        channelContinuations[channel] = registry.count > 0 ? registry : nil
     }
 
-    func registerEventContinuation(_ continuation: AsyncStream<RelayEvent>.Continuation) {
-        eventContinuations.append(continuation)
+    func registerInboundMessageContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, id: UUID, generation: UInt64) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        inboundMessageContinuations.register(continuation, id: id)
     }
 
-    func registerConnectionStateContinuation(_ continuation: AsyncStream<ConnectionStateChange>.Continuation) {
-        connectionStateContinuations.append(continuation)
+    func unregisterInboundMessageContinuation(id: UUID) {
+        inboundMessageContinuations.unregister(id: id)
+    }
+
+    func registerEventContinuation(_ continuation: AsyncStream<RelayEvent>.Continuation, id: UUID, generation: UInt64) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        eventContinuations.register(continuation, id: id)
+    }
+
+    func unregisterEventContinuation(id: UUID) {
+        eventContinuations.unregister(id: id)
+    }
+
+    func registerConnectionStateContinuation(_ continuation: AsyncStream<ConnectionStateChange>.Continuation, id: UUID, generation: UInt64) {
+        guard !Task.isCancelled, generation == streamLifecycle.snapshot() else {
+            continuation.finish()
+            return
+        }
+        connectionStateContinuations.register(continuation, id: id)
+    }
+
+    func unregisterConnectionStateContinuation(id: UUID) {
+        connectionStateContinuations.unregister(id: id)
+    }
+
+    func continuationCounts() -> (channels: Int, channelRegistries: Int, inbound: Int, events: Int, connectionState: Int) {
+        (
+            channels: channelContinuations.values.reduce(0) { $0 + $1.count },
+            channelRegistries: channelContinuations.count,
+            inbound: inboundMessageContinuations.count,
+            events: eventContinuations.count,
+            connectionState: connectionStateContinuations.count
+        )
     }
 
     func subscribe(channel: String) async throws {
@@ -459,19 +850,27 @@ actor HostedParticipantCore {
         try await ensureConnected()
     }
 
-    func post(channel: String, text: String) async throws {
+    func post(channel: String, text: String, attachments: [String] = []) async throws {
         let engine = try engine()
         do {
-            _ = try await engine.send(Self.normalizeChannel(channel), text: text, options: Relaycast.SendMessageOptions(mode: .wait))
+            _ = try await engine.send(
+                Self.normalizeChannel(channel),
+                text: text,
+                options: Relaycast.SendMessageOptions(attachments: attachments.isEmpty ? nil : attachments, mode: .wait)
+            )
         } catch let error as Relaycast.RelayError {
             throw RelayError(error)
         }
     }
 
-    func dm(to target: String, text: String) async throws {
+    func dm(to target: String, text: String, attachments: [String] = []) async throws {
         let engine = try engine()
         do {
-            _ = try await engine.dm(Self.stripSigil(target), text: text, options: Relaycast.DMOptions(mode: .wait))
+            _ = try await engine.dm(
+                Self.stripSigil(target),
+                text: text,
+                options: Relaycast.DMOptions(mode: .wait, attachments: attachments.isEmpty ? nil : attachments)
+            )
         } catch let error as Relaycast.RelayError {
             throw RelayError(error)
         }
@@ -614,10 +1013,14 @@ actor HostedParticipantCore {
 
     // MARK: - Event routing (glue kept on top of the engine)
 
-    private func routeEvent(_ event: RelayEvent) {
-        for continuation in eventContinuations {
+    func routeEvent(_ event: RelayEvent) {
+        for continuation in eventContinuations.continuations {
             continuation.yield(event)
         }
+
+        // Fan out to the typed listener hub (#1159) alongside the back-compat
+        // AsyncStreams above.
+        dispatchToTypedListeners(event)
 
         if event.type == "action.invoked" || event.type == "actionInvoked" {
             routeActionInvocation(event)
@@ -625,12 +1028,14 @@ actor HostedParticipantCore {
         }
 
         guard let message = channelEvent(from: event) else { return }
-        for continuation in inboundMessageContinuations {
+        for continuation in inboundMessageContinuations.continuations {
             continuation.yield(message)
         }
         if let channel = message.channel {
-            for continuation in channelContinuations[Self.normalizeChannel(channel)] ?? [] {
-                continuation.yield(message)
+            if let continuations = channelContinuations[Self.normalizeChannel(channel)]?.continuations {
+                for continuation in continuations {
+                    continuation.yield(message)
+                }
             }
         }
     }
@@ -765,20 +1170,22 @@ actor HostedParticipantCore {
         return ["value": .string(output)]
     }
 
-    private func notifyConnectionState(_ state: ConnectionStateChange) {
-        for continuation in connectionStateContinuations {
+    func notifyConnectionState(_ state: ConnectionStateChange) {
+        for continuation in connectionStateContinuations.continuations {
             continuation.yield(state)
         }
     }
 
-    private static func stripSigil(_ value: String) -> String {
+    // Internal (not private): `RelayRestClient` reuses the same channel/agent
+    // name normalization for the history endpoints.
+    static func stripSigil(_ value: String) -> String {
         if value.hasPrefix("@") || value.hasPrefix("#") {
             return String(value.dropFirst())
         }
         return value
     }
 
-    private static func normalizeChannel(_ value: String) -> String {
+    static func normalizeChannel(_ value: String) -> String {
         stripSigil(value).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

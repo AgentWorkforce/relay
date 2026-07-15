@@ -5,6 +5,13 @@ use relaycast::{CreateObserverTokenRequest, ObserverScope};
 /// when the caller doesn't supply one.
 const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
 
+/// How long the broker waits for a worker's `write_pty_response` before it
+/// fails a PTY input ack. Keeps `PtyInputStream.send()` from hanging forever
+/// when a worker wedges or dies mid-write; the deadline sweep in `reap_tick`
+/// enforces it. Short because a confirmed PTY write is a local pipe → drainer
+/// round-trip that resolves in well under a second on a healthy worker.
+const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Scopes granted to observer tokens minted via `/api/observer-token`: broad
 /// read access to workspace activity, deliberately excluding anything
 /// write/spawn-capable (unlike the raw `rk_live_...` workspace key this
@@ -28,23 +35,6 @@ pub(crate) fn default_observer_token_scopes() -> Vec<ObserverScope> {
 
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
-        let req = match req {
-            ListenApiRequest::FleetSidecarConnect { outbound, reply } => {
-                let result = self.handle_fleet_sidecar_connect(outbound).await;
-                let _ = reply.send(result);
-                return;
-            }
-            ListenApiRequest::FleetSidecarDisconnect => {
-                self.handle_fleet_sidecar_disconnect().await;
-                return;
-            }
-            ListenApiRequest::FleetSidecarFrame { frame, reply } => {
-                let result = self.handle_fleet_sidecar_frame(frame).await;
-                let _ = reply.send(result);
-                return;
-            }
-            other => other,
-        };
         let paths = &self.paths;
         let state = &mut self.state;
         let workspaces = &self.workspaces;
@@ -63,11 +53,15 @@ impl BrokerRuntime {
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
-        let fleet_handlers_live = self.fleet_handlers.handlers_live();
+        // The broker provider's capacity handlers are live whenever it is
+        // connected, so node heartbeats always report handlers_live.
+        let fleet_handlers_live = true;
         let telemetry = &self.telemetry;
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
+        let dead_letters = &mut self.dead_letters;
         let pending_requests = &mut self.pending_requests;
+        let resize_owners = &mut self.resize_owners;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
         let dedup = &mut self.dedup;
@@ -152,6 +146,7 @@ impl BrokerRuntime {
                     let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                     match super::fleet::register_node_agent_token(
                         fleet_control_tx,
+                        fleet_delivery_book,
                         name.as_str(),
                         None,
                         session_ref,
@@ -559,12 +554,14 @@ impl BrokerRuntime {
                                         ).await;
                             let _ = emit_dropped_delivery_failures(
                                 sdk_out_tx,
+                                dead_letters,
                                 &dropped,
                                 "agent_released",
                             )
                             .await;
                         }
                         fail_pending_requests_for_worker(pending_requests, &name, "agent_released");
+                        resize_owners.remove(&name);
                         delivery_states.remove(&name);
                         agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);
@@ -1000,29 +997,49 @@ impl BrokerRuntime {
                 {
                     None => {
                         let _ =
-                            reply.send(Err(format!("agent_not_found: no worker named '{name}'")));
+                            reply.send(Err(worker_request::RequestWorkerError::WorkerNotFound(
+                                format!("no worker named '{name}'"),
+                            )));
                     }
                     Some(AgentRuntime::Headless) => {
-                        let _ = reply.send(Err(format!(
-                            "unsupported_runtime: worker '{name}' is headless; pty input is only supported on PTY workers"
-                        )));
+                        let _ = reply.send(Err(
+                            worker_request::RequestWorkerError::UnsupportedRuntime(format!(
+                                "worker '{name}' is headless; pty input is only supported on PTY workers"
+                            )),
+                        ));
                     }
                     Some(AgentRuntime::Pty) => {
+                        // Ship the write and park the reply in `pending_requests`
+                        // keyed by `request_id`. The worker replies with a
+                        // `write_pty_response` frame only after the drainer
+                        // confirms the bytes reached the child (or failed), which
+                        // the generic `*_response` routing fulfils. The deadline
+                        // sweep (`reap_tick`) and worker-teardown paths fail the
+                        // reply if the worker dies mid-write, so a client's
+                        // `send()` never hangs on a dead worker.
+                        let request_id = RequestId::new(format!("api_{}", Uuid::new_v4().simple()));
                         if let Err(err) = workers
                             .send_to_worker(
                                 &name,
                                 "write_pty",
-                                Some(RequestId::new(format!("api_{}", Uuid::new_v4().simple()))),
+                                Some(request_id.clone()),
                                 json!({ "data": data }),
                             )
                             .await
                         {
-                            let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            let _ = reply.send(Err(
+                                worker_request::RequestWorkerError::SendFailed(err.to_string()),
+                            ));
                         } else {
-                            let _ = reply.send(Ok(json!({
-                                "name": name,
-                                "bytes_written": data.len(),
-                            })));
+                            pending_requests.insert(
+                                request_id.into_string(),
+                                worker_request::PendingRequest {
+                                    kind: "write_pty".to_string(),
+                                    worker_name: name.into_string(),
+                                    reply,
+                                    deadline: Instant::now() + PTY_INPUT_ACK_TIMEOUT,
+                                },
+                            );
                         }
                     }
                 }
@@ -1054,9 +1071,40 @@ impl BrokerRuntime {
                 name,
                 rows,
                 cols,
+                session_id,
+                release,
                 reply,
             } => {
-                if rows == 0 || cols == 0 {
+                // Treat an empty/whitespace session id as absent: it is not a
+                // meaningful owner key, and a shared empty-string "owner" would
+                // let unrelated clients collide. (The HTTP boundary already
+                // normalises this; belt-and-braces for other callers.)
+                let session_id = session_id.filter(|sid| !sid.trim().is_empty());
+
+                // Explicit ownership release on detach (see `resize_owners`
+                // doc on `BrokerRuntime`). A release carries the owning
+                // `session_id`; we drop ownership only if it matches, then
+                // return without touching the PTY size. A release without a
+                // session id, or from a non-owner, is a no-op. The response
+                // reports the *actual* outcome so the client can tell a real
+                // release from a no-op.
+                if release {
+                    let released = match session_id.as_deref() {
+                        Some(sid)
+                            if resize_owners
+                                .get(&name)
+                                .is_some_and(|owner| owner.session_id == sid) =>
+                        {
+                            resize_owners.remove(&name);
+                            true
+                        }
+                        _ => false,
+                    };
+                    let _ = reply.send(Ok(json!({
+                        "name": name,
+                        "released": released,
+                    })));
+                } else if rows == 0 || cols == 0 {
                     let _ =
                         reply.send(Err("invalid_dimensions: rows and cols must be >= 1".into()));
                 } else {
@@ -1075,25 +1123,93 @@ impl BrokerRuntime {
                             )));
                         }
                         Some(AgentRuntime::Pty) => {
-                            if let Err(err) = workers
-                                .send_to_worker(
-                                    &name,
-                                    "resize_pty",
-                                    Some(RequestId::new(format!(
-                                        "api_{}",
-                                        Uuid::new_v4().simple()
-                                    ))),
-                                    json!({ "rows": rows, "cols": cols }),
-                                )
-                                .await
-                            {
-                                let _ = reply.send(Err(format!("agent_not_found: {}", err)));
-                            } else {
-                                let _ = reply.send(Ok(json!({
-                                    "name": name,
-                                    "rows": rows,
-                                    "cols": cols,
-                                })));
+                            // Single-resizer policy. A resize is applied when
+                            // it carries no session id (legacy/one-shot
+                            // callers), when the requesting session already
+                            // owns the worker or claims a currently-unowned
+                            // one, or when the prior owner has gone stale
+                            // (crashed without releasing). Otherwise a second
+                            // live drive client's resize is rejected so the
+                            // two clients don't fight over the shared PTY. The
+                            // decision + ownership bookkeeping lives in
+                            // `plan_resize`/`commit_resize_ownership` so it is
+                            // unit-testable without a live worker.
+                            let now = Instant::now();
+                            match plan_resize(
+                                resize_owners,
+                                &name,
+                                rows,
+                                cols,
+                                session_id.as_deref(),
+                                now,
+                            ) {
+                                ResizeAction::Reject => {
+                                    // Not the resize owner: acknowledge without
+                                    // resizing so the client doesn't error-spam
+                                    // on every SIGWINCH.
+                                    let _ = reply.send(Ok(json!({
+                                        "name": name,
+                                        "rows": rows,
+                                        "cols": cols,
+                                        "applied": false,
+                                        "reason": "not_resize_owner",
+                                    })));
+                                }
+                                ResizeAction::Refresh => {
+                                    // Same-size owner re-assert: `plan_resize`
+                                    // already bumped `last_seen`. Do NOT re-send
+                                    // `resize_pty`, or the child would get a
+                                    // spurious SIGWINCH/repaint on every
+                                    // keep-alive.
+                                    let _ = reply.send(Ok(json!({
+                                        "name": name,
+                                        "rows": rows,
+                                        "cols": cols,
+                                        "applied": false,
+                                        "reason": "unchanged",
+                                    })));
+                                }
+                                ResizeAction::Apply => {
+                                    if let Err(err) = workers
+                                        .send_to_worker(
+                                            &name,
+                                            "resize_pty",
+                                            Some(RequestId::new(format!(
+                                                "api_{}",
+                                                Uuid::new_v4().simple()
+                                            ))),
+                                            json!({ "rows": rows, "cols": cols }),
+                                        )
+                                        .await
+                                    {
+                                        let _ =
+                                            reply.send(Err(format!("agent_not_found: {}", err)));
+                                    } else {
+                                        // Ownership is recorded only after the
+                                        // resize actually reaches the worker, so
+                                        // a failed send doesn't claim the lease.
+                                        // Re-sample the clock *after* the awaited
+                                        // send so `last_seen` (the liveness
+                                        // anchor for the stale-owner window) is
+                                        // stamped when the resize actually
+                                        // applied, not before a possibly-slow
+                                        // worker send.
+                                        commit_resize_ownership(
+                                            resize_owners,
+                                            &name,
+                                            rows,
+                                            cols,
+                                            session_id,
+                                            Instant::now(),
+                                        );
+                                        let _ = reply.send(Ok(json!({
+                                            "name": name,
+                                            "rows": rows,
+                                            "cols": cols,
+                                            "applied": true,
+                                        })));
+                                    }
+                                }
                             }
                         }
                     }
@@ -1220,6 +1336,7 @@ impl BrokerRuntime {
                         "token_present": node_delivery_token_present,
                         "connected": node_delivery_connected,
                     },
+                    "dead_letter_count": dead_letters.len(),
                     "auth": {
                         "authenticated": !auth_workspaces.is_empty(),
                         "workspace_count": auth_workspaces.len(),
@@ -1230,6 +1347,87 @@ impl BrokerRuntime {
             }
             ListenApiRequest::GetCrashInsights { reply } => {
                 let _ = reply.send(Ok(crash_insights.to_json()));
+            }
+            ListenApiRequest::GetDeadLetters { reply } => {
+                let now_ms = unix_timestamp_millis();
+                let entries: Vec<Value> = dead_letters
+                    .iter()
+                    .map(|entry| {
+                        json!({
+                            "delivery_id": entry.delivery.delivery_id,
+                            "worker_name": entry.worker_name,
+                            "event_id": entry.delivery.event_id,
+                            "from": entry.delivery.from,
+                            "to": entry.delivery.target,
+                            "attempts": entry.attempts,
+                            "reason": entry.reason,
+                            "queued_at_ms": entry.queued_at_ms,
+                            "failed_at_ms": entry.failed_at_ms,
+                            "age_ms": now_ms.saturating_sub(entry.failed_at_ms),
+                        })
+                    })
+                    .collect();
+                let _ = reply.send(Ok(json!({
+                    "count": entries.len(),
+                    "dead_letters": entries,
+                })));
+            }
+            ListenApiRequest::RedeliverDeadLetters { id, reply } => {
+                let candidate_ids: Vec<DeliveryId> = match id {
+                    Some(id) => {
+                        if dead_letters.get(&id).is_none() {
+                            let _ =
+                                reply.send(Err(format!("no dead-letter delivery with id '{id}'")));
+                            return;
+                        }
+                        vec![id]
+                    }
+                    None => dead_letters.delivery_ids(),
+                };
+
+                let mut redelivered: Vec<Value> = Vec::new();
+                let mut skipped: Vec<Value> = Vec::new();
+                for delivery_id in candidate_ids {
+                    let Some(entry) = dead_letters.get(&delivery_id) else {
+                        continue;
+                    };
+                    // Leave entries for recipients that are not running in the
+                    // queue — requeueing them would only bounce straight back
+                    // here with `recipient gone` on the next maintenance tick.
+                    // Probe liveness, not mere registration: a dead child can
+                    // still be present until the next reap sweep.
+                    if !workers.is_worker_live(&entry.worker_name) {
+                        skipped.push(json!({
+                            "delivery_id": delivery_id,
+                            "worker_name": entry.worker_name,
+                            "reason": "recipient not running",
+                        }));
+                        continue;
+                    }
+                    let Some(pending) =
+                        requeue_dead_letter(dead_letters, pending_deliveries, &delivery_id)
+                    else {
+                        continue;
+                    };
+                    let _ = send_broker_event(
+                        sdk_out_tx,
+                        BrokerEvent::DeadLetterRedelivered {
+                            name: pending.worker_name.clone(),
+                            delivery_id: pending.delivery.delivery_id.clone(),
+                            event_id: pending.delivery.event_id.clone(),
+                        },
+                    )
+                    .await;
+                    redelivered.push(json!({
+                        "delivery_id": pending.delivery.delivery_id,
+                        "worker_name": pending.worker_name,
+                        "event_id": pending.delivery.event_id,
+                    }));
+                }
+                let _ = reply.send(Ok(json!({
+                    "redelivered": redelivered,
+                    "skipped": skipped,
+                })));
             }
             ListenApiRequest::Preflight { agents, reply } => {
                 let count = agents.len();
@@ -1427,56 +1625,169 @@ impl BrokerRuntime {
                     let _ = reply.send(Ok(mode));
                 }
             }
-            ListenApiRequest::SetInboundDeliveryMode { name, mode, reply } => {
+            ListenApiRequest::SetInboundDeliveryMode {
+                name,
+                mode,
+                expected_mode,
+                expected_revision,
+                reply,
+            } => {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
-                    let entry = delivery_states.entry(name.clone()).or_default();
-                    let previous = entry.mode;
-                    entry.mode = mode;
-                    let to_flush: Vec<PendingRelayMessage> = if previous
-                        == InboundDeliveryMode::ManualFlush
-                        && mode == InboundDeliveryMode::AutoInject
+                    // Compare-and-set guard: when the caller supplied an
+                    // `expected_mode` (detach restore) and it no longer matches
+                    // the worker's current mode, a concurrent change happened —
+                    // no-op and report the current mode with `matched: false`
+                    // rather than clobbering it. Closes the restore TOCTOU.
                     {
-                        entry.drain_pending()
+                        let entry = delivery_states.entry(name.clone()).or_default();
+                        if let Some(expected) = expected_mode {
+                            if entry.mode != expected {
+                                let current = entry.mode;
+                                let revision = entry.revision;
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    expected = expected.as_wire_str(),
+                                    current = current.as_wire_str(),
+                                    requested = mode.as_wire_str(),
+                                    "inbound delivery mode compare-and-set skipped (expected_mode mismatch)"
+                                );
+                                let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                                    mode: current,
+                                    flushed: 0,
+                                    matched: false,
+                                    revision,
+                                }));
+                                return;
+                            }
+                        }
+                        if let Some(expected) = expected_revision {
+                            if entry.revision != expected {
+                                let current = entry.mode;
+                                let revision = entry.revision;
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    expected_revision = expected,
+                                    current_revision = revision,
+                                    requested = mode.as_wire_str(),
+                                    "inbound delivery mode compare-and-set skipped (revision mismatch)"
+                                );
+                                let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                                    mode: current,
+                                    flushed: 0,
+                                    matched: false,
+                                    revision,
+                                }));
+                                return;
+                            }
+                        }
+                    }
+                    let previous = delivery_states.entry(name.clone()).or_default().mode;
+                    let transition_requires_flush = previous == InboundDeliveryMode::ManualFlush
+                        && mode == InboundDeliveryMode::AutoInject;
+                    // Deferred-ACK flush: inject and ACK only the contiguous FIFO
+                    // prefix, stopping at the first not-yet-ACKable receipt or
+                    // failed injection so held frames are never silently ACKed.
+                    let flush_result = if transition_requires_flush {
+                        tracing::info!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            "draining pending queue on manual_flush → auto_inject transition"
+                        );
+                        super::fleet::flush_pending_relay_messages(
+                            delivery_states,
+                            workers,
+                            fleet_delivery_book,
+                            fleet_control_tx,
+                            &name,
+                            delivery_retry_interval,
+                        )
+                        .await
                     } else {
-                        Vec::new()
+                        super::fleet::FlushPendingRelayResult::default()
                     };
-                    let flushed = to_flush.len();
-                    if !to_flush.is_empty() {
+                    let flushed = flush_result.flushed;
+                    if let Some(error) = flush_result.failure.as_deref() {
+                        tracing::warn!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            flushed,
+                            error,
+                            "stopped delivery-mode transition at failed pending message"
+                        );
+                    }
+                    // A partial flush leaves the worker in manual_flush so the
+                    // held frames are retried rather than silently ACKed.
+                    let actual_mode = if transition_requires_flush && flush_result.failure.is_some()
+                    {
+                        InboundDeliveryMode::ManualFlush
+                    } else {
+                        mode
+                    };
+                    let revision = {
+                        let entry = delivery_states.entry(name.clone()).or_default();
+                        entry.set_mode(actual_mode);
+                        entry.revision
+                    };
+                    if flushed > 0 {
                         tracing::info!(
                             target = "agent_relay::broker",
                             worker = %name,
                             drained = flushed,
-                            "draining pending queue on manual_flush → auto_inject transition"
+                            "drained pending queue on delivery-mode transition"
                         );
-                    }
-                    for queued in to_flush {
-                        inject_pending_relay_message(
-                            workers,
-                            pending_deliveries,
-                            &name,
-                            &queued,
-                            delivery_retry_interval,
-                        )
-                        .await;
                     }
                     tracing::info!(
                         target = "agent_relay::broker",
                         worker = %name,
                         previous_mode = previous.as_wire_str(),
-                        mode = mode.as_wire_str(),
+                        mode = actual_mode.as_wire_str(),
                         flushed,
                         "inbound delivery mode updated"
                     );
-                    if previous != mode {
+                    if previous != actual_mode {
+                        // Toggle the worker-side interactive hold across a
+                        // manual_flush boundary so worker automation (pending
+                        // injections, auto-enter, prompt auto-responders) can't
+                        // splice into a human's drive. Only PTY workers run that
+                        // automation; headless workers don't handle the frame.
+                        let entered_manual = actual_mode == InboundDeliveryMode::ManualFlush;
+                        let left_manual = previous == InboundDeliveryMode::ManualFlush;
+                        if (entered_manual || left_manual)
+                            && workers
+                                .workers
+                                .get(&name)
+                                .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                                .unwrap_or(false)
+                        {
+                            if let Err(err) = workers
+                                .send_to_worker(
+                                    &name,
+                                    "set_interactive_hold",
+                                    None,
+                                    json!({ "hold": entered_manual }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    hold = entered_manual,
+                                    error = %err,
+                                    "failed to send interactive hold to worker"
+                                );
+                            }
+                        }
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind":"agent_inbound_delivery_mode_changed",
                                 "name":&name,
                                 "previous_mode":previous.as_wire_str(),
-                                "mode":mode.as_wire_str(),
+                                "mode":actual_mode.as_wire_str(),
                             }),
                         )
                         .await;
@@ -1493,7 +1804,12 @@ impl BrokerRuntime {
                         )
                         .await;
                     }
-                    let _ = reply.send(Ok(SetInboundDeliveryModeOk { mode, flushed }));
+                    let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                        mode: actual_mode,
+                        flushed,
+                        matched: true,
+                        revision,
+                    }));
                 }
             }
             ListenApiRequest::GetPending { name, reply } => {
@@ -1511,11 +1827,16 @@ impl BrokerRuntime {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
-                    let to_flush: Vec<PendingRelayMessage> = delivery_states
-                        .get_mut(&name)
-                        .map(|state| state.drain_pending())
-                        .unwrap_or_default();
-                    let flushed = to_flush.len();
+                    let flush_result = super::fleet::flush_pending_relay_messages(
+                        delivery_states,
+                        workers,
+                        fleet_delivery_book,
+                        fleet_control_tx,
+                        &name,
+                        delivery_retry_interval,
+                    )
+                    .await;
+                    let flushed = flush_result.flushed;
                     if flushed > 0 {
                         tracing::info!(
                             target = "agent_relay::broker",
@@ -1524,15 +1845,14 @@ impl BrokerRuntime {
                             "flushing pending queue on explicit /flush"
                         );
                     }
-                    for queued in to_flush {
-                        inject_pending_relay_message(
-                            workers,
-                            pending_deliveries,
-                            &name,
-                            &queued,
-                            delivery_retry_interval,
-                        )
-                        .await;
+                    if let Some(error) = flush_result.failure.as_deref() {
+                        tracing::warn!(
+                            target = "agent_relay::broker",
+                            worker = %name,
+                            flushed,
+                            error,
+                            "stopped explicit flush at failed pending message"
+                        );
                     }
                     if flushed > 0 {
                         let _ = send_event(
@@ -1561,11 +1881,6 @@ impl BrokerRuntime {
                     "expires_in_secs": expires_in,
                     "persist": persist,
                 })));
-            }
-            ListenApiRequest::FleetSidecarConnect { .. }
-            | ListenApiRequest::FleetSidecarDisconnect
-            | ListenApiRequest::FleetSidecarFrame { .. } => {
-                unreachable!("fleet sidecar API requests are handled before runtime borrows")
             }
         }
     }

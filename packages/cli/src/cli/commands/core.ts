@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 
 import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
@@ -261,12 +261,26 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
   };
 }
 
-export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
-  const deps = withDefaults(overrides);
+/** Options accepted by the `up` command action (shared by `local`/`node`). */
+export interface UpCommandOptions {
+  spawn?: boolean;
+  background?: boolean;
+  verbose?: boolean;
+  workspaceKey?: string;
+  stateDir?: string;
+  brokerName?: string;
+  config?: string;
+  logFile?: string;
+  logLevel?: string;
+  logJson?: boolean;
+}
 
-  program
-    .command('up')
-    .description('Start the local broker')
+/**
+ * Attach the shared `up` broker options to a command. `node up` adds `--config`
+ * on top of these; `local up` uses them as-is.
+ */
+export function addUpCommandOptions(command: Command): Command {
+  return command
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
@@ -277,18 +291,47 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
       'Directory for broker state and connection files (default: .agentworkforce/relay/)'
     )
     .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
-    .action(
-      async (options: {
-        spawn?: boolean;
-        background?: boolean;
-        verbose?: boolean;
-        workspaceKey?: string;
-        stateDir?: string;
-        brokerName?: string;
-      }) => {
+    .option(
+      '--log-file <path>',
+      'Write structured node logs (capabilities registered, actions invoked/completed) to a file'
+    )
+    .option(
+      '--log-level <level>',
+      'Node log verbosity: debug | info | warn | error (default: info)',
+      parseLogLevel
+    )
+    .option('--log-json', 'Emit node logs as JSON lines instead of text');
+}
+
+const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+
+/**
+ * Validate `--log-level` at parse time (case-insensitive). Rejecting a typo here
+ * — rather than passing it through — avoids the silent failure where an
+ * unrecognized `AGENT_RELAY_LOG_LEVEL` drops every log line.
+ */
+function parseLogLevel(value: string): string {
+  const normalized = value.toLowerCase();
+  if (!(LOG_LEVELS as readonly string[]).includes(normalized)) {
+    throw new InvalidArgumentError(`Expected one of: ${LOG_LEVELS.join(', ')}.`);
+  }
+  return normalized;
+}
+
+export function registerCoreCommands(
+  program: Command,
+  overrides: Partial<CoreDependencies> = {},
+  opts: { includeUp?: boolean } = {}
+): void {
+  const deps = withDefaults(overrides);
+
+  if (opts.includeUp !== false) {
+    addUpCommandOptions(program.command('up').description('Start the local broker')).action(
+      async (options: UpCommandOptions) => {
         await runUpCommand(options, deps);
       }
     );
+  }
 
   program
     .command('down')
@@ -327,6 +370,79 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         client?.disconnect();
       }
     });
+
+  program
+    .command('deadletters')
+    .description('List terminally-failed deliveries retained in the broker dead-letter queue')
+    .option('--json', 'Output raw JSON')
+    .action(async (options: { json?: boolean }) => {
+      let client: HarnessDriverClient | undefined;
+      try {
+        client = HarnessDriverClient.connect({ cwd: process.cwd() });
+        const result = await client.getDeadLetters();
+        if (options.json) {
+          deps.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (result.count === 0) {
+          deps.log('No dead-letter deliveries.');
+          return;
+        }
+        for (const entry of result.dead_letters) {
+          deps.log(
+            `${entry.delivery_id}  recipient=${entry.worker_name}  from=${entry.from}  ` +
+              `age=${formatAgeMs(entry.age_ms)}  attempts=${entry.attempts}  reason=${entry.reason}`
+          );
+        }
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      } finally {
+        client?.disconnect();
+      }
+    });
+
+  program
+    .command('redeliver [id]')
+    .description('Requeue dead-letter deliveries through the normal delivery path')
+    .option('--all', 'Redeliver every dead-letter entry')
+    .action(async (id: string | undefined, options: { all?: boolean }) => {
+      if (Boolean(id) === Boolean(options.all)) {
+        deps.error('Provide exactly one of <id> or --all.');
+        deps.exit(1);
+      }
+      let client: HarnessDriverClient | undefined;
+      try {
+        client = HarnessDriverClient.connect({ cwd: process.cwd() });
+        const result = await client.redeliverDeadLetters(id ? { id } : { all: true });
+        for (const entry of result.redelivered) {
+          deps.log(`Redelivered ${entry.delivery_id} to ${entry.worker_name}`);
+        }
+        for (const entry of result.skipped) {
+          deps.warn(`Skipped ${entry.delivery_id} (${entry.worker_name}): ${entry.reason}`);
+        }
+        if (result.redelivered.length === 0 && result.skipped.length === 0) {
+          deps.log('No dead-letter deliveries to redeliver.');
+        }
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      } finally {
+        client?.disconnect();
+      }
+    });
+}
+
+/** Render a millisecond age as a compact human-readable duration. */
+function formatAgeMs(ageMs: number): string {
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ''}`;
+  const days = Math.floor(hours / 24);
+  return `${days}d${hours % 24 ? `${hours % 24}h` : ''}`;
 }
 
 /**
