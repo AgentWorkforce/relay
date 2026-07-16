@@ -882,6 +882,8 @@ mod tests {
 
     impl Drop for NodeIdEnvGuard {
         fn drop(&mut self) {
+            // SAFETY: These tests hold NODE_ID_ENV_MUTEX while mutating the
+            // process environment, serializing access within this test module.
             unsafe {
                 std::env::remove_var("RELAY_NODE_ID");
                 std::env::remove_var("RELAY_NODE_TOKEN");
@@ -891,6 +893,8 @@ mod tests {
 
     fn clear_node_id_env() -> NodeIdEnvGuard {
         let guard = NODE_ID_ENV_MUTEX.lock().unwrap();
+        // SAFETY: NODE_ID_ENV_MUTEX serializes environment mutations for these
+        // tests before any code under test observes RELAY_NODE_* values.
         unsafe {
             std::env::remove_var("RELAY_NODE_ID");
             std::env::remove_var("RELAY_NODE_TOKEN");
@@ -946,6 +950,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let seed_path = dir.path().join("machine-id");
         std::fs::write(&seed_path, "node_legacy_file\n").unwrap();
+        // SAFETY: clear_node_id_env holds NODE_ID_ENV_MUTEX for the duration
+        // of this test, so RELAY_NODE_* mutations are serialized.
         unsafe {
             std::env::set_var("RELAY_NODE_TOKEN", "nt_live_enrolled");
             std::env::set_var("RELAY_NODE_ID", "node_enrolled");
@@ -962,6 +968,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let seed_path = dir.path().join("machine-id");
         std::fs::write(&seed_path, "node_legacy_file\n").unwrap();
+        // SAFETY: clear_node_id_env holds NODE_ID_ENV_MUTEX for the duration
+        // of this test, so RELAY_NODE_* mutations are serialized.
         unsafe {
             std::env::set_var("RELAY_NODE_TOKEN", "nt_live_enrolled");
         }

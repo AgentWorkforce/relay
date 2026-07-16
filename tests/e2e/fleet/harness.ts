@@ -456,19 +456,19 @@ export class FleetNode {
       // `fleet serve --name` → `node up --broker-name` (the served node's name).
       '--broker-name',
       o.name,
-      // `node up` has no `--base-url`; the engine URL is carried by the
-      // RELAY_BASE_URL / RELAYCAST_BASE_URL env vars set below (as it was for
-      // `fleet serve --base-url`). Serve only — never auto-spawn teams.json
-      // agents (there are none in this hermetic project dir).
-      '--no-spawn',
     ];
     if (!o.usePersistedEnrollment) {
       // Direct-token fixtures predate Cloud enrollment pickup and still model
       // an explicit direct workspace selection. The persisted-enrollment
       // regression must NOT pass this flag: `node up` intentionally treats it
       // as an operator override and skips the enrollment store.
-      args.splice(args.length - 1, 0, '--workspace-key', o.workspaceKey);
+      args.push('--workspace-key', o.workspaceKey);
     }
+    // `node up` has no `--base-url`; the engine URL is carried by the
+    // RELAY_BASE_URL / RELAYCAST_BASE_URL env vars set below (as it was for
+    // `fleet serve --base-url`). Serve only — never auto-spawn teams.json
+    // agents (there are none in this hermetic project dir).
+    args.push('--no-spawn');
     this.child = spawn(process.execPath, args, {
       cwd: REPO_ROOT,
       env: cleanEnv({
