@@ -1,0 +1,44 @@
+{
+  "id": "traj_5ja5ex9h76xe",
+  "version": 1,
+  "task": {
+    "title": "relay-verify-features-workflow",
+    "description": "Automated feature health check. Runs CLI verification tiers 1–4 and the 5 critical paths. Posts a structured PASS/FAIL report to #relay-health.",
+    "source": {
+      "system": "workflow-runner",
+      "id": "a24d42c37e69be1ad9f8f33f"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-07-16T11:46:01.967Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-07-16T11:46:01.967Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_rr8xjwh1gxot",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-07-16T11:46:01.967Z",
+      "events": [
+        {
+          "ts": 1784202361967,
+          "type": "note",
+          "content": "Purpose: Automated feature health check. Runs CLI verification tiers 1–4 and the 5 critical paths. Posts a structured PASS/FAIL report to #relay-health."
+        },
+        {
+          "ts": 1784202361967,
+          "type": "note",
+          "content": "Approach: 10-step pipeline workflow — Parsed 10 steps, 9 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
+}
