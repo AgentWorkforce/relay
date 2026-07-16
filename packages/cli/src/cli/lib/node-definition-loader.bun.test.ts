@@ -28,6 +28,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const LOADER = path.join(here, 'node-definition-loader.ts');
 const CHILD_PROVIDER = path.join(here, 'node-provider-child.ts');
+const BROKER_LIFECYCLE = path.join(here, 'broker-lifecycle.ts');
 
 function hasBun(): boolean {
   try {
@@ -43,7 +44,9 @@ function compile(dir: string, name: string, source: string): string {
   const entry = path.join(dir, `${name}.ts`);
   writeFileSync(entry, source, 'utf8');
   const outfile = path.join(dir, name);
-  execFileSync('bun', ['build', '--compile', entry, '--outfile', outfile], { stdio: 'pipe' });
+  execFileSync('bun', ['build', '--compile', '--minify', entry, '--outfile', outfile], {
+    stdio: 'pipe',
+  });
   return outfile;
 }
 
@@ -177,6 +180,37 @@ describe.skipIf(!bunAvailable)('node definition loading from a bun-compiled bina
     expect(descriptor).toEqual({ name: 'fixture-node', capabilities: ['spawn:claude'] });
   }, 60_000);
 
+  it('serves a .tsx config through a transpiling Node loader', () => {
+    const config = path.join(dir, 'agent-relay-bare.tsx');
+    const helper = path.join(dir, 'node-definition.tsx');
+    writeFileSync(config, "export { default } from './node-definition.tsx';\n");
+    writeFileSync(
+      helper,
+      [
+        "import definition from '@fixture/node-lib';",
+        'const identity = <T,>(value: T): T => value;',
+        'export default identity(definition);',
+      ].join('\n')
+    );
+
+    const descriptor = describeViaHarness(dir, config);
+
+    expect(descriptor).toEqual({ name: 'fixture-node', capabilities: ['spawn:claude'] });
+  }, 60_000);
+
+  it.each(['mts', 'cts'])(
+    'serves a .%s config through the transpiling Node loader',
+    (extension) => {
+      const config = path.join(dir, `agent-relay-bare.${extension}`);
+      writeFileSync(config, "export { default } from '@fixture/node-lib';\n");
+
+      const descriptor = describeViaHarness(dir, config);
+
+      expect(descriptor).toEqual({ name: 'fixture-node', capabilities: ['spawn:claude'] });
+    },
+    60_000
+  );
+
   /**
    * Pins the bun limitation the child-process design exists for: a compiled
    * binary cannot resolve a package whose entry lives in a subdirectory. If
@@ -200,6 +234,80 @@ describe.skipIf(!bunAvailable)('node definition loading from a bun-compiled bina
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/Cannot find (module|package) '@fixture\/node-lib'/);
+  }, 60_000);
+});
+
+describe.skipIf(!bunAvailable)('node definition serving plan under plain Bun', () => {
+  it('keeps plain Bun in-process and reserves the node child for a compiled Bun binary', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'relay-plain-bun-plan-'));
+    const config = path.join(dir, 'agent-relay.mjs');
+    const harness = path.join(dir, 'plain-bun-plan.ts');
+    const packageRoot = path.join(dir, 'node_modules', '@fixture', 'plan-node');
+    mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+    writeFileSync(config, "export { default } from '@fixture/plan-node';\n");
+    writeFileSync(
+      path.join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name: '@fixture/plan-node',
+        version: '1.0.0',
+        type: 'module',
+        main: 'dist/index.js',
+        exports: { '.': './dist/index.js' },
+      })
+    );
+    writeFileSync(
+      path.join(packageRoot, 'dist', 'index.js'),
+      "export default { __agentRelayFleetNode: true, name: 'plan', capabilities: {}, triggers: [] };\n"
+    );
+    writeFileSync(
+      harness,
+      [
+        `import { loadNodeDefinitionPlan } from ${JSON.stringify(BROKER_LIFECYCLE)};`,
+        'const configPath = process.argv[2];',
+        'const deps = {',
+        "  argv: ['bun', import.meta.path, 'node', 'up'],",
+        '  cliScript: import.meta.path,',
+        '  env: process.env,',
+        "  execCommand: async () => { throw new Error('plain Bun must not require node'); },",
+        '};',
+        'const plan = await loadNodeDefinitionPlan(configPath, deps);',
+        'console.log(plan.mode);',
+      ].join('\n')
+    );
+
+    try {
+      const stdout = execFileSync('bun', [harness, config], {
+        cwd: path.resolve(here, '../../../../..'),
+        stdio: 'pipe',
+        encoding: 'utf8',
+      });
+      expect(stdout.trim()).toBe('in-process');
+
+      const compiled = compile(
+        dir,
+        'compiled-serving-plan',
+        [
+          `import { loadNodeDefinitionPlan } from ${JSON.stringify(BROKER_LIFECYCLE)};`,
+          'import { exec } from "node:child_process";',
+          'import { promisify } from "node:util";',
+          'const execAsync = promisify(exec);',
+          'const deps = {',
+          '  argv: process.argv,',
+          '  cliScript: process.argv[1],',
+          '  env: process.env,',
+          '  execCommand: async (command) => execAsync(command),',
+          '};',
+          'const plan = await loadNodeDefinitionPlan(process.argv[2], deps);',
+          'console.log(plan.mode);',
+        ].join('\n')
+      );
+      const compiledResult = run(compiled, [config], dir);
+      expect(compiledResult.status).toBe(0);
+      expect(compiledResult.stdout.trim()).toBe('child-node');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 60_000);
 });
 

@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { createLogger } from '@agent-relay/utils';
 
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
 
@@ -15,6 +19,12 @@ export type NodeProviderCredentials = {
   nodeName: string;
   workspaceKey?: string;
 };
+
+/** Derive a package root from a resolved entry on both POSIX and Windows. */
+export function packageRootFromEntry(entry: string, packageName: string): string {
+  const index = entry.replace(/\\/g, '/').lastIndexOf(packageName);
+  return index >= 0 ? entry.slice(0, index + packageName.length) : entry;
+}
 
 /**
  * Bootstrap executed by a child `node` process to serve a JS/TS fleet node
@@ -52,15 +62,13 @@ import { pathToFileURL } from 'node:url';
 
 const configPath = process.argv[2];
 const describeOnly = process.argv.includes('--describe');
+const FAILURE = Symbol('node-provider-failure');
 
 const fail = (message) => {
   console.error('[agent-relay] node provider: ' + message);
-  process.exit(2);
+  process.exitCode = 2;
+  throw FAILURE;
 };
-
-if (!configPath) {
-  fail('missing config path argument.');
-}
 
 const isDefinition = (value) =>
   Boolean(value && typeof value === 'object' && value.__agentRelayFleetNode === true);
@@ -75,11 +83,16 @@ const unwrap = (loaded) => {
   return candidate;
 };
 
+const errorText = (err) => (err && (err.stack || err.message)) || String(err);
+const packageRootFromEntry = ${packageRootFromEntry.toString()};
+
+const main = async () => {
+if (!configPath) {
+  fail('missing config path argument.');
+}
 const requireFromConfig = createRequire(configPath);
 const importFromConfig = async (specifier) =>
   import(pathToFileURL(requireFromConfig.resolve(specifier)).href);
-
-const errorText = (err) => (err && (err.stack || err.message)) || String(err);
 
 let definition;
 try {
@@ -103,7 +116,7 @@ if (describeOnly) {
     ...(typeof definition.maxAgents === 'number' ? { maxAgents: definition.maxAgents } : {}),
   };
   console.log('__AGENT_RELAY_NODE_DESCRIPTOR__' + JSON.stringify(descriptor));
-  process.exit(0);
+  return;
 }
 
 // Only serving needs the fleet runtime; describing must not require it, so a
@@ -122,10 +135,8 @@ try {
 
 // serveNode's connection contract below is fleet >=10 ({nodeToken, nodeId}).
 // Fleet 9 took {url, apiKey} and would silently reconnect forever instead.
-const fleetRoot = fleetEntry.slice(
-  0,
-  fleetEntry.lastIndexOf('@agent-relay/fleet') + '@agent-relay/fleet'.length
-);
+const fleetPackage = '@agent-relay/fleet';
+const fleetRoot = packageRootFromEntry(fleetEntry, fleetPackage);
 let fleetVersion;
 try {
   fleetVersion = requireFromConfig(fleetRoot + '/package.json').version;
@@ -157,6 +168,29 @@ const nodeId = env.RELAY_NODE_ID;
 const nodeName = env.RELAY_NODE_NAME;
 const baseUrl = env.RELAY_BASE_URL && env.RELAY_BASE_URL.trim();
 const workspaceKey = env.RELAY_WORKSPACE_KEY && env.RELAY_WORKSPACE_KEY.trim();
+const loggingEnabled = Boolean(
+  env.AGENT_RELAY_LOG_FILE || env.AGENT_RELAY_LOG_LEVEL || env.AGENT_RELAY_LOG_JSON === '1'
+);
+
+const sendLog = (level, message, extra) => {
+  if (typeof process.send === 'function') {
+    process.send({
+      __agentRelayNodeProviderLog: true,
+      level,
+      message,
+      ...(extra && typeof extra === 'object' ? { extra } : {}),
+    });
+  }
+};
+const logger = {
+  debug: (message, extra) => sendLog('debug', message, extra),
+  info: (message, extra) => sendLog('info', message, extra),
+  warn: (message, extra) => sendLog('warn', message, extra),
+  error: (message, extra) => sendLog('error', message, extra),
+};
+const warn = loggingEnabled
+  ? (message, extra) => logger.warn(message, extra)
+  : (message) => console.warn('[agent-relay][node] ' + message);
 
 if (!nodeToken || !nodeId) {
   fail('RELAY_NODE_TOKEN and RELAY_NODE_ID are required.');
@@ -174,9 +208,7 @@ if (workspaceKey) {
       delete: (id) => relay.triggers.delete(id),
     };
   } catch (err) {
-    console.warn(
-      '[agent-relay] node provider: message triggers will not sync (' + errorText(err) + ').'
-    );
+    warn('Message triggers will not sync (' + errorText(err) + ').');
   }
 }
 
@@ -194,12 +226,20 @@ try {
     ...(triggers ? { triggers } : {}),
     reconnect: true,
     signal: stopSignal.signal,
-    log: (message) => console.log('[agent-relay][node] ' + message),
-    warn: (message) => console.warn('[agent-relay][node] ' + message),
+    ...(loggingEnabled ? { logger } : { warn }),
   });
 } catch (err) {
   if (!stopSignal.signal.aborted) {
     fail('serving ' + configPath + ' failed: ' + errorText(err));
+  }
+}
+};
+
+try {
+  await main();
+} catch (err) {
+  if (err !== FAILURE) {
+    throw err;
   }
 }
 `;
@@ -256,6 +296,7 @@ export function descriptorCapacitySource(descriptor: NodeDefinitionDescriptor): 
  * a `bun build --compile` binary.
  */
 const JS_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs']);
+const TS_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
 
 /** Whether `configPath` is a JS/TS node definition (as opposed to `agent-relay.py`). */
 export function isJsNodeDefinition(configPath: string): boolean {
@@ -266,16 +307,205 @@ export function isJsNodeDefinition(configPath: string): boolean {
  * Write the child bootstrap to a temp file so a child `node` process has
  * something on disk to execute. The compiled binary has no `dist/` on disk, so
  * the source is materialized per run.
- * @param mkdtemp - Temp-dir factory, injectable for tests.
- * @returns Absolute path to the materialized bootstrap module.
+ * TypeScript inputs are pre-transpiled by the compiled Bun parent and served
+ * through a Node loader hook at their original file URLs. Keeping the original
+ * URLs preserves both relative imports and bare-specifier resolution from the
+ * config's own `node_modules`.
+ * @param configPath - Node definition the bootstrap will load.
+ * @param tempRoot - Root in which to create the private bootstrap directory.
+ * @returns Materialized bootstrap arguments and an idempotent cleanup handle.
  */
 export function materializeNodeProviderChildScript(
-  mkdtemp: (prefix: string) => string = (prefix) => fs.mkdtempSync(prefix)
-): string {
-  const dir = mkdtemp(path.join(os.tmpdir(), 'agent-relay-node-provider-'));
-  const file = path.join(dir, 'node-provider-child.mjs');
-  fs.writeFileSync(file, NODE_PROVIDER_CHILD_SOURCE, 'utf8');
-  return file;
+  configPath: string,
+  tempRoot = os.tmpdir()
+): MaterializedNodeProviderChild {
+  const directory = fs.mkdtempSync(path.join(tempRoot, 'agent-relay-node-provider-'));
+  activeTempDirectories.add(directory);
+  registerTempCleanupFallback();
+
+  try {
+    const scriptPath = path.join(directory, 'node-provider-child.mjs');
+    fs.writeFileSync(scriptPath, NODE_PROVIDER_CHILD_SOURCE, 'utf8');
+
+    const nodeArgs: string[] = [];
+    const transpiled = transpileTypeScriptGraph(configPath);
+    if (transpiled) {
+      const loaderPath = path.join(directory, 'node-definition-loader.mjs');
+      const registerPath = path.join(directory, 'register-node-definition-loader.mjs');
+      fs.writeFileSync(loaderPath, renderNodeLoader(transpiled), 'utf8');
+      fs.writeFileSync(
+        registerPath,
+        [
+          "import { register } from 'node:module';",
+          `register(${JSON.stringify(pathToFileURL(loaderPath).href)}, import.meta.url);`,
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+      nodeArgs.push('--import', registerPath);
+    }
+
+    let cleaned = false;
+    return {
+      scriptPath,
+      nodeArgs,
+      directory,
+      cleanup: () => {
+        if (cleaned) return;
+        cleaned = true;
+        cleanupTempDirectory(directory);
+      },
+    };
+  } catch (err) {
+    cleanupTempDirectory(directory);
+    throw err;
+  }
+}
+
+export type MaterializedNodeProviderChild = {
+  scriptPath: string;
+  nodeArgs: string[];
+  directory: string;
+  cleanup(): void;
+};
+
+type BunTranspiler = {
+  transformSync(source: string, loader?: 'ts' | 'tsx'): string;
+  scanImports(source: string): Array<{ path: string }>;
+};
+
+type BunRuntime = {
+  Transpiler: new (options: { loader: 'ts' | 'tsx'; target: 'node' }) => BunTranspiler;
+};
+
+type TranspiledGraph = {
+  sources: Record<string, string>;
+  resolutions: Record<string, string>;
+};
+
+const activeTempDirectories = new Set<string>();
+let tempCleanupFallbackRegistered = false;
+
+function registerTempCleanupFallback(): void {
+  if (tempCleanupFallbackRegistered) return;
+  tempCleanupFallbackRegistered = true;
+  process.once('exit', () => {
+    for (const directory of [...activeTempDirectories]) {
+      cleanupTempDirectory(directory);
+    }
+  });
+}
+
+function cleanupTempDirectory(directory: string): void {
+  activeTempDirectories.delete(directory);
+  try {
+    fs.rmSync(directory, { recursive: true, force: true });
+  } catch {
+    // Best effort: lifecycle cleanup must never mask the provider result.
+  }
+}
+
+/** Pre-transpile the entry and its statically imported local TypeScript graph. */
+function transpileTypeScriptGraph(configPath: string): TranspiledGraph | undefined {
+  if (!TS_NODE_DEFINITION_EXTENSIONS.has(path.extname(configPath).toLowerCase())) {
+    return undefined;
+  }
+  const bun = (globalThis as typeof globalThis & { Bun?: BunRuntime }).Bun;
+  if (!bun?.Transpiler) {
+    // This helper is only selected by the compiled-Bun serving plan. Retaining
+    // the native Node path here keeps isolated Node unit tests injectable.
+    return undefined;
+  }
+
+  const sources: Record<string, string> = {};
+  const resolutions: Record<string, string> = {};
+  const queued = [path.resolve(configPath)];
+  const seen = new Set<string>();
+
+  while (queued.length > 0) {
+    const file = queued.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+
+    const source = fs.readFileSync(file, 'utf8');
+    const loader = path.extname(file).toLowerCase() === '.tsx' ? 'tsx' : 'ts';
+    const transpiler = new bun.Transpiler({ loader, target: 'node' });
+    const parentUrls = new Set([pathToFileURL(file).href, pathToFileURL(fs.realpathSync(file)).href]);
+    const transformed = transpiler.transformSync(source, loader);
+    for (const parentUrl of parentUrls) {
+      sources[parentUrl] = transformed;
+    }
+
+    for (const imported of transpiler.scanImports(source)) {
+      const resolved = resolveImportedTypeScript(file, imported.path);
+      if (!resolved) continue;
+      const resolvedUrl = pathToFileURL(fs.realpathSync(resolved)).href;
+      for (const parentUrl of parentUrls) {
+        resolutions[loaderResolutionKey(parentUrl, imported.path)] = resolvedUrl;
+      }
+      queued.push(resolved);
+    }
+  }
+
+  return { sources, resolutions };
+}
+
+function resolveImportedTypeScript(parentFile: string, specifier: string): string | undefined {
+  let candidate: string;
+  try {
+    if (specifier.startsWith('file:')) {
+      candidate = fileURLToPath(specifier);
+    } else if (specifier.startsWith('.') || path.isAbsolute(specifier)) {
+      candidate = path.resolve(path.dirname(parentFile), specifier);
+    } else {
+      candidate = createRequire(parentFile).resolve(specifier);
+    }
+  } catch {
+    return undefined;
+  }
+
+  const attempts = [candidate];
+  if (!path.extname(candidate)) {
+    for (const extension of TS_NODE_DEFINITION_EXTENSIONS) {
+      attempts.push(candidate + extension, path.join(candidate, 'index' + extension));
+    }
+  } else if (/\.[cm]?js$/i.test(candidate)) {
+    const stem = candidate.replace(/\.[cm]?js$/i, '');
+    attempts.push(stem + '.ts', stem + '.tsx', stem + '.mts', stem + '.cts');
+  }
+  const resolved = attempts.find(
+    (attempt) => TS_NODE_DEFINITION_EXTENSIONS.has(path.extname(attempt).toLowerCase()) && isFile(attempt)
+  );
+  return resolved ? path.resolve(resolved) : undefined;
+}
+
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function loaderResolutionKey(parentUrl: string, specifier: string): string {
+  return `${parentUrl}\0${specifier}`;
+}
+
+function renderNodeLoader(graph: TranspiledGraph): string {
+  return [
+    `const sources = new Map(Object.entries(${JSON.stringify(graph.sources)}));`,
+    `const resolutions = new Map(Object.entries(${JSON.stringify(graph.resolutions)}));`,
+    `const key = (parentURL, specifier) => parentURL + '\\0' + specifier;`,
+    'export async function resolve(specifier, context, nextResolve) {',
+    '  const url = resolutions.get(key(context.parentURL || "", specifier));',
+    '  return url ? { url, shortCircuit: true } : nextResolve(specifier, context);',
+    '}',
+    'export async function load(url, context, nextLoad) {',
+    '  const source = sources.get(url);',
+    "  return source === undefined ? nextLoad(url, context) : { format: 'module', source, shortCircuit: true };",
+    '}',
+    '',
+  ].join('\n');
 }
 
 /** Single-quote a path for safe interpolation into a shell command. */
@@ -301,8 +531,10 @@ export async function describeNodeDefinitionViaNode(
   deps: CoreDependencies
 ): Promise<NodeDefinitionDescriptor> {
   const nodeBin = deps.env.AGENT_RELAY_NODE?.trim() || 'node';
-  const script = materializeNodeProviderChildScript();
-  const command = `${shellQuote(nodeBin)} ${shellQuote(script)} ${shellQuote(configPath)} --describe`;
+  const materialized = materializeNodeProviderChildScript(configPath, deps.env.TMPDIR?.trim() || os.tmpdir());
+  const command = [nodeBin, ...materialized.nodeArgs, materialized.scriptPath, configPath, '--describe']
+    .map(shellQuote)
+    .join(' ');
 
   let stdout: string;
   try {
@@ -314,6 +546,8 @@ export async function describeNodeDefinitionViaNode(
         `Serving a JS/TS node definition from the standalone agent-relay binary requires \`${nodeBin}\` on PATH ` +
         '(set AGENT_RELAY_NODE to override).'
     );
+  } finally {
+    materialized.cleanup();
   }
 
   const descriptor = parseNodeDescriptor(stdout);
@@ -345,13 +579,13 @@ function extractChildFailure(err: unknown): string {
  * @param configPath - Absolute path to the user's node definition file.
  * @param credentials - Node identity/token the child registers with.
  * @param deps - Core dependencies (spawn, env, logging).
- * @returns The spawned child, or `undefined` when it could not be started.
+ * @returns A supervised child handle, or `undefined` when it could not be started.
  */
-export function startNodeJsNodeProvider(
+export async function startNodeJsNodeProvider(
   configPath: string,
   credentials: NodeProviderCredentials,
   deps: CoreDependencies
-): SpawnedProcess | undefined {
+): Promise<RunningNodeProviderChild | undefined> {
   const nodeBin = deps.env.AGENT_RELAY_NODE?.trim() || 'node';
   const env: NodeJS.ProcessEnv = {
     ...deps.env,
@@ -361,19 +595,29 @@ export function startNodeJsNodeProvider(
     ...(credentials.baseUrl ? { RELAY_BASE_URL: credentials.baseUrl } : {}),
     ...(credentials.workspaceKey ? { RELAY_WORKSPACE_KEY: credentials.workspaceKey } : {}),
   };
+  const loggingEnabled = childLoggingEnabled(env);
+  let materialized: MaterializedNodeProviderChild | undefined;
 
   try {
-    const script = materializeNodeProviderChildScript();
-    const child = deps.spawnProcess(nodeBin, [script, configPath], {
-      stdio: 'inherit',
-      env,
-      cwd: path.dirname(configPath),
-    });
+    materialized = materializeNodeProviderChildScript(configPath, deps.env.TMPDIR?.trim() || os.tmpdir());
+    const child = deps.spawnProcess(
+      nodeBin,
+      [...materialized.nodeArgs, materialized.scriptPath, configPath],
+      {
+        stdio: loggingEnabled ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',
+        env,
+        cwd: path.dirname(configPath),
+      }
+    );
+    attachChildLogger(child, loggingEnabled);
+    const managed = manageNodeProviderChild(child, materialized, deps, configPath);
+    await managed.started;
     deps.log(
       `Serving fleet node provider: ${nodeBin} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
     );
-    return child;
+    return managed.handle;
   } catch (err) {
+    materialized?.cleanup();
     deps.warn(
       `Fleet node provider skipped: ${err instanceof Error ? err.message : String(err)}. ` +
         `Serving a JS/TS node definition from the standalone agent-relay binary requires \`${nodeBin}\` on PATH; ` +
@@ -381,4 +625,129 @@ export function startNodeJsNodeProvider(
     );
     return undefined;
   }
+}
+
+/** Managed child contract used by the broker lifecycle. */
+export type RunningNodeProviderChild = {
+  pid?: number;
+  done: Promise<void>;
+  stop(): Promise<void>;
+};
+
+type EventedSpawnedProcess = SpawnedProcess & {
+  once?: (event: string, listener: (...args: unknown[]) => void) => unknown;
+  on?: (event: string, listener: (...args: unknown[]) => void) => unknown;
+};
+
+function childLoggingEnabled(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.AGENT_RELAY_LOG_FILE || env.AGENT_RELAY_LOG_LEVEL || env.AGENT_RELAY_LOG_JSON === '1');
+}
+
+function attachChildLogger(child: SpawnedProcess, enabled: boolean): void {
+  const evented = child as EventedSpawnedProcess;
+  if (!enabled || typeof evented.on !== 'function') return;
+  const logger = createLogger('fleet');
+  evented.on('message', (message: unknown) => {
+    if (!isChildLogMessage(message)) return;
+    logger[message.level](message.message, message.extra);
+  });
+}
+
+type ChildLogMessage = {
+  __agentRelayNodeProviderLog: true;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  message: string;
+  extra?: Record<string, unknown>;
+};
+
+function isChildLogMessage(value: unknown): value is ChildLogMessage {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<ChildLogMessage>;
+  return (
+    candidate.__agentRelayNodeProviderLog === true &&
+    typeof candidate.message === 'string' &&
+    ['debug', 'info', 'warn', 'error'].includes(String(candidate.level)) &&
+    (candidate.extra === undefined ||
+      (typeof candidate.extra === 'object' && candidate.extra !== null && !Array.isArray(candidate.extra)))
+  );
+}
+
+function manageNodeProviderChild(
+  child: SpawnedProcess,
+  materialized: MaterializedNodeProviderChild,
+  deps: CoreDependencies,
+  configPath: string
+): { started: Promise<void>; handle: RunningNodeProviderChild } {
+  const evented = child as EventedSpawnedProcess;
+  const observesLifecycle = typeof evented.once === 'function';
+  let stopping = false;
+  let settled = false;
+  let resolveDone!: () => void;
+  let rejectDone!: (err: Error) => void;
+  let resolveStarted!: () => void;
+  let rejectStarted!: (err: Error) => void;
+  const done = new Promise<void>((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+  // A child may fail between startNodeJsNodeProvider returning and the broker
+  // attaching its lifecycle race. Mark the promise handled without changing
+  // what callers observe when they await the original promise.
+  void done.catch(() => undefined);
+  const started = new Promise<void>((resolve, reject) => {
+    resolveStarted = resolve;
+    rejectStarted = reject;
+  });
+
+  const finish = (error?: Error): void => {
+    if (settled) return;
+    settled = true;
+    materialized.cleanup();
+    if (error && !stopping) {
+      rejectDone(error);
+    } else {
+      resolveDone();
+    }
+  };
+
+  if (observesLifecycle) {
+    evented.once!('spawn', () => resolveStarted());
+    evented.once!('error', (rawError: unknown) => {
+      const error = rawError instanceof Error ? rawError : new Error(String(rawError));
+      rejectStarted(error);
+      finish(new Error(`Fleet node provider for ${configPath} failed: ${error.message}`, { cause: error }));
+    });
+    evented.once!('exit', (code: unknown, signal: unknown) => {
+      const detail = signal ? `signal ${String(signal)}` : `code ${String(code)}`;
+      finish(new Error(`Fleet node provider for ${configPath} exited unexpectedly (${detail}).`));
+    });
+  } else {
+    resolveStarted();
+  }
+
+  return {
+    started,
+    handle: {
+      ...(child.pid !== undefined ? { pid: child.pid } : {}),
+      done,
+      stop: async () => {
+        stopping = true;
+        if (!settled) {
+          try {
+            if (child.pid) {
+              deps.killProcess(child.pid, 'SIGTERM');
+            } else {
+              child.kill?.('SIGTERM');
+            }
+          } catch {
+            // The child may already have exited between the state check and kill.
+          }
+        }
+        if (observesLifecycle && !settled) {
+          await Promise.race([done.catch(() => undefined), deps.sleep(5_000)]);
+        }
+        finish();
+      },
+    },
+  };
 }

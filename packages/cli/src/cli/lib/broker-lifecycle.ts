@@ -12,7 +12,6 @@ import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-s
 import {
   discoverNodeConfigPath,
   discoverPythonNodeConfigPath,
-  isBunRuntime,
   loadNodeDefinition,
 } from './node-definition-loader.js';
 import {
@@ -20,6 +19,7 @@ import {
   descriptorCapacitySource,
   startNodeJsNodeProvider,
   type NodeDefinitionDescriptor,
+  type RunningNodeProviderChild,
 } from './node-provider-child.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { writeProjectWorkspaceKey } from './project-workspace-key.js';
@@ -345,6 +345,8 @@ export async function startBrokerWithPortFallback(
 
 /** A handle to stop the capability providers started alongside the broker. */
 export interface RunningNodeProviders {
+  /** Rejects when a supervised provider exits before broker shutdown. */
+  done?: Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -488,7 +490,7 @@ async function startNodeCapabilityProviders(
 
   const served: RunningNode[] = [];
   let pythonChild: SpawnedProcess | undefined;
-  let nodeJsChild: SpawnedProcess | undefined;
+  let nodeJsChild: RunningNodeProviderChild | undefined;
 
   if (nodePlan?.mode === 'in-process') {
     const nodeDefinition = nodePlan.definition;
@@ -524,7 +526,7 @@ async function startNodeCapabilityProviders(
   }
 
   if (nodePlan?.mode === 'child-node') {
-    nodeJsChild = startNodeJsNodeProvider(
+    nodeJsChild = await startNodeJsNodeProvider(
       nodePlan.configPath,
       {
         nodeToken,
@@ -557,15 +559,14 @@ async function startNodeCapabilityProviders(
   }
 
   return {
+    ...(nodeJsChild ? { done: nodeJsChild.done } : {}),
     stop: async () => {
-      await Promise.all(served.map((node) => node.stop().catch(() => undefined)));
-      for (const child of [pythonChild, nodeJsChild]) {
-        if (child?.pid) {
-          try {
-            deps.killProcess(child.pid, 'SIGTERM');
-          } catch {
-            // Already exited.
-          }
+      await Promise.all([...served.map((node) => node.stop().catch(() => undefined)), nodeJsChild?.stop()]);
+      if (pythonChild?.pid) {
+        try {
+          deps.killProcess(pythonChild.pid, 'SIGTERM');
+        } catch {
+          // Already exited.
         }
       }
     },
@@ -963,9 +964,13 @@ function isCliScriptEntrypoint(deps: CoreDependencies): boolean {
   );
 }
 
-function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
+export function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
   // Bun --compile exposes argv[1] as a virtual path for the embedded executable.
-  return deps.argv[0] === 'bun' && deps.cliScript.startsWith('/$bunfs/root/');
+  const entrypoint = deps.cliScript.replace(/\\/g, '/');
+  return (
+    deps.argv[0] === 'bun' &&
+    (entrypoint.startsWith('/$bunfs/root/') || /^[A-Z]:\/~BUN\/root\//i.test(entrypoint))
+  );
 }
 
 function sameCliPath(left: string, right: string): boolean {
@@ -1121,11 +1126,11 @@ type NodeDefinitionPlan =
  * @param configPath - Absolute path to the node definition file.
  * @param deps - Core dependencies.
  */
-async function loadNodeDefinitionPlan(
+export async function loadNodeDefinitionPlan(
   configPath: string,
   deps: CoreDependencies
 ): Promise<NodeDefinitionPlan> {
-  if (!isBunRuntime()) {
+  if (!isBundledBunExecutableEntrypoint(deps)) {
     return { mode: 'in-process', definition: await loadNodeDefinition(configPath) };
   }
   const descriptor = await describeNodeDefinitionViaNode(configPath, deps);
@@ -1404,7 +1409,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.exit(0);
     });
 
-    await deps.holdOpen();
+    const holdOpen = deps.holdOpen();
+    if (nodeProviders?.done) {
+      await Promise.race([holdOpen, nodeProviders.done]);
+    } else {
+      await holdOpen;
+    }
   } catch (err: unknown) {
     await shutdownOnce();
     const message = toErrorMessage(err);
