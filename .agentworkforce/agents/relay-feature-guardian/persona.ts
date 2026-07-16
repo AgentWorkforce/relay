@@ -24,8 +24,8 @@ export default definePersona({
 
   integrations: {
     slack: {
-      scope: { channels: '/slack/channels/**' }
-    }
+      scope: { channels: '/slack/channels/**' },
+    },
   },
 
   inputs: {
@@ -33,21 +33,21 @@ export default definePersona({
       description: 'Slack channel to post feature checks to (e.g. relay-health or general).',
       env: 'SLACK_CHANNEL',
       default: 'C0BHWJSF309',
-      picker: { provider: 'slack', resource: 'channels' }
+      picker: { provider: 'slack', resource: 'channels' },
     },
     SLACK_USER_WILL: {
       description: 'Slack user ID for Will (e.g. U01234ABCDE). Used for @mentions in checks.',
       env: 'SLACK_USER_WILL',
-      optional: true
+      optional: true,
     },
     SLACK_USER_KHALIQ: {
       description: 'Slack user ID for Khaliq (e.g. U01234ABCDE). Used for @mentions in checks.',
       env: 'SLACK_USER_KHALIQ',
-      optional: true
-    }
+      optional: true,
+    },
   },
 
   memory: { enabled: true, scopes: ['workspace'], ttlDays: 14 },
 
-  onEvent: './agent.ts'
+  onEvent: './agent.ts',
 });
