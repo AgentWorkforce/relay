@@ -5,6 +5,13 @@ export type HeadlessProvider = 'claude' | 'opencode';
 export type InboundDeliveryMode = 'auto_inject' | 'manual_flush';
 export type SnapshotFormat = 'plain' | 'ansi';
 
+/**
+ * Requested spawn lifecycle. `task_exit`/`single_shot` (and their hyphenated
+ * spellings) make the agent exit once its task is complete; `interactive`
+ * keeps it running.
+ */
+export type SpawnMode = 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
+
 export interface RestartPolicy {
   enabled?: boolean;
   max_restarts?: number;
@@ -27,6 +34,10 @@ export interface AgentSpec {
   shadow_of?: string;
   shadow_mode?: string;
   restart_policy?: RestartPolicy;
+  /** Request task-exit lifecycle; rides the spawn input to the broker. */
+  spawn_mode?: SpawnMode;
+  /** Request task-exit lifecycle; rides the spawn input to the broker. */
+  exit_after_task?: boolean;
 }
 
 export type MessageInjectionMode = 'wait' | 'steer';

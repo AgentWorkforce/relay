@@ -43,13 +43,13 @@ use super::{
     normalize_channel, normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
     persist_dead_letters_on_shutdown, persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
     relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
-    relaycast_ws_spawn_token, requeue_dead_letter, resolve_workspace, retry_pending_delivery,
-    save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
-    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason, AgentRuntime,
-    DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
-    ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
-    ProtocolHeadlessProvider, RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS,
-    MAX_DELIVERY_RETRIES,
+    relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
+    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
+    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    synthetic_delivery_read_ack_reason, AgentRuntime, DeadLetterEntry, DeadLetterStore,
+    DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome, ObserverTokenMintError,
+    ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
+    RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -1162,6 +1162,44 @@ fn exit_after_task_instruction_appends_clean_exit_contract() {
     let task = apply_exit_after_task_instruction(Some("Ship the patch".to_string()));
     assert!(task.starts_with("Ship the patch\n\n## Post-task exit"));
     assert!(task.contains("output `/exit` on its own line"));
+}
+
+#[test]
+fn resolve_exit_after_task_maps_spawn_mode_and_explicit_flag() {
+    // Interactive / absent spawn_mode keeps the agent running.
+    assert!(!resolve_exit_after_task(None, None).expect("absent is valid"));
+    assert!(!resolve_exit_after_task(Some("interactive"), None).expect("interactive is valid"));
+    assert!(!resolve_exit_after_task(Some(""), None).expect("blank is valid"));
+
+    // Every accepted task-exit synonym flips the flag on, case/spacing-insensitive.
+    for mode in [
+        "task_exit",
+        "task-exit",
+        "single_shot",
+        "single-shot",
+        " Task_Exit ",
+    ] {
+        assert!(
+            resolve_exit_after_task(Some(mode), None).expect("task-exit synonym is valid"),
+            "spawn_mode '{mode}' should resolve to exit_after_task=true"
+        );
+    }
+
+    // An explicit exit_after_task=true wins even without a spawn_mode.
+    assert!(resolve_exit_after_task(None, Some(true)).expect("explicit flag is valid"));
+    // and does not override an interactive spawn_mode back off.
+    assert!(resolve_exit_after_task(Some("interactive"), Some(true)).expect("explicit flag wins"));
+    assert!(!resolve_exit_after_task(Some("interactive"), Some(false)).expect("both off"));
+}
+
+#[test]
+fn resolve_exit_after_task_rejects_unknown_spawn_mode() {
+    let error = resolve_exit_after_task(Some("detached"), None)
+        .expect_err("unknown spawn_mode must be rejected");
+    assert!(
+        error.contains("unsupported spawnMode 'detached'"),
+        "error should name the bad mode; got {error}"
+    );
 }
 
 #[test]

@@ -818,27 +818,21 @@ async fn listen_api_spawn(
     let spawn_mode = body
         .get("spawn_mode")
         .or_else(|| body.get("spawnMode"))
-        .and_then(Value::as_str)
-        .map(|value| value.trim().to_ascii_lowercase());
-    let spawn_mode_exit_after_task = match spawn_mode.as_deref() {
-        None | Some("") | Some("interactive") => false,
-        Some("task_exit" | "task-exit" | "single_shot" | "single-shot") => true,
-        Some(other) => {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                axum::Json(json!({
-                    "success": false,
-                    "error": format!("unsupported spawnMode '{other}' (expected 'interactive' or 'task_exit')")
-                })),
-            );
-        }
-    };
-    let exit_after_task = body
+        .and_then(Value::as_str);
+    let explicit_exit_after_task = body
         .get("exit_after_task")
         .or_else(|| body.get("exitAfterTask"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || spawn_mode_exit_after_task;
+        .and_then(Value::as_bool);
+    let exit_after_task =
+        match crate::runtime::resolve_exit_after_task(spawn_mode, explicit_exit_after_task) {
+            Ok(value) => value,
+            Err(error) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(json!({ "success": false, "error": error })),
+                );
+            }
+        };
     let skip_relay_prompt = body
         .get("skip_relay_prompt")
         .or_else(|| body.get("skipRelayPrompt"))
@@ -3727,6 +3721,37 @@ mod auth_tests {
         assert_eq!(body["success"], json!(true));
 
         spawn_replier.await.expect("spawn replier should complete");
+    }
+
+    #[tokio::test]
+    async fn spawn_route_rejects_unsupported_spawn_mode() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawn")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "worker-a",
+                            "cli": "codex",
+                            "spawnMode": "detached"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .expect("error should be a string")
+            .contains("unsupported spawnMode 'detached'"));
     }
 
     #[tokio::test]
