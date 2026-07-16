@@ -871,6 +871,7 @@ fn node_max_agents() -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::sync::{Mutex, MutexGuard};
 
@@ -878,28 +879,70 @@ mod tests {
 
     struct NodeIdEnvGuard {
         _guard: MutexGuard<'static, ()>,
+        original_node_id: Option<OsString>,
+        original_node_token: Option<OsString>,
     }
 
     impl Drop for NodeIdEnvGuard {
         fn drop(&mut self) {
             // SAFETY: These tests hold NODE_ID_ENV_MUTEX while mutating the
-            // process environment, serializing access within this test module.
+            // process environment, serializing access within this test module
+            // until the inherited RELAY_NODE_* values have been restored.
             unsafe {
-                std::env::remove_var("RELAY_NODE_ID");
-                std::env::remove_var("RELAY_NODE_TOKEN");
+                match &self.original_node_id {
+                    Some(value) => std::env::set_var("RELAY_NODE_ID", value),
+                    None => std::env::remove_var("RELAY_NODE_ID"),
+                }
+                match &self.original_node_token {
+                    Some(value) => std::env::set_var("RELAY_NODE_TOKEN", value),
+                    None => std::env::remove_var("RELAY_NODE_TOKEN"),
+                }
             }
         }
     }
 
     fn clear_node_id_env() -> NodeIdEnvGuard {
+        clear_node_id_env_with_originals().0
+    }
+
+    fn clear_node_id_env_with_originals() -> (NodeIdEnvGuard, Option<OsString>, Option<OsString>) {
         let guard = NODE_ID_ENV_MUTEX.lock().unwrap();
+        let original_node_id = std::env::var_os("RELAY_NODE_ID");
+        let original_node_token = std::env::var_os("RELAY_NODE_TOKEN");
         // SAFETY: NODE_ID_ENV_MUTEX serializes environment mutations for these
         // tests before any code under test observes RELAY_NODE_* values.
         unsafe {
             std::env::remove_var("RELAY_NODE_ID");
             std::env::remove_var("RELAY_NODE_TOKEN");
         }
-        NodeIdEnvGuard { _guard: guard }
+        (
+            NodeIdEnvGuard {
+                _guard: guard,
+                original_node_id: original_node_id.clone(),
+                original_node_token: original_node_token.clone(),
+            },
+            original_node_id,
+            original_node_token,
+        )
+    }
+
+    #[test]
+    fn node_id_env_guard_restores_original_node_env() {
+        let (env_guard, original_node_id, original_node_token) = clear_node_id_env_with_originals();
+        assert!(std::env::var_os("RELAY_NODE_ID").is_none());
+        assert!(std::env::var_os("RELAY_NODE_TOKEN").is_none());
+
+        // SAFETY: env_guard holds NODE_ID_ENV_MUTEX for the duration of this
+        // test, so RELAY_NODE_* mutations are serialized.
+        unsafe {
+            std::env::set_var("RELAY_NODE_ID", "node_test_mutation");
+            std::env::set_var("RELAY_NODE_TOKEN", "nt_live_test_mutation");
+        }
+
+        drop(env_guard);
+
+        assert_eq!(std::env::var_os("RELAY_NODE_ID"), original_node_id);
+        assert_eq!(std::env::var_os("RELAY_NODE_TOKEN"), original_node_token);
     }
 
     #[test]

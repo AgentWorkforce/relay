@@ -273,6 +273,13 @@ export async function startCloudEnrollmentEndpoint(input: {
   const server = createHttpServer((request, response) => {
     let raw = '';
     request.setEncoding('utf-8');
+    request.on('error', () => {
+      if (response.writableEnded) return;
+      if (!response.headersSent) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+      }
+      response.end(JSON.stringify({ error: 'Enrollment request stream error' }));
+    });
     request.on('data', (chunk) => {
       raw += chunk;
     });
@@ -430,7 +437,7 @@ export class FleetNode {
     });
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       child.once('error', reject);
-      child.once('exit', resolve);
+      child.once('close', resolve);
     });
     if (exitCode !== 0) {
       throw new Error(`cloud enroll exited ${exitCode}: ${output}`);
