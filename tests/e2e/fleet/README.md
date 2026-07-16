@@ -72,6 +72,8 @@ vars are stripped (so the broker never rejoins the operator's real workspace), w
 its own `HOME`, project dir, state dir, and broker port. The broker reads its
 node id from `<data_local_dir>/agent-relay/machine-id`, which the harness pre-seeds
 to match the enrolled node id (otherwise `node.register` is rejected
-`node_id_mismatch`). `FleetNode.stop()` kills the broker child too (by its
+`node_id_mismatch`) for direct-token fixtures. The Cloud-enrollment regression
+intentionally does not pre-seed that file; it verifies `cloud enroll` persistence
+drives `node up` through `RELAY_NODE_ID`/`RELAY_NODE_TOKEN` instead. `FleetNode.stop()` kills the broker child too (by its
 `connection.json` pid) so a SIGKILLed sidecar doesn't orphan a broker that would
 hold the node online + the state-dir flock and break a later restart.

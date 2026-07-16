@@ -480,14 +480,16 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
                 `The one-time enrollment token has been consumed. Credentials were saved to ${recoveryPath} (owner-only permissions).`
               );
               deps.error(
-                "Fix the store problem and re-add them from that file, or export RELAY_NODE_TOKEN/RELAY_BASE_URL from it before 'relay node up'. Delete the file afterwards."
+                "Fix the store problem and re-add them from that file, or export RELAY_NODE_TOKEN/RELAY_NODE_ID/RELAY_BASE_URL from it before 'relay node up'. Delete the file afterwards."
               );
             } catch {
               deps.error(
                 'The one-time enrollment token has been consumed and a recovery file could not be written. SAVE THESE CREDENTIALS NOW:'
               );
               deps.error(JSON.stringify(record, null, 2));
-              deps.error("Export RELAY_NODE_TOKEN/RELAY_BASE_URL from them before 'relay node up'.");
+              deps.error(
+                "Export RELAY_NODE_TOKEN/RELAY_NODE_ID/RELAY_BASE_URL from them before 'relay node up'."
+              );
             }
             deps.exit(1);
             return;

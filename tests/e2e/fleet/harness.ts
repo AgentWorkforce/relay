@@ -447,56 +447,55 @@ export class FleetNode {
   start(): void {
     const o = this.opts;
     const stateDir = path.join(this.projectDir, '.agentworkforce', 'relay');
-    this.child = spawn(
-      process.execPath,
-      [
-        CLI_ENTRY,
-        'node',
-        'up',
-        '--config',
-        o.nodeFile,
-        // `fleet serve --name` → `node up --broker-name` (the served node's name).
-        '--broker-name',
-        o.name,
-        // `fleet serve --workspace` → `node up --workspace-key`.
-        '--workspace-key',
-        o.workspaceKey,
-        // `node up` has no `--base-url`; the engine URL is carried by the
-        // RELAY_BASE_URL / RELAYCAST_BASE_URL env vars set below (as it was for
-        // `fleet serve --base-url`). Serve only — never auto-spawn teams.json
-        // agents (there are none in this hermetic project dir).
-        '--no-spawn',
-      ],
-      {
-        cwd: REPO_ROOT,
-        env: cleanEnv({
-          HOME: this.home,
-          BROKER_BINARY_PATH: o.brokerBinary,
-          RELAYCAST_BASE_URL: o.engineBaseUrl,
-          RELAY_BASE_URL: o.engineBaseUrl,
-          ...(o.usePersistedEnrollment
-            ? {
-                AGENT_RELAY_HOME: this.enrollmentHome,
-                // Supply the broker-self workspace membership without using
-                // RELAY_WORKSPACE_KEY, which is intentionally an explicit
-                // direct-workspace choice that disables enrollment pickup.
-                RELAY_WORKSPACES_JSON: JSON.stringify([
-                  { workspace_id: 'fleet-e2e', api_key: o.workspaceKey },
-                ]),
-              }
-            : {
-                RELAY_NODE_TOKEN: o.nodeToken,
-                RELAY_WORKSPACE_KEY: o.workspaceKey,
-                RELAY_API_KEY: o.workspaceKey,
-              }),
-          AGENT_RELAY_PROJECT: this.projectDir,
-          AGENT_RELAY_STATE_DIR: stateDir,
-          AGENT_RELAY_BROKER_PORT: String(o.brokerPort),
-          ...(o.capacityHarnesses ? { AGENT_RELAY_NODE_HARNESSES: o.capacityHarnesses } : {}),
-        }),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }
-    );
+    const args = [
+      CLI_ENTRY,
+      'node',
+      'up',
+      '--config',
+      o.nodeFile,
+      // `fleet serve --name` → `node up --broker-name` (the served node's name).
+      '--broker-name',
+      o.name,
+      // `node up` has no `--base-url`; the engine URL is carried by the
+      // RELAY_BASE_URL / RELAYCAST_BASE_URL env vars set below (as it was for
+      // `fleet serve --base-url`). Serve only — never auto-spawn teams.json
+      // agents (there are none in this hermetic project dir).
+      '--no-spawn',
+    ];
+    if (!o.usePersistedEnrollment) {
+      // Direct-token fixtures predate Cloud enrollment pickup and still model
+      // an explicit direct workspace selection. The persisted-enrollment
+      // regression must NOT pass this flag: `node up` intentionally treats it
+      // as an operator override and skips the enrollment store.
+      args.splice(args.length - 1, 0, '--workspace-key', o.workspaceKey);
+    }
+    this.child = spawn(process.execPath, args, {
+      cwd: REPO_ROOT,
+      env: cleanEnv({
+        HOME: this.home,
+        BROKER_BINARY_PATH: o.brokerBinary,
+        RELAYCAST_BASE_URL: o.engineBaseUrl,
+        RELAY_BASE_URL: o.engineBaseUrl,
+        ...(o.usePersistedEnrollment
+          ? {
+              AGENT_RELAY_HOME: this.enrollmentHome,
+              // Supply the broker-self workspace membership without using
+              // RELAY_WORKSPACE_KEY, which is intentionally an explicit
+              // direct-workspace choice that disables enrollment pickup.
+              RELAY_WORKSPACES_JSON: JSON.stringify([{ workspace_id: 'fleet-e2e', api_key: o.workspaceKey }]),
+            }
+          : {
+              RELAY_NODE_TOKEN: o.nodeToken,
+              RELAY_WORKSPACE_KEY: o.workspaceKey,
+              RELAY_API_KEY: o.workspaceKey,
+            }),
+        AGENT_RELAY_PROJECT: this.projectDir,
+        AGENT_RELAY_STATE_DIR: stateDir,
+        AGENT_RELAY_BROKER_PORT: String(o.brokerPort),
+        ...(o.capacityHarnesses ? { AGENT_RELAY_NODE_HARNESSES: o.capacityHarnesses } : {}),
+      }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     // Persist the sidecar's output to serve.log (append across restarts) so the
     // CI "upload node logs on failure" step has something to attach.
     const record = (d: Buffer) => {

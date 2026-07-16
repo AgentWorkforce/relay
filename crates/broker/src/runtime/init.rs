@@ -219,32 +219,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
     let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
-    let node_id = match crate::node_control::default_node_id_path() {
-        Some(path) => {
-            // Node-id mode — explicit vs auto:
-            //   * Explicit / fleet: when an operator pre-enrolls this node and
-            //     supplies `RELAY_NODE_TOKEN`, the node id is pinned (via the
-            //     machine-id file) and MUST be sent verbatim in `node.register`,
-            //     or the engine rejects it with `node_id_mismatch`. Use the file
-            //     content as-is — do NOT derive.
-            //   * Auto / direct: with no supplied token the broker mints its own
-            //     node via `create_node`; derive the id from the machine seed +
-            //     cwd so one host serving multiple workspaces/dirs doesn't collide.
-            let pinned = std::env::var("RELAY_NODE_TOKEN")
-                .ok()
-                .is_some_and(|value| !value.trim().is_empty());
-            let loaded = if pinned {
-                crate::node_control::load_or_create_machine_seed(&path)
-            } else {
-                crate::node_control::load_or_create_node_id(&path, &node_workspace_id)
-            };
-            loaded.unwrap_or_else(|error| {
-                tracing::warn!(error = %error, "failed to load fleet node machine id; using ephemeral id");
-                format!("node_{}", Uuid::new_v4().simple())
-            })
-        }
-        None => format!("node_{}", Uuid::new_v4().simple()),
-    };
+    let node_id = resolve_broker_node_id(&node_workspace_id);
     // The node registers under its resolved instance name (--instance-name, the
     // legacy --name/--broker-name alias, or AGENT_RELAY_BROKER_NAME), falling back
     // to the machine hostname only when none is set. Deriving this from the raw
@@ -735,6 +710,58 @@ fn resolve_cached_node_token(
     None
 }
 
+fn explicit_env_node_id() -> Option<String> {
+    std::env::var("RELAY_NODE_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn explicit_env_node_token_present() -> bool {
+    std::env::var("RELAY_NODE_TOKEN")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn resolve_broker_node_id(workspace_id: &str) -> String {
+    resolve_broker_node_id_from_path(
+        crate::node_control::default_node_id_path().as_deref(),
+        workspace_id,
+    )
+}
+
+fn resolve_broker_node_id_from_path(seed_path: Option<&Path>, workspace_id: &str) -> String {
+    if let Some(node_id) = explicit_env_node_id() {
+        return node_id;
+    }
+
+    match seed_path {
+        Some(path) => {
+            // Node-id mode — explicit vs auto:
+            //   * Cloud enrollment: `relay node up` supplies RELAY_NODE_ID and
+            //     RELAY_NODE_TOKEN from the enrollment store. The env node id
+            //     must be sent verbatim in `node.register`, or the engine rejects
+            //     the token-bound handshake with `node_id_mismatch`.
+            //   * Legacy explicit / fleet: before RELAY_NODE_ID existed,
+            //     operators pre-seeded the machine-id file and supplied
+            //     RELAY_NODE_TOKEN. Keep honoring that file as the pinned id.
+            //   * Auto / direct: with no supplied token the broker mints its own
+            //     node via `create_node`; derive the id from the machine seed +
+            //     cwd so one host serving multiple workspaces/dirs doesn't collide.
+            let loaded = if explicit_env_node_token_present() {
+                crate::node_control::load_or_create_machine_seed(path)
+            } else {
+                crate::node_control::load_or_create_node_id(path, workspace_id)
+            };
+            loaded.unwrap_or_else(|error| {
+                tracing::warn!(error = %error, "failed to load fleet node machine id; using ephemeral id");
+                format!("node_{}", Uuid::new_v4().simple())
+            })
+        }
+        None => format!("node_{}", Uuid::new_v4().simple()),
+    }
+}
+
 fn callback_host_for_url(api_bind: &str, local_addr: SocketAddr) -> String {
     let host = match unbracket_ipv6(api_bind.trim()) {
         "" => {
@@ -845,6 +872,31 @@ fn node_max_agents() -> Option<u32> {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::sync::{Mutex, MutexGuard};
+
+    static NODE_ID_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct NodeIdEnvGuard {
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for NodeIdEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("RELAY_NODE_ID");
+                std::env::remove_var("RELAY_NODE_TOKEN");
+            }
+        }
+    }
+
+    fn clear_node_id_env() -> NodeIdEnvGuard {
+        let guard = NODE_ID_ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::remove_var("RELAY_NODE_ID");
+            std::env::remove_var("RELAY_NODE_TOKEN");
+        }
+        NodeIdEnvGuard { _guard: guard }
+    }
 
     #[test]
     fn bootstrap_node_manifest_advertises_capacity_not_bare_spawn() {
@@ -886,6 +938,37 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+    }
+
+    #[test]
+    fn broker_node_id_prefers_explicit_relay_node_id_env() {
+        let _env_guard = clear_node_id_env();
+        let dir = tempfile::tempdir().unwrap();
+        let seed_path = dir.path().join("machine-id");
+        std::fs::write(&seed_path, "node_legacy_file\n").unwrap();
+        unsafe {
+            std::env::set_var("RELAY_NODE_TOKEN", "nt_live_enrolled");
+            std::env::set_var("RELAY_NODE_ID", "node_enrolled");
+        }
+
+        let node_id = resolve_broker_node_id_from_path(Some(&seed_path), "rw_test");
+
+        assert_eq!(node_id, "node_enrolled");
+    }
+
+    #[test]
+    fn broker_node_id_keeps_legacy_token_pinned_machine_file_without_env_id() {
+        let _env_guard = clear_node_id_env();
+        let dir = tempfile::tempdir().unwrap();
+        let seed_path = dir.path().join("machine-id");
+        std::fs::write(&seed_path, "node_legacy_file\n").unwrap();
+        unsafe {
+            std::env::set_var("RELAY_NODE_TOKEN", "nt_live_enrolled");
+        }
+
+        let node_id = resolve_broker_node_id_from_path(Some(&seed_path), "rw_test");
+
+        assert_eq!(node_id, "node_legacy_file");
     }
 
     #[test]
