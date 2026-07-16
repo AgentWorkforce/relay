@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay-broker`'s `/api/observer-token` recovers from an `observer_token_name_conflict` (409) by rotating the existing same-named token to return fresh, usable material instead of failing the mint, so repeat mints of the fixed-name dashboard observer token succeed. It rotates only a token whose scopes exactly match the endpoint's read-only set and that carries no filters; any other conflict still propagates unchanged.
 
 ## [10.5.0] - 2026-07-16
 
@@ -25,7 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` `relay.addListener(...)` on a workspace-key client now receives channel messages, DMs, and thread replies by streaming through registered agent clients (`workspace.register`/`reconnect`) over the node transport, deduplicating events delivered to multiple locally-registered agents; previously listeners silently received nothing. Listener connect failures now surface through `onError` instead of being swallowed, and a listener with no registered agent warns after 10s.
 - `agent-relay-broker` now mutes the default/extra channels it joins for its own broker-self agent, so channel messages stop writing delivery rows to that identity's permanently-offline implicit node (they previously queued until TTL expiry on every message). Muting is best-effort and never fails startup.
 - `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
-- `agent-relay-broker`'s `/api/observer-token` recovers from an `observer_token_name_conflict` (409) by rotating the existing same-named token to return fresh, usable material instead of failing the mint, so repeat mints of the fixed-name dashboard observer token succeed. It rotates only a token whose scopes exactly match the endpoint's read-only set and that carries no filters; any other conflict still propagates unchanged.
 
 ## [10.4.0] - 2026-07-15
 
