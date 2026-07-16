@@ -97,6 +97,7 @@ describe('registerNodeCommands', () => {
 
     expect(resolveEnrollment).toHaveBeenCalledTimes(1);
     expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
+    expect(env.RELAY_NODE_ID).toBe('node_abc');
     expect(env.RELAY_BASE_URL).toBe('https://relaycast.example.com');
     expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
       expect.objectContaining({ discoverConfig: true, nodeName: 'kjglaptop' }),

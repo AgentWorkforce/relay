@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay node up --config` now loads JavaScript and TypeScript node definitions with package imports from standalone binaries, while npm-installed Bun runs keep their existing in-process behavior.
+- `agent-relay node up` now serves persisted Cloud-enrolled nodes with the enrolled `nodeId`, so the broker and local providers authenticate with the node token's bound identity instead of a fresh local node id.
 
 ## [10.6.0] - 2026-07-16
 
