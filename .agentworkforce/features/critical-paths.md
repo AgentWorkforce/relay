@@ -109,14 +109,14 @@ AGENT_RELAY_TOKEN=<TOKEN_W> relay message dm list  → shows message from orches
 
 These are not foundational but are exercised constantly and failures are immediately noticeable.
 
-| Path | Risk | Code Area |
-|------|------|-----------|
-| PTY message injection timing | Race conditions in TMUX wrapper | crates/relay-pty/, packages/harness-driver/ |
-| Dead letter queue + redeliver | Messages lost silently | crates/broker/src/queue.rs |
-| Agent token auth validation | Auth bypass or silent rejection | crates/broker/src/auth.rs (or equivalent) |
-| Message delivery ordering | Out-of-order delivery corrupts workflows | crates/broker/ |
-| Hold/flush state machine | Stuck agents that never receive messages | crates/broker/, packages/cli/src/cli/commands/local-agent.ts |
-| MCP tool schema validation | Tool calls rejected silently by harness | packages/cli/src/cli/mcp/ |
+| Path                          | Risk                                     | Code Area                                                    |
+| ----------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| PTY message injection timing  | Race conditions in TMUX wrapper          | crates/relay-pty/, packages/harness-driver/                  |
+| Dead letter queue + redeliver | Messages lost silently                   | crates/broker/src/queue.rs                                   |
+| Agent token auth validation   | Auth bypass or silent rejection          | crates/broker/src/auth.rs (or equivalent)                    |
+| Message delivery ordering     | Out-of-order delivery corrupts workflows | crates/broker/                                               |
+| Hold/flush state machine      | Stuck agents that never receive messages | crates/broker/, packages/cli/src/cli/commands/local-agent.ts |
+| MCP tool schema validation    | Tool calls rejected silently by harness  | packages/cli/src/cli/mcp/                                    |
 
 ---
 

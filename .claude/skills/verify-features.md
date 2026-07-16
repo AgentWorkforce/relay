@@ -30,26 +30,28 @@ grep -A 8 "id: message-post" .agentworkforce/features/manifest.yaml
 ```
 
 The manifest tells you:
+
 - `criticality` — how important is this feature
 - `verify_tier` — what's required to verify it (1=nothing, 2=broker, 3=agent token, 4=two agents, 5=cloud, 6=manual)
 - `location` — which source files implement it
 
 ### 2. Check verify tier requirements
 
-| Tier | Requires | Setup command |
-|------|---------|---------------|
-| 1 | Nothing | (none) |
-| 2 | Broker running | `relay up` |
-| 3 | Broker + agent token | `relay up && relay agent register <name>` |
-| 4 | Broker + 2 agents | `relay up && relay agent register a && relay agent register b` |
-| 5 | Cloud auth | `relay cloud whoami` (must already be logged in) |
-| 6 | Manual only | Human must verify in browser or interactive session |
+| Tier | Requires             | Setup command                                                  |
+| ---- | -------------------- | -------------------------------------------------------------- |
+| 1    | Nothing              | (none)                                                         |
+| 2    | Broker running       | `relay up`                                                     |
+| 3    | Broker + agent token | `relay up && relay agent register <name>`                      |
+| 4    | Broker + 2 agents    | `relay up && relay agent register a && relay agent register b` |
+| 5    | Cloud auth           | `relay cloud whoami` (must already be logged in)               |
+| 6    | Manual only          | Human must verify in browser or interactive session            |
 
 ### 3. Run the verification
 
 Follow `.agentworkforce/features/verify/procedures.md` for the relevant tier. Always start from the lowest tier that applies and work up.
 
 **Quick sanity check after any change:**
+
 ```bash
 relay version && \
 relay status || relay up && \
@@ -66,15 +68,15 @@ relay agent remove quick-check
 
 ### 4. Determine which features to verify for a given change
 
-| Changed code area | Verify these feature categories |
-|-------------------|--------------------------------|
-| `crates/broker/` | broker, messaging-*, local-agents, mcp |
-| `crates/relay-pty/` | local-agents (spawn/attach) |
-| `packages/cli/src/cli/commands/` | The command that changed + broker |
-| `packages/cli/src/cli/mcp/` | mcp category (all tools) |
-| `packages/harness-driver/` | harnesses, local-agents |
-| `packages/sdk/` | sdk category |
-| `packages/cloud/` | cloud category |
+| Changed code area                | Verify these feature categories         |
+| -------------------------------- | --------------------------------------- |
+| `crates/broker/`                 | broker, messaging-\*, local-agents, mcp |
+| `crates/relay-pty/`              | local-agents (spawn/attach)             |
+| `packages/cli/src/cli/commands/` | The command that changed + broker       |
+| `packages/cli/src/cli/mcp/`      | mcp category (all tools)                |
+| `packages/harness-driver/`       | harnesses, local-agents                 |
+| `packages/sdk/`                  | sdk category                            |
+| `packages/cloud/`                | cloud category                          |
 
 ### 5. Check critical paths last
 
@@ -89,12 +91,14 @@ Always run the 5 critical paths from `critical-paths.md` before declaring a chan
 ## When to update the manifest
 
 Add or update entries in `manifest.yaml` when:
+
 - A new CLI command is added
 - An MCP tool is added or renamed
 - A new harness is supported
 - A feature is removed or deprecated
 
 Update `critical-paths.md` when:
+
 - A new path becomes foundational to the product
 - A critical path sequence changes (commands renamed, flags changed)
 

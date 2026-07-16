@@ -19,18 +19,22 @@ Failed at "report-and-analyze" [timeout] after 25min. 9/10 steps completed befor
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 2. Execution: report-and-analyze
-*Agent: reporter*
+
+_Agent: reporter_
 
 ### 3. Execution: report-and-analyze
-*Agent: reporter*
+
+_Agent: reporter_
 
 - "report-and-analyze" failed [timeout]: Interactive agent timed out — it may have gone idle, failed to self-terminate, or the task scope was too broad. Check if the agent was waiting for relay signals that never arrived.
 
 ### 4. Retrospective
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 - Failed at "report-and-analyze" [timeout] after 25min. 9/10 steps completed before failure. (abandoned after 25 minutes)
 - Workflow abandoned: Step "report-and-analyze" failed: Step "report-and-analyze" failed after 1 retries: Step "report-and-analyze" timed out after 600000ms

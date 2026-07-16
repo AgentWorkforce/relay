@@ -19,12 +19,15 @@ All 10 steps completed in 10min.
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 2. Execution: report-and-analyze
-*Agent: reporter*
+
+_Agent: reporter_
 
 ### 3. Retrospective
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 - All 10 steps completed in 10min. (completed in 10 minutes)

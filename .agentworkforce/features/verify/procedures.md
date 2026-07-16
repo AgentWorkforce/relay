@@ -355,13 +355,13 @@ Pass criteria: cloud commands return data consistent with the authenticated acco
 
 These cannot be automated from CLI. A human must verify them.
 
-| Feature | How to Verify |
-|---------|---------------|
-| `relay cloud login` | Open browser OAuth flow, complete auth, check `relay cloud whoami` succeeds |
-| Cursor harness | Open Cursor, run cursor-agent, confirm PTY injection works |
-| Web dashboard (relay-dashboard repo) | Navigate to dashboard, confirm agents/channels visible |
-| `relay cloud connect` | SSH session must complete provider auth interactively |
-| `relay cloud enroll` | Machine enrollment requires cloud account and browser confirmation |
+| Feature                              | How to Verify                                                               |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `relay cloud login`                  | Open browser OAuth flow, complete auth, check `relay cloud whoami` succeeds |
+| Cursor harness                       | Open Cursor, run cursor-agent, confirm PTY injection works                  |
+| Web dashboard (relay-dashboard repo) | Navigate to dashboard, confirm agents/channels visible                      |
+| `relay cloud connect`                | SSH session must complete provider auth interactively                       |
+| `relay cloud enroll`                 | Machine enrollment requires cloud account and browser confirmation          |
 
 ---
 
@@ -369,17 +369,17 @@ These cannot be automated from CLI. A human must verify them.
 
 Use this to determine which tiers to run:
 
-| Change area | Tiers to run |
-|-------------|-------------|
-| Broker Rust code (`crates/broker/`) | 1, 2, 3, 4 |
-| PTY/harness code (`crates/relay-pty/`, `packages/harness-driver/`) | 2 (spawn tests) |
-| CLI commands (`packages/cli/src/cli/commands/`) | 1 + tier matching the command |
-| MCP tools (`packages/cli/src/cli/mcp/`) | 2, 3 (MCP server + tool calls) |
-| SDK (`packages/sdk/`) | 3, 4 |
-| Cloud client (`packages/cloud/`) | 5 |
-| Any auth/token change | 2, 3, 4 |
-| Message ordering/delivery | 3, 4 (post then list, confirm order) |
-| Harness definitions (`packages/harnesses/`) | 2 (spawn that harness) |
+| Change area                                                        | Tiers to run                         |
+| ------------------------------------------------------------------ | ------------------------------------ |
+| Broker Rust code (`crates/broker/`)                                | 1, 2, 3, 4                           |
+| PTY/harness code (`crates/relay-pty/`, `packages/harness-driver/`) | 2 (spawn tests)                      |
+| CLI commands (`packages/cli/src/cli/commands/`)                    | 1 + tier matching the command        |
+| MCP tools (`packages/cli/src/cli/mcp/`)                            | 2, 3 (MCP server + tool calls)       |
+| SDK (`packages/sdk/`)                                              | 3, 4                                 |
+| Cloud client (`packages/cloud/`)                                   | 5                                    |
+| Any auth/token change                                              | 2, 3, 4                              |
+| Message ordering/delivery                                          | 3, 4 (post then list, confirm order) |
+| Harness definitions (`packages/harnesses/`)                        | 2 (spawn that harness)               |
 
 ---
 

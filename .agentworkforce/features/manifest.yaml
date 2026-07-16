@@ -1,5 +1,5 @@
-version: "1.0"
-updated: "2026-07-16"
+version: '1.0'
+updated: '2026-07-16'
 
 # Every user-facing feature in this repo, categorized and scored.
 #
@@ -17,7 +17,6 @@ updated: "2026-07-16"
 #   6 - manual / browser only
 
 categories:
-
   broker:
     name: Local Broker
     description: The Rust daemon that routes all agent messages locally

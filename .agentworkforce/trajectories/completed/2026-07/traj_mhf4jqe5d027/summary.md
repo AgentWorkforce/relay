@@ -19,29 +19,36 @@ Failed at "report" [unknown] after 8min. 9/11 steps completed before failure.
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 2. Execution: report, analyze-improvements
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 3. Execution: analyze-improvements
-*Agent: reporter*
+
+_Agent: reporter_
 
 ### 4. Execution: report
-*Agent: reporter*
+
+_Agent: reporter_
 
 ### 5. Execution: report
-*Agent: reporter*
+
+_Agent: reporter_
 
 - "report" failed [unknown]: Unexpected failure. Review the error and step definition.
 
 ### 6. Execution: analyze-improvements
-*Agent: reporter*
+
+_Agent: reporter_
 
 - "analyze-improvements" failed [unknown]: Unexpected failure. Review the error and step definition.
 
 ### 7. Retrospective
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 - Failed at "report" [unknown] after 8min. 9/11 steps completed before failure. (abandoned after 8 minutes)
 - Workflow abandoned: Step "report" failed: Step "report" failed after 1 retries: fetch failed
