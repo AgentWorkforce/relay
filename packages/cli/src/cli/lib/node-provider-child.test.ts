@@ -355,6 +355,44 @@ describe('startNodeJsNodeProvider', () => {
       fixture.cleanup();
     }
   });
+
+  it('force-kills a real provider that ignores graceful shutdown', async () => {
+    const fixture = createServingFixture();
+    const readyFile = path.join(fixture.root, 'ignore-abort-ready');
+    let pid: number | undefined;
+    try {
+      const child = await startNodeJsNodeProvider(
+        fixture.config,
+        { nodeToken: 't', nodeId: 'n', nodeName: 'x' },
+        realProcessDeps({
+          env: {
+            ...process.env,
+            TMPDIR: fixture.tempRoot,
+            FIXTURE_IGNORE_ABORT: '1',
+            FIXTURE_READY_FILE: readyFile,
+            RELAY_WORKSPACE_KEY: '',
+          },
+          sleep: (ms) => delay(Math.min(ms, 50)),
+        })
+      );
+      expect(child).toBeDefined();
+      pid = child!.pid;
+      expect(pid).toBeDefined();
+      await waitFor(() => existsSync(readyFile));
+
+      await child!.stop();
+
+      await expect(child!.done).resolves.toBeUndefined();
+      expect(isProcessRunning(pid!)).toBe(false);
+      expect(readdirSync(fixture.tempRoot)).toEqual([]);
+    } finally {
+      if (pid && isProcessRunning(pid)) {
+        process.kill(pid, 'SIGKILL');
+        await delay(50);
+      }
+      fixture.cleanup();
+    }
+  });
 });
 
 describe('node provider child logging defaults', () => {
@@ -429,6 +467,7 @@ function createServingFixture(): {
   writeFileSync(
     path.join(fleetRoot, 'dist', 'index.js'),
     [
+      "import { writeFileSync } from 'node:fs';",
       'export async function serveNode(options) {',
       "  options.logger?.debug('fixture debug', { capability: 'spawn:test' });",
       "  options.logger?.info('fixture info', { action: 'spawn:test' });",
@@ -437,6 +476,11 @@ function createServingFixture(): {
       "  options.log?.('fixture info');",
       "  options.warn?.('fixture warning');",
       "  if (process.env.FIXTURE_EXIT_AFTER_LOG === '1') return;",
+      "  if (process.env.FIXTURE_IGNORE_ABORT === '1') {",
+      "    writeFileSync(process.env.FIXTURE_READY_FILE, 'ready');",
+      '    setInterval(() => undefined, 1_000);',
+      '    await new Promise(() => undefined);',
+      '  }',
       '  if (options.signal.aborted) return;',
       '  await new Promise((resolve) => {',
       '    const keepAlive = setInterval(() => undefined, 1_000);',
@@ -451,6 +495,15 @@ function createServingFixture(): {
     config,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {

@@ -375,7 +375,11 @@ type BunTranspiler = {
 };
 
 type BunRuntime = {
-  Transpiler: new (options: { loader: 'ts' | 'tsx'; target: 'node' }) => BunTranspiler;
+  Transpiler: new (options: {
+    loader: 'ts' | 'tsx';
+    target: 'node';
+    define?: Record<string, string>;
+  }) => BunTranspiler;
 };
 
 type TranspiledGraph = {
@@ -419,6 +423,7 @@ function transpileTypeScriptGraph(configPath: string): TranspiledGraph | undefin
 
   const sources: Record<string, string> = {};
   const resolutions: Record<string, string> = {};
+  const commonJsSources: Record<string, string> = {};
   const queued = [path.resolve(configPath)];
   const seen = new Set<string>();
 
@@ -430,12 +435,26 @@ function transpileTypeScriptGraph(configPath: string): TranspiledGraph | undefin
     const source = fs.readFileSync(file, 'utf8');
     const extension = path.extname(file).toLowerCase();
     const loader = extension === '.tsx' ? 'tsx' : 'ts';
-    const transpiler = new bun.Transpiler({ loader, target: 'node' });
+    const transpiler = new bun.Transpiler({
+      loader,
+      target: 'node',
+      ...(extension === '.cts'
+        ? {
+            define: {
+              __filename: '__relayCommonJsFilename',
+              __dirname: '__relayCommonJsDirname',
+            },
+          }
+        : {}),
+    });
     const parentUrls = new Set([pathToFileURL(file).href, pathToFileURL(fs.realpathSync(file)).href]);
-    const rawTransformed = transpiler.transformSync(source, loader);
-    const transformed = extension === '.cts' ? wrapCommonJsAsModule(rawTransformed) : rawTransformed;
+    const transformed = transpiler.transformSync(source, loader);
     for (const parentUrl of parentUrls) {
-      sources[parentUrl] = transformed;
+      if (extension === '.cts') {
+        commonJsSources[parentUrl] = transformed;
+      } else {
+        sources[parentUrl] = transformed;
+      }
     }
 
     for (const imported of transpiler.scanImports(source)) {
@@ -449,30 +468,63 @@ function transpileTypeScriptGraph(configPath: string): TranspiledGraph | undefin
     }
   }
 
+  for (const entryUrl of Object.keys(commonJsSources)) {
+    sources[entryUrl] = wrapCommonJsAsModule(entryUrl, commonJsSources, resolutions);
+  }
+
   return { sources, resolutions };
 }
 
-/** Execute transpiled .cts output with the CommonJS bindings users expect. */
-function wrapCommonJsAsModule(source: string): string {
+/** Execute a transpiled .cts graph synchronously with Node-like CommonJS modules. */
+function wrapCommonJsAsModule(
+  entryUrl: string,
+  commonJsSources: Record<string, string>,
+  resolutions: Record<string, string>
+): string {
   return [
-    "import { createRequire as __relayCreateRequire } from 'node:module';",
+    "import { Module as __RelayModule, createRequire as __relayCreateRequire } from 'node:module';",
     "import { dirname as __relayDirname } from 'node:path';",
     "import { fileURLToPath as __relayFileURLToPath } from 'node:url';",
-    'const __relayModule = { exports: {} };',
-    'const __relayFilename = __relayFileURLToPath(import.meta.url);',
-    'const __relayRequire = __relayCreateRequire(import.meta.url);',
-    'const __relayDir = __relayDirname(__relayFilename);',
-    '(function (exports, require, module, __filename, __dirname) {',
-    source,
-    '}).call(',
-    '  __relayModule.exports,',
-    '  __relayModule.exports,',
-    '  __relayRequire,',
-    '  __relayModule,',
-    '  __relayFilename,',
-    '  __relayDir',
-    ');',
-    'export default __relayModule.exports;',
+    `const __relaySources = new Map(Object.entries(${JSON.stringify(commonJsSources)}));`,
+    `const __relayResolutions = new Map(Object.entries(${JSON.stringify(resolutions)}));`,
+    `const __relayKey = (parentURL, specifier) => parentURL + '\\0' + specifier;`,
+    'const __relayCache = new Map();',
+    'const __relayLoad = (url, parent) => {',
+    '  const cached = __relayCache.get(url);',
+    '  if (cached) return cached.exports;',
+    '  const source = __relaySources.get(url);',
+    "  if (source === undefined) throw new Error('Missing transpiled CommonJS source for ' + url);",
+    '  const filename = __relayFileURLToPath(url);',
+    '  const dirname = __relayDirname(filename);',
+    '  const nativeRequire = __relayCreateRequire(url);',
+    '  const relayModule = new __RelayModule(filename, parent);',
+    '  relayModule.filename = filename;',
+    '  relayModule.path = dirname;',
+    "  relayModule.paths = nativeRequire.resolve.paths('__agent_relay_module_paths__') || [];",
+    '  const relayRequire = (specifier) => {',
+    '    const resolved = __relayResolutions.get(__relayKey(url, specifier));',
+    '    return resolved && __relaySources.has(resolved)',
+    '      ? __relayLoad(resolved, relayModule)',
+    '      : nativeRequire(specifier);',
+    '  };',
+    '  relayRequire.resolve = nativeRequire.resolve;',
+    '  relayRequire.cache = nativeRequire.cache;',
+    '  relayRequire.extensions = nativeRequire.extensions;',
+    '  relayRequire.main = nativeRequire.main;',
+    '  relayModule.require = relayRequire;',
+    '  __relayCache.set(url, relayModule);',
+    '  const factory = new Function(',
+    "    'exports', 'require', 'module', '__filename', '__dirname',",
+    "    '__relayCommonJsFilename', '__relayCommonJsDirname', source",
+    '  );',
+    '  factory.call(',
+    '    relayModule.exports, relayModule.exports, relayRequire, relayModule,',
+    '    filename, dirname, filename, dirname',
+    '  );',
+    '  relayModule.loaded = true;',
+    '  return relayModule.exports;',
+    '};',
+    `export default __relayLoad(${JSON.stringify(entryUrl)}, undefined);`,
     '',
   ].join('\n');
 }
@@ -771,7 +823,25 @@ function manageNodeProviderChild(
           }
         }
         if (observesLifecycle && !settled) {
-          await Promise.race([done.catch(() => undefined), deps.sleep(5_000)]);
+          const exited = await Promise.race([
+            done.then(
+              () => true,
+              () => true
+            ),
+            deps.sleep(5_000).then(() => false),
+          ]);
+          if (!exited && !settled) {
+            try {
+              if (child.pid) {
+                deps.killProcess(child.pid, 'SIGKILL');
+              } else {
+                child.kill?.('SIGKILL');
+              }
+            } catch {
+              // The child may have exited while graceful shutdown timed out.
+            }
+            await Promise.race([done.catch(() => undefined), deps.sleep(1_000)]);
+          }
         }
         finish();
       },

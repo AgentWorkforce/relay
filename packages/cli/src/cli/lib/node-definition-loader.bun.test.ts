@@ -209,9 +209,27 @@ describe.skipIf(!bunAvailable)('node definition loading from a bun-compiled bina
 
   it('serves a CommonJS .cts config through the transpiling Node loader', () => {
     const config = path.join(dir, 'agent-relay-bare.cts');
+    const helper = path.join(dir, 'node-definition.cts');
     writeFileSync(
       config,
-      ["const definition = require('@fixture/node-lib').default;", 'export = definition;'].join('\n')
+      [
+        "const definition = require('./node-definition.cts');",
+        "const direct = module.require('@fixture/node-lib').default;",
+        "if (definition !== direct) throw new Error('local CommonJS graph returned the wrong export');",
+        "if (module.filename !== __filename) throw new Error('module.filename mismatch: ' + module.filename + ' !== ' + __filename);",
+        "if (module.path !== __dirname) throw new Error('module.path mismatch: ' + module.path + ' !== ' + __dirname);",
+        'export = definition;',
+      ].join('\n')
+    );
+    writeFileSync(
+      helper,
+      [
+        "enum FixtureKind { Node = 'node' }",
+        'const kind: FixtureKind = FixtureKind.Node;',
+        "if (kind !== 'node') throw new Error('TypeScript was not transformed');",
+        "const definition = require('@fixture/node-lib').default;",
+        'export = definition;',
+      ].join('\n')
     );
 
     const descriptor = describeViaHarness(dir, config);
