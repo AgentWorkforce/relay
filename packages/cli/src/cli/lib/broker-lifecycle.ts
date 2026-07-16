@@ -12,8 +12,15 @@ import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-s
 import {
   discoverNodeConfigPath,
   discoverPythonNodeConfigPath,
+  isBunRuntime,
   loadNodeDefinition,
 } from './node-definition-loader.js';
+import {
+  describeNodeDefinitionViaNode,
+  descriptorCapacitySource,
+  startNodeJsNodeProvider,
+  type NodeDefinitionDescriptor,
+} from './node-provider-child.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
@@ -445,12 +452,12 @@ async function startNodeCapabilityProviders(
   relay: CoreRelay,
   options: UpOptions,
   deps: CoreDependencies,
-  nodeDefinition: FleetNodeDefinition | undefined
+  nodePlan: NodeDefinitionPlan | undefined
 ): Promise<RunningNodeProviders | undefined> {
   // Definition discovery is opt-in (`node up` only), matching the TS config scan.
   const pythonConfig =
     options.discoverConfig === true ? discoverPythonNodeConfigPath(paths.projectRoot) : undefined;
-  if (!nodeDefinition && !pythonConfig) {
+  if (!nodePlan && !pythonConfig) {
     return undefined;
   }
 
@@ -481,8 +488,10 @@ async function startNodeCapabilityProviders(
 
   const served: RunningNode[] = [];
   let pythonChild: SpawnedProcess | undefined;
+  let nodeJsChild: SpawnedProcess | undefined;
 
-  if (nodeDefinition) {
+  if (nodePlan?.mode === 'in-process') {
+    const nodeDefinition = nodePlan.definition;
     try {
       const workspaceKey = relay.workspaceKey;
       served.push(
@@ -514,6 +523,20 @@ async function startNodeCapabilityProviders(
     }
   }
 
+  if (nodePlan?.mode === 'child-node') {
+    nodeJsChild = startNodeJsNodeProvider(
+      nodePlan.configPath,
+      {
+        nodeToken,
+        baseUrl,
+        nodeId: identity.nodeId,
+        nodeName: options.nodeName ?? identity.nodeName,
+        ...(relay.workspaceKey ? { workspaceKey: relay.workspaceKey } : {}),
+      },
+      deps
+    );
+  }
+
   if (pythonConfig) {
     pythonChild = startPythonNodeProvider(
       pythonConfig,
@@ -529,18 +552,20 @@ async function startNodeCapabilityProviders(
     );
   }
 
-  if (served.length === 0 && !pythonChild) {
+  if (served.length === 0 && !pythonChild && !nodeJsChild) {
     return undefined;
   }
 
   return {
     stop: async () => {
       await Promise.all(served.map((node) => node.stop().catch(() => undefined)));
-      if (pythonChild?.pid) {
-        try {
-          deps.killProcess(pythonChild.pid, 'SIGTERM');
-        } catch {
-          // Already exited.
+      for (const child of [pythonChild, nodeJsChild]) {
+        if (child?.pid) {
+          try {
+            deps.killProcess(child.pid, 'SIGTERM');
+          } catch {
+            // Already exited.
+          }
         }
       }
     },
@@ -1049,7 +1074,7 @@ async function resolveNodeDefinitionForUp(
   paths: CoreProjectPaths,
   options: UpOptions,
   deps: CoreDependencies
-): Promise<FleetNodeDefinition | undefined> {
+): Promise<NodeDefinitionPlan | undefined> {
   const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
   if (fleetNodeDisabled || (!options.config && options.discoverConfig !== true)) {
     return undefined;
@@ -1061,10 +1086,10 @@ async function resolveNodeDefinitionForUp(
   }
   vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
   if (explicitConfig) {
-    return loadNodeDefinition(configPath);
+    return loadNodeDefinitionPlan(configPath, deps);
   }
   try {
-    return await loadNodeDefinition(configPath);
+    return await loadNodeDefinitionPlan(configPath, deps);
   } catch (err) {
     deps.warn(
       `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
@@ -1072,6 +1097,49 @@ async function resolveNodeDefinitionForUp(
     );
     return undefined;
   }
+}
+
+/**
+ * How a discovered JS/TS node definition will be served.
+ *
+ * Under Node the definition is imported and served in-process, unchanged. Under
+ * a `bun build --compile` binary it cannot be imported at all — the compiled
+ * runtime fails to resolve a bare specifier out of the user's `node_modules`
+ * whenever the package's entry lives in a subdirectory (`dist/`), i.e. every
+ * TypeScript-built package, and the failure is transitive through the user's
+ * whole dependency graph — so the CLI only learns its descriptor (via a
+ * `--describe` child) and hands the file to a child `node` process to serve,
+ * exactly as `agent-relay.py` is handed to `python3`.
+ */
+type NodeDefinitionPlan =
+  | { mode: 'in-process'; definition: FleetNodeDefinition }
+  | { mode: 'child-node'; configPath: string; descriptor: NodeDefinitionDescriptor };
+
+/**
+ * Decide how to serve `configPath` and gather what the broker needs before it
+ * starts (capacity, and a hard failure on a bad explicit --config).
+ * @param configPath - Absolute path to the node definition file.
+ * @param deps - Core dependencies.
+ */
+async function loadNodeDefinitionPlan(
+  configPath: string,
+  deps: CoreDependencies
+): Promise<NodeDefinitionPlan> {
+  if (!isBunRuntime()) {
+    return { mode: 'in-process', definition: await loadNodeDefinition(configPath) };
+  }
+  const descriptor = await describeNodeDefinitionViaNode(configPath, deps);
+  return { mode: 'child-node', configPath, descriptor };
+}
+
+/** The capability names a plan contributes to the broker's advertised capacity. */
+function planCapacitySource(
+  plan: NodeDefinitionPlan | undefined
+): { capabilities: Readonly<Record<string, unknown>> } | undefined {
+  if (!plan) {
+    return undefined;
+  }
+  return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
 }
 
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
@@ -1226,7 +1294,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     // Resolved BEFORE the broker starts so an explicit bad --config fails
     // fast instead of tearing down a broker that just came up.
-    const nodeDefinition = await resolveNodeDefinitionForUp(paths, options, deps);
+    const nodePlan = await resolveNodeDefinitionForUp(paths, options, deps);
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
 
     // The broker advertises spawn:<harness> capacity for this set. A pre-set
@@ -1237,7 +1305,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.env.AGENT_RELAY_NODE_HARNESSES = resolveNodeCapacityHarnesses(
       deps.env.AGENT_RELAY_NODE_HARNESSES,
       teamsConfig,
-      nodeDefinition
+      planCapacitySource(nodePlan)
     );
 
     // Kill any orphaned broker processes for this project that lost their PID
@@ -1273,7 +1341,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     vlog(deps, options.verbose, 'Starting node capability providers (if any)...');
-    nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodeDefinition);
+    nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodePlan);
     // When Reflex is enabled, periodically sync + push local session history to
     // relayhistory-cloud in-process via the ai-hist-native addon (no subprocess).
     // No-op when disabled or the addon isn't available.

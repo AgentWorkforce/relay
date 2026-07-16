@@ -105,7 +105,7 @@ function isFleetNodeDefinitionLike(value: unknown): value is FleetNodeDefinition
 }
 
 async function importNodeDefinition(absolutePath: string): Promise<unknown> {
-  if (!JITI_NODE_DEFINITION_EXTENSIONS.has(path.extname(absolutePath).toLowerCase())) {
+  if (!needsJitiTranspile(absolutePath)) {
     try {
       return (await import(pathToFileURL(absolutePath).href)) as unknown;
     } catch (error) {
@@ -124,6 +124,25 @@ async function importNodeDefinition(absolutePath: string): Promise<unknown> {
   return importNodeDefinitionWithJiti(absolutePath);
 }
 
+/**
+ * Whether `absolutePath` has to go through jiti to be transpiled.
+ *
+ * Only TypeScript sources need a transpiler, and only when the host runtime
+ * cannot parse them itself. Bun transpiles TypeScript natively, so under Bun a
+ * plain `import()` handles `.ts` — and it *must* be used: jiti resolves its
+ * Babel transpiler through a dynamic `require('../dist/babel.cjs')`, which
+ * `bun build --compile` cannot see statically and therefore never embeds in the
+ * single-file binary. Routing `.ts` through jiti there fails with
+ * `Cannot find module '../dist/babel.cjs' from '/$bunfs/root/agent-relay-<target>'`,
+ * which broke every TypeScript node config on the shipped binary.
+ */
+function needsJitiTranspile(absolutePath: string): boolean {
+  if (!JITI_NODE_DEFINITION_EXTENSIONS.has(path.extname(absolutePath).toLowerCase())) {
+    return false;
+  }
+  return !isBunRuntime();
+}
+
 function shouldFallbackToJiti(error: unknown): boolean {
   if (isBunRuntime()) {
     return false;
@@ -131,7 +150,8 @@ function shouldFallbackToJiti(error: unknown): boolean {
   return error instanceof SyntaxError && getErrorCode(error) !== 'ERR_MODULE_NOT_FOUND';
 }
 
-function isBunRuntime(): boolean {
+/** Whether we are executing inside Bun (notably the `bun build --compile` binary). */
+export function isBunRuntime(): boolean {
   return typeof (process.versions as NodeJS.ProcessVersions & { bun?: string }).bun === 'string';
 }
 
