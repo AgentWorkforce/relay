@@ -107,6 +107,28 @@ describe('registerNodeCommands', () => {
     expect(log.mock.calls.flat().join('\n')).toContain('rw_123');
   });
 
+  it('preserves the enrolled identity when background startup re-execs the CLI', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env } = createNodeHarness({ env: {}, resolveEnrollment });
+
+    await program.parseAsync(['node', 'up', '--background'], { from: 'user' });
+
+    expect(env).toMatchObject({
+      RELAY_NODE_ID: 'node_abc',
+      RELAY_NODE_TOKEN: 'nt_secret',
+    });
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        background: true,
+        brokerName: 'kjglaptop',
+        nodeName: 'kjglaptop',
+      }),
+      expect.anything()
+    );
+  });
+
   it('lets --broker-name beat the enrolled node name', async () => {
     const resolveEnrollment = vi.fn(
       () => enrollmentRecord
@@ -164,6 +186,24 @@ describe('registerNodeCommands', () => {
     expect(resolveEnrollment).not.toHaveBeenCalled();
     expect(env.RELAY_NODE_TOKEN).toBe('preexisting');
     expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the forwarded enrolled name when the detached child already has credentials', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program } = createNodeHarness({
+      env: { RELAY_NODE_ID: 'node_abc', RELAY_NODE_TOKEN: 'nt_secret' },
+      resolveEnrollment,
+    });
+
+    await program.parseAsync(['node', 'up', '--broker-name', 'kjglaptop'], { from: 'user' });
+
+    expect(resolveEnrollment).not.toHaveBeenCalled();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ brokerName: 'kjglaptop', nodeName: 'kjglaptop' }),
+      expect.anything()
+    );
   });
 
   it('keeps an existing RELAY_BASE_URL when applying enrollment creds', async () => {

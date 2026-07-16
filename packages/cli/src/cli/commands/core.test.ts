@@ -8,7 +8,14 @@ import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
-  getSession: vi.fn(async () => ({ workspace_key: '' }) as { workspace_key?: string }),
+  getSession: vi.fn(
+    async () =>
+      ({ workspace_key: '' }) as {
+        workspace_key?: string;
+        node_id?: string;
+        node_name?: string;
+      }
+  ),
   disconnect: vi.fn(() => undefined),
 };
 
@@ -534,7 +541,7 @@ describe('registerCoreCommands', () => {
     }
   });
 
-  it('up --background re-execs a Bun standalone binary without adding its virtual entrypoint', async () => {
+  it('up --background preserves an enrolled identity through a Bun standalone re-exec', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
     const fs = createFsMock();
@@ -546,25 +553,150 @@ describe('registerCoreCommands', () => {
       if ((pid === 9001 || pid === 4242) && signal === 0) return;
       throw new Error('unexpected kill check');
     });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      agent_count: 0,
+      pending_delivery_count: 0,
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'sf-mini',
+    });
     const { program, deps } = createHarness({
       fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_enrolled',
+      },
       spawnedProcess,
       killImpl,
       nowImpl: vi.fn(() => now),
       sleepImpl,
       execPath: '/tmp/agent-relay-darwin-arm64',
       cliScript: '/$bunfs/root/agent-relay-darwin-arm64',
-      argv: ['bun', '/$bunfs/root/agent-relay-darwin-arm64', 'up', '--background'],
+      argv: [
+        'bun',
+        '/$bunfs/root/agent-relay-darwin-arm64',
+        'node',
+        'up',
+        '--background',
+        '--config',
+        'agent-relay.mjs',
+      ],
     });
 
-    const exitCode = await runCommand(program, ['up', '--background']);
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
 
     expect(exitCode).toBe(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith('/tmp/agent-relay-darwin-arm64', ['up'], {
-      detached: true,
-      stdio: 'ignore',
-      env: deps.env,
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/tmp/agent-relay-darwin-arm64',
+      ['node', 'up', '--config', 'agent-relay.mjs', '--broker-name', 'sf-mini'],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: expect.objectContaining({
+          RELAY_NODE_ID: 'node_enrolled',
+          RELAY_NODE_TOKEN: 'nt_enrolled',
+        }),
+      }
+    );
+  });
+
+  it('up --background fails loudly when the broker reports the wrong enrolled identity', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
+    const stopped = new Set<number>();
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0 && !stopped.has(pid)) return;
+      if ((pid === 9001 || pid === 4242) && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        stopped.add(pid);
+        return;
+      }
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'project',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_enrolled',
+      },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Cloud enrollment identity mismatch: expected node name "sf-mini", got "project".'
+    );
+    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('up --background fails when enrolled node delivery never connects', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
+    });
+    const stopped = new Set<number>();
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0 && !stopped.has(pid)) return;
+      if ((pid === 9001 || pid === 4242) && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        stopped.add(pid);
+        return;
+      }
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      node_connected: false,
+      node_delivery: { token_present: true, connected: false },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'sf-mini',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_expired',
+      },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Cloud enrollment for node "sf-mini" did not become ready. Node delivery: DOWN (node websocket disconnected)'
+    );
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
   it('up --background exits non-zero when the detached broker never becomes ready', async () => {
@@ -896,7 +1028,11 @@ describe('registerCoreCommands', () => {
     const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 4, pending_delivery_count: 2 });
-    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_test123' });
+    sdkStatusClient.getSession.mockResolvedValueOnce({
+      workspace_key: 'rk_live_test123',
+      node_id: 'node_enrolled',
+      node_name: 'sf-mini',
+    });
 
     const { program, deps } = createHarness({ fs });
 
@@ -906,6 +1042,7 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
     expect(deps.log).toHaveBeenCalledWith('Agents: 4');
     expect(deps.log).toHaveBeenCalledWith('Pending deliveries: 2');
+    expect(deps.log).toHaveBeenCalledWith('Node: sf-mini (node_enrolled)');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_test123');
     expect(deps.log).toHaveBeenCalledWith('Observer: https://agentrelay.com/observer?key=rk_live_test123');
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
