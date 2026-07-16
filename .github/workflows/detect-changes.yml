@@ -1,0 +1,124 @@
+name: Detect Changes
+
+# Reusable change-scope detection so each CI workflow only runs the jobs a
+# change can actually affect. Callers gate jobs on the outputs below:
+#
+#   rust_changed      — Rust toolchain jobs (cargo test/clippy/fmt/cross-compile)
+#   node_changed      — Node/TypeScript jobs (npm test, lint, package validation).
+#                       Rust changes count as node-affecting because `npm test`
+#                       runs `pretest` -> `npm run build` -> `build:rust`, so the
+#                       TS suite exercises a broker built from the PR's sources.
+#   sdk_swift_changed — Swift SDK jobs (swift build/test)
+#
+# When the change scope is unknown (API failure, truncated file list,
+# unexpected event) every output is true — fail open, never silently skip.
+
+on:
+  workflow_call:
+    outputs:
+      rust_changed:
+        description: 'True when Rust sources (crates/, Cargo manifests) or CI config changed'
+        value: ${{ jobs.changes.outputs.rust_changed }}
+      node_changed:
+        description: 'True when anything affecting the Node/TypeScript toolchain changed'
+        value: ${{ jobs.changes.outputs.node_changed }}
+      sdk_swift_changed:
+        description: 'True when the Swift SDK (packages/sdk-swift/, Package.swift) or CI config changed'
+        value: ${{ jobs.changes.outputs.sdk_swift_changed }}
+
+# Read-only: listFiles needs pull-requests read, compareCommits needs
+# contents read. Never inherit broader caller permissions.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    name: Detect change scope
+    runs-on: ubuntu-latest
+    outputs:
+      rust_changed: ${{ steps.scope.outputs.rust_changed }}
+      node_changed: ${{ steps.scope.outputs.node_changed }}
+      sdk_swift_changed: ${{ steps.scope.outputs.sdk_swift_changed }}
+    steps:
+      - id: scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let files = [];
+            let unknownScope = false;
+
+            try {
+              if (context.eventName === 'pull_request') {
+                const changed = await github.paginate(github.rest.pulls.listFiles, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.payload.pull_request.number,
+                  per_page: 100,
+                });
+                // Renames classify BOTH paths: removing the old location can
+                // affect a domain the new location doesn't.
+                files = changed.flatMap((file) =>
+                  [file.filename, file.previous_filename].filter(Boolean)
+                );
+                // listFiles caps at 3000 entries; at the cap the list may be
+                // truncated.
+                if (changed.length >= 3000) unknownScope = true;
+              } else if (context.eventName === 'push') {
+                const comparison = await github.rest.repos.compareCommits({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  base: context.payload.before,
+                  head: context.sha,
+                });
+                const changedFiles = comparison.data.files || [];
+                files = changedFiles.flatMap((file) =>
+                  [file.filename, file.previous_filename].filter(Boolean)
+                );
+                // compareCommits caps the file list at 300 entries; at the cap
+                // the list may be truncated.
+                if (changedFiles.length >= 300) unknownScope = true;
+              } else {
+                unknownScope = true;
+              }
+            } catch (error) {
+              core.warning(`Change detection failed: ${error?.message}`);
+              unknownScope = true;
+            }
+
+            if (files.length === 0) unknownScope = true;
+
+            const isCi = (file) => file.startsWith('.github/');
+            const isSwift = (file) =>
+              file.startsWith('packages/sdk-swift/') || file === 'Package.swift';
+            const isRust = (file) =>
+              file.startsWith('crates/') ||
+              file.startsWith('.cargo/') ||
+              file.endsWith('.rs') ||
+              ['Cargo.toml', 'Cargo.lock', 'Cross.toml', 'rust-toolchain', 'rust-toolchain.toml'].includes(file);
+            // Files no build, test, or lint job consumes.
+            const isInert = (file) =>
+              file.startsWith('web/') ||
+              file.startsWith('docs/') ||
+              file.startsWith('specs/') ||
+              file.startsWith('.claude/') ||
+              file.startsWith('.agentworkforce/') ||
+              file.startsWith('.agents/') ||
+              file === 'LICENSE' ||
+              (/\.mdx?$/i.test(file) && !file.includes('/'));
+
+            const rustChanged =
+              unknownScope ||
+              files.some((file) => (isRust(file) && !isInert(file)) || isCi(file));
+            const nodeChanged =
+              unknownScope || files.some((file) => !isSwift(file) && !isInert(file));
+            const sdkSwiftChanged =
+              unknownScope || files.some((file) => isSwift(file) || isCi(file));
+
+            core.info(`Changed files (${files.length}): ${files.join(', ')}`);
+            core.info(
+              `unknownScope=${unknownScope} rust_changed=${rustChanged} node_changed=${nodeChanged} sdk_swift_changed=${sdkSwiftChanged}`
+            );
+            core.setOutput('rust_changed', rustChanged ? 'true' : 'false');
+            core.setOutput('node_changed', nodeChanged ? 'true' : 'false');
+            core.setOutput('sdk_swift_changed', sdkSwiftChanged ? 'true' : 'false');

@@ -4,9 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'crates/broker/**'
+      - 'crates/**'
       - 'Cargo.toml'
-      - 'crates/broker/Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/build-broker-binary.yml'
   workflow_dispatch:

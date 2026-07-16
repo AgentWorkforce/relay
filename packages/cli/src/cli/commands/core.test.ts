@@ -1,6 +1,10 @@
 import { Command } from 'commander';
+import nodeFs from 'node:fs';
 import os from 'node:os';
+import nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
@@ -498,6 +502,36 @@ describe('registerCoreCommands', () => {
     expect(deps.env.AGENT_RELAY_STATE_DIR).toBe(stateDir);
     expect(deps.log).toHaveBeenCalledWith('Broker started.');
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
+  });
+
+  it('up --state-dir records the workspace key in the default project dir, not the state dir', async () => {
+    // SDK commands (fleet nodes, …) read the key from the default project data
+    // dir and never accept --state-dir, so a redirected broker state dir must
+    // NOT be where the key lands — otherwise those commands miss it.
+    const stateDir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-statedir-'));
+    const relay = createRelayMock({ workspaceKey: 'rk_statedir_regression' });
+    const { program } = createHarness({ relay });
+
+    try {
+      const exitCode = await runCommand(program, [
+        'up',
+        '--state-dir',
+        stateDir,
+        '--workspace-key',
+        'rk_statedir_regression',
+      ]);
+
+      expect(exitCode).toBeUndefined();
+      // Persisted at the default project data dir (the harness's mocked path)…
+      expect(readProjectWorkspaceKey('/tmp/project/.agentworkforce/relay')).toBe('rk_statedir_regression');
+      // …and NOT in the redirected state dir.
+      expect(readProjectWorkspaceKey(stateDir)).toBeUndefined();
+    } finally {
+      nodeFs.rmSync(stateDir, { recursive: true, force: true });
+      // The key is written to the real default project dir; clean it up so it
+      // doesn't leak into other tests running in this process.
+      nodeFs.rmSync('/tmp/project/.agentworkforce/relay/workspace-key.json', { force: true });
+    }
   });
 
   it('up --background re-execs a Bun standalone binary without adding its virtual entrypoint', async () => {
@@ -1173,6 +1207,21 @@ describe('registerCoreCommands', () => {
     expect(env.RELAY_API_KEY).toBe('rk_live_custom');
     expect(deps.createRelay).toHaveBeenCalled();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_custom');
+  });
+
+  it('up --wk is an alias for --workspace-key', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock({ workspaceKey: 'rk_live_alias' });
+    const { program, deps } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up', '--wk', 'rk_live_alias']);
+
+    expect(exitCode).toBeUndefined();
+    // The alias is folded into workspaceKey, so the broker sees the same env the
+    // explicit flag would have set.
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
+    expect(env.RELAY_API_KEY).toBe('rk_live_alias');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_alias');
   });
 
   it('up without --workspace-key does not set workspace key env vars', async () => {

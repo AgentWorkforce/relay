@@ -49,6 +49,24 @@ struct PendingWorkerInjection {
     queued_at: Instant,
 }
 
+/// Default per-atom gap for escape-aware paced injection, in milliseconds.
+/// Overridable at runtime via `RELAY_INJECT_RATE_MS`; `0` disables pacing and
+/// restores the single bulk write. Kept small because a full injection
+/// (envelope plus an optional MCP reminder) can span a few hundred atoms and
+/// the gap multiplies across every one.
+const DEFAULT_INJECT_RATE_MS: u64 = 5;
+
+/// Resolve the injection pacing gap from `RELAY_INJECT_RATE_MS`, falling back to
+/// [`DEFAULT_INJECT_RATE_MS`]. A value of `0` disables pacing so the body is
+/// written in one shot, exactly as it was before paced injection landed.
+fn inject_rate_from_env() -> Duration {
+    let ms = std::env::var("RELAY_INJECT_RATE_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_INJECT_RATE_MS);
+    Duration::from_millis(ms)
+}
+
 /// Stage of an in-flight injection's paced write sequence. Each stage is
 /// separated from the next by a short TUI-pacing delay. Rather than blocking
 /// the worker select loop with `sleep().await` between stages (which stalled
@@ -79,6 +97,11 @@ struct ActiveInjection {
     stage: InjectionStage,
     next_at: tokio::time::Instant,
     injection_text: Option<String>,
+    /// Popped under a `flush_injections` exemption (or marked by the flush
+    /// frame while already in flight): the deadline arm may advance this
+    /// injection even while the interactive hold is active. A human asked
+    /// for the backlog explicitly, so writing it is not a splice.
+    hold_exempt: bool,
 }
 
 /// Result of an in-flight `write_pty` awaiting the PTY drainer: the request id
@@ -246,9 +269,15 @@ fn startup_gate_ready(
 /// Gated off when an injection is already in flight OR an interactive hold is
 /// active (a human is driving). While held, deliveries stay parked in
 /// `pending_worker_injections` — never dropped — and resume popping once the
-/// hold is released.
-fn injection_pop_allowed(active_injection_present: bool, interactive_hold: bool) -> bool {
-    !active_injection_present && !interactive_hold
+/// hold is released. An outstanding `flush_injections` exemption
+/// (`hold_exempt_remaining > 0`) lets pops proceed through the hold: the
+/// human explicitly asked for the queued backlog to be injected now.
+fn injection_pop_allowed(
+    active_injection_present: bool,
+    interactive_hold: bool,
+    hold_exempt_remaining: usize,
+) -> bool {
+    !active_injection_present && (!interactive_hold || hold_exempt_remaining > 0)
 }
 
 /// What to do with an in-flight injection once its combined Body+Enter write
@@ -406,6 +435,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    // Per-atom gap for escape-aware paced injection writes, resolved once at
+    // worker start. `Duration::ZERO` (via `RELAY_INJECT_RATE_MS=0`) restores
+    // the historical single bulk write.
+    let inject_rate = inject_rate_from_env();
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
@@ -413,6 +446,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // one injection is in flight at a time; the pending-injection interval arm
     // starts the next one once this returns to `None`.
     let mut active_injection: Option<ActiveInjection> = None;
+    // Outstanding `flush_injections` allowance: how many queued injections may
+    // still be popped THROUGH an interactive hold. Set to the queue length when
+    // the broker forwards an explicit flush; decremented on every pop (so a
+    // flush issued while unheld drains naturally and can't leak into a later
+    // hold); restored when a hold-exempt injection is requeued after a failed
+    // write so an explicit flush is never silently swallowed by a transient
+    // error. Deliveries arriving after the flush get no exemption.
+    let mut hold_exempt_injections: usize = 0;
     // Ack receiver for the in-flight injection's most recent Body/Enter write.
     // `submit_write` only enqueues to the bounded drainer queue; the oneshot
     // resolves once the drainer has actually written and flushed those bytes to
@@ -779,6 +820,43 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     );
                                 }
                                 pty_auto.interactive_hold = hold;
+                                // A hold boundary invalidates any outstanding
+                                // flush exemption: entering a hold must freeze
+                                // everything (a pre-hold flush was consent to
+                                // inject while NOT driving, not through a later
+                                // drive), and after a release the exemption is
+                                // moot. Without this, a large backlog flushed
+                                // before a drive attach could keep injecting
+                                // into the human's session.
+                                hold_exempt_injections = 0;
+                                if let Some(inj) = active_injection.as_mut() {
+                                    inj.hold_exempt = false;
+                                }
+                            }
+                            "flush_injections" => {
+                                // Explicit flush (`POST /api/spawned/{name}/flush`):
+                                // the human asked for the queued backlog NOW, so
+                                // grant the currently-queued injections (and any
+                                // frozen in-flight one) a one-shot exemption from
+                                // the interactive hold. Later deliveries keep
+                                // parking under the hold as usual. Granted ONLY
+                                // while a hold is actually active — without one,
+                                // injections pop normally and an exemption
+                                // recorded now could pierce a hold that starts
+                                // before a slow backlog finishes draining.
+                                if pty_auto.interactive_hold {
+                                    let backlog = pending_worker_injections.len();
+                                    hold_exempt_injections = hold_exempt_injections.max(backlog);
+                                    if let Some(inj) = active_injection.as_mut() {
+                                        inj.hold_exempt = true;
+                                    }
+                                    tracing::info!(
+                                        target: "agent_relay::worker::pty",
+                                        worker = %worker_name,
+                                        backlog,
+                                        "flushing queued injections through interactive hold"
+                                    );
+                                }
                             }
                             "ping" => {
                                 let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
@@ -1241,18 +1319,21 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // Gated off while an interactive hold is active so queued deliveries
             // stay parked (not dropped) until the human releases the drive.
             _ = pending_injection_interval.tick() => {
-                if injection_pop_allowed(active_injection.is_some(), pty_auto.interactive_hold) {
+                if injection_pop_allowed(active_injection.is_some(), pty_auto.interactive_hold, hold_exempt_injections) {
                     let should_block = pending_worker_injections
                         .front()
                         .map(|pending| should_block_pending_injection(pty_auto.auto_suggestion_visible, pending))
                         .unwrap_or(false);
                     if !should_block {
                         if let Some(pending) = pending_worker_injections.pop_front() {
+                            let hold_exempt = hold_exempt_injections > 0;
+                            hold_exempt_injections = hold_exempt_injections.saturating_sub(1);
                             active_injection = Some(ActiveInjection {
                                 pending,
                                 stage: InjectionStage::Escape,
                                 next_at: tokio::time::Instant::now() + throttle.delay(),
                                 injection_text: None,
+                                hold_exempt,
                             });
                         }
                     }
@@ -1267,7 +1348,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // injection-ack arm, which paces the next stage once the drainer
             // confirms the write. The select loop keeps forwarding PTY output
             // and handling input between stages.
-            _ = &mut injection_delay, if active_injection.is_some() && injection_ack.is_none() && !pty_auto.interactive_hold => {
+            _ = &mut injection_delay, if active_injection.is_some() && injection_ack.is_none()
+                && (!pty_auto.interactive_hold
+                    || active_injection.as_ref().is_some_and(|inj| inj.hold_exempt)) => {
                 let mut inj = active_injection.take().expect("active injection present under guard");
                 match inj.stage {
                     InjectionStage::Escape => {
@@ -1282,6 +1365,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     error = %error,
                                     "steer mode ESC ESC write failed, re-queuing delivery"
                                 );
+                                if inj.hold_exempt {
+                                    hold_exempt_injections += 1;
+                                }
                                 pending_worker_injections.push_front(inj.pending);
                             } else {
                                 inj.stage = InjectionStage::Body;
@@ -1325,20 +1411,24 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
-                        // Submit the body and its trailing `\r` as a single write
-                        // and hold the ack. `PtySession::submit_write` documents
-                        // that adjacent writes must be submitted back-to-back
-                        // with no intervening submission from another task to
-                        // stay adjacent on the drainer FIFO — a separate Enter
-                        // write left a window (between this ack and the next
-                        // stage) where another writer (a passthrough keystroke,
-                        // an auto-responder) could splice in ahead of the `\r`.
-                        // A single write has no such window. Finalization (emit
-                        // `delivery_injected`, queue echo verification) still
-                        // waits for this ack in the injection-ack arm.
+                        // Submit the body and its trailing `\r` as a single
+                        // paced write and hold the ack. `submit_write_paced`
+                        // emits one escape-aware atom (CSI/SS3/OSC sequence,
+                        // UTF-8 codepoint, or plain byte) at a time with
+                        // `inject_rate` between them, so the child receives the
+                        // injection spread across reads instead of one blob it
+                        // may batch or drop leading characters from. The whole
+                        // payload — body atoms plus the trailing `\r` — is one
+                        // queue entry, so nothing (a passthrough keystroke, an
+                        // auto-responder, a terminal-query reply) can splice
+                        // between the body and its Enter. With `inject_rate` of
+                        // zero this is exactly the old single bulk write.
+                        // Finalization (emit `delivery_injected`, queue echo
+                        // verification) still waits for this ack in the
+                        // injection-ack arm.
                         let mut bytes = injection.clone().into_bytes();
                         bytes.extend_from_slice(b"\r");
-                        match pty.submit_write(bytes) {
+                        match pty.submit_write_paced(bytes, inject_rate) {
                             Ok(ack_rx) => {
                                 inj.injection_text = Some(injection);
                                 inj.stage = InjectionStage::Finalize;
@@ -1351,6 +1441,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     error = %e,
                                     "PTY injection write failed, re-queuing delivery"
                                 );
+                                if inj.hold_exempt {
+                                    hold_exempt_injections += 1;
+                                }
                                 pending_worker_injections.push_front(inj.pending);
                             }
                         }
@@ -1364,6 +1457,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             delivery_id = %inj.pending.delivery.delivery_id,
                             "injection reached Finalize in deadline arm without pending ack; re-queuing delivery"
                         );
+                        if inj.hold_exempt {
+                            hold_exempt_injections += 1;
+                        }
                         pending_worker_injections.push_front(inj.pending);
                     }
                 }
@@ -1437,7 +1533,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             );
                             // Requeue at the front, preserving retry ordering. The
                             // delivery_id stays in `pending_worker_delivery_ids`, so
-                            // the next pop retries the same delivery.
+                            // the next pop retries the same delivery. A hold-exempt
+                            // injection keeps its exemption so an explicit flush is
+                            // retried rather than freezing under the hold.
+                            if inj.hold_exempt {
+                                hold_exempt_injections += 1;
+                            }
                             pending_worker_injections.push_front(inj.pending);
                         }
                     }
@@ -1843,13 +1944,24 @@ mod tests {
     #[test]
     fn injection_pop_gated_by_hold_and_active_injection() {
         // Free loop, no hold: may start the next injection.
-        assert!(injection_pop_allowed(false, false));
+        assert!(injection_pop_allowed(false, false, 0));
         // An injection is already in flight: wait for it to finish.
-        assert!(!injection_pop_allowed(true, false));
+        assert!(!injection_pop_allowed(true, false, 0));
         // Interactive hold active (human driving): keep deliveries parked —
         // they are not popped, so nothing is dropped while held.
-        assert!(!injection_pop_allowed(false, true));
-        assert!(!injection_pop_allowed(true, true));
+        assert!(!injection_pop_allowed(false, true, 0));
+        assert!(!injection_pop_allowed(true, true, 0));
+    }
+
+    #[test]
+    fn injection_pop_allowed_through_hold_with_flush_exemption() {
+        // An explicit `flush_injections` allowance lets pops pierce the hold…
+        assert!(injection_pop_allowed(false, true, 1));
+        assert!(injection_pop_allowed(false, true, 3));
+        // …but never preempts an injection already in flight.
+        assert!(!injection_pop_allowed(true, true, 1));
+        // Exemption is irrelevant when no hold is active.
+        assert!(injection_pop_allowed(false, false, 1));
     }
 
     #[test]

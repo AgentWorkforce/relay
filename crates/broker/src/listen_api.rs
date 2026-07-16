@@ -2194,7 +2194,10 @@ async fn listen_api_get_pending(
 /// Injects queued messages into the worker in FIFO order and stops at the first
 /// failure, retaining that message and its suffix for a later attempt. The
 /// inbound delivery mode is *not* changed — a caller still in `manual_flush`
-/// delivery mode will continue to queue newly-arriving messages.
+/// delivery mode will continue to queue newly-arriving messages. When a drive
+/// session's interactive hold is active, the broker follows the handoff with a
+/// one-shot `flush_injections` worker frame so the flushed backlog is injected
+/// through the hold instead of freezing in the worker's queue until detach.
 async fn listen_api_flush_pending(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
