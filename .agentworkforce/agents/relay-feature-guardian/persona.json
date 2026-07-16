@@ -45,9 +45,6 @@
       }
     }
   },
-  "mount": {
-    "ignoredPatterns": ["/*", "!.agentworkforce", "!.agentworkforce/features", "!.agentworkforce/features/**"]
-  },
   "memory": {
     "enabled": true,
     "scopes": ["workspace"],

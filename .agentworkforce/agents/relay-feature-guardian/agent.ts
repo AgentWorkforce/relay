@@ -54,10 +54,11 @@ interface Feature {
   mcp?: string;
 }
 
-const MANIFEST_PATH = '.agentworkforce/features/manifest.yaml';
+const MANIFEST_RELPATH = '.agentworkforce/features/manifest.yaml';
 
 async function loadFeatures(ctx: WorkforceCtx): Promise<Feature[]> {
-  const raw = await ctx.files.read(MANIFEST_PATH);
+  const absPath = `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`;
+  const raw = await ctx.sandbox.readFile(absPath);
   const manifest = parse(raw) as Manifest;
   const features: Feature[] = [];
   for (const category of Object.values(manifest.categories)) {
@@ -191,7 +192,7 @@ export default defineAgent({
       features = await loadFeatures(ctx);
     } catch (err) {
       ctx.log('error', 'relay-feature-guardian.manifest-load-failed', {
-        path: MANIFEST_PATH,
+        path: `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`,
         err: String(err),
       });
       return;
