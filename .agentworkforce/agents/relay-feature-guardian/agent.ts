@@ -191,14 +191,18 @@ export default defineAgent({
     try {
       features = await loadFeatures(ctx);
     } catch (err) {
-      ctx.log('error', 'relay-feature-guardian.manifest-load-failed', {
-        path: `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`,
-        err: String(err),
-      });
+      const absPath = `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`;
+      ctx.log('error', 'relay-feature-guardian.manifest-load-failed', { path: absPath, err: String(err) });
+      const isNotFound = String(err).includes('ENOENT');
+      const errMsg = isNotFound
+        ? `⚠️ *relay-feature-guardian* can't find the feature manifest at \`${MANIFEST_RELPATH}\`.\n\nThe \`feature/verify-features-workflow\` branch hasn't been merged to main yet — the sandbox runs on main, so the manifest doesn't exist. Merge PR #1283 to fix this.`
+        : `⚠️ *relay-feature-guardian* failed to load the feature manifest: \`${String(err)}\``;
+      await slackClient().post(channel, errMsg).catch(() => undefined);
       return;
     }
     if (features.length === 0) {
       ctx.log('error', 'relay-feature-guardian.no-features', { reason: 'manifest parsed but empty' });
+      await slackClient().post(channel, '⚠️ *relay-feature-guardian* loaded the manifest but found no features. Check `.agentworkforce/features/manifest.yaml`.').catch(() => undefined);
       return;
     }
 
