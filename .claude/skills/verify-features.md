@@ -11,7 +11,7 @@ Use when you need to verify that a specific feature or set of features works cor
 
 ## Feature manifest location
 
-```
+```text
 .agentworkforce/features/manifest.yaml    # every feature, criticality, location
 .agentworkforce/features/critical-paths.md  # what must work for the product to function
 .agentworkforce/features/verify/procedures.md  # step-by-step verification by tier
@@ -56,11 +56,10 @@ Follow `.agentworkforce/features/verify/procedures.md` for the relevant tier. Al
 relay version && \
 relay status || relay node up --background && \
 relay status && \
-relay agent register quick-check && \
+export RELAY_AGENT_TOKEN=$(relay agent register quick-check | jq -r '.token') && \
 relay agent list && \
 relay channel create quick-check-ch && \
 relay channel join quick-check-ch && \
-export RELAY_AGENT_TOKEN=$(relay agent register quick-check-msg | grep -oP 'RELAY_AGENT_TOKEN=\K\S+') && \
 relay message post quick-check-ch "sanity $(date)" && \
 relay message list quick-check-ch --limit 1 && \
 relay channel archive quick-check-ch && \
@@ -105,9 +104,9 @@ Update `critical-paths.md` when:
 
 ## Example: verifying after a messaging change
 
-```
+```text
 1. Read the manifest: grep "messaging-messages" manifest.yaml → verify_tier: 3
-2. Setup: relay node up --background && export RELAY_AGENT_TOKEN=$(relay agent register test-agent | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
+2. Setup: relay node up --background && export RELAY_AGENT_TOKEN=$(relay agent register test-agent | jq -r '.token')
 3. Follow tier 3 procedures: post → list → reply → get_thread → search
 4. Run critical path 2 (channel messaging) with two agents
 5. Clean up: relay agent remove test-agent

@@ -387,6 +387,7 @@ if RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send "$AGENT_B" "$DM_TEXT" > /t
 else
   DM_SEND_OUT=$(cat /tmp/dm-send-out.txt)
   echo "  FAIL  dm send A→B (exit code non-zero)" | tee -a "$LOG"
+  echo "    output: $DM_SEND_OUT" >> "$LOG"
   FAIL=$((FAIL + 1))
 fi
 CONV_ID=$(echo "$DM_SEND_OUT" | grep -o '"conversationId": *"[^"]*"' | head -1 | sed 's/.*"conversationId": *"//;s/".*//' || echo "")
@@ -559,6 +560,8 @@ if [ -n "$TOKEN_CP4A" ] && [ -n "$TOKEN_CP4B" ]; then
   DM_MSG="dm-cp4-$(date +%s)"
   if RELAY_AGENT_TOKEN="$TOKEN_CP4A" relay message dm send "$CP4_B" "$DM_MSG" > /tmp/cp4-dm-out.txt 2>&1; then
     CP4=$((CP4 + 1))
+  else
+    echo "    dm send output: $(cat /tmp/cp4-dm-out.txt)" >> "$LOG"
   fi
   CONV4_ID=$(cat /tmp/cp4-dm-out.txt | grep -o '"conversationId": *"[^"]*"' | head -1 | sed 's/.*"conversationId": *"//;s/".*//' || echo "")
   if [ -n "$CONV4_ID" ]; then

@@ -148,7 +148,7 @@ Pass criteria: each command exits 0, output matches expected description.
 Register at least one agent (`relay agent register <name>`) and export its token:
 
 ```bash
-export RELAY_AGENT_TOKEN=$(relay agent register verify-agent | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
+export RELAY_AGENT_TOKEN=$(relay agent register verify-agent | jq -r '.token')
 ```
 
 Or pass `--token <value>` to commands that support it.
@@ -234,10 +234,9 @@ relay message reaction remove --message-id "$MSG_ID" --emoji thumbsup
 relay integration webhook list
 # → success (empty or populated)
 
-relay integration webhook create --url https://example.com/hook --events message.created
+HOOK_ID=$(relay integration webhook create https://example.com/hook --event message.created | jq -r '.id')
 # → prints webhook id
 
-HOOK_ID=$(relay integration webhook list --json | jq -r '.[0].id')
 relay integration webhook delete "$HOOK_ID"
 # → success
 ```
@@ -258,8 +257,8 @@ Pass criteria: all channel/message round-trips show data that matches what was w
 Register two agents and test cross-agent features:
 
 ```bash
-export TOKEN_A=$(relay agent register verify-alice | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
-export TOKEN_B=$(relay agent register verify-bob | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
+export TOKEN_A=$(relay agent register verify-alice | jq -r '.token')
+export TOKEN_B=$(relay agent register verify-bob | jq -r '.token')
 ```
 
 ### Channel Invite
@@ -278,11 +277,13 @@ RELAY_AGENT_TOKEN=$TOKEN_B relay channel list
 
 ```bash
 # Send DM and capture conversationId from JSON output:
-RELAY_AGENT_TOKEN=$TOKEN_A relay message dm send verify-bob "hello bob"
-# → success; note the conversationId from the JSON response
+DM_RESPONSE=$(RELAY_AGENT_TOKEN=$TOKEN_A relay message dm send verify-bob "hello bob")
+CONV_ID=$(echo "$DM_RESPONSE" | jq -r '.conversationId')
+# → success; conversationId captured
 
-# dm list requires the conversationId returned by send:
-# RELAY_AGENT_TOKEN=$TOKEN_B relay message dm list <conversationId>
+# Verify recipient can list the conversation:
+RELAY_AGENT_TOKEN=$TOKEN_B relay message dm list "$CONV_ID"
+# → shows the DM from verify-alice
 
 RELAY_AGENT_TOKEN=$TOKEN_A relay message dm send_group "group hello" --to verify-bob
 # → success
@@ -387,14 +388,15 @@ Use this to determine which tiers to run:
 
 ```bash
 relay version && relay status || relay node up --background && relay status
-relay agent register quick-check-$(date +%s)
+AGENT_NAME="quick-check-$(date +%s)"
+export RELAY_AGENT_TOKEN=$(relay agent register "$AGENT_NAME" | jq -r '.token')
 relay agent list
 relay channel create quick-check-ch
 relay channel join quick-check-ch
 relay message post quick-check-ch "sanity $(date)"
 relay message list quick-check-ch --limit 1
 relay channel archive quick-check-ch
-relay agent remove quick-check-$(date +%s)
+relay agent remove "$AGENT_NAME"
 ```
 
 All steps should succeed. Total runtime: under 10 seconds.

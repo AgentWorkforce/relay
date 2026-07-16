@@ -303,7 +303,7 @@ categories:
 
       - id: local-agent-new
         name: Spawn and Attach
-        cli: relay node agent new <name>
+        cli: relay node agent new <provider> --name <agent-name>
         description: Spawn an agent and immediately attach your terminal to it
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
@@ -929,13 +929,6 @@ categories:
     description: Initial setup, diagnostics, and CLI lifecycle
     criticality: hot
     features:
-      - id: setup-doctor
-        name: Status / Health Check
-        cli: relay status
-        description: Show workspace, cloud login, and local broker status
-        location: packages/cli/src/cli/commands/core.ts
-        verify_tier: 1
-
       - id: cli-version
         name: Show Version
         cli: relay version
