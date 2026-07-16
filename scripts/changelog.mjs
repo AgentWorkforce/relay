@@ -354,6 +354,54 @@ function cmdRelease(argv) {
   console.log(`Released ${version} (${level}) with ${fragments.length} fragment(s).`);
 }
 
+/**
+ * Fold pending fragments into the inline [Unreleased] section (merging with any
+ * bullets already there) and delete the fragment files. This is the release
+ * integration point: the publish workflow runs it so its existing changelog
+ * generator, which reads the inline [Unreleased] block, picks up fragments. A
+ * no-op when there are no fragments, so releases without fragments are unaffected.
+ */
+function cmdCollect(argv) {
+  const { flags } = parseFlags(argv);
+  const fragments = loadFragments();
+  if (fragments.length === 0) {
+    console.log('changelog collect: no fragments to fold in.');
+    return;
+  }
+
+  const changelog = readFileSync(CHANGELOG, 'utf8');
+  const byType = parseUnreleasedBody(changelog);
+  for (const f of fragments) {
+    if (!byType.has(f.type)) byType.set(f.type, []);
+    byType.get(f.type).push(toBullet(f.body));
+  }
+  const sections = renderSections(byType);
+
+  const lines = changelog.split(/\r?\n/);
+  const headingIdx = lines.findIndex((l) => /^##\s+\[Unreleased/i.test(l));
+  if (headingIdx === -1) throw new Error('CHANGELOG.md has no [Unreleased] heading');
+  let nextIdx = lines.findIndex((l, i) => i > headingIdx && /^##\s+\[/.test(l));
+  if (nextIdx === -1) nextIdx = lines.length;
+
+  const rebuilt = [
+    ...lines.slice(0, headingIdx),
+    '## [Unreleased]',
+    '',
+    sections,
+    '',
+    ...lines.slice(nextIdx),
+  ].join('\n');
+
+  writeFileSync(CHANGELOG, rebuilt.replace(/\n{3,}/g, '\n\n'));
+
+  if (flags['keep-fragments']) {
+    console.log(`Folded ${fragments.length} fragment(s) into [Unreleased] (kept files).`);
+  } else {
+    for (const f of fragments) rmSync(path.join(FRAGMENT_DIR, f.name));
+    console.log(`Folded ${fragments.length} fragment(s) into [Unreleased] and removed them.`);
+  }
+}
+
 function cmdHelp() {
   console.log(`Changelog fragment tooling
 
@@ -366,6 +414,9 @@ Commands:
               [--slug <name>] "<entry text>"
   preview   Render what [Unreleased] will look like from the fragments.
   check     Validate all fragments and CHANGELOG.md (CI entry point).
+  collect   Fold fragments into the inline [Unreleased] block and delete them.
+              Used by the publish workflow; no-op when there are no fragments.
+              [--keep-fragments]
   release   Compile fragments into a dated version section and delete them.
               [--version <x.y.z>]  (default: bump package.json by highest level)
               [--date <YYYY-MM-DD>] (default: today)
@@ -384,6 +435,9 @@ try {
       break;
     case 'check':
       cmdCheck();
+      break;
+    case 'collect':
+      cmdCollect(rest);
       break;
     case 'release':
       cmdRelease(rest);

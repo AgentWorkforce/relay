@@ -38,9 +38,9 @@ level: minor
 between held and live inbound delivery.
 ```
 
-- **`type`** — the Keep a Changelog section. One of:
-  `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`,
-  `Breaking Changes`, `Migration Guidance`.
+- **`type`** — the Keep a Changelog section. One of (listed in the order they
+  render in `CHANGELOG.md`): `Breaking Changes`, `Added`, `Changed`,
+  `Deprecated`, `Removed`, `Fixed`, `Security`, `Migration Guidance`.
 - **`level`** — the SemVer impact of this change: `patch`, `minor`, or `major`.
   The release version bump is the **highest** level across all pending
   fragments (`patch < minor < major`).

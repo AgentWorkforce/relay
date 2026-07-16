@@ -39,7 +39,7 @@ Versioning.
 Add a fragment as you land a PR:
 
 ```bash
-npm run changelog:add -- --type Added --level minor "`agent-relay foo` now does X."
+npm run changelog:add -- --type Added --level minor "\`agent-relay foo\` now does X."
 ```
 
 Each fragment declares a `type` (Keep a Changelog section) and a `level`

@@ -1731,6 +1731,13 @@ jobs:
         with:
           node-version: '22.14.0'
 
+      # Fold pending changelog.d/ fragments into the inline [Unreleased] block
+      # (and delete the fragment files) so the generator below — which reads that
+      # block — picks up curated entries. No-op when there are no fragments.
+      - name: Collect changelog fragments
+        if: needs.build.outputs.is_prerelease != 'true'
+        run: node scripts/changelog.mjs collect
+
       - name: Generate changelog entry
         run: |
           NEW_VERSION="${{ needs.build.outputs.new_version }}"
@@ -1971,6 +1978,8 @@ jobs:
           git add package.json package-lock.json packages/*/package.json packages/sdk-py/pyproject.toml CHANGELOG.md
           # Stage optional paths that may not exist (trajectories already committed in prior step)
           git add .trajectories/ 2>/dev/null || true
+          # Stage changelog fragment removals from the "Collect changelog fragments" step
+          git add -A changelog.d/ 2>/dev/null || true
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
