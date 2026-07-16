@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AgentStream,
+  CLOUD_ENROLLED_NODE_FILE,
   cleanupTmp,
   createTrigger,
   createWorkspace,
@@ -25,6 +26,7 @@ import {
   registerAgent,
   releaseAgent,
   sendDm,
+  startCloudEnrollmentEndpoint,
   startEngine,
   waitFor,
   type EngineHandle,
@@ -43,6 +45,73 @@ if (!pre.ok) {
   // eslint-disable-next-line no-console
   console.warn(`[fleet-e2e] skipped: ${pre.reason}`);
 }
+
+describe.skipIf(!pre.ok)('Cloud-enrolled node startup', () => {
+  let tmpRoot: string;
+  let engine: EngineHandle;
+  let workspaceKey: string;
+  let enrolledNode: FleetNode;
+
+  beforeAll(async () => {
+    tmpRoot = makeTmpRoot();
+    engine = await startEngine(pre.engineServe!, tmpRoot);
+    workspaceKey = await createWorkspace(engine, 'cloud-enrollment-e2e');
+
+    const nodeId = 'node_cloud_enrolled';
+    const nodeName = 'cloud-enrolled';
+    const nodeToken = await enrollNode(engine, workspaceKey, nodeId, nodeName, ['cloud:ping']);
+    const enrollmentToken = 'ocl_node_enr_e2e_once';
+    const endpoint = await startCloudEnrollmentEndpoint({
+      enrollmentToken,
+      nodeId,
+      nodeName,
+      nodeToken,
+      relayWorkspaceId: 'fleet-e2e',
+      relaycastUrl: engine.baseUrl,
+    });
+
+    enrolledNode = new FleetNode({
+      name: nodeName,
+      nodeId,
+      nodeFile: CLOUD_ENROLLED_NODE_FILE,
+      nodeToken,
+      workspaceKey,
+      engineBaseUrl: engine.baseUrl,
+      brokerBinary: pre.brokerBinary!,
+      tmpRoot,
+      brokerPort: await getFreePort(),
+      capacityHarnesses: 'claude',
+      usePersistedEnrollment: true,
+    });
+    try {
+      await enrolledNode.cloudEnroll(endpoint.url, enrollmentToken);
+    } finally {
+      await endpoint.stop();
+    }
+    enrolledNode.start();
+  }, 45_000);
+
+  afterAll(async () => {
+    await enrolledNode?.stop();
+    await engine?.stop();
+    if (tmpRoot && !process.env.CI) cleanupTmp(tmpRoot);
+  });
+
+  it('enroll -> node up presents the enrolled id and registers its capabilities and tags', async () => {
+    const enrolled = await waitFor(
+      async () => {
+        const nodes = await getNodes(engine, workspaceKey, { name: 'cloud-enrolled' });
+        const match = nodes.find((node) => node.id === 'node_cloud_enrolled');
+        return match?.live && match.handlers_live ? match : null;
+      },
+      { timeoutMs: 30_000, label: 'Cloud-enrolled node online with live handlers' }
+    );
+
+    expect(enrolled.name).toBe('cloud-enrolled');
+    expect(enrolled.capabilities.map((capability) => capability.name)).toContain('cloud:ping');
+    expect(enrolled.tags).toEqual(expect.arrayContaining(['cloud-enrolled', 'e2e']));
+  });
+});
 
 async function pollUntilStable<T>(
   read: () => Promise<T>,

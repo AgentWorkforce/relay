@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import {
   appendFileSync,
   existsSync,
@@ -26,6 +27,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 export const NODE_A_FILE = path.join(HERE, 'nodes', 'node-a.ts');
 export const NODE_B_FILE = path.join(HERE, 'nodes', 'node-b.ts');
+export const CLOUD_ENROLLED_NODE_FILE = path.join(HERE, 'nodes', 'cloud-enrolled.ts');
 
 const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
 
@@ -105,7 +107,7 @@ export function preflight(): Preflight {
 
 export function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
-    const srv = createServer();
+    const srv = createNetServer();
     srv.unref();
     srv.on('error', reject);
     srv.listen(0, '127.0.0.1', () => {
@@ -249,6 +251,71 @@ export async function enrollNode(
   return body.data.token as string;
 }
 
+export interface CloudEnrollmentEndpoint {
+  url: string;
+  stop(): Promise<void>;
+}
+
+/**
+ * Serve one Cloud enrollment exchange locally. The exchange itself is a small
+ * stand-in for Cloud's control-plane endpoint; the returned node token was
+ * minted by the real relaycast engine, so the subsequent broker registration
+ * still exercises the real token-to-node binding and fails on node_id_mismatch.
+ */
+export async function startCloudEnrollmentEndpoint(input: {
+  enrollmentToken: string;
+  nodeId: string;
+  nodeName: string;
+  nodeToken: string;
+  relayWorkspaceId: string;
+  relaycastUrl: string;
+}): Promise<CloudEnrollmentEndpoint> {
+  const server = createHttpServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf-8');
+    request.on('data', (chunk) => {
+      raw += chunk;
+    });
+    request.on('end', () => {
+      let token = '';
+      try {
+        token = String((JSON.parse(raw) as { enrollmentToken?: unknown }).enrollmentToken ?? '');
+      } catch {
+        // The 400 response below covers malformed JSON as an invalid exchange.
+      }
+      if (request.method !== 'POST' || token !== input.enrollmentToken) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Invalid enrollment token' }));
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          nodeId: input.nodeId,
+          nodeName: input.nodeName,
+          nodeToken: input.nodeToken,
+          relayWorkspaceId: input.relayWorkspaceId,
+          relaycastUrl: input.relaycastUrl,
+          websocketUrl: `${input.relaycastUrl}/v1/node/ws`,
+        })
+      );
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('cloud enrollment endpoint did not bind a TCP port');
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}/api/v1/fleet/register`,
+    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
 export interface NodeRosterEntry {
   id: string;
   name: string;
@@ -259,6 +326,7 @@ export interface NodeRosterEntry {
   load: number;
   active_agents: number;
   max_agents: number;
+  tags?: string[];
 }
 
 export async function getNodes(
@@ -300,6 +368,9 @@ export class FleetNode {
       /** Pins the broker's `spawn:<harness>` capacity set (AGENT_RELAY_NODE_HARNESSES)
        * so two nodes on one host advertise distinct capabilities. */
       capacityHarnesses?: string;
+      /** Exercise `cloud enroll` persistence + automatic `node up` pickup rather
+       * than injecting the node token and pre-seeding the broker machine id. */
+      usePersistedEnrollment?: boolean;
     }
   ) {
     this.projectDir = path.join(opts.tmpRoot, `node-${opts.name}`);
@@ -307,22 +378,71 @@ export class FleetNode {
     this.home = path.join(this.projectDir, 'home');
     mkdirSync(this.home, { recursive: true });
     this.logPath = path.join(this.projectDir, 'serve.log');
-    // The broker reads its node id from `<data_local_dir>/agent-relay/machine-id`
-    // (macOS: ~/Library/Application Support, Linux: ~/.local/share). Seed both so
-    // the broker's `node.register` node_id matches the enrolled token's node id —
-    // otherwise the engine rejects the register (node_id_mismatch) and the
-    // capability→action binding never happens.
-    for (const rel of [
-      ['Library', 'Application Support', 'agent-relay', 'machine-id'],
-      ['.local', 'share', 'agent-relay', 'machine-id'],
-    ]) {
-      const file = path.join(this.home, ...rel);
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, `${opts.nodeId}\n`);
+    if (!opts.usePersistedEnrollment) {
+      // Direct-token fixtures predate the Cloud enrollment store. Keep their
+      // explicit machine-id setup so those scenarios remain focused on their
+      // existing fleet behavior; the persisted-enrollment regression below
+      // intentionally takes the unseeded path that failed in production.
+      for (const rel of [
+        ['Library', 'Application Support', 'agent-relay', 'machine-id'],
+        ['.local', 'share', 'agent-relay', 'machine-id'],
+      ]) {
+        const file = path.join(this.home, ...rel);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, `${opts.nodeId}\n`);
+      }
     }
   }
 
   private readonly home: string;
+
+  /** Redeem through the real CLI so the production enrollment store writer and
+   * subsequent `node up` resolver are both part of the regression boundary. */
+  async cloudEnroll(enrollmentUrl: string, enrollmentToken: string): Promise<void> {
+    if (!this.opts.usePersistedEnrollment) {
+      throw new Error('cloudEnroll requires usePersistedEnrollment');
+    }
+    const child = spawn(
+      process.execPath,
+      [
+        CLI_ENTRY,
+        'cloud',
+        'enroll',
+        '--token',
+        enrollmentToken,
+        '--enrollment-url',
+        enrollmentUrl,
+        '--name',
+        this.opts.name,
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: cleanEnv({ HOME: this.home, AGENT_RELAY_HOME: this.enrollmentHome }),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+    let output = '';
+    child.stdout?.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    if (exitCode !== 0) {
+      throw new Error(`cloud enroll exited ${exitCode}: ${output}`);
+    }
+    if (!output.includes(`Enrolled node "${this.opts.name}"`)) {
+      throw new Error(`cloud enroll did not report success: ${output}`);
+    }
+  }
+
+  private get enrollmentHome(): string {
+    return path.join(this.home, '.agentworkforce', 'relay');
+  }
 
   start(): void {
     const o = this.opts;
@@ -354,9 +474,21 @@ export class FleetNode {
           BROKER_BINARY_PATH: o.brokerBinary,
           RELAYCAST_BASE_URL: o.engineBaseUrl,
           RELAY_BASE_URL: o.engineBaseUrl,
-          RELAY_NODE_TOKEN: o.nodeToken,
-          RELAY_WORKSPACE_KEY: o.workspaceKey,
-          RELAY_API_KEY: o.workspaceKey,
+          ...(o.usePersistedEnrollment
+            ? {
+                AGENT_RELAY_HOME: this.enrollmentHome,
+                // Supply the broker-self workspace membership without using
+                // RELAY_WORKSPACE_KEY, which is intentionally an explicit
+                // direct-workspace choice that disables enrollment pickup.
+                RELAY_WORKSPACES_JSON: JSON.stringify([
+                  { workspace_id: 'fleet-e2e', api_key: o.workspaceKey },
+                ]),
+              }
+            : {
+                RELAY_NODE_TOKEN: o.nodeToken,
+                RELAY_WORKSPACE_KEY: o.workspaceKey,
+                RELAY_API_KEY: o.workspaceKey,
+              }),
           AGENT_RELAY_PROJECT: this.projectDir,
           AGENT_RELAY_STATE_DIR: stateDir,
           AGENT_RELAY_BROKER_PORT: String(o.brokerPort),
