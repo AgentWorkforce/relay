@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.agentworkforce/features/critical-paths.md` — documents the 4 product-critical sequences that must work end-to-end (broker+registration, channel messaging, local agent lifecycle, MCP server).
 - `@agent-relay/sdk` `./workflows` subpath export, enabling local workflow files to import the workflow builder without a build step.
 
+## [10.6.1] - 2026-07-16
+
 ### Fixed
 
 - `agent-relay node up --config` now loads JavaScript and TypeScript node definitions with package imports from standalone binaries, while npm-installed Bun runs keep their existing in-process behavior.
