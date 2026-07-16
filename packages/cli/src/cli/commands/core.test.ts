@@ -652,6 +652,93 @@ describe('registerCoreCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
+  it('up --background rejects an enrolled node token without a node id', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
+    });
+    const stopped = new Set<number>();
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0 && !stopped.has(pid)) return;
+      if ((pid === 9001 || pid === 4242) && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        stopped.add(pid);
+        return;
+      }
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: { RELAY_NODE_ID: '   ', RELAY_NODE_TOKEN: 'nt_incomplete' },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Cloud enrollment credentials are incomplete: RELAY_NODE_ID is required when RELAY_NODE_TOKEN is set.'
+    );
+    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('up --background retains broker state when failed enrollment cleanup cannot stop the broker', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync(connectionPath, connectionFile(4242));
+    });
+    const runningPids = new Set([9001, 4242]);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      if (pid === 9001 && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        runningPids.delete(pid);
+      }
+    });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'project',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_enrolled',
+      },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Failed to stop broker process after Cloud enrollment startup failed (pid: 4242). ' +
+        'Run `agent-relay down --force` to retry cleanup.'
+    );
+    expect(fs.existsSync(connectionPath)).toBe(true);
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
   it('up --background fails when enrolled node delivery never connects', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;

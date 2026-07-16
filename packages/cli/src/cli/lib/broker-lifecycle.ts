@@ -1293,8 +1293,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.exit(1);
       return;
     }
-    const enrolledNodeId = deps.env.RELAY_NODE_TOKEN?.trim() ? deps.env.RELAY_NODE_ID?.trim() : undefined;
-    if (enrolledNodeId) {
+    const enrolledNodeToken = deps.env.RELAY_NODE_TOKEN?.trim();
+    const enrolledNodeId = enrolledNodeToken ? deps.env.RELAY_NODE_ID?.trim() : undefined;
+    let enrollmentFailureReason: string | undefined;
+    if (enrolledNodeToken && !enrolledNodeId) {
+      enrollmentFailureReason =
+        'Cloud enrollment credentials are incomplete: RELAY_NODE_ID is required when RELAY_NODE_TOKEN is set.';
+    } else if (enrolledNodeId) {
       const enrolledReadiness = await waitForEnrolledNodeReadiness(
         readiness.conn,
         deps,
@@ -1305,20 +1310,33 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         readiness.statusDetails
       );
       if (!enrolledReadiness.ready) {
-        deps.error(enrolledReadiness.reason ?? 'Cloud enrollment did not become ready.');
-        const cleanupPids = new Set<number>();
-        if (typeof child.pid === 'number' && child.pid > 0) {
-          cleanupPids.add(child.pid);
-        }
-        cleanupPids.add(readiness.conn.pid);
-        for (const cleanupPid of cleanupPids) {
-          deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
-          await terminateProcess(cleanupPid, deps, true);
-        }
-        cleanupBrokerFiles(paths, deps);
-        deps.exit(1);
-        return;
+        enrollmentFailureReason = enrolledReadiness.reason ?? 'Cloud enrollment did not become ready.';
       }
+    }
+    if (enrollmentFailureReason) {
+      deps.error(enrollmentFailureReason);
+      const cleanupPids = new Set<number>();
+      if (typeof child.pid === 'number' && child.pid > 0) {
+        cleanupPids.add(child.pid);
+      }
+      cleanupPids.add(readiness.conn.pid);
+      let allStopped = true;
+      for (const cleanupPid of cleanupPids) {
+        deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
+        const stopped = await terminateProcess(cleanupPid, deps, true);
+        if (!stopped) {
+          allStopped = false;
+          deps.error(
+            `Failed to stop broker process after Cloud enrollment startup failed (pid: ${cleanupPid}). ` +
+              'Run `agent-relay down --force` to retry cleanup.'
+          );
+        }
+      }
+      if (allStopped) {
+        cleanupBrokerFiles(paths, deps);
+      }
+      deps.exit(1);
+      return;
     }
     deps.log('Broker started.');
     deps.log(`Broker PID: ${readiness.conn.pid}`);
