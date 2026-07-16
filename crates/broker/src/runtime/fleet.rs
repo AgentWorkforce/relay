@@ -374,6 +374,22 @@ impl BrokerRuntime {
         let channel = action_invoke_string(&invoke.input, &["channel"]);
         let model = action_invoke_string(&invoke.input, &["model"]);
 
+        // Honor the task-exit lifecycle exactly like the local HTTP spawn API:
+        // `spawn_mode: task_exit` / `exit_after_task: true` make the agent exit
+        // once its task is done instead of idling. Reject an unknown spawn_mode
+        // loudly rather than silently defaulting to interactive.
+        let spawn_mode = action_invoke_string(&invoke.input, &["spawn_mode", "spawnMode"]);
+        let explicit_exit_after_task =
+            action_invoke_bool(&invoke.input, &["exit_after_task", "exitAfterTask"]);
+        let exit_after_task =
+            match resolve_exit_after_task(spawn_mode.as_deref(), explicit_exit_after_task) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.reply_action_error(&invoke.invocation_id, &error).await;
+                    return;
+                }
+            };
+
         // Reuse the action input as the `ws_value` the spawn fn reads
         // harnessConfig / supplied tokens from, mirroring the firehose payload
         // shape (top-level and nested-`agent` lookups both work).
@@ -406,6 +422,7 @@ impl BrokerRuntime {
             task,
             channel,
             model,
+            exit_after_task,
             &ws_value,
             &workspace_id,
             None,
@@ -940,6 +957,25 @@ fn action_invoke_string(input: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
+/// Read the first boolean at any of the given top-level keys of an
+/// `action.invoke` input object (also checks under a nested `agent` object),
+/// mirroring [`action_invoke_string`]'s lookup order for the flattened-vs-nested
+/// spawn payload shape.
+fn action_invoke_bool(input: &Value, keys: &[&str]) -> Option<bool> {
+    for key in keys {
+        if let Some(value) = input.get(key).and_then(Value::as_bool) {
+            return Some(value);
+        }
+    }
+    let agent = input.get("agent")?;
+    for key in keys {
+        if let Some(value) = agent.get(key).and_then(Value::as_bool) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// Message fields extracted from a node `deliver` payload, ready to build a
 /// [`RelayDelivery`].
 struct FleetDeliveryFields {
@@ -1277,6 +1313,55 @@ mod tests {
             .as_deref(),
             Some("claude")
         );
+    }
+
+    #[test]
+    fn action_invoke_bool_reads_top_level_and_nested_agent() {
+        // Top-level (flattened) and nested-`agent` shapes both resolve, matching
+        // the fleet TS layer that flattens `{...spawn.agent, task, ...}`.
+        assert_eq!(
+            action_invoke_bool(&json!({"exit_after_task": true}), &["exit_after_task"]),
+            Some(true)
+        );
+        assert_eq!(
+            action_invoke_bool(
+                &json!({"agent": {"exitAfterTask": false}}),
+                &["exit_after_task", "exitAfterTask"]
+            ),
+            Some(false)
+        );
+        // Absent on both levels yields None so the caller can default.
+        assert_eq!(
+            action_invoke_bool(&json!({"cli": "codex"}), &["exit_after_task"]),
+            None
+        );
+    }
+
+    #[test]
+    fn action_invoke_spawn_input_resolves_task_exit_lifecycle() {
+        // The engine-dispatched spawn reads spawn_mode/exit_after_task from the
+        // invoke input exactly like the local HTTP spawn, from either the
+        // flattened top level or the nested `agent` object.
+        let top_level = json!({"cli": "codex", "spawn_mode": "task_exit"});
+        assert!(resolve_exit_after_task(
+            action_invoke_string(&top_level, &["spawn_mode", "spawnMode"]).as_deref(),
+            action_invoke_bool(&top_level, &["exit_after_task", "exitAfterTask"]),
+        )
+        .expect("valid spawn_mode"));
+
+        let nested = json!({"agent": {"cli": "codex", "spawnMode": "interactive"}});
+        assert!(!resolve_exit_after_task(
+            action_invoke_string(&nested, &["spawn_mode", "spawnMode"]).as_deref(),
+            action_invoke_bool(&nested, &["exit_after_task", "exitAfterTask"]),
+        )
+        .expect("valid spawn_mode"));
+
+        let explicit = json!({"cli": "codex", "exit_after_task": true});
+        assert!(resolve_exit_after_task(
+            action_invoke_string(&explicit, &["spawn_mode", "spawnMode"]).as_deref(),
+            action_invoke_bool(&explicit, &["exit_after_task", "exitAfterTask"]),
+        )
+        .expect("valid explicit flag"));
     }
 
     #[test]
