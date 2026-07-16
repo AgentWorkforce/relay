@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay-broker` reports a PII-safe `broker_panic` telemetry event from a process-wide panic hook, capturing only the compile-time `panic_location` (`file:line`) — never the panic message — so broker crashes are visible alongside the existing agent-crash signal.
+
+### Fixed
+
+- `@agent-relay/sdk` repo-filtered message placement now matches nodes: `toRelayNode` derives a node's `repoKeys` from its `repo:<key>` registration tags when no dedicated repo field is present, so a placement repo filter is no longer a no-op that never matches. Explicit `repoKeys`/`repo_keys`/`repoPaths` fields still take precedence.
+- `agent-relay-broker`'s `/api/observer-token` recovers from an `observer_token_name_conflict` (409) by rotating the existing same-named token to return fresh, usable material instead of failing the mint, so repeat mints of the fixed-name dashboard observer token succeed. It rotates only a token whose scopes exactly match the endpoint's read-only set and that carries no filters; any other conflict still propagates unchanged.
 
 ## [10.5.0] - 2026-07-16
 

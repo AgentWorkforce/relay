@@ -159,6 +159,17 @@ export interface AgentCrashEvent {
   exit_code?: number;
 }
 
+/**
+ * broker_panic - Emitted from the Rust broker's panic hook when the broker
+ * process itself panics (distinct from agent_crash, which tracks child agents).
+ * Deliberately PII-safe: only the compile-time source location is captured —
+ * the panic message is never sent, as it can contain user data.
+ */
+export interface BrokerPanicEvent {
+  /** Source location of the panic, `file:line` (compile-time path, no user data). */
+  panic_location: string;
+}
+
 // =============================================================================
 // Tier 2: Engagement Events (messaging + CLI usage)
 // =============================================================================
@@ -431,6 +442,7 @@ export type TelemetryEventName =
   | 'agent_spawn'
   | 'agent_release'
   | 'agent_crash'
+  | 'broker_panic'
   | 'message_send'
   | 'cli_command_run'
   | 'cli_command_complete'
@@ -453,6 +465,7 @@ export interface TelemetryEventMap {
   agent_spawn: AgentSpawnEvent;
   agent_release: AgentReleaseEvent;
   agent_crash: AgentCrashEvent;
+  broker_panic: BrokerPanicEvent;
   message_send: MessageSendEvent;
   cli_command_run: CliCommandRunEvent;
   cli_command_complete: CliCommandCompleteEvent;

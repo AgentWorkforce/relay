@@ -119,6 +119,11 @@ pub(crate) async fn run() -> Result<()> {
     runtime::init_tracing(&cli.command.log_identifier());
 
     let telemetry = TelemetryClient::new();
+    // Install a panic hook that reports broker panics before the process tears
+    // down. Skipped entirely when telemetry is disabled (no reporter is built).
+    if let Some(reporter) = telemetry.panic_reporter() {
+        crate::telemetry::install_panic_hook(reporter);
+    }
     telemetry.track(TelemetryEvent::CliCommandRun {
         command_name: cli.command.telemetry_name().to_string(),
     });
