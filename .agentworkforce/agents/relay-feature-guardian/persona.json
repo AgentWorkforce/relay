@@ -27,14 +27,22 @@
       }
     },
     "SLACK_USER_WILL": {
-      "description": "Slack user ID for Will (e.g. U01234ABCDE). Used for @mentions in checks.",
+      "description": "Slack user ID for Will. Used for @mentions in feature checks.",
       "env": "SLACK_USER_WILL",
-      "optional": true
+      "optional": true,
+      "picker": {
+        "provider": "slack",
+        "resource": "users"
+      }
     },
     "SLACK_USER_KHALIQ": {
-      "description": "Slack user ID for Khaliq (e.g. U01234ABCDE). Used for @mentions in checks.",
+      "description": "Slack user ID for Khaliq. Used for @mentions in feature checks.",
       "env": "SLACK_USER_KHALIQ",
-      "optional": true
+      "optional": true,
+      "picker": {
+        "provider": "slack",
+        "resource": "users"
+      }
     }
   },
   "mount": {
