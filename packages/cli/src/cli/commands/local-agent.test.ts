@@ -53,6 +53,18 @@ describe('local agent subtree', () => {
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
   });
 
+  it('forwards semantic output flags to the attach runner', async () => {
+    const { program, attach } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--json', '--reasoning', '--diagnostics'], {
+      from: 'user',
+    });
+    expect(attach).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      expect.objectContaining({ json: true, reasoning: true, diagnostics: true })
+    );
+  });
+
   it('attach rejects an unknown mode', async () => {
     const { program, attach, error, exit } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--mode', 'bogus'], { from: 'user' });

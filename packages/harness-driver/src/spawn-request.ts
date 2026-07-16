@@ -18,6 +18,7 @@ export function isBundledHeadlessCli(value: string): value is HeadlessProvider {
 }
 
 export function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
+  if (input.harnessConfig?.runtime === 'semantic') return 'headless';
   if (input.transport) return input.transport;
   if (input.harnessConfig) return input.harnessConfig.runtime;
   return input.cli === 'opencode' ? 'headless' : 'pty';

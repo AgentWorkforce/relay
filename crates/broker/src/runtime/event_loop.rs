@@ -22,6 +22,56 @@ pub(crate) struct ResizeOwner {
 /// immediately, so this window never fires in the normal path.
 pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
 
+pub(crate) struct HostedAgentEvent {
+    pub(super) name: String,
+    pub(super) event_type: String,
+    pub(super) payload: serde_json::Map<String, Value>,
+    pub(super) workspace_id: Option<WorkspaceId>,
+}
+
+pub(crate) async fn run_hosted_agent_event_publisher(
+    default_client: RelaycastHttpClient,
+    clients: HashMap<WorkspaceId, RelaycastHttpClient>,
+    mut rx: mpsc::Receiver<HostedAgentEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        let client = event
+            .workspace_id
+            .as_ref()
+            .and_then(|workspace_id| clients.get(workspace_id))
+            .unwrap_or(&default_client);
+        if let Err(error) = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.emit_agent_event(&event.name, event.event_type, event.payload),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Relaycast agent event publish timed out"))
+        .and_then(|result| result)
+        {
+            tracing::warn!(worker = %event.name, error = %error, "failed to publish agent event to Relaycast");
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PtyObservabilityState {
+    pub(crate) sequence: u64,
+    pub(crate) activity: &'static str,
+    pub(crate) turn_id: Option<String>,
+    pub(crate) workspace_id: Option<WorkspaceId>,
+}
+
+impl Default for PtyObservabilityState {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            activity: "idle",
+            turn_id: None,
+            workspace_id: None,
+        }
+    }
+}
+
 /// Decide whether a resize request from `session_id` should be applied under
 /// the single-resizer policy (#1247).
 ///
@@ -140,6 +190,8 @@ pub(crate) struct BrokerRuntime {
     pub(super) self_names: HashSet<String>,
     pub(super) ws_control_tx: mpsc::Sender<WsControl>,
     pub(super) relaycast_http: RelaycastHttpClient,
+    pub(super) hosted_agent_event_tx: mpsc::Sender<HostedAgentEvent>,
+    pub(super) pty_observability: HashMap<WorkerName, PtyObservabilityState>,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
     pub(super) api_open: bool,
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
@@ -420,7 +472,53 @@ impl BrokerRuntime {
 #[cfg(test)]
 mod resize_owner_tests {
     use super::*;
+    use httpmock::{Method::POST, MockServer};
     use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn hosted_events_route_to_their_own_workspace_client() {
+        let default_server = MockServer::start();
+        let secondary_server = MockServer::start();
+        let default_post = default_server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/Worker/events");
+            then.status(200).json_body(json!({"ok":true,"data":{"id":"evt_default","agent_id":"a","type":"activity.changed","payload":{},"created_at":"2026-07-16T00:00:00Z"}}));
+        });
+        let secondary_post = secondary_server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/Worker/events");
+            then.status(200).json_body(json!({"ok":true,"data":{"id":"evt_secondary","agent_id":"a","type":"activity.changed","payload":{},"created_at":"2026-07-16T00:00:00Z"}}));
+        });
+        let default_client = RelaycastHttpClient::new(
+            Some(default_server.base_url()),
+            "rk_default",
+            "broker",
+            "codex",
+        );
+        let secondary_client = RelaycastHttpClient::new(
+            Some(secondary_server.base_url()),
+            "rk_secondary",
+            "broker",
+            "codex",
+        );
+        let workspace_id = WorkspaceId::new("ws_secondary");
+        let (tx, rx) = mpsc::channel(4);
+        let task = tokio::spawn(run_hosted_agent_event_publisher(
+            default_client,
+            HashMap::from([(workspace_id.clone(), secondary_client)]),
+            rx,
+        ));
+        tx.send(HostedAgentEvent {
+            name: "Worker".to_string(),
+            event_type: "activity.changed".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: Some(workspace_id),
+        })
+        .await
+        .expect("publisher queue open");
+        drop(tx);
+        task.await.expect("publisher task");
+        secondary_post.assert_hits(1);
+        default_post.assert_hits(0);
+    }
 
     #[test]
     fn legacy_request_without_session_always_applies() {

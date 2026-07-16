@@ -1,4 +1,6 @@
 export const PROTOCOL_VERSION = 2 as const;
+/** Version of the broker <-> semantic harness sidecar protocol. */
+export const SEMANTIC_PROTOCOL_VERSION = 1 as const;
 
 export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
@@ -93,6 +95,80 @@ export interface ProtocolEnvelope<TPayload> {
 }
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export type SemanticInputMode = 'auto' | 'active' | 'idle';
+export type SemanticCommandKind =
+  | 'submit_user_message'
+  | 'interrupt'
+  | 'approve_tool'
+  | 'reject_tool'
+  | 'compact'
+  | 'release';
+
+/**
+ * Portable semantic payload. The SDK owns the canonical event discriminants;
+ * the driver intentionally preserves adapter additions as JSON instead of
+ * coupling protocol compatibility to one SDK package release.
+ */
+export interface SemanticEventPayload {
+  kind: string;
+  [key: string]: JsonValue;
+}
+
+/** SDK-owned reference vocabulary transported by `SemanticEventPayload`. */
+export type CanonicalSemanticEvent = import('@agent-relay/sdk').CanonicalAgentSessionEvent;
+
+export interface SemanticDiagnosticPayload {
+  level: 'debug' | 'info' | 'warning' | 'error';
+  message: string;
+  [key: string]: JsonValue;
+}
+
+export interface SemanticEventEnvelope {
+  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+  name: string;
+  sequence: number;
+  timestamp: string;
+  event: SemanticEventPayload;
+}
+
+export interface SemanticDiagnosticEnvelope {
+  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+  name: string;
+  sequence: number;
+  timestamp: string;
+  diagnostic: SemanticDiagnosticPayload;
+}
+
+export interface SemanticCommand {
+  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+  kind: SemanticCommandKind;
+  idempotency_key: string;
+  text?: string;
+  mode?: SemanticInputMode;
+  approval_id?: string;
+  /** Optional adapter-specific compaction guidance. Valid only for `compact`. */
+  instructions?: string;
+}
+
+export interface SemanticCommandAck {
+  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+  request_id: string;
+  idempotency_key: string;
+  accepted: boolean;
+  duplicate?: boolean;
+  active_turn?: boolean;
+  error?: ProtocolError;
+}
+
+export interface SemanticHistoryResponse {
+  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+  name: string;
+  events: SemanticEventEnvelope[];
+  high_water_sequence: number;
+  oldest_available_sequence: number | null;
+  gap: boolean;
+}
 
 export interface NodeCapabilityManifest {
   name: string;
@@ -316,6 +392,8 @@ export type BrokerEvent =
        */
       offset?: number;
     }
+  | ({ kind: 'semantic_event' } & SemanticEventEnvelope)
+  | ({ kind: 'semantic_diagnostic' } & SemanticDiagnosticEnvelope)
   | {
       kind: 'delivery_retry';
       name: string;
@@ -551,6 +629,11 @@ export type BrokerToWorker =
        */
       type: 'flush_injections';
       payload: Record<string, never>;
+    }
+  | {
+      type: 'semantic_command';
+      request_id?: string;
+      payload: SemanticCommand;
     };
 
 export type WorkerToBroker =
@@ -585,4 +668,17 @@ export type WorkerToBroker =
   | {
       type: 'pong';
       payload: { ts_ms: number };
+    }
+  | {
+      type: 'semantic_event';
+      payload: Omit<SemanticEventEnvelope, 'name'>;
+    }
+  | {
+      type: 'semantic_diagnostic';
+      payload: Omit<SemanticDiagnosticEnvelope, 'name'>;
+    }
+  | {
+      type: 'semantic_command_response';
+      request_id?: string;
+      payload: SemanticCommandAck;
     };

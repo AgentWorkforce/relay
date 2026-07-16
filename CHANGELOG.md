@@ -5,7 +5,20 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Added
+
+- Relay harnesses can run Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents through official AI SDK harness adapters, while PTY remains available for terminal sessions and unsupported harnesses.
+- Relaycast exposes canonical agent activity and semantic runtime events with capability, source, and fidelity metadata across AI SDK and PTY runtimes.
+
+### Breaking Changes
+
+- Agent Relay now requires Node.js 22 or newer.
+
+### Migration Guidance
+
+- Upgrade Node.js to version 22 or newer before installing this Agent Relay release.
 
 ## [10.6.0] - 2026-07-16
 

@@ -1,0 +1,269 @@
+import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
+import { randomUUID } from 'node:crypto';
+
+import {
+  HarnessDriverClient,
+  type BrokerEvent,
+  type SemanticCommandAck,
+  type SemanticDiagnosticEnvelope,
+  type SemanticEventEnvelope,
+} from '@agent-relay/harness-driver';
+
+import {
+  defaultStateDir,
+  readConnectionFileFromDisk,
+  resolveBrokerConnection,
+  type BrokerConnection,
+} from './broker-connection.js';
+import { createBrokerClient } from './attach-broker.js';
+
+export type SemanticAttachMode = 'view' | 'drive' | 'passthrough';
+
+export interface SemanticAttachOptions {
+  brokerUrl?: string;
+  apiKey?: string;
+  stateDir?: string;
+  json?: boolean;
+  reasoning?: boolean;
+  diagnostics?: boolean;
+}
+
+export interface SemanticAttachOutput {
+  stdout(text: string): void;
+  stderr(text: string): void;
+}
+
+export function renderSemanticEvent(
+  envelope: SemanticEventEnvelope,
+  options: Pick<SemanticAttachOptions, 'json' | 'reasoning'> = {}
+): string | null {
+  if (envelope.event.kind.startsWith('reasoning.') && !options.reasoning) return null;
+  if (options.json) return `${JSON.stringify({ kind: 'semantic_event', ...envelope })}\n`;
+  const event = envelope.event;
+  switch (event.kind) {
+    case 'text.delta':
+      return typeof event.delta === 'string' ? event.delta : null;
+    case 'text.finished':
+      return '\n';
+    case 'reasoning.delta':
+      return options.reasoning && typeof event.delta === 'string' ? event.delta : null;
+    case 'activity.changed': {
+      const reason = typeof event.reason === 'string' && event.reason ? ` (${event.reason})` : '';
+      return `\n[activity] ${String(event.activity ?? 'unknown')}${reason}\n`;
+    }
+    case 'tool.called':
+      return `\n[tool] ${String(event.tool ?? event.name ?? 'tool')} started\n`;
+    case 'tool.completed':
+      return `[tool] ${String(event.tool ?? event.name ?? 'tool')} finished\n`;
+    case 'tool.failed':
+      return `[tool] ${String(event.tool ?? event.name ?? 'tool')} failed: ${String(event.error ?? 'unknown error')}\n`;
+    case 'tool.approval.requested':
+      return `[waiting] approval required for ${String(event.tool ?? 'tool')} (${String(event.approvalId ?? '')})\n`;
+    case 'tool.approval.resolved':
+      return `[approval] ${event.approved === true ? 'approved' : 'rejected'}\n`;
+    case 'file.changed':
+      return `[file] ${String(event.operation ?? 'updated')} ${String(event.path ?? '')}\n`;
+    case 'usage.updated':
+      return `[usage] ${JSON.stringify(event.usage ?? {})}\n`;
+    case 'warning':
+      return `[warning] ${String(event.message ?? '')}\n`;
+    case 'error':
+    case 'session.failed':
+      return `[error] ${String(event.message ?? event.error ?? 'semantic harness failed')}\n`;
+    default:
+      if (event.kind.startsWith('session.')) return `[session] ${event.kind.slice('session.'.length)}\n`;
+      if (event.kind === 'context.compacted') return '[context] compacted\n';
+      return null;
+  }
+}
+
+export function renderSemanticDiagnostic(
+  envelope: SemanticDiagnosticEnvelope,
+  options: Pick<SemanticAttachOptions, 'json' | 'diagnostics'> = {}
+): string | null {
+  if (!options.diagnostics) return null;
+  if (options.json) return `${JSON.stringify({ kind: 'semantic_diagnostic', ...envelope })}\n`;
+  return `[diagnostic:${envelope.diagnostic.level}] ${envelope.diagnostic.message}\n`;
+}
+
+export interface SemanticAttachDependencies {
+  connect(connection: BrokerConnection): HarnessDriverClient;
+  output: SemanticAttachOutput;
+  createReadline(): ReadlineInterface;
+  onSignal(handler: () => void): () => void;
+}
+
+function defaultDependencies(options: SemanticAttachOptions): SemanticAttachDependencies {
+  void options;
+  return {
+    connect: (resolved) => createBrokerClient(resolved),
+    output: {
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    },
+    createReadline: () => createInterface({ input: process.stdin, terminal: Boolean(process.stdin.isTTY) }),
+    onSignal: (handler) => {
+      process.once('SIGINT', handler);
+      return () => process.off('SIGINT', handler);
+    },
+  };
+}
+
+export async function attachSemantic(
+  name: string,
+  mode: SemanticAttachMode,
+  options: SemanticAttachOptions,
+  overrides: Partial<SemanticAttachDependencies> = {}
+): Promise<number> {
+  if (mode === 'passthrough') {
+    (overrides.output?.stderr ?? ((text: string) => process.stderr.write(text)))(
+      'Error: semantic harnesses do not expose a terminal byte stream; use --mode view or --mode drive.\n'
+    );
+    return 1;
+  }
+  const connection = resolveBrokerConnection(options, {
+    readConnectionFile: readConnectionFileFromDisk,
+    getDefaultStateDir: defaultStateDir,
+    env: process.env,
+  });
+  if (!connection) {
+    (overrides.output?.stderr ?? ((text: string) => process.stderr.write(text)))(
+      'Error: could not locate broker connection.\n'
+    );
+    return 1;
+  }
+  const deps = { ...defaultDependencies(options), ...overrides } as SemanticAttachDependencies;
+  const client = deps.connect(connection);
+  // Capture a global broker cursor before subscribing. The broker replays
+  // everything after this cursor while the semantic history request runs,
+  // closing the history/live race even when the WebSocket opens slowly.
+  let brokerCursor: number;
+  try {
+    brokerCursor = await client.currentEventSeq();
+  } catch (error) {
+    deps.output.stderr(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+  const stream = client.subscribeSemanticEvents(name, { sinceSequence: 0, sinceBrokerSeq: brokerCursor });
+  const iterator = stream[Symbol.asyncIterator]();
+  let highWater = 0;
+  let stopped = false;
+  let readline: ReadlineInterface | undefined;
+  const pendingCommands = new Set<Promise<void>>();
+  let commandChain = Promise.resolve();
+  const render = (event: SemanticEventEnvelope) => {
+    if (event.sequence <= highWater) return;
+    highWater = event.sequence;
+    const text = renderSemanticEvent(event, options);
+    if (text !== null) deps.output.stdout(text);
+  };
+  const unsubscribeDiagnostics = client.onEvent((event: BrokerEvent) => {
+    if (event.kind !== 'semantic_diagnostic' || event.name !== name) return;
+    const text = renderSemanticDiagnostic(event, options);
+    if (text !== null) deps.output.stdout(text);
+  });
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    readline?.close();
+    void iterator.return?.();
+  };
+  const removeSignal = deps.onSignal(stop);
+
+  try {
+    const history = await client.getSemanticHistory(name, 0);
+    if (history.gap) {
+      const gap = {
+        kind: 'semantic_replay_gap',
+        name,
+        oldest_available_sequence: history.oldest_available_sequence,
+      };
+      if (options.json) deps.output.stdout(`${JSON.stringify(gap)}\n`);
+      else deps.output.stderr('[attach] semantic history was truncated; showing retained events.\n');
+    }
+    for (const event of history.events) render(event);
+
+    if (mode === 'drive') {
+      readline = deps.createReadline();
+      readline.on('line', (line) => {
+        const text = line.trim();
+        if (!text) return;
+        if (text === '/detach') {
+          stop();
+          return;
+        }
+        const approval = text.match(/^\/(approve|reject)\s+(.+)$/);
+        const kind = approval
+          ? approval[1] === 'approve'
+            ? 'approve_tool'
+            : 'reject_tool'
+          : text === '/interrupt'
+            ? 'interrupt'
+            : 'submit_user_message';
+        const commandText = kind === 'submit_user_message' ? line : undefined;
+        const approvalId = approval?.[2]?.trim();
+        const pendingCommand = commandChain
+          .then(() =>
+            client.sendSemanticCommand(name, {
+              kind,
+              idempotency_key: randomUUID(),
+              ...(commandText === undefined ? {} : { text: commandText }),
+              ...(commandText === undefined ? {} : { mode: 'auto' as const }),
+              ...(approvalId ? { approval_id: approvalId } : {}),
+            })
+          )
+          .then((ack: SemanticCommandAck) => {
+            if (!ack.accepted) {
+              deps.output.stderr(
+                `Input rejected: ${ack.error?.message ?? 'semantic harness rejected input'}\n`
+              );
+            } else if (options.json) {
+              deps.output.stdout(`${JSON.stringify({ kind: 'semantic_command_ack', name, ...ack })}\n`);
+            } else {
+              deps.output.stderr(ack.duplicate ? '[input] already accepted\n' : '[input] accepted\n');
+            }
+          })
+          .catch((error: unknown) => {
+            deps.output.stderr(`Input failed: ${error instanceof Error ? error.message : String(error)}\n`);
+          })
+          .then(() => undefined);
+        commandChain = pendingCommand.catch(() => undefined);
+        pendingCommands.add(pendingCommand);
+        void pendingCommand.finally(() => pendingCommands.delete(pendingCommand));
+      });
+    }
+
+    while (!stopped) {
+      const next = await iterator.next();
+      if (next.done) break;
+      render(next.value);
+    }
+    await Promise.allSettled(pendingCommands);
+    return 0;
+  } catch (error) {
+    deps.output.stderr(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  } finally {
+    stopped = true;
+    removeSignal();
+    unsubscribeDiagnostics();
+    readline?.close();
+    await iterator.return?.();
+  }
+}
+
+export async function isSemanticHarness(
+  name: string,
+  options: SemanticAttachOptions,
+  fetchFn: typeof globalThis.fetch = globalThis.fetch
+): Promise<boolean> {
+  const connection = resolveBrokerConnection(options, {
+    readConnectionFile: readConnectionFileFromDisk,
+    getDefaultStateDir: defaultStateDir,
+    env: process.env,
+  });
+  if (!connection) return false;
+  const client = createBrokerClient(connection, fetchFn);
+  const agent = (await client.listAgents()).find((candidate) => candidate.name === name);
+  return agent?.runtime_kind === 'semantic-harness';
+}

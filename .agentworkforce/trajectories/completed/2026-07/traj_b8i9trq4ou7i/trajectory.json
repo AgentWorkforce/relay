@@ -1,0 +1,53 @@
+{
+  "id": "traj_b8i9trq4ou7i",
+  "version": 1,
+  "task": {
+    "title": "Correct AI SDK adoption plan to include model-provider expansion"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T23:22:50.247Z",
+  "completedAt": "2026-07-15T23:42:26.715Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T23:42:26.354Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_d43u0x0fzxsm",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T23:42:26.354Z",
+      "endedAt": "2026-07-15T23:42:26.715Z",
+      "events": [
+        {
+          "ts": 1784158946355,
+          "type": "decision",
+          "content": "Separate external harness adapters from model-provider support: Separate external harness adapters from model-provider support",
+          "raw": {
+            "question": "Separate external harness adapters from model-provider support",
+            "chosen": "Separate external harness adapters from model-provider support",
+            "alternatives": [],
+            "reasoning": "AI SDK provider packages such as @ai-sdk/xai standardize model inference but do not launch coding CLIs. Relay should retain Plan 001 for HarnessV1/PTy runtimes and add a dependent relay-native ToolLoopAgent harness that can use the broader provider registry with Relay-owned tools and semantic attach."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Corrected the AI SDK roadmap by distinguishing five external HarnessV1 adapters from dozens of model providers and added a self-contained relay-native provider plan.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}

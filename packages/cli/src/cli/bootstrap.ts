@@ -20,6 +20,7 @@ import {
 } from './telemetry/index.js';
 
 import { ensureWebSocketGlobal } from './lib/ensure-websocket.js';
+import { assertSupportedNodeVersion } from './lib/node-version.js';
 import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerSetupCommands } from './commands/setup.js';
@@ -374,6 +375,7 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 }
 
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
+  assertSupportedNodeVersion();
   ensureWebSocketGlobal();
   maybeRunUpdateCheck(VERSION, argv);
   const orchestratorHarness = propagateTelemetryContextToChildren();

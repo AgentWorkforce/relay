@@ -7,6 +7,8 @@ impl BrokerRuntime {
         let sdk_out_tx = &self.sdk_out_tx;
         let ws_control_tx = &self.ws_control_tx;
         let relaycast_http = &self.relaycast_http;
+        let hosted_agent_event_tx = &self.hosted_agent_event_tx;
+        let pty_observability = &mut self.pty_observability;
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
@@ -101,6 +103,21 @@ impl BrokerRuntime {
         let mut fleet_load_changed = !exited.is_empty();
         for (name, code, signal, exit_reason) in &exited {
             let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
+            if (code.is_some_and(|code| code != 0) || signal.is_some())
+                && state
+                    .agents
+                    .get(name)
+                    .is_some_and(|agent| agent.runtime == AgentRuntime::Pty)
+            {
+                publish_pty_error(
+                    pty_observability,
+                    hosted_agent_event_tx,
+                    name,
+                    lifecycle_reason,
+                    code.map(|code| code.to_string()).or_else(|| signal.clone()),
+                );
+            }
+            pty_observability.remove(name);
             // Record crash in insights
             let (category, description) =
                 crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());

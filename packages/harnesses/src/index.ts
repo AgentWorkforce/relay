@@ -1,7 +1,9 @@
-import { definePtyHarness, type PtyHarness } from './define.js';
+import { defineManagedHarness, definePtyHarness, type PtyHarness } from './define.js';
 
 export * from './define.js';
 export * from './create-human.js';
+export * from './observability.js';
+export * from './ai-sdk/index.js';
 
 // Custom (non-PTY) harnesses are defined with the SDK's harness contract;
 // re-export it here so harness authors have one import surface.
@@ -13,9 +15,9 @@ export type {
   HarnessCreateContext,
 } from '@agent-relay/sdk';
 
-export const claude: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'claude' });
+export const claude = defineManagedHarness('claude', { runtime: 'pty', command: 'claude' });
 
-export const codex: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'codex' });
+export const codex = defineManagedHarness('codex', { runtime: 'pty', command: 'codex' });
 
 export const gemini: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'gemini' });
 
@@ -23,10 +25,14 @@ export const cursor: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'c
 
 export const droid: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'droid' });
 
-export const opencode: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'opencode' });
+export const opencode = defineManagedHarness('opencode', { runtime: 'pty', command: 'opencode' });
 
 export const aider: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'aider' });
 
 export const goose: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'goose' });
 
 export const grok: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'grok' });
+
+export const pi = defineManagedHarness('pi');
+
+export const deepAgents = defineManagedHarness('deepagents');

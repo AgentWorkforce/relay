@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/harnesses",
   "version": "10.6.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Pre-built harness definitions for Agent Relay.",
   "type": "module",
   "main": "dist/index.js",
@@ -24,7 +27,13 @@
   },
   "dependencies": {
     "@agent-relay/harness-driver": "10.6.0",
-    "@agent-relay/sdk": "10.6.0"
+    "@agent-relay/sdk": "10.6.0",
+    "@ai-sdk/harness": "1.0.34",
+    "@ai-sdk/harness-claude-code": "1.0.35",
+    "@ai-sdk/harness-codex": "1.0.36",
+    "@ai-sdk/harness-deepagents": "1.0.33",
+    "@ai-sdk/harness-opencode": "1.0.35",
+    "@ai-sdk/harness-pi": "1.0.34"
   },
   "publishConfig": {
     "access": "public"

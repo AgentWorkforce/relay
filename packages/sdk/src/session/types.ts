@@ -3,6 +3,107 @@ import type { RelayMessage, RelayMessagingEvent } from '../messaging/index.js';
 
 export type AgentSessionStatus = 'active' | 'idle' | 'blocked' | 'waiting' | 'offline';
 
+/** High-frequency work state, separate from durable session presence and health. */
+export type AgentActivity = 'starting' | 'thinking' | 'typing' | 'using_tool' | 'waiting' | 'idle' | 'error';
+
+export type ObservabilityFidelity = 'exact' | 'inferred';
+export type ObservabilitySource = 'ai-sdk' | 'pty-structured' | 'pty-terminal' | 'broker';
+
+export type ObservabilitySupport =
+  | { available: true; fidelities: readonly ObservabilityFidelity[] }
+  | { available: false };
+
+export const OBSERVABILITY_UNAVAILABLE = { available: false } as const satisfies ObservabilitySupport;
+export const EXACT_OBSERVABILITY = {
+  available: true,
+  fidelities: ['exact'],
+} as const satisfies ObservabilitySupport;
+export const INFERRED_OBSERVABILITY = {
+  available: true,
+  fidelities: ['inferred'],
+} as const satisfies ObservabilitySupport;
+export const EXACT_AND_INFERRED_OBSERVABILITY = {
+  available: true,
+  fidelities: ['exact', 'inferred'],
+} as const satisfies ObservabilitySupport;
+
+export type AgentSemanticEventFamily =
+  | 'lifecycle'
+  | 'turns'
+  | 'text'
+  | 'reasoning'
+  | 'tools'
+  | 'tool_approvals'
+  | 'files'
+  | 'compaction'
+  | 'model'
+  | 'warnings'
+  | 'usage'
+  | 'diagnostics'
+  | 'errors';
+
+/** Runtime-declared observability coverage. Unsupported signals stay explicit. */
+export interface AgentObservabilityCapabilities {
+  activities: Record<AgentActivity, ObservabilitySupport>;
+  events: Record<AgentSemanticEventFamily, ObservabilitySupport>;
+}
+
+export const AGENT_ACTIVITIES = [
+  'starting',
+  'thinking',
+  'typing',
+  'using_tool',
+  'waiting',
+  'idle',
+  'error',
+] as const satisfies readonly AgentActivity[];
+
+export const AGENT_SEMANTIC_EVENT_FAMILIES = [
+  'lifecycle',
+  'turns',
+  'text',
+  'reasoning',
+  'tools',
+  'tool_approvals',
+  'files',
+  'compaction',
+  'model',
+  'warnings',
+  'usage',
+  'diagnostics',
+  'errors',
+] as const satisfies readonly AgentSemanticEventFamily[];
+
+/** Fill omitted capability entries as unavailable, keeping declarations honest by default. */
+export function createAgentObservabilityCapabilities(input: {
+  activities?: Partial<Record<AgentActivity, ObservabilitySupport>>;
+  events?: Partial<Record<AgentSemanticEventFamily, ObservabilitySupport>>;
+}): AgentObservabilityCapabilities {
+  return {
+    activities: Object.fromEntries(
+      AGENT_ACTIVITIES.map((activity) => [
+        activity,
+        input.activities?.[activity] ?? OBSERVABILITY_UNAVAILABLE,
+      ])
+    ) as unknown as Record<AgentActivity, ObservabilitySupport>,
+    events: Object.fromEntries(
+      AGENT_SEMANTIC_EVENT_FAMILIES.map((family) => [
+        family,
+        input.events?.[family] ?? OBSERVABILITY_UNAVAILABLE,
+      ])
+    ) as unknown as Record<AgentSemanticEventFamily, ObservabilitySupport>,
+  };
+}
+
+/** Provenance attached to every canonical observation emitted by a runtime. */
+export interface AgentObservabilityMetadata {
+  source: ObservabilitySource;
+  fidelity: ObservabilityFidelity;
+  sequence: number;
+  timestamp: Date | string;
+  turnId?: string;
+}
+
 export interface AgentIdentityInput {
   id?: string;
   name: string;
@@ -94,6 +195,8 @@ export interface AgentSessionCapabilities {
     fork?: boolean;
     snapshot?: boolean;
   };
+  /** Exact, inferred, and unavailable semantic signals for this runtime. */
+  observability?: AgentObservabilityCapabilities;
 }
 
 export const MINIMAL_AGENT_SESSION_CAPABILITIES: AgentSessionCapabilities = {
@@ -104,6 +207,8 @@ export const MINIMAL_AGENT_SESSION_CAPABILITIES: AgentSessionCapabilities = {
 };
 
 export type AgentSessionEventType =
+  | 'activity.changed'
+  | 'observability.capabilities'
   | 'status.changed'
   | 'status.idle'
   | 'status.active'
@@ -120,6 +225,8 @@ export type AgentSessionEventType =
   | 'tool.completed'
   | 'tool.failed'
   | 'tool.output'
+  | 'tool.approval.requested'
+  | 'tool.approval.resolved'
   | 'action.invoked'
   | 'action.completed'
   | 'action.failed'
@@ -132,11 +239,65 @@ export type AgentSessionEventType =
   | 'terminal.output'
   | 'terminal.screen'
   | 'usage.updated'
+  | 'session.starting'
   | 'session.started'
+  | 'session.suspended'
+  | 'session.detached'
+  | 'session.stopped'
+  | 'session.destroyed'
+  | 'session.failed'
   | 'session.released'
   | 'session.resumed'
   | 'session.forked'
+  | 'turn.started'
+  | 'step.finished'
+  | 'turn.finished'
+  | 'turn.settled'
+  | 'text.started'
+  | 'text.delta'
+  | 'text.finished'
+  | 'reasoning.started'
+  | 'reasoning.delta'
+  | 'reasoning.finished'
+  | 'context.compacted'
+  | 'model.resolved'
+  | 'warning'
+  | 'diagnostic'
   | 'log'
+  | 'error';
+
+/** Selectors comprising Relay's runtime-neutral semantic observability vocabulary. */
+export type AgentSemanticEventType =
+  | 'observability.capabilities'
+  | 'session.starting'
+  | 'session.started'
+  | 'session.resumed'
+  | 'session.suspended'
+  | 'session.detached'
+  | 'session.stopped'
+  | 'session.destroyed'
+  | 'session.failed'
+  | 'turn.started'
+  | 'step.finished'
+  | 'turn.finished'
+  | 'turn.settled'
+  | 'text.started'
+  | 'text.delta'
+  | 'text.finished'
+  | 'reasoning.started'
+  | 'reasoning.delta'
+  | 'reasoning.finished'
+  | 'tool.called'
+  | 'tool.approval.requested'
+  | 'tool.approval.resolved'
+  | 'tool.completed'
+  | 'tool.failed'
+  | 'file.changed'
+  | 'context.compacted'
+  | 'model.resolved'
+  | 'warning'
+  | 'usage.updated'
+  | 'diagnostic'
   | 'error';
 
 export interface AgentSessionEventBase<TType extends AgentSessionEventType> {
@@ -144,7 +305,14 @@ export interface AgentSessionEventBase<TType extends AgentSessionEventType> {
   at?: Date | string;
   agent?: AgentIdentity;
   metadata?: Record<string, unknown>;
+  /** Present when this event participates in the canonical observability contract. */
+  observability?: AgentObservabilityMetadata;
 }
+
+export type CanonicalAgentSessionEventBase<TType extends AgentSessionEventType> =
+  AgentSessionEventBase<TType> & {
+    observability: AgentObservabilityMetadata;
+  };
 
 export interface TranscriptChunk {
   id: string;
@@ -156,6 +324,16 @@ export interface TranscriptChunk {
 }
 
 export type AgentSessionEvent =
+  | (CanonicalAgentSessionEventBase<'activity.changed'> & {
+      activity: AgentActivity;
+      previousActivity: AgentActivity;
+      reason: string;
+      tool?: { callId: string; name?: string };
+      approval?: { approvalId: string; callId?: string };
+    })
+  | (CanonicalAgentSessionEventBase<'observability.capabilities'> & {
+      capabilities: AgentObservabilityCapabilities;
+    })
   | (AgentSessionEventBase<'status.changed'> & {
       status: AgentSessionStatus;
       previousStatus?: AgentSessionStatus;
@@ -183,25 +361,41 @@ export type AgentSessionEvent =
     })
   | (AgentSessionEventBase<'tool.called'> & {
       run?: string;
+      callId?: string;
       tool: string;
       input?: unknown;
     })
   | (AgentSessionEventBase<'tool.completed'> & {
       run?: string;
+      callId?: string;
       tool: string;
       output?: unknown;
       durationMs?: number;
     })
   | (AgentSessionEventBase<'tool.failed'> & {
       run?: string;
+      callId?: string;
       tool: string;
       error: string;
       durationMs?: number;
     })
   | (AgentSessionEventBase<'tool.output'> & {
       run?: string;
+      callId?: string;
       tool?: string;
       output: unknown;
+    })
+  | (CanonicalAgentSessionEventBase<'tool.approval.requested'> & {
+      approvalId: string;
+      callId?: string;
+      tool?: string;
+      input?: unknown;
+    })
+  | (CanonicalAgentSessionEventBase<'tool.approval.resolved'> & {
+      approvalId: string;
+      callId?: string;
+      approved: boolean;
+      reason?: string;
     })
   | (AgentSessionEventBase<'action.invoked'> & {
       action: string;
@@ -228,7 +422,7 @@ export type AgentSessionEvent =
   | (AgentSessionEventBase<'transcript.chunk'> & { chunk: TranscriptChunk })
   | (AgentSessionEventBase<'file.changed'> & {
       path: string;
-      operation: 'create' | 'update' | 'delete';
+      operation: 'create' | 'modify' | 'update' | 'delete';
       diff?: string;
     })
   | (AgentSessionEventBase<'command.started'> & {
@@ -261,10 +455,54 @@ export type AgentSessionEvent =
   | (AgentSessionEventBase<'usage.updated'> & {
       usage: Record<string, number | string | boolean | null>;
     })
+  | (CanonicalAgentSessionEventBase<'session.starting'> & { reason?: string })
   | (AgentSessionEventBase<'session.started'> & { reason?: string })
+  | (CanonicalAgentSessionEventBase<'session.suspended'> & { reason: string })
+  | (CanonicalAgentSessionEventBase<'session.detached'> & { reason?: string })
+  | (CanonicalAgentSessionEventBase<'session.stopped'> & { reason?: string })
+  | (CanonicalAgentSessionEventBase<'session.destroyed'> & { reason?: string })
+  | (CanonicalAgentSessionEventBase<'session.failed'> & {
+      error: string;
+      code?: string;
+      retryable?: boolean;
+    })
   | (AgentSessionEventBase<'session.released'> & { reason?: string })
   | (AgentSessionEventBase<'session.resumed'> & { reason?: string })
   | (AgentSessionEventBase<'session.forked'> & { child: AgentIdentity })
+  | (CanonicalAgentSessionEventBase<'turn.started'> & { turnId: string })
+  | (CanonicalAgentSessionEventBase<'step.finished'> & {
+      turnId: string;
+      finishReason?: string;
+      usage?: Record<string, number | string | boolean | null>;
+    })
+  | (CanonicalAgentSessionEventBase<'turn.finished'> & {
+      turnId: string;
+      finishReason: string;
+    })
+  | (CanonicalAgentSessionEventBase<'turn.settled'> & { turnId: string })
+  | (CanonicalAgentSessionEventBase<'text.started'> & { blockId: string })
+  | (CanonicalAgentSessionEventBase<'text.delta'> & { blockId: string; delta: string })
+  | (CanonicalAgentSessionEventBase<'text.finished'> & { blockId: string; text?: string })
+  | (CanonicalAgentSessionEventBase<'reasoning.started'> & { blockId: string })
+  | (CanonicalAgentSessionEventBase<'reasoning.delta'> & { blockId: string; delta: string })
+  | (CanonicalAgentSessionEventBase<'reasoning.finished'> & { blockId: string; text?: string })
+  | (CanonicalAgentSessionEventBase<'context.compacted'> & {
+      trigger?: 'automatic' | 'manual';
+      beforeTokens?: number;
+      afterTokens?: number;
+    })
+  | (CanonicalAgentSessionEventBase<'model.resolved'> & {
+      provider?: string;
+      requestedModel?: string;
+      model: string;
+    })
+  | (CanonicalAgentSessionEventBase<'warning'> & { message: string; code?: string })
+  | (CanonicalAgentSessionEventBase<'diagnostic'> & {
+      level: 'debug' | 'info' | 'warn' | 'error';
+      message: string;
+      subsystem?: string;
+      data?: Record<string, unknown>;
+    })
   | (AgentSessionEventBase<'log'> & {
       level?: 'debug' | 'info' | 'warn' | 'error';
       message: string;
@@ -274,6 +512,20 @@ export type AgentSessionEvent =
       code?: string;
       retryable?: boolean;
     });
+
+type RequireCanonicalObservation<TEvent> = TEvent extends { type: AgentSemanticEventType }
+  ? TEvent extends { type: 'tool.called' | 'tool.completed' | 'tool.failed' }
+    ? TEvent & { callId: string; observability: AgentObservabilityMetadata }
+    : TEvent extends { type: 'file.changed' }
+      ? Omit<TEvent, 'operation'> & {
+          operation: 'create' | 'modify' | 'delete';
+          observability: AgentObservabilityMetadata;
+        }
+      : TEvent & { observability: AgentObservabilityMetadata }
+  : never;
+
+/** A semantic event whose provenance is complete enough for observer-plane publication. */
+export type CanonicalAgentSessionEvent = RequireCanonicalObservation<AgentSessionEvent>;
 
 export interface AgentSession {
   identity: AgentIdentity;

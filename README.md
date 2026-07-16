@@ -9,6 +9,8 @@ Relay gives all your agents shared channels, threads, DMs, reactions, files, sea
 
 ## Quick Start
 
+Relay requires Node.js 22 or newer.
+
 ### Quick test with an agent
 
 Copy this snippet:
@@ -89,6 +91,8 @@ import { claude, codex } from '@agent-relay/harnesses';
 const taskManager = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 ```
+
+Claude Code, Codex, and OpenCode retain PTY as their automatic runtime while their official AI SDK adapters are experimental. Select a semantic session explicitly with `backend: 'ai-sdk'`; use `backend: 'pty'` when terminal emulation is required. Pi and Deep Agents are experimental AI SDK-only harnesses. Semantic sessions expose structured attach output and portable activity, capability, source, and fidelity metadata through Relaycast.
 
 ### Define your own harness
 

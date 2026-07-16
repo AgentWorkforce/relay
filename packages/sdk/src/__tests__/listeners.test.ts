@@ -108,6 +108,67 @@ describe('Listener DSL (Phase B)', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  it('publishes canonical activity transitions with provenance', () => {
+    const { relay } = createRelay();
+    const engineer = relay.agent({ id: 'a-eng', name: 'engineer' });
+    const named = vi.fn();
+    const predicate = vi.fn();
+    relay.addListener('agent.activity.changed', named);
+    relay.addListener(engineer.activity.becomes('using_tool'), predicate);
+
+    relay.emitSessionEvent('a-eng', {
+      type: 'activity.changed',
+      previousActivity: 'thinking',
+      activity: 'using_tool',
+      reason: 'tool_call',
+      tool: { callId: 'call-1', name: 'bash' },
+      observability: {
+        source: 'ai-sdk',
+        fidelity: 'exact',
+        sequence: 7,
+        timestamp: '2026-07-15T12:00:00.000Z',
+        turnId: 'turn-1',
+      },
+    });
+
+    expect(named).toHaveBeenCalledWith({
+      type: 'agent.activity.changed',
+      agentId: 'a-eng',
+      previousActivity: 'thinking',
+      activity: 'using_tool',
+      reason: 'tool_call',
+      tool: { callId: 'call-1', name: 'bash' },
+      source: 'ai-sdk',
+      fidelity: 'exact',
+      sequence: 7,
+      timestamp: '2026-07-15T12:00:00.000Z',
+      turnId: 'turn-1',
+    });
+    expect(predicate).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes canonical semantic events under the existing session envelope', () => {
+    const { relay } = createRelay();
+    const handler = vi.fn();
+    relay.addListener('text.delta', handler);
+
+    const event = {
+      type: 'text.delta' as const,
+      blockId: 'text-1',
+      delta: 'hello',
+      observability: {
+        source: 'pty-structured' as const,
+        fidelity: 'exact' as const,
+        sequence: 3,
+        timestamp: '2026-07-15T12:00:00.000Z',
+        turnId: 'turn-1',
+      },
+    };
+    relay.emitSessionEvent('a-eng', event);
+
+    expect(handler).toHaveBeenCalledWith({ type: 'text.delta', agentId: 'a-eng', event });
+  });
+
   it('addListener("message.created") delivers a discriminated event with a rich envelope', () => {
     const { relay, bus } = createRelay();
     const handler = vi.fn();

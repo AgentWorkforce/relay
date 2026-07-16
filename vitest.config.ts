@@ -63,6 +63,7 @@ export default defineConfig({
     setupFiles: [path.resolve(__dirname, './vitest.setup.ts')],
     include: [
       'tests/fixtures/**/*.test.ts',
+      'tests/integration/ai-sdk-harnesses/**/*.test.ts',
       'tests/integration/broker/evals/**/*.unit.test.ts',
       'packages/**/src/**/*.test.ts',
       'packages/**/src/**/*.test.tsx',
@@ -71,6 +72,7 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
+      'packages/sdk-swift/.build/**',
       'packages/sdk/**', // Uses Node.js test runner, not vitest
     ],
     coverage: {
@@ -81,6 +83,7 @@ export default defineConfig({
         '**/*.test.ts',
         '**/*.test.tsx',
         '**/dist/**',
+        'packages/sdk-swift/.build/**',
         'packages/sdk/**', // SDK uses Node.js test runner in tests/integration/broker
         // Transitively loaded via barrel re-exports but not exercised by the
         // root test suite. Previously these resolved to dist/*.js and were

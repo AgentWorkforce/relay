@@ -1,4 +1,5 @@
 export * from './types.js';
+export * from './activity-reducer.js';
 
 import { createAgentHandle, type RelayAgentHandle } from '../listeners.js';
 import type { AgentIdentity, AgentIdentityInput, HarnessConfig } from './types.js';

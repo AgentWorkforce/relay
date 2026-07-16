@@ -218,6 +218,22 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
+    let (hosted_agent_event_tx, hosted_agent_event_rx) = mpsc::channel::<HostedAgentEvent>(10_000);
+    let hosted_event_client = relaycast_http.clone();
+    let hosted_event_clients = workspaces
+        .iter()
+        .map(|workspace| {
+            (
+                workspace.workspace_id.clone(),
+                workspace.http_client.clone(),
+            )
+        })
+        .collect();
+    tokio::spawn(run_hosted_agent_event_publisher(
+        hosted_event_client,
+        hosted_event_clients,
+        hosted_agent_event_rx,
+    ));
     let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
     let node_id = match crate::node_control::default_node_id_path() {
         Some(path) => {
@@ -655,6 +671,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         self_names,
         ws_control_tx,
         relaycast_http,
+        hosted_agent_event_tx,
+        pty_observability: HashMap::new(),
         api_rx,
         api_open: true,
         ws_inbound_rx,

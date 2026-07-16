@@ -138,11 +138,27 @@ pub struct HeadlessHarnessConfig {
     pub metadata: Option<HashMap<String, Value>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticHarnessConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, Value>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "runtime", rename_all = "snake_case")]
 pub enum ResolvedHarnessConfig {
     Pty(PtyHarnessConfig),
     Headless(HeadlessHarnessConfig),
+    Semantic(SemanticHarnessConfig),
 }
 
 impl<'de> Deserialize<'de> for ResolvedHarnessConfig {
@@ -164,6 +180,9 @@ impl<'de> Deserialize<'de> for ResolvedHarnessConfig {
             "headless" => serde_json::from_value(value)
                 .map(Self::Headless)
                 .map_err(serde::de::Error::custom),
+            "semantic" => serde_json::from_value(value)
+                .map(Self::Semantic)
+                .map_err(serde::de::Error::custom),
             "app_server" => {
                 if let Some(object) = value.as_object_mut() {
                     object.insert(
@@ -177,7 +196,7 @@ impl<'de> Deserialize<'de> for ResolvedHarnessConfig {
             }
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["pty", "headless", "app_server"],
+                &["pty", "headless", "semantic", "app_server"],
             )),
         }
     }
@@ -188,6 +207,7 @@ impl ResolvedHarnessConfig {
         match self {
             Self::Pty(_) => AgentRuntime::Pty,
             Self::Headless(_) => AgentRuntime::Headless,
+            Self::Semantic(_) => AgentRuntime::Headless,
         }
     }
 
@@ -195,6 +215,7 @@ impl ResolvedHarnessConfig {
         match self {
             Self::Pty(config) => config.session_id.as_deref(),
             Self::Headless(config) => Some(config.session_id.as_str()),
+            Self::Semantic(config) => Some(config.session_id.as_str()),
         }
     }
 }
@@ -560,6 +581,19 @@ pub enum BrokerToWorker {
     /// sitting frozen until the drive session detaches. Deliveries that
     /// arrive after the flush stay parked under the hold as usual.
     FlushInjections {},
+    /// Versioned semantic control sent to a headless harness sidecar. The
+    /// envelope request id correlates the sidecar's command response.
+    SemanticCommand {
+        protocol_version: u32,
+        kind: String,
+        idempotency_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -597,6 +631,30 @@ pub enum WorkerToBroker {
     },
     Pong {
         ts_ms: u64,
+    },
+    SemanticEvent {
+        protocol_version: u32,
+        sequence: u64,
+        timestamp: String,
+        event: Value,
+    },
+    SemanticDiagnostic {
+        protocol_version: u32,
+        sequence: u64,
+        timestamp: String,
+        diagnostic: Value,
+    },
+    SemanticCommandResponse {
+        protocol_version: u32,
+        request_id: String,
+        idempotency_key: String,
+        accepted: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duplicate: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_turn: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<ProtocolError>,
     },
 }
 
@@ -682,6 +740,35 @@ mod tests {
         let encoded = serde_json::to_string(&msg).unwrap();
         let decoded: WorkerToBroker = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn semantic_protocol_frames_round_trip() {
+        let command = BrokerToWorker::SemanticCommand {
+            protocol_version: 1,
+            kind: "submit_user_message".into(),
+            idempotency_key: "input-1".into(),
+            text: Some("continue".into()),
+            mode: Some("active".into()),
+            approval_id: None,
+        };
+        let encoded = serde_json::to_string(&command).unwrap();
+        assert_eq!(
+            serde_json::from_str::<BrokerToWorker>(&encoded).unwrap(),
+            command
+        );
+
+        let event = WorkerToBroker::SemanticEvent {
+            protocol_version: 1,
+            sequence: 7,
+            timestamp: "2026-07-15T00:00:00Z".into(),
+            event: json!({"kind":"text.delta","delta":"hi"}),
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            serde_json::from_str::<WorkerToBroker>(&encoded).unwrap(),
+            event
+        );
     }
 
     #[test]

@@ -21,6 +21,8 @@ export interface SpawnRuntimeInput {
   model?: string;
   cwd?: string;
   transport?: 'pty' | 'headless';
+  /** Resolved harness launch contract, including broker-owned semantic sidecars. */
+  harnessConfig?: import('./harness.js').ResolvedHarnessConfig;
 }
 
 export interface AttachRuntimeInput {
@@ -36,6 +38,16 @@ export interface SpawnedAgentRuntime {
   delivery: DriverDeliveryRef;
   status(): Promise<DriverRuntimeStatus>;
   release(reason?: string): Promise<void>;
+  /** Reconciles semantic history with live events and returns an async disposer. */
+  observeSemanticEvents?(
+    listener: (event: import('./protocol.js').SemanticEventEnvelope) => void | Promise<void>,
+    onError?: (error: unknown) => void | Promise<void>
+  ): Promise<() => Promise<void>>;
+  /** Observe broker-owned lifecycle/output events for this runtime. */
+  observeBrokerEvents?(
+    listener: (event: import('./protocol.js').BrokerEvent) => void | Promise<void>,
+    onError?: (error: unknown) => void | Promise<void>
+  ): Promise<() => Promise<void>>;
 }
 
 export interface AgentSpawner {

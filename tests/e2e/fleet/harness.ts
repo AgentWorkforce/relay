@@ -17,7 +17,7 @@ import WebSocket from 'ws';
 
 // Node <22 lacks a global WebSocket, which @relaycast/sdk's in-process
 // AgentClient requires. The spawned CLI installs its own via runCli; this
-// covers the test runner's own client on Node 20/21.
+// covers the test runner's own client on unsupported Node releases.
 if (typeof (globalThis as { WebSocket?: unknown }).WebSocket === 'undefined') {
   (globalThis as { WebSocket?: unknown }).WebSocket = WebSocket;
 }

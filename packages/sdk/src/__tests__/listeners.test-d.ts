@@ -2,12 +2,14 @@ import { describe, expectTypeOf, it } from 'vitest';
 
 import { AgentRelay } from '../index.js';
 import type {
+  RelayAgentActivityEvent,
   RelayActionEvent,
   RelayEvent,
   RelayMessageEvent,
   RelayMessageReactedEvent,
   RelayMessageReadEventPublic,
 } from '../listeners.js';
+import type { AgentSessionEvent } from '../session/index.js';
 
 describe('addListener selector narrowing', () => {
   const relay = new AgentRelay({ workspaceKey: 'rk_type_test' });
@@ -38,6 +40,21 @@ describe('addListener selector narrowing', () => {
     relay.addListener('action.completed', (event) => {
       expectTypeOf(event).toEqualTypeOf<RelayActionEvent<'action.completed'>>();
       expectTypeOf(event.type).toEqualTypeOf<'action.completed'>();
+    });
+  });
+
+  it('narrows activity and canonical semantic selectors', () => {
+    relay.addListener('agent.activity.changed', (event) => {
+      expectTypeOf(event).toEqualTypeOf<RelayAgentActivityEvent>();
+      expectTypeOf(event.activity).toEqualTypeOf<
+        'starting' | 'thinking' | 'typing' | 'using_tool' | 'waiting' | 'idle' | 'error'
+      >();
+    });
+
+    relay.addListener('text.delta', (event) => {
+      expectTypeOf(event.type).toEqualTypeOf<'text.delta'>();
+      expectTypeOf(event.event).toEqualTypeOf<Extract<AgentSessionEvent, { type: 'text.delta' }>>();
+      expectTypeOf(event.event.delta).toEqualTypeOf<string>();
     });
   });
 

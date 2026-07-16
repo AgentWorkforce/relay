@@ -4,6 +4,8 @@ A thin operator console for a local agent workforce: stand up the broker, staff 
 
 ## Install
 
+Requires Node.js 22 or newer.
+
 ```bash
 npm install -g agent-relay
 ```
@@ -38,6 +40,8 @@ agent-relay node agent list
 agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
+
+For AI SDK semantic harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Semantic `drive` is line-oriented and acknowledged; semantic `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
 To run as a Cloud-managed node, first redeem a one-time enrollment token, then start the node:
 

@@ -3,6 +3,7 @@
 //! Stores recent broadcast events with monotonic sequence numbers so that
 //! reconnecting WS clients can request events they missed via `?since_seq=N`.
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -44,7 +45,17 @@ pub struct ReplayBuffer {
 
 struct ReplayBufferInner {
     entries: VecDeque<ReplayEntry>,
+    semantic_entries: HashMap<String, VecDeque<Value>>,
+    semantic_high_water: HashMap<String, u64>,
     capacity: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticReplaySnapshot {
+    pub events: Vec<Value>,
+    pub high_water_sequence: u64,
+    pub oldest_available_sequence: Option<u64>,
+    pub gap: bool,
 }
 
 impl ReplayBuffer {
@@ -53,6 +64,8 @@ impl ReplayBuffer {
         Self {
             inner: Arc::new(RwLock::new(ReplayBufferInner {
                 entries: VecDeque::with_capacity(capacity),
+                semantic_entries: HashMap::new(),
+                semantic_high_water: HashMap::new(),
                 capacity,
             })),
             seq_counter: Arc::new(AtomicU64::new(0)),
@@ -63,6 +76,43 @@ impl ReplayBuffer {
     /// The event JSON is annotated with a `"seq"` field before storage.
     pub async fn push(&self, mut event: Value) -> anyhow::Result<(u64, Value)> {
         let mut inner = self.inner.write().await;
+        let event_kind = event.get("kind").and_then(Value::as_str);
+        if matches!(event_kind, Some("agent_released" | "agent_exited")) {
+            if let Some(name) = event.get("name").and_then(Value::as_str) {
+                inner.semantic_entries.remove(name);
+                inner.semantic_high_water.remove(name);
+            }
+        }
+        if event_kind == Some("semantic_event") {
+            let name = event
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("semantic event missing agent name"))?
+                .to_string();
+            let semantic_sequence = event
+                .get("sequence")
+                .and_then(Value::as_u64)
+                .filter(|sequence| *sequence > 0)
+                .ok_or_else(|| anyhow::anyhow!("semantic event missing positive sequence"))?;
+            if inner
+                .semantic_high_water
+                .get(&name)
+                .is_some_and(|high_water| semantic_sequence <= *high_water)
+            {
+                anyhow::bail!(
+                    "semantic sequence for '{name}' is not monotonic: {semantic_sequence}"
+                );
+            }
+            inner
+                .semantic_high_water
+                .insert(name.clone(), semantic_sequence);
+            let capacity = inner.capacity;
+            let history = inner.semantic_entries.entry(name).or_default();
+            if history.len() >= capacity {
+                history.pop_front();
+            }
+            history.push_back(event.clone());
+        }
         let seq = self.seq_counter.fetch_add(1, Ordering::Relaxed) + 1;
         event
             .as_object_mut()
@@ -80,6 +130,20 @@ impl ReplayBuffer {
         inner.entries.push_back(entry);
 
         Ok((seq, event))
+    }
+
+    /// Clear the semantic replay state belonging to a previous runtime
+    /// generation of `name`.
+    ///
+    /// Callers must invoke this before launching the replacement worker. A
+    /// later `agent_spawned` broadcast is only an observation that launch
+    /// succeeded; using it as the reset boundary races startup events emitted
+    /// by an already-running semantic sidecar and can erase current-generation
+    /// history.
+    pub async fn reset_semantic_history(&self, name: &str) {
+        let mut inner = self.inner.write().await;
+        inner.semantic_entries.remove(name);
+        inner.semantic_high_water.remove(name);
     }
 
     /// Retrieve all events with seq > since_seq.
@@ -124,6 +188,35 @@ impl ReplayBuffer {
     /// Current sequence counter value (the last assigned seq).
     pub fn current_seq(&self) -> u64 {
         self.seq_counter.load(Ordering::Relaxed)
+    }
+
+    /// Replay one semantic agent's sidecar-sequenced history. This is separate
+    /// from the global dashboard ring so unrelated broker traffic cannot evict
+    /// an active transcript or erase its high-water cursor.
+    pub async fn replay_semantic_since(&self, name: &str, since: u64) -> SemanticReplaySnapshot {
+        let inner = self.inner.read().await;
+        let history = inner.semantic_entries.get(name);
+        let oldest = history
+            .and_then(|entries| entries.front())
+            .and_then(|event| event.get("sequence"))
+            .and_then(Value::as_u64);
+        let events = history
+            .into_iter()
+            .flat_map(|entries| entries.iter())
+            .filter(|event| {
+                event
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|sequence| sequence > since)
+            })
+            .cloned()
+            .collect();
+        SemanticReplaySnapshot {
+            events,
+            high_water_sequence: inner.semantic_high_water.get(name).copied().unwrap_or(0),
+            oldest_available_sequence: oldest,
+            gap: oldest.is_some_and(|oldest| since.saturating_add(1) < oldest),
+        }
     }
 }
 
@@ -346,5 +439,111 @@ mod tests {
             "the buffer does not distinguish event kinds, so relay_inbound was evicted \
              along with everything else once capacity was exceeded"
         );
+    }
+
+    #[tokio::test]
+    async fn semantic_history_is_per_agent_bounded_and_reports_gap() {
+        let buf = ReplayBuffer::new(2);
+        for sequence in 1..=3 {
+            buf.push(json!({
+                "kind": "semantic_event",
+                "name": "A",
+                "protocol_version": 1,
+                "sequence": sequence,
+                "timestamp": "now",
+                "event": {"kind": "text.delta", "delta": sequence.to_string()}
+            }))
+            .await
+            .unwrap();
+            buf.push(json!({"kind": "unrelated", "sequence": sequence}))
+                .await
+                .unwrap();
+        }
+        let snapshot = buf.replay_semantic_since("A", 0).await;
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.oldest_available_sequence, Some(2));
+        assert_eq!(snapshot.high_water_sequence, 3);
+        assert!(snapshot.gap);
+    }
+
+    #[tokio::test]
+    async fn semantic_history_rejects_duplicate_sequence_and_resets_before_replacement() {
+        let buf = ReplayBuffer::new(4);
+        let event = json!({
+            "kind": "semantic_event", "name": "A", "protocol_version": 1,
+            "sequence": 1, "timestamp": "now", "event": {"kind": "turn.started"}
+        });
+        buf.push(event.clone()).await.unwrap();
+        assert!(buf.push(event).await.is_err());
+        buf.reset_semantic_history("A").await;
+        buf.push(json!({
+            "kind": "semantic_event", "name": "A", "protocol_version": 1,
+            "sequence": 1, "timestamp": "later", "event": {"kind": "turn.started"}
+        }))
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn semantic_startup_events_before_spawn_broadcast_remain_replayable() {
+        let buf = ReplayBuffer::new(8);
+
+        // The reset is the replacement-generation boundary. The new sidecar
+        // may then emit startup events before the HTTP spawn path gets around
+        // to broadcasting agent_spawned.
+        buf.push(json!({
+            "kind": "semantic_event", "name": "A", "protocol_version": 1,
+            "sequence": 9, "timestamp": "old", "event": {"kind": "session.stopped"}
+        }))
+        .await
+        .unwrap();
+        buf.reset_semantic_history("A").await;
+        let cleared = buf.replay_semantic_since("A", 0).await;
+        assert!(cleared.events.is_empty());
+        assert_eq!(cleared.high_water_sequence, 0);
+
+        buf.push(json!({
+            "kind": "semantic_event", "name": "A", "protocol_version": 1,
+            "sequence": 1, "timestamp": "now", "event": {"kind": "session.starting"}
+        }))
+        .await
+        .unwrap();
+        buf.push(json!({
+            "kind": "semantic_event", "name": "A", "protocol_version": 1,
+            "sequence": 2, "timestamp": "now", "event": {"kind": "session.started"}
+        }))
+        .await
+        .unwrap();
+        buf.push(json!({"kind": "agent_spawned", "name": "A"}))
+            .await
+            .unwrap();
+
+        let snapshot = buf.replay_semantic_since("A", 0).await;
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.events[0]["sequence"], 1);
+        assert_eq!(snapshot.events[1]["sequence"], 2);
+        assert_eq!(snapshot.high_water_sequence, 2);
+        assert!(!snapshot.gap);
+    }
+
+    #[tokio::test]
+    async fn semantic_history_is_pruned_when_agent_lifecycle_ends() {
+        for lifecycle_kind in ["agent_released", "agent_exited"] {
+            let buf = ReplayBuffer::new(4);
+            buf.push(json!({
+                "kind": "semantic_event", "name": "A", "protocol_version": 1,
+                "sequence": 1, "timestamp": "now", "event": {"kind": "turn.started"}
+            }))
+            .await
+            .unwrap();
+
+            buf.push(json!({"kind": lifecycle_kind, "name": "A"}))
+                .await
+                .unwrap();
+
+            let snapshot = buf.replay_semantic_since("A", 0).await;
+            assert!(snapshot.events.is_empty());
+            assert_eq!(snapshot.high_water_sequence, 0);
+        }
     }
 }

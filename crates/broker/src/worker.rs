@@ -143,6 +143,7 @@ impl WorkerRegistry {
         self.workers
             .iter()
             .map(|(name, handle)| {
+                let semantic = semantic_runtime_metadata(&handle.spec);
                 json!({
                     "name": name,
                     "runtime": handle.spec.runtime,
@@ -161,6 +162,9 @@ impl WorkerRegistry {
                         - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
                     "context_budget_pct": handle.context_budget_pct,
                     "current_state": handle.state.as_str(),
+                    "runtime_kind": if semantic.is_some() { "semantic-harness" } else if handle.spec.runtime == AgentRuntime::Pty { "pty" } else { "headless" },
+                    "semantic_protocol_version": semantic.as_ref().map(|(version, _)| *version),
+                    "semantic_capabilities": semantic.and_then(|(_, capabilities)| capabilities),
                 })
             })
             .collect()
@@ -302,6 +306,7 @@ impl WorkerRegistry {
         let mut harness_env: Vec<(String, String)> = Vec::new();
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
+        let mut direct_semantic_sidecar = false;
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -517,6 +522,30 @@ impl WorkerRegistry {
                             .push(("AGENT_RELAY_APP_SERVER_AUTH_PASSWORD".to_string(), password));
                     }
                 }
+            }
+            Some(ResolvedHarnessConfig::Semantic(config)) => {
+                if config.command.trim().is_empty() {
+                    anyhow::bail!("semantic sidecar command is required");
+                }
+                if config.session_id.trim().is_empty() {
+                    anyhow::bail!("semantic sidecar sessionId is required");
+                }
+                spec.runtime = AgentRuntime::Headless;
+                spec.session_id = Some(config.session_id);
+                if spec.cwd.is_none() {
+                    spec.cwd = config.cwd;
+                }
+                if let Some(env) = config.env {
+                    harness_env.extend(env);
+                }
+                let (program, inline_args) =
+                    parse_cli_command(&config.command).with_context(|| {
+                        format!("invalid semantic sidecar command '{}'", config.command)
+                    })?;
+                command = Command::new(program);
+                command.args(inline_args);
+                command.args(config.args);
+                direct_semantic_sidecar = true;
             }
             None => match spec.runtime {
                 AgentRuntime::Pty => {
@@ -796,6 +825,9 @@ impl WorkerRegistry {
         }
 
         let mut child = command.spawn().context("failed to spawn worker")?;
+        if direct_semantic_sidecar {
+            initial_harness_pid = child.id();
+        }
         let stdin = child.stdin.take().context("worker missing stdin pipe")?;
         let stdout = child.stdout.take().context("worker missing stdout pipe")?;
         let stderr = child.stderr.take().context("worker missing stderr pipe")?;
@@ -1032,6 +1064,45 @@ impl WorkerRegistry {
     }
 }
 
+/// Runtime metadata is deliberately carried in the harness config so the
+/// process wrapper can remain `headless` while attach clients select the
+/// semantic transport. Accept both the explicit marker and protocol field to
+/// keep the broker compatible with sidecars produced by adjacent releases.
+pub(crate) fn semantic_runtime_metadata(spec: &AgentSpec) -> Option<(u64, Option<Value>)> {
+    let (metadata, explicit_protocol) = match spec.harness_config.as_ref()? {
+        ResolvedHarnessConfig::Semantic(config) => (config.metadata.as_ref(), true),
+        ResolvedHarnessConfig::Headless(config) => {
+            let protocol = config.protocol.trim().to_ascii_lowercase();
+            (
+                config.metadata.as_ref(),
+                protocol == "relay-semantic" || protocol == "relay-semantic-v1",
+            )
+        }
+        ResolvedHarnessConfig::Pty(_) => return None,
+    };
+    let explicit = metadata
+        .and_then(|m| m.get("runtimeKind").or_else(|| m.get("runtime_kind")))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "semantic-harness");
+    if !explicit && !explicit_protocol {
+        return None;
+    }
+    let version = metadata
+        .and_then(|m| {
+            m.get("semanticProtocolVersion")
+                .or_else(|| m.get("semantic_protocol_version"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let capabilities = metadata
+        .and_then(|m| {
+            m.get("semanticCapabilities")
+                .or_else(|| m.get("semantic_capabilities"))
+        })
+        .cloned();
+    Some((version, capabilities))
+}
+
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
     match policy {
         Some(HarnessReleasePolicy::Abort) => "abort",
@@ -1055,6 +1126,7 @@ fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
         {
             APP_SERVER_RELEASE_GRACE
         }
+        Some(ResolvedHarnessConfig::Semantic(_)) => APP_SERVER_RELEASE_GRACE,
         _ => DEFAULT_RELEASE_GRACE,
     }
 }
@@ -1708,6 +1780,35 @@ mod tests {
     fn app_server_config_validation_accepts_attached_opencode_config() {
         let config = make_app_server_config();
         validate_app_server_config(&config).expect("valid app-server config");
+    }
+
+    #[test]
+    fn semantic_runtime_metadata_is_explicit_and_capability_accurate() {
+        let spec: AgentSpec = serde_json::from_value(json!({
+            "name": "semantic-worker",
+            "runtime": "headless",
+            "args": [],
+            "channels": [],
+            "harnessConfig": {
+                "runtime": "semantic",
+                "command": "node",
+                "args": ["/tmp/sidecar.js"],
+                "sessionId": "semantic-1",
+                "metadata": {
+                    "runtimeKind": "semantic-harness",
+                    "semanticProtocolVersion": 1,
+                    "semanticCapabilities": {"activeInput": true, "interrupt": true}
+                }
+            }
+        }))
+        .expect("semantic agent spec");
+
+        let (version, capabilities) = semantic_runtime_metadata(&spec).expect("semantic metadata");
+        assert_eq!(version, 1);
+        assert_eq!(
+            capabilities.unwrap(),
+            json!({"activeInput": true, "interrupt": true})
+        );
     }
 
     #[test]

@@ -33,6 +33,10 @@ import type {
   PtySnapshot,
   InboundDeliveryMode,
   SnapshotFormat,
+  SemanticCommand,
+  SemanticCommandAck,
+  SemanticEventEnvelope,
+  SemanticHistoryResponse,
 } from './protocol.js';
 import type {
   SpawnAgentResult,
@@ -170,6 +174,13 @@ export interface WorkerStreamSubscriptionOptions {
    * zero, or negative values are ignored and fall back to the default rather
    * than silently disabling the bound. Default: 10000.
    */
+  maxQueueSize?: number;
+}
+
+export interface SemanticEventSubscriptionOptions {
+  sinceSequence?: number;
+  /** Broker event cursor used to make subscribe-before-history gap-free. */
+  sinceBrokerSeq?: number;
   maxQueueSize?: number;
 }
 
@@ -796,6 +807,96 @@ export class HarnessDriverClient {
     return this.transport.request<PtySnapshot>(
       `/api/spawned/${encodeURIComponent(name)}/snapshot?format=${encodeURIComponent(format)}`
     );
+  }
+
+  async getSemanticHistory(name: string, sinceSequence = 0): Promise<SemanticHistoryResponse> {
+    return this.transport.request<SemanticHistoryResponse>(
+      `/api/spawned/${encodeURIComponent(name)}/semantic/history?sinceSequence=${encodeURIComponent(String(sinceSequence))}`
+    );
+  }
+
+  async sendSemanticCommand(
+    name: string,
+    command: Omit<SemanticCommand, 'protocol_version'>
+  ): Promise<SemanticCommandAck> {
+    return this.transport.request<SemanticCommandAck>(
+      `/api/spawned/${encodeURIComponent(name)}/semantic/command`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ protocol_version: 1, ...command }),
+      }
+    );
+  }
+
+  subscribeSemanticEvents(
+    name: string,
+    options: SemanticEventSubscriptionOptions = {}
+  ): AsyncIterable<SemanticEventEnvelope> {
+    this.connectEvents(options.sinceBrokerSeq);
+    const maxQueueSize = normalizeMaxQueueSize(options.maxQueueSize);
+    let highWater = options.sinceSequence ?? 0;
+    return {
+      [Symbol.asyncIterator]: () => {
+        const queue: SemanticEventEnvelope[] = [];
+        let pending:
+          | {
+              resolve: (result: IteratorResult<SemanticEventEnvelope>) => void;
+              reject: (error: unknown) => void;
+            }
+          | undefined;
+        let done = false;
+        let failure: Error | undefined;
+        const unsubscribe = this.onEvent((event) => {
+          if (event.kind !== 'semantic_event' || event.name !== name || event.sequence <= highWater) return;
+          highWater = event.sequence;
+          if (pending) {
+            const { resolve } = pending;
+            pending = undefined;
+            resolve({ done: false, value: event });
+            return;
+          }
+          if (queue.length >= maxQueueSize) {
+            failure = new Error(
+              `semantic event subscription for ${JSON.stringify(name)} exceeded ${maxQueueSize} buffered events; reconnect with the last processed sequence`
+            );
+            queue.length = 0;
+            done = true;
+            unsubscribe();
+            return;
+          }
+          queue.push(event);
+        });
+        const close = (): IteratorResult<SemanticEventEnvelope> => {
+          done = true;
+          unsubscribe();
+          pending?.resolve({ done: true, value: undefined as never });
+          pending = undefined;
+          return { done: true, value: undefined as never };
+        };
+        return {
+          next: () => {
+            const value = queue.shift();
+            if (value) return Promise.resolve({ done: false, value });
+            if (failure) return Promise.reject(failure);
+            if (done) return Promise.resolve({ done: true, value: undefined as never });
+            return new Promise<IteratorResult<SemanticEventEnvelope>>((resolve, reject) => {
+              pending = { resolve, reject };
+            });
+          },
+          return: () => Promise.resolve(close()),
+          throw: (error?: unknown) => {
+            done = true;
+            unsubscribe();
+            pending?.reject(error);
+            pending = undefined;
+            return Promise.reject(error);
+          },
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+        };
+      },
+    };
   }
 
   /**

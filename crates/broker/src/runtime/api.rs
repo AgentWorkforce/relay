@@ -237,6 +237,8 @@ impl BrokerRuntime {
         let default_workspace_id = &self.default_workspace_id;
         let self_names = &self.self_names;
         let relaycast_http = &self.relaycast_http;
+        let hosted_agent_event_tx = &self.hosted_agent_event_tx;
+        let pty_observability = &mut self.pty_observability;
         let ws_control_tx = &self.ws_control_tx;
         let sdk_out_tx = &self.sdk_out_tx;
         let workers = &mut self.workers;
@@ -288,6 +290,7 @@ impl BrokerRuntime {
                 harness_config,
                 agent_token,
                 agent_result_schema,
+                replay_buffer,
                 reply,
             } => {
                 let effective_channels = if channels.is_empty() {
@@ -513,6 +516,15 @@ impl BrokerRuntime {
                 if let Some(config) = &agent_result {
                     agent_result_tokens.insert(config.token.clone(), name.clone());
                 }
+                // Establish the new runtime generation before the child is
+                // launched. The semantic sidecar can publish startup events as
+                // soon as its stdout reader starts, so clearing in the later
+                // agent_spawned broadcast would erase valid current-generation
+                // history. A duplicate live name is not a replacement attempt
+                // and must retain its existing history.
+                if !workers.has_worker(&name) {
+                    replay_buffer.reset_semantic_history(&name).await;
+                }
                 match workers
                     .spawn(
                         spec,
@@ -607,6 +619,14 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
+                        if effective_spec.runtime == AgentRuntime::Pty {
+                            publish_pty_starting(
+                                pty_observability,
+                                hosted_agent_event_tx,
+                                &name,
+                                spawn_workspace_id.clone(),
+                            );
+                        }
                         publish_agent_state_transition(
                             ws_control_tx,
                             &name,
@@ -756,6 +776,7 @@ impl BrokerRuntime {
                         }
                         fail_pending_requests_for_worker(pending_requests, &name, "agent_released");
                         resize_owners.remove(&name);
+                        pty_observability.remove(&name);
                         delivery_states.remove(&name);
                         agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);
@@ -1439,6 +1460,12 @@ impl BrokerRuntime {
                     .workers
                     .get(&name)
                     .map(|handle| handle.spec.runtime.clone());
+                let semantic_request = kind.starts_with("semantic_");
+                let semantic_worker = workers
+                    .workers
+                    .get(&name)
+                    .and_then(|handle| crate::worker::semantic_runtime_metadata(&handle.spec))
+                    .is_some();
                 match runtime {
                     None => {
                         let _ =
@@ -1446,14 +1473,21 @@ impl BrokerRuntime {
                                 format!("no worker named '{name}'"),
                             )));
                     }
-                    Some(AgentRuntime::Headless) => {
+                    Some(AgentRuntime::Headless) if !(semantic_request && semantic_worker) => {
                         let _ = reply.send(Err(
                                         worker_request::RequestWorkerError::UnsupportedRuntime(
                                             format!("worker '{name}' is headless; {kind} is only supported on PTY workers"),
                                         ),
                                     ));
                     }
-                    Some(AgentRuntime::Pty) => {
+                    Some(AgentRuntime::Pty) if semantic_request => {
+                        let _ = reply.send(Err(
+                            worker_request::RequestWorkerError::UnsupportedRuntime(format!(
+                                "worker '{name}' is a PTY worker; {kind} requires a semantic harness"
+                            )),
+                        ));
+                    }
+                    Some(AgentRuntime::Pty) | Some(AgentRuntime::Headless) => {
                         let request_id = RequestId::new(format!("req_{}", Uuid::new_v4().simple()));
                         if let Err(err) = workers
                             .send_to_worker(&name, &kind, Some(request_id.clone()), payload)
