@@ -18,38 +18,47 @@ Implemented Plan 001: Node 22 baseline, experimental AI SDK harness adapters, ca
 ## Key Decisions
 
 ### Adopt exact published AI SDK harness family and Node 22.14 CI baseline
+
 - **Chose:** Adopt exact published AI SDK harness family and Node 22.14 CI baseline
 - **Reasoning:** All six official packages resolve to one HarnessV1 1.0.34 family and require Node >=22; 22.14.0 is already the repository's pinned Node 22 CI release.
 
 ### Model canonical activity as a pure reducer over the existing AgentSessionEvent envelope
+
 - **Chose:** Model canonical activity as a pure reducer over the existing AgentSessionEvent envelope
 - **Reasoning:** Keeping activity separate from durable status and carrying source/fidelity/sequence on canonical session observations lets AI SDK and PTY runtimes share listeners while observer replay remains deduplicated and monotonic.
 
 ### Host public HarnessV1 directly and make the semantic sidecar a thin protocol adapter
+
 - **Chose:** Host public HarnessV1 directly and make the semantic sidecar a thin protocol adapter
 - **Reasoning:** Retaining HarnessV1PromptControl preserves active input and approvals; the sidecar only translates broker commands/events while RelaySession owns ordering and deduplication.
 
 ### Hash runtime-owned session state paths and sanitize work-directory segments
+
 - **Chose:** Hash runtime-owned session state paths and sanitize work-directory segments
 - **Reasoning:** Session identifiers cross a protocol boundary and must never become deletion paths or escape the configured workspace.
 
 ### Use broker-owned semantic sidecars with versioned framed commands, per-agent monotonic event sequences, and bounded per-agent replay
+
 - **Chose:** Use broker-owned semantic sidecars with versioned framed commands, per-agent monotonic event sequences, and bounded per-agent replay
 - **Reasoning:** This keeps PTY behavior unchanged while giving supported harnesses structured lifecycle, input acknowledgements, reconnect reconciliation, and a stable benchmark for adapter parity.
 
 ### Use deterministic fake adapters for CI contracts and gate real CLI turns behind RELAY_INTEGRATION_REAL_CLI=1
+
 - **Chose:** Use deterministic fake adapters for CI contracts and gate real CLI turns behind RELAY_INTEGRATION_REAL_CLI=1
 - **Reasoning:** Keeps ordinary CI stable and credential-free while preserving an explicit real-adapter verification path with named per-adapter skips.
 
 ### Report PTY parity per activity and semantic family
+
 - **Chose:** Report PTY parity per activity and semantic family
 - **Reasoning:** AI SDK is the reference profile; exact, inferred, and unavailable signals remain visible without a misleading scalar score.
 
 ### Publish canonical lifecycle through Relaycast agent event storage and wire PTY broker evidence into the shared translator
+
 - **Chose:** Publish canonical lifecycle through Relaycast agent event storage and wire PTY broker evidence into the shared translator
 - **Reasoning:** Remote applications need durable cross-process observability; AI SDK remains the reference profile while PTY emits only exact/inferred signals it can prove
 
 ### Parallelized lazy adapter imports in the registry test and gave the package-load assertion a 15-second ceiling
+
 - **Chose:** Parallelized lazy adapter imports in the registry test and gave the package-load assertion a 15-second ceiling
 - **Reasoning:** The assertion validates adapter availability, not sequential import latency; the full-suite 5-second timeout was flaky while all adapters loaded successfully in under one second when independent imports ran concurrently.
 
@@ -58,7 +67,8 @@ Implemented Plan 001: Node 22 baseline, experimental AI SDK harness adapters, ca
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Adopt exact published AI SDK harness family and Node 22.14 CI baseline: Adopt exact published AI SDK harness family and Node 22.14 CI baseline
 - Model canonical activity as a pure reducer over the existing AgentSessionEvent envelope: Model canonical activity as a pure reducer over the existing AgentSessionEvent envelope

@@ -18,6 +18,7 @@ Assessed Relay spawn and delivery layers against the adjacent Vercel AI SDK fork
 ## Key Decisions
 
 ### Use a hybrid AI SDK adoption: AI SDK owns supported headless runtime adapters; Relay retains broker, durable delivery, PTY, placement, and unsupported CLIs
+
 - **Chose:** Use a hybrid AI SDK adoption: AI SDK owns supported headless runtime adapters; Relay retains broker, durable delivery, PTY, placement, and unsupported CLIs
 - **Reasoning:** The AI SDK fork already provides mature Claude Code, Codex, and OpenCode lifecycle/bridge adapters and in-flight user-message controls, while Relay has stronger broker delivery, PTY, remote placement, and provider coverage. A staged opt-in adapter minimizes fork surface and preserves fallback.
 
@@ -26,6 +27,7 @@ Assessed Relay spawn and delivery layers against the adjacent Vercel AI SDK fork
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use a hybrid AI SDK adoption: AI SDK owns supported headless runtime adapters; Relay retains broker, durable delivery, PTY, placement, and unsupported CLIs: Use a hybrid AI SDK adoption: AI SDK owns supported headless runtime adapters; Relay retains broker, durable delivery, PTY, placement, and unsupported CLIs

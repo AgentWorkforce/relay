@@ -18,6 +18,7 @@ Rewrote the full AI SDK harness adoption plan into a forward-focused eight-step 
 ## Key Decisions
 
 ### Write the adoption plan from the target architecture forward
+
 - **Chose:** Write the adoption plan from the target architecture forward
 - **Reasoning:** Executor guidance should state the desired runtime, ownership boundaries, implementation sequence, and measurable gates. Removed fork references, rejected alternatives, conversational backstory, and repeated negative constraints while retaining only operational safety and contract STOP conditions.
 
@@ -26,6 +27,7 @@ Rewrote the full AI SDK harness adoption plan into a forward-focused eight-step 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Write the adoption plan from the target architecture forward: Write the adoption plan from the target architecture forward

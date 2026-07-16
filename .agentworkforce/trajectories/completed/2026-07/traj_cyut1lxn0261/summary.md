@@ -18,6 +18,7 @@ Refined the AI SDK harness adoption plan with a broker-supervised semantic sidec
 ## Key Decisions
 
 ### Use semantic attach for AI SDK runtimes
+
 - **Chose:** Use semantic attach for AI SDK runtimes
 - **Reasoning:** A separate CLI process cannot reach an in-process HarnessV1PromptControl. The broker must supervise a Node 22 sidecar, retain bounded normalized event history, broadcast live events, and acknowledge message-oriented input. Human attach renders those events; NDJSON is opt-in with --json.
 
@@ -26,6 +27,7 @@ Refined the AI SDK harness adoption plan with a broker-supervised semantic sidec
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use semantic attach for AI SDK runtimes: Use semantic attach for AI SDK runtimes

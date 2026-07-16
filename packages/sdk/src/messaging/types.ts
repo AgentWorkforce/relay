@@ -853,7 +853,10 @@ export interface RelayMessagingClient {
   /** Durable canonical harness events stored on the Relaycast agent record. */
   readonly sessionEvents?: {
     emit(agentName: string, event: AgentSessionEvent): Promise<unknown>;
-    list(agentName: string, options?: { type?: AgentSessionEvent['type']; limit?: number }): Promise<unknown[]>;
+    list(
+      agentName: string,
+      options?: { type?: AgentSessionEvent['type']; limit?: number }
+    ): Promise<unknown[]>;
   };
   readonly channels: {
     list(options?: RelayListChannelsOptions): Promise<RelayChannel[]>;

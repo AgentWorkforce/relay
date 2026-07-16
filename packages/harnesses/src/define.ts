@@ -10,7 +10,11 @@ import {
   type HarnessFactory,
   type RelayHarnessAgent,
 } from '@agent-relay/sdk';
-import type { BrokerEvent, SemanticEventEnvelope, StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
+import type {
+  BrokerEvent,
+  SemanticEventEnvelope,
+  StaticPtyHarnessDefinition,
+} from '@agent-relay/harness-driver';
 
 import { getHarnessDriver } from './broker-binding.js';
 import { aiSdkAdapterRegistry, type AiSdkAdapterRegistryEntry } from './ai-sdk/adapter-registry.js';

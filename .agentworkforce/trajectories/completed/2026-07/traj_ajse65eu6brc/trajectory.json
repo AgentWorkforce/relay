@@ -111,12 +111,7 @@
           "type": "reflection",
           "content": "Second fresh-context review rejects Plan 001: semantic events are not wired to Relaycast/AgentRelay listeners; port handoff remains stealable; lexical path checks allow symlink escape; semantic command idempotency accepts conflicting payloads.",
           "raw": {
-            "focalPoints": [
-              "relaycast",
-              "port-handoff",
-              "filesystem-security",
-              "idempotency"
-            ],
+            "focalPoints": ["relaycast", "port-handoff", "filesystem-security", "idempotency"],
             "adjustments": "Require repairs and end-to-end regressions before signoff",
             "confidence": 0.95
           },

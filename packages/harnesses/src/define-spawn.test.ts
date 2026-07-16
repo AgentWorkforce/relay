@@ -62,7 +62,11 @@ vi.mock('@agent-relay/harness-driver', async (importActual) => {
 const { claude, codex, gemini, pi } = await import('./index.js');
 
 const fakeRelay = (workspaceKey?: string): AgentRelay =>
-  ({ workspaceKey, emitSessionEvent: vi.fn(), publishSessionEvent: vi.fn(async () => undefined) }) as unknown as AgentRelay;
+  ({
+    workspaceKey,
+    emitSessionEvent: vi.fn(),
+    publishSessionEvent: vi.fn(async () => undefined),
+  }) as unknown as AgentRelay;
 
 describe('create({ relay }) — live PTY spawn', () => {
   beforeEach(() => {

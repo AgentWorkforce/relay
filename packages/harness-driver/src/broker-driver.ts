@@ -49,7 +49,8 @@ export class BrokerDriver implements AgentDriver {
     const buffered = transport === 'pty' ? this.bufferBrokerEvents(client, input.name) : undefined;
     let result: SpawnAgentResult;
     try {
-      result = transport === 'headless' ? await client.spawnHeadless(spawnInput) : await client.spawnPty(spawnInput);
+      result =
+        transport === 'headless' ? await client.spawnHeadless(spawnInput) : await client.spawnPty(spawnInput);
     } catch (error) {
       buffered?.dispose();
       throw error;

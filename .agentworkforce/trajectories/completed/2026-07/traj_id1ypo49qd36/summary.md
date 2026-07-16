@@ -18,6 +18,7 @@ Extended the adoption plan with a canonical Relay observability contract, Relayc
 ## Key Decisions
 
 ### Use AI SDK HarnessV1 as Relay's reference observability profile
+
 - **Chose:** Use AI SDK HarnessV1 as Relay's reference observability profile
 - **Reasoning:** HarnessV1 has the richest portable structured stream across supported runtimes. Relaycast will expose a runtime-neutral semantic vocabulary and activity reducer, while each runtime declares exact, inferred, and unavailable signals with provenance. PTY implementations improve against the same profile.
 
@@ -26,6 +27,7 @@ Extended the adoption plan with a canonical Relay observability contract, Relayc
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use AI SDK HarnessV1 as Relay's reference observability profile: Use AI SDK HarnessV1 as Relay's reference observability profile

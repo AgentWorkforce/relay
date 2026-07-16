@@ -50,9 +50,7 @@ import {
   normalizeSearchResult,
   normalizeThread,
 } from './normalize.js';
-import type {
-  AgentSessionEvent,
-} from '../session/index.js';
+import type { AgentSessionEvent } from '../session/index.js';
 import type {
   RelayActionInvocation,
   RelayActionInvocationAck,

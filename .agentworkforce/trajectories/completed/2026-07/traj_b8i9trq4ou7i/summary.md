@@ -18,6 +18,7 @@ Corrected the AI SDK roadmap by distinguishing five external HarnessV1 adapters 
 ## Key Decisions
 
 ### Separate external harness adapters from model-provider support
+
 - **Chose:** Separate external harness adapters from model-provider support
 - **Reasoning:** AI SDK provider packages such as @ai-sdk/xai standardize model inference but do not launch coding CLIs. Relay should retain Plan 001 for HarnessV1/PTy runtimes and add a dependent relay-native ToolLoopAgent harness that can use the broader provider registry with Relay-owned tools and semantic attach.
 
@@ -26,6 +27,7 @@ Corrected the AI SDK roadmap by distinguishing five external HarnessV1 adapters 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Separate external harness adapters from model-provider support: Separate external harness adapters from model-provider support

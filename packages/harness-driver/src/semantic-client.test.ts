@@ -176,13 +176,15 @@ describe('semantic broker client', () => {
         return unsubscribe;
       }),
       getSemanticHistory: vi.fn(async () => ({
-        events: [{
-          protocol_version: 1,
-          name: 'Worker',
-          sequence: 1,
-          timestamp: '2026-07-16T00:00:00Z',
-          event: { kind: 'diagnostic', message: 'listener failure test' },
-        }],
+        events: [
+          {
+            protocol_version: 1,
+            name: 'Worker',
+            sequence: 1,
+            timestamp: '2026-07-16T00:00:00Z',
+            event: { kind: 'diagnostic', message: 'listener failure test' },
+          },
+        ],
       })),
       subscribeSemanticEvents: vi.fn(() => ({
         [Symbol.asyncIterator]: () => ({
@@ -197,12 +199,9 @@ describe('semantic broker client', () => {
       harnessConfig: { runtime: 'semantic', command: 'node' },
     });
     const onError = vi.fn();
-    const dispose = await runtime.observeSemanticEvents?.(
-      () => {
-        throw new Error('listener rejected');
-      },
-      onError
-    );
+    const dispose = await runtime.observeSemanticEvents?.(() => {
+      throw new Error('listener rejected');
+    }, onError);
 
     brokerHandler?.({ kind: 'agent_exited', name: 'Worker', code: 1 });
 

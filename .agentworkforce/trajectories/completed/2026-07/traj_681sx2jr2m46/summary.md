@@ -18,6 +18,7 @@ Refined the AI SDK adoption plan to avoid the fork, require Node 22, host the pu
 ## Key Decisions
 
 ### Use official AI SDK HarnessV1 adapters directly, upgrade Relay to Node 22, and retain PTY as the interactive/unsupported pre-start fallback
+
 - **Chose:** Use official AI SDK HarnessV1 adapters directly, upgrade Relay to Node 22, and retain PTY as the interactive/unsupported pre-start fallback
 - **Reasoning:** HarnessV1.doPromptTurn already returns prompt control with submitUserMessage across Claude Code, Codex, OpenCode, Pi, and Deep Agents, so Relay can preserve active injection without a fork. Node 22 aligns with official package engines. A data-driven registry expands coverage while avoiding unsafe fallback after work begins.
 
@@ -26,6 +27,7 @@ Refined the AI SDK adoption plan to avoid the fork, require Node 22, host the pu
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use official AI SDK HarnessV1 adapters directly, upgrade Relay to Node 22, and retain PTY as the interactive/unsupported pre-start fallback: Use official AI SDK HarnessV1 adapters directly, upgrade Relay to Node 22, and retain PTY as the interactive/unsupported pre-start fallback

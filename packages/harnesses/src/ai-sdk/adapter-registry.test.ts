@@ -47,9 +47,7 @@ describe('AI SDK adapter registry', () => {
   });
 
   it('loads each official package lazily', async () => {
-    const harnesses = await Promise.all(
-      aiSdkAdapterRegistry.list().map((entry) => entry.createHarness())
-    );
+    const harnesses = await Promise.all(aiSdkAdapterRegistry.list().map((entry) => entry.createHarness()));
 
     for (const harness of harnesses) {
       expect(harness.specificationVersion).toBe('harness-v1');
