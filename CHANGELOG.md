@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay-broker`'s `/api/observer-token` recovers from an `observer_token_name_conflict` (409) by rotating the existing same-named token to return fresh, usable material instead of failing the mint, so repeat mints of the fixed-name dashboard observer token succeed. It rotates only a token whose scopes exactly match the endpoint's read-only set and that carries no filters; any other conflict still propagates unchanged.
 
 ## [10.5.0] - 2026-07-16
 
@@ -36,7 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `agent-relay-broker` injects messages into a CLI with escape-aware paced writes — one VT control sequence (CSI/SS3/OSC), UTF-8 codepoint, or byte at a time with a small gap between them — instead of one bulk write, reducing dropped or batched leading characters during injection. Tunable via `RELAY_INJECT_RATE_MS` (default `5`; `0` restores the single bulk write).
-  > > > > > > > origin/main
 
 ## [10.3.0] - 2026-07-15
 

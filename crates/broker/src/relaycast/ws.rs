@@ -197,6 +197,12 @@ impl RelaycastHttpClient {
     /// `rk_live_...` workspace key, which grants full read/write/spawn
     /// access. The raw token material is only present on this response (and
     /// on `rotate_observer_token`'s), never on subsequent reads.
+    ///
+    /// Uses `anyhow::Error::from` (rather than formatting the SDK error into
+    /// a fresh string-only error) so callers can `downcast_ref::<RelayError>`
+    /// on the returned error to branch on the structured API error code
+    /// (e.g. `observer_token_name_conflict`) instead of string-matching the
+    /// `Display` output.
     pub async fn create_observer_token(
         &self,
         request: CreateObserverTokenRequest,
@@ -207,7 +213,36 @@ impl RelaycastHttpClient {
         relay
             .create_observer_token(request)
             .await
-            .map_err(|error| anyhow::anyhow!("{error}"))
+            .map_err(anyhow::Error::from)
+    }
+
+    /// List observer tokens for this workspace. Metadata only — no raw token
+    /// material is ever included, per the SDK's own doc comment on this
+    /// method. Used to recover the id of an existing token by name when
+    /// `create_observer_token` fails with `observer_token_name_conflict`.
+    pub async fn list_observer_tokens(&self) -> Result<Vec<ObserverToken>> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        relay
+            .list_observer_tokens()
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    /// Rotate an observer token, returning fresh raw token material. Used as
+    /// a fallback when `create_observer_token` fails with
+    /// `observer_token_name_conflict`: since the original raw token was
+    /// never persisted anywhere, rotating the existing token under that name
+    /// is the only way to hand the caller a usable `ot_live_...` value.
+    pub async fn rotate_observer_token(&self, id: &str) -> Result<ObserverToken> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        relay
+            .rotate_observer_token(id)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     /// Fetch a single action invocation, including its `input`. The
