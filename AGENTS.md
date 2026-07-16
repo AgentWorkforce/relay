@@ -28,19 +28,33 @@ This ensures the user maintains control over what goes into the main branch.
 
 ## Changelog
 
-Curate `[Unreleased]` in `CHANGELOG.md` as you land PRs. The root changelog is
-the cross-package, user-facing release narrative for Relay. It follows
+Record each user-visible change as a **fragment** under `changelog.d/` — one
+small file per change — instead of editing the `[Unreleased]` section of
+`CHANGELOG.md` directly. Because every change lands in its own new file, two
+PRs never touch the same lines, so a changelog entry can't merge-conflict or
+get inserted under the wrong (already-released) version when PRs merge in quick
+succession. The root changelog is the cross-package, user-facing release
+narrative for Relay. It follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and Semantic
-Versioning.
+Versioning. See `changelog.d/README.md` for the fragment format.
 
-An empty post-release changelog starts with `[Unreleased]`. The first pending
-user-visible change must set the heading to `[Unreleased - Patch]`,
-`[Unreleased - Minor]`, or `[Unreleased - Major]` according to its SemVer
-impact. The pending release level is monotonic (`Patch < Minor < Major`):
-raise the heading when a higher-impact change arrives; never lower it for a
-later lower-impact change, and leave it unchanged for another change at the
-same level. When a release is cut, move the pending entries under the released
-version and restore an empty `[Unreleased]` heading with no release level.
+Add a fragment as you land a PR:
+
+```bash
+npm run changelog:add -- --type Added --level minor "`agent-relay foo` now does X."
+```
+
+Each fragment carries a `type` (the Keep a Changelog section) and a `level`
+(`patch`, `minor`, or `major` — this change's SemVer impact). The pending
+release level is the **highest** level across all fragments (`patch < minor <
+major`); there is no manual `[Unreleased - Patch]` heading to bump — the level
+is derived, and `npm run changelog:preview` renders it. Between releases,
+`CHANGELOG.md`'s `[Unreleased]` heading stays empty.
+
+When a release is cut, run `npm run changelog:release -- --version <x.y.z>`: it
+compiles the fragments into a new dated version section, deletes them, and
+restores an empty `[Unreleased]` heading. `npm run changelog:check` (also run in
+CI) validates every fragment and guards against leftover conflict markers.
 
 Changelog entries should be concise and impact-first. Prefer one short bullet
 per user-visible change: name the command, API, schema, or package touched and

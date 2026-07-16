@@ -1,1 +1,7 @@
 packages/cli/src/cli/commands/integration-cleanup-journal.ts text diff
+
+# Changelog entries live as one-file-per-change fragments under changelog.d/, so
+# they don't collide. `merge=union` is a backstop for the root CHANGELOG.md: if
+# two branches still touch it, keep both sides instead of leaving conflict
+# markers in the released history.
+CHANGELOG.md merge=union

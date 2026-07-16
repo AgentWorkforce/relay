@@ -1,0 +1,18 @@
+name: Changelog
+
+# Validates changelog fragments in changelog.d/ and guards CHANGELOG.md against
+# leftover merge-conflict markers. Fragments are the source of the pending
+# release narrative; keeping them well-formed lets `changelog:release` compile
+# them deterministically.
+on: [pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - name: Validate changelog fragments
+        run: node scripts/changelog.mjs check
