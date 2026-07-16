@@ -6,6 +6,9 @@ on:
     paths:
       - 'packages/**'
       - '!packages/sdk-swift/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'scripts/e2e-test.sh'
       - 'package.json'
       - '.github/workflows/e2e-tests.yml'
@@ -14,6 +17,9 @@ on:
     paths:
       - 'packages/**'
       - '!packages/sdk-swift/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'scripts/e2e-test.sh'
       - 'package.json'
       - '.github/workflows/e2e-tests.yml'
