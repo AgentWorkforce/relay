@@ -43,7 +43,7 @@ describe('addListener selector narrowing', () => {
     });
   });
 
-  it('narrows activity and canonical semantic selectors', () => {
+  it('narrows activity and canonical agent-event selectors', () => {
     relay.addListener('agent.activity.changed', (event) => {
       expectTypeOf(event).toEqualTypeOf<RelayAgentActivityEvent>();
       expectTypeOf(event.activity).toEqualTypeOf<

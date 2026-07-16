@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import type { AgentRelay } from '@agent-relay/sdk';
 
-const observeSemanticEventsMock = vi.fn(
+const observeAgentEventsMock = vi.fn(
   async (listener: (event: Record<string, unknown>) => void | Promise<void>) => {
     await listener({
       protocol_version: 1,
@@ -39,7 +39,7 @@ const spawnMock = vi.fn(async (input: { name: string; cli: string }) => ({
   delivery: { mode: 'managed' as const },
   status: async () => 'idle' as const,
   release: async () => {},
-  observeSemanticEvents: observeSemanticEventsMock,
+  observeAgentEvents: observeAgentEventsMock,
   observeBrokerEvents: observeBrokerEventsMock,
 }));
 
@@ -71,7 +71,7 @@ const fakeRelay = (workspaceKey?: string): AgentRelay =>
 describe('create({ relay }) — live PTY spawn', () => {
   beforeEach(() => {
     spawnMock.mockClear();
-    observeSemanticEventsMock.mockClear();
+    observeAgentEventsMock.mockClear();
     observeBrokerEventsMock.mockClear();
     constructed.length = 0;
   });
@@ -133,12 +133,12 @@ describe('create({ relay }) — live PTY spawn', () => {
     expect(agent.cli).toBe('claude');
   });
 
-  it('spawns an explicit AI SDK backend through the broker-owned semantic sidecar', async () => {
+  it('spawns an explicit AI SDK backend through the broker-owned native harness sidecar', async () => {
     const agent = await claude.create({
-      relay: fakeRelay('rk_live_semantic'),
+      relay: fakeRelay('rk_live_native'),
       backend: 'ai-sdk',
       model: 'sonnet',
-      cwd: '/tmp/relay-semantic-test',
+      cwd: '/tmp/relay-native-harness-test',
     });
 
     expect(spawnMock).toHaveBeenCalledWith(
@@ -146,13 +146,13 @@ describe('create({ relay }) — live PTY spawn', () => {
         cli: 'claude',
         transport: 'headless',
         harnessConfig: expect.objectContaining({
-          runtime: 'semantic',
+          runtime: 'native',
           command: process.execPath,
-          sessionId: expect.stringMatching(/^semantic-/),
+          sessionId: expect.stringMatching(/^native-/),
           metadata: expect.objectContaining({
-            runtimeKind: 'semantic-harness',
-            semanticProtocolVersion: 1,
-            semanticCapabilities: expect.objectContaining({
+            runtimeKind: 'native',
+            nativeHarnessProtocolVersion: 1,
+            nativeHarnessCapabilities: expect.objectContaining({
               activeInput: true,
               toolApprovals: true,
               compact: true,
@@ -171,15 +171,15 @@ describe('create({ relay }) — live PTY spawn', () => {
     };
     expect(JSON.parse(spawn.harnessConfig.env.RELAY_AI_SDK_SIDECAR_CONFIG)).toMatchObject({
       harness: 'claude',
-      workspace: '/tmp/relay-semantic-test',
+      workspace: '/tmp/relay-native-harness-test',
       settings: { model: 'sonnet' },
     });
-    expect(agent).toMatchObject({ runtime: 'semantic-harness', backend: 'ai-sdk' });
-    expect(observeSemanticEventsMock).toHaveBeenCalledTimes(1);
+    expect(agent).toMatchObject({ runtime: 'native', backend: 'ai-sdk' });
+    expect(observeAgentEventsMock).toHaveBeenCalledTimes(1);
   });
 
-  it('bridges broker semantic activity into AgentRelay listeners without manual emission', async () => {
-    const relay = fakeRelay('rk_live_semantic_events');
+  it('bridges broker normalized activity into AgentRelay listeners without manual emission', async () => {
+    const relay = fakeRelay('rk_live_agent_events');
     await claude.create({ relay, backend: 'ai-sdk', name: 'Observed' });
     expect(relay.emitSessionEvent).toHaveBeenCalledWith(
       'Observed',
@@ -200,7 +200,7 @@ describe('create({ relay }) — live PTY spawn', () => {
     await expect(pi.create()).rejects.toThrow(/experimental AI SDK-only harness/);
     const descriptor = await pi.create({ backend: 'ai-sdk' });
     expect(descriptor).toMatchObject({
-      runtime: 'semantic-harness',
+      runtime: 'native',
       backend: 'ai-sdk',
       adapter: 'pi',
     });

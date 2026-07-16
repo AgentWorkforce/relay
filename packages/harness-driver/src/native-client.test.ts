@@ -4,7 +4,7 @@ import { HarnessDriverClient } from './client.js';
 import { resolveStaticHarnessConfig } from './harness.js';
 import { BrokerDriver } from './broker-driver.js';
 
-describe('semantic broker client', () => {
+describe('native harness broker client', () => {
   it('streams broker runtime evidence and disposes the observer on process exit', async () => {
     let brokerHandler: ((event: Record<string, unknown>) => void) | undefined;
     const unsubscribe = vi.fn();
@@ -39,39 +39,39 @@ describe('semantic broker client', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('resolves a broker-owned semantic sidecar without changing its stdio contract', () => {
+  it('resolves a broker-owned native harness sidecar without changing its stdio contract', () => {
     expect(
       resolveStaticHarnessConfig({
         name: 'Worker',
         cli: 'codex',
         definition: {
-          runtime: 'semantic',
+          runtime: 'native',
           command: 'node',
           args: ['/opt/relay/sidecar.js', '--adapter', '{args}'],
           sessionId: 'session-1',
-          metadata: { semanticProtocolVersion: 1 },
+          metadata: { nativeHarnessProtocolVersion: 1 },
         },
         args: ['codex'],
         cwd: '/workspace',
       })
     ).toEqual({
-      runtime: 'semantic',
+      runtime: 'native',
       command: 'node',
       args: ['/opt/relay/sidecar.js', '--adapter', 'codex'],
       sessionId: 'session-1',
       cwd: '/workspace',
-      metadata: { semanticProtocolVersion: 1 },
+      metadata: { nativeHarnessProtocolVersion: 1 },
     });
   });
 
-  it('does not inject PTY task arguments into a semantic sidecar by default', () => {
+  it('does not inject PTY task arguments into a native harness sidecar by default', () => {
     expect(
       resolveStaticHarnessConfig({
         name: 'Worker',
         cli: 'codex',
         task: 'do not pass this to the sidecar executable',
         definition: {
-          runtime: 'semantic',
+          runtime: 'native',
           command: 'node',
           sessionId: 'session-1',
         },
@@ -79,7 +79,7 @@ describe('semantic broker client', () => {
     ).toEqual([]);
   });
 
-  it('routes a semantic sidecar config through the headless broker spawn seam', async () => {
+  it('routes a native harness sidecar config through the headless broker spawn seam', async () => {
     const spawnHeadless = vi.fn(async () => ({ name: 'Worker', runtime: 'headless' }));
     const client = {
       spawnHeadless,
@@ -92,7 +92,7 @@ describe('semantic broker client', () => {
       name: 'Worker',
       cli: 'codex',
       harnessConfig: {
-        runtime: 'semantic',
+        runtime: 'native',
         command: 'node',
         args: ['/opt/relay/sidecar.js'],
         sessionId: 'session-1',
@@ -101,13 +101,13 @@ describe('semantic broker client', () => {
     expect(spawnHeadless).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'Worker',
-        harnessConfig: expect.objectContaining({ runtime: 'semantic' }),
+        harnessConfig: expect.objectContaining({ runtime: 'native' }),
       })
     );
     expect(client.spawnPty).not.toHaveBeenCalled();
   });
 
-  it('reconciles semantic history with live events before exposing them to Relaycast', async () => {
+  it('reconciles agent-event history with live events before exposing them to Relaycast', async () => {
     const envelope = (sequence: number) => ({
       protocol_version: 1 as const,
       name: 'Worker',
@@ -123,7 +123,7 @@ describe('semantic broker client', () => {
       connectEvents: vi.fn(),
       onEvent: vi.fn(() => () => undefined),
       currentEventSeq: vi.fn(async () => 40),
-      getSemanticHistory: vi.fn(async () => ({
+      getAgentEventHistory: vi.fn(async () => ({
         protocol_version: 1,
         name: 'Worker',
         events: [envelope(1), envelope(2)],
@@ -131,7 +131,7 @@ describe('semantic broker client', () => {
         oldest_available_sequence: 1,
         gap: false,
       })),
-      subscribeSemanticEvents: vi.fn(() => ({
+      subscribeAgentEvents: vi.fn(() => ({
         async *[Symbol.asyncIterator]() {
           yield envelope(2);
           yield envelope(3);
@@ -142,22 +142,22 @@ describe('semantic broker client', () => {
     const runtime = await driver.spawn({
       name: 'Worker',
       cli: 'codex',
-      harnessConfig: { runtime: 'semantic', command: 'node' },
+      harnessConfig: { runtime: 'native', command: 'node' },
     });
     const seen: number[] = [];
-    const dispose = await runtime.observeSemanticEvents?.((event) => {
+    const dispose = await runtime.observeAgentEvents?.((event) => {
       seen.push(event.sequence);
     });
     await vi.waitFor(() => expect(seen).toEqual([1, 2, 3]));
     await dispose?.();
     expect(client.currentEventSeq).toHaveBeenCalledTimes(1);
-    expect(client.subscribeSemanticEvents).toHaveBeenCalledWith('Worker', {
+    expect(client.subscribeAgentEvents).toHaveBeenCalledWith('Worker', {
       sinceSequence: 0,
       sinceBrokerSeq: 40,
     });
   });
 
-  it('closes and unregisters a semantic observer when the broker reports a crash', async () => {
+  it('closes and unregisters an agent-event observer when the broker reports a crash', async () => {
     let brokerHandler: ((event: Record<string, unknown>) => void) | undefined;
     let resolveNext: ((value: IteratorResult<never>) => void) | undefined;
     const iteratorReturn = vi.fn(async () => {
@@ -175,7 +175,7 @@ describe('semantic broker client', () => {
         brokerHandler = handler;
         return unsubscribe;
       }),
-      getSemanticHistory: vi.fn(async () => ({
+      getAgentEventHistory: vi.fn(async () => ({
         events: [
           {
             protocol_version: 1,
@@ -186,7 +186,7 @@ describe('semantic broker client', () => {
           },
         ],
       })),
-      subscribeSemanticEvents: vi.fn(() => ({
+      subscribeAgentEvents: vi.fn(() => ({
         [Symbol.asyncIterator]: () => ({
           next: () => new Promise<IteratorResult<never>>((resolve) => (resolveNext = resolve)),
           return: iteratorReturn,
@@ -196,10 +196,10 @@ describe('semantic broker client', () => {
     const runtime = await new BrokerDriver({ client: client as never }).spawn({
       name: 'Worker',
       cli: 'codex',
-      harnessConfig: { runtime: 'semantic', command: 'node' },
+      harnessConfig: { runtime: 'native', command: 'node' },
     });
     const onError = vi.fn();
-    const dispose = await runtime.observeSemanticEvents?.(() => {
+    const dispose = await runtime.observeAgentEvents?.(() => {
       throw new Error('listener rejected');
     }, onError);
 
@@ -230,9 +230,9 @@ describe('semantic broker client', () => {
         )
     );
     const client = new HarnessDriverClient({ baseUrl: 'http://broker', apiKey: 'secret', fetch });
-    await expect(client.getSemanticHistory('A/B', 7)).resolves.toMatchObject({ high_water_sequence: 9 });
+    await expect(client.getAgentEventHistory('A/B', 7)).resolves.toMatchObject({ high_water_sequence: 9 });
     expect(fetch).toHaveBeenCalledWith(
-      'http://broker/api/spawned/A%2FB/semantic/history?sinceSequence=7',
+      'http://broker/api/spawned/A%2FB/agent-events/history?sinceSequence=7',
       expect.objectContaining({ headers: expect.objectContaining({ 'X-API-Key': 'secret' }) })
     );
   });
@@ -260,7 +260,7 @@ describe('semantic broker client', () => {
     });
     const client = new HarnessDriverClient({ baseUrl: 'http://broker', fetch });
     await expect(
-      client.sendSemanticCommand('Worker', {
+      client.sendNativeHarnessCommand('Worker', {
         kind: 'submit_user_message',
         idempotency_key: 'input-1',
         text: 'continue',
@@ -290,7 +290,7 @@ describe('semantic broker client', () => {
     });
     const client = new HarnessDriverClient({ baseUrl: 'http://broker', fetch });
     await expect(
-      client.sendSemanticCommand('Worker', {
+      client.sendNativeHarnessCommand('Worker', {
         kind: 'compact',
         idempotency_key: 'compact-1',
         instructions: 'Retain open decisions',

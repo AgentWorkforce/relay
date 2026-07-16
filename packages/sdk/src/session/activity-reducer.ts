@@ -34,7 +34,7 @@ export interface AgentActivityState {
 
 export interface AgentActivityReduction {
   state: AgentActivityState;
-  /** Omitted when the semantic event did not change the public activity. */
+  /** Omitted when the agent event did not change the public activity. */
   transition?: Extract<AgentSessionEvent, { type: 'activity.changed' }>;
 }
 
@@ -139,7 +139,7 @@ function observed(event: AgentSessionEvent): AgentObservabilityMetadata | undefi
 }
 
 /**
- * Reduce one canonical semantic observation into a deduplicated activity transition.
+ * Reduce one canonical agent event into a deduplicated activity transition.
  *
  * The reducer is deliberately side-effect free. Sets and maps are cloned so callers
  * can retain prior snapshots, including while tool calls and output blocks overlap.

@@ -10,7 +10,7 @@ export function summarizeProfile(profile: AgentObservabilityCapabilities) {
     activities: Object.fromEntries(
       Object.entries(profile.activities).map(([key, value]) => [key, summarizeSupport(value)])
     ),
-    semanticFamilies: Object.fromEntries(
+    agentEventFamilies: Object.fromEntries(
       Object.entries(profile.events).map(([key, value]) => [key, summarizeSupport(value)])
     ),
   };
@@ -32,6 +32,6 @@ export function compareProfiles(
     );
   return {
     activities: compare(reference.activities, candidate.activities),
-    semanticFamilies: compare(reference.events, candidate.events),
+    agentEventFamilies: compare(reference.events, candidate.events),
   };
 }

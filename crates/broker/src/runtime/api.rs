@@ -517,13 +517,13 @@ impl BrokerRuntime {
                     agent_result_tokens.insert(config.token.clone(), name.clone());
                 }
                 // Establish the new runtime generation before the child is
-                // launched. The semantic sidecar can publish startup events as
+                // launched. The native harness sidecar can publish startup events as
                 // soon as its stdout reader starts, so clearing in the later
                 // agent_spawned broadcast would erase valid current-generation
                 // history. A duplicate live name is not a replacement attempt
                 // and must retain its existing history.
                 if !workers.has_worker(&name) {
-                    replay_buffer.reset_semantic_history(&name).await;
+                    replay_buffer.reset_agent_event_history(&name).await;
                 }
                 match workers
                     .spawn(
@@ -1460,11 +1460,11 @@ impl BrokerRuntime {
                     .workers
                     .get(&name)
                     .map(|handle| handle.spec.runtime.clone());
-                let semantic_request = kind.starts_with("semantic_");
-                let semantic_worker = workers
+                let native_request = kind.starts_with("native_harness_");
+                let native_worker = workers
                     .workers
                     .get(&name)
-                    .and_then(|handle| crate::worker::semantic_runtime_metadata(&handle.spec))
+                    .and_then(|handle| crate::worker::native_harness_metadata(&handle.spec))
                     .is_some();
                 match runtime {
                     None => {
@@ -1473,17 +1473,17 @@ impl BrokerRuntime {
                                 format!("no worker named '{name}'"),
                             )));
                     }
-                    Some(AgentRuntime::Headless) if !(semantic_request && semantic_worker) => {
+                    Some(AgentRuntime::Headless) if !(native_request && native_worker) => {
                         let _ = reply.send(Err(
                                         worker_request::RequestWorkerError::UnsupportedRuntime(
                                             format!("worker '{name}' is headless; {kind} is only supported on PTY workers"),
                                         ),
                                     ));
                     }
-                    Some(AgentRuntime::Pty) if semantic_request => {
+                    Some(AgentRuntime::Pty) if native_request => {
                         let _ = reply.send(Err(
                             worker_request::RequestWorkerError::UnsupportedRuntime(format!(
-                                "worker '{name}' is a PTY worker; {kind} requires a semantic harness"
+                                "worker '{name}' is a PTY worker; {kind} requires a native harness"
                             )),
                         ));
                     }

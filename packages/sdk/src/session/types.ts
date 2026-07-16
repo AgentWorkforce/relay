@@ -27,7 +27,7 @@ export const EXACT_AND_INFERRED_OBSERVABILITY = {
   fidelities: ['exact', 'inferred'],
 } as const satisfies ObservabilitySupport;
 
-export type AgentSemanticEventFamily =
+export type AgentEventFamily =
   | 'lifecycle'
   | 'turns'
   | 'text'
@@ -45,7 +45,7 @@ export type AgentSemanticEventFamily =
 /** Runtime-declared observability coverage. Unsupported signals stay explicit. */
 export interface AgentObservabilityCapabilities {
   activities: Record<AgentActivity, ObservabilitySupport>;
-  events: Record<AgentSemanticEventFamily, ObservabilitySupport>;
+  events: Record<AgentEventFamily, ObservabilitySupport>;
 }
 
 export const AGENT_ACTIVITIES = [
@@ -58,7 +58,7 @@ export const AGENT_ACTIVITIES = [
   'error',
 ] as const satisfies readonly AgentActivity[];
 
-export const AGENT_SEMANTIC_EVENT_FAMILIES = [
+export const AGENT_EVENT_FAMILIES = [
   'lifecycle',
   'turns',
   'text',
@@ -72,12 +72,12 @@ export const AGENT_SEMANTIC_EVENT_FAMILIES = [
   'usage',
   'diagnostics',
   'errors',
-] as const satisfies readonly AgentSemanticEventFamily[];
+] as const satisfies readonly AgentEventFamily[];
 
 /** Fill omitted capability entries as unavailable, keeping declarations honest by default. */
 export function createAgentObservabilityCapabilities(input: {
   activities?: Partial<Record<AgentActivity, ObservabilitySupport>>;
-  events?: Partial<Record<AgentSemanticEventFamily, ObservabilitySupport>>;
+  events?: Partial<Record<AgentEventFamily, ObservabilitySupport>>;
 }): AgentObservabilityCapabilities {
   return {
     activities: Object.fromEntries(
@@ -87,11 +87,8 @@ export function createAgentObservabilityCapabilities(input: {
       ])
     ) as unknown as Record<AgentActivity, ObservabilitySupport>,
     events: Object.fromEntries(
-      AGENT_SEMANTIC_EVENT_FAMILIES.map((family) => [
-        family,
-        input.events?.[family] ?? OBSERVABILITY_UNAVAILABLE,
-      ])
-    ) as unknown as Record<AgentSemanticEventFamily, ObservabilitySupport>,
+      AGENT_EVENT_FAMILIES.map((family) => [family, input.events?.[family] ?? OBSERVABILITY_UNAVAILABLE])
+    ) as unknown as Record<AgentEventFamily, ObservabilitySupport>,
   };
 }
 
@@ -195,7 +192,7 @@ export interface AgentSessionCapabilities {
     fork?: boolean;
     snapshot?: boolean;
   };
-  /** Exact, inferred, and unavailable semantic signals for this runtime. */
+  /** Exact, inferred, and unavailable agent-event signals for this runtime. */
   observability?: AgentObservabilityCapabilities;
 }
 
@@ -266,8 +263,8 @@ export type AgentSessionEventType =
   | 'log'
   | 'error';
 
-/** Selectors comprising Relay's runtime-neutral semantic observability vocabulary. */
-export type AgentSemanticEventType =
+/** Selectors comprising Relay's runtime-neutral agent-event vocabulary. */
+export type AgentEventType =
   | 'observability.capabilities'
   | 'session.starting'
   | 'session.started'
@@ -513,7 +510,7 @@ export type AgentSessionEvent =
       retryable?: boolean;
     });
 
-type RequireCanonicalObservation<TEvent> = TEvent extends { type: AgentSemanticEventType }
+type RequireCanonicalObservation<TEvent> = TEvent extends { type: AgentEventType }
   ? TEvent extends { type: 'tool.called' | 'tool.completed' | 'tool.failed' }
     ? TEvent & { callId: string; observability: AgentObservabilityMetadata }
     : TEvent extends { type: 'file.changed' }
@@ -524,8 +521,11 @@ type RequireCanonicalObservation<TEvent> = TEvent extends { type: AgentSemanticE
       : TEvent & { observability: AgentObservabilityMetadata }
   : never;
 
-/** A semantic event whose provenance is complete enough for observer-plane publication. */
-export type CanonicalAgentSessionEvent = RequireCanonicalObservation<AgentSessionEvent>;
+/** A normalized runtime-neutral event with observer-plane provenance. */
+export type AgentEvent = RequireCanonicalObservation<AgentSessionEvent>;
+
+/** @deprecated Use {@link AgentEvent}. */
+export type CanonicalAgentSessionEvent = AgentEvent;
 
 export interface AgentSession {
   identity: AgentIdentity;

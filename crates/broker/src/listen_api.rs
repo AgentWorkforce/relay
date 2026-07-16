@@ -58,7 +58,7 @@ pub enum ListenApiRequest {
         harness_config: Option<ResolvedHarnessConfig>,
         agent_token: Option<String>,
         agent_result_schema: Option<Value>,
-        /// Shared semantic replay store. The runtime resets the previous
+        /// Shared agent-event replay store. The runtime resets the previous
         /// generation immediately before launching this worker, rather than
         /// racing startup events with the later `agent_spawned` broadcast.
         replay_buffer: ReplayBuffer,
@@ -470,12 +470,12 @@ fn listen_api_router_with_auth(
             routing::get(listen_api_snapshot),
         )
         .route(
-            "/api/spawned/{name}/semantic/history",
-            routing::get(listen_api_semantic_history),
+            "/api/spawned/{name}/agent-events/history",
+            routing::get(listen_api_agent_event_history),
         )
         .route(
-            "/api/spawned/{name}/semantic/command",
-            routing::post(listen_api_semantic_command),
+            "/api/spawned/{name}/native-harness/command",
+            routing::post(listen_api_native_harness_command),
         )
         .route(
             "/api/spawned/{name}/delivery-mode",
@@ -692,14 +692,14 @@ async fn listen_api_replay(
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct SemanticHistoryQuery {
+struct AgentEventHistoryQuery {
     #[serde(rename = "sinceSequence")]
     since_sequence_camel: Option<u64>,
     #[serde(rename = "since_sequence")]
     since_sequence_snake: Option<u64>,
 }
 
-impl SemanticHistoryQuery {
+impl AgentEventHistoryQuery {
     fn since_sequence(&self) -> u64 {
         self.since_sequence_camel
             .or(self.since_sequence_snake)
@@ -707,10 +707,10 @@ impl SemanticHistoryQuery {
     }
 }
 
-async fn listen_api_semantic_history(
+async fn listen_api_agent_event_history(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
-    axum::extract::Query(query): axum::extract::Query<SemanticHistoryQuery>,
+    axum::extract::Query(query): axum::extract::Query<AgentEventHistoryQuery>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
@@ -747,16 +747,16 @@ async fn listen_api_semantic_history(
             format!("no worker named '{name}'"),
         );
     };
-    if agent.get("runtime_kind").and_then(Value::as_str) != Some("semantic-harness") {
+    if agent.get("runtime_kind").and_then(Value::as_str) != Some("native") {
         return api_error(
             axum::http::StatusCode::CONFLICT,
             "unsupported_runtime",
-            format!("worker '{name}' does not expose semantic history"),
+            format!("worker '{name}' does not expose agent-event history"),
         );
     }
     let snapshot = state
         .replay_buffer
-        .replay_semantic_since(&name, query.since_sequence())
+        .replay_agent_events_since(&name, query.since_sequence())
         .await;
     (
         axum::http::StatusCode::OK,
@@ -772,7 +772,7 @@ async fn listen_api_semantic_history(
 }
 
 #[derive(Debug, Deserialize)]
-struct SemanticCommandBody {
+struct NativeHarnessCommandBody {
     protocol_version: u64,
     kind: String,
     idempotency_key: String,
@@ -786,17 +786,17 @@ struct SemanticCommandBody {
     instructions: Option<String>,
 }
 
-async fn listen_api_semantic_command(
+async fn listen_api_native_harness_command(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
-    axum::Json(body): axum::Json<SemanticCommandBody>,
+    axum::Json(body): axum::Json<NativeHarnessCommandBody>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     if body.protocol_version != 1 {
         return api_error(
             axum::http::StatusCode::CONFLICT,
             "unsupported_protocol_version",
             format!(
-                "semantic protocol version {} is unsupported (expected 1)",
+                "native harness protocol version {} is unsupported (expected 1)",
                 body.protocol_version
             ),
         );
@@ -805,7 +805,7 @@ async fn listen_api_semantic_command(
         return api_error(
             axum::http::StatusCode::BAD_REQUEST,
             "invalid_idempotency_key",
-            "semantic command idempotency_key must not be empty",
+            "native harness command idempotency_key must not be empty",
         );
     }
     let valid_kind = matches!(
@@ -820,8 +820,8 @@ async fn listen_api_semantic_command(
     if !valid_kind {
         return api_error(
             axum::http::StatusCode::BAD_REQUEST,
-            "invalid_semantic_command",
-            format!("unsupported semantic command '{}'", body.kind),
+            "invalid_native_harness_command",
+            format!("unsupported native harness command '{}'", body.kind),
         );
     }
     if body.kind == "submit_user_message"
@@ -832,7 +832,7 @@ async fn listen_api_semantic_command(
     {
         return api_error(
             axum::http::StatusCode::BAD_REQUEST,
-            "invalid_semantic_input",
+            "invalid_native_harness_input",
             "submit_user_message requires non-empty text",
         );
     }
@@ -844,7 +844,7 @@ async fn listen_api_semantic_command(
     {
         return api_error(
             axum::http::StatusCode::BAD_REQUEST,
-            "invalid_semantic_approval",
+            "invalid_native_harness_approval",
             "approve_tool and reject_tool require a non-empty approval_id",
         );
     }
@@ -855,8 +855,8 @@ async fn listen_api_semantic_command(
     {
         return api_error(
             axum::http::StatusCode::BAD_REQUEST,
-            "invalid_semantic_input_mode",
-            "semantic input mode must be auto, active, or idle",
+            "invalid_native_harness_input_mode",
+            "native harness input mode must be auto, active, or idle",
         );
     }
 
@@ -874,7 +874,7 @@ async fn listen_api_semantic_command(
         .tx
         .send(ListenApiRequest::WorkerRequest {
             name: WorkerName::new(name),
-            kind: "semantic_command".to_string(),
+            kind: "native_harness_command".to_string(),
             payload,
             timeout: DEFAULT_REQUEST_TIMEOUT,
             reply: reply_tx,
@@ -5653,8 +5653,8 @@ mod auth_tests {
             ("PUT", "/api/spawned/worker-a/delivery-mode"),
             ("GET", "/api/spawned/worker-a/pending"),
             ("POST", "/api/spawned/worker-a/flush"),
-            ("GET", "/api/spawned/worker-a/semantic/history"),
-            ("POST", "/api/spawned/worker-a/semantic/command"),
+            ("GET", "/api/spawned/worker-a/agent-events/history"),
+            ("POST", "/api/spawned/worker-a/native-harness/command"),
         ] {
             let response = router
                 .clone()
@@ -5677,7 +5677,7 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn semantic_command_route_forwards_versioned_idempotent_input() {
+    async fn native_harness_command_route_forwards_versioned_idempotent_input() {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             match rx.recv().await {
@@ -5689,7 +5689,7 @@ mod auth_tests {
                     ..
                 }) => {
                     assert_eq!(name, "worker-a");
-                    assert_eq!(kind, "semantic_command");
+                    assert_eq!(kind, "native_harness_command");
                     assert_eq!(payload["protocol_version"], json!(1));
                     assert_eq!(payload["kind"], json!("submit_user_message"));
                     assert_eq!(payload["idempotency_key"], json!("input-1"));
@@ -5707,7 +5707,7 @@ mod auth_tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/worker-a/semantic/command")
+                    .uri("/api/spawned/worker-a/native-harness/command")
                     .method("POST")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
@@ -5731,12 +5731,12 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn semantic_approval_command_requires_an_approval_id() {
+    async fn native_harness_approval_command_requires_an_approval_id() {
         let (router, _rx) = test_router(Some("secret"));
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/worker-a/semantic/command")
+                    .uri("/api/spawned/worker-a/native-harness/command")
                     .method("POST")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
@@ -5755,7 +5755,7 @@ mod auth_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response_json(response).await["code"],
-            json!("invalid_semantic_approval")
+            json!("invalid_native_harness_approval")
         );
     }
 }

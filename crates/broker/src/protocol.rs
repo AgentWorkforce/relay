@@ -13,6 +13,8 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Broker process wrapper. Native harnesses and attached app servers both use
+/// `Headless`; `ResolvedHarnessConfig` carries the harness execution mode.
 pub enum AgentRuntime {
     Pty,
     Headless,
@@ -140,7 +142,7 @@ pub struct HeadlessHarnessConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SemanticHarnessConfig {
+pub struct NativeHarnessConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -158,7 +160,7 @@ pub struct SemanticHarnessConfig {
 pub enum ResolvedHarnessConfig {
     Pty(PtyHarnessConfig),
     Headless(HeadlessHarnessConfig),
-    Semantic(SemanticHarnessConfig),
+    Native(NativeHarnessConfig),
 }
 
 impl<'de> Deserialize<'de> for ResolvedHarnessConfig {
@@ -180,8 +182,8 @@ impl<'de> Deserialize<'de> for ResolvedHarnessConfig {
             "headless" => serde_json::from_value(value)
                 .map(Self::Headless)
                 .map_err(serde::de::Error::custom),
-            "semantic" => serde_json::from_value(value)
-                .map(Self::Semantic)
+            "native" => serde_json::from_value(value)
+                .map(Self::Native)
                 .map_err(serde::de::Error::custom),
             "app_server" => {
                 if let Some(object) = value.as_object_mut() {
@@ -196,7 +198,7 @@ impl<'de> Deserialize<'de> for ResolvedHarnessConfig {
             }
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["pty", "headless", "semantic", "app_server"],
+                &["pty", "headless", "native", "app_server"],
             )),
         }
     }
@@ -207,7 +209,7 @@ impl ResolvedHarnessConfig {
         match self {
             Self::Pty(_) => AgentRuntime::Pty,
             Self::Headless(_) => AgentRuntime::Headless,
-            Self::Semantic(_) => AgentRuntime::Headless,
+            Self::Native(_) => AgentRuntime::Headless,
         }
     }
 
@@ -215,7 +217,7 @@ impl ResolvedHarnessConfig {
         match self {
             Self::Pty(config) => config.session_id.as_deref(),
             Self::Headless(config) => Some(config.session_id.as_str()),
-            Self::Semantic(config) => Some(config.session_id.as_str()),
+            Self::Native(config) => Some(config.session_id.as_str()),
         }
     }
 }
@@ -581,9 +583,9 @@ pub enum BrokerToWorker {
     /// sitting frozen until the drive session detaches. Deliveries that
     /// arrive after the flush stay parked under the hold as usual.
     FlushInjections {},
-    /// Versioned semantic control sent to a headless harness sidecar. The
+    /// Versioned control sent to a native harness sidecar. The
     /// envelope request id correlates the sidecar's command response.
-    SemanticCommand {
+    NativeHarnessCommand {
         protocol_version: u32,
         kind: String,
         idempotency_key: String,
@@ -632,19 +634,19 @@ pub enum WorkerToBroker {
     Pong {
         ts_ms: u64,
     },
-    SemanticEvent {
+    AgentEvent {
         protocol_version: u32,
         sequence: u64,
         timestamp: String,
         event: Value,
     },
-    SemanticDiagnostic {
+    NativeHarnessDiagnostic {
         protocol_version: u32,
         sequence: u64,
         timestamp: String,
         diagnostic: Value,
     },
-    SemanticCommandResponse {
+    NativeHarnessCommandResponse {
         protocol_version: u32,
         request_id: String,
         idempotency_key: String,
@@ -743,8 +745,8 @@ mod tests {
     }
 
     #[test]
-    fn semantic_protocol_frames_round_trip() {
-        let command = BrokerToWorker::SemanticCommand {
+    fn native_harness_protocol_frames_round_trip() {
+        let command = BrokerToWorker::NativeHarnessCommand {
             protocol_version: 1,
             kind: "submit_user_message".into(),
             idempotency_key: "input-1".into(),
@@ -758,7 +760,7 @@ mod tests {
             command
         );
 
-        let event = WorkerToBroker::SemanticEvent {
+        let event = WorkerToBroker::AgentEvent {
             protocol_version: 1,
             sequence: 7,
             timestamp: "2026-07-15T00:00:00Z".into(),

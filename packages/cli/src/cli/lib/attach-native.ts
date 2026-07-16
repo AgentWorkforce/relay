@@ -4,9 +4,9 @@ import { randomUUID } from 'node:crypto';
 import {
   HarnessDriverClient,
   type BrokerEvent,
-  type SemanticCommandAck,
-  type SemanticDiagnosticEnvelope,
-  type SemanticEventEnvelope,
+  type NativeHarnessCommandAck,
+  type NativeHarnessDiagnosticEnvelope,
+  type AgentEventEnvelope,
 } from '@agent-relay/harness-driver';
 
 import {
@@ -17,9 +17,9 @@ import {
 } from './broker-connection.js';
 import { createBrokerClient } from './attach-broker.js';
 
-export type SemanticAttachMode = 'view' | 'drive' | 'passthrough';
+export type NativeAttachMode = 'view' | 'drive' | 'passthrough';
 
-export interface SemanticAttachOptions {
+export interface NativeAttachOptions {
   brokerUrl?: string;
   apiKey?: string;
   stateDir?: string;
@@ -28,17 +28,17 @@ export interface SemanticAttachOptions {
   diagnostics?: boolean;
 }
 
-export interface SemanticAttachOutput {
+export interface NativeAttachOutput {
   stdout(text: string): void;
   stderr(text: string): void;
 }
 
-export function renderSemanticEvent(
-  envelope: SemanticEventEnvelope,
-  options: Pick<SemanticAttachOptions, 'json' | 'reasoning'> = {}
+export function renderAgentEvent(
+  envelope: AgentEventEnvelope,
+  options: Pick<NativeAttachOptions, 'json' | 'reasoning'> = {}
 ): string | null {
   if (envelope.event.kind.startsWith('reasoning.') && !options.reasoning) return null;
-  if (options.json) return `${JSON.stringify({ kind: 'semantic_event', ...envelope })}\n`;
+  if (options.json) return `${JSON.stringify({ kind: 'agent_event', ...envelope })}\n`;
   const event = envelope.event;
   switch (event.kind) {
     case 'text.delta':
@@ -69,7 +69,7 @@ export function renderSemanticEvent(
       return `[warning] ${String(event.message ?? '')}\n`;
     case 'error':
     case 'session.failed':
-      return `[error] ${String(event.message ?? event.error ?? 'semantic harness failed')}\n`;
+      return `[error] ${String(event.message ?? event.error ?? 'native harness failed')}\n`;
     default:
       if (event.kind.startsWith('session.')) return `[session] ${event.kind.slice('session.'.length)}\n`;
       if (event.kind === 'context.compacted') return '[context] compacted\n';
@@ -77,23 +77,23 @@ export function renderSemanticEvent(
   }
 }
 
-export function renderSemanticDiagnostic(
-  envelope: SemanticDiagnosticEnvelope,
-  options: Pick<SemanticAttachOptions, 'json' | 'diagnostics'> = {}
+export function renderNativeHarnessDiagnostic(
+  envelope: NativeHarnessDiagnosticEnvelope,
+  options: Pick<NativeAttachOptions, 'json' | 'diagnostics'> = {}
 ): string | null {
   if (!options.diagnostics) return null;
-  if (options.json) return `${JSON.stringify({ kind: 'semantic_diagnostic', ...envelope })}\n`;
+  if (options.json) return `${JSON.stringify({ kind: 'native_harness_diagnostic', ...envelope })}\n`;
   return `[diagnostic:${envelope.diagnostic.level}] ${envelope.diagnostic.message}\n`;
 }
 
-export interface SemanticAttachDependencies {
+export interface NativeAttachDependencies {
   connect(connection: BrokerConnection): HarnessDriverClient;
-  output: SemanticAttachOutput;
+  output: NativeAttachOutput;
   createReadline(): ReadlineInterface;
   onSignal(handler: () => void): () => void;
 }
 
-function defaultDependencies(options: SemanticAttachOptions): SemanticAttachDependencies {
+function defaultDependencies(options: NativeAttachOptions): NativeAttachDependencies {
   void options;
   return {
     connect: (resolved) => createBrokerClient(resolved),
@@ -109,15 +109,15 @@ function defaultDependencies(options: SemanticAttachOptions): SemanticAttachDepe
   };
 }
 
-export async function attachSemantic(
+export async function attachNative(
   name: string,
-  mode: SemanticAttachMode,
-  options: SemanticAttachOptions,
-  overrides: Partial<SemanticAttachDependencies> = {}
+  mode: NativeAttachMode,
+  options: NativeAttachOptions,
+  overrides: Partial<NativeAttachDependencies> = {}
 ): Promise<number> {
   if (mode === 'passthrough') {
     (overrides.output?.stderr ?? ((text: string) => process.stderr.write(text)))(
-      'Error: semantic harnesses do not expose a terminal byte stream; use --mode view or --mode drive.\n'
+      'Error: native harnesses do not expose a terminal byte stream; use --mode view or --mode drive.\n'
     );
     return 1;
   }
@@ -132,10 +132,10 @@ export async function attachSemantic(
     );
     return 1;
   }
-  const deps = { ...defaultDependencies(options), ...overrides } as SemanticAttachDependencies;
+  const deps = { ...defaultDependencies(options), ...overrides } as NativeAttachDependencies;
   const client = deps.connect(connection);
   // Capture a global broker cursor before subscribing. The broker replays
-  // everything after this cursor while the semantic history request runs,
+  // everything after this cursor while the agent-event history request runs,
   // closing the history/live race even when the WebSocket opens slowly.
   let brokerCursor: number;
   try {
@@ -144,22 +144,22 @@ export async function attachSemantic(
     deps.output.stderr(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
-  const stream = client.subscribeSemanticEvents(name, { sinceSequence: 0, sinceBrokerSeq: brokerCursor });
+  const stream = client.subscribeAgentEvents(name, { sinceSequence: 0, sinceBrokerSeq: brokerCursor });
   const iterator = stream[Symbol.asyncIterator]();
   let highWater = 0;
   let stopped = false;
   let readline: ReadlineInterface | undefined;
   const pendingCommands = new Set<Promise<void>>();
   let commandChain = Promise.resolve();
-  const render = (event: SemanticEventEnvelope) => {
+  const render = (event: AgentEventEnvelope) => {
     if (event.sequence <= highWater) return;
     highWater = event.sequence;
-    const text = renderSemanticEvent(event, options);
+    const text = renderAgentEvent(event, options);
     if (text !== null) deps.output.stdout(text);
   };
   const unsubscribeDiagnostics = client.onEvent((event: BrokerEvent) => {
-    if (event.kind !== 'semantic_diagnostic' || event.name !== name) return;
-    const text = renderSemanticDiagnostic(event, options);
+    if (event.kind !== 'native_harness_diagnostic' || event.name !== name) return;
+    const text = renderNativeHarnessDiagnostic(event, options);
     if (text !== null) deps.output.stdout(text);
   });
   const stop = () => {
@@ -171,15 +171,15 @@ export async function attachSemantic(
   const removeSignal = deps.onSignal(stop);
 
   try {
-    const history = await client.getSemanticHistory(name, 0);
+    const history = await client.getAgentEventHistory(name, 0);
     if (history.gap) {
       const gap = {
-        kind: 'semantic_replay_gap',
+        kind: 'agent_event_replay_gap',
         name,
         oldest_available_sequence: history.oldest_available_sequence,
       };
       if (options.json) deps.output.stdout(`${JSON.stringify(gap)}\n`);
-      else deps.output.stderr('[attach] semantic history was truncated; showing retained events.\n');
+      else deps.output.stderr('[attach] agent-event history was truncated; showing retained events.\n');
     }
     for (const event of history.events) render(event);
 
@@ -204,7 +204,7 @@ export async function attachSemantic(
         const approvalId = approval?.[2]?.trim();
         const pendingCommand = commandChain
           .then(() =>
-            client.sendSemanticCommand(name, {
+            client.sendNativeHarnessCommand(name, {
               kind,
               idempotency_key: randomUUID(),
               ...(commandText === undefined ? {} : { text: commandText }),
@@ -212,13 +212,13 @@ export async function attachSemantic(
               ...(approvalId ? { approval_id: approvalId } : {}),
             })
           )
-          .then((ack: SemanticCommandAck) => {
+          .then((ack: NativeHarnessCommandAck) => {
             if (!ack.accepted) {
               deps.output.stderr(
-                `Input rejected: ${ack.error?.message ?? 'semantic harness rejected input'}\n`
+                `Input rejected: ${ack.error?.message ?? 'native harness rejected input'}\n`
               );
             } else if (options.json) {
-              deps.output.stdout(`${JSON.stringify({ kind: 'semantic_command_ack', name, ...ack })}\n`);
+              deps.output.stdout(`${JSON.stringify({ kind: 'native_harness_command_ack', name, ...ack })}\n`);
             } else {
               deps.output.stderr(ack.duplicate ? '[input] already accepted\n' : '[input] accepted\n');
             }
@@ -252,9 +252,9 @@ export async function attachSemantic(
   }
 }
 
-export async function isSemanticHarness(
+export async function isNativeHarness(
   name: string,
-  options: SemanticAttachOptions,
+  options: NativeAttachOptions,
   fetchFn: typeof globalThis.fetch = globalThis.fetch
 ): Promise<boolean> {
   const connection = resolveBrokerConnection(options, {
@@ -265,5 +265,5 @@ export async function isSemanticHarness(
   if (!connection) return false;
   const client = createBrokerClient(connection, fetchFn);
   const agent = (await client.listAgents()).find((candidate) => candidate.name === name);
-  return agent?.runtime_kind === 'semantic-harness';
+  return agent?.runtime_kind === 'native';
 }

@@ -52,9 +52,9 @@ export interface HeadlessAppServerHarnessConfig {
   metadata?: Record<string, unknown>;
 }
 
-/** Broker-owned semantic sidecar launched directly with JSON-over-stdio. */
-export interface SemanticHarnessConfig {
-  runtime: 'semantic';
+/** Broker-owned native harness sidecar launched directly with JSON-over-stdio. */
+export interface NativeHarnessConfig {
+  runtime: 'native';
   command: string;
   args: string[];
   cwd?: string;
@@ -63,7 +63,7 @@ export interface SemanticHarnessConfig {
   metadata?: Record<string, unknown>;
 }
 
-export type ResolvedHarnessConfig = PtyHarnessConfig | HeadlessAppServerHarnessConfig | SemanticHarnessConfig;
+export type ResolvedHarnessConfig = PtyHarnessConfig | HeadlessAppServerHarnessConfig | NativeHarnessConfig;
 
 export interface StaticPtyHarnessDefinition {
   runtime: 'pty';
@@ -89,14 +89,14 @@ export interface StaticHeadlessAppServerHarnessDefinition {
   metadata?: Record<string, unknown>;
 }
 
-export interface StaticSemanticHarnessDefinition extends Omit<SemanticHarnessConfig, 'args'> {
+export interface StaticNativeHarnessDefinition extends Omit<NativeHarnessConfig, 'args'> {
   args?: string[];
 }
 
 export type StaticHarnessDefinition =
   | StaticPtyHarnessDefinition
   | StaticHeadlessAppServerHarnessDefinition
-  | StaticSemanticHarnessDefinition;
+  | StaticNativeHarnessDefinition;
 export type HarnessDefinition = StaticHarnessDefinition;
 
 export interface ResolveStaticHarnessInput {
@@ -115,9 +115,9 @@ const DEFAULT_MODEL_ARGS = ['--model', '{model}'] as const;
 
 export function resolveStaticHarnessConfig(input: ResolveStaticHarnessInput): ResolvedHarnessConfig {
   const { definition } = input;
-  if (definition.runtime === 'semantic') {
+  if (definition.runtime === 'native') {
     return {
-      runtime: 'semantic',
+      runtime: 'native',
       command: expandHome(definition.command),
       args: renderTemplate(definition.args ?? [], {
         args: input.args ?? [],

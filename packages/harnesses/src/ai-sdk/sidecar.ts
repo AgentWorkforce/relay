@@ -3,14 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import {
-  SEMANTIC_PROTOCOL_VERSION,
+  NATIVE_HARNESS_PROTOCOL_VERSION,
   type ProtocolEnvelope,
   type RelayDelivery,
-  type SemanticCommand,
-  type SemanticCommandAck,
-  type SemanticDiagnosticEnvelope,
-  type SemanticEventEnvelope,
-  type SemanticEventPayload,
+  type NativeHarnessCommand,
+  type NativeHarnessCommandAck,
+  type NativeHarnessDiagnosticEnvelope,
+  type AgentEventEnvelope,
+  type AgentEventPayload,
 } from '@agent-relay/harness-driver';
 import type { AgentIdentity, AgentSessionEvent, RelayMessage } from '@agent-relay/sdk';
 import type { HarnessV1Diagnostic } from '@ai-sdk/harness';
@@ -28,7 +28,7 @@ export interface AiSdkSidecarConfig {
   instructions?: string;
   runtimeRoot?: string;
   permissionMode?: 'allow-reads' | 'allow-edits' | 'allow-all';
-  /** Bounded semantic-command idempotency cache; primarily configurable for tests. */
+  /** Bounded native harness command idempotency cache; primarily configurable for tests. */
   maxCommandDedupeEntries?: number;
 }
 
@@ -37,9 +37,9 @@ export interface AiSdkSidecarIo {
   write: (line: string) => void | Promise<void>;
 }
 
-interface SemanticCommandFrame extends ProtocolEnvelope<SemanticCommand> {
+interface NativeHarnessCommandFrame extends ProtocolEnvelope<NativeHarnessCommand> {
   v: 2;
-  type: 'semantic_command';
+  type: 'native_harness_command';
   request_id: string;
 }
 
@@ -52,10 +52,10 @@ function errorMessage(error: unknown): string {
 }
 
 function protocolError(error: unknown) {
-  return { code: 'semantic_command_failed', message: errorMessage(error), retryable: false };
+  return { code: 'native_harness_command_failed', message: errorMessage(error), retryable: false };
 }
 
-function commandDigest(command: SemanticCommand): string {
+function commandDigest(command: NativeHarnessCommand): string {
   const canonical = JSON.stringify([
     command.kind,
     command.text ?? null,
@@ -66,14 +66,14 @@ function commandDigest(command: SemanticCommand): string {
   return createHash('sha256').update(canonical).digest('hex');
 }
 
-function isCommandFrame(value: unknown): value is SemanticCommandFrame {
+function isCommandFrame(value: unknown): value is NativeHarnessCommandFrame {
   if (!value || typeof value !== 'object') return false;
-  const frame = value as Partial<SemanticCommandFrame>;
+  const frame = value as Partial<NativeHarnessCommandFrame>;
   return (
     frame.v === 2 &&
-    frame.type === 'semantic_command' &&
+    frame.type === 'native_harness_command' &&
     typeof frame.request_id === 'string' &&
-    frame.payload?.protocol_version === SEMANTIC_PROTOCOL_VERSION
+    frame.payload?.protocol_version === NATIVE_HARNESS_PROTOCOL_VERSION
   );
 }
 
@@ -81,12 +81,12 @@ function isWorkerInputFrame(value: unknown): value is WorkerInputFrame {
   return Boolean(value && typeof value === 'object' && (value as WorkerInputFrame).v === 2);
 }
 
-function eventPayload(event: AgentSessionEvent, sequence: number, timestamp: string): SemanticEventPayload {
+function eventPayload(event: AgentSessionEvent, sequence: number, timestamp: string): AgentEventPayload {
   const { type, agent: _agent, ...payload } = event;
   const observability = event.observability ? { ...event.observability, sequence, timestamp } : undefined;
   return JSON.parse(
     JSON.stringify({ kind: type, ...payload, ...(observability ? { observability } : {}) })
-  ) as SemanticEventPayload;
+  ) as AgentEventPayload;
 }
 
 function diagnosticPayload(diagnostic: HarnessV1Diagnostic) {
@@ -114,22 +114,22 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     runtimeRoot: config.runtimeRoot,
   });
   let diagnosticSequence = 0;
-  let semanticSequence = 0;
-  let semanticWrites = Promise.resolve();
+  let agentEventSequence = 0;
+  let agentEventWrites = Promise.resolve();
   const write = async (frame: unknown) => io.write(`${JSON.stringify(frame)}\n`);
   const publishEvent = (event: AgentSessionEvent): Promise<void> => {
-    semanticWrites = semanticWrites.then(async () => {
-      const sequence = ++semanticSequence;
+    agentEventWrites = agentEventWrites.then(async () => {
+      const sequence = ++agentEventSequence;
       const timestamp = new Date().toISOString();
-      const envelope: Omit<SemanticEventEnvelope, 'name'> = {
-        protocol_version: SEMANTIC_PROTOCOL_VERSION,
+      const envelope: Omit<AgentEventEnvelope, 'name'> = {
+        protocol_version: NATIVE_HARNESS_PROTOCOL_VERSION,
         sequence,
         timestamp,
         event: eventPayload(event, sequence, timestamp),
       };
-      await write({ v: 2, type: 'semantic_event', payload: envelope });
+      await write({ v: 2, type: 'agent_event', payload: envelope });
     });
-    return semanticWrites;
+    return agentEventWrites;
   };
   const host = new HarnessHost({
     harness,
@@ -139,13 +139,13 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     instructions: config.instructions,
     permissionMode: config.permissionMode,
     onDiagnostic: async (diagnostic) => {
-      const envelope: Omit<SemanticDiagnosticEnvelope, 'name'> = {
-        protocol_version: SEMANTIC_PROTOCOL_VERSION,
+      const envelope: Omit<NativeHarnessDiagnosticEnvelope, 'name'> = {
+        protocol_version: NATIVE_HARNESS_PROTOCOL_VERSION,
         sequence: ++diagnosticSequence,
         timestamp: new Date().toISOString(),
         diagnostic: diagnosticPayload(diagnostic),
       };
-      await write({ v: 2, type: 'semantic_diagnostic', payload: envelope });
+      await write({ v: 2, type: 'native_harness_diagnostic', payload: envelope });
     },
   });
   const relaySession = new RelayHarnessSession({
@@ -173,7 +173,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
   await host.start();
 
   const maxCommandDedupeEntries = Math.max(1, config.maxCommandDedupeEntries ?? 10_000);
-  const acknowledgements = new Map<string, { digest: string; acknowledgement: SemanticCommandAck }>();
+  const acknowledgements = new Map<string, { digest: string; acknowledgement: NativeHarnessCommandAck }>();
   const lines = createInterface({ input: io.input, crlfDelay: Infinity });
   for await (const line of lines) {
     if (!line.trim()) continue;
@@ -183,12 +183,15 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     } catch (error) {
       await write({
         v: 2,
-        type: 'semantic_diagnostic',
+        type: 'native_harness_diagnostic',
         payload: {
-          protocol_version: SEMANTIC_PROTOCOL_VERSION,
+          protocol_version: NATIVE_HARNESS_PROTOCOL_VERSION,
           sequence: ++diagnosticSequence,
           timestamp: new Date().toISOString(),
-          diagnostic: { level: 'error', message: `Invalid semantic command JSON: ${errorMessage(error)}` },
+          diagnostic: {
+            level: 'error',
+            message: `Invalid native harness command JSON: ${errorMessage(error)}`,
+          },
         },
       });
       continue;
@@ -264,26 +267,26 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       if (previous.digest !== digest) {
         await write({
           v: 2,
-          type: 'semantic_command_response',
+          type: 'native_harness_command_response',
           request_id: frame.request_id,
           payload: {
-            protocol_version: SEMANTIC_PROTOCOL_VERSION,
+            protocol_version: NATIVE_HARNESS_PROTOCOL_VERSION,
             request_id: frame.request_id,
             idempotency_key: command.idempotency_key,
             accepted: false,
             active_turn: host.hasActiveTurn,
             error: {
               code: 'idempotency_conflict',
-              message: 'Semantic command idempotency key was already used for a different command',
+              message: 'Native harness command idempotency key was already used for a different command',
               retryable: false,
             },
-          } satisfies SemanticCommandAck,
+          } satisfies NativeHarnessCommandAck,
         });
         continue;
       }
       await write({
         v: 2,
-        type: 'semantic_command_response',
+        type: 'native_harness_command_response',
         request_id: frame.request_id,
         payload: {
           ...previous.acknowledgement,
@@ -294,7 +297,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       continue;
     }
 
-    let acknowledgement: SemanticCommandAck;
+    let acknowledgement: NativeHarnessCommandAck;
     try {
       switch (command.kind) {
         case 'submit_user_message': {
@@ -327,15 +330,15 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
           await host.compact(command.instructions);
           break;
         case 'release':
-          await relaySession.release('semantic_command');
+          await relaySession.release('native_harness_command');
           break;
         default:
           throw new Error(
-            `Unsupported semantic command kind: ${String((command as { kind?: unknown }).kind)}`
+            `Unsupported native harness command kind: ${String((command as { kind?: unknown }).kind)}`
           );
       }
       acknowledgement = {
-        protocol_version: SEMANTIC_PROTOCOL_VERSION,
+        protocol_version: NATIVE_HARNESS_PROTOCOL_VERSION,
         request_id: frame.request_id,
         idempotency_key: command.idempotency_key,
         accepted: true,
@@ -343,7 +346,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       };
     } catch (error) {
       acknowledgement = {
-        protocol_version: SEMANTIC_PROTOCOL_VERSION,
+        protocol_version: NATIVE_HARNESS_PROTOCOL_VERSION,
         request_id: frame.request_id,
         idempotency_key: command.idempotency_key,
         accepted: false,
@@ -359,7 +362,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     }
     await write({
       v: 2,
-      type: 'semantic_command_response',
+      type: 'native_harness_command_response',
       request_id: frame.request_id,
       payload: acknowledgement,
     });
@@ -367,7 +370,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
   }
 
   if (host.state !== 'destroyed' && host.state !== 'detached') await host.destroy();
-  await semanticWrites;
+  await agentEventWrites;
 }
 
 async function loadConfig(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<AiSdkSidecarConfig> {

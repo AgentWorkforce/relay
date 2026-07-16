@@ -4,9 +4,9 @@ import {
   EXACT_OBSERVABILITY,
   INFERRED_OBSERVABILITY,
   type AgentActivity,
+  type AgentEvent,
   type AgentObservabilityCapabilities,
   type AgentSessionEvent,
-  type CanonicalAgentSessionEvent,
 } from '@agent-relay/sdk';
 
 export const AI_SDK_REFERENCE_OBSERVABILITY_PROFILE: AgentObservabilityCapabilities =
@@ -105,13 +105,11 @@ export type PtyObservabilitySignal =
   | { type: 'idle'; turnId: string; at?: Date | string }
   | { type: 'error'; error: string; code?: string; at?: Date | string };
 
-export type PtyCanonicalObservabilityEvent =
-  | CanonicalAgentSessionEvent
-  | Extract<AgentSessionEvent, { type: 'activity.changed' }>;
+export type PtyAgentEvent = AgentEvent | Extract<AgentSessionEvent, { type: 'activity.changed' }>;
 
 export interface PtyObservabilityTranslator {
   readonly capabilities: AgentObservabilityCapabilities;
-  translate(signal: PtyObservabilitySignal): PtyCanonicalObservabilityEvent[];
+  translate(signal: PtyObservabilitySignal): PtyAgentEvent[];
 }
 
 /** Translate broker-owned PTY lifecycle evidence into the canonical contract. */
@@ -135,7 +133,7 @@ export function createPtyObservabilityTranslator(harnessName: string): PtyObserv
     fidelity: 'exact' | 'inferred',
     at: Date | string,
     turnId?: string
-  ): PtyCanonicalObservabilityEvent | undefined => {
+  ): PtyAgentEvent | undefined => {
     if (activity === next) return undefined;
     const previousActivity = activity;
     activity = next;
@@ -155,7 +153,7 @@ export function createPtyObservabilityTranslator(harnessName: string): PtyObserv
       const at = signal.at ?? new Date().toISOString();
       switch (signal.type) {
         case 'starting': {
-          const events: PtyCanonicalObservabilityEvent[] = [
+          const events: PtyAgentEvent[] = [
             {
               type: 'session.starting',
               reason: 'broker_spawn',
@@ -170,7 +168,7 @@ export function createPtyObservabilityTranslator(harnessName: string): PtyObserv
         case 'busy': {
           if (activeTurnId === signal.turnId && activity === 'thinking') return [];
           activeTurnId = signal.turnId;
-          const events: PtyCanonicalObservabilityEvent[] = [
+          const events: PtyAgentEvent[] = [
             {
               type: 'turn.started',
               turnId: signal.turnId,
@@ -185,7 +183,7 @@ export function createPtyObservabilityTranslator(harnessName: string): PtyObserv
         case 'idle': {
           if (activeTurnId !== signal.turnId) return [];
           activeTurnId = undefined;
-          const events: PtyCanonicalObservabilityEvent[] = [
+          const events: PtyAgentEvent[] = [
             {
               type: 'turn.settled',
               turnId: signal.turnId,
@@ -198,7 +196,7 @@ export function createPtyObservabilityTranslator(harnessName: string): PtyObserv
           return events;
         }
         case 'error': {
-          const events: PtyCanonicalObservabilityEvent[] = [
+          const events: PtyAgentEvent[] = [
             {
               type: 'session.failed',
               error: signal.error,

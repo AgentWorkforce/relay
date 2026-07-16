@@ -91,20 +91,18 @@ mod pty_observability_tests {
             "sequence": 1,
             "diagnostic": { "kind": "diagnostic", "message": "debug" }
         });
-        assert!(hosted_semantic_event(&name, "semantic_diagnostic", &diagnostic, None).is_none());
+        assert!(
+            hosted_agent_event(&name, "native_harness_diagnostic", &diagnostic, None).is_none()
+        );
 
         let canonical = json!({
             "protocol_version":1, "sequence":9, "timestamp":"2026-07-16T00:00:00Z",
             "event":{"kind":"diagnostic","message":"debug","observability":{"source":"ai-sdk","fidelity":"exact","sequence":9,"timestamp":"2026-07-16T00:00:00Z"}}
         });
         let workspace_id = WorkspaceId::new("ws_secondary");
-        let hosted = hosted_semantic_event(
-            &name,
-            "semantic_event",
-            &canonical,
-            Some(workspace_id.clone()),
-        )
-        .expect("canonical event should be hosted");
+        let hosted =
+            hosted_agent_event(&name, "agent_event", &canonical, Some(workspace_id.clone()))
+                .expect("canonical event should be hosted");
         assert_eq!(hosted.event_type, "diagnostic");
         assert!(hosted.payload.get("kind").is_none());
         assert_eq!(hosted.payload["protocol_version"], 1);
@@ -282,13 +280,13 @@ fn pty_capabilities() -> Value {
     })
 }
 
-fn hosted_semantic_event(
+fn hosted_agent_event(
     name: &WorkerName,
     msg_type: &str,
     payload: &Value,
     workspace_id: Option<WorkspaceId>,
 ) -> Option<HostedAgentEvent> {
-    if msg_type != "semantic_event" {
+    if msg_type != "agent_event" {
         return None;
     }
     let mut event_payload = payload.get("event")?.as_object()?.clone();
@@ -631,12 +629,12 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                    } else if msg_type == "semantic_event" || msg_type == "semantic_diagnostic" {
+                    } else if msg_type == "agent_event" || msg_type == "native_harness_diagnostic" {
                         let payload = value.get("payload").cloned().unwrap_or(Value::Null);
                         let protocol_version =
                             payload.get("protocol_version").and_then(Value::as_u64);
                         let sequence = payload.get("sequence").and_then(Value::as_u64);
-                        let body_key = if msg_type == "semantic_event" {
+                        let body_key = if msg_type == "agent_event" {
                             "event"
                         } else {
                             "diagnostic"
@@ -650,11 +648,11 @@ impl BrokerRuntime {
                                 json!({
                                     "kind": "worker_error",
                                     "name": name,
-                                    "code": "invalid_semantic_frame",
-                                    "message": "semantic frame requires protocol_version=1, a positive sequence, and an object payload",
+                                    "code": "invalid_native_harness_frame",
+                                    "message": "native harness frame requires protocol_version=1, a positive sequence, and an object payload",
                                     "error": {
-                                        "code": "invalid_semantic_frame",
-                                        "message": "semantic frame requires protocol_version=1, a positive sequence, and an object payload",
+                                        "code": "invalid_native_harness_frame",
+                                        "message": "native harness frame requires protocol_version=1, a positive sequence, and an object payload",
                                         "retryable": false,
                                     }
                                 }),
@@ -666,26 +664,26 @@ impl BrokerRuntime {
                             handle.last_activity_at = Instant::now();
                         }
                         // Transport diagnostics have their own sequence domain and are
-                        // also represented by the canonical `diagnostic` semantic event.
+                        // also represented by the canonical `diagnostic` agent event.
                         // Keep them on the local attach stream, but publish only the
-                        // canonical semantic stream to Relaycast to avoid duplicates.
+                        // canonical agent-event stream to Relaycast to avoid duplicates.
                         let workspace_id = workers
                             .workers
                             .get(&name)
                             .and_then(|handle| handle.workspace_id.clone());
                         if let Some(hosted_event) =
-                            hosted_semantic_event(&name, msg_type, &payload, workspace_id)
+                            hosted_agent_event(&name, msg_type, &payload, workspace_id)
                         {
                             if let Err(error) = hosted_agent_event_tx.try_send(hosted_event) {
-                                tracing::warn!(worker = %name, error = %error, "Relaycast semantic event queue is full or closed");
+                                tracing::warn!(worker = %name, error = %error, "Relaycast agent-event queue is full or closed");
                             }
                         }
-                        let mut semantic = payload;
-                        if let Some(object) = semantic.as_object_mut() {
+                        let mut agent_event = payload;
+                        if let Some(object) = agent_event.as_object_mut() {
                             object.insert("kind".to_string(), Value::String(msg_type.to_string()));
                             object.insert("name".to_string(), Value::String(name.to_string()));
                         }
-                        let _ = send_event(sdk_out_tx, semantic).await;
+                        let _ = send_event(sdk_out_tx, agent_event).await;
                     } else if msg_type.ends_with("_response") {
                         // Generic worker request/response dispatch.
                         // Any frame whose `type` ends in

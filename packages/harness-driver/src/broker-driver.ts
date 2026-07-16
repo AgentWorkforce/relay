@@ -1,5 +1,5 @@
 import { HarnessDriverClient, type RuntimeSpawnOptions } from './client.js';
-import type { BrokerEvent, SemanticEventEnvelope } from './protocol.js';
+import type { BrokerEvent, AgentEventEnvelope } from './protocol.js';
 import type { ListAgent, SpawnAgentResult } from './types.js';
 import type {
   AgentDriver,
@@ -44,7 +44,7 @@ export class BrokerDriver implements AgentDriver {
 
   async spawn(input: SpawnRuntimeInput): Promise<SpawnedAgentRuntime> {
     const client = await this.ensureClient();
-    const transport = input.harnessConfig?.runtime === 'semantic' ? 'headless' : (input.transport ?? 'pty');
+    const transport = input.harnessConfig?.runtime === 'native' ? 'headless' : (input.transport ?? 'pty');
     const { transport: _transport, ...spawnInput } = input;
     const buffered = transport === 'pty' ? this.bufferBrokerEvents(client, input.name) : undefined;
     let result: SpawnAgentResult;
@@ -88,7 +88,7 @@ export class BrokerDriver implements AgentDriver {
   private runtimeHandle(
     client: HarnessDriverClient,
     result: SpawnAgentResult,
-    semantic = false,
+    nativeHarness = false,
     buffered?: BufferedBrokerEvents
   ): SpawnedAgentRuntime {
     const observers = new Set<() => Promise<void>>();
@@ -134,11 +134,11 @@ export class BrokerDriver implements AgentDriver {
         await trackedDispose();
       };
     };
-    if (semantic) {
-      runtime.observeSemanticEvents = async (listener, onError) => {
+    if (nativeHarness) {
+      runtime.observeAgentEvents = async (listener, onError) => {
         let closed = false;
         let trackedDispose: (() => Promise<void>) | undefined;
-        const dispose = await this.observeSemanticEvents(client, result.name, listener, onError, () => {
+        const dispose = await this.observeAgentEvents(client, result.name, listener, onError, () => {
           closed = true;
           if (trackedDispose) observers.delete(trackedDispose);
         });
@@ -153,14 +153,14 @@ export class BrokerDriver implements AgentDriver {
     return runtime;
   }
 
-  private async observeSemanticEvents(
+  private async observeAgentEvents(
     client: HarnessDriverClient,
     name: string,
-    listener: (event: SemanticEventEnvelope) => void | Promise<void>,
+    listener: (event: AgentEventEnvelope) => void | Promise<void>,
     onError?: (error: unknown) => void | Promise<void>,
     onClose?: () => void
   ): Promise<() => Promise<void>> {
-    let iterator: AsyncIterator<SemanticEventEnvelope> | undefined;
+    let iterator: AsyncIterator<AgentEventEnvelope> | undefined;
     let stopped = false;
     const stopOnRuntimeExit = client.onEvent((event: BrokerEvent) => {
       if (
@@ -179,7 +179,7 @@ export class BrokerDriver implements AgentDriver {
       stopOnRuntimeExit();
       throw error;
     }
-    const stream = client.subscribeSemanticEvents(name, {
+    const stream = client.subscribeAgentEvents(name, {
       sinceSequence: 0,
       sinceBrokerSeq: brokerCursor,
     });
@@ -187,7 +187,7 @@ export class BrokerDriver implements AgentDriver {
     let highWater = 0;
     let terminalSeen = false;
     let delivery = Promise.resolve();
-    const publish = (event: SemanticEventEnvelope) => {
+    const publish = (event: AgentEventEnvelope) => {
       if (event.sequence <= highWater) return;
       highWater = event.sequence;
       delivery = delivery.then(() => listener(event));
@@ -195,7 +195,7 @@ export class BrokerDriver implements AgentDriver {
         String(event.event.kind)
       );
     };
-    const history = await client.getSemanticHistory(name, 0);
+    const history = await client.getAgentEventHistory(name, 0);
     for (const event of history.events) publish(event);
     const pump = (async () => {
       try {

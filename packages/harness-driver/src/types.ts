@@ -148,7 +148,7 @@ export interface ListAgent {
   context_budget_pct?: number | null;
   current_state?: AgentCurrentState;
   /** Attach/runtime discriminator independent from the process wrapper. */
-  runtime_kind?: 'pty' | 'headless' | 'semantic-harness';
-  semantic_protocol_version?: number;
-  semantic_capabilities?: Record<string, unknown>;
+  runtime_kind?: 'pty' | 'headless' | 'native';
+  native_harness_protocol_version?: number;
+  native_harness_capabilities?: Record<string, unknown>;
 }

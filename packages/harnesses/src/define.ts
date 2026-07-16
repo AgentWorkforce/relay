@@ -12,7 +12,7 @@ import {
 } from '@agent-relay/sdk';
 import type {
   BrokerEvent,
-  SemanticEventEnvelope,
+  AgentEventEnvelope,
   StaticPtyHarnessDefinition,
 } from '@agent-relay/harness-driver';
 
@@ -73,11 +73,11 @@ export interface HarnessAgent extends RelayHarnessAgent {
   observability: ReturnType<typeof getPtyObservabilityProfile>;
 }
 
-export interface SemanticHarnessAgent extends RelayHarnessAgent {
-  kind: 'semantic';
+export interface NativeHarnessAgent extends RelayHarnessAgent {
+  kind: 'native';
   backend: 'ai-sdk';
   cli: string;
-  runtime: 'semantic-harness';
+  runtime: 'native';
   adapter: string;
   model?: string;
   task?: string;
@@ -88,10 +88,10 @@ export interface SemanticHarnessAgent extends RelayHarnessAgent {
   observability: typeof AI_SDK_REFERENCE_OBSERVABILITY_PROFILE;
 }
 
-export type ManagedHarnessAgent = HarnessAgent | SemanticHarnessAgent;
+export type ManagedHarnessAgent = HarnessAgent | NativeHarnessAgent;
 
 export interface ManagedHarness extends HarnessFactory<HarnessCreateInput, ManagedHarnessAgent> {
-  readonly runtime: 'pty' | 'semantic';
+  readonly runtime: 'pty' | 'native';
   readonly command: string;
   readonly adapter: AiSdkAdapterRegistryEntry;
   create(input?: HarnessCreateInput): Promise<ManagedHarnessAgent>;
@@ -246,18 +246,18 @@ function selectBackend(
   );
 }
 
-function semanticDescriptor(
+function nativeDescriptor(
   adapter: AiSdkAdapterRegistryEntry,
   input: HarnessCreateInput,
   name = nextHarnessName(adapter.name, input.name)
-): SemanticHarnessAgent {
+): NativeHarnessAgent {
   const handle = createAgentHandle({ id: `harness:${adapter.name}:${name}`, name });
   return {
     ...handle,
-    kind: 'semantic',
+    kind: 'native',
     backend: 'ai-sdk',
     cli: adapter.name,
-    runtime: 'semantic-harness',
+    runtime: 'native',
     adapter: adapter.name,
     model: input.model,
     task: input.task,
@@ -269,7 +269,7 @@ function semanticDescriptor(
   };
 }
 
-function publicSemanticLifecycle(adapter: AiSdkAdapterRegistryEntry) {
+function publicNativeLifecycle(adapter: AiSdkAdapterRegistryEntry) {
   return {
     activeInput: adapter.lifecycle.activeInput,
     toolApprovals: adapter.lifecycle.toolApprovals,
@@ -283,20 +283,20 @@ function publicSemanticLifecycle(adapter: AiSdkAdapterRegistryEntry) {
   };
 }
 
-function sessionEventFromSemanticEnvelope(envelope: SemanticEventEnvelope): AgentSessionEvent | undefined {
+function sessionEventFromAgentEventEnvelope(envelope: AgentEventEnvelope): AgentSessionEvent | undefined {
   const { kind, ...payload } = envelope.event;
   if (typeof kind !== 'string') return undefined;
   return { type: kind, ...payload } as AgentSessionEvent;
 }
 
-async function spawnSemantic(
+async function spawnNative(
   adapter: AiSdkAdapterRegistryEntry,
   input: HarnessCreateInput,
   relay: AgentRelay
-): Promise<SemanticHarnessAgent> {
+): Promise<NativeHarnessAgent> {
   const name = nextHarnessName(adapter.name, input.name);
   const cwd = path.resolve(input.cwd ?? process.cwd());
-  const sessionId = `semantic-${randomUUID()}`;
+  const sessionId = `native-${randomUUID()}`;
   const driver = getHarnessDriver(relay);
   const sidecarEntry = fileURLToPath(new URL('./ai-sdk/sidecar.js', import.meta.url));
   const sidecarConfig = {
@@ -315,7 +315,7 @@ async function spawnSemantic(
     cwd,
     transport: 'headless',
     harnessConfig: {
-      runtime: 'semantic',
+      runtime: 'native',
       command: process.execPath,
       args: [sidecarEntry],
       cwd,
@@ -325,21 +325,21 @@ async function spawnSemantic(
       },
       sessionId,
       metadata: {
-        runtimeKind: 'semantic-harness',
-        semanticProtocolVersion: 1,
+        runtimeKind: 'native',
+        nativeHarnessProtocolVersion: 1,
         // Only operations reachable through the versioned sidecar protocol are
         // public runtime capabilities. The adapter may support additional
         // in-process lifecycle methods that cannot safely cross this boundary.
-        semanticCapabilities: publicSemanticLifecycle(adapter),
+        nativeHarnessCapabilities: publicNativeLifecycle(adapter),
         observability: AI_SDK_REFERENCE_OBSERVABILITY_PROFILE,
       },
     },
   });
-  await runtime.observeSemanticEvents?.(async (envelope) => {
-    const event = sessionEventFromSemanticEnvelope(envelope);
+  await runtime.observeAgentEvents?.(async (envelope) => {
+    const event = sessionEventFromAgentEventEnvelope(envelope);
     if (event) relay.emitSessionEvent(runtime.agent.name, event);
   });
-  const descriptor = semanticDescriptor(adapter, input, runtime.agent.name);
+  const descriptor = nativeDescriptor(adapter, input, runtime.agent.name);
   return { ...descriptor, id: runtime.agent.name };
 }
 
@@ -361,18 +361,18 @@ export function defineManagedHarness(
 
   const build = (input: HarnessCreateInput = {}): ManagedHarnessAgent => {
     const backend = selectBackend(adapter, input.backend);
-    return backend === 'pty' ? pty!.new({ ...input, backend: 'pty' }) : semanticDescriptor(adapter, input);
+    return backend === 'pty' ? pty!.new({ ...input, backend: 'pty' }) : nativeDescriptor(adapter, input);
   };
 
   return {
-    runtime: ptyDefinition ? 'pty' : 'semantic',
+    runtime: ptyDefinition ? 'pty' : 'native',
     name: adapter.name,
     command: ptyDefinition?.command ?? adapter.name,
     adapter,
     create: async (input = {}) => {
       const backend = selectBackend(adapter, input.backend);
       if (backend === 'pty') return pty!.create({ ...input, backend: 'pty' });
-      return input.relay ? spawnSemantic(adapter, input, input.relay) : semanticDescriptor(adapter, input);
+      return input.relay ? spawnNative(adapter, input, input.relay) : nativeDescriptor(adapter, input);
     },
     new: build,
   };

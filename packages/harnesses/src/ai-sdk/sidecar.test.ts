@@ -51,8 +51,8 @@ async function waitFor(predicate: () => boolean) {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('AI SDK semantic sidecar', () => {
-  it('speaks worker and semantic protocols with command deduplication', async () => {
+describe('AI SDK native harness sidecar', () => {
+  it('speaks worker and native harness protocols with command deduplication', async () => {
     const fixture = fakeHarness();
     vi.spyOn(aiSdkAdapterRegistry, 'require').mockReturnValue({
       ...aiSdkAdapterRegistry.require('codex'),
@@ -71,11 +71,11 @@ describe('AI SDK semantic sidecar', () => {
       },
       { input, write: (line) => output.push(JSON.parse(line)) }
     );
-    await waitFor(() => output.some((frame) => frame.type === 'semantic_event'));
-    const semantic = output.find((frame) => frame.type === 'semantic_event') as {
+    await waitFor(() => output.some((frame) => frame.type === 'agent_event'));
+    const firstAgentEvent = output.find((frame) => frame.type === 'agent_event') as {
       payload: Record<string, unknown>;
     };
-    expect(semantic.payload).not.toHaveProperty('name');
+    expect(firstAgentEvent.payload).not.toHaveProperty('name');
 
     input.write(`${JSON.stringify({ v: 2, type: 'init_worker', payload: { agent: {} } })}\n`);
     input.write(
@@ -106,7 +106,7 @@ describe('AI SDK semantic sidecar', () => {
     );
     const command = {
       v: 2,
-      type: 'semantic_command',
+      type: 'native_harness_command',
       request_id: 'request-1',
       payload: {
         protocol_version: 1,
@@ -121,7 +121,7 @@ describe('AI SDK semantic sidecar', () => {
     input.write(
       `${JSON.stringify({
         v: 2,
-        type: 'semantic_command',
+        type: 'native_harness_command',
         request_id: 'release',
         payload: { protocol_version: 1, kind: 'release', idempotency_key: 'release' },
       })}\n`
@@ -131,28 +131,28 @@ describe('AI SDK semantic sidecar', () => {
     expect(output.some((frame) => frame.type === 'worker_ready')).toBe(true);
     expect(output.filter((frame) => frame.type === 'delivery_ack')).toHaveLength(2);
     expect(fixture.session.doPromptTurn).toHaveBeenCalledTimes(1);
-    const semanticEvents = output.filter((frame) => frame.type === 'semantic_event') as Array<{
+    const agentEvents = output.filter((frame) => frame.type === 'agent_event') as Array<{
       payload: {
         sequence: number;
         event: { kind: string; activity?: string; observability?: { sequence: number } };
       };
     }>;
-    expect(semanticEvents[0]?.payload.event.kind).toBe('observability.capabilities');
-    expect(semanticEvents.map((frame) => frame.payload.sequence)).toEqual(
-      semanticEvents.map((_, index) => index + 1)
+    expect(agentEvents[0]?.payload.event.kind).toBe('observability.capabilities');
+    expect(agentEvents.map((frame) => frame.payload.sequence)).toEqual(
+      agentEvents.map((_, index) => index + 1)
     );
-    for (const frame of semanticEvents) {
+    for (const frame of agentEvents) {
       if (frame.payload.event.observability) {
         expect(frame.payload.event.observability.sequence).toBe(frame.payload.sequence);
       }
     }
-    const activities = semanticEvents
+    const activities = agentEvents
       .filter((frame) => frame.payload.event.kind === 'activity.changed')
       .map((frame) => frame.payload.event.activity);
     expect(activities).toEqual(
       expect.arrayContaining(['starting', 'idle', 'thinking', 'typing', 'using_tool', 'waiting'])
     );
-    const responses = output.filter((frame) => frame.type === 'semantic_command_response') as Array<{
+    const responses = output.filter((frame) => frame.type === 'native_harness_command_response') as Array<{
       payload: { duplicate?: boolean; accepted: boolean };
     }>;
     expect(responses).toHaveLength(3);
@@ -181,10 +181,10 @@ describe('AI SDK semantic sidecar', () => {
       },
       { input, write: (line) => output.push(JSON.parse(line)) }
     );
-    await waitFor(() => output.some((frame) => frame.type === 'semantic_event'));
+    await waitFor(() => output.some((frame) => frame.type === 'agent_event'));
     const compact = {
       v: 2,
-      type: 'semantic_command',
+      type: 'native_harness_command',
       request_id: 'compact-1',
       payload: {
         protocol_version: 1,
@@ -198,7 +198,7 @@ describe('AI SDK semantic sidecar', () => {
     input.write(
       `${JSON.stringify({
         v: 2,
-        type: 'semantic_command',
+        type: 'native_harness_command',
         request_id: 'release',
         payload: { protocol_version: 1, kind: 'release', idempotency_key: 'release' },
       })}\n`
@@ -207,7 +207,7 @@ describe('AI SDK semantic sidecar', () => {
 
     expect(fixture.session.doCompact).toHaveBeenCalledTimes(1);
     expect(fixture.session.doCompact).toHaveBeenCalledWith('Keep decisions');
-    const responses = output.filter((frame) => frame.type === 'semantic_command_response') as Array<{
+    const responses = output.filter((frame) => frame.type === 'native_harness_command_response') as Array<{
       payload: { accepted: boolean; duplicate?: boolean };
     }>;
     expect(responses).toHaveLength(3);
@@ -234,11 +234,11 @@ describe('AI SDK semantic sidecar', () => {
       },
       { input, write: (line) => output.push(JSON.parse(line)) }
     );
-    await waitFor(() => output.some((frame) => frame.type === 'semantic_event'));
+    await waitFor(() => output.some((frame) => frame.type === 'agent_event'));
     input.write(
       `${JSON.stringify({
         v: 2,
-        type: 'semantic_command',
+        type: 'native_harness_command',
         request_id: 'detach',
         payload: { protocol_version: 1, kind: 'detach', idempotency_key: 'detach' },
       })}\n`
@@ -246,14 +246,14 @@ describe('AI SDK semantic sidecar', () => {
     input.write(
       `${JSON.stringify({
         v: 2,
-        type: 'semantic_command',
+        type: 'native_harness_command',
         request_id: 'release',
         payload: { protocol_version: 1, kind: 'release', idempotency_key: 'release' },
       })}\n`
     );
     await running;
 
-    const responses = output.filter((frame) => frame.type === 'semantic_command_response') as Array<{
+    const responses = output.filter((frame) => frame.type === 'native_harness_command_response') as Array<{
       request_id: string;
       payload: { accepted: boolean; error?: { message?: string } };
     }>;
@@ -261,7 +261,7 @@ describe('AI SDK semantic sidecar', () => {
       request_id: 'detach',
       payload: {
         accepted: false,
-        error: { message: 'Unsupported semantic command kind: detach' },
+        error: { message: 'Unsupported native harness command kind: detach' },
       },
     });
     expect(fixture.session.doDetach).not.toHaveBeenCalled();
@@ -287,12 +287,12 @@ describe('AI SDK semantic sidecar', () => {
       },
       { input, write: (line) => output.push(JSON.parse(line)) }
     );
-    await waitFor(() => output.some((frame) => frame.type === 'semantic_event'));
+    await waitFor(() => output.some((frame) => frame.type === 'agent_event'));
     const send = (requestId: string, kind: string, key: string, instructions?: string) =>
       input.write(
         `${JSON.stringify({
           v: 2,
-          type: 'semantic_command',
+          type: 'native_harness_command',
           request_id: requestId,
           payload: {
             protocol_version: 1,
@@ -310,7 +310,7 @@ describe('AI SDK semantic sidecar', () => {
     send('release', 'release', 'release');
     await running;
 
-    const responses = output.filter((frame) => frame.type === 'semantic_command_response') as Array<{
+    const responses = output.filter((frame) => frame.type === 'native_harness_command_response') as Array<{
       request_id: string;
       payload: { accepted: boolean; error?: { code?: string } };
     }>;

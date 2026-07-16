@@ -1,4 +1,4 @@
-# Plan 001: Make AI SDK harness adapters Relay's primary headless runtime
+# Plan 001: Make AI SDK harness adapters Relay's primary native runtime
 
 > **Executor instructions**: Follow the steps in order. Run each verification command and confirm the expected result before continuing. Stop and report if a STOP condition occurs. When complete, update this plan's status in `plans/README.md`.
 >
@@ -21,13 +21,13 @@
 
 ## Outcome
 
-Relay uses official AI SDK harness adapters as its default headless runtime for Claude Code, Codex, OpenCode, and Pi after each adapter passes contract and soak gates. Deep Agents is available as an experimental adapter with capability-accurate lifecycle behavior.
+Relay uses official AI SDK harness adapters as its default native runtime for Claude Code, Codex, OpenCode, and Pi after each adapter passes contract and soak gates. Deep Agents is available as an experimental adapter with capability-accurate lifecycle behavior.
 
-The existing PTY runtime remains available for native terminal sessions and remains the default for harnesses without an AI SDK adapter. AI SDK sessions support `agent attach` through a semantic event view instead of terminal emulation.
+The existing PTY runtime remains available for terminal sessions and remains the default for harnesses without an AI SDK adapter. Native harness sessions support `agent attach` through an agent-event view instead of terminal emulation.
 
 Relay requires Node 22 across packages, CI, installation, and documentation.
 
-Relay adopts the AI SDK harness stream as its reference observability profile. Relaycast publishes the same canonical activity and semantic event vocabulary for every runtime. AI SDK events populate that profile directly; PTY runtimes populate the same profile from structured CLI output and terminal evidence with explicit fidelity metadata.
+Relay adopts the AI SDK harness stream as its reference observability profile. Relaycast publishes the same canonical activity and agent-event vocabulary for every runtime. AI SDK events populate that profile directly; PTY runtimes populate the same profile from structured CLI output and terminal evidence with explicit fidelity metadata.
 
 ## Why this matters
 
@@ -76,12 +76,12 @@ backend?: 'auto' | 'ai-sdk' | 'pty';
 | Local filesystem, processes, bootstrap cache, loopback bridge ports | Relay local-host sandbox provider                     |
 | Durable inbox and delivery acknowledgements                         | Existing Relay `DeliveryRunner` and broker            |
 | Agent identity, channels, threads, actions                          | Existing Relay SDK                                    |
-| AI SDK process supervision and semantic replay                      | Relay broker plus Node 22 sidecar                     |
-| Human and machine attach output                                     | Relay CLI semantic renderer                           |
+| AI SDK process supervision and agent-event replay                   | Relay broker plus Node 22 sidecar                     |
+| Human and machine attach output                                     | Relay CLI agent-event renderer                        |
 | Native terminal sessions and unsupported harnesses                  | Existing Relay PTY runtime                            |
-| Canonical activity, semantic events, fidelity, and capabilities     | Relay SDK and Relaycast                               |
+| Canonical activity, agent events, fidelity, and capabilities        | Relay SDK and Relaycast                               |
 
-The broker-supervised sidecar hosts the AI SDK session because `agent attach` runs in a separate process. `HarnessV1PromptControl` remains inside the sidecar; the broker exchanges versioned semantic commands, events, and acknowledgements with it.
+The broker-supervised sidecar hosts the AI SDK session because `agent attach` runs in a separate process. `HarnessV1PromptControl` remains inside the sidecar; the broker exchanges versioned native harness commands, events, and acknowledgements with it.
 
 ## Canonical observability profile
 
@@ -100,7 +100,7 @@ type ObservabilitySupport =
 
 Relaycast publishes `agent.activity.changed` with agent id, current and previous activity, reason, turn id, sequence, timestamp, source, fidelity, and optional tool/approval details. `waiting` always includes a reason such as `tool_approval`, `turn_suspended`, or `external_dependency`.
 
-The canonical semantic vocabulary covers:
+The canonical agent-event vocabulary covers:
 
 - session starting, started, resumed, suspended, detached, stopped, destroyed, and failed;
 - turn started, step finished, and turn finished with finish reason;
@@ -110,7 +110,7 @@ The canonical semantic vocabulary covers:
 - context compaction;
 - model resolution, warnings, usage, diagnostics, and errors.
 
-Every runtime declares `AgentObservabilityCapabilities`, with supported fidelities or `available: false` for each semantic family and activity. Event metadata carries the actual source and fidelity used for that event, allowing a runtime to provide both exact and inferred forms of one activity.
+Every runtime declares `AgentObservabilityCapabilities`, with supported fidelities or `available: false` for each agent-event family and activity. Event metadata carries the actual source and fidelity used for that event, allowing a runtime to provide both exact and inferred forms of one activity.
 
 The shared activity reducer tracks active text ids, reasoning ids, unresolved tool calls, pending approvals, turn state, and startup state. Its precedence is:
 
@@ -191,11 +191,11 @@ Deep Agents currently supports active messages, live detach/attach, suspend/cont
   - `sidecar.ts`
   - adjacent tests
 - `packages/harnesses/src/define.ts` and `packages/harnesses/src/index.ts`.
-- Semantic protocol and client additions in `packages/harness-driver`.
+- Native harness protocol and client additions in `packages/harness-driver`.
 - Canonical observability types, activity reducer, capability profile, listeners, and tests in `packages/sdk`.
-- Broker supervision, runtime metadata, semantic event replay, and input endpoints.
-- Relaycast wire support for canonical activity and semantic session events.
-- Semantic attach routing, rendering, and input in `packages/cli`.
+- Broker supervision, runtime metadata, agent-event replay, and input endpoints.
+- Relaycast wire support for canonical activity and agent session events.
+- Native harness attach routing, rendering, and input in `packages/cli`.
 - PTY observability translators and capability declarations for existing harnesses.
 - Contract and soak tests under `tests/integration/ai-sdk-harnesses/`.
 - Harness documentation, root runtime documentation, `CHANGELOG.md`, and `plans/README.md`.
@@ -286,9 +286,9 @@ Expected: all five registry entries pass; sandbox tests cover file/process opera
 
 ### Step 3: Define Relay's canonical observability contract
 
-Extend `packages/sdk/src/session/types.ts` with `AgentActivity`, observability source/fidelity, `AgentObservabilityCapabilities`, and the canonical semantic event families listed above. Preserve `AgentSessionStatus` for durable presence and health.
+Extend `packages/sdk/src/session/types.ts` with `AgentActivity`, observability source/fidelity, `AgentObservabilityCapabilities`, and the canonical agent-event families listed above. Preserve `AgentSessionStatus` for durable presence and health.
 
-Add a pure activity reducer in the session layer. It consumes canonical semantic events and emits deduplicated `activity.changed` transitions. Track block and call ids as sets/maps so parallel tools and interleaved reasoning/text produce stable activity. Include reason, turn id, sequence, timestamp, source, fidelity, and optional tool/approval context.
+Add a pure activity reducer in the session layer. It consumes canonical agent events and emits deduplicated `activity.changed` transitions. Track block and call ids as sets/maps so parallel tools and interleaved reasoning/text produce stable activity. Include reason, turn id, sequence, timestamp, source, fidelity, and optional tool/approval context.
 
 Extend Relay listeners and Relaycast with:
 
@@ -317,7 +317,7 @@ Create `harness-host.ts` around the public low-level contract:
 3. Start the adapter with permission mode, skills, diagnostics, abort signal, and validated resume state.
 4. Start turns with `doPromptTurn()` and retain the returned control until `done` settles.
 5. Route active input through `submitUserMessage()` when supported.
-6. Normalize `HarnessV1StreamPart` into Relay semantic events.
+6. Normalize `HarnessV1StreamPart` into Relay agent events.
 7. Serialize turn and lifecycle transitions.
 8. Surface supported detach, stop, destroy, resume, suspend, continue, and approval operations through capability-accurate results.
 
@@ -345,12 +345,12 @@ npm run build:harnesses
 
 Expected: prompt flow, active injection, FIFO ordering, deduplication, stale-turn protection, lifecycle races, capability errors, and receipt semantics pass.
 
-### Step 5: Add the broker-supervised semantic sidecar
+### Step 5: Add the broker-supervised native harness sidecar
 
 Create `sidecar.ts` and a framed, versioned protocol shared with `packages/harness-driver`. The protocol carries:
 
 - lifecycle commands and correlated acknowledgements;
-- normalized semantic events with per-agent sequence numbers;
+- normalized agent events with per-agent sequence numbers;
 - activity transitions and runtime observability capabilities;
 - idle-turn input and active-turn `submit_user_message` input with idempotency keys;
 - interrupt, approval, release, and capability responses;
@@ -358,11 +358,11 @@ Create `sidecar.ts` and a framed, versioned protocol shared with `packages/harne
 
 The broker:
 
-- supervises the Node 22 sidecar as a headless worker;
-- publishes `semantic-harness` runtime and capability metadata;
-- retains bounded semantic history with a high-water sequence number;
+- supervises the Node 22 sidecar as a native harness runtime without a PTY;
+- publishes `native` runtime and capability metadata;
+- retains bounded agent-event history with a high-water sequence number;
 - broadcasts live events;
-- exposes authenticated history and semantic input endpoints;
+- exposes authenticated history and native harness input endpoints;
 - reconciles subscribe-first live events with fetched history;
 - terminates owned sidecars on release and marks protocol failure explicitly.
 
@@ -375,14 +375,14 @@ cargo test --manifest-path crates/broker/Cargo.toml
 
 Expected: version negotiation, correlation, ordering, replay bounds, history/live reconciliation, input acknowledgement, idempotency, authorization, crash handling, and cleanup pass.
 
-### Step 6: Add semantic CLI attach
+### Step 6: Add native harness CLI attach
 
 Route `agent attach` by runtime metadata:
 
 - PTY agents retain existing `view`, `drive`, and `passthrough` behavior.
-- Semantic harness agents use the new semantic renderer.
+- Native harness agents use the new agent-event renderer.
 
-Semantic `view` is read-only. Semantic `drive` accepts line-oriented messages: idle input starts a turn and active input uses the retained prompt control. Semantic `passthrough` returns a clear unsupported-mode error because there is no terminal byte stream.
+Native harness `view` is read-only. Native harness `drive` accepts line-oriented messages: idle input starts a turn and active input uses the retained prompt control. Native harness `passthrough` returns a clear unsupported-mode error because there is no terminal byte stream.
 
 Human output renders:
 
@@ -397,7 +397,7 @@ Reasoning and diagnostics are opt-in. `--json` emits normalized NDJSON with no d
 **Verify**:
 
 ```bash
-npx vitest run packages/cli/src/cli/lib/attach-semantic.test.ts packages/cli/src/cli/commands/local-agent.test.ts
+npx vitest run packages/cli/src/cli/lib/attach-native.test.ts packages/cli/src/cli/commands/local-agent.test.ts
 npm run build:cli
 ```
 
@@ -441,7 +441,7 @@ Common contract:
 6. Concurrent input preserves order.
 7. Crash and release clean up owned processes without acknowledging unaccepted work.
 8. Capability declarations match method outcomes.
-9. Semantic replay and attach remain ordered.
+9. Agent-event replay and native harness attach remain ordered.
 10. PTY regressions pass for shared harnesses.
 11. Every emitted event matches the canonical schema and declared fidelity.
 12. Activity transitions match the reference reducer, including parallel tools and approvals.
@@ -475,7 +475,7 @@ npm test
 cargo test --manifest-path crates/broker/Cargo.toml
 ```
 
-Expected: deterministic tests pass, configured real adapters pass their declared contract, unavailable adapters report named skips, and the soak command produces a machine-readable promotion and observability report. The report compares each PTY profile with the AI SDK reference by semantic family and fidelity rather than collapsing gaps into one score.
+Expected: deterministic tests pass, configured real adapters pass their declared contract, unavailable adapters report named skips, and the soak command produces a machine-readable promotion and observability report. The report compares each PTY profile with the AI SDK reference by agent-event family and fidelity rather than collapsing gaps into one score.
 
 ### Step 9: Document and release the runtime change
 
@@ -483,8 +483,8 @@ Update harness and root documentation with:
 
 - Node 22 requirement;
 - support matrix and backend selection;
-- semantic `view`, `drive`, `--json`, reasoning, and diagnostics behavior;
-- canonical activities, semantic event families, capability discovery, source, and fidelity;
+- native harness `view`, `drive`, `--json`, reasoning, and diagnostics behavior;
+- canonical activities, agent-event families, capability discovery, source, and fidelity;
 - the AI SDK reference profile and per-PTY-runtime observability matrix;
 - Pi and Deep Agents examples;
 - Deep Agents lifecycle limits;
@@ -497,7 +497,7 @@ Add an impact-first changelog entry under `[Unreleased - Major]`:
 - `Breaking Changes`: Relay requires Node 22.
 - `Migration Guidance`: upgrade Node before installing the new Relay version.
 - `Added`: AI SDK-backed Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents runtimes, with PTY retained for terminal and unsupported harnesses.
-- `Added`: Relaycast agent activity and semantic observability events with runtime capability and fidelity metadata.
+- `Added`: Relaycast agent activity and agent observability events with runtime capability and fidelity metadata.
 
 **Verify**:
 
@@ -521,7 +521,7 @@ Expected: all commands pass; modified files are in scope plus project-required t
 
 ### Canonical observability
 
-- Public activity and semantic event types, reducer precedence, parallel block/tool tracking, explicit waiting reasons, source/fidelity, capability discovery, Relaycast transport, and AI SDK reference fixtures.
+- Public activity and agent-event types, reducer precedence, parallel block/tool tracking, explicit waiting reasons, source/fidelity, capability discovery, Relaycast transport, and AI SDK reference fixtures.
 
 ### Local-host provider
 
@@ -533,7 +533,7 @@ Expected: all commands pass; modified files are in scope plus project-required t
 
 ### Broker and attach
 
-- Protocol versioning, correlation, semantic history, activity transitions, capability profiles, live reconciliation, authentication, acknowledged input, crash cleanup, human rendering, NDJSON, reasoning/diagnostics flags, and PTY regressions.
+- Protocol versioning, correlation, agent-event history, activity transitions, capability profiles, live reconciliation, authentication, acknowledged input, crash cleanup, human rendering, NDJSON, reasoning/diagnostics flags, and PTY regressions.
 
 ### Adapter contracts
 
@@ -547,15 +547,15 @@ Expected: all commands pass; modified files are in scope plus project-required t
 - [ ] Relay packages, CLI, CI, and docs require Node 22.
 - [ ] Exact official AI SDK harness packages are installed as one tested family.
 - [ ] The adapter registry contains Claude Code, Codex, OpenCode, Pi, and Deep Agents with tested capabilities and rollout states.
-- [ ] Relay defines a runtime-neutral semantic event vocabulary and `starting | thinking | typing | using_tool | waiting | idle | error` activity reducer.
-- [ ] Relaycast publishes activity transitions, semantic session events, and observability capability discovery with source and fidelity.
+- [ ] Relay defines a runtime-neutral agent-event vocabulary and `starting | thinking | typing | using_tool | waiting | idle | error` activity reducer.
+- [ ] Relaycast publishes activity transitions, agent session events, and observability capability discovery with source and fidelity.
 - [ ] AI SDK adapters satisfy the reference observability profile from structured HarnessV1 events.
 - [ ] Every PTY harness declares exact, inferred, or unavailable support for each reference signal and emits available signals through the same contract.
 - [ ] The local-host provider owns adapter processes, bootstrap cache, workspace access, and loopback bridge ports.
 - [ ] The HarnessV1 host retains active prompt control and implements lifecycle operations accurately.
 - [ ] `AgentSession` preserves Relay delivery ordering, deduplication, durability boundaries, and truthful receipts.
-- [ ] The broker supervises semantic sidecars and provides authenticated replay, live events, and acknowledged input.
-- [ ] Semantic `view` and `drive` work; `--json` produces NDJSON; PTY attach behavior remains compatible.
+- [ ] The broker supervises native harness sidecars and provides authenticated replay, live events, and acknowledged input.
+- [ ] Native harness `view` and `drive` work; `--json` produces NDJSON; PTY attach behavior remains compatible.
 - [ ] Unsupported harnesses use PTY, and shared harnesses retain explicit PTY selection.
 - [ ] Each default adapter has passed deterministic contracts and its promotion soak.
 - [ ] Deep Agents exposes only its tested lifecycle subset.
@@ -571,7 +571,7 @@ Stop and report if:
 - The published adapter versions cannot be installed as a coherent Node 22 family.
 - The local-host provider cannot keep bridge ports loopback-only or clean up only processes it owns.
 - Delivery integration would bypass `DeliveryRunner` or introduce another durable queue.
-- Semantic history and live events cannot be reconciled without gaps or duplicates.
+- Agent-event history and live events cannot be reconciled without gaps or duplicates.
 - The public event contract cannot distinguish structured events from terminal inference or cannot expose unsupported signals explicitly.
 - An adapter requires provider-specific parsing outside the shared `HarnessV1StreamPart` vocabulary.
 - A verification command fails twice after a scoped repair.
@@ -580,7 +580,7 @@ Stop and report if:
 
 - Update the harness package family through the full contract suite and real-adapter pilots.
 - Add future official adapters through one registry entry, settings mapper, capability declaration, and contract case.
-- Treat the AI SDK reference profile as Relay's observability benchmark. Review every runtime against the same semantic-family matrix.
+- Treat the AI SDK reference profile as Relay's observability benchmark. Review every runtime against the same agent-event-family matrix.
 - Improve PTY fidelity through structured CLI modes first and terminal inference second; preserve source/fidelity on every event.
 - Keep support status and default-runtime status separate in public documentation.
 - Preserve PTY as the terminal runtime and rollback path for shared harnesses.

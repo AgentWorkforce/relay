@@ -53,7 +53,7 @@ describe('local agent subtree', () => {
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
   });
 
-  it('forwards semantic output flags to the attach runner', async () => {
+  it('forwards native harness output flags to the attach runner', async () => {
     const { program, attach } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--json', '--reasoning', '--diagnostics'], {
       from: 'user',

@@ -1,7 +1,12 @@
 export const PROTOCOL_VERSION = 2 as const;
-/** Version of the broker <-> semantic harness sidecar protocol. */
-export const SEMANTIC_PROTOCOL_VERSION = 1 as const;
+/** Version of the broker <-> native harness sidecar protocol. */
+export const NATIVE_HARNESS_PROTOCOL_VERSION = 1 as const;
 
+/**
+ * Broker process wrapper, not the public harness execution mode. Native
+ * harnesses and attached app servers both use the `headless` process wrapper;
+ * inspect `harness_config.runtime` for `pty | native | headless` execution.
+ */
 export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
 export type InboundDeliveryMode = 'auto_inject' | 'manual_flush';
@@ -96,8 +101,8 @@ export interface ProtocolEnvelope<TPayload> {
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
-export type SemanticInputMode = 'auto' | 'active' | 'idle';
-export type SemanticCommandKind =
+export type NativeHarnessInputMode = 'auto' | 'active' | 'idle';
+export type NativeHarnessCommandKind =
   | 'submit_user_message'
   | 'interrupt'
   | 'approve_tool'
@@ -106,53 +111,50 @@ export type SemanticCommandKind =
   | 'release';
 
 /**
- * Portable semantic payload. The SDK owns the canonical event discriminants;
+ * Portable normalized agent-event payload. The SDK owns the canonical event discriminants;
  * the driver intentionally preserves adapter additions as JSON instead of
  * coupling protocol compatibility to one SDK package release.
  */
-export interface SemanticEventPayload {
+export interface AgentEventPayload {
   kind: string;
   [key: string]: JsonValue;
 }
 
-/** SDK-owned reference vocabulary transported by `SemanticEventPayload`. */
-export type CanonicalSemanticEvent = import('@agent-relay/sdk').CanonicalAgentSessionEvent;
-
-export interface SemanticDiagnosticPayload {
+export interface NativeHarnessDiagnosticPayload {
   level: 'debug' | 'info' | 'warning' | 'error';
   message: string;
   [key: string]: JsonValue;
 }
 
-export interface SemanticEventEnvelope {
-  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+export interface AgentEventEnvelope {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
   name: string;
   sequence: number;
   timestamp: string;
-  event: SemanticEventPayload;
+  event: AgentEventPayload;
 }
 
-export interface SemanticDiagnosticEnvelope {
-  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+export interface NativeHarnessDiagnosticEnvelope {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
   name: string;
   sequence: number;
   timestamp: string;
-  diagnostic: SemanticDiagnosticPayload;
+  diagnostic: NativeHarnessDiagnosticPayload;
 }
 
-export interface SemanticCommand {
-  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
-  kind: SemanticCommandKind;
+export interface NativeHarnessCommand {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
+  kind: NativeHarnessCommandKind;
   idempotency_key: string;
   text?: string;
-  mode?: SemanticInputMode;
+  mode?: NativeHarnessInputMode;
   approval_id?: string;
   /** Optional adapter-specific compaction guidance. Valid only for `compact`. */
   instructions?: string;
 }
 
-export interface SemanticCommandAck {
-  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+export interface NativeHarnessCommandAck {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
   request_id: string;
   idempotency_key: string;
   accepted: boolean;
@@ -161,10 +163,10 @@ export interface SemanticCommandAck {
   error?: ProtocolError;
 }
 
-export interface SemanticHistoryResponse {
-  protocol_version: typeof SEMANTIC_PROTOCOL_VERSION;
+export interface AgentEventHistoryResponse {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
   name: string;
-  events: SemanticEventEnvelope[];
+  events: AgentEventEnvelope[];
   high_water_sequence: number;
   oldest_available_sequence: number | null;
   gap: boolean;
@@ -392,8 +394,8 @@ export type BrokerEvent =
        */
       offset?: number;
     }
-  | ({ kind: 'semantic_event' } & SemanticEventEnvelope)
-  | ({ kind: 'semantic_diagnostic' } & SemanticDiagnosticEnvelope)
+  | ({ kind: 'agent_event' } & AgentEventEnvelope)
+  | ({ kind: 'native_harness_diagnostic' } & NativeHarnessDiagnosticEnvelope)
   | {
       kind: 'delivery_retry';
       name: string;
@@ -631,9 +633,9 @@ export type BrokerToWorker =
       payload: Record<string, never>;
     }
   | {
-      type: 'semantic_command';
+      type: 'native_harness_command';
       request_id?: string;
-      payload: SemanticCommand;
+      payload: NativeHarnessCommand;
     };
 
 export type WorkerToBroker =
@@ -670,15 +672,15 @@ export type WorkerToBroker =
       payload: { ts_ms: number };
     }
   | {
-      type: 'semantic_event';
-      payload: Omit<SemanticEventEnvelope, 'name'>;
+      type: 'agent_event';
+      payload: Omit<AgentEventEnvelope, 'name'>;
     }
   | {
-      type: 'semantic_diagnostic';
-      payload: Omit<SemanticDiagnosticEnvelope, 'name'>;
+      type: 'native_harness_diagnostic';
+      payload: Omit<NativeHarnessDiagnosticEnvelope, 'name'>;
     }
   | {
-      type: 'semantic_command_response';
+      type: 'native_harness_command_response';
       request_id?: string;
-      payload: SemanticCommandAck;
+      payload: NativeHarnessCommandAck;
     };

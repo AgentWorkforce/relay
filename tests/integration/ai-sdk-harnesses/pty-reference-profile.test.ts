@@ -38,7 +38,7 @@ describe('PTY parity against the AI SDK reference profile', () => {
     }
   });
 
-  it('lists every reference gap by semantic family and fidelity, without a scalar score', () => {
+  it('lists every reference gap by agent-event family and fidelity, without a scalar score', () => {
     const comparison = compareProfiles(
       AI_SDK_OBSERVABILITY_CAPABILITIES,
       getPtyObservabilityProfile('claude')
@@ -52,7 +52,7 @@ describe('PTY parity against the AI SDK reference profile', () => {
       idle: { reference: ['exact'], candidate: ['inferred'] },
       error: { reference: ['exact'], candidate: ['exact'] },
     });
-    expect(comparison.semanticFamilies).toMatchObject({
+    expect(comparison.agentEventFamilies).toMatchObject({
       lifecycle: { reference: ['exact'], candidate: ['exact'] },
       turns: { reference: ['exact'], candidate: ['inferred'] },
       text: { reference: ['exact'], candidate: ['unavailable'] },

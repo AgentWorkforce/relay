@@ -13,7 +13,7 @@ import type {
 } from './messaging/index.js';
 import type {
   AgentActivity,
-  AgentSemanticEventType,
+  AgentEventType,
   AgentSessionEvent,
   AgentSessionStatus,
   ObservabilityFidelity,
@@ -534,7 +534,7 @@ export interface RelaySessionEvent<TType extends AgentSessionEvent['type'] = Age
   event: Extract<AgentSessionEvent, { type: TType }>;
 }
 
-export type CanonicalSessionSelector = AgentSemanticEventType;
+export type CanonicalSessionSelector = AgentEventType;
 
 export type RelayCanonicalSessionEventMap = {
   [TType in CanonicalSessionSelector]: RelaySessionEvent<TType>;

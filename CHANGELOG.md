@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Relay harnesses can run Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents through official AI SDK harness adapters, while PTY remains available for terminal sessions and unsupported harnesses.
-- Relaycast exposes canonical agent activity and semantic runtime events with capability, source, and fidelity metadata across AI SDK and PTY runtimes.
+- Relaycast exposes canonical agent activity and agent events with capability, source, and fidelity metadata across native and PTY runtimes.
 
 ### Breaking Changes
 

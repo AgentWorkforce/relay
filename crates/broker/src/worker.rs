@@ -143,7 +143,7 @@ impl WorkerRegistry {
         self.workers
             .iter()
             .map(|(name, handle)| {
-                let semantic = semantic_runtime_metadata(&handle.spec);
+                let native_harness = native_harness_metadata(&handle.spec);
                 json!({
                     "name": name,
                     "runtime": handle.spec.runtime,
@@ -162,9 +162,9 @@ impl WorkerRegistry {
                         - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
                     "context_budget_pct": handle.context_budget_pct,
                     "current_state": handle.state.as_str(),
-                    "runtime_kind": if semantic.is_some() { "semantic-harness" } else if handle.spec.runtime == AgentRuntime::Pty { "pty" } else { "headless" },
-                    "semantic_protocol_version": semantic.as_ref().map(|(version, _)| *version),
-                    "semantic_capabilities": semantic.and_then(|(_, capabilities)| capabilities),
+                    "runtime_kind": if native_harness.is_some() { "native" } else if handle.spec.runtime == AgentRuntime::Pty { "pty" } else { "headless" },
+                    "native_harness_protocol_version": native_harness.as_ref().map(|(version, _)| *version),
+                    "native_harness_capabilities": native_harness.and_then(|(_, capabilities)| capabilities),
                 })
             })
             .collect()
@@ -306,7 +306,7 @@ impl WorkerRegistry {
         let mut harness_env: Vec<(String, String)> = Vec::new();
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
-        let mut direct_semantic_sidecar = false;
+        let mut direct_native_harness_sidecar = false;
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -523,12 +523,12 @@ impl WorkerRegistry {
                     }
                 }
             }
-            Some(ResolvedHarnessConfig::Semantic(config)) => {
+            Some(ResolvedHarnessConfig::Native(config)) => {
                 if config.command.trim().is_empty() {
-                    anyhow::bail!("semantic sidecar command is required");
+                    anyhow::bail!("native harness sidecar command is required");
                 }
                 if config.session_id.trim().is_empty() {
-                    anyhow::bail!("semantic sidecar sessionId is required");
+                    anyhow::bail!("native harness sidecar sessionId is required");
                 }
                 spec.runtime = AgentRuntime::Headless;
                 spec.session_id = Some(config.session_id);
@@ -540,12 +540,15 @@ impl WorkerRegistry {
                 }
                 let (program, inline_args) =
                     parse_cli_command(&config.command).with_context(|| {
-                        format!("invalid semantic sidecar command '{}'", config.command)
+                        format!(
+                            "invalid native harness sidecar command '{}'",
+                            config.command
+                        )
                     })?;
                 command = Command::new(program);
                 command.args(inline_args);
                 command.args(config.args);
-                direct_semantic_sidecar = true;
+                direct_native_harness_sidecar = true;
             }
             None => match spec.runtime {
                 AgentRuntime::Pty => {
@@ -825,7 +828,7 @@ impl WorkerRegistry {
         }
 
         let mut child = command.spawn().context("failed to spawn worker")?;
-        if direct_semantic_sidecar {
+        if direct_native_harness_sidecar {
             initial_harness_pid = child.id();
         }
         let stdin = child.stdin.take().context("worker missing stdin pipe")?;
@@ -1066,16 +1069,16 @@ impl WorkerRegistry {
 
 /// Runtime metadata is deliberately carried in the harness config so the
 /// process wrapper can remain `headless` while attach clients select the
-/// semantic transport. Accept both the explicit marker and protocol field to
+/// native harness transport. Accept both the explicit marker and protocol field to
 /// keep the broker compatible with sidecars produced by adjacent releases.
-pub(crate) fn semantic_runtime_metadata(spec: &AgentSpec) -> Option<(u64, Option<Value>)> {
+pub(crate) fn native_harness_metadata(spec: &AgentSpec) -> Option<(u64, Option<Value>)> {
     let (metadata, explicit_protocol) = match spec.harness_config.as_ref()? {
-        ResolvedHarnessConfig::Semantic(config) => (config.metadata.as_ref(), true),
+        ResolvedHarnessConfig::Native(config) => (config.metadata.as_ref(), true),
         ResolvedHarnessConfig::Headless(config) => {
             let protocol = config.protocol.trim().to_ascii_lowercase();
             (
                 config.metadata.as_ref(),
-                protocol == "relay-semantic" || protocol == "relay-semantic-v1",
+                protocol == "relay-native-harness" || protocol == "relay-native-harness-v1",
             )
         }
         ResolvedHarnessConfig::Pty(_) => return None,
@@ -1083,21 +1086,21 @@ pub(crate) fn semantic_runtime_metadata(spec: &AgentSpec) -> Option<(u64, Option
     let explicit = metadata
         .and_then(|m| m.get("runtimeKind").or_else(|| m.get("runtime_kind")))
         .and_then(Value::as_str)
-        .is_some_and(|kind| kind == "semantic-harness");
+        .is_some_and(|kind| kind == "native");
     if !explicit && !explicit_protocol {
         return None;
     }
     let version = metadata
         .and_then(|m| {
-            m.get("semanticProtocolVersion")
-                .or_else(|| m.get("semantic_protocol_version"))
+            m.get("nativeHarnessProtocolVersion")
+                .or_else(|| m.get("native_harness_protocol_version"))
         })
         .and_then(Value::as_u64)
         .unwrap_or(1);
     let capabilities = metadata
         .and_then(|m| {
-            m.get("semanticCapabilities")
-                .or_else(|| m.get("semantic_capabilities"))
+            m.get("nativeHarnessCapabilities")
+                .or_else(|| m.get("native_harness_capabilities"))
         })
         .cloned();
     Some((version, capabilities))
@@ -1126,7 +1129,7 @@ fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
         {
             APP_SERVER_RELEASE_GRACE
         }
-        Some(ResolvedHarnessConfig::Semantic(_)) => APP_SERVER_RELEASE_GRACE,
+        Some(ResolvedHarnessConfig::Native(_)) => APP_SERVER_RELEASE_GRACE,
         _ => DEFAULT_RELEASE_GRACE,
     }
 }
@@ -1783,27 +1786,28 @@ mod tests {
     }
 
     #[test]
-    fn semantic_runtime_metadata_is_explicit_and_capability_accurate() {
+    fn native_harness_metadata_is_explicit_and_capability_accurate() {
         let spec: AgentSpec = serde_json::from_value(json!({
-            "name": "semantic-worker",
+            "name": "native-worker",
             "runtime": "headless",
             "args": [],
             "channels": [],
             "harnessConfig": {
-                "runtime": "semantic",
+                "runtime": "native",
                 "command": "node",
                 "args": ["/tmp/sidecar.js"],
-                "sessionId": "semantic-1",
+                "sessionId": "native-1",
                 "metadata": {
-                    "runtimeKind": "semantic-harness",
-                    "semanticProtocolVersion": 1,
-                    "semanticCapabilities": {"activeInput": true, "interrupt": true}
+                    "runtimeKind": "native",
+                    "nativeHarnessProtocolVersion": 1,
+                    "nativeHarnessCapabilities": {"activeInput": true, "interrupt": true}
                 }
             }
         }))
-        .expect("semantic agent spec");
+        .expect("native harness agent spec");
 
-        let (version, capabilities) = semantic_runtime_metadata(&spec).expect("semantic metadata");
+        let (version, capabilities) =
+            native_harness_metadata(&spec).expect("native harness metadata");
         assert_eq!(version, 1);
         assert_eq!(
             capabilities.unwrap(),

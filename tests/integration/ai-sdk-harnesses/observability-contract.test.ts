@@ -7,7 +7,7 @@ import {
 } from '../../../packages/harnesses/src/ai-sdk/relay-session.js';
 import { FakeHarnessController, FakeSandboxProvider, TEST_IDENTITY, message, settleEvents } from './fakes.js';
 
-const REFERENCE_SEMANTIC_TYPES = [
+const REFERENCE_AGENT_EVENT_TYPES = [
   'session.starting',
   'session.started',
   'turn.started',
@@ -41,7 +41,7 @@ function assertCanonicalObservation(event: AgentSessionEvent): void {
 }
 
 describe('AI SDK reference observability contract', () => {
-  it('normalizes semantic events in adapter order with valid schema and fidelity', async () => {
+  it('normalizes agent events in adapter order with valid schema and fidelity', async () => {
     const controller = new FakeHarnessController({ autoComplete: false });
     const host = new HarnessHost({
       harness: controller.harness,
@@ -63,22 +63,22 @@ describe('AI SDK reference observability contract', () => {
     controller.complete();
     await settleEvents();
 
-    const semantic = events.filter(
+    const agentEvents = events.filter(
       (event) =>
         event.type !== 'activity.changed' &&
         event.type !== 'observability.capabilities' &&
         event.type !== 'message.received' &&
         event.type !== 'delivery.accepted'
     );
-    for (const event of semantic) assertCanonicalObservation(event);
-    const actualTypes = semantic.map((event) => event.type);
-    for (const expectedType of REFERENCE_SEMANTIC_TYPES) {
+    for (const event of agentEvents) assertCanonicalObservation(event);
+    const actualTypes = agentEvents.map((event) => event.type);
+    for (const expectedType of REFERENCE_AGENT_EVENT_TYPES) {
       expect(actualTypes, `missing reference event ${expectedType}`).toContain(expectedType);
     }
-    const positions = REFERENCE_SEMANTIC_TYPES.map((type) => actualTypes.indexOf(type));
+    const positions = REFERENCE_AGENT_EVENT_TYPES.map((type) => actualTypes.indexOf(type));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
 
-    const directSequences = semantic.map((event) => event.observability!.sequence);
+    const directSequences = agentEvents.map((event) => event.observability!.sequence);
     expect(directSequences).toEqual([...directSequences].sort((a, b) => a - b));
     expect(new Set(directSequences).size).toBe(directSequences.length);
     await session.release();
@@ -130,13 +130,13 @@ describe('AI SDK reference observability contract', () => {
     await session.release();
   });
 
-  it('declares every reference activity and semantic family explicitly', () => {
+  it('declares every reference activity and agent-event family explicitly', () => {
     for (const [activity, support] of Object.entries(AI_SDK_OBSERVABILITY_CAPABILITIES.activities)) {
       expect(support, `activity ${activity}`).toMatchObject({ available: true });
       if (support.available) expect(support.fidelities.length).toBeGreaterThan(0);
     }
     for (const [family, support] of Object.entries(AI_SDK_OBSERVABILITY_CAPABILITIES.events)) {
-      expect(support, `semantic family ${family}`).toMatchObject({ available: true });
+      expect(support, `agent-event family ${family}`).toMatchObject({ available: true });
       if (support.available) expect(support.fidelities).toContain('exact');
     }
   });

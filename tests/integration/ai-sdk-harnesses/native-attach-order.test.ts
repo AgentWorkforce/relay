@@ -1,8 +1,8 @@
-import type { SemanticEventEnvelope } from '@agent-relay/harness-driver';
+import type { AgentEventEnvelope } from '@agent-relay/harness-driver';
 import { describe, expect, it, vi } from 'vitest';
-import { attachSemantic } from '../../../packages/cli/src/cli/lib/attach-semantic.js';
+import { attachNative } from '../../../packages/cli/src/cli/lib/attach-native.js';
 
-function envelope(sequence: number, delta: string): SemanticEventEnvelope {
+function envelope(sequence: number, delta: string): AgentEventEnvelope {
   return {
     protocol_version: 1,
     name: 'Worker',
@@ -12,7 +12,7 @@ function envelope(sequence: number, delta: string): SemanticEventEnvelope {
   };
 }
 
-describe('semantic attach replay contract', () => {
+describe('native harness attach replay contract', () => {
   it('renders history then live events once in sequence order across the attach race', async () => {
     const output: string[] = [];
     const live = [envelope(2, 'duplicate-history'), envelope(3, 'live-c')];
@@ -23,13 +23,13 @@ describe('semantic attach replay contract', () => {
       }),
       return: vi.fn(async () => ({ done: true as const, value: undefined as never })),
     };
-    const subscribeSemanticEvents = vi.fn(() => ({
+    const subscribeAgentEvents = vi.fn(() => ({
       [Symbol.asyncIterator]: () => iterator,
     }));
     const client = {
       currentEventSeq: async () => 41,
-      subscribeSemanticEvents,
-      getSemanticHistory: async () => ({
+      subscribeAgentEvents,
+      getAgentEventHistory: async () => ({
         protocol_version: 1,
         name: 'Worker',
         events: [envelope(1, 'history-a'), envelope(2, 'history-b')],
@@ -38,11 +38,11 @@ describe('semantic attach replay contract', () => {
         gap: false,
       }),
       onEvent: () => () => undefined,
-      sendSemanticCommand: vi.fn(),
+      sendNativeHarnessCommand: vi.fn(),
     };
 
     await expect(
-      attachSemantic(
+      attachNative(
         'Worker',
         'view',
         { brokerUrl: 'http://broker' },
@@ -54,7 +54,7 @@ describe('semantic attach replay contract', () => {
       )
     ).resolves.toBe(0);
 
-    expect(subscribeSemanticEvents).toHaveBeenCalledWith('Worker', {
+    expect(subscribeAgentEvents).toHaveBeenCalledWith('Worker', {
       sinceSequence: 0,
       sinceBrokerSeq: 41,
     });
@@ -70,8 +70,8 @@ describe('semantic attach replay contract', () => {
     };
     const client = {
       currentEventSeq: async () => 7,
-      subscribeSemanticEvents: () => ({ [Symbol.asyncIterator]: () => iterator }),
-      getSemanticHistory: async () => ({
+      subscribeAgentEvents: () => ({ [Symbol.asyncIterator]: () => iterator }),
+      getAgentEventHistory: async () => ({
         protocol_version: 1,
         name: 'Worker',
         events: [envelope(9, 'retained')],
@@ -80,10 +80,10 @@ describe('semantic attach replay contract', () => {
         gap: true,
       }),
       onEvent: () => () => undefined,
-      sendSemanticCommand: vi.fn(),
+      sendNativeHarnessCommand: vi.fn(),
     };
 
-    await attachSemantic(
+    await attachNative(
       'Worker',
       'view',
       { brokerUrl: 'http://broker' },
@@ -93,6 +93,6 @@ describe('semantic attach replay contract', () => {
         onSignal: () => () => undefined,
       }
     );
-    expect(stderr.join('')).toContain('semantic history was truncated');
+    expect(stderr.join('')).toContain('agent-event history was truncated');
   });
 });

@@ -14,7 +14,7 @@ import { spawnAgentWithClient } from '../lib/client-factory.js';
 import { attachDrive } from '../lib/attach-drive.js';
 import { attachView } from '../lib/attach-view.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
-import { attachSemantic, isSemanticHarness, type SemanticAttachOptions } from '../lib/attach-semantic.js';
+import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
 import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 
 // ── Auto-routing model resolution ─────────────────────────────────────────────
@@ -56,9 +56,9 @@ export type AttachMode = 'drive' | 'view' | 'passthrough';
 export type LocalAgentMessageBrokerOptions = BrokerConnectionOptions;
 
 /** Dispatch `local agent attach --mode` to the drive/view/passthrough session runners. */
-export function runAttach(name: string, mode: AttachMode, options: SemanticAttachOptions): Promise<number> {
-  return isSemanticHarness(name, options).then((semantic) => {
-    if (semantic) return attachSemantic(name, mode, options);
+export function runAttach(name: string, mode: AttachMode, options: NativeAttachOptions): Promise<number> {
+  return isNativeHarness(name, options).then((nativeHarness) => {
+    if (nativeHarness) return attachNative(name, mode, options);
     switch (mode) {
       case 'view':
         return attachView(name, options);
@@ -76,7 +76,7 @@ type ExitFn = (code: number) => never;
 export interface LocalAgentDependencies {
   connect: (cwd: string) => Promise<HarnessDriverClient>;
   connectLocal: (cwd: string, options: LocalAgentMessageBrokerOptions) => Promise<HarnessDriverClient>;
-  attach: (name: string, mode: AttachMode, options: SemanticAttachOptions) => Promise<number>;
+  attach: (name: string, mode: AttachMode, options: NativeAttachOptions) => Promise<number>;
   cwd: () => string;
   readConnectionFile: (stateDir: string) => unknown;
   getDefaultStateDir: () => string;
@@ -326,9 +326,9 @@ export function registerLocalAgentCommands(
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
     .option('--state-dir <dir>', 'Directory containing connection.json (default: .agentworkforce/relay/)')
-    .option('--json', 'Emit normalized semantic events as NDJSON')
-    .option('--reasoning', 'Include semantic reasoning events')
-    .option('--diagnostics', 'Include semantic sidecar diagnostics')
+    .option('--json', 'Emit normalized agent events as NDJSON')
+    .option('--reasoning', 'Include agent reasoning events')
+    .option('--diagnostics', 'Include native harness diagnostics')
     .action(async (name: string, options: Record<string, unknown>) => {
       const mode = (options.mode as string) ?? 'view';
       if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {

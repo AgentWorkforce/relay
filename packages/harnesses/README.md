@@ -6,13 +6,13 @@ Use this package with `@agent-relay/harness-driver` when Agent Relay should crea
 
 ## Runtime selection
 
-Claude Code, Codex, and OpenCode offer both an official AI SDK semantic runtime and the existing PTY runtime. Their adapters begin as experimental, so `auto` continues to select PTY until each adapter passes its promotion gates.
+Claude Code, Codex, and OpenCode offer both an official AI SDK native harness runtime and the existing PTY runtime. Their adapters begin as experimental, so `auto` continues to select PTY until each adapter passes its promotion gates.
 
 ```ts
 import { claude } from '@agent-relay/harnesses';
 
 await claude.create({ relay }); // auto: PTY while the adapter is experimental
-await claude.create({ relay, backend: 'ai-sdk' }); // explicit semantic runtime
+await claude.create({ relay, backend: 'ai-sdk' }); // explicit native harness runtime
 await claude.create({ relay, backend: 'pty' }); // explicit terminal runtime
 ```
 
@@ -29,9 +29,11 @@ Runtime selection is final before the session starts. Relay does not switch a ru
 
 Pi and Deep Agents require `backend: 'ai-sdk'` while experimental. Deep Agents does not advertise manual compaction, and stopping its current adapter does not preserve in-memory conversation.
 
-## Semantic attach
+Harness execution is `pty` or `native`. The broker may internally wrap native harnesses and attached app servers as `headless` processes, but `headless` is not an observability mode. Both execution paths publish the same normalized `AgentEvent` contract.
 
-AI SDK sessions expose semantic history and live events instead of terminal bytes:
+## Native harness attach
+
+AI SDK sessions expose agent-event history and live events instead of terminal bytes:
 
 ```bash
 agent-relay node agent attach my-agent --mode view
@@ -40,11 +42,11 @@ agent-relay node agent attach my-agent --mode view --json
 agent-relay node agent attach my-agent --mode view --reasoning --diagnostics
 ```
 
-`view` is read-only. `drive` sends each input line after broker acknowledgement; `/interrupt`, `/approve <id>`, `/reject <id>`, and `/detach` are local controls. `passthrough` is unavailable because a semantic session has no terminal byte stream. `--json` writes normalized NDJSON to stdout. Reasoning and diagnostics stay hidden unless requested.
+`view` is read-only. `drive` sends each input line after broker acknowledgement; `/interrupt`, `/approve <id>`, `/reject <id>`, and `/detach` are local controls. `passthrough` is unavailable because a native harness session has no terminal byte stream. `--json` writes normalized NDJSON to stdout. Reasoning and diagnostics stay hidden unless requested.
 
 ## Observability
 
-The AI SDK stream is Relay's reference observability profile. Relay publishes portable semantic events and the activities `starting`, `thinking`, `typing`, `using_tool`, `waiting`, `idle`, and `error`. Every event carries its source and either `exact` or `inferred` fidelity.
+The AI SDK stream is Relay's reference observability profile. Relay publishes portable agent events and the activities `starting`, `thinking`, `typing`, `using_tool`, `waiting`, `idle`, and `error`. Every event carries its source and either `exact` or `inferred` fidelity.
 
 PTY sessions use the same capability matrix. Today the broker provides exact startup and runtime failure plus inferred busy and idle boundaries. Signals that terminal bytes cannot prove, including reasoning, text blocks, tools, approvals, files, and compaction, are reported as unavailable rather than guessed.
 
@@ -67,4 +69,4 @@ The AI SDK local-host provider is a process and filesystem lifecycle boundary, n
 
 The local-host AI SDK runtime currently supports macOS and Linux. On Windows, use the PTY backend; an explicit AI SDK selection fails with a typed platform error instead of attempting POSIX adapter bootstrap commands. Preflight checks the platform, Node.js 22, `pnpm`, workspace access, cache access, and loopback port allocation. If startup fails, verify those commands and permissions first. Bootstrap work is cached by stable adapter identity under the runtime cache; deleting unrelated workspace files is never part of cleanup.
 
-Adapter upgrades must keep the `@ai-sdk/harness@1.0.34` family coherent and pass the registry, lifecycle, semantic replay, observability, real-CLI, and 100-cycle soak contracts before changing an adapter's rollout state.
+Adapter upgrades must keep the `@ai-sdk/harness@1.0.34` family coherent and pass the registry, lifecycle, agent-event replay, observability, real-CLI, and 100-cycle soak contracts before changing an adapter's rollout state.

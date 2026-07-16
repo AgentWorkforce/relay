@@ -33,10 +33,10 @@ import type {
   PtySnapshot,
   InboundDeliveryMode,
   SnapshotFormat,
-  SemanticCommand,
-  SemanticCommandAck,
-  SemanticEventEnvelope,
-  SemanticHistoryResponse,
+  NativeHarnessCommand,
+  NativeHarnessCommandAck,
+  AgentEventEnvelope,
+  AgentEventHistoryResponse,
 } from './protocol.js';
 import type {
   SpawnAgentResult,
@@ -177,7 +177,7 @@ export interface WorkerStreamSubscriptionOptions {
   maxQueueSize?: number;
 }
 
-export interface SemanticEventSubscriptionOptions {
+export interface AgentEventSubscriptionOptions {
   sinceSequence?: number;
   /** Broker event cursor used to make subscribe-before-history gap-free. */
   sinceBrokerSeq?: number;
@@ -809,18 +809,18 @@ export class HarnessDriverClient {
     );
   }
 
-  async getSemanticHistory(name: string, sinceSequence = 0): Promise<SemanticHistoryResponse> {
-    return this.transport.request<SemanticHistoryResponse>(
-      `/api/spawned/${encodeURIComponent(name)}/semantic/history?sinceSequence=${encodeURIComponent(String(sinceSequence))}`
+  async getAgentEventHistory(name: string, sinceSequence = 0): Promise<AgentEventHistoryResponse> {
+    return this.transport.request<AgentEventHistoryResponse>(
+      `/api/spawned/${encodeURIComponent(name)}/agent-events/history?sinceSequence=${encodeURIComponent(String(sinceSequence))}`
     );
   }
 
-  async sendSemanticCommand(
+  async sendNativeHarnessCommand(
     name: string,
-    command: Omit<SemanticCommand, 'protocol_version'>
-  ): Promise<SemanticCommandAck> {
-    return this.transport.request<SemanticCommandAck>(
-      `/api/spawned/${encodeURIComponent(name)}/semantic/command`,
+    command: Omit<NativeHarnessCommand, 'protocol_version'>
+  ): Promise<NativeHarnessCommandAck> {
+    return this.transport.request<NativeHarnessCommandAck>(
+      `/api/spawned/${encodeURIComponent(name)}/native-harness/command`,
       {
         method: 'POST',
         body: JSON.stringify({ protocol_version: 1, ...command }),
@@ -828,26 +828,26 @@ export class HarnessDriverClient {
     );
   }
 
-  subscribeSemanticEvents(
+  subscribeAgentEvents(
     name: string,
-    options: SemanticEventSubscriptionOptions = {}
-  ): AsyncIterable<SemanticEventEnvelope> {
+    options: AgentEventSubscriptionOptions = {}
+  ): AsyncIterable<AgentEventEnvelope> {
     this.connectEvents(options.sinceBrokerSeq);
     const maxQueueSize = normalizeMaxQueueSize(options.maxQueueSize);
     let highWater = options.sinceSequence ?? 0;
     return {
       [Symbol.asyncIterator]: () => {
-        const queue: SemanticEventEnvelope[] = [];
+        const queue: AgentEventEnvelope[] = [];
         let pending:
           | {
-              resolve: (result: IteratorResult<SemanticEventEnvelope>) => void;
+              resolve: (result: IteratorResult<AgentEventEnvelope>) => void;
               reject: (error: unknown) => void;
             }
           | undefined;
         let done = false;
         let failure: Error | undefined;
         const unsubscribe = this.onEvent((event) => {
-          if (event.kind !== 'semantic_event' || event.name !== name || event.sequence <= highWater) return;
+          if (event.kind !== 'agent_event' || event.name !== name || event.sequence <= highWater) return;
           highWater = event.sequence;
           if (pending) {
             const { resolve } = pending;
@@ -857,7 +857,7 @@ export class HarnessDriverClient {
           }
           if (queue.length >= maxQueueSize) {
             failure = new Error(
-              `semantic event subscription for ${JSON.stringify(name)} exceeded ${maxQueueSize} buffered events; reconnect with the last processed sequence`
+              `agent event subscription for ${JSON.stringify(name)} exceeded ${maxQueueSize} buffered events; reconnect with the last processed sequence`
             );
             queue.length = 0;
             done = true;
@@ -866,7 +866,7 @@ export class HarnessDriverClient {
           }
           queue.push(event);
         });
-        const close = (): IteratorResult<SemanticEventEnvelope> => {
+        const close = (): IteratorResult<AgentEventEnvelope> => {
           done = true;
           unsubscribe();
           pending?.resolve({ done: true, value: undefined as never });
@@ -879,7 +879,7 @@ export class HarnessDriverClient {
             if (value) return Promise.resolve({ done: false, value });
             if (failure) return Promise.reject(failure);
             if (done) return Promise.resolve({ done: true, value: undefined as never });
-            return new Promise<IteratorResult<SemanticEventEnvelope>>((resolve, reject) => {
+            return new Promise<IteratorResult<AgentEventEnvelope>>((resolve, reject) => {
               pending = { resolve, reject };
             });
           },

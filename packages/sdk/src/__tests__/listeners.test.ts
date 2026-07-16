@@ -147,7 +147,7 @@ describe('Listener DSL (Phase B)', () => {
     expect(predicate).toHaveBeenCalledTimes(1);
   });
 
-  it('publishes canonical semantic events under the existing session envelope', () => {
+  it('publishes canonical agent events under the existing session envelope', () => {
     const { relay } = createRelay();
     const handler = vi.fn();
     relay.addListener('text.delta', handler);
