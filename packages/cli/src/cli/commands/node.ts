@@ -97,6 +97,7 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
     }
     if (record) {
       env.RELAY_NODE_TOKEN = record.nodeToken;
+      env.RELAY_NODE_ID = record.nodeId;
       if (!env.RELAY_BASE_URL) {
         env.RELAY_BASE_URL = record.relaycastUrl;
       }

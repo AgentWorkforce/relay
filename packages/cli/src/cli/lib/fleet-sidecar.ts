@@ -1,5 +1,5 @@
 import { AgentRelay } from '@agent-relay/sdk';
-import type { FleetNodeDefinition, FleetTriggerSyncClient } from '@agent-relay/fleet';
+import type { FleetTriggerSyncClient } from '@agent-relay/fleet';
 
 import type { CoreTeamsConfig } from '../commands/core.js';
 
@@ -15,9 +15,18 @@ import type { CoreTeamsConfig } from '../commands/core.js';
 // broker's default capacity for it.
 const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'opencode'] as const;
 
+/**
+ * The minimum a node config has to expose to contribute `spawn:<harness>`
+ * capacity: its capability names. A full {@link FleetNodeDefinition} satisfies
+ * this, and so does the descriptor reported by a node definition served
+ * out-of-process (which the CLI never loads in-process, so it has capability
+ * names but no handlers).
+ */
+export type NodeCapacitySource = { capabilities: Readonly<Record<string, unknown>> };
+
 export function nodeCapacityHarnesses(
   teamsConfig: CoreTeamsConfig | null,
-  definition?: FleetNodeDefinition
+  definition?: NodeCapacitySource
 ): string[] {
   const harnesses = new Set<string>(DEFAULT_HARNESSES);
   for (const agent of teamsConfig?.agents ?? []) {
@@ -46,7 +55,7 @@ export function nodeCapacityHarnesses(
 export function resolveNodeCapacityHarnesses(
   preset: string | undefined,
   teamsConfig: CoreTeamsConfig | null,
-  definition?: FleetNodeDefinition
+  definition?: NodeCapacitySource
 ): string {
   const trimmed = preset?.trim();
   if (trimmed) {
