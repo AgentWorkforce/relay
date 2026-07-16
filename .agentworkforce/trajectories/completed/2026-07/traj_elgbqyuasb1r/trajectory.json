@@ -1,0 +1,192 @@
+{
+  "id": "traj_elgbqyuasb1r",
+  "version": 1,
+  "task": {
+    "title": "relay-verify-features-workflow",
+    "description": "Automated feature health check. Runs CLI verification tiers 1–4 and the 5 critical paths. Posts a structured PASS/FAIL report to #relay-health.",
+    "source": {
+      "system": "workflow-runner",
+      "id": "d831c8ec12c4b5a6286aeaf3"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-07-16T12:28:53.059Z",
+  "completedAt": "2026-07-16T12:32:48.592Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-07-16T12:28:53.060Z"
+    },
+    {
+      "name": "reporter",
+      "role": "specialist",
+      "joinedAt": "2026-07-16T12:31:03.452Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_nsg33mzc0kqm",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-07-16T12:28:53.060Z",
+      "endedAt": "2026-07-16T12:31:03.446Z",
+      "events": [
+        {
+          "ts": 1784204933060,
+          "type": "note",
+          "content": "Purpose: Automated feature health check. Runs CLI verification tiers 1–4 and the 5 critical paths. Posts a structured PASS/FAIL report to #relay-health."
+        },
+        {
+          "ts": 1784204933060,
+          "type": "note",
+          "content": "Approach: 11-step pipeline workflow — Parsed 11 steps, 10 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    },
+    {
+      "id": "chap_w3cai5zbclzy",
+      "title": "Execution: report, analyze-improvements",
+      "agentName": "orchestrator",
+      "startedAt": "2026-07-16T12:31:03.446Z",
+      "endedAt": "2026-07-16T12:31:03.452Z",
+      "events": []
+    },
+    {
+      "id": "chap_2b5t7qghp7pr",
+      "title": "Execution: analyze-improvements",
+      "agentName": "reporter",
+      "startedAt": "2026-07-16T12:31:03.452Z",
+      "endedAt": "2026-07-16T12:31:03.487Z",
+      "events": [
+        {
+          "ts": 1784205063452,
+          "type": "note",
+          "content": "\"analyze-improvements\": You are an automated feature health agent for agent-relay",
+          "raw": {
+            "agent": "reporter"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_w272ojod8cun",
+      "title": "Execution: report",
+      "agentName": "reporter",
+      "startedAt": "2026-07-16T12:31:03.487Z",
+      "endedAt": "2026-07-16T12:32:30.893Z",
+      "events": [
+        {
+          "ts": 1784205063487,
+          "type": "note",
+          "content": "\"report\": You are an automated feature health agent for agent-relay",
+          "raw": {
+            "agent": "reporter"
+          }
+        },
+        {
+          "ts": 1784205063490,
+          "type": "note",
+          "content": "\"analyze-improvements\" retrying (attempt 1/2)"
+        },
+        {
+          "ts": 1784205063525,
+          "type": "note",
+          "content": "\"report\" retrying (attempt 1/2)"
+        }
+      ]
+    },
+    {
+      "id": "chap_6ugow7ufsssf",
+      "title": "Execution: analyze-improvements",
+      "agentName": "reporter",
+      "startedAt": "2026-07-16T12:32:30.893Z",
+      "endedAt": "2026-07-16T12:32:48.533Z",
+      "events": [
+        {
+          "ts": 1784205150893,
+          "type": "note",
+          "content": "\"analyze-improvements\": You are an automated feature health agent for agent-relay",
+          "raw": {
+            "agent": "reporter"
+          }
+        },
+        {
+          "ts": 1784205150912,
+          "type": "error",
+          "content": "\"analyze-improvements\" failed [unknown]: Unexpected failure. Review the error and step definition.",
+          "raw": {
+            "cause": "unknown",
+            "rawError": "fetch failed",
+            "attempt": 2,
+            "maxRetries": 1
+          },
+          "significance": "high"
+        }
+      ]
+    },
+    {
+      "id": "chap_mzfye7m5uf2r",
+      "title": "Execution: report",
+      "agentName": "reporter",
+      "startedAt": "2026-07-16T12:32:48.533Z",
+      "endedAt": "2026-07-16T12:32:48.592Z",
+      "events": [
+        {
+          "ts": 1784205168533,
+          "type": "note",
+          "content": "\"report\": You are an automated feature health agent for agent-relay",
+          "raw": {
+            "agent": "reporter"
+          }
+        },
+        {
+          "ts": 1784205168553,
+          "type": "error",
+          "content": "\"report\" failed [unknown]: Unexpected failure. Review the error and step definition.",
+          "raw": {
+            "cause": "unknown",
+            "rawError": "fetch failed",
+            "attempt": 2,
+            "maxRetries": 1
+          },
+          "significance": "high"
+        }
+      ]
+    },
+    {
+      "id": "chap_w51yb7gojijb",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-07-16T12:32:48.592Z",
+      "endedAt": "2026-07-16T12:32:48.592Z",
+      "events": [
+        {
+          "ts": 1784205168592,
+          "type": "reflection",
+          "content": "Failed at \"report\" [unknown] after 4min. 9/11 steps completed before failure. (abandoned after 4 minutes)",
+          "significance": "high"
+        },
+        {
+          "ts": 1784205168592,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"report\" failed: Step \"report\" failed after 1 retries: fetch failed",
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Failed at \"report\" [unknown] after 4min. 9/11 steps completed before failure.",
+    "approach": "pipeline workflow (1 agents)",
+    "challenges": [
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition."
+    ],
+    "learnings": [],
+    "confidence": 0.6136363636363636
+  },
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
+}
