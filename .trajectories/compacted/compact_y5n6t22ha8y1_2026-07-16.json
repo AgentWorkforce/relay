@@ -3,9 +3,7 @@
   "version": 1,
   "type": "compacted",
   "compactedAt": "2026-07-16T20:04:50.754Z",
-  "sourceTrajectories": [
-    "traj_v1w541j6vrj4"
-  ],
+  "sourceTrajectories": ["traj_v1w541j6vrj4"],
   "dateRange": {
     "start": "2026-07-16T20:02:36.440Z",
     "end": "2026-07-16T20:04:34.006Z"
@@ -13,9 +11,7 @@
   "summary": {
     "totalDecisions": 1,
     "totalEvents": 1,
-    "uniqueAgents": [
-      "default"
-    ]
+    "uniqueAgents": ["default"]
   },
   "decisionGroups": [
     {
