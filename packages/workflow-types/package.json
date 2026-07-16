@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/workflow-types",
-  "version": "10.6.0",
+  "version": "10.6.2",
   "type": "module",
   "main": "dist/index.js",
   "files": [
