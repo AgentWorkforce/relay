@@ -134,11 +134,15 @@ function pickNextFeature(features: Feature[], checkedIds: Set<string>): Feature 
 async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise<string> {
   const mcpNote = feature.mcp ? `\nMCP tool: \`${feature.mcp}\`` : '';
   const tierLabel =
-    feature.tier === 1 ? 'no broker needed' :
-    feature.tier === 2 ? 'broker required' :
-    feature.tier === 3 ? 'broker + agent token' :
-    feature.tier === 4 ? 'broker + two agents' :
-    'cloud auth required';
+    feature.tier === 1
+      ? 'no broker needed'
+      : feature.tier === 2
+        ? 'broker required'
+        : feature.tier === 3
+          ? 'broker + agent token'
+          : feature.tier === 4
+            ? 'broker + two agents'
+            : 'cloud auth required';
 
   const prompt = [
     'You are the Relay Feature Guardian, a proactive Slack bot for the Agent Relay team.',
