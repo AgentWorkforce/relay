@@ -428,10 +428,12 @@ function transpileTypeScriptGraph(configPath: string): TranspiledGraph | undefin
     seen.add(file);
 
     const source = fs.readFileSync(file, 'utf8');
-    const loader = path.extname(file).toLowerCase() === '.tsx' ? 'tsx' : 'ts';
+    const extension = path.extname(file).toLowerCase();
+    const loader = extension === '.tsx' ? 'tsx' : 'ts';
     const transpiler = new bun.Transpiler({ loader, target: 'node' });
     const parentUrls = new Set([pathToFileURL(file).href, pathToFileURL(fs.realpathSync(file)).href]);
-    const transformed = transpiler.transformSync(source, loader);
+    const rawTransformed = transpiler.transformSync(source, loader);
+    const transformed = extension === '.cts' ? wrapCommonJsAsModule(rawTransformed) : rawTransformed;
     for (const parentUrl of parentUrls) {
       sources[parentUrl] = transformed;
     }
@@ -448,6 +450,31 @@ function transpileTypeScriptGraph(configPath: string): TranspiledGraph | undefin
   }
 
   return { sources, resolutions };
+}
+
+/** Execute transpiled .cts output with the CommonJS bindings users expect. */
+function wrapCommonJsAsModule(source: string): string {
+  return [
+    "import { createRequire as __relayCreateRequire } from 'node:module';",
+    "import { dirname as __relayDirname } from 'node:path';",
+    "import { fileURLToPath as __relayFileURLToPath } from 'node:url';",
+    'const __relayModule = { exports: {} };',
+    'const __relayFilename = __relayFileURLToPath(import.meta.url);',
+    'const __relayRequire = __relayCreateRequire(import.meta.url);',
+    'const __relayDir = __relayDirname(__relayFilename);',
+    '(function (exports, require, module, __filename, __dirname) {',
+    source,
+    '}).call(',
+    '  __relayModule.exports,',
+    '  __relayModule.exports,',
+    '  __relayRequire,',
+    '  __relayModule,',
+    '  __relayFilename,',
+    '  __relayDir',
+    ');',
+    'export default __relayModule.exports;',
+    '',
+  ].join('\n');
 }
 
 function resolveImportedTypeScript(parentFile: string, specifier: string): string | undefined {

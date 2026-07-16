@@ -198,18 +198,26 @@ describe.skipIf(!bunAvailable)('node definition loading from a bun-compiled bina
     expect(descriptor).toEqual({ name: 'fixture-node', capabilities: ['spawn:claude'] });
   }, 60_000);
 
-  it.each(['mts', 'cts'])(
-    'serves a .%s config through the transpiling Node loader',
-    (extension) => {
-      const config = path.join(dir, `agent-relay-bare.${extension}`);
-      writeFileSync(config, "export { default } from '@fixture/node-lib';\n");
+  it('serves a .mts config through the transpiling Node loader', () => {
+    const config = path.join(dir, 'agent-relay-bare.mts');
+    writeFileSync(config, "export { default } from '@fixture/node-lib';\n");
 
-      const descriptor = describeViaHarness(dir, config);
+    const descriptor = describeViaHarness(dir, config);
 
-      expect(descriptor).toEqual({ name: 'fixture-node', capabilities: ['spawn:claude'] });
-    },
-    60_000
-  );
+    expect(descriptor).toEqual({ name: 'fixture-node', capabilities: ['spawn:claude'] });
+  }, 60_000);
+
+  it('serves a CommonJS .cts config through the transpiling Node loader', () => {
+    const config = path.join(dir, 'agent-relay-bare.cts');
+    writeFileSync(
+      config,
+      ["const definition = require('@fixture/node-lib').default;", 'export = definition;'].join('\n')
+    );
+
+    const descriptor = describeViaHarness(dir, config);
+
+    expect(descriptor).toEqual({ name: 'fixture-node', capabilities: ['spawn:claude'] });
+  }, 60_000);
 
   /**
    * Pins the bun limitation the child-process design exists for: a compiled
