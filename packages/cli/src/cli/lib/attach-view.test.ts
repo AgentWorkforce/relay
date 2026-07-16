@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   extractMatchingChunk,
+  InputReportModeFilter,
   resolveViewBrokerConnection,
   runViewSession,
   toWsUrl,
@@ -59,6 +60,8 @@ interface HarnessOverrides {
   snapshotResult?: Awaited<ReturnType<ViewDependencies['captureAndRenderSnapshot']>>;
   /** If set, snapshot helper writes this string to `writeChunk` when called. */
   snapshotChunk?: string;
+  /** Simulate an interactive (TTY) stdout so the on-detach reset fires. */
+  stdoutIsTty?: boolean;
 }
 
 function createHarness(overrides: HarnessOverrides = {}): {
@@ -109,6 +112,7 @@ function createHarness(overrides: HarnessOverrides = {}): {
       }
       return overrides.snapshotResult ?? { status: 'ok' };
     }) as ViewDependencies['captureAndRenderSnapshot'],
+    stdoutIsTty: overrides.stdoutIsTty ?? false,
   };
 
   return { deps, writes, errors, logs, signals, sockets };
@@ -125,8 +129,9 @@ describe('extractMatchingChunk', () => {
       name: 'Alice',
       stream: 'stdout',
       chunk: '[31mhello[0m',
+      offset: 7,
     });
-    expect(extractMatchingChunk(raw, 'Alice')).toBe('[31mhello[0m');
+    expect(extractMatchingChunk(raw, 'Alice')).toEqual({ chunk: '[31mhello[0m', offset: 7 });
   });
 
   it('filters out events for other agents', () => {
@@ -162,7 +167,96 @@ describe('extractMatchingChunk', () => {
 
   it('keeps empty chunks (server sends them to signal flushes)', () => {
     const raw = JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: '' });
-    expect(extractMatchingChunk(raw, 'Alice')).toBe('');
+    expect(extractMatchingChunk(raw, 'Alice')).toEqual({ chunk: '', offset: undefined });
+  });
+});
+
+describe('InputReportModeFilter', () => {
+  it('passes escape-free text through untouched (fast path)', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('plain text\r\n')).toBe('plain text\r\n');
+  });
+
+  it('strips mouse-tracking and SGR-encoding enables', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('before\x1b[?1000hafter')).toBe('beforeafter');
+    expect(filter.push('\x1b[?1002h\x1b[?1003h\x1b[?1006h')).toBe('');
+  });
+
+  it('strips focus, alternate-scroll, and bracketed-paste enables', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1004h\x1b[?1007h\x1b[?2004h')).toBe('');
+  });
+
+  it('keeps the matching disables so mode resets pass through', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1000l\x1b[?2004l')).toBe('\x1b[?1000l\x1b[?2004l');
+  });
+
+  it('keeps other DECSET enables (alt screen, cursor show) verbatim', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1049h\x1b[?25h\x1b[?1h')).toBe('\x1b[?1049h\x1b[?25h\x1b[?1h');
+  });
+
+  it('rewrites multi-mode sets, keeping only the non-report modes', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1002;25h')).toBe('\x1b[?25h');
+    expect(filter.push('\x1b[?1002;1006h')).toBe('');
+    expect(filter.push('\x1b[?25;1049h')).toBe('\x1b[?25;1049h');
+  });
+
+  it('passes non-DECSET CSIs, SGR colors, and 2-byte escapes through', () => {
+    const filter = new InputReportModeFilter();
+    const bytes = '\x1b[2J\x1b[H\x1b[31;1mRED\x1b[0m\x1b7\x1b8\x1b]0;title\x07';
+    expect(filter.push(bytes)).toBe(bytes);
+  });
+
+  it('filters a DECSET split across chunk boundaries', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('hi\x1b[?10')).toBe('hi');
+    expect(filter.push('06h there')).toBe(' there');
+  });
+
+  it('holds a bare trailing ESC and reassembles it with the next chunk', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('ok\x1b')).toBe('ok');
+    expect(filter.push('[?1000hrest')).toBe('rest');
+    expect(filter.push('ok\x1b')).toBe('ok');
+    expect(filter.push('[31mred')).toBe('\x1b[31mred');
+  });
+
+  it('gives up on pathologically long unterminated non-private CSIs instead of holding forever', () => {
+    const filter = new InputReportModeFilter();
+    const longCsi = '\x1b[' + '1;'.repeat(200);
+    expect(filter.push(longCsi)).toBe(longCsi);
+  });
+
+  it('holds and filters a large batched private-mode set split across frames', () => {
+    // A full private-mode init batches visual + input-report modes and can
+    // still split before the final `h`; the whole set must be held so the
+    // input-report modes are stripped while the visual ones survive.
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1049;1000;1002;1003;1004;1006;1007;1015;1016;2004;25')).toBe('');
+    expect(filter.push(';47h')).toBe('\x1b[?1049;25;47h');
+  });
+
+  it('drops an over-long partial private-mode set instead of flushing it', () => {
+    // If a private-mode set overruns the hold cap, flushing the partial
+    // `CSI ? …` prefix would let a later chunk's `h` complete it locally and
+    // re-enable the input-report modes this filter exists to strip. Drop it.
+    const filter = new InputReportModeFilter();
+    const longPrivate = '\x1b[?' + '1000;'.repeat(80);
+    expect(longPrivate.length).toBeGreaterThan(256);
+    expect(filter.push(longPrivate)).toBe('');
+    // The completing `h` arriving next must not resurrect the sequence.
+    expect(filter.push('h')).toBe('h');
+  });
+
+  it('drops a held partial sequence on reset', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?10')).toBe('');
+    filter.reset();
+    expect(filter.push('normal')).toBe('normal');
   });
 });
 
@@ -247,6 +341,14 @@ describe('resolveViewBrokerConnection', () => {
   });
 });
 
+/** Flush enough microtasks/macrotasks that the async
+ *  paint-snapshot-then-reconcile chain in the `open` handler settles. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 describe('runViewSession', () => {
   it('writes chunks for matching events and ignores others', async () => {
     const { deps, writes, sockets, logs } = createHarness({
@@ -261,7 +363,9 @@ describe('runViewSession', () => {
     expect(socket.url).toBe('ws://localhost:3889/ws');
     expect(socket.headers['X-API-Key']).toBe('k');
 
+    // Subscribe-first: the snapshot is painted+reconciled after `open`.
     socket.emit('open');
+    await settle();
     expect(logs.some((args) => String(args[0]).includes('streaming Alice from'))).toBe(false);
     socket.emit(
       'message',
@@ -292,6 +396,7 @@ describe('runViewSession', () => {
     await new Promise((resolve) => setImmediate(resolve));
     const socket = sockets[0];
     socket.emit('open');
+    await settle();
     socket.emit(
       'message',
       JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: ansi })
@@ -300,6 +405,76 @@ describe('runViewSession', () => {
 
     await sessionPromise;
     expect(writes).toEqual([ansi]);
+  });
+
+  it('drops buffered chunks the snapshot already reflects, applies the rest (offset reconcile)', async () => {
+    // Snapshot reports offset=10. Chunks with end offset <= 10 are already on
+    // screen (drop); later ones are applied. Chunks buffered before the
+    // snapshot is painted must be reconciled, not lost or double-applied.
+    const snapshotBytes = 'SNAPSHOT';
+    const { deps, writes, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotChunk: snapshotBytes,
+      snapshotResult: { status: 'ok', offset: 10 },
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    // These arrive while the snapshot is still being fetched → buffered.
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'inSnap', offset: 10 })
+    );
+    socket.emit(
+      'message',
+      JSON.stringify({
+        kind: 'worker_stream',
+        name: 'Alice',
+        stream: 'stdout',
+        chunk: 'afterSnap',
+        offset: 18,
+      })
+    );
+    await settle();
+    socket.emit('close', 1000, Buffer.from(''));
+
+    await sessionPromise;
+    // Snapshot painted first, then only the post-offset chunk applied.
+    expect(writes).toEqual([snapshotBytes, 'afterSnap']);
+  });
+
+  it('strips input-report mode enables from snapshot and live output', async () => {
+    // A viewed TUI (or the snapshot's mode replay) enabling mouse tracking
+    // must not reach the local terminal: view never consumes the reports the
+    // terminal would start sending, so they'd echo as `^[[<35;22;25M` garbage
+    // over cooked stdin. Visual modes and the disables still pass through.
+    const { deps, writes, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotChunk: '\x1b[?1049h\x1b[?1000h\x1b[?1006hSCREEN',
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    await settle();
+    expect(writes).toEqual(['\x1b[?1049hSCREEN']);
+
+    // Live enable split across two worker_stream frames is still stripped.
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'out\x1b[?10' })
+    );
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: '02hmore' })
+    );
+    socket.emit('close', 1000, Buffer.from(''));
+
+    await sessionPromise;
+    expect(writes).toEqual(['\x1b[?1049hSCREEN', 'out', 'more']);
   });
 
   it('exits cleanly on SIGINT without surfacing an error', async () => {
@@ -319,6 +494,39 @@ describe('runViewSession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
     expect(socket.closed).toBe(true);
+  });
+
+  it('emits a terminal reset on detach when stdout is a TTY', async () => {
+    const { deps, writes, sockets, signals } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      stdoutIsTty: true,
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    sockets[0].emit('open');
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Leave alt-screen + show cursor + disable mouse/bracketed-paste must be
+    // written so the viewer's terminal isn't left mis-configured by a snapshot
+    // that re-emitted those modes.
+    expect(writes.some((w) => w.includes('\x1b[?1049l') && w.includes('\x1b[?25h'))).toBe(true);
+  });
+
+  it('does not emit a terminal reset on detach when stdout is not a TTY', async () => {
+    const { deps, writes, sockets, signals } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      stdoutIsTty: false,
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    sockets[0].emit('open');
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    expect(writes.some((w) => w.includes('\x1b[?1049l'))).toBe(false);
   });
 
   it('reports an error and resolves with 1 on abnormal close', async () => {
@@ -372,10 +580,10 @@ describe('runViewSession', () => {
     await sessionPromise;
   });
 
-  it('renders the snapshot to stdout BEFORE the WebSocket opens', async () => {
-    // The snapshot helper writes a clear-screen + welcome banner first;
-    // the live WS then appends a delta. The user's terminal should see
-    // the snapshot bytes first, then the live chunk.
+  it('renders the snapshot to stdout after subscribing, before live deltas', async () => {
+    // Subscribe-first: the WS opens (and subscribes) first, then the
+    // snapshot is painted, then buffered/live deltas are applied — so the
+    // user still sees the snapshot before the live delta, with no gap.
     const snapshotBytes = '\x1b[2J\x1b[H\x1b[32mWelcome back Will\x1b[0m\n❯\n';
     const { deps, writes, sockets } = createHarness({
       connectionFile: { url: 'http://localhost:3889', api_key: 'k' },
@@ -385,11 +593,14 @@ describe('runViewSession', () => {
     const sessionPromise = runViewSession('Alice', {}, deps);
     await new Promise((resolve) => setImmediate(resolve));
 
-    // Snapshot must have been written before any WS chunk arrives.
-    expect(writes).toEqual([snapshotBytes]);
+    // Nothing painted until the WS subscribes and the snapshot is fetched.
+    expect(writes).toEqual([]);
 
     const socket = sockets[0];
     socket.emit('open');
+    await settle();
+    // Snapshot painted on open.
+    expect(writes).toEqual([snapshotBytes]);
     socket.emit(
       'message',
       JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'live delta' })
@@ -400,15 +611,46 @@ describe('runViewSession', () => {
     expect(writes).toEqual([snapshotBytes, 'live delta']);
   });
 
+  it('stops writing output once teardown has begun (item 3)', async () => {
+    const { deps, writes, sockets, signals } = createHarness({
+      connectionFile: { url: 'http://localhost:3889', api_key: 'k' },
+      snapshotChunk: '',
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    await settle();
+
+    // Detach via SIGINT.
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    const before = writes.length;
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'POST-DETACH' })
+    );
+    expect(writes.includes('POST-DETACH')).toBe(false);
+    expect(writes.length).toBe(before);
+  });
+
   it('aborts with exit code 1 when the snapshot reports not_found', async () => {
     const { deps, errors, sockets } = createHarness({
       connectionFile: { url: 'http://localhost:3889' },
       snapshotResult: { status: 'not_found', message: "no agent named 'Ghost'" },
     });
 
-    const code = await runViewSession('Ghost', {}, deps);
+    const sessionPromise = runViewSession('Ghost', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    // Subscribe-first: the broker-wide WS opens, then the snapshot 404s and
+    // we close it and abort.
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    const code = await sessionPromise;
     expect(code).toBe(1);
-    expect(sockets).toHaveLength(0); // never opened the WS
+    expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no agent named/);
   });
 
@@ -421,16 +663,21 @@ describe('runViewSession', () => {
       },
     });
 
-    const code = await runViewSession('Headless', {}, deps);
+    const sessionPromise = runViewSession('Headless', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    const code = await sessionPromise;
     expect(code).toBe(1);
-    expect(sockets).toHaveLength(0);
+    expect(sockets[0].closed).toBe(true);
     expect(errors[0]?.[0]).toMatch(/no PTY/);
   });
 
   it('logs and continues when the snapshot is transiently unavailable', async () => {
     // Snapshot fails (broker hiccup, worker crashed mid-snapshot, etc.)
     // but the live stream should still attach — the agent may produce
-    // useful output even if the current screen couldn't be captured.
+    // useful output even if the current screen couldn't be captured. With no
+    // snapshot to reconcile against, buffered chunks are applied as-is.
     const { deps, logs, sockets, writes } = createHarness({
       connectionFile: { url: 'http://localhost:3889' },
       snapshotResult: { status: 'unavailable', message: 'snapshot returned HTTP 504' },
@@ -438,12 +685,12 @@ describe('runViewSession', () => {
 
     const sessionPromise = runViewSession('Alice', {}, deps);
     await new Promise((resolve) => setImmediate(resolve));
-
-    expect(sockets).toHaveLength(1); // WS still opened
-    expect(logs.some((args) => String(args[0]).includes('could not capture initial screen'))).toBe(true);
+    expect(sockets).toHaveLength(1); // WS opened first
 
     const socket = sockets[0];
     socket.emit('open');
+    await settle();
+    expect(logs.some((args) => String(args[0]).includes('could not capture initial screen'))).toBe(true);
     socket.emit(
       'message',
       JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'live' })

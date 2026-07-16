@@ -57,7 +57,7 @@ log_phase() { echo -e "\n${CYAN}========================================${NC}"; 
 
 broker_is_running() {
   local status_output
-  status_output=$(run_with_timeout 5 "$CLI_CMD" local status 2>/dev/null || true)
+  status_output=$(run_with_timeout 5 "$CLI_CMD" node status 2>/dev/null || true)
   echo "$status_output" | grep -q "Status: RUNNING"
 }
 
@@ -129,7 +129,7 @@ cleanup() {
 
   # Stop daemon (with timeout to prevent hanging)
   log_info "Ensuring daemon is stopped..."
-  run_with_timeout 10 "$CLI_CMD" local down --force --timeout 5000 2>/dev/null || true
+  run_with_timeout 10 "$CLI_CMD" node down --force --timeout 5000 2>/dev/null || true
 
   log_info "Cleanup complete."
 }
@@ -149,7 +149,7 @@ fi
 log_phase "Phase 1: Broker Startup"
 
 # Kill any existing daemon (with timeout to prevent hanging)
-run_with_timeout 10 "$CLI_CMD" local down --force --timeout 5000 2>/dev/null || true
+run_with_timeout 10 "$CLI_CMD" node down --force --timeout 5000 2>/dev/null || true
 
 # Kill any process using our target port (ensures the broker can bind)
 if command -v lsof &> /dev/null; then
@@ -160,7 +160,7 @@ sleep 1
 # Start broker in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agentworkforce/relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" local up > "$DAEMON_LOG" 2>&1 &
+AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" node up > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"
@@ -188,7 +188,7 @@ done
 # If daemon-only mode, stop here
 if [ "$DAEMON_ONLY" = true ]; then
   log_phase "Daemon-Only Test Complete"
-  run_with_timeout 5 "$CLI_CMD" local status || true
+  run_with_timeout 5 "$CLI_CMD" node status || true
   echo ""
   log_info "=== DAEMON TEST PASSED ==="
   exit 0
@@ -215,9 +215,9 @@ if ! "$CLI_CMD" version > /dev/null 2>&1; then
 fi
 
 # Test status command (with timeout to ensure it doesn't hang)
-log_info "Testing: agent-relay local status (with 10s timeout)"
+log_info "Testing: agent-relay node status (with 10s timeout)"
 STATUS_EXIT=0
-run_with_timeout 10 "$CLI_CMD" local status || STATUS_EXIT=$?
+run_with_timeout 10 "$CLI_CMD" node status || STATUS_EXIT=$?
 if [ $STATUS_EXIT -ne 0 ]; then
   if [ $STATUS_EXIT -eq 124 ]; then
     log_error "status command timed out (hung for >10s)"
@@ -232,17 +232,17 @@ log_info "  status command completed without hanging"
 log_info "Testing: agent-relay update --check"
 "$CLI_CMD" update --check 2>/dev/null || true
 
-# Test local agent command help
-log_info "Testing: agent-relay local agent list --help"
-"$CLI_CMD" local agent list --help > /dev/null 2>&1
+# Test node agent command help
+log_info "Testing: agent-relay node agent list --help"
+"$CLI_CMD" node agent list --help > /dev/null 2>&1
 
 log_info "All CLI command tests passed!"
 
 # Phase 3: Final cleanup down (verify no hang)
 log_phase "Phase 3: Final Down Check"
 
-log_info "Testing: agent-relay local down (with 15s timeout)"
-if ! run_with_timeout 15 "$CLI_CMD" local down --timeout 10000; then
+log_info "Testing: agent-relay node down (with 15s timeout)"
+if ! run_with_timeout 15 "$CLI_CMD" node down --timeout 10000; then
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 124 ]; then
     log_error "down command timed out (hung for >15s)"
@@ -256,7 +256,7 @@ else
 fi
 
 # Verify broker is actually stopped
-STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" local status 2>/dev/null || true)
+STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" node status 2>/dev/null || true)
 if echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
   log_error "Broker still reported as running after down command"
   echo "$STATUS_OUTPUT"

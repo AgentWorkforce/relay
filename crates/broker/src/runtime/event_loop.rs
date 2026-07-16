@@ -1,5 +1,132 @@
 use super::*;
 
+/// Current PTY resize owner for a worker under the single-resizer policy.
+///
+/// `session_id` is the client-generated id that currently owns resizing;
+/// `last_seen` timestamps its most recent resize so a crashed client that
+/// never releases can be superseded after [`RESIZE_OWNER_STALE`]. `rows`/`cols`
+/// record the last size actually applied to the PTY so a periodic same-size
+/// re-assert (the client's liveness keep-alive) can refresh `last_seen` without
+/// emitting a redundant SIGWINCH/repaint to the child. Legacy unkeyed resizes
+/// update these dimensions without extending the owner's lease.
+pub(crate) struct ResizeOwner {
+    pub(super) session_id: String,
+    pub(super) last_seen: Instant,
+    pub(super) rows: u16,
+    pub(super) cols: u16,
+}
+
+/// How long an owning session may be idle before another session is allowed
+/// to take over resizing. Only a safety net for clients that crash without
+/// sending an explicit release on detach — a well-behaved client releases
+/// immediately, so this window never fires in the normal path.
+pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
+
+/// Decide whether a resize request from `session_id` should be applied under
+/// the single-resizer policy (#1247).
+///
+/// - Requests without a `session_id` (legacy/one-shot callers) always apply
+///   and never change ownership.
+/// - The first session to resize an unowned worker, and the session that
+///   already owns it, are applied.
+/// - A different session is rejected while the current owner is live, so two
+///   drive clients can't fight over the shared PTY — unless the owner has gone
+///   `owner_stale` (crashed without releasing), in which case the newcomer may
+///   take over.
+pub(crate) fn resize_owner_allows(
+    owner_session: Option<&str>,
+    owner_stale: bool,
+    session_id: Option<&str>,
+) -> bool {
+    match session_id {
+        None => true,
+        Some(sid) => match owner_session {
+            None => true,
+            Some(owner) => owner == sid || owner_stale,
+        },
+    }
+}
+
+/// The action the `ResizePty` handler must take for a resize request, decided
+/// against the current ownership map. Extracted from the handler so the
+/// single-resizer state transitions are unit-testable without a live worker.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ResizeAction {
+    /// Requester is not the resize owner: acknowledge without resizing.
+    Reject,
+    /// Owner re-asserted its current size: `last_seen` was refreshed in place
+    /// and no SIGWINCH/repaint is needed.
+    Refresh,
+    /// Apply the resize (emit SIGWINCH). After the worker send succeeds, call
+    /// [`commit_resize_ownership`] to claim/record ownership.
+    Apply,
+}
+
+/// Evaluate a session-keyed (or legacy) resize against `resize_owners` and,
+/// for the owner-refresh case, bump `last_seen` in place. Returns the
+/// [`ResizeAction`] the handler must take. `now` is injected so the staleness
+/// window is testable.
+pub(crate) fn plan_resize(
+    resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
+    name: &WorkerName,
+    rows: u16,
+    cols: u16,
+    session_id: Option<&str>,
+    now: Instant,
+) -> ResizeAction {
+    let owner = resize_owners.get(name);
+    let owner_stale =
+        owner.is_some_and(|o| now.saturating_duration_since(o.last_seen) >= RESIZE_OWNER_STALE);
+    if !resize_owner_allows(
+        owner.map(|o| o.session_id.as_str()),
+        owner_stale,
+        session_id,
+    ) {
+        return ResizeAction::Reject;
+    }
+    // Same-size owner re-assert: refresh liveness without a redundant SIGWINCH.
+    let owner_refresh = session_id.is_some_and(|sid| {
+        resize_owners
+            .get(name)
+            .is_some_and(|o| o.session_id == sid && o.rows == rows && o.cols == cols)
+    });
+    if owner_refresh {
+        if let Some(owner) = resize_owners.get_mut(name) {
+            owner.last_seen = now;
+        }
+        return ResizeAction::Refresh;
+    }
+    ResizeAction::Apply
+}
+
+/// Record ownership after a resize is actually applied. Session-keyed resizes
+/// claim or refresh the lease; legacy (unkeyed) resizes update the recorded
+/// dimensions of an existing owner *without* renewing its lease, so the owner
+/// still restores its own size on its next re-assert.
+pub(crate) fn commit_resize_ownership(
+    resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
+    name: &WorkerName,
+    rows: u16,
+    cols: u16,
+    session_id: Option<String>,
+    now: Instant,
+) {
+    if let Some(sid) = session_id {
+        resize_owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: sid,
+                last_seen: now,
+                rows,
+                cols,
+            },
+        );
+    } else if let Some(owner) = resize_owners.get_mut(name) {
+        owner.rows = rows;
+        owner.cols = cols;
+    }
+}
+
 pub(crate) struct BrokerRuntime {
     pub(super) persist: bool,
     pub(super) broker_start: Instant,
@@ -26,12 +153,6 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
-    pub(super) fleet_handlers: HandlerDispatchState,
-    pub(super) fleet_sidecar_out_tx: Option<mpsc::Sender<ProtocolEnvelope<Value>>>,
-    pub(super) fleet_sidecar_supervision: Option<NodeSupervision>,
-    pub(super) fleet_sidecar_child: Option<tokio::process::Child>,
-    pub(super) fleet_sidecar_restart_at: Option<Instant>,
-    pub(super) fleet_sidecar_restart: fleet::FleetSidecarRestartState,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
     pub(super) sdk_out_tx: mpsc::Sender<ProtocolEnvelope<Value>>,
@@ -46,8 +167,20 @@ pub(crate) struct BrokerRuntime {
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
     pub(super) pending_deliveries: PendingDeliveryStore,
+    pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
+    /// Per-worker PTY resize ownership (single-resizer policy, see #1247).
+    ///
+    /// A shared PTY has exactly one size, so letting every attached client
+    /// (and every local SIGWINCH) resize it makes concurrent drive clients
+    /// fight and can garble view clients. We therefore key resizes on an
+    /// optional client-generated `session_id`: the first session to resize a
+    /// worker claims it, and only that session's resizes are applied until it
+    /// releases on detach (or is superseded after a long idle window when a
+    /// client crashes without releasing). Resizes without a `session_id` are
+    /// always applied (legacy/one-shot callers), preserving old behaviour.
+    pub(super) resize_owners: HashMap<WorkerName, ResizeOwner>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
     pub(super) recent_thread_messages: VecDeque<Value>,
@@ -138,26 +271,62 @@ impl BrokerRuntime {
                 }
             }
 
-            self.flush_pending_deliveries();
+            self.flush_persisted_stores();
         }
 
         self.shutdown_runtime().await
     }
 
-    /// Persist pending deliveries whenever the map was mutated by the event
-    /// just handled. Keeps the on-disk snapshot in lockstep with the
-    /// in-memory map so a crash between maintenance ticks cannot lose
-    /// queued deliveries.
-    fn flush_pending_deliveries(&mut self) {
-        if !self.pending_deliveries.take_dirty() || !self.paths.persist {
+    /// Persist pending deliveries, dead letters, and the dedup cache whenever
+    /// they were mutated by the event just handled. Keeps the on-disk
+    /// snapshots in lockstep with the in-memory state so a crash between
+    /// maintenance ticks cannot lose queued deliveries, dead letters, or
+    /// already-seen event ids.
+    fn flush_persisted_stores(&mut self) {
+        let pending_dirty = self.pending_deliveries.take_dirty();
+        let dead_letters_dirty = self.dead_letters.take_dirty();
+        let dedup_dirty = self.dedup.take_dirty();
+        if !self.paths.persist {
             return;
         }
-        if let Err(error) = save_pending_deliveries(&self.paths.pending, &self.pending_deliveries) {
-            tracing::warn!(
-                path = %self.paths.pending.display(),
-                error = %error,
-                "failed to persist pending deliveries"
-            );
+        // Persist the dead-letter store *before* pending. When a delivery is
+        // moved pending -> DLQ both stores are dirty in the same tick; writing
+        // the store that gained the entry first means a crash between the two
+        // writes leaves the delivery in both files (recoverable) rather than in
+        // neither (lost). Startup reconciliation drops the stale pending copy.
+        if dead_letters_dirty {
+            if let Err(error) = save_dead_letters(&self.paths.dead_letters, &self.dead_letters) {
+                tracing::warn!(
+                    path = %self.paths.dead_letters.display(),
+                    error = %error,
+                    "failed to persist dead letters — will retry on next flush"
+                );
+                // Preserve durability across a transient filesystem failure:
+                // keep the store dirty so the next flush re-attempts the write.
+                self.dead_letters.mark_dirty();
+            }
+        }
+        if pending_dirty {
+            if let Err(error) =
+                save_pending_deliveries(&self.paths.pending, &self.pending_deliveries)
+            {
+                tracing::warn!(
+                    path = %self.paths.pending.display(),
+                    error = %error,
+                    "failed to persist pending deliveries — will retry on next flush"
+                );
+                self.pending_deliveries.mark_dirty();
+            }
+        }
+        if dedup_dirty {
+            if let Err(error) = crate::dedup::save_dedup_cache(&self.paths.dedup, &self.dedup) {
+                tracing::warn!(
+                    path = %self.paths.dedup.display(),
+                    error = %error,
+                    "failed to persist dedup cache — will retry on next flush"
+                );
+                self.dedup.mark_dirty();
+            }
         }
     }
 
@@ -214,9 +383,6 @@ impl BrokerRuntime {
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
         }
-        if let Some(mut child) = self.fleet_sidecar_child.take() {
-            let _ = crate::spawner::terminate_child(&mut child, Duration::from_secs(3)).await;
-        }
         // Persist any still-pending deliveries so the next start can
         // redeliver them; only remove the file when nothing is pending.
         persist_pending_on_shutdown(
@@ -224,6 +390,20 @@ impl BrokerRuntime {
             self.paths.persist,
             &self.pending_deliveries,
         );
+        persist_dead_letters_on_shutdown(
+            &self.paths.dead_letters,
+            self.paths.persist,
+            &self.dead_letters,
+        );
+        if self.paths.persist {
+            if let Err(error) = crate::dedup::save_dedup_cache(&self.paths.dedup, &self.dedup) {
+                tracing::warn!(
+                    path = %self.paths.dedup.display(),
+                    error = %error,
+                    "failed to persist dedup cache during shutdown"
+                );
+            }
+        }
         self.workers.shutdown_all().await?;
 
         // Clean up state and connection files on graceful shutdown
@@ -234,5 +414,229 @@ impl BrokerRuntime {
         let _ = std::fs::remove_file(&connection_path);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod resize_owner_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn legacy_request_without_session_always_applies() {
+        // Someone else owns it, but a request with no session id still applies.
+        assert!(resize_owner_allows(Some("other"), false, None));
+        assert!(resize_owner_allows(None, false, None));
+    }
+
+    #[test]
+    fn first_session_claims_unowned_worker() {
+        assert!(resize_owner_allows(None, false, Some("s1")));
+    }
+
+    #[test]
+    fn owner_session_is_accepted() {
+        assert!(resize_owner_allows(Some("s1"), false, Some("s1")));
+    }
+
+    #[test]
+    fn different_live_session_is_rejected() {
+        assert!(!resize_owner_allows(Some("s1"), false, Some("s2")));
+    }
+
+    #[test]
+    fn stale_owner_can_be_taken_over() {
+        assert!(resize_owner_allows(Some("s1"), true, Some("s2")));
+    }
+
+    #[test]
+    fn claim_reject_release_lifecycle() {
+        // Drive the real handler transitions end-to-end.
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        let now = Instant::now();
+
+        // s1 claims the (unowned) worker: Apply, then ownership is committed.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 24, 80, Some("s1"), now),
+            ResizeAction::Apply,
+        );
+        commit_resize_ownership(&mut owners, &name, 24, 80, Some("s1".to_string()), now);
+        assert_eq!(owners.get(&name).unwrap().session_id, "s1");
+
+        // s2 is rejected while s1 owns and is fresh.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 30, 100, Some("s2"), now),
+            ResizeAction::Reject,
+        );
+        // Rejected requests must not perturb the owner's recorded size.
+        assert_eq!(
+            (owners[&name].rows, owners[&name].cols),
+            (24, 80),
+            "a rejected resize must not touch the owner's dimensions"
+        );
+
+        // s1 releases on detach (handled by the separate release path).
+        owners.remove(&name);
+
+        // Now s2 can claim the freed worker.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 30, 100, Some("s2"), now),
+            ResizeAction::Apply,
+        );
+    }
+
+    #[test]
+    fn same_size_owner_reassert_refreshes_without_repaint() {
+        // The owner re-sends its current size to stay live: `plan_resize`
+        // must return Refresh (no worker send / SIGWINCH) and bump `last_seen`.
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        // Offset the injected "now" *forward* rather than pushing `last_seen`
+        // backward — `Instant - Duration` panics on a freshly booted host whose
+        // monotonic clock is younger than the offset.
+        let base = Instant::now();
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: base,
+                rows: 24,
+                cols: 80,
+            },
+        );
+
+        // Same session, same size → owner refresh with a bumped `last_seen`.
+        // `now` is 120s later but still within the stale window, so the owner
+        // keeps ownership.
+        let now = base + Duration::from_secs(120);
+        assert_eq!(
+            plan_resize(&mut owners, &name, 24, 80, Some("s1"), now),
+            ResizeAction::Refresh,
+        );
+        assert!(
+            owners.get(&name).unwrap().last_seen > base,
+            "owner refresh must bump last_seen"
+        );
+
+        // A *different* size from the owner is a real resize, not a refresh.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 30, 100, Some("s1"), now),
+            ResizeAction::Apply,
+            "changed size must be a real resize, not a refresh"
+        );
+    }
+
+    #[test]
+    fn legacy_resize_invalidates_owner_same_size_refresh() {
+        // Reviewer callout (#1253): exercise the real handler transition —
+        // keyed claim, legacy resize, then keyed re-assert — instead of
+        // reimplementing the map mutation.
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        let now = Instant::now();
+
+        // s1 claims at 24x80.
+        commit_resize_ownership(&mut owners, &name, 24, 80, Some("s1".to_string()), now);
+        let claimed_seen = owners.get(&name).unwrap().last_seen;
+
+        // A legacy (unkeyed) caller applies a different size. It plans as Apply
+        // and, once committed, updates the recorded dimensions *without*
+        // renewing the owner's lease.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 40, 120, None, now),
+            ResizeAction::Apply,
+        );
+        commit_resize_ownership(&mut owners, &name, 40, 120, None, now);
+        let owner = owners.get(&name).unwrap();
+        assert_eq!((owner.rows, owner.cols), (40, 120));
+        assert_eq!(
+            owner.last_seen, claimed_seen,
+            "legacy resize must not renew the lease"
+        );
+
+        // The owner re-asserting its former 24x80 size must now plan as a real
+        // resize (Apply), not a refresh, so it restores the PTY after the
+        // legacy caller changed the size out from under it.
+        assert_eq!(
+            plan_resize(&mut owners, &name, 24, 80, Some("s1"), now),
+            ResizeAction::Apply,
+            "owner must restore dimensions changed by a legacy resize"
+        );
+    }
+
+    #[test]
+    fn stale_owner_is_taken_over_via_plan_resize() {
+        // A crashed owner (last_seen older than the stale window) is superseded
+        // by a new session's resize through the real transition helper.
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        // Anchor `last_seen` at a real instant and push the injected "now"
+        // forward past the stale window — `Instant - Duration` panics on a
+        // freshly booted host whose monotonic clock is younger than the offset.
+        let base = Instant::now();
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: base,
+                rows: 24,
+                cols: 80,
+            },
+        );
+        let now = base + RESIZE_OWNER_STALE + Duration::from_secs(1);
+
+        assert_eq!(
+            plan_resize(&mut owners, &name, 30, 100, Some("s2"), now),
+            ResizeAction::Apply,
+            "a newcomer may take over a stale (crashed) owner",
+        );
+        commit_resize_ownership(&mut owners, &name, 30, 100, Some("s2".to_string()), now);
+        assert_eq!(owners.get(&name).unwrap().session_id, "s2");
+    }
+
+    #[test]
+    fn release_outcome_reports_actual_removal() {
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: Instant::now(),
+                rows: 24,
+                cols: 80,
+            },
+        );
+
+        // Release from the owner removes and reports true.
+        let released = matches!(owners.get(&name).map(|o| o.session_id.as_str()), Some("s1"))
+            && owners.remove(&name).is_some();
+        assert!(released, "owner release must report released=true");
+
+        // A second release (nothing owned) is a no-op → false.
+        let released_again = owners.get(&name).is_some_and(|o| o.session_id == "s1")
+            && owners.remove(&name).is_some();
+        assert!(!released_again, "no-op release must report released=false");
+    }
+
+    #[test]
+    fn release_from_non_owner_is_ignored() {
+        let name = WorkerName::new("w1".to_string());
+        let mut owners: HashMap<WorkerName, ResizeOwner> = HashMap::new();
+        owners.insert(
+            name.clone(),
+            ResizeOwner {
+                session_id: "s1".to_string(),
+                last_seen: Instant::now(),
+                rows: 24,
+                cols: 80,
+            },
+        );
+        // A release carrying the wrong session id must not evict the owner.
+        if owners.get(&name).is_some_and(|o| o.session_id == "s2") {
+            owners.remove(&name);
+        }
+        assert_eq!(owners.get(&name).map(|o| o.session_id.as_str()), Some("s1"));
     }
 }

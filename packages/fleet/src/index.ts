@@ -4,8 +4,6 @@ import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@ag
 import type {
   AgentSpec,
   MessageInjectionMode,
-  NodeCapabilityManifest,
-  NodeManifest,
   RestartPolicy,
   JsonValue,
 } from '@agent-relay/harness-driver/protocol';
@@ -22,9 +20,6 @@ export interface FleetRelaySendMessageInput {
   to: string;
   text: string;
   from?: string;
-  threadId?: string;
-  workspaceId?: string;
-  workspaceAlias?: string;
   mode?: MessageInjectionMode;
   data?: Record<string, unknown>;
 }
@@ -308,26 +303,6 @@ export function nodeInfo(definition: FleetNodeDefinition): FleetNodeInfo {
   };
 }
 
-export function nodeManifest(
-  definition: FleetNodeDefinition,
-  overrides: { name?: string; maxAgents?: number } = {}
-): NodeManifest {
-  const name = overrides.name ? nonEmpty(overrides.name, 'node name') : definition.name;
-  const maxAgents = overrides.maxAgents ?? definition.maxAgents;
-  const capabilities: NodeCapabilityManifest[] = Object.values(definition.capabilities).map((capability) => ({
-    name: capability.name,
-    kind: capability.kind,
-    ...(capability.metadata ? { metadata: capability.metadata } : {}),
-  }));
-  return {
-    name,
-    capabilities,
-    ...(maxAgents !== undefined ? { max_agents: maxAgents } : {}),
-    ...(definition.tags ? { tags: [...definition.tags] } : {}),
-    ...(definition.version ? { version: definition.version } : {}),
-  };
-}
-
 export async function invokeNodeHandler(
   definition: FleetNodeDefinition,
   name: string,
@@ -439,3 +414,5 @@ function parseWithSchema<T>(schema: ZodLikeSchema<T>, input: unknown): T {
   const message = 'error' in parsed ? parsed.error.message : 'input validation failed';
   throw new Error(message);
 }
+
+export * from './serve-node.js';

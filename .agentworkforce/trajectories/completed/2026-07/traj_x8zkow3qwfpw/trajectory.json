@@ -1,0 +1,94 @@
+{
+  "id": "traj_x8zkow3qwfpw",
+  "version": 1,
+  "task": {
+    "title": "Rebase PR #1098 (broker DLQ + redeliver + persisted dedup) onto current main; resolve conflicts",
+    "source": {
+      "system": "plain",
+      "id": "PR-1098"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-07-14T15:25:05.936Z",
+  "completedAt": "2026-07-14T15:25:55.139Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-14T15:25:13.243Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_x4f5yutrc14h",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-14T15:25:13.243Z",
+      "endedAt": "2026-07-14T15:25:55.139Z",
+      "events": [
+        {
+          "ts": 1784042713244,
+          "type": "decision",
+          "content": "Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename): Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename)",
+          "raw": {
+            "question": "Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename)",
+            "chosen": "Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename)",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784042714531,
+          "type": "decision",
+          "content": "Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature: Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature",
+          "raw": {
+            "question": "Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature",
+            "chosen": "Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Rebased PR #1098 onto main: resolved 9 conflicts, adapted local->node CLI rename, threaded dead_letters through release_worker_locally. All broker + TS tests pass.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": ["defd3305"],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_x8zkow3qwfpw/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/dedup.rs",
+    "crates/broker/src/listen_api.rs",
+    "crates/broker/src/protocol.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/dead_letter.rs",
+    "crates/broker/src/runtime/delivery.rs",
+    "crates/broker/src/runtime/event_loop.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/init.rs",
+    "crates/broker/src/runtime/maintenance.rs",
+    "crates/broker/src/runtime/mod.rs",
+    "crates/broker/src/runtime/paths.rs",
+    "crates/broker/src/runtime/relaycast_events.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/src/util/fs.rs",
+    "crates/broker/src/util/mod.rs",
+    "packages/cli/src/cli/bootstrap.test.ts",
+    "packages/cli/src/cli/commands/core.test.ts",
+    "packages/cli/src/cli/commands/core.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/protocol.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "cadc2dcef04b85ae813e0db5b10bd898c1ced5fe",
+    "endRef": "defd3305decc224b6d113aabe3d5e3be098aa183",
+    "traceId": "2938aa4d-2f92-44f1-a8e1-e21f10edcb29"
+  }
+}

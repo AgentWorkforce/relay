@@ -7,6 +7,13 @@
  *
  * No keystrokes are forwarded — the broker keeps doing whatever it's doing.
  * Ctrl+C exits the client cleanly; the agent keeps running under the broker.
+ *
+ * Because nothing is forwarded, DECSET modes that make the *local* terminal
+ * generate input reports (mouse tracking, focus events, bracketed paste, …)
+ * are stripped from the stream before it reaches stdout — see
+ * {@link InputReportModeFilter}. The interactive verbs (`drive`,
+ * `passthrough`) keep those modes: they own stdin in raw mode and forward
+ * the reports to the agent, where a TUI can actually consume them.
  */
 
 import fs from 'node:fs';
@@ -18,6 +25,9 @@ import { getProjectPaths } from '@agent-relay/config';
 
 import {
   captureAndRenderSnapshot,
+  createBackpressureAwareWriter,
+  resetLocalTerminalOnDetach,
+  StreamSyncBuffer,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
@@ -64,6 +74,13 @@ export interface ViewDependencies {
   createWebSocket: ViewWebSocketFactory;
   /** Where the PTY chunks get written. Defaults to `process.stdout.write`. */
   writeChunk: (chunk: string) => void;
+  /**
+   * Tear down the backpressure-aware writer on detach: drop its pending queue
+   * and unhook its `'drain'` listener so nothing flushes to stdout after the
+   * session settles. Defaults to the writer created in {@link withDefaults};
+   * tests that inject their own `writeChunk` can omit it (no-op).
+   */
+  disposeWriter?: () => void;
   /** Signal registration (so tests can drive SIGINT without killing the test). */
   onSignal: ViewSignalRegistrar;
   log: (...args: unknown[]) => void;
@@ -77,6 +94,12 @@ export interface ViewDependencies {
     agentName: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
+  /**
+   * True when stdout is an interactive terminal. Gates the on-detach terminal
+   * reset so a piped/redirected `view` never writes reset controls into the
+   * captured log. Defaults to `Boolean(process.stdout.isTTY)`.
+   */
+  stdoutIsTty: boolean;
 }
 
 function readConnectionFileFromDisk(stateDir: string): unknown {
@@ -97,14 +120,14 @@ function defaultStateDir(): string {
 }
 
 function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependencies {
+  const writer = createBackpressureAwareWriter(process.stdout);
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as ViewWebSocket,
-    writeChunk: (chunk) => {
-      process.stdout.write(chunk);
-    },
+    writeChunk: writer.write,
+    disposeWriter: writer.dispose,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -115,6 +138,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     exit: defaultExit,
     fetch: (input, init) => fetch(input, init),
     captureAndRenderSnapshot,
+    stdoutIsTty: Boolean(process.stdout.isTTY),
     ...overrides,
   };
 }
@@ -178,15 +202,22 @@ export function toWsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/^http/, 'ws')}/ws`;
 }
 
+/** A matched `worker_stream` chunk plus its per-worker byte offset (absent on
+ *  brokers that predate stream-offset support). */
+export interface MatchedChunk {
+  chunk: string;
+  offset?: number;
+}
+
 /**
  * Inspect a single WebSocket message and, if it's a `worker_stream` event for
- * the requested agent, return the raw chunk string. Returns `null` for events
- * that don't match (other kinds, other agents, malformed JSON, etc.) so the
- * caller can ignore them.
+ * the requested agent, return the raw chunk string plus its stream offset.
+ * Returns `null` for events that don't match (other kinds, other agents,
+ * malformed JSON, etc.) so the caller can ignore them.
  *
  * Exported for unit testing the filter in isolation from any WebSocket.
  */
-export function extractMatchingChunk(rawMessage: string, agentName: string): string | null {
+export function extractMatchingChunk(rawMessage: string, agentName: string): MatchedChunk | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawMessage);
@@ -198,7 +229,135 @@ export function extractMatchingChunk(rawMessage: string, agentName: string): str
   if (parsed.name !== agentName) return null;
   const chunk = parsed.chunk;
   if (typeof chunk !== 'string') return null;
-  return chunk;
+  const offset = typeof parsed.offset === 'number' ? parsed.offset : undefined;
+  return { chunk, offset };
+}
+
+/**
+ * DECSET (`CSI ? … h`) modes that instruct the terminal to *send* escape
+ * sequences on input events. Enabling any of these on the viewer's local
+ * terminal is harmful: `view` never reads stdin (it stays cooked and
+ * echoing), so every report the terminal emits — mouse motion like
+ * `ESC [<35;22;25M`, focus in/out, paste guards — is echoed straight into
+ * the display as garbage instead of being consumed (#1247-adjacent; the
+ * on-detach reset already disables them, but that never helped mid-session).
+ *
+ *  - 9, 1000, 1001, 1002, 1003 — X10/normal/highlight/button/any-event mouse
+ *  - 1004                      — focus in/out reporting
+ *  - 1005, 1006, 1015, 1016    — mouse coordinate encodings
+ *  - 1007                      — alternate scroll (wheel → arrow-key input)
+ *  - 2004                      — bracketed paste
+ */
+const INPUT_REPORT_MODES: ReadonlySet<number> = new Set([
+  9, 1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 1016, 2004,
+]);
+
+/** Longest escape-sequence prefix the filter will hold across chunk
+ *  boundaries before giving up on it. Any DECSET we care about is far
+ *  shorter — even a full private-mode init that batches every mode stays well
+ *  under this — so the cap only bites on a pathological CSI (an agent that
+ *  stalls mid-sequence), where it bounds memory and latency. Beyond the cap an
+ *  incomplete private-mode (`CSI ? …`) prefix is dropped rather than flushed,
+ *  so a later chunk's final `h` can't re-enable an input-report mode on the
+ *  local terminal; any other CSI is passed through verbatim. */
+const MAX_HELD_SEQUENCE_LENGTH = 256;
+
+/** An incomplete private-mode CSI (`CSI ? …`) that is still only parameter
+ *  bytes — digits and `;` with no final byte yet. Flushing a prefix like this
+ *  is unsafe: a later chunk's `h` would complete it locally and re-enable the
+ *  very input-report modes this filter strips, so an over-long one is dropped
+ *  instead of passed through. */
+// eslint-disable-next-line no-control-regex -- intentionally matching a raw ESC byte in PTY output
+const PARTIAL_PRIVATE_MODE = /^\x1b\[\?[0-9;]*$/;
+
+/**
+ * Streaming filter that removes input-report DECSET *enables* from a PTY
+ * byte stream. Everything else — including the matching `CSI ? … l`
+ * disables, all other CSIs, OSC/DCS strings, and printable text — passes
+ * through byte-for-byte.
+ *
+ * A CSI sequence may be split across `worker_stream` frames, so the filter
+ * holds an incomplete trailing ESC/CSI prefix (bounded by
+ * {@link MAX_HELD_SEQUENCE_LENGTH}) until the next chunk completes it.
+ * Multi-mode sets like `CSI ? 1002;1006 h` are rewritten to keep only the
+ * non-input-report modes (dropped entirely when none remain).
+ *
+ * Only ASCII control bytes drive the parsing; multi-byte UTF-8 payload
+ * characters never appear inside a CSI, so scanning UTF-16 code units is
+ * safe (same reasoning as `AnsiBoundaryScanner`).
+ */
+export class InputReportModeFilter {
+  /** Incomplete ESC/CSI prefix held from the previous chunk. */
+  private held = '';
+
+  /** Filter a chunk, returning the bytes safe to write to the local
+   *  terminal. May return `''` while a split sequence is being held. */
+  push(chunk: string): string {
+    // Fast path: nothing held and no ESC anywhere — pass through untouched.
+    if (this.held === '' && chunk.indexOf('\x1b') === -1) return chunk;
+
+    const data = this.held + chunk;
+    this.held = '';
+    let out = '';
+    let i = 0;
+    while (i < data.length) {
+      const esc = data.indexOf('\x1b', i);
+      if (esc === -1) {
+        out += data.slice(i);
+        break;
+      }
+      out += data.slice(i, esc);
+      if (esc + 1 >= data.length) {
+        // Chunk ends on a bare ESC — hold it for the next push.
+        this.held = '\x1b';
+        break;
+      }
+      if (data.charCodeAt(esc + 1) !== 0x5b /* [ */) {
+        // Not a CSI (2-byte escape, OSC/DCS intro, …) — never a DECSET;
+        // emit the ESC and resume scanning right after it.
+        out += '\x1b';
+        i = esc + 1;
+        continue;
+      }
+      // CSI: find the final byte (0x40–0x7E).
+      let j = esc + 2;
+      while (j < data.length && !(data.charCodeAt(j) >= 0x40 && data.charCodeAt(j) <= 0x7e)) {
+        j += 1;
+      }
+      if (j >= data.length) {
+        const tail = data.slice(esc);
+        if (tail.length <= MAX_HELD_SEQUENCE_LENGTH) {
+          this.held = tail; // incomplete CSI — hold until the next chunk
+        } else if (!PARTIAL_PRIVATE_MODE.test(tail)) {
+          out += tail; // pathologically long non-private CSI — give up filtering it
+        }
+        // else: an over-long incomplete private-mode prefix. Drop it — flushing
+        // the partial `CSI ? …` would let the next frame's final `h` re-enable
+        // an input-report mode locally, the exact spray this filter prevents.
+        break;
+      }
+      out += filterCompleteCsi(data.slice(esc, j + 1));
+      i = j + 1;
+    }
+    return out;
+  }
+
+  /** Drop any held partial sequence (detach teardown — an incomplete
+   *  escape prefix written alone would itself garble the terminal). */
+  reset(): void {
+    this.held = '';
+  }
+}
+
+/** Rewrite one complete CSI sequence: strip input-report modes from a
+ *  DECSET enable, pass every other CSI through verbatim. */
+function filterCompleteCsi(sequence: string): string {
+  // eslint-disable-next-line no-control-regex -- intentionally matching a raw ESC byte in PTY output
+  const match = /^\x1b\[\?([0-9;]+)h$/.exec(sequence);
+  if (!match) return sequence;
+  const kept = match[1].split(';').filter((mode) => !INPUT_REPORT_MODES.has(Number(mode)));
+  if (kept.length === 0) return '';
+  return `\x1b[?${kept.join(';')}h`;
 }
 
 /**
@@ -229,35 +388,6 @@ export async function runViewSession(
     return 1;
   }
 
-  // Render the agent's current screen before the live stream begins, so
-  // the user sees what's there instead of staring at a blank terminal
-  // until the agent happens to produce more output. Hard errors
-  // (`not_found` / `no_pty`) abort — there's nothing meaningful to view.
-  // Transient errors (`unavailable` / `transport_error`) are surfaced as
-  // a warning and we fall through to the live stream; the agent may
-  // still produce useful output even if the snapshot couldn't be served.
-  const snapshot = await deps.captureAndRenderSnapshot(
-    { url: connection.url, apiKey: connection.apiKey },
-    name,
-    { fetch: deps.fetch, writeChunk: deps.writeChunk }
-  );
-  switch (snapshot.status) {
-    case 'ok':
-      break;
-    case 'not_found':
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
-      return 1;
-    case 'no_pty':
-      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to view`}`);
-      return 1;
-    case 'unavailable':
-    case 'transport_error':
-      deps.log(
-        `[view] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
-      );
-      break;
-  }
-
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};
   if (connection.apiKey) {
@@ -267,6 +397,19 @@ export async function runViewSession(
   return new Promise<number>((resolve) => {
     let settled = false;
     const cleanupSignals: Array<() => void> = [];
+    // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
+    // is painted and reconciled, so no output around attach time is lost and
+    // (via per-worker offsets) none is double-applied. See StreamSyncBuffer.
+    const sync = new StreamSyncBuffer();
+    // Every byte of agent output (snapshot + live) flows through this filter
+    // so input-report modes never reach the viewer's terminal — `view` has no
+    // one consuming the reports they would trigger. The on-detach reset below
+    // bypasses it deliberately (its `?…l` disables must go out verbatim).
+    const inputModeFilter = new InputReportModeFilter();
+    const writeAgentOutput = (chunk: string): void => {
+      const filtered = inputModeFilter.push(chunk);
+      if (filtered.length > 0) deps.writeChunk(filtered);
+    };
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
@@ -282,7 +425,63 @@ export async function runViewSession(
       } catch {
         // best effort — already closed
       }
+      try {
+        // Heal the local terminal: a replayed snapshot re-emits terminal modes
+        // (alt-screen, mouse reporting, bracketed paste, ...) that would
+        // otherwise linger after the viewer detaches. TTY stdout only.
+        // Must run before disposeWriter — the writer no-ops once disposed.
+        resetLocalTerminalOnDetach(deps.writeChunk, deps.stdoutIsTty);
+      } catch {
+        // best effort
+      }
+      // Drop the writer's pending queue and unhook its drain listener so no
+      // buffered chunk flushes to stdout after detach.
+      deps.disposeWriter?.();
       resolve(code);
+    };
+
+    // Render the agent's current screen once the WS is subscribed, then
+    // reconcile the buffered live chunks against it. Hard errors
+    // (`not_found` / `no_pty`) abort — there's nothing meaningful to view.
+    // Transient errors (`unavailable` / `transport_error`) are surfaced as a
+    // warning and we fall through to the live stream; the agent may still
+    // produce useful output even if the snapshot couldn't be served.
+    // Guard every snapshot-path write on `settled` so a Ctrl+C that lands
+    // while the snapshot HTTP fetch is in flight can't paint the snapshot
+    // after teardown has begun (the snapshot render path runs inside the
+    // awaited `captureAndRenderSnapshot`, past the WS `message` guard).
+    const guardedWrite = (chunk: string): void => {
+      if (!settled) writeAgentOutput(chunk);
+    };
+    const paintSnapshotAndReconcile = async (): Promise<void> => {
+      const snapshot = await deps.captureAndRenderSnapshot(
+        { url: connection.url, apiKey: connection.apiKey },
+        name,
+        { fetch: deps.fetch, writeChunk: guardedWrite }
+      );
+      if (settled) return;
+      switch (snapshot.status) {
+        case 'ok':
+          for (const chunk of sync.reconcile(snapshot.offset)) writeAgentOutput(chunk);
+          return;
+        case 'not_found':
+          deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
+          finish(1);
+          return;
+        case 'no_pty':
+          deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to view`}`);
+          finish(1);
+          return;
+        case 'unavailable':
+        case 'transport_error':
+          deps.log(
+            `[view] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+          );
+          // No snapshot painted — apply everything buffered so far rather
+          // than dropping live output we already received.
+          for (const chunk of sync.flushAll()) writeAgentOutput(chunk);
+          return;
+      }
     };
 
     const socket = deps.createWebSocket(wsUrl, headers);
@@ -292,12 +491,18 @@ export async function runViewSession(
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
     }
 
+    socket.on('open', () => {
+      void paintSnapshotAndReconcile();
+    });
+
     socket.on('message', (data) => {
+      // Stop writing output once teardown has begun (no spray past detach).
+      if (settled) return;
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
-      const chunk = extractMatchingChunk(text, name);
-      if (chunk !== null) {
-        deps.writeChunk(chunk);
+      const matched = extractMatchingChunk(text, name);
+      if (matched !== null && sync.push(matched.chunk, matched.offset)) {
+        writeAgentOutput(matched.chunk);
       }
     });
 

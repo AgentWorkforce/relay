@@ -1,23 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
+import { createLogger } from '@agent-relay/utils';
 
-import type {
-  CoreDependencies,
-  CoreProjectPaths,
-  CoreRelay,
-  CoreTeamsConfig,
-  SpawnedProcess,
-} from '../commands/core.js';
+import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
+import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-sidecar.js';
 import {
-  createImplicitLocalFleetNode,
-  fleetStatusPath,
-  startFleetSidecar,
-  type RunningFleetSidecar,
-} from './fleet-sidecar.js';
+  discoverNodeConfigPath,
+  discoverPythonNodeConfigPath,
+  loadNodeDefinition,
+} from './node-definition-loader.js';
+import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
+import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -26,6 +24,22 @@ type UpOptions = {
   workspaceKey?: string;
   stateDir?: string;
   brokerName?: string;
+  config?: string;
+  /**
+   * Opt-in to auto-discovering an `agent-relay.*` node definition in the
+   * project root. Only `node up` sets this — the deprecated `local up` alias
+   * (and any other legacy caller) must keep its pre-`node` behavior of never
+   * touching such files.
+   */
+  discoverConfig?: boolean;
+  /** Registered node name override (e.g. from a persisted Cloud enrollment). */
+  nodeName?: string;
+  /** Write structured node logs (capabilities, action invocations) to this file. */
+  logFile?: string;
+  /** Log verbosity floor: debug | info | warn | error. Defaults to info. */
+  logLevel?: string;
+  /** Emit logs as JSON lines instead of human-readable text. */
+  logJson?: boolean;
 };
 
 type DownOptions = {
@@ -44,6 +58,10 @@ const CONNECTION_FILENAME = 'connection.json';
 const STATUS_POLL_INTERVAL_MS = 500;
 const DETACHED_START_READY_TIMEOUT_MS = 10_000;
 const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
+// Bounded wait for the broker's background-minted node token to surface on
+// `/api/session` when serving a capability definition without an explicit
+// RELAY_NODE_TOKEN.
+const NODE_TOKEN_WAIT_MS = 15_000;
 
 export interface BrokerConnection {
   url: string;
@@ -127,6 +145,30 @@ function toErrorMessage(err: unknown): string {
 function vlog(deps: CoreDependencies, verbose: boolean | undefined, message: string): void {
   if (verbose) {
     deps.log(`[verbose] ${message}`);
+  }
+}
+
+/** True when any log flag (or `--verbose`) opts the node into structured logging. */
+function nodeLoggingEnabled(options: UpOptions): boolean {
+  return Boolean(options.logFile || options.logLevel || options.logJson || options.verbose);
+}
+
+/**
+ * Translate the `--log-*` (and `--verbose`) flags into the `AGENT_RELAY_LOG_*`
+ * environment the shared `createLogger` reads. `--verbose` alone raises the
+ * floor to DEBUG so per-capability registration lines surface; an explicit
+ * `--log-level` always wins. Called before the fleet sidecar starts.
+ */
+function applyNodeLogEnv(options: UpOptions, deps: CoreDependencies): void {
+  if (options.logFile) {
+    deps.env.AGENT_RELAY_LOG_FILE = options.logFile;
+  }
+  const level = options.logLevel ?? (options.verbose ? 'debug' : undefined);
+  if (level) {
+    deps.env.AGENT_RELAY_LOG_LEVEL = level.toUpperCase();
+  }
+  if (options.logJson) {
+    deps.env.AGENT_RELAY_LOG_JSON = '1';
   }
 }
 
@@ -294,40 +336,243 @@ export async function startBrokerWithPortFallback(
   return { relay: candidate, apiPort };
 }
 
-function startImplicitLocalFleetSidecar(
+/** A handle to stop the capability providers started alongside the broker. */
+export interface RunningNodeProviders {
+  stop(): Promise<void>;
+}
+
+export interface BrokerNodeIdentity {
+  nodeId: string;
+  nodeName: string;
+  nodeToken?: string;
+}
+
+interface SessionSnapshot {
+  node_id?: string;
+  node_name?: string;
+  node_token?: string;
+}
+
+/** Reject if `promise` doesn't settle within `ms`, clearing the timer on settle. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('session read exceeded token-wait budget')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
+ * Resolve the broker's node identity from repeated `/api/session` reads.
+ *
+ * The broker publishes its node id as soon as the workspace handshake completes,
+ * but mints the node token off the API-readiness path (in the background), so a
+ * freshly started broker can report `node_id` before `node_token`. When
+ * `awaitTokenMs` is set, poll until the token appears (or the budget elapses) so
+ * a provider that needs the broker-minted token isn't skipped over a startup
+ * race. A transient session-read error yields the best identity seen so far
+ * (identity without token), or `null` if no `node_id` was ever read.
+ */
+export async function resolveNodeIdentityFromSession(
+  getSession: () => Promise<SessionSnapshot>,
+  options: { awaitTokenMs?: number; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<BrokerNodeIdentity | null> {
+  const awaitTokenMs = options.awaitTokenMs ?? 0;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = Date.now() + awaitTokenMs;
+  let identity: BrokerNodeIdentity | null = null;
+  for (;;) {
+    let session: SessionSnapshot;
+    try {
+      // Bound each read to the remaining token-wait budget so a single stalled
+      // `/api/session` can't hold startup past `awaitTokenMs` (the transport's
+      // own request timeout is far longer). The non-await path issues one read
+      // and doesn't need the bound.
+      session =
+        awaitTokenMs > 0
+          ? await withTimeout(getSession(), Math.max(0, deadline - Date.now()))
+          : await getSession();
+    } catch {
+      return identity;
+    }
+    if (!session.node_id) return identity;
+    identity = {
+      nodeId: session.node_id,
+      nodeName: session.node_name ?? session.node_id,
+      ...(session.node_token ? { nodeToken: session.node_token } : {}),
+    };
+    if (session.node_token || awaitTokenMs <= 0 || Date.now() >= deadline) {
+      return identity;
+    }
+    await sleep(250);
+  }
+}
+
+/**
+ * Read the node id/name the broker registered as, from its HTTP session. The
+ * capability providers attach to this same node so they share its identity.
+ */
+async function readBrokerNodeIdentity(
+  conn: BrokerConnection,
+  options: { awaitTokenMs?: number; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<BrokerNodeIdentity | null> {
+  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  try {
+    return await resolveNodeIdentityFromSession(() => client.getSession(), options);
+  } finally {
+    client.disconnect();
+  }
+}
+
+/**
+ * Serve the project's capability definitions as node providers connected
+ * directly to the engine, alongside the broker provider: an `agent-relay.{ts,…}`
+ * definition via {@link startServeNode}, and an `agent-relay.py` script spawned
+ * as a supervised `python` child with the node token in its env. When no
+ * definition exists, nothing is served — the broker's capacity already brings
+ * the node online. Best-effort: a provider setup failure never aborts `up`.
+ */
+async function startNodeCapabilityProviders(
   paths: CoreProjectPaths,
   relay: CoreRelay,
   options: UpOptions,
   deps: CoreDependencies,
-  teamsConfig: CoreTeamsConfig | null = deps.loadTeamsConfig(paths.projectRoot)
-): RunningFleetSidecar | undefined {
-  if (deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1') {
+  nodeDefinition: FleetNodeDefinition | undefined
+): Promise<RunningNodeProviders | undefined> {
+  // Definition discovery is opt-in (`node up` only), matching the TS config scan.
+  const pythonConfig =
+    options.discoverConfig === true ? discoverPythonNodeConfigPath(paths.projectRoot) : undefined;
+  if (!nodeDefinition && !pythonConfig) {
     return undefined;
   }
+
   const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
   if (!conn) {
-    deps.warn('Fleet local node skipped: broker connection file was not available.');
+    deps.warn('Capability providers skipped: broker connection file was not available.');
     return undefined;
   }
-  // The implicit local fleet node is best-effort: it lets this broker advertise
-  // itself as a fleet node, but the broker is already up and usable without it.
-  // Never let a sidecar setup failure abort `up`.
+  const baseUrl = deps.env.RELAY_BASE_URL?.trim();
+  // Serving a definition needs the node token. When no explicit RELAY_NODE_TOKEN
+  // is set we rely on the broker's background-minted token, which can lag its
+  // node id by a Relaycast round-trip — wait a bounded window for it rather than
+  // racing the mint and skipping the provider.
+  const awaitTokenMs = deps.env.RELAY_NODE_TOKEN?.trim() ? 0 : NODE_TOKEN_WAIT_MS;
+  const identity = await readBrokerNodeIdentity(conn, { awaitTokenMs });
+  if (!identity) {
+    deps.warn('Capability providers skipped: the broker did not report its node id yet.');
+    return undefined;
+  }
+  // The broker mints its own node token when RELAY_NODE_TOKEN is unset (local,
+  // un-enrolled); all providers on the node share that token, so fall back to
+  // the one it reports on its session rather than requiring pre-enrollment.
+  const nodeToken = deps.env.RELAY_NODE_TOKEN?.trim() || identity.nodeToken;
+  if (!nodeToken) {
+    deps.warn('Capability providers skipped: no node token available from the broker or environment.');
+    return undefined;
+  }
+
+  const served: RunningNode[] = [];
+  let pythonChild: SpawnedProcess | undefined;
+
+  if (nodeDefinition) {
+    try {
+      const workspaceKey = relay.workspaceKey;
+      served.push(
+        startServeNode({
+          definition: nodeDefinition,
+          connection: {
+            ...(baseUrl ? { baseUrl } : {}),
+            nodeToken,
+            nodeId: identity.nodeId,
+          },
+          nameOverride: options.nodeName ?? identity.nodeName,
+          // The served definition attaches as its own provider, distinct from the
+          // broker ("broker") on the same node.
+          providerName: nodeDefinition.name,
+          ...(workspaceKey ? { triggers: createTriggerSyncClient({ workspaceKey, baseUrl }) } : {}),
+          reconnect: true,
+          // With any --log-* flag (or --verbose), surface the node's full lifecycle
+          // — capabilities registered, every action invoked/completed — through the
+          // shared logger, which honors AGENT_RELAY_LOG_FILE/_LEVEL/_JSON. Without a
+          // flag, keep the prior behavior: the registration summary via log, warnings
+          // via warn.
+          ...(nodeLoggingEnabled(options)
+            ? { logger: createLogger('fleet') }
+            : { warn: (message) => deps.warn(message), log: (message) => deps.log(message) }),
+        })
+      );
+    } catch (err) {
+      deps.warn(`Capability provider skipped: ${toErrorMessage(err)}`);
+    }
+  }
+
+  if (pythonConfig) {
+    pythonChild = startPythonNodeProvider(
+      pythonConfig,
+      {
+        nodeToken,
+        baseUrl,
+        nodeId: identity.nodeId,
+        // Prefer the enrolled/override name so a Cloud-enrolled py provider
+        // registers under the same name as the TS provider, not the broker default.
+        nodeName: options.nodeName ?? identity.nodeName,
+      },
+      deps
+    );
+  }
+
+  if (served.length === 0 && !pythonChild) {
+    return undefined;
+  }
+
+  return {
+    stop: async () => {
+      await Promise.all(served.map((node) => node.stop().catch(() => undefined)));
+      if (pythonChild?.pid) {
+        try {
+          deps.killProcess(pythonChild.pid, 'SIGTERM');
+        } catch {
+          // Already exited.
+        }
+      }
+    },
+  };
+}
+
+/**
+ * Spawn `python agent-relay.py` as a supervised child with the node credentials
+ * in its environment. The child connects to the engine on its own via the SDK's
+ * `NodeProvider.from_enrollment()`.
+ */
+function startPythonNodeProvider(
+  configPath: string,
+  credentials: { nodeToken: string; baseUrl?: string; nodeId: string; nodeName: string },
+  deps: CoreDependencies
+): SpawnedProcess | undefined {
+  const python = deps.env.AGENT_RELAY_PYTHON?.trim() || 'python3';
+  const env: NodeJS.ProcessEnv = {
+    ...deps.env,
+    RELAY_NODE_TOKEN: credentials.nodeToken,
+    RELAY_NODE_ID: credentials.nodeId,
+    RELAY_NODE_NAME: credentials.nodeName,
+    ...(credentials.baseUrl ? { RELAY_BASE_URL: credentials.baseUrl } : {}),
+  };
   try {
-    const node = createImplicitLocalFleetNode({
-      paths,
-      teamsConfig,
-      name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
-    });
-    return startFleetSidecar({
-      definition: node,
-      connection: { url: conn.url, apiKey: conn.api_key },
-      workspaceKey: relay.workspaceKey,
-      statusPath: fleetStatusPath(paths),
-      reconnect: true,
-      warn: (message) => deps.warn(message),
-    });
+    const child = deps.spawnProcess(python, [configPath], { stdio: 'inherit', env });
+    deps.log(
+      `Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
+    );
+    return child;
   } catch (err) {
-    deps.warn(`Fleet local node skipped: ${toErrorMessage(err)}`);
+    deps.warn(`Python node provider skipped: ${toErrorMessage(err)}`);
     return undefined;
   }
 }
@@ -787,10 +1032,58 @@ async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: Core
 }
 
 // eslint-disable-next-line complexity
+/**
+ * Resolve the node definition `up` should serve, if any.
+ *
+ * A discovered (or explicit --config) node definition takes over from the
+ * implicit teams.json-derived node. Discovery is opt-in (`node up` only): the
+ * deprecated `local up` alias never scanned for agent-relay.* files and must
+ * not start importing arbitrary modules from the project root. An explicit
+ * --config resolves against the invocation cwd and fails hard; implicit
+ * discovery scans the project root and merely warns on a file that doesn't
+ * load as defineNode(...) — a stray agent-relay.ts must not brick startup.
+ * When the implicit fleet node is disabled the sidecar never starts, so
+ * loading a config would be pointless — skip it entirely.
+ */
+async function resolveNodeDefinitionForUp(
+  paths: CoreProjectPaths,
+  options: UpOptions,
+  deps: CoreDependencies
+): Promise<FleetNodeDefinition | undefined> {
+  const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
+  if (fleetNodeDisabled || (!options.config && options.discoverConfig !== true)) {
+    return undefined;
+  }
+  const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
+  const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+  if (!configPath) {
+    return undefined;
+  }
+  vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
+  if (explicitConfig) {
+    return loadNodeDefinition(configPath);
+  }
+  try {
+    return await loadNodeDefinition(configPath);
+  } catch (err) {
+    deps.warn(
+      `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
+        'Serving the implicit local node instead; pass --config to fail hard on this file.'
+    );
+    return undefined;
+  }
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
 
   const paths = deps.getProjectPaths();
+  // The stable, default project data dir (`.agentworkforce/relay/`) captured
+  // BEFORE any --state-dir override below. SDK-backed commands resolve the
+  // recorded workspace key from this default location (they don't accept
+  // --state-dir), so the key must be persisted here even when broker state is
+  // redirected elsewhere.
+  const projectWorkspaceKeyDataDir = paths.dataDir;
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -889,7 +1182,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   const existingPid = readBrokerPid(paths.dataDir, deps);
 
   let relay: CoreRelay | null = null;
-  let fleetSidecar: RunningFleetSidecar | undefined;
+  let nodeProviders: RunningNodeProviders | undefined;
+  let reflexCapture: RunningReflexCapture | undefined;
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
@@ -900,7 +1194,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         shutdownPromise = Promise.resolve();
       } else {
         shutdownPromise = (async () => {
-          await fleetSidecar?.stop();
+          await reflexCapture?.stop();
+          await nodeProviders?.stop();
           await shutdownUpResources(relay, paths.dataDir, deps);
         })();
       }
@@ -925,6 +1220,26 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 
+    // Point the shared logger at a file / level / format before the fleet
+    // sidecar (which reads this env when it builds its logger) starts.
+    applyNodeLogEnv(options, deps);
+
+    // Resolved BEFORE the broker starts so an explicit bad --config fails
+    // fast instead of tearing down a broker that just came up.
+    const nodeDefinition = await resolveNodeDefinitionForUp(paths, options, deps);
+    const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
+
+    // The broker advertises spawn:<harness> capacity for this set. A pre-set
+    // AGENT_RELAY_NODE_HARNESSES is the operator's authoritative declaration of the
+    // node's real capacity and is used verbatim; otherwise the CLI computes it from
+    // the project's runnable harnesses (built-in defaults plus teams.json clis and
+    // any spawn:<harness> definitions) and passes it to the broker before it registers.
+    deps.env.AGENT_RELAY_NODE_HARNESSES = resolveNodeCapacityHarnesses(
+      deps.env.AGENT_RELAY_NODE_HARNESSES,
+      teamsConfig,
+      nodeDefinition
+    );
+
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
@@ -945,15 +1260,37 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
 
-    vlog(deps, options.verbose, 'Loading teams.json and starting implicit fleet sidecar (if any)...');
-    const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
-    fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig);
+    // Record the workspace this broker joined (explicitly passed or auto-minted)
+    // in the DEFAULT project data dir (not any --state-dir override), so later
+    // SDK commands in this CWD resolve it instead of the machine-global active
+    // workspace. Persistence must never abort startup, so a write failure is
+    // swallowed.
+    try {
+      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined);
+    } catch {
+      // best-effort: a broker that came up should stay up even if the key file
+      // can't be written (read-only dir, etc.).
+    }
+
+    vlog(deps, options.verbose, 'Starting node capability providers (if any)...');
+    nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodeDefinition);
+    // When Reflex is enabled, periodically sync + push local session history to
+    // relayhistory-cloud in-process via the ai-hist-native addon (no subprocess).
+    // No-op when disabled or the addon isn't available.
+    reflexCapture = startReflexCapture({ log: (message) => deps.log(message) });
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
       vlog(deps, options.verbose, 'Waiting for broker node delivery (/v1/node/ws) before auto-spawning...');
-      const delivery = await waitForNodeDelivery(relay, deps);
+      // Node delivery can't connect until the broker mints its node token, which
+      // now happens in the background after `Broker started.`. Budget for that
+      // mint window plus the connect so a slow mint doesn't abort auto-spawn.
+      const delivery = await waitForNodeDelivery(
+        relay,
+        deps,
+        NODE_TOKEN_WAIT_MS + NODE_DELIVERY_READY_TIMEOUT_MS
+      );
       if (!delivery.ready) {
         deps.error('Refusing to auto-spawn agents because broker node delivery is not connected.');
         deps.error(`Node delivery: ${formatNodeDeliveryStatus(delivery.status)}`);

@@ -1,7 +1,7 @@
 name: Fleet E2E
 
 # Two-node fleet scenario matrix (RFC #1056, Phase 6). Boots a real relaycast
-# engine + two `agent-relay fleet serve` nodes (each a Rust broker + TS sidecar)
+# engine + two `agent-relay node up` nodes (each a Rust broker + TS sidecar)
 # and drives the live control wire. Heavier than the unit suite (builds the Rust
 # broker + the relaycast engine), so it runs on its own workflow, gated to fleet
 # paths. The scenario matrix itself runs in well under a minute (~30s locally);
@@ -52,22 +52,18 @@ jobs:
       - name: Checkout relay
         uses: actions/checkout@v4
 
-      # The relaycast engine lives in a separate repo. This E2E REQUIRES the
-      # engine compat fixes it surfaced (Bearer-header node auth + the
-      # agent.register reply frame) AND the node.heartbeat roster-snapshot
-      # acceptance: the broker now carries the node roster (name/node_id/
-      # capabilities/max_agents/version) on the heartbeat, which the engine's
-      # previously-`.strict()` schema rejected wholesale (dropping every live
-      # load update and timing out the spawn/load scenarios). Those land on
-      # `feat/heartbeat-roster-snapshot` (relaycast#197, branched off the
-      # already-merged relaycast#194). Pinned to a SHA for reproducibility (the
-      # same commit the local harness resolves, so local == CI). Re-pin to
-      # `main@<sha>` once relaycast#197 merges down.
-      - name: Checkout relaycast engine (carries the E2E compat fixes)
+      # The relaycast engine lives in a separate repo. This E2E now drives the
+      # node-provider model (broker registers as the `broker` provider carrying a
+      # `provider` identity + capacity `kind`), so it REQUIRES the node-provider
+      # engine (relaycast#243/#244, released as 6.0.0) — a pre-provider engine
+      # rejects the `provider` field and no node comes online. Pinned to the
+      # v6.0.0 release tag's commit so CI runs the same engine the published
+      # packages came from (the roster-snapshot/Bearer-auth compat is included).
+      - name: Checkout relaycast engine (node-provider model)
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: 2f685fa99ad486b09de5fb61091594fd48459815 # feat/heartbeat-roster-snapshot (relaycast#197)
+          ref: 58a93422a5a5dc568f2eaffc0ad55fe656a78288 # relaycast v6.0.1 (node-provider engine + self-host write gate, trigger/reschedule node-scoped fixes)
           path: relaycast-engine
 
       - name: Setup Node.js

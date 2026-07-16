@@ -459,6 +459,20 @@ export function registerLocalWorkflowCommands(
 ): void {
   const deps = withDefaults(overrides);
 
+  // The workflow verbs register under both the deprecated flat `local` group
+  // and the nested `node workflow` group, so follow-up hints must reflect the
+  // group actually invoked. Resolved lazily — the group may not be attached to
+  // the root program yet at registration time.
+  const groupPathPrefix = (): string => {
+    const parts: string[] = [];
+    let current: Command | null | undefined = program;
+    while (current && current.parent) {
+      parts.unshift(current.name());
+      current = current.parent as Command | null;
+    }
+    return parts.length > 0 ? `${parts.join(' ')} ` : '';
+  };
+
   program
     .command('run')
     .description('Run a workflow file locally')
@@ -477,8 +491,8 @@ export function registerLocalWorkflowCommands(
           deps.log(`Run created: ${result.runId}`);
           deps.log(`Status: ${result.status}`);
           deps.log(`Logs: ${result.logPath}`);
-          deps.log(`\nView logs:  agent-relay local logs ${result.runId} --follow`);
-          deps.log(`Sync code:  agent-relay local sync ${result.runId}`);
+          deps.log(`\nView logs:  agent-relay ${groupPathPrefix()}logs ${result.runId} --follow`);
+          deps.log(`Sync code:  agent-relay ${groupPathPrefix()}sync ${result.runId}`);
         }
         success = true;
       } catch (err) {

@@ -97,6 +97,31 @@ describe('registerLocalWorkflowCommands', () => {
     expect(program.commands.map((command) => command.name())).toEqual(['run', 'logs', 'sync']);
   });
 
+  it('prints follow-up hints for the nested `node workflow` group', async () => {
+    const { tmpRoot, logs } = createHarness();
+    // Register onto a nested `node workflow` subgroup on a fresh root so the
+    // hint prefix walks the real parent chain (node -> workflow).
+    const root = new Command();
+    root.exitOverride();
+    const workflowGroup = root.command('node').command('workflow');
+    registerLocalWorkflowCommands(workflowGroup, {
+      cwd: () => tmpRoot,
+      env: { ...process.env },
+      randomRunId: () => 'local_test123',
+      sleep: async () => undefined,
+      log: (...args: unknown[]) => {
+        logs.push(args.join(' '));
+      },
+    });
+
+    fs.writeFileSync(path.join(tmpRoot, 'workflow.js'), 'console.log("hi");\n', 'utf-8');
+    await root.parseAsync(['node', 'workflow', 'run', 'workflow.js'], { from: 'user' });
+
+    expect(logs).toContain('\nView logs:  agent-relay node workflow logs local_test123 --follow');
+    expect(logs).toContain('Sync code:  agent-relay node workflow sync local_test123');
+    await waitForRunStatus(tmpRoot, 'local_test123', 'completed');
+  });
+
   it('runs a JavaScript workflow in the background and exposes logs and sync state', async () => {
     const { program, tmpRoot, logs, getStdout } = createHarness();
     const workflowPath = path.join(tmpRoot, 'workflow.js');

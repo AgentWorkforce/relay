@@ -6,7 +6,6 @@ version = 4
 name = "agent-relay-broker"
 version = "3.0.0"
 dependencies = [
- "alacritty_terminal",
  "anyhow",
  "axum",
  "base64 0.22.1",
@@ -20,10 +19,9 @@ dependencies = [
  "httpmock",
  "libc",
  "nix 0.30.1",
- "parking_lot",
- "portable-pty",
  "rand 0.8.5",
  "regex",
+ "relay-pty",
  "relaycast",
  "reqwest",
  "serde",
@@ -2000,10 +1998,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
+name = "relay-pty"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "chrono",
+ "libc",
+ "parking_lot",
+ "portable-pty",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "relaycast"
-version = "5.0.2"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ebdb019e721d550a15b602e7a47d024ce76bbb57d5c6cea76c82e1ac96183b0"
+checksum = "b78f728d34cfb36d07d78b1d28d70784810bf4d1dcffc896906d92eac27b1669"
 dependencies = [
  "futures-util",
  "reqwest",

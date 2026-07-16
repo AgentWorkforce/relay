@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::{cli_mcp_args, pty_worker, runtime, swarm, wrap};
 
 pub(crate) mod command_parse;
+pub(crate) mod journal_lock;
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay-broker")]
@@ -36,6 +37,10 @@ enum Commands {
     /// Capture the current visible PTY screen of a running worker and print
     /// it. Talks to the broker over its listen API.
     DumpPty(DumpPtyCommand),
+    /// Internal: hold the CLI cleanup-journal kernel lock for a parent
+    /// process. Not for direct user invocation.
+    #[command(name = "journal-lock", hide = true)]
+    JournalLock(journal_lock::JournalLockCommand),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
     /// Used by the SDK — not for direct user invocation.
     /// Usage: agent-relay-broker wrap codex -- --full-auto
@@ -59,6 +64,7 @@ impl Commands {
             Commands::McpArgs(_) => "mcp_args",
             Commands::Swarm(_) => "swarm",
             Commands::DumpPty(_) => "dump_pty",
+            Commands::JournalLock(_) => "journal_lock",
             Commands::Wrap { .. } => "wrap",
         }
     }
@@ -95,6 +101,7 @@ impl Commands {
             Commands::Wrap { cli, .. } => format!("wrap-{cli}-{pid}"),
             Commands::McpArgs(_) => format!("mcp_args-{pid}"),
             Commands::DumpPty(cmd) => format!("dump_pty-{}-{}", cmd.name, pid),
+            Commands::JournalLock(_) => format!("journal_lock-{pid}"),
             Commands::Swarm(_) => format!("swarm-{pid}"),
         }
     }
@@ -124,6 +131,7 @@ pub(crate) async fn run() -> Result<()> {
         Commands::McpArgs(cmd) => cli_mcp_args::run_mcp_args(cmd).await,
         Commands::Swarm(args) => swarm::run_swarm(args).await,
         Commands::DumpPty(cmd) => runtime::run_dump_pty(cmd).await,
+        Commands::JournalLock(cmd) => journal_lock::run_journal_lock(cmd),
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
 }
@@ -360,6 +368,31 @@ mod tests {
         let command = init_command("", None);
 
         assert_eq!(command.resolved_instance_name(Some("fallback")), "env-name");
+    }
+
+    #[test]
+    fn node_name_uses_resolved_instance_name_then_hostname_fallback() {
+        let _guard = broker_name_env_guard();
+
+        // Mirrors run_init's node-name derivation: the node registers under its
+        // resolved instance name, falling back to a non-empty hostname.
+        fn node_name(cmd: &InitCommand) -> String {
+            let resolved = cmd.resolved_instance_name(None);
+            crate::node_control::default_node_name(
+                (!resolved.trim().is_empty()).then_some(resolved.as_str()),
+            )
+        }
+
+        // --instance-name wins.
+        assert_eq!(node_name(&init_command("legacy", Some("node-a"))), "node-a");
+        // Legacy --name / --broker-name when no --instance-name.
+        assert_eq!(node_name(&init_command("node-b", None)), "node-b");
+        // AGENT_RELAY_BROKER_NAME when neither flag is set.
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-node");
+        assert_eq!(node_name(&init_command("", None)), "env-node");
+        std::env::remove_var("AGENT_RELAY_BROKER_NAME");
+        // Nothing set → non-empty hostname fallback (never an empty node name).
+        assert!(!node_name(&init_command("", None)).is_empty());
     }
 
     #[test]

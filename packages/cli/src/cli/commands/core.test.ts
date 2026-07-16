@@ -1,6 +1,10 @@
 import { Command } from 'commander';
+import nodeFs from 'node:fs';
 import os from 'node:os';
+import nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
@@ -8,10 +12,15 @@ const sdkStatusClient = {
   disconnect: vi.fn(() => undefined),
 };
 
+const harnessConnectMock = vi.hoisted(() => vi.fn());
+
 vi.mock('@agent-relay/harness-driver', () => ({
-  HarnessDriverClient: vi.fn(function () {
-    return sdkStatusClient;
-  }),
+  HarnessDriverClient: Object.assign(
+    vi.fn(function () {
+      return sdkStatusClient;
+    }),
+    { connect: harnessConnectMock }
+  ),
 }));
 
 const telemetryMocks = vi.hoisted(() => ({
@@ -22,12 +31,25 @@ vi.mock('../telemetry/index.js', () => ({
   track: telemetryMocks.track,
 }));
 
+vi.mock('../lib/reflex-capture.js', () => ({
+  startReflexCapture: vi.fn(() => ({ stop: vi.fn(async () => undefined) })),
+}));
+
+vi.mock('@agent-relay/fleet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/fleet')>();
+  return {
+    ...actual,
+    startServeNode: vi.fn(() => ({ stop: vi.fn(async () => undefined), done: Promise.resolve() })),
+  };
+});
+
 beforeEach(() => {
   sdkStatusClient.getStatus.mockReset();
   sdkStatusClient.getStatus.mockResolvedValue({ agent_count: 0, pending_delivery_count: 0 });
   sdkStatusClient.getSession.mockReset();
   sdkStatusClient.getSession.mockResolvedValue({ workspace_key: '' });
   sdkStatusClient.disconnect.mockClear();
+  harnessConnectMock.mockReset();
   telemetryMocks.track.mockClear();
 });
 
@@ -110,6 +132,7 @@ function createHarness(options?: {
   killImpl?: CoreDependencies['killProcess'];
   nowImpl?: CoreDependencies['now'];
   sleepImpl?: CoreDependencies['sleep'];
+  holdOpen?: CoreDependencies['holdOpen'];
   execPath?: string;
   cliScript?: string;
   argv?: string[];
@@ -124,6 +147,8 @@ function createHarness(options?: {
   const fs = options?.fs ?? createFsMock();
   const relay = options?.relay ?? createRelayMock();
   const spawnedProcess = options?.spawnedProcess ?? createSpawnedProcessMock();
+  const env = options?.env ?? {};
+  env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE ??= '1';
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -149,7 +174,7 @@ function createHarness(options?: {
       async () => options?.checkForUpdatesResult ?? { updateAvailable: false, latestVersion: '1.2.3' }
     ) as unknown as CoreDependencies['checkForUpdates'],
     getVersion: vi.fn(() => '1.2.3'),
-    env: options?.env ?? {},
+    env,
     argv: options?.argv ?? ['node', '/tmp/agent-relay.js', 'up'],
     execPath: options?.execPath ?? '/usr/bin/node',
     cliScript: options?.cliScript ?? '/tmp/agent-relay.js',
@@ -158,7 +183,7 @@ function createHarness(options?: {
     isPortInUse: vi.fn(async () => false),
     sleep: options?.sleepImpl ?? vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
-    holdOpen: vi.fn(async () => undefined),
+    holdOpen: options?.holdOpen ?? vi.fn(async () => undefined),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     warn: vi.fn(() => undefined),
@@ -200,7 +225,9 @@ describe('registerCoreCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status', 'metrics']));
+    expect(commandNames).toEqual(
+      expect.arrayContaining(['up', 'down', 'status', 'metrics', 'deadletters', 'redeliver'])
+    );
     expect(commandNames).not.toEqual(expect.arrayContaining(['bridge', 'uninstall', 'version', 'update']));
   });
 
@@ -312,6 +339,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('up refuses auto-spawn when node delivery is down', async () => {
+    let now = 0;
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({
         agent_count: 0,
@@ -327,7 +355,11 @@ describe('registerCoreCommands', () => {
         autoSpawn: true,
         agents: [{ name: 'WorkerA', cli: 'codex', task: 'Ship tests' }],
       },
-      nowImpl: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(10_000).mockReturnValue(10_000),
+      nowImpl: vi.fn(() => {
+        const current = now;
+        now += 10_000;
+        return current;
+      }),
     });
 
     const exitCode = await runCommand(program, ['up']);
@@ -470,6 +502,36 @@ describe('registerCoreCommands', () => {
     expect(deps.env.AGENT_RELAY_STATE_DIR).toBe(stateDir);
     expect(deps.log).toHaveBeenCalledWith('Broker started.');
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
+  });
+
+  it('up --state-dir records the workspace key in the default project dir, not the state dir', async () => {
+    // SDK commands (fleet nodes, …) read the key from the default project data
+    // dir and never accept --state-dir, so a redirected broker state dir must
+    // NOT be where the key lands — otherwise those commands miss it.
+    const stateDir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-statedir-'));
+    const relay = createRelayMock({ workspaceKey: 'rk_statedir_regression' });
+    const { program } = createHarness({ relay });
+
+    try {
+      const exitCode = await runCommand(program, [
+        'up',
+        '--state-dir',
+        stateDir,
+        '--workspace-key',
+        'rk_statedir_regression',
+      ]);
+
+      expect(exitCode).toBeUndefined();
+      // Persisted at the default project data dir (the harness's mocked path)…
+      expect(readProjectWorkspaceKey('/tmp/project/.agentworkforce/relay')).toBe('rk_statedir_regression');
+      // …and NOT in the redirected state dir.
+      expect(readProjectWorkspaceKey(stateDir)).toBeUndefined();
+    } finally {
+      nodeFs.rmSync(stateDir, { recursive: true, force: true });
+      // The key is written to the real default project dir; clean it up so it
+      // doesn't leak into other tests running in this process.
+      nodeFs.rmSync('/tmp/project/.agentworkforce/relay/workspace-key.json', { force: true });
+    }
   });
 
   it('up --background re-execs a Bun standalone binary without adding its virtual entrypoint', async () => {
@@ -751,9 +813,19 @@ describe('registerCoreCommands', () => {
       shutdown: vi.fn(() => new Promise(() => undefined)),
     });
 
-    const { program, deps } = createHarness({ relay });
-    const exitCode = await runCommand(program, ['up']);
-    expect(exitCode).toBeUndefined();
+    const { program, deps } = createHarness({
+      relay,
+      holdOpen: vi.fn(() => new Promise(() => undefined)),
+    });
+    void runCommand(program, ['up']);
+
+    for (
+      let i = 0;
+      i < 10 && (deps.onSignal as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
+      i += 1
+    ) {
+      await Promise.resolve();
+    }
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
@@ -1137,6 +1209,21 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_custom');
   });
 
+  it('up --wk is an alias for --workspace-key', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock({ workspaceKey: 'rk_live_alias' });
+    const { program, deps } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up', '--wk', 'rk_live_alias']);
+
+    expect(exitCode).toBeUndefined();
+    // The alias is folded into workspaceKey, so the broker sees the same env the
+    // explicit flag would have set.
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
+    expect(env.RELAY_API_KEY).toBe('rk_live_alias');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_alias');
+  });
+
   it('up without --workspace-key does not set workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = {};
     const relay = createRelayMock();
@@ -1194,5 +1281,115 @@ describe('registerCoreCommands', () => {
     expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_new');
     expect(env.RELAY_API_KEY).toBe('rk_live_new');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
+  });
+});
+
+describe('dead-letter commands', () => {
+  function deadLetterEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      delivery_id: 'del_1',
+      worker_name: 'Worker',
+      event_id: 'evt_1',
+      from: 'Lead',
+      to: 'Worker',
+      attempts: 10,
+      reason: 'max delivery retries exceeded',
+      queued_at_ms: 1,
+      failed_at_ms: 2,
+      age_ms: 65_000,
+      ...overrides,
+    };
+  }
+
+  it('deadletters lists entries from the broker', async () => {
+    const client = {
+      getDeadLetters: vi.fn(async () => ({ count: 1, dead_letters: [deadLetterEntry()] })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['deadletters']);
+
+    expect(exitCode).toBeUndefined();
+    expect(client.getDeadLetters).toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('del_1'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('recipient=Worker'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('reason=max delivery retries exceeded'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('age=1m'));
+    expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it('deadletters reports an empty queue', async () => {
+    const client = {
+      getDeadLetters: vi.fn(async () => ({ count: 0, dead_letters: [] })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['deadletters']);
+
+    expect(deps.log).toHaveBeenCalledWith('No dead-letter deliveries.');
+  });
+
+  it('deadletters --json prints the raw response', async () => {
+    const response = { count: 1, dead_letters: [deadLetterEntry()] };
+    const client = {
+      getDeadLetters: vi.fn(async () => response),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['deadletters', '--json']);
+
+    expect(deps.log).toHaveBeenCalledWith(JSON.stringify(response, null, 2));
+  });
+
+  it('redeliver requeues a single entry by id', async () => {
+    const client = {
+      redeliverDeadLetters: vi.fn(async () => ({
+        redelivered: [{ delivery_id: 'del_1', worker_name: 'Worker', event_id: 'evt_1' }],
+        skipped: [],
+      })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['redeliver', 'del_1']);
+
+    expect(exitCode).toBeUndefined();
+    expect(client.redeliverDeadLetters).toHaveBeenCalledWith({ id: 'del_1' });
+    expect(deps.log).toHaveBeenCalledWith('Redelivered del_1 to Worker');
+    expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it('redeliver --all requeues everything and reports skips', async () => {
+    const client = {
+      redeliverDeadLetters: vi.fn(async () => ({
+        redelivered: [{ delivery_id: 'del_1', worker_name: 'Worker', event_id: 'evt_1' }],
+        skipped: [{ delivery_id: 'del_2', worker_name: 'Ghost', reason: 'recipient not running' }],
+      })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['redeliver', '--all']);
+
+    expect(client.redeliverDeadLetters).toHaveBeenCalledWith({ all: true });
+    expect(deps.log).toHaveBeenCalledWith('Redelivered del_1 to Worker');
+    expect(deps.warn).toHaveBeenCalledWith('Skipped del_2 (Ghost): recipient not running');
+  });
+
+  it('redeliver requires exactly one of id or --all', async () => {
+    const { program, deps } = createHarness();
+
+    expect(await runCommand(program, ['redeliver'])).toBe(1);
+    expect(await runCommand(program, ['redeliver', 'del_1', '--all'])).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Provide exactly one of <id> or --all.');
+    expect(harnessConnectMock).not.toHaveBeenCalled();
   });
 });
