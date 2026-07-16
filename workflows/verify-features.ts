@@ -7,7 +7,7 @@
  * PASS/FAIL report into #relay-health.
  *
  * Designed to run on a schedule (nightly or post-merge):
- *   relay cloud schedule --file workflows/verify-features.ts --cron "0 3 * * *"
+ *   relay cloud schedule workflows/verify-features.ts --cron "0 3 * * *"
  *
  * Or manually:
  *   relay node workflow run workflows/verify-features.ts
