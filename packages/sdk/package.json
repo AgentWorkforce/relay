@@ -34,6 +34,11 @@
       "types": "./dist/capabilities.d.ts",
       "import": "./dist/capabilities.js",
       "default": "./dist/capabilities.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows/index.d.ts",
+      "import": "./dist/workflows/index.js",
+      "default": "./dist/workflows/index.js"
     }
   },
   "files": [
