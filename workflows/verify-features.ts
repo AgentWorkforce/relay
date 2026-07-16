@@ -26,7 +26,7 @@
  * Procedures ref:   .agentworkforce/features/verify/procedures.md
  */
 
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow } from '@relayflows/core';
 
 const ARTIFACTS = '.workflow-artifacts/verify-features';
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
@@ -40,7 +40,7 @@ async function main() {
   const wf = workflow('relay-verify-features')
     .description(
       'Automated feature health check. Runs CLI verification tiers 1–4 and the 5 critical paths. ' +
-        'Posts a structured PASS/FAIL report to #relay-health.',
+        'Posts a structured PASS/FAIL report to #relay-health.'
     )
     .pattern('pipeline')
     .channel('relay-health')
@@ -89,7 +89,7 @@ EOF
     type: 'deterministic',
     dependsOn: ['acceptance-contract'],
     captureOutput: true,
-    failOnError: true,
+    failOnError: false,
     command: `
 set -euo pipefail
 
@@ -520,7 +520,7 @@ echo "-- CP3: MCP Server --" | tee -a "$LOG"
 # Capture output first to avoid pipefail interaction with grep
 MCP_HELP=$(relay mcp --help 2>&1 || true)
 echo "  mcp help output: $(echo "$MCP_HELP" | head -1)" | tee -a "$LOG"
-if echo "$MCP_HELP" | grep -qi "mcp\|server\|stdio\|relay\|option\|."; then
+if echo "$MCP_HELP" | grep -qiE "mcp|server|stdio|relay|Usage"; then
   echo "  PASS  relay mcp --help responds" | tee -a "$LOG"
   PASS=$((PASS + 1))
 else
@@ -645,20 +645,39 @@ cat "$SUMMARY"
 `,
   });
 
-  // ── Phase 9: Report + Smart Analysis ────────────────────────────────────
+  // ── Phase 9: Post verification report ───────────────────────────────────
   //
-  // opencode reads all logs and does two things:
-  //   1. Posts a structured PASS/FAIL report to #relay-health
-  //   2. Identifies any feature drift, broken surface, or improvement opportunity
-  //      → posts findings as a separate message and waits for human approval
-  //      → if approved (human replies "approved" or "yes"), opens a PR
+  // Posts a structured PASS/FAIL report to #relay-health.
+  // Must be fast — just read logs and post. No code exploration, no waiting.
 
-  wf.step('report-and-analyze', {
+  wf.step('report', {
     agent: 'reporter',
     dependsOn: ['collect-results'],
     task: `You are an automated feature health agent for agent-relay.
 
-Read these artifact files from the verification run:
+First, check whether the verification artifact directory exists. Look for the directory "${ARTIFACTS}".
+
+If the directory does NOT exist or NONE of the expected log files are present:
+  Post this message to relay-health:
+
+## Feature Verification: ${RUN_ID}
+
+**Overall: NOT_RUN**
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| V1: CLI Health | NOT_RUN | verification pipeline did not produce artifacts |
+| V2: Broker + Agents | NOT_RUN | |
+| V3: Channel Messaging | NOT_RUN | |
+| V4: Cross-Agent DMs | NOT_RUN | |
+| V5: Critical Paths | NOT_RUN | |
+
+**Failures:** verification pipeline did not run — check broker startup and workflow logs
+**Next:** Run \`relay node workflow run workflows/verify-features.ts\` or debug broker startup
+
+Then finish immediately — do not attempt to read missing files.
+
+If the directory DOES exist and has log files, read these artifact files directly:
 - ${ARTIFACTS}/summary.txt
 - ${ARTIFACTS}/tier1.log
 - ${ARTIFACTS}/tier2.log
@@ -666,13 +685,7 @@ Read these artifact files from the verification run:
 - ${ARTIFACTS}/tier4.log
 - ${ARTIFACTS}/critical-paths.log
 
-Also read the feature manifest and critical paths docs for context:
-- .agentworkforce/features/manifest.yaml
-- .agentworkforce/features/critical-paths.md
-
-═══ STEP 1: Post the verification report ═══
-
-Post a message to the relay-health channel with this format:
+Then post a message to the relay-health channel with this format:
 
 ## Feature Verification: ${RUN_ID}
 
@@ -689,34 +702,59 @@ Post a message to the relay-health channel with this format:
 **Failures:** list specific failed commands, or "None"
 **Next:** "System healthy" if all pass, or what to debug if not
 
-═══ STEP 2: Analyze for improvements and drift ═══
+Do NOT explore the codebase, run builds, or test CLI commands. Just read the files and post.`,
+  });
 
-After posting the report, carefully review the logs for:
+  // ── Phase 10: Analyze for improvements and drift ─────────────────────────
+  //
+  // Reads logs to identify feature drift, broken surfaces, or improvement
+  // opportunities. Posts findings as a separate message and optionally waits
+  // for human approval to open a fix PR.
+
+  wf.step('analyze-improvements', {
+    agent: 'reporter',
+    dependsOn: ['collect-results'],
+    task: `You are an automated feature health agent for agent-relay.
+
+First, check whether the verification artifact directory "${ARTIFACTS}" exists and has log files.
+
+If the directory does NOT exist or has no log files:
+  Post "✅ No artifacts to analyze — verification pipeline did not produce results." to relay-health and finish immediately.
+
+If the directory DOES exist and has log files, read these artifact files:
+- ${ARTIFACTS}/summary.txt
+- ${ARTIFACTS}/tier1.log
+- ${ARTIFACTS}/tier2.log
+- ${ARTIFACTS}/tier3.log
+- ${ARTIFACTS}/tier4.log
+- ${ARTIFACTS}/critical-paths.log
+
+Carefully review the logs for:
 - Commands that failed, produced unexpected output, or exited with non-zero codes
-- Two CLI surfaces or APIs that work but could be improved (better error messages, inconsistent output format, missing --json flag, undocumented behavior)
-- Any check where the output doesn't match what the feature manifest describes
+- CLI surfaces or APIs that work but could be improved (better error messages, inconsistent output format, missing --json flag, undocumented behavior)
+- Any check where the output doesn't match what the feature manifest describes (.agentworkforce/features/manifest.yaml) — read this file for context
 - Patterns suggesting technical drift (e.g. a command that used to work differently)
 
+If you find NO concrete improvements: post "✅ No drift or improvements identified this run." to relay-health and finish.
+
 If you find 1 or more concrete improvements:
-  a. Post a second message to relay-health with the title "🔍 Improvement opportunities found"
+  1. Post a message to relay-health with the title "🔍 Improvement opportunities found"
      List each issue as: [FEATURE_ID] Description — specific command/output — suggested fix
-  b. End that message with: "Reply 'approve' to open a PR fixing these, or 'skip' to pass."
-  c. Wait up to 5 minutes for a reply by checking your inbox with list_inbox
-  d. If the reply contains "approve" or "yes" or "approved":
+  2. End that message with: "Reply 'approve' to open a PR fixing these, or 'skip' to pass."
+  3. Wait up to 2 minutes for a reply by checking your inbox with list_inbox
+  4. If the reply contains "approve" or "yes" or "approved":
      - Use git to create a feature branch: git checkout -b fix/verify-improvements-${TIMESTAMP}
      - Make the specific code changes identified in your analysis
      - Commit with: "fix: address feature verification findings from ${RUN_ID}"
      - Push the branch and open a PR using gh pr create
      - Post the PR URL to relay-health
-  e. If reply is "skip" or no reply within 5 minutes: post "Skipping improvements — will check again next run." and finish.
-
-If no improvements found: just post "✅ No drift or improvements identified this run." and finish.
+  5. If reply is "skip" or no reply within 2 minutes: post "Skipping improvements — will check again next run." to relay-health and finish.
 
 Rules:
-- The report must go first. Always.
 - Only propose improvements you are confident about — not speculative refactors.
 - For the PR: only touch files directly related to the specific command or output that failed or is wrong. Surgical fixes only.
-- Never merge the PR — just open it for human review.`,
+- Never merge the PR — just open it for human review.
+- When checking the codebase for drift, focus on the specific files related to the failing commands. Do NOT do broad exploration or rebuild the project.`,
   });
 
   await wf.run();
