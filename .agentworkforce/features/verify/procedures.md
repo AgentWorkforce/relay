@@ -27,12 +27,11 @@ relay workspace list
 ### Setup and Doctor
 
 ```bash
-relay setup --help
-# → shows setup options without error
+relay version
+# → confirms CLI is installed (relay setup does not exist)
 
-relay doctor
-# → runs diagnostics, reports status for each check
-# Look for: no "FAIL" items on critical checks
+relay node --help
+# → shows node subcommand options without error
 ```
 
 Pass criteria: all commands exit 0, output is non-empty and sensibly formatted.
@@ -41,14 +40,14 @@ Pass criteria: all commands exit 0, output is non-empty and sensibly formatted.
 
 ## Tier 2 — Broker running
 
-Start the broker first: `relay up`
+Start the broker first: `relay node up --background`
 
 Confirm it started: `relay status` should show "running".
 
 ### Broker Lifecycle
 
 ```bash
-relay up
+relay node up --background
 relay status
 # → shows "running", agent count, queue stats
 
@@ -58,11 +57,11 @@ relay metrics
 relay deadletters
 # → shows empty list or existing dead letters (not an error)
 
-relay down
+relay node down
 relay status
 # → shows "stopped" or "not running"
 
-relay up   # restart for subsequent tests
+relay node up --background   # restart for subsequent tests
 ```
 
 ### Agent Management
@@ -70,7 +69,7 @@ relay up   # restart for subsequent tests
 ```bash
 # Register agents
 relay agent register verify-agent-1
-# → prints token: AGENT_RELAY_TOKEN=<token>
+# → prints token: RELAY_AGENT_TOKEN=<token>
 
 relay agent list
 # → shows verify-agent-1 in list
@@ -83,22 +82,22 @@ relay agent list
 ### Local Agent Orchestration
 
 ```bash
-relay local agent list
+relay node agent list
 # → shows empty list or running agents
 
 # If claude harness is available:
-relay local agent spawn test-worker --harness claude
-relay local agent list
+relay node agent spawn claude --name test-worker
+relay node agent list
 # → shows test-worker with status active
 
-relay local agent message hold test-worker
+relay node agent message hold test-worker
 # → message delivery paused
 
-relay local agent message auto test-worker
+relay node agent message auto test-worker
 # → message delivery resumed
 
-relay local agent release test-worker
-relay local agent list
+relay node agent release test-worker
+relay node agent list
 # → test-worker no longer appears
 ```
 
@@ -119,7 +118,7 @@ swarm:
           prompt: "Reply with just: OK"
 EOF
 
-relay local workflow run /tmp/test-workflow.yaml
+relay node workflow run /tmp/test-workflow.yaml
 # → executes without crashing, agent responds
 ```
 
@@ -149,7 +148,7 @@ Pass criteria: each command exits 0, output matches expected description.
 Register at least one agent (`relay agent register <name>`) and export its token:
 
 ```bash
-export AGENT_RELAY_TOKEN=$(relay agent register verify-agent | grep -oP 'AGENT_RELAY_TOKEN=\K\S+')
+export RELAY_AGENT_TOKEN=$(relay agent register verify-agent | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
 ```
 
 Or pass `--token <value>` to commands that support it.
@@ -190,16 +189,16 @@ relay channel list
 # Post
 relay channel create verify-msgs
 relay channel join verify-msgs
-relay message post --channel verify-msgs "verification message $(date +%s)"
+relay message post verify-msgs "verification message $(date +%s)"
 # → success
 
 # List and confirm delivery
-relay message list --channel verify-msgs --limit 1
+relay message list verify-msgs --limit 1
 # → shows the message just posted with correct text
 
 # Reply (create thread)
-MSG_ID=$(relay message list --channel verify-msgs --limit 1 --json | jq -r '.[0].id')
-relay message reply --message-id "$MSG_ID" "thread reply"
+MSG_ID=$(relay message list verify-msgs --limit 1 --json | jq -r '.[0].id')
+relay message reply "$MSG_ID" "thread reply"
 # → success
 
 # Get thread
@@ -259,42 +258,43 @@ Pass criteria: all channel/message round-trips show data that matches what was w
 Register two agents and test cross-agent features:
 
 ```bash
-export TOKEN_A=$(relay agent register verify-alice | grep -oP 'AGENT_RELAY_TOKEN=\K\S+')
-export TOKEN_B=$(relay agent register verify-bob | grep -oP 'AGENT_RELAY_TOKEN=\K\S+')
+export TOKEN_A=$(relay agent register verify-alice | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
+export TOKEN_B=$(relay agent register verify-bob | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
 ```
 
 ### Channel Invite
 
 ```bash
-AGENT_RELAY_TOKEN=$TOKEN_A relay channel create private-verify
-AGENT_RELAY_TOKEN=$TOKEN_A relay channel join private-verify
-AGENT_RELAY_TOKEN=$TOKEN_A relay channel invite private-verify verify-bob
+RELAY_AGENT_TOKEN=$TOKEN_A relay channel create private-verify
+RELAY_AGENT_TOKEN=$TOKEN_A relay channel join private-verify
+RELAY_AGENT_TOKEN=$TOKEN_A relay channel invite private-verify verify-bob
 # → success
 
-AGENT_RELAY_TOKEN=$TOKEN_B relay channel list
+RELAY_AGENT_TOKEN=$TOKEN_B relay channel list
 # → shows private-verify as a channel bob is in
 ```
 
 ### Direct Messages
 
 ```bash
-AGENT_RELAY_TOKEN=$TOKEN_A relay message dm send verify-bob "hello bob"
-# → success
+# Send DM and capture conversationId from JSON output:
+RELAY_AGENT_TOKEN=$TOKEN_A relay message dm send verify-bob "hello bob"
+# → success; note the conversationId from the JSON response
 
-AGENT_RELAY_TOKEN=$TOKEN_B relay message dm list
-# → shows DM from verify-alice
+# dm list requires the conversationId returned by send:
+# RELAY_AGENT_TOKEN=$TOKEN_B relay message dm list <conversationId>
 
-AGENT_RELAY_TOKEN=$TOKEN_A relay message dm send_group --agents verify-bob --message "group hello"
+RELAY_AGENT_TOKEN=$TOKEN_A relay message dm send_group "group hello" --to verify-bob
 # → success
 ```
 
 ### Read Receipts
 
 ```bash
-MSG_ID=$(AGENT_RELAY_TOKEN=$TOKEN_A relay message list --channel private-verify --limit 1 --json | jq -r '.[0].id')
-AGENT_RELAY_TOKEN=$TOKEN_B relay message inbox mark_read --message-id "$MSG_ID"
+MSG_ID=$(RELAY_AGENT_TOKEN=$TOKEN_A relay message list private-verify --limit 1 --json | jq -r '.[0].id')
+RELAY_AGENT_TOKEN=$TOKEN_B relay message inbox mark_read --message-id "$MSG_ID"
 
-AGENT_RELAY_TOKEN=$TOKEN_A relay message inbox get_readers --message-id "$MSG_ID"
+RELAY_AGENT_TOKEN=$TOKEN_A relay message inbox get_readers --message-id "$MSG_ID"
 # → shows verify-bob has read the message
 ```
 
@@ -326,7 +326,7 @@ relay cloud session
 ### Cloud Workflow Run
 
 ```bash
-relay cloud run --file examples/basic-workflow.yaml
+relay cloud run examples/basic-workflow.yaml
 # → prints run ID
 
 RUN_ID=<id from above>
@@ -340,7 +340,7 @@ relay cloud logs "$RUN_ID"
 ### Schedules
 
 ```bash
-relay cloud schedule --file examples/basic-workflow.yaml --cron "0 * * * *"
+relay cloud schedule examples/basic-workflow.yaml --cron "0 * * * *"
 # → prints schedule ID
 
 relay cloud schedules
@@ -386,13 +386,13 @@ Use this to determine which tiers to run:
 ## Quick Sanity Check (Run After Any Change)
 
 ```bash
-relay version && relay status || relay up && relay status
+relay version && relay status || relay node up --background && relay status
 relay agent register quick-check-$(date +%s)
 relay agent list
 relay channel create quick-check-ch
 relay channel join quick-check-ch
-relay message post --channel quick-check-ch "sanity $(date)"
-relay message list --channel quick-check-ch --limit 1
+relay message post quick-check-ch "sanity $(date)"
+relay message list quick-check-ch --limit 1
 relay channel archive quick-check-ch
 relay agent remove quick-check-$(date +%s)
 ```

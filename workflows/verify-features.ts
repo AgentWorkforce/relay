@@ -102,14 +102,23 @@ echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "${ARTIFACTS}/setup.lo
 relay node up --background 2>&1 | tee -a "${ARTIFACTS}/setup.log" || true
 
 # Wait for broker to be ready (up to 15 seconds)
+BROKER_READY=0
 for i in $(seq 1 15); do
-  relay status 2>&1 | grep -i "running" && break || true
+  if relay status 2>&1 | grep -qi "running"; then
+    BROKER_READY=1
+    break
+  fi
   sleep 1
 done
 
 relay status 2>&1 | tee -a "${ARTIFACTS}/setup.log"
 
-echo "SETUP_OK" >> "${ARTIFACTS}/setup.log"
+if [ "$BROKER_READY" -eq 1 ]; then
+  echo "SETUP_OK" >> "${ARTIFACTS}/setup.log"
+else
+  echo "SETUP_FAIL: broker did not become ready within 15 seconds" >> "${ARTIFACTS}/setup.log"
+  exit 1
+fi
 `,
   });
 
@@ -371,23 +380,29 @@ DM_TEXT="dm-verify-$(date +%s)"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create "$CHANNEL" 2>/dev/null || true
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel join "$CHANNEL" 2>/dev/null || true
 
-DM_SEND_OUT=$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send "$AGENT_B" "$DM_TEXT" 2>&1)
-echo "$DM_SEND_OUT" | tee -a "$LOG" > /dev/null
-CONV_ID=$(echo "$DM_SEND_OUT" | grep -o '"conversationId": *"[^"]*"' | head -1 | sed 's/.*"conversationId": *"//;s/".*//' || echo "")
-if [ -n "$DM_SEND_OUT" ]; then
+if RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send "$AGENT_B" "$DM_TEXT" > /tmp/dm-send-out.txt 2>&1; then
+  DM_SEND_OUT=$(cat /tmp/dm-send-out.txt)
   echo "  PASS  dm send A→B" | tee -a "$LOG"
   PASS=$((PASS + 1))
 else
-  echo "  FAIL  dm send A→B" | tee -a "$LOG"
+  DM_SEND_OUT=$(cat /tmp/dm-send-out.txt)
+  echo "  FAIL  dm send A→B (exit code non-zero)" | tee -a "$LOG"
   FAIL=$((FAIL + 1))
 fi
+CONV_ID=$(echo "$DM_SEND_OUT" | grep -o '"conversationId": *"[^"]*"' | head -1 | sed 's/.*"conversationId": *"//;s/".*//' || echo "")
 
 # B lists DMs using conversationId from send response
-if [ -n "$CONV_ID" ] && RELAY_AGENT_TOKEN="$TOKEN_B" relay message dm list "$CONV_ID" 2>&1 | grep -qi "."; then
-  echo "  PASS  dm list (B sees DM from A)" | tee -a "$LOG"
-  PASS=$((PASS + 1))
+if [ -n "$CONV_ID" ]; then
+  if RELAY_AGENT_TOKEN="$TOKEN_B" relay message dm list "$CONV_ID" 2>&1 | grep -qi "."; then
+    echo "  PASS  dm list (B sees DM from A)" | tee -a "$LOG"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  dm list (B could not list conversation $CONV_ID)" | tee -a "$LOG"
+    FAIL=$((FAIL + 1))
+  fi
 else
-  echo "  SKIP  dm list (no conversationId captured — send response format may have changed)" | tee -a "$LOG"
+  echo "  FAIL  dm list (no conversationId in send response — cannot verify receipt)" | tee -a "$LOG"
+  FAIL=$((FAIL + 1))
 fi
 
 # Channel invite B into A's channel
@@ -542,16 +557,17 @@ TOKEN_CP4B=$(relay agent register "$CP4_B" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' 
 if [ -n "$TOKEN_CP4A" ] && [ -n "$TOKEN_CP4B" ]; then
   CP4=$((CP4 + 1))
   DM_MSG="dm-cp4-$(date +%s)"
-  DM4_OUT=$(RELAY_AGENT_TOKEN="$TOKEN_CP4A" relay message dm send "$CP4_B" "$DM_MSG" 2>&1)
-  echo "$DM4_OUT" | grep -qi "." && CP4=$((CP4 + 1)) || true
-  CONV4_ID=$(echo "$DM4_OUT" | grep -o '"conversationId": *"[^"]*"' | head -1 | sed 's/.*"conversationId": *"//;s/".*//' || echo "")
+  if RELAY_AGENT_TOKEN="$TOKEN_CP4A" relay message dm send "$CP4_B" "$DM_MSG" > /tmp/cp4-dm-out.txt 2>&1; then
+    CP4=$((CP4 + 1))
+  fi
+  CONV4_ID=$(cat /tmp/cp4-dm-out.txt | grep -o '"conversationId": *"[^"]*"' | head -1 | sed 's/.*"conversationId": *"//;s/".*//' || echo "")
   if [ -n "$CONV4_ID" ]; then
     RELAY_AGENT_TOKEN="$TOKEN_CP4B" relay message dm list "$CONV4_ID" 2>&1 | grep -qi "." && {
       echo "  PASS  B can list DMs" | tee -a "$LOG"
       CP4=$((CP4 + 1))
     } || echo "  FAIL  B cannot list DMs" | tee -a "$LOG"
   else
-    echo "  SKIP  dm list (no conversationId in send response)" | tee -a "$LOG"
+    echo "  FAIL  dm list (no conversationId in send response)" | tee -a "$LOG"
   fi
 fi
 
@@ -760,20 +776,8 @@ if [ -f "$ARTIFACTS/critical-paths.log" ]; then
     echo "$failed" | sed 's/^/    /' >> "$REPORT"
     echo "" >> "$REPORT"
 
-    # Check CP3 (MCP Server) specifically — was the grep pattern fixed?
     if grep -q "relay mcp.*no recognizable output" "$ARTIFACTS/critical-paths.log" 2>/dev/null; then
-      # Check if current workflow code has the fix
-      if [ -f "workflows/verify-features.ts" ]; then
-        if grep -q 'grep -qiE "mcp|server|stdio|relay|Usage"' "workflows/verify-features.ts" 2>/dev/null || \
-           grep -q 'grep.*-qi.*Usage' "workflows/verify-features.ts" 2>/dev/null; then
-          FOUND=$((FOUND - 1))
-          echo "  [mcp-server-start] CP3 MCP help check — grep pattern already fixed to use 'Usage' (current code: workflows/verify-features.ts)" >> "$REPORT"
-          echo "  Resolution: No action needed — fix already applied in source. Next run should pass." >> "$REPORT"
-        else
-          echo "  [mcp-server-start] CP3 MCP help check — grep pattern may be using non-portable \\\\| alternation" >> "$REPORT"
-          echo "  Suggested fix: Change 'grep -qi \"mcp\\\\\\\\|server\\\\\\\\|...' to 'grep -qi \"Usage\"' in workflows/verify-features.ts" >> "$REPORT"
-        fi
-      fi
+      echo "  [mcp-server-start] CP3 MCP help check failed — verify relay mcp --help returns expected output" >> "$REPORT"
       echo "" >> "$REPORT"
     fi
   fi

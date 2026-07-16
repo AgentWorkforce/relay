@@ -37,14 +37,14 @@ The manifest tells you:
 
 ### 2. Check verify tier requirements
 
-| Tier | Requires             | Setup command                                                  |
-| ---- | -------------------- | -------------------------------------------------------------- |
-| 1    | Nothing              | (none)                                                         |
-| 2    | Broker running       | `relay up`                                                     |
-| 3    | Broker + agent token | `relay up && relay agent register <name>`                      |
-| 4    | Broker + 2 agents    | `relay up && relay agent register a && relay agent register b` |
-| 5    | Cloud auth           | `relay cloud whoami` (must already be logged in)               |
-| 6    | Manual only          | Human must verify in browser or interactive session            |
+| Tier | Requires             | Setup command                                                                    |
+| ---- | -------------------- | -------------------------------------------------------------------------------- |
+| 1    | Nothing              | (none)                                                                           |
+| 2    | Broker running       | `relay node up --background`                                                     |
+| 3    | Broker + agent token | `relay node up --background && relay agent register <name>`                      |
+| 4    | Broker + 2 agents    | `relay node up --background && relay agent register a && relay agent register b` |
+| 5    | Cloud auth           | `relay cloud whoami` (must already be logged in)                                 |
+| 6    | Manual only          | Human must verify in browser or interactive session                              |
 
 ### 3. Run the verification
 
@@ -54,14 +54,15 @@ Follow `.agentworkforce/features/verify/procedures.md` for the relevant tier. Al
 
 ```bash
 relay version && \
-relay status || relay up && \
+relay status || relay node up --background && \
 relay status && \
 relay agent register quick-check && \
 relay agent list && \
 relay channel create quick-check-ch && \
 relay channel join quick-check-ch && \
-relay message post --channel quick-check-ch "sanity $(date)" && \
-relay message list --channel quick-check-ch --limit 1 && \
+export RELAY_AGENT_TOKEN=$(relay agent register quick-check-msg | grep -oP 'RELAY_AGENT_TOKEN=\K\S+') && \
+relay message post quick-check-ch "sanity $(date)" && \
+relay message list quick-check-ch --limit 1 && \
 relay channel archive quick-check-ch && \
 relay agent remove quick-check
 ```
@@ -106,7 +107,7 @@ Update `critical-paths.md` when:
 
 ```
 1. Read the manifest: grep "messaging-messages" manifest.yaml → verify_tier: 3
-2. Setup: relay up && export AGENT_RELAY_TOKEN=$(relay agent register test-agent | ...)
+2. Setup: relay node up --background && export RELAY_AGENT_TOKEN=$(relay agent register test-agent | grep -oP 'RELAY_AGENT_TOKEN=\K\S+')
 3. Follow tier 3 procedures: post → list → reply → get_thread → search
 4. Run critical path 2 (channel messaging) with two agents
 5. Clean up: relay agent remove test-agent

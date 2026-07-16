@@ -10,7 +10,7 @@ updated: '2026-07-16'
 #
 # verify_tier (what is required to run verification):
 #   1 - nothing (version, help, telemetry toggle, workspace list)
-#   2 - broker running (relay up)
+#   2 - broker running (relay node up --background)
 #   3 - broker running + at least one agent registered with token
 #   4 - broker running + two or more agents registered
 #   5 - cloud auth required (relay cloud login)
@@ -24,14 +24,14 @@ categories:
     features:
       - id: broker-up
         name: Start Broker
-        cli: relay up
-        description: Start the local broker daemon
+        cli: relay node up --background
+        description: Start the local broker daemon in the background
         location: packages/cli/src/cli/commands/core.ts
         verify_tier: 1
 
       - id: broker-down
         name: Stop Broker
-        cli: relay down
+        cli: relay node down
         description: Stop the running broker daemon
         location: packages/cli/src/cli/commands/core.ts
         verify_tier: 2
@@ -225,7 +225,7 @@ categories:
 
       - id: dm-list
         name: List DMs
-        cli: relay message dm list
+        cli: relay message dm list <conversationId>
         mcp: list_dms
         description: List direct message conversations for the current agent
         location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
@@ -296,70 +296,70 @@ categories:
     features:
       - id: local-agent-spawn
         name: Spawn Agent
-        cli: relay local agent spawn <name> --harness <harness>
+        cli: relay node agent spawn <provider> --name <agent-name>
         description: Launch an AI agent process attached to the local broker
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-new
         name: Spawn and Attach
-        cli: relay local agent new <name>
+        cli: relay node agent new <name>
         description: Spawn an agent and immediately attach your terminal to it
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-release
         name: Release Agent
-        cli: relay local agent release <name>
+        cli: relay node agent release <name>
         description: Gracefully stop a running local agent
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-list
         name: List Local Agents
-        cli: relay local agent list
+        cli: relay node agent list
         description: Show all agents currently running on the local broker
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-set-model
         name: Switch Agent Model
-        cli: relay local agent set-model <name> <model>
+        cli: relay node agent set-model <name> <model>
         description: Change the AI model a running agent uses (sends /model to TUI)
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-attach
         name: Attach to Agent
-        cli: relay local agent attach <name>
+        cli: relay node agent attach <name>
         description: Interactively connect terminal to a running agent (drive/view/passthrough)
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-flush
         name: Flush Agent Messages
-        cli: relay local agent message flush <name>
+        cli: relay node agent message flush <name>
         description: Immediately deliver all queued messages to a held agent
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-hold
         name: Hold Agent Messages
-        cli: relay local agent message hold <name>
+        cli: relay node agent message hold <name>
         description: Pause message delivery to an agent (queue them)
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-auto
         name: Resume Agent Messages
-        cli: relay local agent message auto <name>
+        cli: relay node agent message auto <name>
         description: Resume automatic message injection for an agent
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
 
       - id: local-agent-tail
         name: Tail Broker Events
-        cli: relay local tail [agent]
+        cli: relay node tail [--agent <name>]
         description: Stream live broker events, optionally filtered to one agent
         location: packages/cli/src/cli/commands/local-agent.ts
         verify_tier: 2
@@ -371,7 +371,7 @@ categories:
     features:
       - id: local-workflow-run
         name: Run Local Workflow
-        cli: relay local workflow run <file>
+        cli: relay node workflow run <file>
         description: Execute a workflow YAML or TypeScript/JS file on the local broker
         location: packages/cli/src/cli/commands/local-workflow.ts
         verify_tier: 2
@@ -708,16 +708,30 @@ categories:
         verify_tier: 3
 
   reflex:
-    name: Reflex / Auto
-    description: Generate agents and workflows from natural language
+    name: Reflex
+    description: Reflex history sync - syncs relay activity history for agent context
     criticality: standard
     features:
-      - id: reflex-generate
-        name: Generate Workflow
-        cli: relay reflex
-        description: Auto-generate agents/workflows from a natural language prompt
-        location: packages/cli/src/cli/commands/reflex.ts, packages/cli/src/auto/
-        verify_tier: 3
+      - id: reflex-on
+        name: Reflex On
+        cli: relay reflex on
+        description: Enable reflex history sync so agents receive relay activity context
+        location: packages/cli/src/cli/commands/reflex.ts
+        verify_tier: 2
+
+      - id: reflex-off
+        name: Reflex Off
+        cli: relay reflex off
+        description: Disable reflex history sync
+        location: packages/cli/src/cli/commands/reflex.ts
+        verify_tier: 2
+
+      - id: reflex-status
+        name: Reflex Status
+        cli: relay reflex status
+        description: Show whether reflex history sync is enabled
+        location: packages/cli/src/cli/commands/reflex.ts
+        verify_tier: 2
 
   mcp:
     name: MCP Server Mode
@@ -915,18 +929,11 @@ categories:
     description: Initial setup, diagnostics, and CLI lifecycle
     criticality: hot
     features:
-      - id: setup-init
-        name: Initialize Setup
-        cli: relay setup
-        description: Initialize workspace configuration and first-time setup wizard
-        location: packages/cli/src/cli/commands/setup.ts
-        verify_tier: 1
-
       - id: setup-doctor
-        name: Doctor / Diagnostics
-        cli: relay doctor
-        description: Check system health and diagnose common configuration issues
-        location: packages/cli/src/cli/commands/doctor.ts, packages/cli/src/cli/lib/doctor.ts
+        name: Status / Health Check
+        cli: relay status
+        description: Show workspace, cloud login, and local broker status
+        location: packages/cli/src/cli/commands/core.ts
         verify_tier: 1
 
       - id: cli-version
@@ -977,7 +984,7 @@ categories:
       - id: node-up
         name: Node Up
         cli: relay node up
-        description: Start this node's local broker (node-scoped alias of relay up)
+        description: Start this node's local broker (use --background to run as daemon)
         location: packages/cli/src/cli/commands/node.ts
         verify_tier: 1
 

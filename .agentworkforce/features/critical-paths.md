@@ -8,8 +8,8 @@ The features and sequences that must work for the product to function. These are
 
 Everything depends on this. If it breaks, nothing works.
 
-```
-relay up
+```bash
+relay node up --background
 relay agent register <name>   → produces a token
 relay agent list              → shows the registered agent
 relay status                  → shows broker running with agent count
@@ -23,19 +23,19 @@ relay status                  → shows broker running with agent count
 
 The primary way agents communicate.
 
-```
-relay up
+```bash
+relay node up --background
 relay agent register alice    → TOKEN_A
 relay agent register bob      → TOKEN_B
 
 # As alice:
-AGENT_RELAY_TOKEN=<TOKEN_A> relay channel create team
-AGENT_RELAY_TOKEN=<TOKEN_A> relay channel join team
-AGENT_RELAY_TOKEN=<TOKEN_A> relay message post --channel team "hello from alice"
+RELAY_AGENT_TOKEN=<TOKEN_A> relay channel create team
+RELAY_AGENT_TOKEN=<TOKEN_A> relay channel join team
+RELAY_AGENT_TOKEN=<TOKEN_A> relay message post team "hello from alice"
 
 # Verify bob receives it:
-AGENT_RELAY_TOKEN=<TOKEN_B> relay channel join team
-AGENT_RELAY_TOKEN=<TOKEN_B> relay message list --channel team --limit 1
+RELAY_AGENT_TOKEN=<TOKEN_B> relay channel join team
+RELAY_AGENT_TOKEN=<TOKEN_B> relay message list team --limit 1
 # → should show alice's message
 ```
 
@@ -47,13 +47,13 @@ AGENT_RELAY_TOKEN=<TOKEN_B> relay message list --channel team --limit 1
 
 The mechanism for spawning real AI agents and injecting messages into them.
 
-```
-relay up
-relay local agent spawn worker-1 --harness claude
-relay local agent list          → shows worker-1 as active
-relay local agent message hold worker-1
-relay local agent message flush worker-1
-relay local agent release worker-1
+```bash
+relay node up --background
+relay node agent spawn claude --name worker-1
+relay node agent list           → shows worker-1 as active
+relay node agent message hold worker-1
+relay node agent message flush worker-1
+relay node agent release worker-1
 ```
 
 **What breaks if this fails:** All multi-agent orchestration workflows, the local workflow engine.
@@ -64,7 +64,7 @@ relay local agent release worker-1
 
 The path used when an agent operates inside a harness (Claude Code, Cursor, etc.).
 
-```
+```bash
 relay mcp                       → starts MCP server on stdio
 # From a harness MCP call:
 list_channels                   → returns channel list
@@ -80,9 +80,9 @@ list_messages(channel)          → returns messages including the one just post
 
 A workflow YAML or JS file drives multiple agents to complete a task.
 
-```
-relay up
-relay local workflow run examples/basic-workflow.yaml
+```bash
+relay node up --background
+relay node workflow run examples/basic-workflow.yaml
 # → spawns agents, coordinates them, produces output, terminates cleanly
 ```
 
@@ -92,13 +92,15 @@ relay local workflow run examples/basic-workflow.yaml
 
 ## Path 6: Direct Messaging Between Agents
 
-```
-relay up
+```bash
+relay node up --background
 relay agent register orchestrator  → TOKEN_O
 relay agent register worker        → TOKEN_W
 
-AGENT_RELAY_TOKEN=<TOKEN_O> relay message dm send worker "your task"
-AGENT_RELAY_TOKEN=<TOKEN_W> relay message dm list  → shows message from orchestrator
+# Send DM and capture conversationId from JSON output:
+RELAY_AGENT_TOKEN=<TOKEN_O> relay message dm send worker "your task"
+# dm list requires the conversationId returned by send
+# RELAY_AGENT_TOKEN=<TOKEN_W> relay message dm list <conversationId>
 ```
 
 **What breaks if this fails:** Lead/worker orchestration patterns, any workflow that routes tasks via DM.
@@ -127,10 +129,10 @@ When unsure if the system is healthy, run this sequence in order:
 ```bash
 relay version            # CLI is installed and not corrupt
 relay status             # Broker state (running or not)
-relay up                 # Start if not running
+relay node up --background  # Start if not running
 relay status             # Confirm running
 relay agent list         # Workspace is reachable and has agents
-relay message list --channel general --limit 1  # Messaging works end to end
+relay message list general --limit 1  # Messaging works end to end
 ```
 
 If any step fails, diagnose before proceeding. The failure at each step points to a specific subsystem.

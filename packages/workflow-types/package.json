@@ -3,6 +3,10 @@
   "version": "10.6.0",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
