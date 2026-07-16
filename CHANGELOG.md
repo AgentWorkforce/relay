@@ -5,7 +5,14 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `workflows/verify-features.ts` — scheduled relayflow that verifies every user-facing CLI feature tier by tier (CLI health, broker lifecycle, channel messaging, cross-agent DMs, critical paths) and posts structured PASS/FAIL reports to `#relay-health`. The reporter agent analyzes logs for drift and waits for human approval before opening a PR with fixes.
+- `.agentworkforce/features/manifest.yaml` — exhaustive catalog of 124 features across 20+ categories, each tagged with verify tier, criticality, and source location.
+- `.agentworkforce/features/critical-paths.md` — documents the 4 product-critical sequences that must work end-to-end (broker+registration, channel messaging, local agent lifecycle, MCP server).
+- `@agent-relay/sdk` `./workflows` subpath export, enabling local workflow files to import the workflow builder without a build step.
 
 ## [10.6.0] - 2026-07-16
 
