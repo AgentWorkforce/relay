@@ -1,0 +1,50 @@
+{
+  "id": "traj_9835z9cvpl9q",
+  "version": 1,
+  "task": {
+    "title": "Implement escape-aware paced injection (issue #801)",
+    "source": {
+      "system": "plain",
+      "id": "801"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-07-15T19:48:09.268Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T19:56:40.369Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_optxox9qt5ue",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T19:56:40.369Z",
+      "events": [
+        {
+          "ts": 1784145400371,
+          "type": "decision",
+          "content": "Paced injection in drainer thread: Paced injection in drainer thread",
+          "raw": {
+            "question": "Paced injection in drainer thread",
+            "chosen": "Paced injection in drainer thread",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}

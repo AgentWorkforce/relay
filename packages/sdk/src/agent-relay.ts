@@ -7,8 +7,11 @@ import {
   type RelaycastTelemetryOptions,
 } from './relaycast-telemetry.js';
 import {
+  createEventFanIn,
+  createObserverEventSource,
   RelaycastMessagingClient,
   type RelayAgentRegistration,
+  type RelayEventFanIn,
   type RelayMessaging,
   type RelaycastMessagingOptions,
 } from './messaging/index.js';
@@ -48,6 +51,27 @@ export interface AgentRelayOptions extends RelaycastMessagingOptions {
   actions?: AgentRelayActions;
   /** Factory for agent-token-scoped messaging clients. Defaults to a Relaycast client. */
   createAgentMessaging?: (token: string) => RelayMessaging;
+  /**
+   * Read-only observer token (`ot_live_...`) with `stream:read` scope.
+   * When set, `relay.addListener(...)` streams from the workspace observer
+   * plane — a durable per-workspace event log plus the live `/v1/ws` observer
+   * stream — instead of fanning in through registered agent clients. Observer
+   * tokens are read-only: `workspace.register()` and `workspace.reconnect()`
+   * throw in observer mode.
+   */
+  observerToken?: string;
+  /**
+   * Observer-mode resume cursor: skip durable-log events at or below this
+   * per-workspace sequence number. Pair with {@link AgentRelayOptions.onCursor}
+   * to resume a persisted stream without gaps or duplicates.
+   */
+  sinceSeq?: number;
+  /**
+   * Observer-mode cursor hook, called with each advanced sequence number.
+   * Persisting the cursor is the caller's job; feed the last value back as
+   * `sinceSeq` on the next start.
+   */
+  onCursor?: (seq: number) => void;
   /**
    * Receives listener and action handler errors with a context identifying
    * the listener selector or action name. When unset, errors are logged as
@@ -100,25 +124,68 @@ export class AgentRelay implements AgentRelayAgent {
   readonly messaging: RelayMessaging;
   private readonly actions: AgentRelayActions;
   readonly workspaceKey?: string;
+  private readonly observerToken?: string;
 
   private readonly messagingOptions: RelaycastMessagingOptions;
   private readonly clientsByToken = new Map<string, RelayMessaging>();
   private readonly createAgentMessaging: (token: string) => RelayMessaging;
+  private readonly eventFanIn: RelayEventFanIn;
   private enrichedMessages?: EnrichedMessages;
   private workspaceFacade?: RelayWorkspace;
   private hub?: ListenerHub;
   private readonly errorHooks = new Set<RelayErrorHook>();
 
   constructor(options: AgentRelayOptions = {}) {
-    const { messaging, actions, workspaceKey, createAgentMessaging, onError, ...messagingOptions } = options;
+    const {
+      messaging,
+      actions,
+      workspaceKey,
+      createAgentMessaging,
+      onError,
+      observerToken,
+      sinceSeq,
+      onCursor,
+      ...messagingOptions
+    } = options;
     const resolvedWorkspaceKey = workspaceKey ?? messagingOptions.apiKey;
     this.workspaceKey = resolvedWorkspaceKey;
-    this.messagingOptions = { ...messagingOptions, workspaceKey: resolvedWorkspaceKey };
+    this.observerToken = observerToken;
+    // Observer-only construction: fall back to the observer token as the REST
+    // credential so the client can be built; writes are rejected server-side.
+    this.messagingOptions = { ...messagingOptions, workspaceKey: resolvedWorkspaceKey ?? observerToken };
     this.messaging = messaging ?? new RelaycastMessagingClient(this.messagingOptions);
     this.actions = actions ?? new ActionRegistry();
     this.createAgentMessaging =
       createAgentMessaging ??
       ((token) => new RelaycastMessagingClient({ ...this.messagingOptions, agentToken: token }));
+    if (observerToken) {
+      // Observer mode: the listener hub streams from the workspace observer
+      // plane (durable event log + live observer stream). The observer source
+      // is the sole source — agent registration is disabled — so the fan-in
+      // never falls back to the workspace client and never warns about
+      // missing agent sources.
+      this.eventFanIn = createEventFanIn(undefined, {
+        onError: (error) => this.reportError(error, { source: 'listener', selector: 'events.connect' }),
+      });
+      this.eventFanIn.addSource(
+        createObserverEventSource({
+          observerToken,
+          baseUrl: messagingOptions.baseUrl,
+          sinceSeq,
+          onCursor,
+          onError: (error) => this.reportError(error, { source: 'listener', selector: 'events.connect' }),
+        })
+      );
+    } else {
+      // Relaycast v5 streams events over each agent's node transport; the
+      // workspace-key stream cannot receive them. The fan-in makes
+      // `relay.addListener(...)` stream through every registered agent client
+      // (added in `messagingForToken`), keeping the workspace client only as a
+      // pre-registration fallback.
+      this.eventFanIn = createEventFanIn(this.messaging.events, {
+        onError: (error) => this.reportError(error, { source: 'listener', selector: 'events.connect' }),
+      });
+    }
     if (onError) {
       this.errorHooks.add(onError);
     }
@@ -179,7 +246,7 @@ export class AgentRelay implements AgentRelayAgent {
 
   private get listenerHub(): ListenerHub {
     if (!this.hub) {
-      this.hub = createListenerHub(this.messaging.events, this.actions, {
+      this.hub = createListenerHub(this.eventFanIn, this.actions, {
         onError: (error, context) => this.reportError(error, context),
       });
     }
@@ -212,10 +279,24 @@ export class AgentRelay implements AgentRelayAgent {
 
   get workspace(): RelayWorkspace {
     if (!this.workspaceFacade) {
-      this.workspaceFacade = createWorkspaceFacade(this.messaging, {
+      const facade = createWorkspaceFacade(this.messaging, {
         buildAgentClient: (registration) => this.buildAgentClient(registration),
         reconnectAgent: (apiToken) => this.reconnectAgent(apiToken),
       });
+      // Observer mode is read-only: registering (or rehydrating) participant
+      // agents requires a workspace key, and mixing participant sources into
+      // the observer stream would double-deliver events.
+      this.workspaceFacade = this.observerToken
+        ? {
+            ...facade,
+            register: (async () => {
+              throw new Error(observerReadOnlyMessage('register()'));
+            }) as RelayWorkspace['register'],
+            reconnect: async () => {
+              throw new Error(observerReadOnlyMessage('reconnect()'));
+            },
+          }
+        : facade;
     }
     return this.workspaceFacade;
   }
@@ -325,6 +406,9 @@ export class AgentRelay implements AgentRelayAgent {
     if (!client) {
       client = this.createAgentMessaging(token);
       this.clientsByToken.set(token, client);
+      // Every registered agent's connection feeds the workspace-level
+      // listener hub; the fan-in connects it lazily once a listener exists.
+      this.eventFanIn.addSource(client.events);
     }
     return client;
   }
@@ -335,6 +419,10 @@ export class AgentRelay implements AgentRelayAgent {
       return token ? this.messagingForToken(token).messages : this.messaging.messages;
     };
   }
+}
+
+function observerReadOnlyMessage(method: string): string {
+  return `${method} is not available in observer mode: observer tokens are read-only; use a workspace key to register agents.`;
 }
 
 function extractWorkspaceKey(payload: Record<string, unknown>): string | undefined {

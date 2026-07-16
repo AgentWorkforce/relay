@@ -51,6 +51,12 @@ export type RelayErrorHook = (error: unknown, context: RelayErrorContext) => voi
 /** Default reporting for handler errors when no `onError` hook is registered. */
 export function logRelayHandlerError(error: unknown, context: RelayErrorContext): void {
   const where = context.action ? `action "${context.action}"` : `"${context.selector ?? 'unknown'}"`;
+  // A named `operation` (e.g. `connect`) is a wiring/transport failure, not a
+  // user handler throwing — word it so the two are distinguishable at a glance.
+  if (context.operation) {
+    console.warn(`[agent-relay] ${context.source} ${context.operation} for ${where} failed:`, error);
+    return;
+  }
   console.warn(`[agent-relay] ${context.source} handler for ${where} threw:`, error);
 }
 
@@ -648,12 +654,18 @@ export function createListenerHub(
   ): (() => void) => {
     // Open the event stream — `events.on(...)` only registers handlers; the
     // socket is opened by `events.connect()` (idempotent). Agent-scoped clients
-    // stream through their own connection; workspace-key clients stream all
-    // workspace-visible events through the workspace stream.
+    // stream through their own connection; the workspace-level hub streams
+    // through registered agent clients via the events fan-in. A connect
+    // failure must be surfaced, not swallowed: a listener attached to a
+    // stream that never opens receives nothing, silently.
     try {
       context.events.connect();
-    } catch {
-      // No stream available (no agent token and no workspace stream).
+    } catch (error) {
+      makeReporter(context, {
+        source: 'listener',
+        operation: 'connect',
+        selector: typeof selector === 'string' ? selector : 'predicate',
+      })(error);
     }
     if (typeof selector !== 'string') {
       return selector.subscribe(context, handler as ListenerHandler);
