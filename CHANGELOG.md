@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay-broker` reports a PII-safe `broker_panic` telemetry event from a process-wide panic hook, capturing only the compile-time `panic_location` (`file:line`) — never the panic message — so broker crashes are visible alongside the existing agent-crash signal.
 
 ### Fixed
 

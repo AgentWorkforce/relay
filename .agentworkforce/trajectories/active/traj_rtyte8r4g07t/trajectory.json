@@ -1,0 +1,50 @@
+{
+  "id": "traj_rtyte8r4g07t",
+  "version": 1,
+  "task": {
+    "title": "Implement broker_panic telemetry hook (issue #881)",
+    "source": {
+      "system": "plain",
+      "id": "881"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-07-15T23:00:55.646Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T23:10:50.208Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vzv9vggiykbw",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T23:10:50.208Z",
+      "events": [
+        {
+          "ts": 1784157050210,
+          "type": "decision",
+          "content": "broker_panic sends synchronously via a fresh OS-thread current-thread runtime: broker_panic sends synchronously via a fresh OS-thread current-thread runtime",
+          "raw": {
+            "question": "broker_panic sends synchronously via a fresh OS-thread current-thread runtime",
+            "chosen": "broker_panic sends synchronously via a fresh OS-thread current-thread runtime",
+            "alternatives": [],
+            "reasoning": "Panic may occur on a tokio worker thread and the process may abort before the async sender loop drains; a dedicated std::thread with its own runtime avoids nested-runtime panic, and the reqwest timeout bounds process teardown"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}
