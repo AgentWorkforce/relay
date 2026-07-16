@@ -1,0 +1,132 @@
+{
+  "id": "traj_w8ggb555xlls",
+  "version": 1,
+  "task": {
+    "title": "relay-verify-features-workflow",
+    "description": "Automated feature health check. Runs CLI verification tiers 1–4 and the 5 critical paths. Posts a structured PASS/FAIL report to #relay-health.",
+    "source": {
+      "system": "workflow-runner",
+      "id": "9437556ce59dbf6c774c7abb"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-07-16T11:53:00.659Z",
+  "completedAt": "2026-07-16T12:17:42.091Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-07-16T11:53:00.660Z"
+    },
+    {
+      "name": "reporter",
+      "role": "specialist",
+      "joinedAt": "2026-07-16T11:54:53.324Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_v7a289o0c81b",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-07-16T11:53:00.660Z",
+      "endedAt": "2026-07-16T11:54:53.333Z",
+      "events": [
+        {
+          "ts": 1784202780660,
+          "type": "note",
+          "content": "Purpose: Automated feature health check. Runs CLI verification tiers 1–4 and the 5 critical paths. Posts a structured PASS/FAIL report to #relay-health."
+        },
+        {
+          "ts": 1784202780660,
+          "type": "note",
+          "content": "Approach: 10-step pipeline workflow — Parsed 10 steps, 9 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    },
+    {
+      "id": "chap_s71nxal9tpye",
+      "title": "Execution: report-and-analyze",
+      "agentName": "reporter",
+      "startedAt": "2026-07-16T11:54:53.333Z",
+      "endedAt": "2026-07-16T12:07:23.870Z",
+      "events": [
+        {
+          "ts": 1784202893333,
+          "type": "note",
+          "content": "\"report-and-analyze\": You are an automated feature health agent for agent-relay",
+          "raw": {
+            "agent": "reporter"
+          }
+        },
+        {
+          "ts": 1784203516475,
+          "type": "note",
+          "content": "\"report-and-analyze\" retrying (attempt 1/2)"
+        }
+      ]
+    },
+    {
+      "id": "chap_oxfxt0ob9nsw",
+      "title": "Execution: report-and-analyze",
+      "agentName": "reporter",
+      "startedAt": "2026-07-16T12:07:23.870Z",
+      "endedAt": "2026-07-16T12:17:42.090Z",
+      "events": [
+        {
+          "ts": 1784203643871,
+          "type": "note",
+          "content": "\"report-and-analyze\": You are an automated feature health agent for agent-relay",
+          "raw": {
+            "agent": "reporter"
+          }
+        },
+        {
+          "ts": 1784204261862,
+          "type": "error",
+          "content": "\"report-and-analyze\" failed [timeout]: Interactive agent timed out — it may have gone idle, failed to self-terminate, or the task scope was too broad. Check if the agent was waiting for relay signals that never arrived.",
+          "raw": {
+            "cause": "timeout",
+            "rawError": "Step \"report-and-analyze\" timed out after 600000ms",
+            "attempt": 2,
+            "maxRetries": 1
+          },
+          "significance": "high"
+        }
+      ]
+    },
+    {
+      "id": "chap_t3ci8sukt2eu",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-07-16T12:17:42.090Z",
+      "endedAt": "2026-07-16T12:17:42.091Z",
+      "events": [
+        {
+          "ts": 1784204262091,
+          "type": "reflection",
+          "content": "Failed at \"report-and-analyze\" [timeout] after 25min. 9/10 steps completed before failure. (abandoned after 25 minutes)",
+          "significance": "high"
+        },
+        {
+          "ts": 1784204262091,
+          "type": "error",
+          "content": "Workflow abandoned: Step \"report-and-analyze\" failed: Step \"report-and-analyze\" failed after 1 retries: Step \"report-and-analyze\" timed out after 600000ms",
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Failed at \"report-and-analyze\" [timeout] after 25min. 9/10 steps completed before failure.",
+    "approach": "pipeline workflow (1 agents)",
+    "challenges": [
+      "Interactive agent timed out — it may have gone idle, failed to self-terminate, or the task scope was too broad. Check if the agent was waiting for relay signals that never arrived."
+    ],
+    "learnings": [],
+    "confidence": 0.675
+  },
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
+}

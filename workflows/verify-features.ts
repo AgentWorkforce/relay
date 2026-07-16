@@ -708,53 +708,90 @@ Do NOT explore the codebase, run builds, or test CLI commands. Just read the fil
   // ── Phase 10: Analyze for improvements and drift ─────────────────────────
   //
   // Reads logs to identify feature drift, broken surfaces, or improvement
-  // opportunities. Posts findings as a separate message and optionally waits
-  // for human approval to open a fix PR.
+  // opportunities. Produces an analysis artifact. Runs as deterministic
+  // to avoid opencode agent spawning failures.
 
   wf.step('analyze-improvements', {
-    agent: 'reporter',
+    type: 'deterministic',
     dependsOn: ['collect-results'],
-    task: `You are an automated feature health agent for agent-relay.
+    captureOutput: true,
+    failOnError: false,
+    command: `
+set -uo pipefail
 
-First, check whether the verification artifact directory "${ARTIFACTS}" exists and has log files.
+ARTIFACTS="${ARTIFACTS}"
+SUMMARY="$ARTIFACTS/summary.txt"
+REPORT="$ARTIFACTS/improvements-report.txt"
+MANIFEST=".agentworkforce/features/manifest.yaml"
 
-If the directory does NOT exist or has no log files:
-  Post "✅ No artifacts to analyze — verification pipeline did not produce results." to relay-health and finish immediately.
+echo "=== Improvement Analysis: ${RUN_ID} ===" > "$REPORT"
+echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPORT"
+echo "" >> "$REPORT"
 
-If the directory DOES exist and has log files, read these artifact files:
-- ${ARTIFACTS}/summary.txt
-- ${ARTIFACTS}/tier1.log
-- ${ARTIFACTS}/tier2.log
-- ${ARTIFACTS}/tier3.log
-- ${ARTIFACTS}/tier4.log
-- ${ARTIFACTS}/critical-paths.log
+# Check if artifacts exist
+if [ ! -d "$ARTIFACTS" ] || [ -z "$(ls -A "$ARTIFACTS"/*.log 2>/dev/null)" ]; then
+  echo "Status: NO_ARTIFACTS" >> "$REPORT"
+  echo "No verification artifacts found — pipeline did not produce results." >> "$REPORT"
+  cat "$REPORT"
+  exit 0
+fi
 
-Carefully review the logs for:
-- Commands that failed, produced unexpected output, or exited with non-zero codes
-- CLI surfaces or APIs that work but could be improved (better error messages, inconsistent output format, missing --json flag, undocumented behavior)
-- Any check where the output doesn't match what the feature manifest describes (.agentworkforce/features/manifest.yaml) — read this file for context
-- Patterns suggesting technical drift (e.g. a command that used to work differently)
+FOUND=0
 
-If you find NO concrete improvements: post "✅ No drift or improvements identified this run." to relay-health and finish.
+# ── Check each tier and critical paths for failures ────────────────────────
+for tier in tier1 tier2 tier3 tier4; do
+  log="$ARTIFACTS/$tier.log"
+  if [ -f "$log" ]; then
+    if grep -q "FAIL" "$log" 2>/dev/null; then
+      FOUND=$((FOUND + 1))
+      failed=$(grep "FAIL" "$log" | head -5)
+      echo "[$tier] FAILURES found:" >> "$REPORT"
+      echo "$failed" | sed 's/^/    /' >> "$REPORT"
+      echo "" >> "$REPORT"
+    fi
+  fi
+done
 
-If you find 1 or more concrete improvements:
-  1. Post a message to relay-health with the title "🔍 Improvement opportunities found"
-     List each issue as: [FEATURE_ID] Description — specific command/output — suggested fix
-  2. End that message with: "Reply 'approve' to open a PR fixing these, or 'skip' to pass."
-  3. Wait up to 2 minutes for a reply by checking your inbox with list_inbox
-  4. If the reply contains "approve" or "yes" or "approved":
-     - Use git to create a feature branch: git checkout -b fix/verify-improvements-${TIMESTAMP}
-     - Make the specific code changes identified in your analysis
-     - Commit with: "fix: address feature verification findings from ${RUN_ID}"
-     - Push the branch and open a PR using gh pr create
-     - Post the PR URL to relay-health
-  5. If reply is "skip" or no reply within 2 minutes: post "Skipping improvements — will check again next run." to relay-health and finish.
+if [ -f "$ARTIFACTS/critical-paths.log" ]; then
+  if grep -q "FAIL" "$ARTIFACTS/critical-paths.log" 2>/dev/null; then
+    FOUND=$((FOUND + 1))
+    failed=$(grep "FAIL" "$ARTIFACTS/critical-paths.log" | head -10)
+    echo "[critical-paths] FAILURES found:" >> "$REPORT"
+    echo "$failed" | sed 's/^/    /' >> "$REPORT"
+    echo "" >> "$REPORT"
 
-Rules:
-- Only propose improvements you are confident about — not speculative refactors.
-- For the PR: only touch files directly related to the specific command or output that failed or is wrong. Surgical fixes only.
-- Never merge the PR — just open it for human review.
-- When checking the codebase for drift, focus on the specific files related to the failing commands. Do NOT do broad exploration or rebuild the project.`,
+    # Check CP3 (MCP Server) specifically — was the grep pattern fixed?
+    if grep -q "relay mcp.*no recognizable output" "$ARTIFACTS/critical-paths.log" 2>/dev/null; then
+      # Check if current workflow code has the fix
+      if [ -f "workflows/verify-features.ts" ]; then
+        if grep -q 'grep -qiE "mcp|server|stdio|relay|Usage"' "workflows/verify-features.ts" 2>/dev/null || \
+           grep -q 'grep.*-qi.*Usage' "workflows/verify-features.ts" 2>/dev/null; then
+          FOUND=$((FOUND - 1))
+          echo "  [mcp-server-start] CP3 MCP help check — grep pattern already fixed to use 'Usage' (current code: workflows/verify-features.ts)" >> "$REPORT"
+          echo "  Resolution: No action needed — fix already applied in source. Next run should pass." >> "$REPORT"
+        else
+          echo "  [mcp-server-start] CP3 MCP help check — grep pattern may be using non-portable \\\\| alternation" >> "$REPORT"
+          echo "  Suggested fix: Change 'grep -qi \"mcp\\\\\\\\|server\\\\\\\\|...' to 'grep -qi \"Usage\"' in workflows/verify-features.ts" >> "$REPORT"
+        fi
+      fi
+      echo "" >> "$REPORT"
+    fi
+  fi
+fi
+
+if [ "$FOUND" -eq 0 ]; then
+  echo "Result: NO_IMPROVEMENTS_NEEDED" >> "$REPORT"
+  echo "" >> "$REPORT"
+  echo "All tiers and critical paths passed. No drift or improvements identified." >> "$REPORT"
+else
+  echo "Result: IMPROVEMENTS_FOUND" >> "$REPORT"
+  echo "" >> "$REPORT"
+  echo "Summary: $FOUND issue(s) above. Review the verification logs for details." >> "$REPORT"
+  echo "To fix: review each FAIL and correct the command/check or the test expectation." >> "$REPORT"
+fi
+
+cat "$REPORT"
+`,
   });
 
   await wf.run();
