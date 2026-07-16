@@ -189,6 +189,7 @@ function parseUnreleasedBody(changelog) {
 // Commands
 // ---------------------------------------------------------------------------
 
+/** Derive a short, filesystem-safe slug from entry text (drops code spans, caps at 6 words). */
 function slugify(text) {
   return (
     text
@@ -202,6 +203,7 @@ function slugify(text) {
   );
 }
 
+/** Parse `--key value` / `--flag` argv into `{ flags, positional }`. */
 function parseFlags(argv) {
   const flags = {};
   const positional = [];
@@ -223,6 +225,7 @@ function parseFlags(argv) {
   return { flags, positional };
 }
 
+/** `add` — scaffold a new fragment file from `--type`, `--level`, and entry text. */
 function cmdAdd(argv) {
   const { flags, positional } = parseFlags(argv);
   const type = SECTION_LOOKUP.get(String(flags.type ?? '').toLowerCase());
@@ -249,6 +252,7 @@ function cmdAdd(argv) {
   console.log(`Created ${path.relative(ROOT, file)}`);
 }
 
+/** `preview` — print the [Unreleased] section the current fragments would render. */
 function cmdPreview() {
   const fragments = loadFragments();
   if (fragments.length === 0) {
@@ -265,6 +269,7 @@ function cmdPreview() {
   console.log(`## ${heading}\n\n${renderSections(byType)}`);
 }
 
+/** `check` — validate all fragments and reject conflict markers in CHANGELOG.md; exit non-zero on failure. */
 function cmdCheck() {
   const problems = [];
   try {
@@ -292,6 +297,7 @@ function cmdCheck() {
   console.log(`changelog check passed (${count} pending fragment${count === 1 ? '' : 's'}).`);
 }
 
+/** Bump a `x.y.z` version string by the given SemVer level (`patch`/`minor`/`major`). */
 function bumpVersion(version, level) {
   const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
   if (!m) throw new Error(`Cannot parse current version: ${version}`);
@@ -301,6 +307,11 @@ function bumpVersion(version, level) {
   return `${major}.${minor}.${patch + 1}`;
 }
 
+/**
+ * `release` — compile fragments into a dated version section, reset [Unreleased]
+ * to empty, and delete the fragment files. Version defaults to bumping
+ * package.json by the highest fragment level; date defaults to today.
+ */
 function cmdRelease(argv) {
   const { flags } = parseFlags(argv);
   const fragments = loadFragments();
@@ -402,6 +413,7 @@ function cmdCollect(argv) {
   }
 }
 
+/** `help` — print usage for all subcommands. */
 function cmdHelp() {
   console.log(`Changelog fragment tooling
 
