@@ -80,6 +80,7 @@ __pycache__/
 
 .agentworkforce/relay/
 .relay/
+.agent-relay/
 
 .msd/
 /workflows/*
