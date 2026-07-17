@@ -10,6 +10,7 @@
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 - Abandoned: Orphaned workflow-runner trajectory: stalled in Planning for ~22h with 2 events and 0 decisions; owning runner (workflow-runner:a24d42c37e69be1ad9f8f33f) is gone. Never progressed past planning, so no work to summarize. Closed to unblock new trajectories in this repo.

@@ -10,6 +10,7 @@
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 - Abandoned: Orphaned workflow-runner trajectory from the 2026-07-16 verify-features batch; stalled in Planning, owning runner gone. No work to summarize. Closed to unblock trail in this repo.
