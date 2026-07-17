@@ -62,6 +62,7 @@ export default defineConfig({
     environment: 'node',
     setupFiles: [path.resolve(__dirname, './vitest.setup.ts')],
     include: [
+      '.agentworkforce/agents/**/*.test.ts',
       'tests/fixtures/**/*.test.ts',
       'tests/integration/broker/evals/**/*.unit.test.ts',
       'packages/**/src/**/*.test.ts',
