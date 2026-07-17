@@ -285,9 +285,9 @@ fn injection_pop_allowed(
 /// is queued, so checking only `pending_verifications` leaves a false-positive gap.
 fn injected_output_command_detection_allowed(
     active_injection_present: bool,
-    pending_verifications_present: bool,
+    pending_verifications_empty: bool,
 ) -> bool {
-    !active_injection_present && !pending_verifications_present
+    !active_injection_present && pending_verifications_empty
 }
 
 /// What to do with an in-flight injection once its combined Body+Enter write
@@ -1049,7 +1049,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
                         if injected_output_command_detection_allowed(
                             active_injection.is_some(),
-                            !pending_verifications.is_empty(),
+                            pending_verifications.is_empty(),
                         )
                             && clean_text.lines().any(|line| line.trim() == "/exit")
                         {
@@ -1105,7 +1105,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // from injected relay messages that might contain header-like text.
                         if injected_output_command_detection_allowed(
                             active_injection.is_some(),
-                            !pending_verifications.is_empty(),
+                            pending_verifications.is_empty(),
                         ) {
                             continuity_buffer.push_str(&clean_text);
                             if continuity_buffer.len() > CONTINUITY_BUFFER_MAX {
@@ -1971,10 +1971,12 @@ mod tests {
 
     #[test]
     fn injected_output_commands_are_suppressed_through_injection_lifecycle() {
-        assert!(injected_output_command_detection_allowed(false, false));
-        assert!(!injected_output_command_detection_allowed(true, false));
-        assert!(!injected_output_command_detection_allowed(false, true));
+        // (active_injection_present, pending_verifications_empty): detection is
+        // allowed only when no injection is active and no verification is pending.
+        assert!(injected_output_command_detection_allowed(false, true));
         assert!(!injected_output_command_detection_allowed(true, true));
+        assert!(!injected_output_command_detection_allowed(false, false));
+        assert!(!injected_output_command_detection_allowed(true, false));
     }
 
     #[test]
