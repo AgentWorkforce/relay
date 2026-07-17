@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-broker` no longer mistakes `/exit` text echoed during a paced message injection for an agent-issued exit command, preventing freshly spawned PTY agents from terminating before their initial task is delivered.
 
+## [10.6.2] - 2026-07-16
+
+### Added
+
+- `workflows/verify-features.ts` — scheduled relayflow that verifies every user-facing CLI feature tier by tier (CLI health, broker lifecycle, channel messaging, cross-agent DMs, critical paths) and posts structured PASS/FAIL reports to `#relay-health`. The reporter agent analyzes logs for drift and waits for human approval before opening a PR with fixes.
+- `.agentworkforce/features/manifest.yaml` — exhaustive catalog of 124 features across 20+ categories, each tagged with verify tier, criticality, and source location.
+- `.agentworkforce/features/critical-paths.md` — documents the 4 product-critical sequences that must work end-to-end (broker+registration, channel messaging, local agent lifecycle, MCP server).
+- `@agent-relay/sdk` `./workflows` subpath export, enabling local workflow files to import the workflow builder without a build step.
+
+### Fixed
+
+- `agent-relay node up --background` now preserves persisted Cloud enrollment credentials and node identity through detached startup, and fails instead of reporting healthy when the enrolled node cannot connect.
+
 ## [10.6.1] - 2026-07-16
 
 ### Fixed

@@ -82,6 +82,11 @@ type BrokerStatusDetails = {
   session: Awaited<ReturnType<HarnessDriverClient['getSession']>> | null;
 };
 
+type EnrolledNodeExpectation = {
+  nodeId: string;
+  nodeName?: string;
+};
+
 type NodeDeliveryStatus = {
   tokenPresent: boolean;
   connected: boolean;
@@ -1032,6 +1037,51 @@ async function waitForBrokerReadiness(
   return latest;
 }
 
+async function waitForEnrolledNodeReadiness(
+  conn: BrokerConnection,
+  deps: CoreDependencies,
+  expected: EnrolledNodeExpectation,
+  initialDetails?: BrokerStatusDetails | null
+): Promise<{ ready: boolean; reason?: string }> {
+  const deadline = deps.now() + DETACHED_START_READY_TIMEOUT_MS;
+  let details = initialDetails ?? null;
+
+  for (;;) {
+    details ??= await readBrokerStatusDetails(conn);
+    const actualNodeId = details?.session?.node_id?.trim();
+    const actualNodeName = details?.session?.node_name?.trim();
+    if (actualNodeId && actualNodeId !== expected.nodeId) {
+      return {
+        ready: false,
+        reason: `Cloud enrollment identity mismatch: expected node id "${expected.nodeId}", got "${actualNodeId}".`,
+      };
+    }
+    if (expected.nodeName && actualNodeName && actualNodeName !== expected.nodeName) {
+      return {
+        ready: false,
+        reason: `Cloud enrollment identity mismatch: expected node name "${expected.nodeName}", got "${actualNodeName}".`,
+      };
+    }
+    if (
+      actualNodeId === expected.nodeId &&
+      (!expected.nodeName || actualNodeName === expected.nodeName) &&
+      nodeDeliveryReady(details?.status)
+    ) {
+      return { ready: true };
+    }
+    if (deps.now() >= deadline) {
+      return {
+        ready: false,
+        reason:
+          `Cloud enrollment for node "${expected.nodeName ?? expected.nodeId}" did not become ready. ` +
+          `Node delivery: ${formatNodeDeliveryStatus(details?.status)}`,
+      };
+    }
+    await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+    details = null;
+  }
+}
+
 export async function waitForNodeDelivery(
   relay: CoreRelay,
   deps: CoreDependencies,
@@ -1240,6 +1290,51 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         }
       }
       cleanupBrokerFiles(paths, deps);
+      deps.exit(1);
+      return;
+    }
+    const enrolledNodeToken = deps.env.RELAY_NODE_TOKEN?.trim();
+    const enrolledNodeId = enrolledNodeToken ? deps.env.RELAY_NODE_ID?.trim() : undefined;
+    let enrollmentFailureReason: string | undefined;
+    if (enrolledNodeToken && !enrolledNodeId) {
+      enrollmentFailureReason =
+        'Cloud enrollment credentials are incomplete: RELAY_NODE_ID is required when RELAY_NODE_TOKEN is set.';
+    } else if (enrolledNodeId) {
+      const enrolledReadiness = await waitForEnrolledNodeReadiness(
+        readiness.conn,
+        deps,
+        {
+          nodeId: enrolledNodeId,
+          ...(options.brokerName?.trim() ? { nodeName: options.brokerName.trim() } : {}),
+        },
+        readiness.statusDetails
+      );
+      if (!enrolledReadiness.ready) {
+        enrollmentFailureReason = enrolledReadiness.reason ?? 'Cloud enrollment did not become ready.';
+      }
+    }
+    if (enrollmentFailureReason) {
+      deps.error(enrollmentFailureReason);
+      const cleanupPids = new Set<number>();
+      if (typeof child.pid === 'number' && child.pid > 0) {
+        cleanupPids.add(child.pid);
+      }
+      cleanupPids.add(readiness.conn.pid);
+      let allStopped = true;
+      for (const cleanupPid of cleanupPids) {
+        deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
+        const stopped = await terminateProcess(cleanupPid, deps, true);
+        if (!stopped) {
+          allStopped = false;
+          deps.error(
+            `Failed to stop broker process after Cloud enrollment startup failed (pid: ${cleanupPid}). ` +
+              'Run `agent-relay down --force` to retry cleanup.'
+          );
+        }
+      }
+      if (allStopped) {
+        cleanupBrokerFiles(paths, deps);
+      }
       deps.exit(1);
       return;
     }
@@ -1598,6 +1693,9 @@ export async function runStatusCommand(
       deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
     }
     deps.log(`Node delivery: ${formatNodeDeliveryStatus(status)}`);
+    if (session?.node_id) {
+      deps.log(`Node: ${session.node_name?.trim() || session.node_id} (${session.node_id})`);
+    }
     if (session?.workspace_key) {
       deps.log(`Workspace Key: ${session.workspace_key}`);
       deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
