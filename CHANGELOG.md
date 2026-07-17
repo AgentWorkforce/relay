@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relay harnesses and `agent-relay node agent spawn|new --backend ai-sdk` can run Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents through official AI SDK harness adapters, while `--backend pty` remains available for terminal sessions and unsupported harnesses.
 - Relaycast exposes canonical agent activity and agent events with capability, source, and fidelity metadata across native and PTY runtimes.
 
+### Fixed
+
+- `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
+
 ### Breaking Changes
 
 - Agent Relay now requires Node.js 22 or newer.
@@ -19,6 +23,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Migration Guidance
 
 - Upgrade Node.js to version 22 or newer before installing this Agent Relay release.
+
+## [10.6.3] - 2026-07-17
+
+### Fixed
+
+- `agent-relay-broker` no longer mistakes `/exit` text echoed during a paced message injection for an agent-issued exit command, preventing freshly spawned PTY agents from terminating before their initial task is delivered.
+
+## [10.6.2] - 2026-07-16
+
+### Added
+
+- `workflows/verify-features.ts` — scheduled relayflow that verifies every user-facing CLI feature tier by tier (CLI health, broker lifecycle, channel messaging, cross-agent DMs, critical paths) and posts structured PASS/FAIL reports to `#relay-health`. The reporter agent analyzes logs for drift and waits for human approval before opening a PR with fixes.
+- `.agentworkforce/features/manifest.yaml` — exhaustive catalog of 124 features across 20+ categories, each tagged with verify tier, criticality, and source location.
+- `.agentworkforce/features/critical-paths.md` — documents the 4 product-critical sequences that must work end-to-end (broker+registration, channel messaging, local agent lifecycle, MCP server).
+- `@agent-relay/sdk` `./workflows` subpath export, enabling local workflow files to import the workflow builder without a build step.
+
+### Fixed
+
+- `agent-relay node up --background` now preserves persisted Cloud enrollment credentials and node identity through detached startup, and fails instead of reporting healthy when the enrolled node cannot connect.
+
+## [10.6.1] - 2026-07-16
+
+### Fixed
+
+- `agent-relay node up --config` now loads JavaScript and TypeScript node definitions with package imports from standalone binaries, while npm-installed Bun runs keep their existing in-process behavior.
+- `agent-relay node up` now serves persisted Cloud-enrolled nodes with the enrolled `nodeId`, so the broker and local providers authenticate with the node token's bound identity instead of a fresh local node id.
 
 ## [10.6.0] - 2026-07-16
 

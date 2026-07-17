@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/evals",
-  "version": "10.6.0",
+  "version": "10.6.3",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -71,8 +71,8 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "10.6.0",
-    "@agent-relay/integration-prompts": "10.6.0"
+    "@agent-relay/harness-driver": "10.6.3",
+    "@agent-relay/integration-prompts": "10.6.3"
   },
   "publishConfig": {
     "access": "public"

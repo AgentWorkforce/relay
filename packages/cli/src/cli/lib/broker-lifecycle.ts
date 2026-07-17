@@ -14,6 +14,13 @@ import {
   discoverPythonNodeConfigPath,
   loadNodeDefinition,
 } from './node-definition-loader.js';
+import {
+  describeNodeDefinitionViaNode,
+  descriptorCapacitySource,
+  startNodeJsNodeProvider,
+  type NodeDefinitionDescriptor,
+  type RunningNodeProviderChild,
+} from './node-provider-child.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
@@ -73,6 +80,11 @@ export interface BrokerConnection {
 type BrokerStatusDetails = {
   status: Awaited<ReturnType<HarnessDriverClient['getStatus']>>;
   session: Awaited<ReturnType<HarnessDriverClient['getSession']>> | null;
+};
+
+type EnrolledNodeExpectation = {
+  nodeId: string;
+  nodeName?: string;
 };
 
 type NodeDeliveryStatus = {
@@ -338,6 +350,8 @@ export async function startBrokerWithPortFallback(
 
 /** A handle to stop the capability providers started alongside the broker. */
 export interface RunningNodeProviders {
+  /** Rejects when a supervised provider exits before broker shutdown. */
+  done?: Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -445,12 +459,12 @@ async function startNodeCapabilityProviders(
   relay: CoreRelay,
   options: UpOptions,
   deps: CoreDependencies,
-  nodeDefinition: FleetNodeDefinition | undefined
+  nodePlan: NodeDefinitionPlan | undefined
 ): Promise<RunningNodeProviders | undefined> {
   // Definition discovery is opt-in (`node up` only), matching the TS config scan.
   const pythonConfig =
     options.discoverConfig === true ? discoverPythonNodeConfigPath(paths.projectRoot) : undefined;
-  if (!nodeDefinition && !pythonConfig) {
+  if (!nodePlan && !pythonConfig) {
     return undefined;
   }
 
@@ -481,8 +495,10 @@ async function startNodeCapabilityProviders(
 
   const served: RunningNode[] = [];
   let pythonChild: SpawnedProcess | undefined;
+  let nodeJsChild: RunningNodeProviderChild | undefined;
 
-  if (nodeDefinition) {
+  if (nodePlan?.mode === 'in-process') {
+    const nodeDefinition = nodePlan.definition;
     try {
       const workspaceKey = relay.workspaceKey;
       served.push(
@@ -514,6 +530,20 @@ async function startNodeCapabilityProviders(
     }
   }
 
+  if (nodePlan?.mode === 'child-node') {
+    nodeJsChild = await startNodeJsNodeProvider(
+      nodePlan.configPath,
+      {
+        nodeToken,
+        baseUrl,
+        nodeId: identity.nodeId,
+        nodeName: options.nodeName ?? identity.nodeName,
+        ...(relay.workspaceKey ? { workspaceKey: relay.workspaceKey } : {}),
+      },
+      deps
+    );
+  }
+
   if (pythonConfig) {
     pythonChild = startPythonNodeProvider(
       pythonConfig,
@@ -529,13 +559,14 @@ async function startNodeCapabilityProviders(
     );
   }
 
-  if (served.length === 0 && !pythonChild) {
+  if (served.length === 0 && !pythonChild && !nodeJsChild) {
     return undefined;
   }
 
   return {
+    ...(nodeJsChild ? { done: nodeJsChild.done } : {}),
     stop: async () => {
-      await Promise.all(served.map((node) => node.stop().catch(() => undefined)));
+      await Promise.all([...served.map((node) => node.stop().catch(() => undefined)), nodeJsChild?.stop()]);
       if (pythonChild?.pid) {
         try {
           deps.killProcess(pythonChild.pid, 'SIGTERM');
@@ -938,9 +969,13 @@ function isCliScriptEntrypoint(deps: CoreDependencies): boolean {
   );
 }
 
-function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
+export function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
   // Bun --compile exposes argv[1] as a virtual path for the embedded executable.
-  return deps.argv[0] === 'bun' && deps.cliScript.startsWith('/$bunfs/root/');
+  const entrypoint = deps.cliScript.replace(/\\/g, '/');
+  return (
+    deps.argv[0] === 'bun' &&
+    (entrypoint.startsWith('/$bunfs/root/') || /^[A-Z]:\/~BUN\/root\//i.test(entrypoint))
+  );
 }
 
 function sameCliPath(left: string, right: string): boolean {
@@ -1002,6 +1037,51 @@ async function waitForBrokerReadiness(
   return latest;
 }
 
+async function waitForEnrolledNodeReadiness(
+  conn: BrokerConnection,
+  deps: CoreDependencies,
+  expected: EnrolledNodeExpectation,
+  initialDetails?: BrokerStatusDetails | null
+): Promise<{ ready: boolean; reason?: string }> {
+  const deadline = deps.now() + DETACHED_START_READY_TIMEOUT_MS;
+  let details = initialDetails ?? null;
+
+  for (;;) {
+    details ??= await readBrokerStatusDetails(conn);
+    const actualNodeId = details?.session?.node_id?.trim();
+    const actualNodeName = details?.session?.node_name?.trim();
+    if (actualNodeId && actualNodeId !== expected.nodeId) {
+      return {
+        ready: false,
+        reason: `Cloud enrollment identity mismatch: expected node id "${expected.nodeId}", got "${actualNodeId}".`,
+      };
+    }
+    if (expected.nodeName && actualNodeName && actualNodeName !== expected.nodeName) {
+      return {
+        ready: false,
+        reason: `Cloud enrollment identity mismatch: expected node name "${expected.nodeName}", got "${actualNodeName}".`,
+      };
+    }
+    if (
+      actualNodeId === expected.nodeId &&
+      (!expected.nodeName || actualNodeName === expected.nodeName) &&
+      nodeDeliveryReady(details?.status)
+    ) {
+      return { ready: true };
+    }
+    if (deps.now() >= deadline) {
+      return {
+        ready: false,
+        reason:
+          `Cloud enrollment for node "${expected.nodeName ?? expected.nodeId}" did not become ready. ` +
+          `Node delivery: ${formatNodeDeliveryStatus(details?.status)}`,
+      };
+    }
+    await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+    details = null;
+  }
+}
+
 export async function waitForNodeDelivery(
   relay: CoreRelay,
   deps: CoreDependencies,
@@ -1049,7 +1129,7 @@ async function resolveNodeDefinitionForUp(
   paths: CoreProjectPaths,
   options: UpOptions,
   deps: CoreDependencies
-): Promise<FleetNodeDefinition | undefined> {
+): Promise<NodeDefinitionPlan | undefined> {
   const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
   if (fleetNodeDisabled || (!options.config && options.discoverConfig !== true)) {
     return undefined;
@@ -1061,10 +1141,10 @@ async function resolveNodeDefinitionForUp(
   }
   vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
   if (explicitConfig) {
-    return loadNodeDefinition(configPath);
+    return loadNodeDefinitionPlan(configPath, deps);
   }
   try {
-    return await loadNodeDefinition(configPath);
+    return await loadNodeDefinitionPlan(configPath, deps);
   } catch (err) {
     deps.warn(
       `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
@@ -1072,6 +1152,49 @@ async function resolveNodeDefinitionForUp(
     );
     return undefined;
   }
+}
+
+/**
+ * How a discovered JS/TS node definition will be served.
+ *
+ * Under Node the definition is imported and served in-process, unchanged. Under
+ * a `bun build --compile` binary it cannot be imported at all — the compiled
+ * runtime fails to resolve a bare specifier out of the user's `node_modules`
+ * whenever the package's entry lives in a subdirectory (`dist/`), i.e. every
+ * TypeScript-built package, and the failure is transitive through the user's
+ * whole dependency graph — so the CLI only learns its descriptor (via a
+ * `--describe` child) and hands the file to a child `node` process to serve,
+ * exactly as `agent-relay.py` is handed to `python3`.
+ */
+type NodeDefinitionPlan =
+  | { mode: 'in-process'; definition: FleetNodeDefinition }
+  | { mode: 'child-node'; configPath: string; descriptor: NodeDefinitionDescriptor };
+
+/**
+ * Decide how to serve `configPath` and gather what the broker needs before it
+ * starts (capacity, and a hard failure on a bad explicit --config).
+ * @param configPath - Absolute path to the node definition file.
+ * @param deps - Core dependencies.
+ */
+export async function loadNodeDefinitionPlan(
+  configPath: string,
+  deps: CoreDependencies
+): Promise<NodeDefinitionPlan> {
+  if (!isBundledBunExecutableEntrypoint(deps)) {
+    return { mode: 'in-process', definition: await loadNodeDefinition(configPath) };
+  }
+  const descriptor = await describeNodeDefinitionViaNode(configPath, deps);
+  return { mode: 'child-node', configPath, descriptor };
+}
+
+/** The capability names a plan contributes to the broker's advertised capacity. */
+function planCapacitySource(
+  plan: NodeDefinitionPlan | undefined
+): { capabilities: Readonly<Record<string, unknown>> } | undefined {
+  if (!plan) {
+    return undefined;
+  }
+  return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
 }
 
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
@@ -1170,6 +1293,51 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.exit(1);
       return;
     }
+    const enrolledNodeToken = deps.env.RELAY_NODE_TOKEN?.trim();
+    const enrolledNodeId = enrolledNodeToken ? deps.env.RELAY_NODE_ID?.trim() : undefined;
+    let enrollmentFailureReason: string | undefined;
+    if (enrolledNodeToken && !enrolledNodeId) {
+      enrollmentFailureReason =
+        'Cloud enrollment credentials are incomplete: RELAY_NODE_ID is required when RELAY_NODE_TOKEN is set.';
+    } else if (enrolledNodeId) {
+      const enrolledReadiness = await waitForEnrolledNodeReadiness(
+        readiness.conn,
+        deps,
+        {
+          nodeId: enrolledNodeId,
+          ...(options.brokerName?.trim() ? { nodeName: options.brokerName.trim() } : {}),
+        },
+        readiness.statusDetails
+      );
+      if (!enrolledReadiness.ready) {
+        enrollmentFailureReason = enrolledReadiness.reason ?? 'Cloud enrollment did not become ready.';
+      }
+    }
+    if (enrollmentFailureReason) {
+      deps.error(enrollmentFailureReason);
+      const cleanupPids = new Set<number>();
+      if (typeof child.pid === 'number' && child.pid > 0) {
+        cleanupPids.add(child.pid);
+      }
+      cleanupPids.add(readiness.conn.pid);
+      let allStopped = true;
+      for (const cleanupPid of cleanupPids) {
+        deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
+        const stopped = await terminateProcess(cleanupPid, deps, true);
+        if (!stopped) {
+          allStopped = false;
+          deps.error(
+            `Failed to stop broker process after Cloud enrollment startup failed (pid: ${cleanupPid}). ` +
+              'Run `agent-relay down --force` to retry cleanup.'
+          );
+        }
+      }
+      if (allStopped) {
+        cleanupBrokerFiles(paths, deps);
+      }
+      deps.exit(1);
+      return;
+    }
     deps.log('Broker started.');
     deps.log(`Broker PID: ${readiness.conn.pid}`);
     deps.log('Stop with: agent-relay down');
@@ -1226,7 +1394,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     // Resolved BEFORE the broker starts so an explicit bad --config fails
     // fast instead of tearing down a broker that just came up.
-    const nodeDefinition = await resolveNodeDefinitionForUp(paths, options, deps);
+    const nodePlan = await resolveNodeDefinitionForUp(paths, options, deps);
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
 
     // The broker advertises spawn:<harness> capacity for this set. A pre-set
@@ -1237,7 +1405,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.env.AGENT_RELAY_NODE_HARNESSES = resolveNodeCapacityHarnesses(
       deps.env.AGENT_RELAY_NODE_HARNESSES,
       teamsConfig,
-      nodeDefinition
+      planCapacitySource(nodePlan)
     );
 
     // Kill any orphaned broker processes for this project that lost their PID
@@ -1273,7 +1441,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     vlog(deps, options.verbose, 'Starting node capability providers (if any)...');
-    nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodeDefinition);
+    nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodePlan);
     // When Reflex is enabled, periodically sync + push local session history to
     // relayhistory-cloud in-process via the ai-hist-native addon (no subprocess).
     // No-op when disabled or the addon isn't available.
@@ -1336,7 +1504,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.exit(0);
     });
 
-    await deps.holdOpen();
+    const holdOpen = deps.holdOpen();
+    if (nodeProviders?.done) {
+      await Promise.race([holdOpen, nodeProviders.done]);
+    } else {
+      await holdOpen;
+    }
   } catch (err: unknown) {
     await shutdownOnce();
     const message = toErrorMessage(err);
@@ -1520,6 +1693,9 @@ export async function runStatusCommand(
       deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
     }
     deps.log(`Node delivery: ${formatNodeDeliveryStatus(status)}`);
+    if (session?.node_id) {
+      deps.log(`Node: ${session.node_name?.trim() || session.node_id} (${session.node_id})`);
+    }
     if (session?.workspace_key) {
       deps.log(`Workspace Key: ${session.workspace_key}`);
       deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);

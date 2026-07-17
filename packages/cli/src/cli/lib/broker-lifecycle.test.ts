@@ -1,13 +1,38 @@
+import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   classifyBrokerStartError,
   classifyBrokerStartStage,
   describeError,
+  isBundledBunExecutableEntrypoint,
   readNodeDeliveryStatus,
   resolveNodeIdentityFromSession,
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
+import type { CoreDependencies } from '../commands/core.js';
+
+describe('isBundledBunExecutableEntrypoint', () => {
+  it.each(['/$bunfs/root/agent-relay', 'B:/~BUN/root/agent-relay.exe', 'B:\\~BUN\\root\\agent-relay.exe'])(
+    'recognizes the compiled Bun virtual entrypoint %s',
+    (cliScript) => {
+      expect(
+        isBundledBunExecutableEntrypoint({ argv: ['bun', cliScript], cliScript } as CoreDependencies)
+      ).toBe(true);
+    }
+  );
+
+  it('does not classify the npm CLI running under plain Bun as compiled', () => {
+    expect(
+      isBundledBunExecutableEntrypoint({
+        argv: ['bun', '/project/cli.js'],
+        cliScript: '/project/cli.js',
+      } as CoreDependencies)
+    ).toBe(false);
+  });
+});
 
 describe('describeError', () => {
   it('returns plain message for a bare Error', () => {
@@ -157,6 +182,9 @@ describe('waitForNodeDelivery', () => {
 // fs) with everything broker-shaped mocked out through CoreDependencies.
 
 vi.mock('../telemetry/index.js', () => ({ track: vi.fn() }));
+vi.mock('./reflex-capture.js', () => ({
+  startReflexCapture: vi.fn(() => ({ stop: vi.fn(async () => undefined) })),
+}));
 vi.mock('@agent-relay/fleet', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@agent-relay/fleet')>();
   return {
@@ -194,8 +222,6 @@ import os from 'node:os';
 import pathReal from 'node:path';
 import { startServeNode } from '@agent-relay/fleet';
 import { runUpCommand } from './broker-lifecycle.js';
-import type { CoreDependencies } from '../commands/core.js';
-
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
     super(`exit:${code}`);
@@ -365,6 +391,42 @@ describe('runUpCommand node-config gating', () => {
       .map((arg) => String(arg))
       .join('\n');
     expect(output).not.toMatch(/rk_live_|nt_live_/);
+  });
+
+  it('shuts the broker down when its compiled-binary node provider exits', async () => {
+    const { deps, projectRoot, error, exit } = createUpHarness();
+    const config = pathReal.join(projectRoot, 'agent-relay.mjs');
+    fsReal.writeFileSync(
+      config,
+      "export default { __agentRelayFleetNode: true, name: 'child', capabilities: {}, triggers: [] };\n"
+    );
+    deps.argv = ['bun', '/$bunfs/root/agent-relay', 'node', 'up'];
+    deps.cliScript = '/$bunfs/root/agent-relay';
+    deps.holdOpen = async () => delay(100);
+    deps.execCommand = vi.fn(async (command: string) => ({
+      stdout: command.includes('--describe')
+        ? '__AGENT_RELAY_NODE_DESCRIPTOR__{"name":"child","capabilities":[]}\n'
+        : '',
+      stderr: '',
+    }));
+
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42,
+      killed: false,
+      kill: vi.fn(),
+    });
+    deps.spawnProcess = vi.fn(() => {
+      queueMicrotask(() => {
+        child.emit('spawn');
+        queueMicrotask(() => child.emit('exit', 1, null));
+      });
+      return child;
+    });
+
+    await expect(runUpCommand({ discoverConfig: true }, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error.mock.calls.flat().join('\n')).toContain('exited unexpectedly');
   });
 });
 

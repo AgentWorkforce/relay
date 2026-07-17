@@ -280,6 +280,16 @@ fn injection_pop_allowed(
     !active_injection_present && (!interactive_hold || hold_exempt_remaining > 0)
 }
 
+/// Relay command detection must stay disabled for the entire injection lifecycle.
+/// The paced writer can echo command-like text before its post-write verification
+/// is queued, so checking only `pending_verifications` leaves a false-positive gap.
+fn injected_output_command_detection_allowed(
+    active_injection_present: bool,
+    pending_verifications_empty: bool,
+) -> bool {
+    !active_injection_present && pending_verifications_empty
+}
+
 /// What to do with an in-flight injection once its combined Body+Enter write
 /// ack resolves. Keeps the ack-resolution policy pure and unit-testable,
 /// separate from the frame-sending / verification side effects in the select
@@ -1037,7 +1047,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 Some(tokio::time::Instant::now() + STREAM_FLUSH_INTERVAL);
                         }
 
-                        if pending_verifications.is_empty()
+                        if injected_output_command_detection_allowed(
+                            active_injection.is_some(),
+                            pending_verifications.is_empty(),
+                        )
                             && clean_text.lines().any(|line| line.trim() == "/exit")
                         {
                             tracing::info!(
@@ -1090,7 +1103,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Detect KIND: continuity commands in PTY output.
                         // Only scan when no echo verifications are pending to avoid false-positives
                         // from injected relay messages that might contain header-like text.
-                        if pending_verifications.is_empty() {
+                        if injected_output_command_detection_allowed(
+                            active_injection.is_some(),
+                            pending_verifications.is_empty(),
+                        ) {
                             continuity_buffer.push_str(&clean_text);
                             if continuity_buffer.len() > CONTINUITY_BUFFER_MAX {
                                 let start = floor_char_boundary(
@@ -1951,6 +1967,16 @@ mod tests {
         // they are not popped, so nothing is dropped while held.
         assert!(!injection_pop_allowed(false, true, 0));
         assert!(!injection_pop_allowed(true, true, 0));
+    }
+
+    #[test]
+    fn injected_output_commands_are_suppressed_through_injection_lifecycle() {
+        // (active_injection_present, pending_verifications_empty): detection is
+        // allowed only when no injection is active and no verification is pending.
+        assert!(injected_output_command_detection_allowed(false, true));
+        assert!(!injected_output_command_detection_allowed(true, true));
+        assert!(!injected_output_command_detection_allowed(false, false));
+        assert!(!injected_output_command_detection_allowed(true, false));
     }
 
     #[test]

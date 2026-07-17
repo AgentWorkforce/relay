@@ -97,6 +97,7 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
     }
     if (record) {
       env.RELAY_NODE_TOKEN = record.nodeToken;
+      env.RELAY_NODE_ID = record.nodeId;
       if (!env.RELAY_BASE_URL) {
         env.RELAY_BASE_URL = record.relaycastUrl;
       }
@@ -110,13 +111,15 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
     }
   }
 
+  const nodeName = options.brokerName ?? enrolledNodeName;
   await runUpCommand(
     {
       ...options,
       discoverConfig: true,
-      ...((options.brokerName ?? enrolledNodeName)
-        ? { nodeName: options.brokerName ?? enrolledNodeName }
-        : {}),
+      // The broker name is also its registered fleet-node name. Keeping both
+      // fields aligned makes foreground startup use the enrolled identity and
+      // lets detached startup preserve it via the existing --broker-name arg.
+      ...(nodeName ? { brokerName: nodeName, nodeName } : {}),
     },
     deps.core
   );
