@@ -10,6 +10,11 @@
     "timeoutSeconds": 300
   },
   "integrations": {
+    "github": {
+      "scope": {
+        "repo": "AgentWorkforce/relay"
+      }
+    },
     "slack": {
       "scope": {
         "paths": "/slack/channels/**"
