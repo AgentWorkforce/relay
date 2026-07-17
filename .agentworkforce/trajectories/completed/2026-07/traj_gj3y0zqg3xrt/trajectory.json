@@ -9,8 +9,9 @@
       "id": "0dc69c52679875632216b731"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-07-16T11:44:22.108Z",
+  "completedAt": "2026-07-17T09:45:19.678Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -24,6 +25,7 @@
       "title": "Planning",
       "agentName": "orchestrator",
       "startedAt": "2026-07-16T11:44:22.109Z",
+      "endedAt": "2026-07-17T09:45:19.678Z",
       "events": [
         {
           "ts": 1784202262109,
@@ -34,6 +36,12 @@
           "ts": 1784202262109,
           "type": "note",
           "content": "Approach: 10-step pipeline workflow — Parsed 10 steps, 9 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1784281519679,
+          "type": "note",
+          "content": "Abandoned: Orphaned workflow-runner trajectory from the 2026-07-16 verify-features batch; stalled in Planning, owning runner gone. No work to summarize. Closed to unblock trail in this repo.",
+          "significance": "high"
         }
       ]
     }
