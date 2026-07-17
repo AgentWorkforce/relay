@@ -9,8 +9,9 @@
       "id": "a24d42c37e69be1ad9f8f33f"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-07-16T11:46:01.967Z",
+  "completedAt": "2026-07-17T09:44:44.743Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -24,6 +25,7 @@
       "title": "Planning",
       "agentName": "orchestrator",
       "startedAt": "2026-07-16T11:46:01.967Z",
+      "endedAt": "2026-07-17T09:44:44.743Z",
       "events": [
         {
           "ts": 1784202361967,
@@ -34,6 +36,12 @@
           "ts": 1784202361967,
           "type": "note",
           "content": "Approach: 10-step pipeline workflow — Parsed 10 steps, 9 dependent steps, DAG validated, no cycles"
+        },
+        {
+          "ts": 1784281484744,
+          "type": "note",
+          "content": "Abandoned: Orphaned workflow-runner trajectory: stalled in Planning for ~22h with 2 events and 0 decisions; owning runner (workflow-runner:a24d42c37e69be1ad9f8f33f) is gone. Never progressed past planning, so no work to summarize. Closed to unblock new trajectories in this repo.",
+          "significance": "high"
         }
       ]
     }

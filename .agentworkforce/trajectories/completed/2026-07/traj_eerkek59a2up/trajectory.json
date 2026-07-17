@@ -9,8 +9,9 @@
       "id": "677f930fc976d585094eaaa2"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-07-16T11:42:38.929Z",
+  "completedAt": "2026-07-17T09:45:20.194Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -48,6 +49,7 @@
       "title": "Execution: report-and-analyze",
       "agentName": "reporter",
       "startedAt": "2026-07-16T11:44:36.225Z",
+      "endedAt": "2026-07-17T09:45:20.194Z",
       "events": [
         {
           "ts": 1784202276225,
@@ -56,6 +58,12 @@
           "raw": {
             "agent": "reporter"
           }
+        },
+        {
+          "ts": 1784281520195,
+          "type": "note",
+          "content": "Abandoned: Orphaned workflow-runner trajectory from the 2026-07-16 verify-features batch; stalled in Planning, owning runner gone. No work to summarize. Closed to unblock trail in this repo.",
+          "significance": "high"
         }
       ]
     }
