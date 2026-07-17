@@ -93,6 +93,100 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
   }
 }
 
+async function withExternalControlPlaneDaemon(
+  daemonVersion: string,
+  apiVersion: number,
+  supportedApiVersions: number[],
+  run: (socketPath: string) => Promise<void>
+): Promise<void> {
+  const socketPath = join(tmpdir(), `rf-external-${process.pid}-${++socketSequence}.sock`);
+  rmSync(socketPath, { force: true });
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `const { rmSync } = require('node:fs');
+const { createServer } = require('node:http');
+const [socketPath, daemonVersion, apiVersionRaw, supportedRaw] = process.argv.slice(1);
+const apiVersion = Number(apiVersionRaw);
+const supportedApiVersions = JSON.parse(supportedRaw);
+rmSync(socketPath, { force: true });
+const server = createServer((request, response) => {
+  if (request.method === 'GET' && request.url === '/v1/hello') {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ daemonVersion, apiVersion, supportedApiVersions }));
+    return;
+  }
+  response.writeHead(404, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+});
+const stop = () => server.close(() => {
+  rmSync(socketPath, { force: true });
+  process.exit(0);
+});
+process.on('SIGTERM', stop);
+server.listen(socketPath, () => process.stdout.write('ready\\n'));
+`,
+      socketPath,
+      daemonVersion,
+      String(apiVersion),
+      JSON.stringify(supportedApiVersions),
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    let stderr = '';
+    const fail = (message: string) => {
+      cleanup();
+      reject(new Error(message));
+    };
+    const onData = (chunk: Buffer) => {
+      if (String(chunk).includes('ready')) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onError = (error: Error) => fail(`failed to start fake relayfile daemon: ${error.message}`);
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+      fail(`fake relayfile daemon exited before ready (code ${code}, signal ${signal}): ${stderr}`);
+    const cleanup = () => {
+      child.stdout?.off('data', onData);
+      child.stderr?.off('data', onStderr);
+      child.off('error', onError);
+      child.off('exit', onExit);
+    };
+    const onStderr = (chunk: Buffer) => {
+      stderr += String(chunk);
+    };
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onStderr);
+    child.once('error', onError);
+    child.once('exit', onExit);
+  });
+
+  try {
+    await run(socketPath);
+  } finally {
+    await new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
+      }
+      const timeout = setTimeout(() => {
+        child.kill('SIGKILL');
+        resolve();
+      }, 2000);
+      child.once('exit', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      child.kill('SIGTERM');
+    });
+    rmSync(socketPath, { force: true });
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Pure version-gate unit tests — always run, no daemon required. These lock the
 // daemon-version compat check (`/v1/hello` → daemonVersion) that turns "daemon
@@ -162,7 +256,9 @@ describe('relayfile control-plane hello negotiation', () => {
 
     const helloRequests = requests.filter(({ path }) => path === '/v1/hello');
     expect(helloRequests.length).toBeGreaterThan(0);
-    expect(helloRequests.every(({ method, version }) => method === 'GET' && version === undefined)).toBe(true);
+    expect(helloRequests.every(({ method, version }) => method === 'GET' && version === undefined)).toBe(
+      true
+    );
     expect(requests.find(({ path }) => path?.startsWith('/v1/integrations/provider-status?'))?.version).toBe(
       '3'
     );
@@ -216,72 +312,36 @@ describe('relayfile control-plane hello negotiation', () => {
   });
 
   it('replaces a stale v1 daemon only when the installed binary can serve v3', async () => {
-    const legacyRequests: Array<{ method?: string; path?: string; version?: string }> = [];
-
     await withFakeRelayfileBinary('0.10.27', async (binary) => {
-      await withControlPlaneServer(
-        (request, response) => {
-          legacyRequests.push({
-            method: request.method,
-            path: request.url,
-            version: request.headers['x-relayfile-api-version'] as string | undefined,
-          });
-          writeJson(response, 200, {
-            daemonVersion: '0.10.19',
-            apiVersion: 1,
-            supportedApiVersions: [1],
-          });
-        },
-        async (socketPath) => {
-          const bridge = defaultRelayfileBridge({
-            socketPath,
-            binary,
-            autoStart: true,
-            startTimeoutMs: 2000,
-            requestTimeoutMs: 1000,
-          });
-          await expect(bridge.ensureCompatible()).resolves.toBeUndefined();
-        }
-      );
+      await withExternalControlPlaneDaemon('0.10.19', 1, [1], async (socketPath) => {
+        const bridge = defaultRelayfileBridge({
+          socketPath,
+          binary,
+          autoStart: true,
+          startTimeoutMs: 2000,
+          requestTimeoutMs: 1000,
+        });
+        await expect(bridge.ensureCompatible()).resolves.toBeUndefined();
+      });
     });
-
-    expect(legacyRequests).toEqual([{ method: 'GET', path: '/v1/hello', version: undefined }]);
   });
 
   it('leaves a stale v1 daemon in place when the installed binary is also too old', async () => {
-    const legacyRequests: Array<{ method?: string; path?: string; version?: string }> = [];
-
     await withFakeRelayfileBinary('0.10.19', async (binary) => {
-      await withControlPlaneServer(
-        (request, response) => {
-          legacyRequests.push({
-            method: request.method,
-            path: request.url,
-            version: request.headers['x-relayfile-api-version'] as string | undefined,
-          });
-          writeJson(response, 200, {
-            daemonVersion: '0.10.19',
-            apiVersion: 1,
-            supportedApiVersions: [1],
-          });
-        },
-        async (socketPath) => {
-          const bridge = defaultRelayfileBridge({
-            socketPath,
-            binary,
-            autoStart: true,
-            startTimeoutMs: 2000,
-            requestTimeoutMs: 1000,
-          });
-          await expect(bridge.ensureCompatible()).rejects.toMatchObject({
-            code: 'VERSION_INCOMPATIBLE',
-            message: expect.stringContaining('Installed relayfile binary: 0.10.19'),
-          });
-        }
-      );
+      await withExternalControlPlaneDaemon('0.10.19', 1, [1], async (socketPath) => {
+        const bridge = defaultRelayfileBridge({
+          socketPath,
+          binary,
+          autoStart: true,
+          startTimeoutMs: 2000,
+          requestTimeoutMs: 1000,
+        });
+        await expect(bridge.ensureCompatible()).rejects.toMatchObject({
+          code: 'VERSION_INCOMPATIBLE',
+          message: expect.stringContaining('Installed relayfile binary: 0.10.19'),
+        });
+      });
     });
-
-    expect(legacyRequests).toEqual([{ method: 'GET', path: '/v1/hello', version: undefined }]);
   });
 });
 
