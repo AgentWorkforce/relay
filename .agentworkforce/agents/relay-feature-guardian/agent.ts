@@ -2,7 +2,7 @@
  * relay-feature-guardian handler.
  *
  * Hourly cron tick:
- *   1. Read the feature list from .agentworkforce/features/manifest.yaml
+ *   1. Read the feature list from the cloned relay repository
  *   2. Load feature progress from memory
  *   3. Pick the next unchecked feature (ordered by criticality then tier)
  *   4. Generate a concise quiz question via ctx.llm
@@ -55,9 +55,20 @@ interface Feature {
 }
 
 const MANIFEST_RELPATH = '.agentworkforce/features/manifest.yaml';
+const RELAY_REPO_RELPATH = 'github/repos/AgentWorkforce/relay';
+
+/**
+ * GitHub-scoped repositories are cloned beneath the proactive workspace root.
+ * WorkforceCtx currently exposes that workspace root (`sandbox.cwd`), but not
+ * an integration-specific repository directory, so derive the clone path from
+ * the documented `/github/repos/{owner}/{repo}` layout.
+ */
+export function resolveManifestPath(workspaceDir: string): string {
+  return `${workspaceDir}/${RELAY_REPO_RELPATH}/${MANIFEST_RELPATH}`;
+}
 
 async function loadFeatures(ctx: WorkforceCtx): Promise<Feature[]> {
-  const absPath = `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`;
+  const absPath = resolveManifestPath(ctx.sandbox.cwd);
   const raw = await ctx.sandbox.readFile(absPath);
   const manifest = parse(raw) as Manifest;
   const features: Feature[] = [];
@@ -191,17 +202,21 @@ export default defineAgent({
     try {
       features = await loadFeatures(ctx);
     } catch (err) {
-      const absPath = `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`;
+      const absPath = resolveManifestPath(ctx.sandbox.cwd);
       ctx.log('error', 'relay-feature-guardian.manifest-load-failed', { path: absPath, err: String(err) });
       const isNotFound = String(err).includes('ENOENT');
       const errMsg = isNotFound
-        ? `⚠️ *relay-feature-guardian* can't find the feature manifest at \`${MANIFEST_RELPATH}\`.\n\nThe \`feature/verify-features-workflow\` branch hasn't been merged to main yet — the sandbox runs on main, so the manifest doesn't exist. Merge PR #1283 to fix this.`
+        ? `⚠️ *relay-feature-guardian* can't find the feature manifest in the cloned relay repository at \`${RELAY_REPO_RELPATH}/${MANIFEST_RELPATH}\`.`
         : `⚠️ *relay-feature-guardian* failed to load the feature manifest: \`${String(err)}\``;
       await slackClient()
         .post(channel, errMsg)
         .catch(() => undefined);
       return;
     }
+    ctx.log('info', 'relay-feature-guardian.manifest-loaded', {
+      path: resolveManifestPath(ctx.sandbox.cwd),
+      features: features.length,
+    });
     if (features.length === 0) {
       ctx.log('error', 'relay-feature-guardian.no-features', { reason: 'manifest parsed but empty' });
       await slackClient()
