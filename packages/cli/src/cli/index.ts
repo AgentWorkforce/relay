@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { runAiSdkSidecarMain } from '@agent-relay/harnesses';
+
 import { runCli } from './bootstrap.js';
 
 export * from './bootstrap.js';
@@ -19,7 +21,8 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
-  runCli().catch((err) => {
+  const main = process.argv[2] === '__ai-sdk-sidecar' ? runAiSdkSidecarMain(process.argv.slice(3)) : runCli();
+  main.catch((err) => {
     // Commander will have already printed a helpful message for parse errors.
     // For other top-level failures, surface them to stderr and exit non-zero.
     const message = err instanceof Error ? err.message : String(err);

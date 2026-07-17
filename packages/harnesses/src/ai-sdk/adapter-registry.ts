@@ -57,13 +57,14 @@ function pickSettings(
 
 function lazyFactory(
   packageName: string,
+  load: () => Promise<Record<string, unknown>>,
   exportName: string,
   mapSettings: AiSdkAdapterRegistryEntry['mapSettings']
 ): AiSdkAdapterRegistryEntry['createHarness'] {
   return async (settings) => {
     let loaded: Record<string, unknown>;
     try {
-      loaded = (await import(packageName)) as Record<string, unknown>;
+      loaded = await load();
     } catch (error) {
       throw new Error(`AI SDK harness adapter ${packageName} is unavailable`, { cause: error });
     }
@@ -112,7 +113,12 @@ const ENTRIES: readonly AiSdkAdapterRegistryEntry[] = [
     ptyAvailable: true,
     rollout: 'experimental',
     mapSettings: claudeSettings,
-    createHarness: lazyFactory('@ai-sdk/harness-claude-code', 'createClaudeCode', claudeSettings),
+    createHarness: lazyFactory(
+      '@ai-sdk/harness-claude-code',
+      () => import('@ai-sdk/harness-claude-code'),
+      'createClaudeCode',
+      claudeSettings
+    ),
   },
   {
     name: 'codex',
@@ -123,7 +129,12 @@ const ENTRIES: readonly AiSdkAdapterRegistryEntry[] = [
     ptyAvailable: true,
     rollout: 'experimental',
     mapSettings: codexSettings,
-    createHarness: lazyFactory('@ai-sdk/harness-codex', 'createCodex', codexSettings),
+    createHarness: lazyFactory(
+      '@ai-sdk/harness-codex',
+      () => import('@ai-sdk/harness-codex'),
+      'createCodex',
+      codexSettings
+    ),
   },
   {
     name: 'opencode',
@@ -134,7 +145,12 @@ const ENTRIES: readonly AiSdkAdapterRegistryEntry[] = [
     ptyAvailable: true,
     rollout: 'experimental',
     mapSettings: openCodeSettings,
-    createHarness: lazyFactory('@ai-sdk/harness-opencode', 'createOpenCode', openCodeSettings),
+    createHarness: lazyFactory(
+      '@ai-sdk/harness-opencode',
+      () => import('@ai-sdk/harness-opencode'),
+      'createOpenCode',
+      openCodeSettings
+    ),
   },
   {
     name: 'pi',
@@ -145,7 +161,12 @@ const ENTRIES: readonly AiSdkAdapterRegistryEntry[] = [
     ptyAvailable: false,
     rollout: 'experimental',
     mapSettings: piSettings,
-    createHarness: lazyFactory('@ai-sdk/harness-pi', 'createPi', piSettings),
+    createHarness: lazyFactory(
+      '@ai-sdk/harness-pi',
+      () => import('@ai-sdk/harness-pi'),
+      'createPi',
+      piSettings
+    ),
   },
   {
     name: 'deepagents',
@@ -156,7 +177,12 @@ const ENTRIES: readonly AiSdkAdapterRegistryEntry[] = [
     ptyAvailable: false,
     rollout: 'experimental',
     mapSettings: deepAgentsSettings,
-    createHarness: lazyFactory('@ai-sdk/harness-deepagents', 'createDeepAgents', deepAgentsSettings),
+    createHarness: lazyFactory(
+      '@ai-sdk/harness-deepagents',
+      () => import('@ai-sdk/harness-deepagents'),
+      'createDeepAgents',
+      deepAgentsSettings
+    ),
   },
 ];
 

@@ -11,8 +11,10 @@ import {
   type RelayHarnessAgent,
 } from '@agent-relay/sdk';
 import type {
+  AgentDriver,
   BrokerEvent,
   AgentEventEnvelope,
+  SpawnRuntimeInput,
   StaticPtyHarnessDefinition,
 } from '@agent-relay/harness-driver';
 
@@ -26,6 +28,11 @@ import {
 
 export type HarnessBackend = 'auto' | 'ai-sdk' | 'pty';
 export type SelectedHarnessBackend = Exclude<HarnessBackend, 'auto'>;
+
+export interface NativeHarnessSidecarLaunch {
+  command: string;
+  args: string[];
+}
 
 /** Options accepted when creating an agent from a harness. */
 export interface HarnessCreateInput {
@@ -230,7 +237,7 @@ export function definePtyHarness(definition: StaticPtyHarnessDefinition): PtyHar
   };
 }
 
-function selectBackend(
+export function selectHarnessBackend(
   adapter: AiSdkAdapterRegistryEntry,
   requested: HarnessBackend = 'auto'
 ): SelectedHarnessBackend {
@@ -244,6 +251,21 @@ function selectBackend(
   throw new Error(
     `${adapter.name} is an experimental AI SDK-only harness; select backend: 'ai-sdk' explicitly`
   );
+}
+
+/** Resolve a public harness name or alias to the backend the CLI should launch. */
+export function resolveHarnessBackend(
+  harness: string,
+  requested: HarnessBackend = 'auto'
+): SelectedHarnessBackend {
+  const adapter = aiSdkAdapterRegistry.get(harness);
+  if (!adapter) {
+    if (requested === 'ai-sdk') {
+      throw new Error(`No AI SDK harness adapter is registered for ${harness}`);
+    }
+    return 'pty';
+  }
+  return selectHarnessBackend(adapter, requested);
 }
 
 function nativeDescriptor(
@@ -289,16 +311,22 @@ function sessionEventFromAgentEventEnvelope(envelope: AgentEventEnvelope): Agent
   return { type: kind, ...payload } as AgentSessionEvent;
 }
 
-async function spawnNative(
-  adapter: AiSdkAdapterRegistryEntry,
-  input: HarnessCreateInput,
-  relay: AgentRelay
-): Promise<NativeHarnessAgent> {
+/**
+ * Build the broker launch contract for an AI SDK-backed native harness.
+ *
+ * Keeping this as a public, side-effect-free resolver lets the CLI launch the
+ * sidecar through an already-running broker instead of starting a second one.
+ */
+export function createNativeHarnessLaunch(
+  adapterName: string,
+  input: HarnessCreateInput = {},
+  sidecarLaunch?: NativeHarnessSidecarLaunch
+): SpawnRuntimeInput {
+  const adapter = aiSdkAdapterRegistry.require(adapterName);
   const name = nextHarnessName(adapter.name, input.name);
   const cwd = path.resolve(input.cwd ?? process.cwd());
   const sessionId = `native-${randomUUID()}`;
-  const driver = getHarnessDriver(relay);
-  const sidecarEntry = fileURLToPath(new URL('./ai-sdk/sidecar.js', import.meta.url));
+  const sidecarEntry = fileURLToPath(new URL('./ai-sdk/sidecar-main.js', import.meta.url));
   const sidecarConfig = {
     name,
     harness: adapter.name,
@@ -306,7 +334,7 @@ async function spawnNative(
     sessionId,
     settings: { ...(input.model ? { model: input.model } : {}) },
   };
-  const runtime = await driver.spawn({
+  return {
     name,
     cli: adapter.name,
     task: input.task,
@@ -316,8 +344,8 @@ async function spawnNative(
     transport: 'headless',
     harnessConfig: {
       runtime: 'native',
-      command: process.execPath,
-      args: [sidecarEntry],
+      command: sidecarLaunch?.command ?? process.execPath,
+      args: sidecarLaunch?.args ?? [sidecarEntry],
       cwd,
       env: {
         ...input.env,
@@ -334,12 +362,22 @@ async function spawnNative(
         observability: AI_SDK_REFERENCE_OBSERVABILITY_PROFILE,
       },
     },
-  });
+  };
+}
+
+async function spawnNative(
+  adapter: AiSdkAdapterRegistryEntry,
+  input: HarnessCreateInput,
+  driver: AgentDriver,
+  relay: AgentRelay
+): Promise<NativeHarnessAgent> {
+  const launch = createNativeHarnessLaunch(adapter.name, input);
+  const runtime = await driver.spawn(launch);
   await runtime.observeAgentEvents?.(async (envelope) => {
     const event = sessionEventFromAgentEventEnvelope(envelope);
     if (event) relay.emitSessionEvent(runtime.agent.name, event);
   });
-  const descriptor = nativeDescriptor(adapter, input, runtime.agent.name);
+  const descriptor = nativeDescriptor(adapter, { ...input, cwd: launch.cwd }, runtime.agent.name);
   return { ...descriptor, id: runtime.agent.name };
 }
 
@@ -360,7 +398,7 @@ export function defineManagedHarness(
   const pty = ptyDefinition ? definePtyHarness(ptyDefinition) : undefined;
 
   const build = (input: HarnessCreateInput = {}): ManagedHarnessAgent => {
-    const backend = selectBackend(adapter, input.backend);
+    const backend = selectHarnessBackend(adapter, input.backend);
     return backend === 'pty' ? pty!.new({ ...input, backend: 'pty' }) : nativeDescriptor(adapter, input);
   };
 
@@ -370,9 +408,11 @@ export function defineManagedHarness(
     command: ptyDefinition?.command ?? adapter.name,
     adapter,
     create: async (input = {}) => {
-      const backend = selectBackend(adapter, input.backend);
+      const backend = selectHarnessBackend(adapter, input.backend);
       if (backend === 'pty') return pty!.create({ ...input, backend: 'pty' });
-      return input.relay ? spawnNative(adapter, input, input.relay) : nativeDescriptor(adapter, input);
+      return input.relay
+        ? spawnNative(adapter, input, getHarnessDriver(input.relay), input.relay)
+        : nativeDescriptor(adapter, input);
     },
     new: build,
   };

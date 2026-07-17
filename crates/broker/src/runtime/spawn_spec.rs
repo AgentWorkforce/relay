@@ -62,7 +62,9 @@ pub(crate) fn build_http_api_spawn_spec(
     let (provider, cli_command, model) = match runtime {
         AgentRuntime::Pty => (None, Some(cli), model),
         AgentRuntime::Headless => match harness_config.as_ref() {
-            Some(ResolvedHarnessConfig::Headless(_)) => (None, Some(cli), model),
+            Some(ResolvedHarnessConfig::Headless(_) | ResolvedHarnessConfig::Native(_)) => {
+                (None, Some(cli), model)
+            }
             _ => {
                 let provider = headless_provider_from_cli(&cli).with_context(|| {
                     format!(

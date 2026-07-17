@@ -15,6 +15,7 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const client = {
     listAgents: vi.fn(async () => [{ name: 'lead' }]),
     spawnPty: vi.fn(async () => undefined),
+    spawnHeadless: vi.fn(async () => undefined),
     release: vi.fn(async () => undefined),
     setModel: vi.fn(async () => ({ name: 'lead', model: 'opus', success: true })),
     flushPending: vi.fn(async () => ({ flushed: 2 })),
@@ -107,6 +108,87 @@ describe('local agent subtree', () => {
         exitAfterTask: true,
       })
     );
+  });
+
+  it('spawn --backend ai-sdk launches a native harness sidecar', async () => {
+    const { program, client, log } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'codex',
+        '--backend',
+        'ai-sdk',
+        '--name',
+        'NativeWorker',
+        '--task',
+        'Inspect the repository',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnPty).not.toHaveBeenCalled();
+    expect(client.spawnHeadless).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'NativeWorker',
+        cli: 'codex',
+        task: 'Inspect the repository',
+        harnessConfig: expect.objectContaining({
+          runtime: 'native',
+          metadata: expect.objectContaining({ runtimeKind: 'native' }),
+        }),
+      })
+    );
+    expect(log).toHaveBeenCalledWith('Spawned NativeWorker (codex, ai-sdk).');
+  });
+
+  it('spawn validates backend names and native adapter support', async () => {
+    const invalid = harness();
+    await invalid.program.parseAsync(['local', 'agent', 'spawn', 'codex', '--backend', 'magic'], {
+      from: 'user',
+    });
+    expect(invalid.client.spawnPty).not.toHaveBeenCalled();
+    expect(invalid.client.spawnHeadless).not.toHaveBeenCalled();
+    expect(invalid.error).toHaveBeenCalledWith(expect.stringContaining('Unknown backend'));
+
+    const unsupported = harness();
+    await unsupported.program.parseAsync(['local', 'agent', 'spawn', 'gemini', '--backend', 'ai-sdk'], {
+      from: 'user',
+    });
+    expect(unsupported.client.spawnPty).not.toHaveBeenCalled();
+    expect(unsupported.client.spawnHeadless).not.toHaveBeenCalled();
+    expect(unsupported.error).toHaveBeenCalledWith(
+      expect.stringContaining('No AI SDK harness adapter is registered for gemini')
+    );
+  });
+
+  it('new --backend ai-sdk spawns native then uses structured drive attach', async () => {
+    const { program, client, attach } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'new', 'claude', '--backend', 'ai-sdk', '--name', 'NativeClaude'],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'NativeClaude',
+        harnessConfig: expect.objectContaining({ runtime: 'native' }),
+      })
+    );
+    expect(attach).toHaveBeenCalledWith('NativeClaude', 'drive', {});
+  });
+
+  it('new rejects passthrough before spawning a native harness', async () => {
+    const { program, client, attach, error } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'new', 'codex', '--backend', 'ai-sdk', '--mode', 'passthrough'],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('do not support passthrough'));
   });
 
   it('list connects to the existing project broker instead of spawning one', async () => {

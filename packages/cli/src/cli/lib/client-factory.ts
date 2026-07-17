@@ -1,4 +1,10 @@
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
+import {
+  createNativeHarnessLaunch,
+  resolveHarnessBackend,
+  type HarnessBackend,
+  type SelectedHarnessBackend,
+} from '@agent-relay/harnesses';
 
 export interface CreateRuntimeClientOptions {
   cwd: string;
@@ -27,6 +33,28 @@ export interface ClientSpawnOptions {
   shadowMode?: 'subagent' | 'process';
   spawnMode?: 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
   exitAfterTask?: boolean;
+  /** Harness execution backend. `auto` preserves each adapter's rollout default. */
+  backend?: HarnessBackend;
+}
+
+const NATIVE_SIDECAR_COMMAND = '__ai-sdk-sidecar';
+
+/** Bun standalone executables must re-enter the bundled CLI to run embedded sidecar code. */
+export function nativeSidecarLaunch(
+  argv: readonly string[] = process.argv,
+  execPath = process.execPath
+): { command: string; args: string[] } | undefined {
+  const bundledEntrypoint = argv[1] ?? '';
+  if (argv[0] === 'bun' && bundledEntrypoint.startsWith('/$bunfs/root/')) {
+    return { command: execPath, args: [NATIVE_SIDECAR_COMMAND] };
+  }
+  return undefined;
+}
+
+export function resolvedSpawnBackend(
+  options: Pick<ClientSpawnOptions, 'cli' | 'backend'>
+): SelectedHarnessBackend {
+  return resolveHarnessBackend(options.cli, options.backend);
 }
 
 export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<HarnessDriverClient> {
@@ -68,5 +96,32 @@ export async function spawnAgentWithClient(
   client: HarnessDriverClient,
   options: ClientSpawnOptions
 ): Promise<void> {
-  await client.spawnPty(options);
+  const backend = resolvedSpawnBackend(options);
+  if (backend === 'pty') {
+    const { backend: _backend, ...ptyOptions } = options;
+    await client.spawnPty(ptyOptions);
+    return;
+  }
+
+  if (options.spawnMode && options.spawnMode !== 'interactive') {
+    throw new Error('Native AI SDK harnesses currently support only interactive spawn mode');
+  }
+  if (options.exitAfterTask) {
+    throw new Error('Native AI SDK harnesses do not currently support --exit-after-task');
+  }
+
+  const launch = createNativeHarnessLaunch(
+    options.cli,
+    {
+      backend: 'ai-sdk',
+      name: options.name,
+      channels: options.channels,
+      task: options.task,
+      model: options.model,
+      cwd: options.cwd,
+    },
+    nativeSidecarLaunch()
+  );
+  const { transport: _transport, ...headlessInput } = launch;
+  await client.spawnHeadless(headlessInput);
 }

@@ -1,21 +1,22 @@
 import type { Command } from 'commander';
 
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import type { HarnessBackend } from '@agent-relay/harnesses';
 
+import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 import { createBrokerClient } from '../lib/attach-broker.js';
+import { attachDrive } from '../lib/attach-drive.js';
+import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
+import { attachPassthrough } from '../lib/attach-passthrough.js';
+import { attachView } from '../lib/attach-view.js';
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
   resolveBrokerConnection,
   type BrokerConnectionOptions,
 } from '../lib/broker-connection.js';
+import { resolvedSpawnBackend, spawnAgentWithClient } from '../lib/client-factory.js';
 import { defaultExit } from '../lib/exit.js';
-import { spawnAgentWithClient } from '../lib/client-factory.js';
-import { attachDrive } from '../lib/attach-drive.js';
-import { attachView } from '../lib/attach-view.js';
-import { attachPassthrough } from '../lib/attach-passthrough.js';
-import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
-import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 
 // ── Auto-routing model resolution ─────────────────────────────────────────────
 
@@ -162,6 +163,70 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
+function parseBackendOption(deps: LocalAgentDependencies, value: unknown): HarnessBackend | undefined {
+  const backend = (value ?? 'auto') as string;
+  if (backend === 'auto' || backend === 'ai-sdk' || backend === 'pty') return backend;
+  deps.error(`Unknown backend "${backend}". Expected one of: auto, ai-sdk, pty.`);
+  deps.exit(1);
+  return undefined;
+}
+
+function resolveBackendOption(
+  deps: LocalAgentDependencies,
+  provider: string,
+  value: unknown
+): { requested: HarnessBackend; selected: ReturnType<typeof resolvedSpawnBackend> } | undefined {
+  const requested = parseBackendOption(deps, value);
+  if (!requested) return undefined;
+  try {
+    return { requested, selected: resolvedSpawnBackend({ cli: provider, backend: requested }) };
+  } catch (error) {
+    deps.error(error instanceof Error ? error.message : String(error));
+    deps.exit(1);
+    return undefined;
+  }
+}
+
+function parseSpawnModeOption(
+  deps: LocalAgentDependencies,
+  value: unknown
+): 'interactive' | 'task_exit' | undefined {
+  const spawnMode = (value ?? 'interactive') as string;
+  if (spawnMode === 'interactive') return 'interactive';
+  if (spawnMode === 'task-exit' || spawnMode === 'task_exit') return 'task_exit';
+  deps.error(`Unknown spawn mode "${spawnMode}". Expected one of: interactive, task-exit.`);
+  deps.exit(1);
+  return undefined;
+}
+
+function validateNativeOptions(
+  deps: LocalAgentDependencies,
+  options: {
+    backend: ReturnType<typeof resolvedSpawnBackend>;
+    spawnMode: 'interactive' | 'task_exit';
+    exitAfterTask: boolean;
+    attachMode?: AttachMode;
+  }
+): boolean {
+  if (options.backend !== 'ai-sdk') return true;
+  if (options.attachMode === 'passthrough') {
+    deps.error('Native AI SDK harnesses do not support passthrough attach mode; use drive or view.');
+    deps.exit(1);
+    return false;
+  }
+  if (options.spawnMode !== 'interactive') {
+    deps.error('Native AI SDK harnesses currently support only interactive spawn mode.');
+    deps.exit(1);
+    return false;
+  }
+  if (options.exitAfterTask) {
+    deps.error('Native AI SDK harnesses do not currently support --exit-after-task.');
+    deps.exit(1);
+    return false;
+  }
+  return true;
+}
+
 /**
  * Register the `local agent …` subtree (and `runtime tail`) onto the driver
  * group. List/spawn/release/kill talk to a running local broker.
@@ -193,22 +258,23 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--backend <backend>', 'Harness backend: auto | ai-sdk | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
     .action(async (provider: string, opts: Record<string, unknown>) => {
+      const backend = resolveBackendOption(deps, provider, opts.backend);
+      const spawnMode = parseSpawnModeOption(deps, opts.spawnMode);
+      if (!backend || !spawnMode) return;
+      if (
+        !validateNativeOptions(deps, {
+          backend: backend.selected,
+          spawnMode,
+          exitAfterTask: Boolean(opts.exitAfterTask),
+        })
+      )
+        return;
       await run(deps, async (client) => {
-        const spawnMode = opts.spawnMode as string | undefined;
-        if (
-          spawnMode &&
-          spawnMode !== 'interactive' &&
-          spawnMode !== 'task-exit' &&
-          spawnMode !== 'task_exit'
-        ) {
-          deps.error(`Unknown spawn mode "${spawnMode}". Expected one of: interactive, task-exit.`);
-          deps.exit(1);
-          return;
-        }
         const baseName = (opts.name as string | undefined) ?? provider;
         const resolved = resolveAutoSpawn(
           provider,
@@ -223,12 +289,12 @@ export function registerLocalAgentCommands(
           task: resolved.task,
           model: resolved.model,
           cwd: opts.cwd as string | undefined,
-          spawnMode:
-            spawnMode === 'task-exit' ? 'task_exit' : (spawnMode as 'interactive' | 'task_exit' | undefined),
+          spawnMode,
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
+          backend: backend.requested,
         });
         const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
-        deps.log(`Spawned ${resolved.name} (${provider})${autoNote}.`);
+        deps.log(`Spawned ${resolved.name} (${provider}, ${backend.selected})${autoNote}.`);
       });
     });
 
@@ -244,6 +310,7 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--backend <backend>', 'Harness backend: auto | ai-sdk | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
@@ -254,17 +321,18 @@ export function registerLocalAgentCommands(
         deps.exit(1);
         return;
       }
-      const spawnMode = options.spawnMode as string | undefined;
+      const backend = resolveBackendOption(deps, provider, options.backend);
+      const spawnMode = parseSpawnModeOption(deps, options.spawnMode);
+      if (!backend || !spawnMode) return;
       if (
-        spawnMode &&
-        spawnMode !== 'interactive' &&
-        spawnMode !== 'task-exit' &&
-        spawnMode !== 'task_exit'
-      ) {
-        deps.error(`Unknown spawn mode "${spawnMode}". Expected one of: interactive, task-exit.`);
-        deps.exit(1);
+        !validateNativeOptions(deps, {
+          backend: backend.selected,
+          spawnMode,
+          exitAfterTask: Boolean(options.exitAfterTask),
+          attachMode: mode,
+        })
+      )
         return;
-      }
       const baseName = (options.name as string | undefined) ?? provider;
       const resolved = resolveAutoSpawn(
         provider,
@@ -280,12 +348,14 @@ export function registerLocalAgentCommands(
           task: resolved.task,
           model: resolved.model,
           cwd: options.cwd as string | undefined,
-          spawnMode:
-            spawnMode === 'task-exit' ? 'task_exit' : (spawnMode as 'interactive' | 'task_exit' | undefined),
+          spawnMode,
           exitAfterTask: options.exitAfterTask as boolean | undefined,
+          backend: backend.requested,
         });
         const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
-        deps.log(`Spawned ${resolved.name} (${provider}). Attaching (${mode})${autoNote}…`);
+        deps.log(
+          `Spawned ${resolved.name} (${provider}, ${backend.selected}). Attaching (${mode})${autoNote}…`
+        );
       });
       // `new` spawns and attaches on the same default local broker — broker
       // override flags belong on the standalone `attach` command.

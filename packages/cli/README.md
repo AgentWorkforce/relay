@@ -36,10 +36,14 @@ agent-relay node workflow logs <run-id> --follow
 agent-relay node workflow sync <run-id>
 
 agent-relay node agent new claude            # spawn + attach
+agent-relay node agent new codex --backend ai-sdk
+agent-relay node agent spawn opencode --backend pty
 agent-relay node agent list
 agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
+
+`node agent spawn` and `node agent new` accept `--backend auto|ai-sdk|pty`. `auto` is the default and keeps experimental dual-backend adapters on PTY. Claude Code, Codex, and OpenCode support explicit AI SDK or PTY selection; Pi and Deep Agents are experimental AI SDK-only harnesses and require `--backend ai-sdk`.
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 

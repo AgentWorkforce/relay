@@ -47,6 +47,7 @@
     "@agent-relay/config": "10.6.0",
     "@agent-relay/fleet": "10.6.0",
     "@agent-relay/harness-driver": "10.6.0",
+    "@agent-relay/harnesses": "10.6.0",
     "@agent-relay/sdk": "10.6.0",
     "@agent-relay/utils": "10.6.0",
     "@modelcontextprotocol/sdk": "^1.0.0",

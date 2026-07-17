@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import {
   NATIVE_HARNESS_PROTOCOL_VERSION,
@@ -398,12 +397,5 @@ export async function runAiSdkSidecarMain(
       new Promise<void>((resolveWrite, reject) => {
         process.stdout.write(line, (error) => (error ? reject(error) : resolveWrite()));
       }),
-  });
-}
-
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  runAiSdkSidecarMain().catch((error) => {
-    process.stderr.write(`${errorMessage(error)}\n`);
-    process.exitCode = 1;
   });
 }
