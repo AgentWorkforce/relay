@@ -138,8 +138,8 @@ export function featurePostIdempotencyKey(cycleStartedAt: string, featureId: str
   return `relay-feature-guardian:${cycleStartedAt}:${featureId}`;
 }
 
-export function deliveredSlackTs(result: WritebackResult): string {
-  const receipt = result.receipt as { externalId?: unknown; ts?: unknown } | undefined;
+export function deliveredSlackTs(result: WritebackResult | null | undefined): string {
+  const receipt = result?.receipt as { externalId?: unknown; ts?: unknown } | undefined;
   const value = receipt?.externalId ?? receipt?.ts;
   return typeof value === 'string' ? value.trim() : '';
 }

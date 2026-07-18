@@ -187,6 +187,8 @@ describe('relay-feature-guardian runtime paths', () => {
   });
 
   it('requires a delivered Slack ts instead of a draft receipt id', () => {
+    expect(deliveredSlackTs(undefined)).toBe('');
+    expect(deliveredSlackTs(null)).toBe('');
     expect(
       deliveredSlackTs({
         path: '/draft.json',
