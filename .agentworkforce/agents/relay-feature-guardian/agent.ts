@@ -3,7 +3,7 @@
  *
  * Hourly cron tick:
  *   1. Read the feature list from the cloned relay repository
- *   2. Load feature progress from memory
+ *   2. Load feature progress from an exact, revisioned Relayfile record
  *   3. Pick the next unchecked feature (ordered by criticality then tier)
  *   4. Generate a concise quiz question via ctx.llm
  *   5. Post to Slack with @mentions for Will and Khaliq
@@ -11,9 +11,15 @@
  *
  * After the full manifest is covered, the cycle resets.
  */
-import { defineAgent, type WorkforceCtx } from '@agentworkforce/runtime';
+import {
+  defineAgent,
+  type RelayfileCredentials,
+  type WorkforceCtx,
+  type WorkforceEvent,
+} from '@agentworkforce/runtime';
 import { input } from '@agentworkforce/delivery';
 import { slackClient, type WritebackResult } from '@relayfile/relay-helpers';
+import { randomUUID } from 'node:crypto';
 import { parse } from 'yaml';
 
 // ── manifest types ────────────────────────────────────────────────────────────
@@ -90,9 +96,10 @@ async function loadFeatures(ctx: WorkforceCtx): Promise<Feature[]> {
 
 // ── progress tracking ─────────────────────────────────────────────────────────
 
-interface ProgressState {
+export interface ProgressState {
   kind: 'relay-feature-guardian:progress';
-  version: 1 | 2;
+  version: 3;
+  generation: number;
   checkedIds: string[];
   cycleStartedAt: string;
   totalFeatures: number;
@@ -102,36 +109,330 @@ interface ProgressState {
   };
 }
 
-async function loadProgress(ctx: WorkforceCtx): Promise<ProgressState | null> {
-  const items = await ctx.memory.recall('relay-feature-guardian cycle progress', {
-    tags: ['relay-feature-guardian:progress'],
-    scope: 'workspace',
-    limit: 5,
-  });
-  for (const item of [...items].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))) {
-    try {
-      const parsed = JSON.parse(item.content) as unknown;
-      if (
-        parsed &&
-        typeof parsed === 'object' &&
-        (parsed as ProgressState).kind === 'relay-feature-guardian:progress'
-      ) {
-        return parsed as ProgressState;
-      }
-    } catch {
-      // skip malformed
-    }
-  }
-  return null;
+export const CYCLE_STATE_PATH = '/memory/workspace/relay-feature-guardian/cycle-state.json';
+export const STATE_IO_TIMEOUT_MS = 5_000;
+export const SLACK_WRITEBACK_TIMEOUT_MS = 15_000;
+export const SLACK_WRITEBACK_POLL_MS = 250;
+
+const MAX_STATE_BYTES = 64 * 1024;
+
+export interface ProgressSnapshot {
+  state: ProgressState;
+  revision: string;
 }
 
-async function saveProgress(ctx: WorkforceCtx, state: ProgressState): Promise<string | null> {
-  const receipt = await ctx.memory.save(JSON.stringify(state), {
-    tags: ['relay-feature-guardian:progress'],
-    scope: 'workspace',
-    ttlSeconds: 60 * 60 * 24 * 14, // 14 days
+export interface ProgressStore {
+  load(features: Feature[]): Promise<ProgressSnapshot | null>;
+  save(
+    state: ProgressState,
+    expected: ProgressSnapshot | null,
+    features: Feature[]
+  ): Promise<ProgressSnapshot>;
+}
+
+type FetchLike = typeof fetch;
+
+export class ProgressStateConflictError extends Error {
+  constructor(message = 'relay-feature-guardian cycle state revision conflict') {
+    super(message);
+    this.name = 'ProgressStateConflictError';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.valueOf()) && parsed.toISOString() === value;
+}
+
+function isSlackTs(value: unknown): value is string {
+  return typeof value === 'string' && /^\d+\.\d+$/.test(value.trim());
+}
+
+function parseProgressState(value: unknown, features: Feature[]): ProgressState {
+  if (!isRecord(value)) throw new Error('cycle state must be an object');
+  if (value.kind !== 'relay-feature-guardian:progress' || value.version !== 3) {
+    throw new Error('cycle state kind/version is invalid');
+  }
+  if (!Number.isSafeInteger(value.generation) || (value.generation as number) < 1) {
+    throw new Error('cycle state generation is invalid');
+  }
+  if (!isCanonicalIsoTimestamp(value.cycleStartedAt)) {
+    throw new Error('cycle state cycleStartedAt is invalid');
+  }
+  if (
+    !Number.isSafeInteger(value.totalFeatures) ||
+    (value.totalFeatures as number) < 1 ||
+    (value.totalFeatures as number) > 10_000
+  ) {
+    throw new Error('cycle state totalFeatures is invalid');
+  }
+  if (!Array.isArray(value.checkedIds) || value.checkedIds.length > features.length) {
+    throw new Error('cycle state checkedIds is invalid');
+  }
+
+  const knownIds = new Set(features.map((feature) => feature.id));
+  const checkedIds = value.checkedIds.map((id) => {
+    if (typeof id !== 'string' || !knownIds.has(id)) {
+      throw new Error('cycle state contains an unknown feature id');
+    }
+    return id;
   });
-  return receipt ? receipt.id : null;
+  if (new Set(checkedIds).size !== checkedIds.length) {
+    throw new Error('cycle state contains duplicate feature ids');
+  }
+
+  let lastPost: ProgressState['lastPost'];
+  if (value.lastPost !== undefined) {
+    if (
+      !isRecord(value.lastPost) ||
+      typeof value.lastPost.featureId !== 'string' ||
+      !checkedIds.includes(value.lastPost.featureId) ||
+      !isSlackTs(value.lastPost.ts)
+    ) {
+      throw new Error('cycle state lastPost is invalid');
+    }
+    lastPost = {
+      featureId: value.lastPost.featureId,
+      ts: value.lastPost.ts.trim(),
+    };
+  }
+  if (checkedIds.length > 0 && !lastPost) {
+    throw new Error('cycle state with progress requires lastPost');
+  }
+  if (lastPost && lastPost.featureId !== checkedIds.at(-1)) {
+    throw new Error('cycle state lastPost must describe the latest checked feature');
+  }
+
+  return {
+    kind: 'relay-feature-guardian:progress',
+    version: 3,
+    generation: value.generation as number,
+    checkedIds,
+    cycleStartedAt: value.cycleStartedAt,
+    totalFeatures: value.totalFeatures as number,
+    ...(lastPost ? { lastPost } : {}),
+  };
+}
+
+function assertValidTransition(
+  previous: ProgressSnapshot | null,
+  next: ProgressState,
+  features: Feature[]
+): void {
+  if (!previous) {
+    if (next.generation !== 1 || next.checkedIds.length !== 0 || next.lastPost) {
+      throw new Error('new cycle state must bootstrap an empty generation 1');
+    }
+    return;
+  }
+
+  const prior = previous.state;
+  if (next.generation === prior.generation) {
+    if (next.cycleStartedAt !== prior.cycleStartedAt) {
+      throw new Error('cycleStartedAt is immutable within a generation');
+    }
+    if (
+      next.checkedIds.length < prior.checkedIds.length ||
+      next.checkedIds.length > prior.checkedIds.length + 1 ||
+      !prior.checkedIds.every((id, index) => next.checkedIds[index] === id)
+    ) {
+      throw new Error('cycle progress cannot regress or skip a checkpoint');
+    }
+    if (next.checkedIds.length === prior.checkedIds.length) {
+      if (JSON.stringify(next.lastPost) !== JSON.stringify(prior.lastPost)) {
+        throw new Error('reconciliation cannot overwrite lastPost');
+      }
+    } else if (next.lastPost?.featureId !== next.checkedIds.at(-1)) {
+      throw new Error('new progress must checkpoint the newly checked feature');
+    }
+    return;
+  }
+
+  const allCurrentFeaturesChecked = features.every((feature) => prior.checkedIds.includes(feature.id));
+  if (
+    next.generation !== prior.generation + 1 ||
+    !allCurrentFeaturesChecked ||
+    next.checkedIds.length !== 0 ||
+    next.lastPost ||
+    new Date(next.cycleStartedAt) <= new Date(prior.cycleStartedAt)
+  ) {
+    throw new Error('cycle generation reset is invalid');
+  }
+}
+
+async function withDeadline<T>(
+  label: string,
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), expired]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+function normalizeEtag(value: string | null): string {
+  return (value ?? '').trim().replace(/^W\//, '').replace(/^"|"$/g, '');
+}
+
+function relayfileStateUrl(credentials: RelayfileCredentials): URL {
+  const url = new URL(
+    `/v1/workspaces/${encodeURIComponent(credentials.workspaceId)}/fs/file`,
+    `${credentials.url.replace(/\/+$/, '')}/`
+  );
+  url.searchParams.set('path', CYCLE_STATE_PATH);
+  return url;
+}
+
+function requestHeaders(credentials: RelayfileCredentials, correlationId: string): HeadersInit {
+  return {
+    Authorization: `Bearer ${credentials.token}`,
+    'X-Correlation-Id': correlationId,
+  };
+}
+
+async function readHttpSnapshot(
+  credentials: RelayfileCredentials,
+  features: Feature[],
+  fetchImpl: FetchLike,
+  signal: AbortSignal,
+  correlationId: string
+): Promise<ProgressSnapshot | null> {
+  const response = await fetchImpl(relayfileStateUrl(credentials), {
+    method: 'GET',
+    headers: requestHeaders(credentials, correlationId),
+    signal,
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`cycle state GET failed with HTTP ${response.status}`);
+
+  const file = (await response.json()) as unknown;
+  if (!isRecord(file) || file.path !== CYCLE_STATE_PATH || typeof file.content !== 'string') {
+    throw new Error('cycle state GET returned an invalid file');
+  }
+  if (file.content.length > MAX_STATE_BYTES) throw new Error('cycle state exceeds size limit');
+  const bodyRevision = typeof file.revision === 'string' ? file.revision.trim() : '';
+  const etagRevision = normalizeEtag(response.headers.get('etag'));
+  const revision = bodyRevision || etagRevision;
+  if (!revision || (bodyRevision && etagRevision && bodyRevision !== etagRevision)) {
+    throw new Error('cycle state GET returned an invalid revision');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(file.content);
+  } catch {
+    throw new Error('cycle state contains invalid JSON');
+  }
+  return { state: parseProgressState(parsed, features), revision };
+}
+
+export function createHttpProgressStore(
+  credentials: RelayfileCredentials,
+  options: { fetchImpl?: FetchLike; timeoutMs?: number } = {}
+): ProgressStore {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? STATE_IO_TIMEOUT_MS;
+  return {
+    load: (features) =>
+      withDeadline('cycle state load', timeoutMs, (signal) =>
+        readHttpSnapshot(credentials, features, fetchImpl, signal, `guardian-state-load-${randomUUID()}`)
+      ),
+    save: (state, expected, features) => {
+      const canonical = parseProgressState(state, features);
+      if (canonical.totalFeatures !== features.length) {
+        throw new Error('cycle state totalFeatures must match the current manifest');
+      }
+      assertValidTransition(expected, canonical, features);
+      return withDeadline('cycle state save', timeoutMs, async (signal) => {
+        const correlationId = `guardian-state-save-${randomUUID()}`;
+        const response = await fetchImpl(relayfileStateUrl(credentials), {
+          method: 'PUT',
+          headers: {
+            ...requestHeaders(credentials, correlationId),
+            'Content-Type': 'application/octet-stream',
+            'X-Relayfile-Encoding': 'utf-8',
+            'X-Relayfile-Content-Type': 'application/json',
+            'X-Workspace-Id': credentials.workspaceId,
+            'If-Match': expected?.revision ?? '0',
+          },
+          body: `${JSON.stringify(canonical)}\n`,
+          signal,
+        });
+        if (response.status === 409) throw new ProgressStateConflictError();
+        if (!response.ok) throw new Error(`cycle state PUT failed with HTTP ${response.status}`);
+
+        const readBack = await readHttpSnapshot(credentials, features, fetchImpl, signal, correlationId);
+        if (!readBack || JSON.stringify(readBack.state) !== JSON.stringify(canonical)) {
+          throw new Error('cycle state read-back did not match the saved state');
+        }
+        if (expected && readBack.revision === expected.revision) {
+          throw new Error('cycle state revision did not advance');
+        }
+        return readBack;
+      });
+    },
+  };
+}
+
+function previewRevision(state: ProgressState): string {
+  return `preview:${JSON.stringify(state)}`;
+}
+
+function createPreviewProgressStore(ctx: WorkforceCtx): ProgressStore {
+  const read = async (features: Feature[]): Promise<ProgressSnapshot | null> => {
+    let content: string;
+    try {
+      content = await ctx.files.read(CYCLE_STATE_PATH);
+    } catch (error) {
+      if (String(error).includes('ENOENT')) return null;
+      throw error;
+    }
+    if (content.length > MAX_STATE_BYTES) throw new Error('cycle state exceeds size limit');
+    const state = parseProgressState(JSON.parse(content) as unknown, features);
+    return { state, revision: previewRevision(state) };
+  };
+  return {
+    load: read,
+    save: async (state, expected, features) => {
+      const canonical = parseProgressState(state, features);
+      if (canonical.totalFeatures !== features.length) {
+        throw new Error('cycle state totalFeatures must match the current manifest');
+      }
+      assertValidTransition(expected, canonical, features);
+      const current = await read(features);
+      if (current?.revision !== expected?.revision) throw new ProgressStateConflictError();
+      await ctx.files.write(CYCLE_STATE_PATH, `${JSON.stringify(canonical)}\n`);
+      const readBack = await read(features);
+      if (!readBack || JSON.stringify(readBack.state) !== JSON.stringify(canonical)) {
+        throw new Error('cycle state read-back did not match the saved state');
+      }
+      return readBack;
+    },
+  };
+}
+
+function createProgressStore(ctx: WorkforceCtx): ProgressStore {
+  const credentials = ctx.credentials.tryRequire();
+  if (credentials) return createHttpProgressStore(credentials.relayfile);
+  if (ctx.agent.id === 'sim-agent' && ctx.deployment.id === 'sim-deployment') {
+    return createPreviewProgressStore(ctx);
+  }
+  throw new Error('exact Relayfile credentials are required for guardian cycle state');
 }
 
 export function featurePostIdempotencyKey(cycleStartedAt: string, featureId: string): string {
@@ -141,8 +442,9 @@ export function featurePostIdempotencyKey(cycleStartedAt: string, featureId: str
 export function deliveredSlackTs(result: WritebackResult | null | undefined): string {
   const receipt = result?.receipt as { externalId?: unknown; ts?: unknown } | undefined;
   const externalId = typeof receipt?.externalId === 'string' ? receipt.externalId.trim() : '';
-  if (externalId) return externalId;
-  return typeof receipt?.ts === 'string' ? receipt.ts.trim() : '';
+  if (isSlackTs(externalId)) return externalId;
+  const ts = typeof receipt?.ts === 'string' ? receipt.ts.trim() : '';
+  return isSlackTs(ts) ? ts : '';
 }
 
 // ── feature selection ─────────────────────────────────────────────────────────
@@ -204,135 +506,195 @@ async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise
 
 // ── agent definition ──────────────────────────────────────────────────────────
 
-export default defineAgent({
-  schedules: [{ name: 'hourly-check', cron: '0 * * * *', tz: 'America/New_York' }],
-  handler: async (ctx, _event) => {
-    const channel = input(ctx, 'SLACK_CHANNEL');
-    if (!channel) {
-      ctx.log('warn', 'relay-feature-guardian.no-channel', { reason: 'SLACK_CHANNEL not configured' });
-      return;
-    }
+export async function runGuardian(ctx: WorkforceCtx, _event: WorkforceEvent): Promise<void> {
+  const channel = input(ctx, 'SLACK_CHANNEL');
+  if (!channel) {
+    ctx.log('warn', 'relay-feature-guardian.no-channel', { reason: 'SLACK_CHANNEL not configured' });
+    return;
+  }
 
-    // Load the live feature list from the manifest
-    let features: Feature[];
+  // Load the live feature list from the manifest
+  let features: Feature[];
+  try {
+    features = await loadFeatures(ctx);
+  } catch (err) {
+    const absPath = resolveManifestPath(ctx.sandbox.cwd);
+    ctx.log('error', 'relay-feature-guardian.manifest-load-failed', { path: absPath, err: String(err) });
+    const isNotFound = String(err).includes('ENOENT');
+    const errMsg = isNotFound
+      ? `⚠️ *relay-feature-guardian* can't find the feature manifest in the cloned relay repository at \`${RELAY_REPO_RELPATH}/${MANIFEST_RELPATH}\`.`
+      : `⚠️ *relay-feature-guardian* failed to load the feature manifest: \`${String(err)}\``;
+    await slackClient()
+      .post(channel, errMsg)
+      .catch(() => undefined);
+    return;
+  }
+  ctx.log('info', 'relay-feature-guardian.manifest-loaded', {
+    path: resolveManifestPath(ctx.sandbox.cwd),
+    features: features.length,
+  });
+  if (features.length === 0) {
+    ctx.log('error', 'relay-feature-guardian.no-features', { reason: 'manifest parsed but empty' });
+    await slackClient()
+      .post(
+        channel,
+        '⚠️ *relay-feature-guardian* loaded the manifest but found no features. Check `.agentworkforce/features/manifest.yaml`.'
+      )
+      .catch(() => undefined);
+    return;
+  }
+
+  const totalFeatures = features.length;
+  let store: ProgressStore;
+  let progress: ProgressSnapshot | null;
+  try {
+    store = createProgressStore(ctx);
+    progress = await store.load(features);
+  } catch (err) {
+    ctx.log('error', 'relay-feature-guardian.progress-load-failed', { err: String(err) });
+    return;
+  }
+
+  // A missing exact record is the only bootstrap case. Persist and read back
+  // the empty generation before any Slack side effect.
+  if (!progress) {
+    const initial: ProgressState = {
+      kind: 'relay-feature-guardian:progress',
+      version: 3,
+      generation: 1,
+      checkedIds: [],
+      cycleStartedAt: new Date().toISOString(),
+      totalFeatures,
+    };
     try {
-      features = await loadFeatures(ctx);
+      progress = await store.save(initial, null, features);
     } catch (err) {
-      const absPath = resolveManifestPath(ctx.sandbox.cwd);
-      ctx.log('error', 'relay-feature-guardian.manifest-load-failed', { path: absPath, err: String(err) });
-      const isNotFound = String(err).includes('ENOENT');
-      const errMsg = isNotFound
-        ? `⚠️ *relay-feature-guardian* can't find the feature manifest in the cloned relay repository at \`${RELAY_REPO_RELPATH}/${MANIFEST_RELPATH}\`.`
-        : `⚠️ *relay-feature-guardian* failed to load the feature manifest: \`${String(err)}\``;
-      await slackClient()
-        .post(channel, errMsg)
-        .catch(() => undefined);
+      ctx.log('error', 'relay-feature-guardian.cycle-checkpoint-failed', { err: String(err) });
       return;
     }
-    ctx.log('info', 'relay-feature-guardian.manifest-loaded', {
-      path: resolveManifestPath(ctx.sandbox.cwd),
-      features: features.length,
-    });
-    if (features.length === 0) {
-      ctx.log('error', 'relay-feature-guardian.no-features', { reason: 'manifest parsed but empty' });
-      await slackClient()
-        .post(
-          channel,
-          '⚠️ *relay-feature-guardian* loaded the manifest but found no features. Check `.agentworkforce/features/manifest.yaml`.'
-        )
-        .catch(() => undefined);
+  }
+
+  // Manifest additions change the denominator but must never discard already
+  // checked feature ids or overwrite the last delivered receipt.
+  if (progress.state.totalFeatures !== totalFeatures) {
+    const reconciled: ProgressState = {
+      ...progress.state,
+      totalFeatures,
+    };
+    try {
+      progress = await store.save(reconciled, progress, features);
+    } catch (err) {
+      ctx.log('error', 'relay-feature-guardian.progress-reconcile-failed', { err: String(err) });
       return;
     }
+  }
 
-    // Load progress or bootstrap a fresh cycle
-    const progress = await loadProgress(ctx);
-    const checkedIds = new Set(progress?.checkedIds ?? []);
-    const totalFeatures = features.length;
-    let cycleStartedAt = progress?.cycleStartedAt ?? new Date().toISOString();
-    let needsCycleCheckpoint = !progress;
+  let checkedIds = new Set(progress.state.checkedIds);
 
-    // Pick the next unchecked feature; reset if the cycle is complete
-    let feature = pickNextFeature(features, checkedIds);
-    if (!feature) {
-      ctx.log('info', 'relay-feature-guardian.cycle-complete', { total: totalFeatures });
-      checkedIds.clear();
-      cycleStartedAt = new Date().toISOString();
-      needsCycleCheckpoint = true;
-      feature = pickNextFeature(features, checkedIds);
+  // Pick the next unchecked feature; reset if the cycle is complete
+  let feature = pickNextFeature(features, checkedIds);
+  if (!feature) {
+    ctx.log('info', 'relay-feature-guardian.cycle-complete', { total: totalFeatures });
+    const previousStart = new Date(progress.state.cycleStartedAt).valueOf();
+    const reset: ProgressState = {
+      kind: 'relay-feature-guardian:progress',
+      version: 3,
+      generation: progress.state.generation + 1,
+      checkedIds: [],
+      cycleStartedAt: new Date(Math.max(Date.now(), previousStart + 1)).toISOString(),
+      totalFeatures,
+    };
+    try {
+      progress = await store.save(reset, progress, features);
+    } catch (err) {
+      ctx.log('error', 'relay-feature-guardian.cycle-checkpoint-failed', { err: String(err) });
+      return;
     }
-    if (!feature) return;
+    checkedIds = new Set();
+    feature = pickNextFeature(features, checkedIds);
+  }
+  if (!feature) return;
 
-    // Persist a stable cycle identity before the side effect. If memory is
-    // unavailable, stop instead of posting a feature we cannot checkpoint.
-    if (needsCycleCheckpoint) {
-      const checkpointId = await saveProgress(ctx, {
-        kind: 'relay-feature-guardian:progress',
-        version: 2,
-        checkedIds: [...checkedIds],
-        cycleStartedAt,
-        totalFeatures,
-      });
-      if (!checkpointId) {
-        ctx.log('error', 'relay-feature-guardian.cycle-checkpoint-failed', {
-          feature: feature.id,
-        });
-        return;
-      }
-    }
+  // Build @mention string
+  const userWill = input(ctx, 'SLACK_USER_WILL');
+  const userKhaliq = input(ctx, 'SLACK_USER_KHALIQ');
+  const mentions = [userWill && `<@${userWill}>`, userKhaliq && `<@${userKhaliq}>`].filter(Boolean).join(' ');
+  const mentionPrefix = mentions ? `${mentions} — ` : '';
 
-    // Build @mention string
-    const userWill = input(ctx, 'SLACK_USER_WILL');
-    const userKhaliq = input(ctx, 'SLACK_USER_KHALIQ');
-    const mentions = [userWill && `<@${userWill}>`, userKhaliq && `<@${userKhaliq}>`]
-      .filter(Boolean)
-      .join(' ');
-    const mentionPrefix = mentions ? `${mentions} — ` : '';
+  // Generate quiz message
+  const quizBody = await generateQuizMessage(ctx, feature);
+  const remaining = totalFeatures - checkedIds.size - 1;
+  const progressNote = `_[relay feature check · ${checkedIds.size + 1}/${totalFeatures} · ${remaining} remaining in cycle]_`;
+  const message = [mentionPrefix + quizBody, '', progressNote].join('\n');
+  ctx.log('info', 'relay-feature-guardian.posting', {
+    channel,
+    feature: feature.id,
+    index: checkedIds.size + 1,
+    total: totalFeatures,
+    remaining,
+  });
 
-    // Generate quiz message
-    const quizBody = await generateQuizMessage(ctx, feature);
-    const remaining = totalFeatures - checkedIds.size - 1;
-    const progressNote = `_[relay feature check · ${checkedIds.size + 1}/${totalFeatures} · ${remaining} remaining in cycle]_`;
-    const message = [mentionPrefix + quizBody, '', progressNote].join('\n');
-
-    // Post to Slack
-    const slack = slackClient();
-    const result = await slack.messages.write(
+  // Post to Slack
+  const slack = slackClient({
+    writebackTimeoutMs: SLACK_WRITEBACK_TIMEOUT_MS,
+    writebackPollMs: SLACK_WRITEBACK_POLL_MS,
+  });
+  let result: WritebackResult;
+  try {
+    result = await slack.messages.write(
       { channelId: channel },
       {
         text: message,
-        idempotencyKey: featurePostIdempotencyKey(cycleStartedAt, feature.id),
+        idempotencyKey: featurePostIdempotencyKey(progress.state.cycleStartedAt, feature.id),
       }
     );
-    const ts = deliveredSlackTs(result);
-    if (!ts) {
-      ctx.log('error', 'relay-feature-guardian.post-failed', { channel, feature: feature.id });
-      return;
-    }
-
-    // Checkpoint immediately after the confirmed provider receipt. The stable
-    // idempotency key makes a retry safe if this save times out or the run caps.
-    checkedIds.add(feature.id);
-    const checkpointId = await saveProgress(ctx, {
-      kind: 'relay-feature-guardian:progress',
-      version: 2,
-      checkedIds: [...checkedIds],
-      cycleStartedAt,
-      totalFeatures,
-      lastPost: { featureId: feature.id, ts },
+  } catch (err) {
+    ctx.log('error', 'relay-feature-guardian.post-failed', {
+      channel,
+      feature: feature.id,
+      err: String(err),
     });
-    if (!checkpointId) {
-      ctx.log('error', 'relay-feature-guardian.progress-checkpoint-failed', {
-        channel,
-        feature: feature.id,
-        ts,
-      });
-      return;
-    }
-    ctx.log('info', 'relay-feature-guardian.posted', {
+    return;
+  }
+  const ts = deliveredSlackTs(result);
+  if (!ts) {
+    ctx.log('error', 'relay-feature-guardian.post-failed', { channel, feature: feature.id });
+    return;
+  }
+
+  // Checkpoint immediately after the confirmed provider receipt. The stable
+  // idempotency key makes a retry safe if this save times out or the run caps.
+  checkedIds.add(feature.id);
+  const completed: ProgressState = {
+    kind: 'relay-feature-guardian:progress',
+    version: 3,
+    generation: progress.state.generation,
+    checkedIds: [...checkedIds],
+    cycleStartedAt: progress.state.cycleStartedAt,
+    totalFeatures,
+    lastPost: { featureId: feature.id, ts },
+  };
+  let checkpoint: ProgressSnapshot;
+  try {
+    checkpoint = await store.save(completed, progress, features);
+  } catch (err) {
+    ctx.log('error', 'relay-feature-guardian.progress-checkpoint-failed', {
       channel,
       feature: feature.id,
       ts,
-      checkpointId,
+      err: String(err),
     });
-  },
+    return;
+  }
+  ctx.log('info', 'relay-feature-guardian.posted', {
+    channel,
+    feature: feature.id,
+    ts,
+    checkpointRevision: checkpoint.revision,
+  });
+}
+
+export default defineAgent({
+  schedules: [{ name: 'hourly-check', cron: '0 * * * *', tz: 'America/New_York' }],
+  handler: runGuardian,
 });
