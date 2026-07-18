@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
 - `AgentRelaySDK` now maps Relaycast lifecycle states onto its existing Swift presence states, so root-package consumers compile with Relaycast 6.1 and later while package-local builds remain compatible with 6.0.5.
-- `relay-feature-guardian` now reads the scoped Relay clone, posts to its configured channel, and advances its exact, revision-safe cycle checkpoint only after a bounded wait returns a real Slack receipt, while safely reconciling retired manifest features.
+- `relay-feature-guardian` now limits read mirrors to the feature manifest and workspace memory while keeping Slack write-only to its configured output channel, and advances its exact, revision-safe cycle checkpoint only after a bounded wait returns a real Slack receipt while safely reconciling retired manifest features.
 - `agent-relay-broker` and `@agent-relay/utils` now preserve mise/asdf/rtx-style CLI shims when spawning provider workers, so Codex, Claude, Gemini, and other agent CLIs installed via a version manager receive their own permission flags (e.g. `--dangerously-bypass-approvals-and-sandbox`) instead of the manager binary rejecting them.
 
 ## [10.6.3] - 2026-07-17
