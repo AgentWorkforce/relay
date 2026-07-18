@@ -208,8 +208,8 @@ function parseCliVersion(output: string): string | null {
   return match?.[1] ?? null;
 }
 
-async function readCliVersion(command: string, deps: CoreDependencies): Promise<string> {
-  const { stdout, stderr } = await deps.execCommand(command);
+async function readCliVersion(file: string, args: string[], deps: CoreDependencies): Promise<string> {
+  const { stdout, stderr } = await deps.execFileCommand(file, args);
   const version = parseCliVersion(`${stdout}\n${stderr}`);
   if (!version) {
     throw new Error('The updated CLI did not report a valid version.');
@@ -271,11 +271,11 @@ async function updateStandaloneBinary(
     );
     await deps.execCommand(`chmod +x ${shellQuote(temporaryPath)}`);
 
-    const downloadedVersion = await readCliVersion(`${shellQuote(temporaryPath)} --version`, deps);
+    const downloadedVersion = await readCliVersion(temporaryPath, ['--version'], deps);
     assertUpdatedVersion(downloadedVersion, requestedVersion, currentVersion);
 
     await deps.execCommand(`mv -f ${shellQuote(temporaryPath)} ${shellQuote(targetPath)}`);
-    const installedVersion = await readCliVersion(`${shellQuote(targetPath)} --version`, deps);
+    const installedVersion = await readCliVersion(targetPath, ['--version'], deps);
     assertUpdatedVersion(installedVersion, requestedVersion, currentVersion);
     return installedVersion;
   } finally {
@@ -289,24 +289,16 @@ async function updateStandaloneBinary(
   }
 }
 
-function npmCliVersionCommand(deps: CoreDependencies): string {
-  return `${shellQuote(deps.execPath)} ${shellQuote(deps.cliScript)} --version`;
-}
-
 async function updateNpmInstall(
   requestedVersion: string,
   currentVersion: string,
   deps: CoreDependencies
 ): Promise<string> {
-  const { stdout, stderr } = await deps.execCommand('npm install -g agent-relay@latest');
-  if (stdout.trim().length > 0) {
-    deps.log(stdout.trimEnd());
-  }
-  if (stderr.trim().length > 0) {
-    deps.error(stderr.trimEnd());
-  }
+  // Installer output may contain registry credentials or private paths. Keep
+  // it captured and only report the credential-safe remediation below.
+  await deps.execCommand('npm install -g agent-relay@latest');
 
-  const installedVersion = await readCliVersion(npmCliVersionCommand(deps), deps);
+  const installedVersion = await readCliVersion(deps.execPath, [deps.cliScript, '--version'], deps);
   assertUpdatedVersion(installedVersion, requestedVersion, currentVersion);
   return installedVersion;
 }
