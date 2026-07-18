@@ -726,6 +726,44 @@ describe('relay-feature-guardian exact HTTP state', () => {
     );
   });
 
+  it('rejects oversized UTF-8 state before issuing a PUT', async () => {
+    const featureIds = Array.from({ length: 300 }, (_, index) => `feature-${index}-${'x'.repeat(220)}`);
+    const features = featureIds.map((id, index) => ({
+      id,
+      name: `Feature ${index}`,
+      cli: `relay feature-${index}`,
+      desc: `Checks feature ${index}.`,
+      tier: 1,
+      criticality: 'critical' as const,
+    }));
+    const state = (checkedIds: string[]): ProgressState => ({
+      kind: 'relay-feature-guardian:progress',
+      version: 3,
+      generation: 1,
+      checkedIds,
+      cycleStartedAt: '2026-07-18T10:26:47.981Z',
+      totalFeatures: features.length,
+      ...(checkedIds.length > 0
+        ? {
+            lastPost: {
+              featureId: checkedIds.at(-1) as string,
+              ts: '1784370419.029509',
+            },
+          }
+        : {}),
+    });
+    const previousState = state(featureIds.slice(0, -1));
+    const server = new RelayfileStateServer(null);
+    const store = createHttpProgressStore(credentials, { fetchImpl: server.fetch });
+
+    await expect(
+      Promise.resolve().then(() =>
+        store.save(state(featureIds), { state: previousState, revision: '7' }, features)
+      )
+    ).rejects.toThrow('cycle state exceeds size limit');
+    expect(server.requests).toEqual([]);
+  });
+
   it.each([
     ['duplicate ids', { ...progressState(2), checkedIds: ['broker-up', 'broker-up'] }],
     ['malformed historical id', { ...progressState(1), checkedIds: [''] }],

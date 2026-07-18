@@ -116,6 +116,7 @@ export const SLACK_WRITEBACK_POLL_MS = 250;
 
 const MAX_STATE_BYTES = 64 * 1024;
 const MAX_SAFE_MANIFEST_SHRINK = 1;
+const UTF8_ENCODER = new TextEncoder();
 
 export interface ProgressSnapshot {
   state: ProgressState;
@@ -152,6 +153,12 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
 
 function isSlackTs(value: unknown): value is string {
   return typeof value === 'string' && /^\d+\.\d+$/.test(value.trim());
+}
+
+function assertStateSize(content: string): void {
+  if (UTF8_ENCODER.encode(content).byteLength > MAX_STATE_BYTES) {
+    throw new Error('cycle state exceeds size limit');
+  }
 }
 
 function parseProgressState(
@@ -351,7 +358,7 @@ async function readHttpSnapshot(
   if (!isRecord(file) || file.path !== CYCLE_STATE_PATH || typeof file.content !== 'string') {
     throw new Error('cycle state GET returned an invalid file');
   }
-  if (file.content.length > MAX_STATE_BYTES) throw new Error('cycle state exceeds size limit');
+  assertStateSize(file.content);
   const bodyRevision = typeof file.revision === 'string' ? file.revision.trim() : '';
   const etagRevision = normalizeEtag(response.headers.get('etag'));
   const revision = bodyRevision || etagRevision;
@@ -394,6 +401,8 @@ export function createHttpProgressStore(
       if (canonical.totalFeatures !== features.length) {
         throw new Error('cycle state totalFeatures must match the current manifest');
       }
+      const content = `${JSON.stringify(canonical)}\n`;
+      assertStateSize(content);
       assertValidTransition(expected, canonical, features);
       return withDeadline('cycle state save', timeoutMs, async (signal) => {
         const correlationId = `guardian-state-save-${randomUUID()}`;
@@ -407,7 +416,7 @@ export function createHttpProgressStore(
             'X-Workspace-Id': credentials.workspaceId,
             'If-Match': expected?.revision ?? '0',
           },
-          body: `${JSON.stringify(canonical)}\n`,
+          body: content,
           signal,
         });
         if (response.status === 409) throw new ProgressStateConflictError();
@@ -439,7 +448,7 @@ function createPreviewProgressStore(ctx: WorkforceCtx): ProgressStore {
       if (String(error).includes('ENOENT')) return null;
       throw error;
     }
-    if (content.length > MAX_STATE_BYTES) throw new Error('cycle state exceeds size limit');
+    assertStateSize(content);
     const state = parseProgressState(JSON.parse(content) as unknown, features, {
       allowHistoricalIds,
     });
@@ -452,10 +461,12 @@ function createPreviewProgressStore(ctx: WorkforceCtx): ProgressStore {
       if (canonical.totalFeatures !== features.length) {
         throw new Error('cycle state totalFeatures must match the current manifest');
       }
+      const content = `${JSON.stringify(canonical)}\n`;
+      assertStateSize(content);
       assertValidTransition(expected, canonical, features);
       const current = await read(features, true);
       if (current?.revision !== expected?.revision) throw new ProgressStateConflictError();
-      await ctx.files.write(CYCLE_STATE_PATH, `${JSON.stringify(canonical)}\n`);
+      await ctx.files.write(CYCLE_STATE_PATH, content);
       const readBack = await read(features);
       if (!readBack || JSON.stringify(readBack.state) !== JSON.stringify(canonical)) {
         throw new Error('cycle state read-back did not match the saved state');
