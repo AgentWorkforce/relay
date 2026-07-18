@@ -2,7 +2,7 @@
  * relay-feature-guardian handler.
  *
  * Hourly cron tick:
- *   1. Read the feature list from .agentworkforce/features/manifest.yaml
+ *   1. Read the feature list from the cloned relay repository
  *   2. Load feature progress from memory
  *   3. Pick the next unchecked feature (ordered by criticality then tier)
  *   4. Generate a concise quiz question via ctx.llm
@@ -13,7 +13,7 @@
  */
 import { defineAgent, type WorkforceCtx } from '@agentworkforce/runtime';
 import { input } from '@agentworkforce/delivery';
-import { slackClient } from '@relayfile/relay-helpers';
+import { slackClient, type WritebackResult } from '@relayfile/relay-helpers';
 import { parse } from 'yaml';
 
 // ── manifest types ────────────────────────────────────────────────────────────
@@ -55,9 +55,20 @@ interface Feature {
 }
 
 const MANIFEST_RELPATH = '.agentworkforce/features/manifest.yaml';
+const RELAY_REPO_RELPATH = 'github/repos/AgentWorkforce/relay';
+
+/**
+ * GitHub-scoped repositories are cloned beneath the proactive workspace root.
+ * WorkforceCtx currently exposes that workspace root (`sandbox.cwd`), but not
+ * an integration-specific repository directory, so derive the clone path from
+ * the documented `/github/repos/{owner}/{repo}` layout.
+ */
+export function resolveManifestPath(workspaceDir: string): string {
+  return `${workspaceDir}/${RELAY_REPO_RELPATH}/${MANIFEST_RELPATH}`;
+}
 
 async function loadFeatures(ctx: WorkforceCtx): Promise<Feature[]> {
-  const absPath = `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`;
+  const absPath = resolveManifestPath(ctx.sandbox.cwd);
   const raw = await ctx.sandbox.readFile(absPath);
   const manifest = parse(raw) as Manifest;
   const features: Feature[] = [];
@@ -81,10 +92,14 @@ async function loadFeatures(ctx: WorkforceCtx): Promise<Feature[]> {
 
 interface ProgressState {
   kind: 'relay-feature-guardian:progress';
-  version: 1;
+  version: 1 | 2;
   checkedIds: string[];
   cycleStartedAt: string;
   totalFeatures: number;
+  lastPost?: {
+    featureId: string;
+    ts: string;
+  };
 }
 
 async function loadProgress(ctx: WorkforceCtx): Promise<ProgressState | null> {
@@ -110,12 +125,24 @@ async function loadProgress(ctx: WorkforceCtx): Promise<ProgressState | null> {
   return null;
 }
 
-async function saveProgress(ctx: WorkforceCtx, state: ProgressState): Promise<void> {
-  await ctx.memory.save(JSON.stringify(state), {
+async function saveProgress(ctx: WorkforceCtx, state: ProgressState): Promise<string | null> {
+  const receipt = await ctx.memory.save(JSON.stringify(state), {
     tags: ['relay-feature-guardian:progress'],
     scope: 'workspace',
     ttlSeconds: 60 * 60 * 24 * 14, // 14 days
   });
+  return receipt ? receipt.id : null;
+}
+
+export function featurePostIdempotencyKey(cycleStartedAt: string, featureId: string): string {
+  return `relay-feature-guardian:${cycleStartedAt}:${featureId}`;
+}
+
+export function deliveredSlackTs(result: WritebackResult | null | undefined): string {
+  const receipt = result?.receipt as { externalId?: unknown; ts?: unknown } | undefined;
+  const externalId = typeof receipt?.externalId === 'string' ? receipt.externalId.trim() : '';
+  if (externalId) return externalId;
+  return typeof receipt?.ts === 'string' ? receipt.ts.trim() : '';
 }
 
 // ── feature selection ─────────────────────────────────────────────────────────
@@ -191,17 +218,21 @@ export default defineAgent({
     try {
       features = await loadFeatures(ctx);
     } catch (err) {
-      const absPath = `${ctx.sandbox.cwd}/${MANIFEST_RELPATH}`;
+      const absPath = resolveManifestPath(ctx.sandbox.cwd);
       ctx.log('error', 'relay-feature-guardian.manifest-load-failed', { path: absPath, err: String(err) });
       const isNotFound = String(err).includes('ENOENT');
       const errMsg = isNotFound
-        ? `⚠️ *relay-feature-guardian* can't find the feature manifest at \`${MANIFEST_RELPATH}\`.\n\nThe \`feature/verify-features-workflow\` branch hasn't been merged to main yet — the sandbox runs on main, so the manifest doesn't exist. Merge PR #1283 to fix this.`
+        ? `⚠️ *relay-feature-guardian* can't find the feature manifest in the cloned relay repository at \`${RELAY_REPO_RELPATH}/${MANIFEST_RELPATH}\`.`
         : `⚠️ *relay-feature-guardian* failed to load the feature manifest: \`${String(err)}\``;
       await slackClient()
         .post(channel, errMsg)
         .catch(() => undefined);
       return;
     }
+    ctx.log('info', 'relay-feature-guardian.manifest-loaded', {
+      path: resolveManifestPath(ctx.sandbox.cwd),
+      features: features.length,
+    });
     if (features.length === 0) {
       ctx.log('error', 'relay-feature-guardian.no-features', { reason: 'manifest parsed but empty' });
       await slackClient()
@@ -217,15 +248,37 @@ export default defineAgent({
     const progress = await loadProgress(ctx);
     const checkedIds = new Set(progress?.checkedIds ?? []);
     const totalFeatures = features.length;
+    let cycleStartedAt = progress?.cycleStartedAt ?? new Date().toISOString();
+    let needsCycleCheckpoint = !progress;
 
     // Pick the next unchecked feature; reset if the cycle is complete
     let feature = pickNextFeature(features, checkedIds);
     if (!feature) {
       ctx.log('info', 'relay-feature-guardian.cycle-complete', { total: totalFeatures });
       checkedIds.clear();
+      cycleStartedAt = new Date().toISOString();
+      needsCycleCheckpoint = true;
       feature = pickNextFeature(features, checkedIds);
     }
     if (!feature) return;
+
+    // Persist a stable cycle identity before the side effect. If memory is
+    // unavailable, stop instead of posting a feature we cannot checkpoint.
+    if (needsCycleCheckpoint) {
+      const checkpointId = await saveProgress(ctx, {
+        kind: 'relay-feature-guardian:progress',
+        version: 2,
+        checkedIds: [...checkedIds],
+        cycleStartedAt,
+        totalFeatures,
+      });
+      if (!checkpointId) {
+        ctx.log('error', 'relay-feature-guardian.cycle-checkpoint-failed', {
+          feature: feature.id,
+        });
+        return;
+      }
+    }
 
     // Build @mention string
     const userWill = input(ctx, 'SLACK_USER_WILL');
@@ -243,21 +296,43 @@ export default defineAgent({
 
     // Post to Slack
     const slack = slackClient();
-    const result = await slack.post(channel, message);
-    if (!result.ts) {
+    const result = await slack.messages.write(
+      { channelId: channel },
+      {
+        text: message,
+        idempotencyKey: featurePostIdempotencyKey(cycleStartedAt, feature.id),
+      }
+    );
+    const ts = deliveredSlackTs(result);
+    if (!ts) {
       ctx.log('error', 'relay-feature-guardian.post-failed', { channel, feature: feature.id });
       return;
     }
-    ctx.log('info', 'relay-feature-guardian.posted', { channel, feature: feature.id, ts: result.ts });
 
-    // Persist updated progress
+    // Checkpoint immediately after the confirmed provider receipt. The stable
+    // idempotency key makes a retry safe if this save times out or the run caps.
     checkedIds.add(feature.id);
-    await saveProgress(ctx, {
+    const checkpointId = await saveProgress(ctx, {
       kind: 'relay-feature-guardian:progress',
-      version: 1,
+      version: 2,
       checkedIds: [...checkedIds],
-      cycleStartedAt: progress?.cycleStartedAt ?? new Date().toISOString(),
+      cycleStartedAt,
       totalFeatures,
+      lastPost: { featureId: feature.id, ts },
+    });
+    if (!checkpointId) {
+      ctx.log('error', 'relay-feature-guardian.progress-checkpoint-failed', {
+        channel,
+        feature: feature.id,
+        ts,
+      });
+      return;
+    }
+    ctx.log('info', 'relay-feature-guardian.posted', {
+      channel,
+      feature: feature.id,
+      ts,
+      checkpointId,
     });
   },
 });

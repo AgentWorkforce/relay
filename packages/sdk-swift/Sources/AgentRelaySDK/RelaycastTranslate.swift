@@ -8,9 +8,18 @@ import Relaycast
 // `Relay*` type built here.
 
 extension RelayAgentStatus {
-    /// Map a hosted status string (`online`/`offline`/`away`) onto the enum.
+    /// Map hosted presence and lifecycle states onto the legacy public enum.
+    ///
+    /// Relaycast 6.1 added lifecycle states while this SDK still supports
+    /// 6.0.5, so bridge by raw value instead of naming cases that older
+    /// Relaycast releases do not compile against.
     init(hosted status: String) {
-        self = RelayAgentStatus(rawValue: status) ?? .unknown
+        switch status {
+        case "active", "online": self = .online
+        case "idle", "blocked", "waiting", "away": self = .away
+        case "offline": self = .offline
+        default: self = .unknown
+        }
     }
 
     var relaycastStatus: Relaycast.AgentStatus? {
