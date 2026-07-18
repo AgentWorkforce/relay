@@ -85,6 +85,20 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.online), .online)
         XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.offline), .offline)
         XCTAssertEqual(RelayAgentStatus(Relaycast.AgentStatus.away), .away)
+
+        let lifecycleStatuses: [(String, RelayAgentStatus)] = [
+            ("active", .online),
+            ("idle", .away),
+            ("blocked", .away),
+            ("waiting", .away),
+        ]
+        for (rawValue, expected) in lifecycleStatuses {
+            XCTAssertEqual(RelayAgentStatus(hosted: rawValue), expected)
+            if let relaycastStatus = Relaycast.AgentStatus(rawValue: rawValue) {
+                XCTAssertEqual(RelayAgentStatus(relaycastStatus), expected)
+            }
+        }
+        XCTAssertEqual(RelayAgentStatus(hosted: "future-status"), .unknown)
     }
 
     func testJSONValueBridgingPreservesShape() {
