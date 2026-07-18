@@ -10,6 +10,11 @@
     "timeoutSeconds": 300
   },
   "integrations": {
+    "github": {
+      "scope": {
+        "repo": "AgentWorkforce/relay"
+      }
+    },
     "slack": {
       "scope": {
         "paths": "/slack/channels/**"
@@ -20,7 +25,7 @@
     "SLACK_CHANNEL": {
       "description": "Slack channel to post feature checks to (e.g. relay-health or general).",
       "env": "SLACK_CHANNEL",
-      "default": "C0BHWJSF309",
+      "default": "C0AEKNLDNKW",
       "picker": {
         "provider": "slack",
         "resource": "channels"
