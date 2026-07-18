@@ -15,10 +15,8 @@ const LEGACY_MCP_SERVER_KEYS = ['relaycast'] as const;
 const ZED_SETTINGS_PATH = path.join('.config', 'zed', 'settings.json');
 const DEFAULT_ZED_SERVER_NAME = 'Agent Relay';
 const INSTALL_DIR_NAMES = ['.agentworkforce/relay', '.agent-relay'] as const;
-
-function toErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+const STANDALONE_INSTALL_SCRIPT =
+  'curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash';
 
 /**
  * Remove agent-relay snippet blocks from a markdown file's content.
@@ -154,6 +152,165 @@ function removeZedConfig(
   }
 }
 
+/** Single-quote a value for safe interpolation into a POSIX shell command. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function safeRealpath(filePath: string, fileSystem: CoreFileSystem): string {
+  try {
+    return path.resolve(fileSystem.realpathSync(filePath));
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+/**
+ * Resolve the active Bun standalone executable, including installs reached
+ * through the ~/.local/bin launcher. npm installs execute node/bun with a real
+ * JS cliScript, while compiled Bun binaries expose the embedded /$bunfs path.
+ */
+function resolveActiveStandaloneBinary(deps: CoreDependencies): string | null {
+  const homeDir = os.homedir();
+  const knownPaths = [
+    ...INSTALL_DIR_NAMES.map((installDir) => path.join(homeDir, installDir, 'bin', 'agent-relay')),
+    path.join(homeDir, '.local', 'bin', 'agent-relay'),
+  ];
+  const resolvedExecPath = safeRealpath(deps.execPath, deps.fs);
+  const hasBunMarker = deps.cliScript.includes('/$bunfs/') || deps.cliScript.includes('\\$bunfs\\');
+  const execName = path.basename(resolvedExecPath);
+  const looksLikeStandaloneExecutable =
+    hasBunMarker || execName === 'agent-relay' || execName.startsWith('agent-relay-');
+
+  if (!looksLikeStandaloneExecutable) {
+    return null;
+  }
+
+  for (const candidate of knownPaths) {
+    if (deps.fs.existsSync(candidate) && safeRealpath(candidate, deps.fs) === resolvedExecPath) {
+      return resolvedExecPath;
+    }
+  }
+
+  // Support directly-invoked standalone binaries outside the installer paths.
+  return hasBunMarker && deps.fs.existsSync(deps.execPath) ? resolvedExecPath : null;
+}
+
+function normalizeVersion(value: string): string {
+  return value
+    .trim()
+    .replace(/^openclaw-v/, '')
+    .replace(/^v/, '');
+}
+
+function parseCliVersion(output: string): string | null {
+  const match = output.match(/(?:^|[^0-9])v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/m);
+  return match?.[1] ?? null;
+}
+
+async function readCliVersion(command: string, deps: CoreDependencies): Promise<string> {
+  const { stdout, stderr } = await deps.execCommand(command);
+  const version = parseCliVersion(`${stdout}\n${stderr}`);
+  if (!version) {
+    throw new Error('The updated CLI did not report a valid version.');
+  }
+  return version;
+}
+
+function assertUpdatedVersion(
+  installedVersion: string,
+  requestedVersion: string,
+  currentVersion: string
+): void {
+  const expectedVersion = requestedVersion === 'latest' ? null : normalizeVersion(requestedVersion);
+  if (expectedVersion && installedVersion !== expectedVersion) {
+    throw new Error(`The updated CLI reported ${installedVersion}, expected ${expectedVersion}.`);
+  }
+  if (installedVersion === normalizeVersion(currentVersion)) {
+    throw new Error(`The active CLI still reports ${installedVersion} after the update.`);
+  }
+}
+
+function standaloneAssetName(): string {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
+    throw new Error(`Standalone updates are not supported on ${process.platform}.`);
+  }
+  if (process.arch !== 'x64' && process.arch !== 'arm64') {
+    throw new Error(`Standalone updates are not supported on ${process.arch}.`);
+  }
+  return `agent-relay-${process.platform}-${process.arch}`;
+}
+
+function standaloneDownloadUrl(requestedVersion: string): string {
+  const releasePath =
+    requestedVersion === 'latest'
+      ? 'latest/download'
+      : `download/v${encodeURIComponent(normalizeVersion(requestedVersion))}`;
+  return `https://github.com/AgentWorkforce/relay/releases/${releasePath}/${standaloneAssetName()}`;
+}
+
+async function updateStandaloneBinary(
+  targetPath: string,
+  requestedVersion: string,
+  currentVersion: string,
+  deps: CoreDependencies
+): Promise<string> {
+  // Keep the temporary download beside the target so mv(1) uses an atomic
+  // same-filesystem rename. The launcher/symlink remains pointed at this path.
+  const temporaryPath = path.join(
+    path.dirname(targetPath),
+    `.${path.basename(targetPath)}.update-${deps.pid}`
+  );
+  try {
+    if (deps.fs.existsSync(temporaryPath)) {
+      deps.fs.unlinkSync(temporaryPath);
+    }
+    const downloadUrl = standaloneDownloadUrl(requestedVersion);
+    await deps.execCommand(
+      `curl -fsSL --retry 3 --retry-delay 1 ${shellQuote(downloadUrl)} -o ${shellQuote(temporaryPath)}`
+    );
+    await deps.execCommand(`chmod +x ${shellQuote(temporaryPath)}`);
+
+    const downloadedVersion = await readCliVersion(`${shellQuote(temporaryPath)} --version`, deps);
+    assertUpdatedVersion(downloadedVersion, requestedVersion, currentVersion);
+
+    await deps.execCommand(`mv -f ${shellQuote(temporaryPath)} ${shellQuote(targetPath)}`);
+    const installedVersion = await readCliVersion(`${shellQuote(targetPath)} --version`, deps);
+    assertUpdatedVersion(installedVersion, requestedVersion, currentVersion);
+    return installedVersion;
+  } finally {
+    if (deps.fs.existsSync(temporaryPath)) {
+      try {
+        deps.fs.unlinkSync(temporaryPath);
+      } catch {
+        // Best-effort cleanup; never mask the install or verification result.
+      }
+    }
+  }
+}
+
+function npmCliVersionCommand(deps: CoreDependencies): string {
+  return `${shellQuote(deps.execPath)} ${shellQuote(deps.cliScript)} --version`;
+}
+
+async function updateNpmInstall(
+  requestedVersion: string,
+  currentVersion: string,
+  deps: CoreDependencies
+): Promise<string> {
+  const { stdout, stderr } = await deps.execCommand('npm install -g agent-relay@latest');
+  if (stdout.trim().length > 0) {
+    deps.log(stdout.trimEnd());
+  }
+  if (stderr.trim().length > 0) {
+    deps.error(stderr.trimEnd());
+  }
+
+  const installedVersion = await readCliVersion(npmCliVersionCommand(deps), deps);
+  assertUpdatedVersion(installedVersion, requestedVersion, currentVersion);
+  return installedVersion;
+}
+
 export async function runUpdateCommand(options: { check?: boolean }, deps: CoreDependencies): Promise<void> {
   const currentVersion = deps.getVersion();
   deps.log(`Current version: ${currentVersion}`);
@@ -179,31 +336,35 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
   }
 
   deps.log('Installing update...');
-  const toVersion = info.latestVersion ?? 'latest';
+  const requestedVersion = info.latestVersion ?? 'latest';
+  const standaloneTarget = resolveActiveStandaloneBinary(deps);
   try {
-    const { stdout, stderr } = await deps.execCommand('npm install -g agent-relay@latest');
-    if (stdout.trim().length > 0) {
-      deps.log(stdout.trimEnd());
-    }
-    if (stderr.trim().length > 0) {
-      deps.error(stderr.trimEnd());
-    }
-    deps.log(`Successfully updated to ${toVersion}`);
+    const installedVersion = standaloneTarget
+      ? await updateStandaloneBinary(standaloneTarget, requestedVersion, currentVersion, deps)
+      : await updateNpmInstall(requestedVersion, currentVersion, deps);
+    deps.log(`Successfully updated to ${installedVersion}`);
     track('cli_update', {
       from_version: currentVersion,
-      to_version: toVersion,
+      to_version: installedVersion,
       success: true,
     });
   } catch (err: unknown) {
     const errorClass = errorClassName(err);
     track('cli_update', {
       from_version: currentVersion,
-      to_version: toVersion,
+      to_version: requestedVersion,
       success: false,
       ...(errorClass ? { error_class: errorClass } : {}),
     });
-    deps.error(`Failed to install update: ${toErrorMessage(err)}`);
-    deps.log('Try running manually: npm install -g agent-relay@latest');
+    // Command errors can include environment-specific registry details. Keep
+    // output actionable without reflecting raw command output or credentials.
+    deps.warn('The update could not be installed and verified.');
+    deps.log(
+      standaloneTarget
+        ? `Reinstall the standalone CLI manually: ${STANDALONE_INSTALL_SCRIPT}`
+        : 'Try running manually: npm install -g agent-relay@latest'
+    );
+    deps.log('Then confirm with: agent-relay --version');
     deps.exit(1);
   }
 }

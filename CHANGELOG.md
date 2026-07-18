@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay update` now replaces the active standalone binary and verifies the installed CLI version before reporting success, instead of silently updating an unused npm copy.
 
 ## [10.6.4] - 2026-07-18
 

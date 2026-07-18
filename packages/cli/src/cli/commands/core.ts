@@ -72,6 +72,7 @@ export interface CoreFileSystem {
   mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
   rmSync: (path: string, options?: { recursive?: boolean; force?: boolean }) => void;
   accessSync: (path: string, mode?: number) => void;
+  realpathSync: (path: string) => string;
 }
 
 type UpdateInfo = {
@@ -200,6 +201,7 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
     mkdirSync: (dirPath, options) => fs.mkdirSync(dirPath, options),
     rmSync: (targetPath, options) => fs.rmSync(targetPath, options),
     accessSync: fs.accessSync,
+    realpathSync: fs.realpathSync,
   };
 
   const defaultVersion = resolveCliVersion(fileSystem);
