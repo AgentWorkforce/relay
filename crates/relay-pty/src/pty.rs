@@ -351,10 +351,10 @@ fn needs_sane_term_override() -> bool {
 /// intact. Otherwise fall back to the canonical path (still helps
 /// posix_spawnp on hosts with quirky PATH handling).
 fn canonicalize_display(path: &Path) -> String {
-    let requested_name = path.file_name().and_then(OsStr::to_str);
+    let requested_name = path.file_name();
     match std::fs::canonicalize(path) {
         Ok(resolved) => {
-            let resolved_name = resolved.file_name().and_then(OsStr::to_str);
+            let resolved_name = resolved.file_name();
             if let (Some(orig), Some(target)) = (requested_name, resolved_name) {
                 if orig != target {
                     return absolutize_shim_path(path)
@@ -2035,11 +2035,10 @@ mod tests {
         let path_var = std::env::join_paths([&link_dir]).unwrap();
         let resolved = resolve_command_path_with("mytool", path_var.as_os_str());
 
-        // Basename must be `mytool` either way; the important bit is that
-        // the resolver does not error out on same-name symlinks.
-        assert!(
-            resolved.ends_with("/mytool"),
-            "same-name symlink still resolves to a mytool path; got {resolved:?}"
+        assert_eq!(
+            std::path::PathBuf::from(resolved),
+            std::fs::canonicalize(&real_bin).unwrap(),
+            "same-name symlink should resolve to the canonical target"
         );
     }
 

@@ -52,7 +52,7 @@ describe('resolveCommand — mise/asdf shim preservation', () => {
     // Prepend our shim dir so `which codex` finds our shim first while the
     // system `which` binary itself remains discoverable via the inherited
     // PATH.
-    process.env.PATH = `${shimDir}:${prevPath ?? ''}`;
+    process.env.PATH = `${shimDir}${path.delimiter}${prevPath ?? ''}`;
 
     const resolved = resolveCommand('codex');
 
@@ -91,12 +91,9 @@ describe('resolveCommand — mise/asdf shim preservation', () => {
     fs.writeFileSync(realBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     fs.symlinkSync(realBin, path.join(linkDir, 'mytool'));
 
-    process.env.PATH = `${linkDir}:${prevPath ?? ''}`;
+    process.env.PATH = `${linkDir}${path.delimiter}${prevPath ?? ''}`;
 
     const resolved = resolveCommand('mytool');
-    expect(path.basename(resolved)).toBe('mytool');
-    // No specific assertion about follow vs. preserve — the important thing
-    // is the resolver returns a working `mytool` path without erroring on
-    // same-name symlinks.
+    expect(resolved).toBe(fs.realpathSync(realBin));
   });
 });
