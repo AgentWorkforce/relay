@@ -1,8 +1,8 @@
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc as std_mpsc, Arc,
@@ -334,36 +334,91 @@ fn needs_sane_term_override() -> bool {
     }
 }
 
+/// Resolve `path` into a spawn-ready string while preserving shim behaviour.
+///
+/// Provider CLIs installed via version managers (mise, asdf, rtx/rtx-cli,
+/// direnv, pkgx, chruby, jenv, pyenv, rbenv, nodenv, tfenv, volta, ...) are
+/// exposed as symlinked shims that all point at the version-manager binary.
+/// Those shims dispatch to the real tool based on `argv[0]` (the shim's own
+/// basename). If we `canonicalize` the shim we collapse it to the manager
+/// binary (`/opt/homebrew/bin/mise`) — the child then sees `argv[0] = "mise"`
+/// and the manager parses provider-specific flags like
+/// `--dangerously-bypass-approvals-and-sandbox` as its own arguments, which
+/// aborts the worker before it ever starts.
+///
+/// The safe rule: if canonicalization would change the executable's basename,
+/// treat the input as a shim and keep the caller-facing path so argv[0] stays
+/// intact. Otherwise fall back to the canonical path (still helps
+/// posix_spawnp on hosts with quirky PATH handling).
 fn canonicalize_display(path: &Path) -> String {
-    std::fs::canonicalize(path)
-        .ok()
-        .and_then(|resolved| resolved.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
+    let requested_name = path.file_name().and_then(OsStr::to_str);
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => {
+            let resolved_name = resolved.file_name().and_then(OsStr::to_str);
+            if let (Some(orig), Some(target)) = (requested_name, resolved_name) {
+                if orig != target {
+                    return absolutize_shim_path(path)
+                        .and_then(|p| p.to_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| path.to_string_lossy().to_string());
+                }
+            }
+            resolved
+                .to_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string())
+        }
+        Err(_) => path.to_string_lossy().to_string(),
+    }
+}
+
+/// Return an absolute path for `path` without following the final component's
+/// symlink (so `argv[0]` remains the shim's basename). Falls back to the raw
+/// path if the parent cannot be canonicalized.
+fn absolutize_shim_path(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let file_name = path.file_name()?;
+    let canonical_parent = if parent.as_os_str().is_empty() {
+        std::fs::canonicalize(".").ok()?
+    } else {
+        std::fs::canonicalize(parent).ok()?
+    };
+    Some(canonical_parent.join(file_name))
+}
+
+fn default_path_env() -> OsString {
+    #[cfg(unix)]
+    {
+        let home = env::var("HOME").unwrap_or_else(|_| String::from("/root"));
+        OsString::from(format!(
+            "{home}/.local/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+        ))
+    }
+    #[cfg(windows)]
+    {
+        OsString::from(r"C:\Windows\System32;C:\Windows")
+    }
 }
 
 fn resolve_command_path(command: &str) -> String {
+    let path_env = env::var_os("PATH")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_path_env);
+    resolve_command_path_with(command, path_env.as_os_str())
+}
+
+/// Testable core: resolves `command` against an explicit `path_env` instead of
+/// reading `std::env::var("PATH")`, so unit tests can exercise shim-preserving
+/// behaviour without racing on the process-wide PATH.
+fn resolve_command_path_with(command: &str, path_env: &OsStr) -> String {
     // Already a path (absolute or relative): use as-is but resolve symlinks when possible.
     if command.contains('/') || command.contains('\\') || command.starts_with('.') {
         return canonicalize_display(Path::new(command));
     }
 
-    let path_env = env::var_os("PATH")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            #[cfg(unix)]
-            {
-                let home = env::var("HOME").unwrap_or_else(|_| String::from("/root"));
-                OsString::from(format!(
-                    "{home}/.local/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
-                ))
-            }
-            #[cfg(windows)]
-            {
-                OsString::from(r"C:\Windows\System32;C:\Windows")
-            }
-        });
-
-    for dir in env::split_paths(&path_env) {
+    for dir in env::split_paths(path_env) {
         let candidate = dir.join(command);
         if candidate.is_file() {
             return canonicalize_display(&candidate);
@@ -992,7 +1047,10 @@ impl PtySession {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridSize, PtySession, DEFAULT_NO_PID_EXIT_THRESHOLD};
+    use super::{
+        resolve_command_path, resolve_command_path_with, GridSize, PtySession,
+        DEFAULT_NO_PID_EXIT_THRESHOLD,
+    };
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
@@ -1871,5 +1929,179 @@ mod tests {
 
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    /// Regression: mise/asdf/rtx expose provider CLIs (codex, claude, gemini)
+    /// as symlinked shims that all point at the version-manager binary. Those
+    /// shims dispatch on `argv[0]` (the shim's basename), so canonicalising
+    /// the symlink to `.../bin/mise` makes the manager parse provider flags
+    /// like `--dangerously-bypass-approvals-and-sandbox` as its own arguments
+    /// and abort the worker before it starts.
+    ///
+    /// `resolve_command_path` must keep the shim path, so `CommandBuilder`
+    /// spawns the child with `argv[0] = "codex"` and the flags reach the
+    /// intended provider CLI.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_command_path_preserves_mise_style_shim_via_path_lookup() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager_dir = tmp.path().join("mgr");
+        let shim_dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&manager_dir).unwrap();
+        std::fs::create_dir_all(&shim_dir).unwrap();
+
+        let manager = manager_dir.join("mise");
+        std::fs::write(&manager, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let shim = shim_dir.join("codex");
+        symlink(&manager, &shim).expect("symlink");
+
+        // Passing PATH explicitly avoids racing on process-wide PATH mutation
+        // between parallel test threads.
+        let path_var = std::env::join_paths([&shim_dir, &manager_dir]).unwrap();
+        let resolved = resolve_command_path_with("codex", path_var.as_os_str());
+
+        assert!(
+            resolved.ends_with("/codex"),
+            "shim basename must survive resolution so argv[0] stays 'codex' \
+             (mise/asdf dispatch on argv[0]); got {resolved:?}"
+        );
+        assert!(
+            !resolved.ends_with("/mise"),
+            "must NOT collapse the shim to the version-manager binary \
+             (would cause mise to parse provider flags); got {resolved:?}"
+        );
+        // Preserving argv[0] on unix requires an absolute path so the child
+        // spawn does not depend on the parent's PATH.
+        assert!(
+            std::path::Path::new(&resolved).is_absolute(),
+            "resolved shim path must be absolute; got {resolved:?}"
+        );
+    }
+
+    /// Same shim rule when the caller supplies an explicit path to the shim
+    /// (rather than a bare command that we PATH-search).
+    #[cfg(unix)]
+    #[test]
+    fn resolve_command_path_preserves_shim_when_given_explicit_shim_path() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager_dir = tmp.path().join("mgr");
+        let shim_dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&manager_dir).unwrap();
+        std::fs::create_dir_all(&shim_dir).unwrap();
+
+        let manager = manager_dir.join("asdf");
+        std::fs::write(&manager, b"#!/bin/sh\nexit 0\n").unwrap();
+        let shim = shim_dir.join("gemini");
+        symlink(&manager, &shim).expect("symlink");
+
+        let resolved = resolve_command_path(shim.to_str().unwrap());
+
+        assert!(
+            resolved.ends_with("/gemini"),
+            "shim basename must survive when caller passes the shim path; got {resolved:?}"
+        );
+        assert!(
+            !resolved.ends_with("/asdf"),
+            "must NOT collapse the shim to the version-manager binary; got {resolved:?}"
+        );
+    }
+
+    /// Non-shim symlinks (target basename matches the source basename — the
+    /// common case where a bin dir is itself a symlink) should still be
+    /// resolved, so we do not regress the posix_spawnp fix that motivated
+    /// the original `canonicalize_display` behaviour.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_command_path_still_canonicalizes_same_name_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real_dir = tmp.path().join("real");
+        let link_dir = tmp.path().join("link");
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        let real_bin = real_dir.join("mytool");
+        std::fs::write(&real_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        // link/mytool is a symlink to real/mytool — same basename, so
+        // canonicalising is safe (argv[0] is unchanged).
+        std::fs::create_dir_all(&link_dir).unwrap();
+        symlink(&real_bin, link_dir.join("mytool")).expect("symlink");
+
+        let path_var = std::env::join_paths([&link_dir]).unwrap();
+        let resolved = resolve_command_path_with("mytool", path_var.as_os_str());
+
+        // Basename must be `mytool` either way; the important bit is that
+        // the resolver does not error out on same-name symlinks.
+        assert!(
+            resolved.ends_with("/mytool"),
+            "same-name symlink still resolves to a mytool path; got {resolved:?}"
+        );
+    }
+
+    /// End-to-end proof through `PtySession::spawn`: point a shim named
+    /// `codex-shim` at a fake mise that echoes `$0` and every argument, then
+    /// verify the child actually receives `argv[0] = "codex-shim"` and the
+    /// provider flag as its own argument (rather than the mise binary
+    /// receiving the flag).
+    ///
+    /// Passes the shim to `PtySession::spawn` as an absolute path so this
+    /// test does not race on process-wide PATH mutation with sibling tests.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_spawn_preserves_shim_argv0_for_mise_style_symlink() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager_dir = tmp.path().join("mgr");
+        let shim_dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&manager_dir).unwrap();
+        std::fs::create_dir_all(&shim_dir).unwrap();
+
+        // Fake mise: prints argv[0] and all args, then exits.
+        let manager = manager_dir.join("mise");
+        std::fs::write(
+            &manager,
+            b"#!/bin/sh\nprintf 'argv0=%s\\n' \"$0\"\nfor a in \"$@\"; do printf 'arg=%s\\n' \"$a\"; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&manager, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let shim = shim_dir.join("codex-shim");
+        symlink(&manager, &shim).expect("symlink");
+
+        let flag = "--dangerously-bypass-approvals-and-sandbox".to_string();
+        let (pty, mut rx) = PtySession::spawn(
+            shim.to_str().expect("shim path utf8"),
+            &[flag.clone()],
+            24,
+            80,
+        )
+        .expect("spawn shim");
+
+        let mut collected = Vec::new();
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            collected.extend_from_slice(&chunk);
+            let s = String::from_utf8_lossy(&collected);
+            if s.contains("arg=--dangerously-bypass") {
+                break;
+            }
+        }
+        let _ = pty.shutdown();
+
+        let output = String::from_utf8_lossy(&collected);
+        assert!(
+            output.contains("codex-shim"),
+            "child argv[0] must be the shim basename, not the manager binary; got: {output}"
+        );
+        assert!(
+            output.contains("arg=--dangerously-bypass-approvals-and-sandbox"),
+            "provider flag must reach the shim as an argument (not be parsed by the manager); got: {output}"
+        );
     }
 }
