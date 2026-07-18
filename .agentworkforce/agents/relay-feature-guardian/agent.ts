@@ -115,6 +115,7 @@ export const SLACK_WRITEBACK_TIMEOUT_MS = 15_000;
 export const SLACK_WRITEBACK_POLL_MS = 250;
 
 const MAX_STATE_BYTES = 64 * 1024;
+const MAX_SAFE_MANIFEST_SHRINK = 1;
 
 export interface ProgressSnapshot {
   state: ProgressState;
@@ -153,7 +154,11 @@ function isSlackTs(value: unknown): value is string {
   return typeof value === 'string' && /^\d+\.\d+$/.test(value.trim());
 }
 
-function parseProgressState(value: unknown, features: Feature[]): ProgressState {
+function parseProgressState(
+  value: unknown,
+  features: Feature[],
+  options: { allowHistoricalIds?: boolean } = {}
+): ProgressState {
   if (!isRecord(value)) throw new Error('cycle state must be an object');
   if (value.kind !== 'relay-feature-guardian:progress' || value.version !== 3) {
     throw new Error('cycle state kind/version is invalid');
@@ -171,13 +176,18 @@ function parseProgressState(value: unknown, features: Feature[]): ProgressState 
   ) {
     throw new Error('cycle state totalFeatures is invalid');
   }
-  if (!Array.isArray(value.checkedIds) || value.checkedIds.length > features.length) {
+  if (!Array.isArray(value.checkedIds) || value.checkedIds.length > (value.totalFeatures as number)) {
     throw new Error('cycle state checkedIds is invalid');
   }
 
   const knownIds = new Set(features.map((feature) => feature.id));
   const checkedIds = value.checkedIds.map((id) => {
-    if (typeof id !== 'string' || !knownIds.has(id)) {
+    if (
+      typeof id !== 'string' ||
+      id.length === 0 ||
+      id.length > 256 ||
+      (!options.allowHistoricalIds && !knownIds.has(id))
+    ) {
       throw new Error('cycle state contains an unknown feature id');
     }
     return id;
@@ -219,6 +229,19 @@ function parseProgressState(value: unknown, features: Feature[]): ProgressState 
   };
 }
 
+function retiredFeatureIds(state: ProgressState, features: Feature[]): string[] {
+  const currentIds = new Set(features.map((feature) => feature.id));
+  return state.checkedIds.filter((id) => !currentIds.has(id));
+}
+
+function manifestShrinkIsExplained(state: ProgressState, features: Feature[], retiredIds: string[]): boolean {
+  const removedCount = Math.max(0, state.totalFeatures - features.length);
+  // A rename (no shrink) or one explicit retirement is safe to reconcile.
+  // Larger drops are indistinguishable from a partially parsed clone, so keep
+  // the exact state untouched and wait for a complete manifest on a later run.
+  return removedCount <= MAX_SAFE_MANIFEST_SHRINK && removedCount <= retiredIds.length;
+}
+
 function assertValidTransition(
   previous: ProgressSnapshot | null,
   next: ProgressState,
@@ -253,10 +276,13 @@ function assertValidTransition(
     return;
   }
 
+  const retiredIds = retiredFeatureIds(prior, features);
+  const retirementResetAllowed =
+    retiredIds.length > 0 && manifestShrinkIsExplained(prior, features, retiredIds);
   const allCurrentFeaturesChecked = features.every((feature) => prior.checkedIds.includes(feature.id));
   if (
     next.generation !== prior.generation + 1 ||
-    !allCurrentFeaturesChecked ||
+    (!allCurrentFeaturesChecked && !retirementResetAllowed) ||
     next.checkedIds.length !== 0 ||
     next.lastPost ||
     new Date(next.cycleStartedAt) <= new Date(prior.cycleStartedAt)
@@ -310,7 +336,8 @@ async function readHttpSnapshot(
   features: Feature[],
   fetchImpl: FetchLike,
   signal: AbortSignal,
-  correlationId: string
+  correlationId: string,
+  allowHistoricalIds = false
 ): Promise<ProgressSnapshot | null> {
   const response = await fetchImpl(relayfileStateUrl(credentials), {
     method: 'GET',
@@ -338,7 +365,10 @@ async function readHttpSnapshot(
   } catch {
     throw new Error('cycle state contains invalid JSON');
   }
-  return { state: parseProgressState(parsed, features), revision };
+  return {
+    state: parseProgressState(parsed, features, { allowHistoricalIds }),
+    revision,
+  };
 }
 
 export function createHttpProgressStore(
@@ -350,7 +380,14 @@ export function createHttpProgressStore(
   return {
     load: (features) =>
       withDeadline('cycle state load', timeoutMs, (signal) =>
-        readHttpSnapshot(credentials, features, fetchImpl, signal, `guardian-state-load-${randomUUID()}`)
+        readHttpSnapshot(
+          credentials,
+          features,
+          fetchImpl,
+          signal,
+          `guardian-state-load-${randomUUID()}`,
+          true
+        )
       ),
     save: (state, expected, features) => {
       const canonical = parseProgressState(state, features);
@@ -394,7 +431,7 @@ function previewRevision(state: ProgressState): string {
 }
 
 function createPreviewProgressStore(ctx: WorkforceCtx): ProgressStore {
-  const read = async (features: Feature[]): Promise<ProgressSnapshot | null> => {
+  const read = async (features: Feature[], allowHistoricalIds = false): Promise<ProgressSnapshot | null> => {
     let content: string;
     try {
       content = await ctx.files.read(CYCLE_STATE_PATH);
@@ -403,18 +440,20 @@ function createPreviewProgressStore(ctx: WorkforceCtx): ProgressStore {
       throw error;
     }
     if (content.length > MAX_STATE_BYTES) throw new Error('cycle state exceeds size limit');
-    const state = parseProgressState(JSON.parse(content) as unknown, features);
+    const state = parseProgressState(JSON.parse(content) as unknown, features, {
+      allowHistoricalIds,
+    });
     return { state, revision: previewRevision(state) };
   };
   return {
-    load: read,
+    load: (features) => read(features, true),
     save: async (state, expected, features) => {
       const canonical = parseProgressState(state, features);
       if (canonical.totalFeatures !== features.length) {
         throw new Error('cycle state totalFeatures must match the current manifest');
       }
       assertValidTransition(expected, canonical, features);
-      const current = await read(features);
+      const current = await read(features, true);
       if (current?.revision !== expected?.revision) throw new ProgressStateConflictError();
       await ctx.files.write(CYCLE_STATE_PATH, `${JSON.stringify(canonical)}\n`);
       const readBack = await read(features);
@@ -506,7 +545,16 @@ async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise
 
 // ── agent definition ──────────────────────────────────────────────────────────
 
-export async function runGuardian(ctx: WorkforceCtx, _event: WorkforceEvent): Promise<void> {
+export interface GuardianDependencies {
+  createSlackClient?: typeof slackClient;
+}
+
+export async function runGuardian(
+  ctx: WorkforceCtx,
+  _event: WorkforceEvent,
+  dependencies: GuardianDependencies = {}
+): Promise<void> {
+  const createSlackClient = dependencies.createSlackClient ?? slackClient;
   const channel = input(ctx, 'SLACK_CHANNEL');
   if (!channel) {
     ctx.log('warn', 'relay-feature-guardian.no-channel', { reason: 'SLACK_CHANNEL not configured' });
@@ -524,7 +572,7 @@ export async function runGuardian(ctx: WorkforceCtx, _event: WorkforceEvent): Pr
     const errMsg = isNotFound
       ? `⚠️ *relay-feature-guardian* can't find the feature manifest in the cloned relay repository at \`${RELAY_REPO_RELPATH}/${MANIFEST_RELPATH}\`.`
       : `⚠️ *relay-feature-guardian* failed to load the feature manifest: \`${String(err)}\``;
-    await slackClient()
+    await createSlackClient()
       .post(channel, errMsg)
       .catch(() => undefined);
     return;
@@ -535,7 +583,7 @@ export async function runGuardian(ctx: WorkforceCtx, _event: WorkforceEvent): Pr
   });
   if (features.length === 0) {
     ctx.log('error', 'relay-feature-guardian.no-features', { reason: 'manifest parsed but empty' });
-    await slackClient()
+    await createSlackClient()
       .post(
         channel,
         '⚠️ *relay-feature-guardian* loaded the manifest but found no features. Check `.agentworkforce/features/manifest.yaml`.'
@@ -574,9 +622,44 @@ export async function runGuardian(ctx: WorkforceCtx, _event: WorkforceEvent): Pr
     }
   }
 
-  // Manifest additions change the denominator but must never discard already
-  // checked feature ids or overwrite the last delivered receipt.
-  if (progress.state.totalFeatures !== totalFeatures) {
+  const retiredIds = retiredFeatureIds(progress.state, features);
+  if (!manifestShrinkIsExplained(progress.state, features, retiredIds)) {
+    ctx.log('error', 'relay-feature-guardian.progress-reconcile-failed', {
+      err: 'manifest feature count shrank beyond the checked retired ids; refusing a partial-manifest reset',
+      previousTotal: progress.state.totalFeatures,
+      currentTotal: totalFeatures,
+      retiredIds,
+    });
+    return;
+  }
+
+  // A successfully parsed manifest can retire a feature mid-cycle. Historical
+  // IDs are accepted only at load; reset them under exact-revision CAS before
+  // any Slack side effect so the persisted state is canonical again.
+  if (retiredIds.length > 0) {
+    const previousStart = new Date(progress.state.cycleStartedAt).valueOf();
+    const reset: ProgressState = {
+      kind: 'relay-feature-guardian:progress',
+      version: 3,
+      generation: progress.state.generation + 1,
+      checkedIds: [],
+      cycleStartedAt: new Date(Math.max(Date.now(), previousStart + 1)).toISOString(),
+      totalFeatures,
+    };
+    try {
+      progress = await store.save(reset, progress, features);
+      ctx.log('info', 'relay-feature-guardian.manifest-retirement-reset', {
+        retiredIds,
+        generation: progress.state.generation,
+        total: totalFeatures,
+      });
+    } catch (err) {
+      ctx.log('error', 'relay-feature-guardian.progress-reconcile-failed', { err: String(err) });
+      return;
+    }
+  } else if (progress.state.totalFeatures !== totalFeatures) {
+    // Manifest additions change the denominator but must never discard already
+    // checked feature ids or overwrite the last delivered receipt.
     const reconciled: ProgressState = {
       ...progress.state,
       totalFeatures,
@@ -635,7 +718,7 @@ export async function runGuardian(ctx: WorkforceCtx, _event: WorkforceEvent): Pr
   });
 
   // Post to Slack
-  const slack = slackClient({
+  const slack = createSlackClient({
     writebackTimeoutMs: SLACK_WRITEBACK_TIMEOUT_MS,
     writebackPollMs: SLACK_WRITEBACK_POLL_MS,
   });

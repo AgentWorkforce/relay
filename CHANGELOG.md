@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
 - `AgentRelaySDK` now maps Relaycast lifecycle states onto its existing Swift presence states, so root-package consumers compile with Relaycast 6.1 and later while package-local builds remain compatible with 6.0.5.
-- `relay-feature-guardian` now reads the scoped Relay clone, posts to its configured channel, and advances its exact, revision-safe cycle checkpoint only after a bounded wait returns a real Slack receipt.
+- `relay-feature-guardian` now reads the scoped Relay clone, posts to its configured channel, and advances its exact, revision-safe cycle checkpoint only after a bounded wait returns a real Slack receipt, while safely reconciling retired manifest features.
 
 ## [10.6.3] - 2026-07-17
 
