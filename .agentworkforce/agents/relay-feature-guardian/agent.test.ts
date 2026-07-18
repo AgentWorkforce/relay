@@ -23,6 +23,10 @@ import guardian, {
 } from './agent.ts';
 
 const persona = JSON.parse(readFileSync(new URL('./persona.json', import.meta.url), 'utf8')) as {
+  integrations: Record<
+    string,
+    { relayfileMount?: { requiredReadPaths?: unknown; writeOnlyPaths?: unknown } }
+  >;
   inputs: { SLACK_CHANNEL: { default: string } };
 };
 
@@ -316,6 +320,17 @@ describe('relay-feature-guardian runtime paths', () => {
 
   it('defaults delivery to the relay feature-check channel', () => {
     expect(persona.inputs.SLACK_CHANNEL.default).toBe('C0AEKNLDNKW');
+  });
+
+  it('mounts only the manifest directory and configured Slack output channel', () => {
+    expect(persona.integrations.github?.relayfileMount).toEqual({
+      requiredReadPaths: ['/github/repos/AgentWorkforce/relay/.agentworkforce/features/**'],
+      writeOnlyPaths: [],
+    });
+    expect(persona.integrations.slack?.relayfileMount).toEqual({
+      requiredReadPaths: [],
+      writeOnlyPaths: ['/slack/channels/${SLACK_CHANNEL}/**'],
+    });
   });
 
   it('deduplicates an ambiguous post retry and advances after a saved receipt', async () => {

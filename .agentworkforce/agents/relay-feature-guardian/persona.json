@@ -13,11 +13,19 @@
     "github": {
       "scope": {
         "repo": "AgentWorkforce/relay"
+      },
+      "relayfileMount": {
+        "requiredReadPaths": ["/github/repos/AgentWorkforce/relay/.agentworkforce/features/**"],
+        "writeOnlyPaths": []
       }
     },
     "slack": {
       "scope": {
         "paths": "/slack/channels/**"
+      },
+      "relayfileMount": {
+        "requiredReadPaths": [],
+        "writeOnlyPaths": ["/slack/channels/${SLACK_CHANNEL}/**"]
       }
     }
   },
