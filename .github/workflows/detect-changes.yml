@@ -96,24 +96,53 @@ jobs:
               file.startsWith('.cargo/') ||
               file.endsWith('.rs') ||
               ['Cargo.toml', 'Cargo.lock', 'Cross.toml', 'rust-toolchain', 'rust-toolchain.toml'].includes(file);
+            // Agent implementations and their tests are part of the Node test
+            // surface. Other AgentWorkforce records remain inert metadata.
+            const isAgentRuntime = (file) =>
+              file.startsWith('.agentworkforce/agents/');
             // Files no build, test, or lint job consumes.
             const isInert = (file) =>
               file.startsWith('web/') ||
               file.startsWith('docs/') ||
               file.startsWith('specs/') ||
               file.startsWith('.claude/') ||
-              file.startsWith('.agentworkforce/') ||
+              (file.startsWith('.agentworkforce/') && !isAgentRuntime(file)) ||
               file.startsWith('.agents/') ||
               file === 'LICENSE' ||
               (/\.mdx?$/i.test(file) && !file.includes('/'));
 
-            const rustChanged =
-              unknownScope ||
-              files.some((file) => (isRust(file) && !isInert(file)) || isCi(file));
-            const nodeChanged =
-              unknownScope || files.some((file) => !isSwift(file) && !isInert(file));
-            const sdkSwiftChanged =
-              unknownScope || files.some((file) => isSwift(file) || isCi(file));
+            const classifyFiles = (changedFiles) => ({
+              rustChanged: changedFiles.some(
+                (file) => (isRust(file) && !isInert(file)) || isCi(file)
+              ),
+              nodeChanged: changedFiles.some(
+                (file) => !isSwift(file) && !isInert(file)
+              ),
+              sdkSwiftChanged: changedFiles.some(
+                (file) => isSwift(file) || isCi(file)
+              ),
+            });
+
+            // Exercise the exact production classifier with an agent-only
+            // change so future broad inert-path rules fail visibly.
+            const agentRuntimeProbe = classifyFiles([
+              '.agentworkforce/agents/ci-scope-probe.ts',
+            ]);
+            core.info(
+              `agent_runtime_probe rust_changed=${agentRuntimeProbe.rustChanged} node_changed=${agentRuntimeProbe.nodeChanged} sdk_swift_changed=${agentRuntimeProbe.sdkSwiftChanged}`
+            );
+            if (
+              agentRuntimeProbe.rustChanged ||
+              !agentRuntimeProbe.nodeChanged ||
+              agentRuntimeProbe.sdkSwiftChanged
+            ) {
+              throw new Error('Agent-only scope probe must select only Node jobs');
+            }
+
+            const detectedScope = classifyFiles(files);
+            const rustChanged = unknownScope || detectedScope.rustChanged;
+            const nodeChanged = unknownScope || detectedScope.nodeChanged;
+            const sdkSwiftChanged = unknownScope || detectedScope.sdkSwiftChanged;
 
             core.info(`Changed files (${files.length}): ${files.join(', ')}`);
             core.info(

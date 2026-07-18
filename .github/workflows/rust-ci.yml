@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
 
+# Reusable workflows cannot elevate the caller's token permissions.
+# detect-changes.yml reads pull-request file lists and commit comparisons.
+permissions:
+  contents: read
+  pull-requests: read
+
 env:
   CARGO_TERM_COLOR: always
   AGENT_RELAY_TELEMETRY_DISABLED: 1
