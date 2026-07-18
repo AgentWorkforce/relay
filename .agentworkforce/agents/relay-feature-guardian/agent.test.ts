@@ -28,6 +28,7 @@ const persona = JSON.parse(readFileSync(new URL('./persona.json', import.meta.ur
     { relayfileMount?: { requiredReadPaths?: unknown; writeOnlyPaths?: unknown } }
   >;
   inputs: { SLACK_CHANNEL: { default: string } };
+  memory: { enabled: boolean; scopes: string[]; ttlDays: number };
 };
 
 const manifestFeatures = [
@@ -322,10 +323,15 @@ describe('relay-feature-guardian runtime paths', () => {
     expect(persona.inputs.SLACK_CHANNEL.default).toBe('C0AEKNLDNKW');
   });
 
-  it('mounts only the manifest directory and configured Slack output channel', () => {
+  it('declares bounded manifest and memory reads plus configured Slack output', () => {
     expect(persona.integrations.github?.relayfileMount).toEqual({
       requiredReadPaths: ['/github/repos/AgentWorkforce/relay/.agentworkforce/features/**'],
       writeOnlyPaths: [],
+    });
+    expect(persona.memory).toEqual({
+      enabled: true,
+      scopes: ['workspace'],
+      ttlDays: 14,
     });
     expect(persona.integrations.slack?.relayfileMount).toEqual({
       requiredReadPaths: [],
