@@ -93,7 +93,11 @@ export interface CoreDependencies {
   ) => CoreRelay | Promise<CoreRelay>;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
-  execFileCommand: (file: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  execFileCommand: (
+    file: string,
+    args: string[],
+    options?: { timeout?: number }
+  ) => Promise<{ stdout: string; stderr: string }>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   fs: CoreFileSystem;
   generateAgentName: () => string;
@@ -222,8 +226,8 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
         stderr: result.stderr ?? '',
       };
     },
-    execFileCommand: async (file: string, args: string[]) => {
-      const result = await execFileAsync(file, args);
+    execFileCommand: async (file: string, args: string[], options?: { timeout?: number }) => {
+      const result = await execFileAsync(file, args, { timeout: options?.timeout ?? 30_000 });
       return {
         stdout: result.stdout ?? '',
         stderr: result.stderr ?? '',

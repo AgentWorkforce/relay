@@ -1358,7 +1358,9 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.execCommand).toHaveBeenCalledWith('npm install -g agent-relay@latest');
-    expect(deps.execFileCommand).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', '--version']);
+    expect(deps.execFileCommand).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', '--version'], {
+      timeout: 30_000,
+    });
     expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
     expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
       from_version: '1.2.3',
@@ -1440,7 +1442,9 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['update']);
 
     expect(exitCode).toBeUndefined();
-    expect(execFileCommand).toHaveBeenCalledWith(execPath, [cliScript, '--version']);
+    expect(execFileCommand).toHaveBeenCalledWith(execPath, [cliScript, '--version'], {
+      timeout: 30_000,
+    });
     expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
   });
 
@@ -1505,9 +1509,9 @@ describe('registerCoreCommands', () => {
       )
     );
     expect(execCommand).toHaveBeenCalledWith(`chmod +x '${temporary}'`);
-    expect(execFileCommand).toHaveBeenCalledWith(temporary, ['--version']);
+    expect(execFileCommand).toHaveBeenCalledWith(temporary, ['--version'], { timeout: 30_000 });
     expect(execCommand).toHaveBeenCalledWith(`mv -f '${temporary}' '${target}'`);
-    expect(execFileCommand).toHaveBeenCalledWith(target, ['--version']);
+    expect(execFileCommand).toHaveBeenCalledWith(target, ['--version'], { timeout: 30_000 });
     expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
   });
 
@@ -1578,7 +1582,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(execCommand).toHaveBeenCalledWith(`mv -f '${temporary}' '${target}'`);
-    expect(execFileCommand).toHaveBeenCalledWith(target, ['--version']);
+    expect(execFileCommand).toHaveBeenCalledWith(target, ['--version'], { timeout: 30_000 });
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('Successfully updated'));
     expect(deps.warn).toHaveBeenCalledWith('The update could not be installed and verified.');
   });

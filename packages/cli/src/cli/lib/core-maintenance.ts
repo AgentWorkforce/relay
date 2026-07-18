@@ -17,6 +17,7 @@ const DEFAULT_ZED_SERVER_NAME = 'Agent Relay';
 const INSTALL_DIR_NAMES = ['.agentworkforce/relay', '.agent-relay'] as const;
 const STANDALONE_INSTALL_SCRIPT =
   'curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash';
+const CLI_VERSION_TIMEOUT_MS = 30_000;
 
 /**
  * Remove agent-relay snippet blocks from a markdown file's content.
@@ -209,7 +210,9 @@ function parseCliVersion(output: string): string | null {
 }
 
 async function readCliVersion(file: string, args: string[], deps: CoreDependencies): Promise<string> {
-  const { stdout, stderr } = await deps.execFileCommand(file, args);
+  const { stdout, stderr } = await deps.execFileCommand(file, args, {
+    timeout: CLI_VERSION_TIMEOUT_MS,
+  });
   const version = parseCliVersion(`${stdout}\n${stderr}`);
   if (!version) {
     throw new Error('The updated CLI did not report a valid version.');
