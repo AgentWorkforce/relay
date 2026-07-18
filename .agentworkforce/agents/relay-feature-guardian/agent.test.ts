@@ -203,5 +203,12 @@ describe('relay-feature-guardian runtime paths', () => {
         receipt: { externalId: '1710000001.000100' },
       })
     ).toBe('1710000001.000100');
+    expect(
+      deliveredSlackTs({
+        path: '/delivered-via-ts.json',
+        absolutePath: '/delivered-via-ts.json',
+        receipt: { externalId: '   ', ts: '1710000002.000200' },
+      })
+    ).toBe('1710000002.000200');
   });
 });

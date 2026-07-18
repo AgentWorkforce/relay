@@ -140,8 +140,9 @@ export function featurePostIdempotencyKey(cycleStartedAt: string, featureId: str
 
 export function deliveredSlackTs(result: WritebackResult | null | undefined): string {
   const receipt = result?.receipt as { externalId?: unknown; ts?: unknown } | undefined;
-  const value = receipt?.externalId ?? receipt?.ts;
-  return typeof value === 'string' ? value.trim() : '';
+  const externalId = typeof receipt?.externalId === 'string' ? receipt.externalId.trim() : '';
+  if (externalId) return externalId;
+  return typeof receipt?.ts === 'string' ? receipt.ts.trim() : '';
 }
 
 // ── feature selection ─────────────────────────────────────────────────────────
