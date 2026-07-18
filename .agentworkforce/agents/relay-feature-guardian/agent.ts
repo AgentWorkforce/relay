@@ -241,12 +241,44 @@ function retiredFeatureIds(state: ProgressState, features: Feature[]): string[] 
   return state.checkedIds.filter((id) => !currentIds.has(id));
 }
 
-function manifestShrinkIsExplained(state: ProgressState, features: Feature[], retiredIds: string[]): boolean {
+type ManifestDelta = {
+  kind: 'preserve' | 'reset-checked-retirement' | 'unsafe';
+  retiredIds: string[];
+  removedCount: number;
+  reason?: string;
+};
+
+/**
+ * Complete manifest-delta matrix:
+ * - additions and one unchecked removal preserve the current generation;
+ * - one checked retirement/rename resets the generation under CAS;
+ * - larger shrink or multiple missing checked IDs is suspicious and fail-closed;
+ * - manifest read failures never reach this classifier.
+ */
+function classifyManifestDelta(state: ProgressState, features: Feature[]): ManifestDelta {
   const removedCount = Math.max(0, state.totalFeatures - features.length);
-  // A rename (no shrink) or one explicit retirement is safe to reconcile.
-  // Larger drops are indistinguishable from a partially parsed clone, so keep
-  // the exact state untouched and wait for a complete manifest on a later run.
-  return removedCount <= MAX_SAFE_MANIFEST_SHRINK && removedCount <= retiredIds.length;
+  const retiredIds = retiredFeatureIds(state, features);
+  if (removedCount > MAX_SAFE_MANIFEST_SHRINK) {
+    return {
+      kind: 'unsafe',
+      retiredIds,
+      removedCount,
+      reason: 'manifest feature count shrank by more than one; refusing a partial-manifest reset',
+    };
+  }
+  if (retiredIds.length > 1) {
+    return {
+      kind: 'unsafe',
+      retiredIds,
+      removedCount,
+      reason: 'multiple checked feature ids disappeared; refusing an ambiguous manifest reset',
+    };
+  }
+  return {
+    kind: retiredIds.length === 1 ? 'reset-checked-retirement' : 'preserve',
+    retiredIds,
+    removedCount,
+  };
 }
 
 function assertValidTransition(
@@ -283,9 +315,8 @@ function assertValidTransition(
     return;
   }
 
-  const retiredIds = retiredFeatureIds(prior, features);
-  const retirementResetAllowed =
-    retiredIds.length > 0 && manifestShrinkIsExplained(prior, features, retiredIds);
+  const manifestDelta = classifyManifestDelta(prior, features);
+  const retirementResetAllowed = manifestDelta.kind === 'reset-checked-retirement';
   const allCurrentFeaturesChecked = features.every((feature) => prior.checkedIds.includes(feature.id));
   if (
     next.generation !== prior.generation + 1 ||
@@ -633,10 +664,11 @@ export async function runGuardian(
     }
   }
 
-  const retiredIds = retiredFeatureIds(progress.state, features);
-  if (!manifestShrinkIsExplained(progress.state, features, retiredIds)) {
+  const manifestDelta = classifyManifestDelta(progress.state, features);
+  const { retiredIds } = manifestDelta;
+  if (manifestDelta.kind === 'unsafe') {
     ctx.log('error', 'relay-feature-guardian.progress-reconcile-failed', {
-      err: 'manifest feature count shrank beyond the checked retired ids; refusing a partial-manifest reset',
+      err: manifestDelta.reason,
       previousTotal: progress.state.totalFeatures,
       currentTotal: totalFeatures,
       retiredIds,
@@ -647,7 +679,7 @@ export async function runGuardian(
   // A successfully parsed manifest can retire a feature mid-cycle. Historical
   // IDs are accepted only at load; reset them under exact-revision CAS before
   // any Slack side effect so the persisted state is canonical again.
-  if (retiredIds.length > 0) {
+  if (manifestDelta.kind === 'reset-checked-retirement') {
     const previousStart = new Date(progress.state.cycleStartedAt).valueOf();
     const reset: ProgressState = {
       kind: 'relay-feature-guardian:progress',

@@ -423,7 +423,7 @@ describe('relay-feature-guardian runtime paths', () => {
     }
   });
 
-  it('reconciles the manifest total without losing exact progress or lastPost', async () => {
+  it('preserves progress when the manifest adds features', async () => {
     const transport = new IdempotentSlackTransport();
     const restore = bindPreviewTransport(transport);
     const staleTotal = { ...progressState(1), totalFeatures: 121 };
@@ -434,6 +434,32 @@ describe('relay-feature-guardian runtime paths', () => {
       expect(state.totalFeatures).toBe(122);
       expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
       expect(state.lastPost?.featureId).toBe('broker-status');
+    } finally {
+      restore();
+    }
+  });
+
+  it('reconciles one unchecked feature retirement without resetting the generation', async () => {
+    const transport = new IdempotentSlackTransport();
+    const restore = bindPreviewTransport(transport);
+    const staleTotal = { ...progressState(1), totalFeatures: 123 };
+    const { ctx, files } = exactStateContext(JSON.stringify(staleTotal));
+
+    try {
+      await guardian.handler(ctx, { type: 'cron.tick' } as never);
+      expect(transport.attempts).toHaveLength(1);
+      expect((transport.attempts[0].body as { text: string }).text).toContain(
+        'relay feature check · 2/122 · 120 remaining in cycle'
+      );
+      const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
+      expect(state.generation).toBe(1);
+      expect(state.totalFeatures).toBe(122);
+      expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
+      expect(state.lastPost).toEqual({
+        featureId: 'broker-status',
+        ts: '1710000001.000100',
+      });
+      expect(ctx.files.write).toHaveBeenCalledTimes(2);
     } finally {
       restore();
     }
@@ -498,6 +524,39 @@ describe('relay-feature-guardian runtime paths', () => {
           err: expect.stringContaining('refusing a partial-manifest reset'),
           previousTotal: 123,
           currentTotal: 2,
+        })
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('preserves exact progress when multiple checked feature IDs disappear at the same total', async () => {
+    const transport = new IdempotentSlackTransport();
+    const restore = bindPreviewTransport(transport);
+    const seed = JSON.stringify({
+      kind: 'relay-feature-guardian:progress',
+      version: 3,
+      generation: 7,
+      checkedIds: ['broker-up', 'retired-feature-a', 'retired-feature-b'],
+      cycleStartedAt: '2026-07-18T10:26:47.981Z',
+      totalFeatures: 122,
+      lastPost: { featureId: 'retired-feature-b', ts: '1784370419.029509' },
+    });
+    const { ctx, files } = exactStateContext(seed);
+
+    try {
+      await guardian.handler(ctx, { type: 'cron.tick' } as never);
+      expect(transport.attempts).toHaveLength(0);
+      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toEqual(JSON.parse(seed));
+      expect(ctx.log).toHaveBeenCalledWith(
+        'error',
+        'relay-feature-guardian.progress-reconcile-failed',
+        expect.objectContaining({
+          err: expect.stringContaining('multiple checked feature ids disappeared'),
+          previousTotal: 122,
+          currentTotal: 122,
+          retiredIds: ['retired-feature-a', 'retired-feature-b'],
         })
       );
     } finally {
@@ -657,6 +716,22 @@ describe('relay-feature-guardian exact HTTP state', () => {
     const saved = await store.save(reset, loaded, storeFeatures);
 
     expect(saved.state).toEqual(reset);
+    expect(server.requests.filter((request) => request.method === 'PUT')).toEqual([
+      { method: 'PUT', ifMatch: loaded?.revision ?? '' },
+    ]);
+  });
+
+  it('uses the loaded revision for a bounded downward total reconciliation', async () => {
+    const previousState = { ...progressState(1), totalFeatures: 123 };
+    const server = new RelayfileStateServer(previousState);
+    const store = createHttpProgressStore(credentials, { fetchImpl: server.fetch });
+    const loaded = await store.load(storeFeatures);
+    expect(loaded).not.toBeNull();
+
+    const reconciled = { ...previousState, totalFeatures: 122 };
+    const saved = await store.save(reconciled, loaded, storeFeatures);
+
+    expect(saved.state).toEqual(reconciled);
     expect(server.requests.filter((request) => request.method === 'PUT')).toEqual([
       { method: 'PUT', ifMatch: loaded?.revision ?? '' },
     ]);
