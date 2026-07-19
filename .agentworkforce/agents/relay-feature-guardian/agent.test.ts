@@ -960,12 +960,14 @@ describe('relay-feature-guardian delayed Slack receipts', () => {
     }
   });
 
-  it('never advances on a receipt-shaped draft without provider ts', async () => {
+  it('rejects and never advances on a receipt-shaped draft without provider ts', async () => {
     const transport = new ReceiptlessSlackTransport();
     const restore = bindPreviewTransport(transport);
     const { ctx, files } = exactStateContext(JSON.stringify(progressState(1)));
     try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
+      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+        'Slack post failed: no timestamp returned for feature broker-status'
+      );
       expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
       expect(ctx.log).toHaveBeenCalledWith('error', 'relay-feature-guardian.post-failed', {
         channel: 'C0AEKNLDNKW',
