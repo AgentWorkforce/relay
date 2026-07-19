@@ -5,6 +5,10 @@ pub(crate) struct PendingDelivery {
     pub(super) worker_name: WorkerName,
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
+    /// Consecutive broker-to-worker handoff failures. Successful writes reset
+    /// this count because waiting for the PTY to acknowledge an already queued
+    /// delivery is not a failed delivery attempt.
+    pub(super) failed_attempts: u32,
     pub(super) next_retry_at: Instant,
     pub(super) queued_at_ms: u64,
     pub(super) last_error: Option<String>,
@@ -16,6 +20,8 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) worker_name: WorkerName,
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
+    #[serde(default)]
+    pub(super) failed_attempts: u32,
     #[serde(default)]
     pub(super) queued_at_ms: u64,
     #[serde(default)]
@@ -130,6 +136,7 @@ pub(crate) fn save_pending_deliveries(
             worker_name: pd.worker_name.clone(),
             delivery: pd.delivery.clone(),
             attempts: pd.attempts,
+            failed_attempts: pd.failed_attempts,
             queued_at_ms: pd.queued_at_ms,
             last_error: pd.last_error.clone(),
         })
@@ -156,6 +163,7 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
                     worker_name: p.worker_name,
                     delivery: p.delivery,
                     attempts: p.attempts,
+                    failed_attempts: p.failed_attempts,
                     next_retry_at: Instant::now(), // retry immediately on restart
                     queued_at_ms: if p.queued_at_ms == 0 {
                         unix_timestamp_millis()
@@ -671,15 +679,22 @@ pub(crate) async fn queue_and_try_delivery_raw(
             worker_name: WorkerName::new(worker_name),
             delivery,
             attempts: 0,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: unix_timestamp_millis(),
             last_error: None,
         },
     );
 
-    if let DeliveryAttemptOutcome::Failed { last_error, .. } =
-        retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await?
+    if let DeliveryAttemptOutcome::Failed {
+        pending,
+        last_error,
+    } = retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await?
     {
+        // The raw queue path has no dead-letter store/event sender. Preserve
+        // ownership locally so the maintenance retry path can record the
+        // terminal failure instead of silently discarding it here.
+        pending_deliveries.insert(pending.delivery.delivery_id.clone(), *pending);
         anyhow::bail!(last_error);
     }
     Ok(())
@@ -696,7 +711,7 @@ pub(crate) async fn retry_pending_delivery(
         None => return Ok(DeliveryAttemptOutcome::Noop),
     };
 
-    if pending.attempts >= MAX_DELIVERY_RETRIES {
+    if pending.failed_attempts >= MAX_DELIVERY_RETRIES {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
         let last_error = removed
             .last_error
@@ -723,7 +738,9 @@ pub(crate) async fn retry_pending_delivery(
         Ok(()) => {
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
-                current.next_retry_at = Instant::now() + retry_interval;
+                current.failed_attempts = 0;
+                current.next_retry_at = Instant::now()
+                    + delivery_ack_timeout(&current.delivery.injection_mode, retry_interval);
                 current.last_error = None;
                 return Ok(DeliveryAttemptOutcome::Attempted {
                     worker_name: current.worker_name.clone(),
@@ -736,9 +753,10 @@ pub(crate) async fn retry_pending_delivery(
         Err(error) => {
             let should_fail = if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
+                current.failed_attempts = current.failed_attempts.saturating_add(1);
                 current.next_retry_at = Instant::now() + retry_interval;
                 current.last_error = Some(error.to_string());
-                current.attempts >= MAX_DELIVERY_RETRIES
+                current.failed_attempts >= MAX_DELIVERY_RETRIES
             } else {
                 false
             };
@@ -759,6 +777,17 @@ pub(crate) async fn retry_pending_delivery(
             Ok(DeliveryAttemptOutcome::Noop)
         }
     }
+}
+
+pub(crate) fn delivery_ack_timeout(
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> Duration {
+    let minimum = match injection_mode {
+        MessageInjectionMode::Wait => WAIT_DELIVERY_ACK_TIMEOUT,
+        MessageInjectionMode::Steer => crate::broker::delivery_verification::VERIFICATION_WINDOW,
+    };
+    std::cmp::max(retry_interval, minimum)
 }
 
 pub(crate) async fn emit_delivery_attempt_outcome(

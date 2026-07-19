@@ -477,6 +477,27 @@ pub(super) async fn spawn_worker_from_request(
             }
         }
     };
+    let channel_membership_warning = if let Some(token) = worker_relay_key.as_deref() {
+        seed_supplied_agent_token(workspace_http, &name, token);
+        if let Err(error) = workspace_http
+            .ensure_agent_channels(&name, Some(&cli), &channels)
+            .await
+        {
+            tracing::error!(
+                worker = %name,
+                channels = ?channels,
+                error = %error,
+                "worker channel membership reconciliation failed for Relaycast spawn"
+            );
+            Some(format!(
+                "worker channel membership was not fully reconciled: {error}"
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     match workers
         .spawn(
@@ -553,6 +574,7 @@ pub(super) async fn spawn_worker_from_request(
                     "pid": pid,
                     "source": "relaycast_ws",
                     "pre_registered": worker_relay_key.is_some(),
+                    "registration_warning": channel_membership_warning,
                 }),
             )
             .await;

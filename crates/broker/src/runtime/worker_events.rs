@@ -12,6 +12,7 @@ impl BrokerRuntime {
         let workers = &mut self.workers;
         let dedup = &mut self.dedup;
         let pending_deliveries = &mut self.pending_deliveries;
+        let dead_letters = &mut self.dead_letters;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
         let delivery_retry_interval = self.delivery_retry_interval;
@@ -112,9 +113,9 @@ impl BrokerRuntime {
                                 .unwrap_or("");
                             if let Some(pending) = pending_deliveries.get_mut(delivery_id) {
                                 pending.next_retry_at = Instant::now()
-                                    + std::cmp::max(
+                                    + delivery_ack_timeout(
+                                        &pending.delivery.injection_mode,
                                         delivery_retry_interval,
-                                        crate::broker::delivery_verification::VERIFICATION_WINDOW,
                                     );
                             }
                             if let Some(handle) = workers.workers.get_mut(&name) {
@@ -273,17 +274,11 @@ impl BrokerRuntime {
                                     handle.last_activity_at = Instant::now();
                                     handle.state = AgentWorkState::Working;
                                 }
-                                let _ = send_broker_event(
+                                let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
-                                    BrokerEvent::MessageDeliveryFailed {
-                                        name: name.clone(),
-                                        delivery_id: Some(pending.delivery.delivery_id),
-                                        event_id: Some(pending.delivery.event_id),
-                                        from: pending.delivery.from,
-                                        to: pending.delivery.target,
-                                        attempts: pending.attempts,
-                                        last_error: reason.to_string(),
-                                    },
+                                    dead_letters,
+                                    std::slice::from_ref(&pending),
+                                    reason,
                                 )
                                 .await;
                             }

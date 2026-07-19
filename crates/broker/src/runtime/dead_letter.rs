@@ -203,6 +203,7 @@ pub(crate) fn requeue_dead_letter(
         worker_name: entry.worker_name,
         delivery,
         attempts: 0,
+        failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: entry.queued_at_ms,
         last_error: None,
