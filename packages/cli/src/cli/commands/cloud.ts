@@ -142,6 +142,13 @@ type MintedFleetNodeEnrollment = {
   enrollmentUrl: string;
 };
 
+type CloudAuth = Awaited<ReturnType<typeof ensureCloudSession>>['auth'];
+
+type ResolvedCloudWorkspace = {
+  cloudWorkspaceId: string;
+  auth: CloudAuth;
+};
+
 function isCloudLoginError(error: unknown): boolean {
   if (!isObject(error) || typeof error.code !== 'string') {
     return false;
@@ -178,6 +185,59 @@ function enrollmentTokenMintError(response: Response, payload: unknown, workspac
   return new Error(`Failed to mint a Cloud enrollment token: ${detail}`);
 }
 
+function workspaceResolveError(response: Response, payload: unknown, workspaceId: string): Error {
+  if (response.status === 401) {
+    return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+  }
+  if (response.status === 403) {
+    return new Error(`You do not have access to Cloud workspace ${workspaceId}.`);
+  }
+  if (response.status === 404) {
+    return new Error(
+      `Workspace ${workspaceId} was not found by Agent Relay Cloud. ` +
+        'Use a Cloud workspace UUID, unified rw_ workspace ID, or workspace key.'
+    );
+  }
+
+  const detail =
+    isObject(payload) && typeof payload.error === 'string' && payload.error.trim()
+      ? payload.error.trim()
+      : `${response.status} ${response.statusText}`.trim();
+  return new Error(`Failed to resolve Cloud workspace ${workspaceId}: ${detail}`);
+}
+
+async function resolveCloudWorkspace(
+  workspaceId: string,
+  auth: CloudAuth,
+  deps: Pick<CloudDependencies, 'authorizedApiFetch'>
+): Promise<ResolvedCloudWorkspace> {
+  const { response, auth: activeAuth } = await deps.authorizedApiFetch(
+    auth,
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve`,
+    { method: 'GET' },
+    { interactive: false }
+  );
+  const payload = (await response.json().catch(() => null)) as unknown;
+
+  if (!response.ok) {
+    throw workspaceResolveError(response, payload, workspaceId);
+  }
+  if (!isObject(payload) || typeof payload.cloudWorkspaceId !== 'string') {
+    throw new Error(
+      `Workspace ${workspaceId} is not linked to a Cloud workspace and cannot be enrolled with a Cloud login.`
+    );
+  }
+
+  const cloudWorkspaceId = payload.cloudWorkspaceId.trim();
+  if (!cloudWorkspaceId) {
+    throw new Error(
+      `Workspace ${workspaceId} is not linked to a Cloud workspace and cannot be enrolled with a Cloud login.`
+    );
+  }
+
+  return { cloudWorkspaceId, auth: activeAuth };
+}
+
 async function mintFleetNodeEnrollment(
   options: { workspaceId: string; name?: string; maxAgents?: number },
   deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
@@ -192,13 +252,14 @@ async function mintFleetNodeEnrollment(
       apiUrl: defaultApiUrl(),
       interactive: false,
     });
+    const resolved = await resolveCloudWorkspace(workspaceId, session.auth, deps);
     const { response } = await deps.authorizedApiFetch(
-      session.auth,
+      resolved.auth,
       '/api/v1/fleet/enrollment-tokens',
       {
         method: 'POST',
         body: JSON.stringify({
-          workspaceId,
+          workspaceId: resolved.cloudWorkspaceId,
           ...(options.name ? { name: options.name } : {}),
           ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
         }),
@@ -578,7 +639,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .addOption(
       new Option(
         '--workspace <workspaceId>',
-        'Mint an enrollment token using the stored Cloud login'
+        'Resolve a Cloud workspace UUID, unified rw_ ID, or workspace key and mint using the stored login'
       ).conflicts('token')
     )
     .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')
