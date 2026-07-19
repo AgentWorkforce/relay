@@ -230,6 +230,15 @@ pub(crate) async fn dead_letter_pending_delivery(
         attempts: entry.attempts,
         reason: entry.reason.clone(),
     };
+    tracing::warn!(
+        target = "agent_relay::broker",
+        worker = %entry.worker_name,
+        delivery_id = %entry.delivery.delivery_id,
+        event_id = %entry.delivery.event_id,
+        attempts = entry.attempts,
+        reason = %entry.reason,
+        "delivery moved to dead-letter queue"
+    );
     dead_letters.push(entry);
     let _ = send_broker_event(sdk_out_tx, event).await;
 }
