@@ -18,6 +18,7 @@ Picker-gated relay-feature-guardian's Slack integration to the configured SLACK_
 ## Key Decisions
 
 ### Picker-gate Slack without narrowing authorization
+
 - **Chose:** Picker-gate Slack without narrowing authorization
 - **Reasoning:** Cloud derives the runtime mirror from optional plus enabledByInput and the selected SLACK_CHANNEL value. Keeping the existing broad scope preserves authorization while the picker gate and authored write-only path constrain bootstrap to the production channel; the schedule-only agent has no trigger path that can reintroduce the collection root.
 
@@ -26,6 +27,7 @@ Picker-gated relay-feature-guardian's Slack integration to the configured SLACK_
 ## Chapters
 
 ### 1. Initial work
-*Agent: pa-migrate*
+
+_Agent: pa-migrate_
 
 - Picker-gate Slack without narrowing authorization: Picker-gate Slack without narrowing authorization
