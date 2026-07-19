@@ -20,6 +20,8 @@
       }
     },
     "slack": {
+      "optional": true,
+      "enabledByInput": "SLACK_CHANNEL",
       "scope": {
         "paths": "/slack/channels/**"
       },

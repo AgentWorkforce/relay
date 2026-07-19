@@ -1,0 +1,53 @@
+{
+  "id": "traj_u2rlmhnu5q7f",
+  "version": 1,
+  "task": {
+    "title": "Narrow relay-feature-guardian Slack mount"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-19T08:09:40.983Z",
+  "completedAt": "2026-07-19T08:11:46.890Z",
+  "agents": [
+    {
+      "name": "pa-migrate",
+      "role": "lead",
+      "joinedAt": "2026-07-19T08:09:41.053Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_m1gaq6hxn80w",
+      "title": "Initial work",
+      "agentName": "pa-migrate",
+      "startedAt": "2026-07-19T08:09:41.053Z",
+      "endedAt": "2026-07-19T08:11:46.890Z",
+      "events": [
+        {
+          "ts": 1784448617797,
+          "type": "decision",
+          "content": "Picker-gate Slack without narrowing authorization: Picker-gate Slack without narrowing authorization",
+          "raw": {
+            "question": "Picker-gate Slack without narrowing authorization",
+            "chosen": "Picker-gate Slack without narrowing authorization",
+            "alternatives": [],
+            "reasoning": "Cloud derives the runtime mirror from optional plus enabledByInput and the selected SLACK_CHANNEL value. Keeping the existing broad scope preserves authorization while the picker gate and authored write-only path constrain bootstrap to the production channel; the schedule-only agent has no trigger path that can reintroduce the collection root."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Picker-gated relay-feature-guardian's Slack integration to the configured SLACK_CHANNEL, pinned the contract in the persona test, and documented the patch. Focused tests and production-shaped CLI dry-run pass.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7d1faa47919a7324c671bd1df9671ae3f8033a7d",
+    "endRef": "7d1faa47919a7324c671bd1df9671ae3f8033a7d"
+  }
+}

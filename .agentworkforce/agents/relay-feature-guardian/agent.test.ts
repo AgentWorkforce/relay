@@ -25,7 +25,11 @@ import guardian, {
 const persona = JSON.parse(readFileSync(new URL('./persona.json', import.meta.url), 'utf8')) as {
   integrations: Record<
     string,
-    { relayfileMount?: { requiredReadPaths?: unknown; writeOnlyPaths?: unknown } }
+    {
+      optional?: boolean;
+      enabledByInput?: string;
+      relayfileMount?: { requiredReadPaths?: unknown; writeOnlyPaths?: unknown };
+    }
   >;
   inputs: { SLACK_CHANNEL: { default: string } };
   memory: { enabled: boolean; scopes: string[]; ttlDays: number };
@@ -333,9 +337,13 @@ describe('relay-feature-guardian runtime paths', () => {
       scopes: ['workspace'],
       ttlDays: 14,
     });
-    expect(persona.integrations.slack?.relayfileMount).toEqual({
-      requiredReadPaths: [],
-      writeOnlyPaths: ['/slack/channels/${SLACK_CHANNEL}/**'],
+    expect(persona.integrations.slack).toMatchObject({
+      optional: true,
+      enabledByInput: 'SLACK_CHANNEL',
+      relayfileMount: {
+        requiredReadPaths: [],
+        writeOnlyPaths: ['/slack/channels/${SLACK_CHANNEL}/**'],
+      },
     });
   });
 
