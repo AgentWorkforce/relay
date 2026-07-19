@@ -7,6 +7,7 @@
     "workspaceId": "ws_cross_repo",
     "agentCount": 1,
     "pendingDeliveryCount": 0,
+    "deadLetterCount": 0,
     "wsConnections": 1,
     "memoryMb": 256,
     "relaycastConnected": true

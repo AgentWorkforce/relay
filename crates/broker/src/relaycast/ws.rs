@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use relaycast::{
@@ -6,7 +6,7 @@ use relaycast::{
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
     CompleteInvocationRequest, CreateObserverTokenRequest, MessageListQuery, ObserverToken,
-    RegisterActionRequest, RelayCast, RelayCastOptions, ReleaseAgentRequest,
+    RegisterActionRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
 };
 use serde_json::Value;
 
@@ -440,6 +440,125 @@ impl RelaycastHttpClient {
         Ok(())
     }
 
+    /// Ensure a spawned worker is a Relaycast member of every channel in its
+    /// broker spec. The worker token must already be seeded in the registration
+    /// cache; otherwise creating a client for an existing name can rotate that
+    /// agent's token (see [`Self::registered_agent_client_as`]).
+    pub(crate) async fn ensure_agent_channels(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+        channels: &[crate::ids::ChannelName],
+    ) -> Result<()> {
+        if channels.is_empty() {
+            return Ok(());
+        }
+        let agent_client = self
+            .registered_agent_client_as(agent_name, cli_hint)
+            .await
+            .with_context(|| {
+                format!("failed to authenticate worker '{agent_name}' for channel membership")
+            })?;
+        let mut seen = BTreeSet::new();
+        let mut failures = Vec::new();
+        for channel in channels {
+            let name = channel.as_str();
+            if !seen.insert(name.to_ascii_lowercase()) {
+                continue;
+            }
+            match agent_client
+                .ensure_joined_channel(relaycast::CreateChannelRequest {
+                    name: name.to_string(),
+                    topic: None,
+                    metadata: None,
+                })
+                .await
+            {
+                Ok(outcome) => {
+                    tracing::info!(
+                        worker = %agent_name,
+                        channel = %outcome.name,
+                        created = outcome.created,
+                        joined = outcome.joined,
+                        "ensured worker channel membership"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        worker = %agent_name,
+                        channel = %name,
+                        error = %error,
+                        "failed to ensure worker channel membership"
+                    );
+                    failures.push(format!("{name}: {error}"));
+                }
+            }
+        }
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "failed to join worker '{agent_name}' to channels: {}",
+                failures.join("; ")
+            );
+        }
+        Ok(())
+    }
+
+    /// Reconcile worker-side Relaycast membership when the broker removes
+    /// channels from a running worker's spec. Missing memberships are already
+    /// in the desired state and are treated as success.
+    pub(crate) async fn leave_agent_channels(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+        channels: &[crate::ids::ChannelName],
+    ) -> Result<()> {
+        if channels.is_empty() {
+            return Ok(());
+        }
+        let agent_client = self
+            .registered_agent_client_as(agent_name, cli_hint)
+            .await
+            .with_context(|| {
+                format!("failed to authenticate worker '{agent_name}' for channel membership")
+            })?;
+        let mut seen = BTreeSet::new();
+        let mut failures = Vec::new();
+        for channel in channels {
+            let name = channel.as_str();
+            if !seen.insert(name.to_ascii_lowercase()) {
+                continue;
+            }
+            match agent_client.leave_channel(name).await {
+                Ok(())
+                | Err(RelayError::Api {
+                    status: 404 | 409, ..
+                }) => {
+                    tracing::info!(
+                        worker = %agent_name,
+                        channel = %name,
+                        "reconciled worker channel removal"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        worker = %agent_name,
+                        channel = %name,
+                        error = %error,
+                        "failed to remove worker channel membership"
+                    );
+                    failures.push(format!("{name}: {error}"));
+                }
+            }
+        }
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "failed to remove worker '{agent_name}' from channels: {}",
+                failures.join("; ")
+            );
+        }
+        Ok(())
+    }
+
     /// Fetch recent DM history for an agent via the Relaycast REST API.
     pub async fn get_dms(&self, agent: &str, limit: usize) -> Result<Vec<Value>> {
         let agent_client = self.registered_agent_client().await?;
@@ -672,6 +791,8 @@ mod tests {
     use relaycast::AgentRegistrationError;
     use serde_json::json;
 
+    use crate::ids::ChannelName;
+
     use super::{
         format_worker_preregistration_error, registration_is_retryable,
         registration_retry_after_secs, MessageInjectionMode, RelaycastHttpClient,
@@ -752,6 +873,59 @@ mod tests {
 
         assert_eq!(result["agent_id"], "agent_existing_recipient");
         read_mock.assert_hits(1);
+        spawn_mock.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn worker_channel_membership_is_reconciled_for_mention_fanout() {
+        let server = MockServer::start();
+        let create_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels")
+                .header("authorization", "Bearer at_live_lead")
+                .body_contains("\"name\":\"pa-fixes-hardening\"");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "channel_already_exists",
+                    "message": "Channel exists"
+                }
+            }));
+        });
+        let join_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels/pa-fixes-hardening/join")
+                .header("authorization", "Bearer at_live_lead");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "already_member",
+                    "message": "Already joined"
+                }
+            }));
+        });
+        let spawn_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(500).json_body(json!({
+                "ok": false,
+                "error": { "code": "wrong_identity", "message": "must not respawn" }
+            }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("lead", "at_live_lead");
+
+        client
+            .ensure_agent_channels(
+                "lead",
+                Some("claude"),
+                &[ChannelName::from("pa-fixes-hardening")],
+            )
+            .await
+            .expect("worker channel membership should be idempotently reconciled");
+
+        create_mock.assert_hits(1);
+        join_mock.assert_hits(1);
         spawn_mock.assert_hits(0);
     }
 

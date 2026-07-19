@@ -342,6 +342,24 @@ impl BrokerRuntime {
                         }
                     }
                 };
+                if let Some(token) = worker_relay_key.as_deref() {
+                    seed_supplied_agent_token(relaycast_http, &name, token);
+                    if let Err(error) = relaycast_http
+                        .ensure_agent_channels(
+                            &name,
+                            rst.payload.spec.cli.as_deref(),
+                            &rst.payload.spec.channels,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            worker = %name,
+                            channels = ?rst.payload.spec.channels,
+                            error = %error,
+                            "worker channel membership reconciliation failed before restart"
+                        );
+                    }
+                }
 
                 match workers
                     .spawn(

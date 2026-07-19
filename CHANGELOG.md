@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay cloud enroll --workspace <id>` now mints and redeems a fleet-node enrollment token from the stored Cloud login, so admins can enroll machines without copying tokens from the dashboard.
+- `agent-relay-broker` `/health` now reports `deadLetterCount`, making terminal delivery loss visible alongside the pending queue.
+
+### Fixed
+
+- `agent-relay-broker` now keeps wait-mode PTY deliveries pending through busy turns and enrolls spawned workers in their declared Relaycast channels, preventing premature dead-lettering and missing channel mentions.
 
 ## [10.6.4] - 2026-07-18
 
