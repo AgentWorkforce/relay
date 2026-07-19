@@ -149,6 +149,9 @@ type ResolvedCloudWorkspace = {
   auth: CloudAuth;
 };
 
+const CLOUD_WORKSPACE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UNIFIED_WORKSPACE_ID_PATTERN = /^rw_[a-z0-9]{8}$/;
+
 function isCloudLoginError(error: unknown): boolean {
   if (!isObject(error) || typeof error.code !== 'string') {
     return false;
@@ -185,17 +188,17 @@ function enrollmentTokenMintError(response: Response, payload: unknown, workspac
   return new Error(`Failed to mint a Cloud enrollment token: ${detail}`);
 }
 
-function workspaceResolveError(response: Response, payload: unknown, workspaceId: string): Error {
+function workspaceResolveError(response: Response, payload: unknown): Error {
   if (response.status === 401) {
     return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
   }
   if (response.status === 403) {
-    return new Error(`You do not have access to Cloud workspace ${workspaceId}.`);
+    return new Error('You do not have access to that Cloud workspace.');
   }
   if (response.status === 404) {
     return new Error(
-      `Workspace ${workspaceId} was not found by Agent Relay Cloud. ` +
-        'Use a Cloud workspace UUID, unified rw_ workspace ID, or workspace key.'
+      'The workspace identifier was not found by Agent Relay Cloud. ' +
+        'Use a Cloud workspace UUID or unified rw_ workspace ID.'
     );
   }
 
@@ -203,7 +206,7 @@ function workspaceResolveError(response: Response, payload: unknown, workspaceId
     isObject(payload) && typeof payload.error === 'string' && payload.error.trim()
       ? payload.error.trim()
       : `${response.status} ${response.statusText}`.trim();
-  return new Error(`Failed to resolve Cloud workspace ${workspaceId}: ${detail}`);
+  return new Error(`Failed to resolve the Cloud workspace: ${detail}`);
 }
 
 async function resolveCloudWorkspace(
@@ -220,19 +223,15 @@ async function resolveCloudWorkspace(
   const payload = (await response.json().catch(() => null)) as unknown;
 
   if (!response.ok) {
-    throw workspaceResolveError(response, payload, workspaceId);
+    throw workspaceResolveError(response, payload);
   }
   if (!isObject(payload) || typeof payload.cloudWorkspaceId !== 'string') {
-    throw new Error(
-      `Workspace ${workspaceId} is not linked to a Cloud workspace and cannot be enrolled with a Cloud login.`
-    );
+    throw new Error('That identifier is not linked to a Cloud workspace and cannot be enrolled.');
   }
 
   const cloudWorkspaceId = payload.cloudWorkspaceId.trim();
   if (!cloudWorkspaceId) {
-    throw new Error(
-      `Workspace ${workspaceId} is not linked to a Cloud workspace and cannot be enrolled with a Cloud login.`
-    );
+    throw new Error('That identifier is not linked to a Cloud workspace and cannot be enrolled.');
   }
 
   return { cloudWorkspaceId, auth: activeAuth };
@@ -245,6 +244,11 @@ async function mintFleetNodeEnrollment(
   const workspaceId = options.workspaceId.trim();
   if (!workspaceId) {
     throw new Error('A workspace ID is required for session-based enrollment.');
+  }
+  if (!CLOUD_WORKSPACE_UUID_PATTERN.test(workspaceId) && !UNIFIED_WORKSPACE_ID_PATTERN.test(workspaceId)) {
+    throw new Error(
+      'Unsupported Cloud workspace identifier. Use a Cloud workspace UUID or unified rw_ workspace ID.'
+    );
   }
 
   try {
@@ -639,7 +643,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .addOption(
       new Option(
         '--workspace <workspaceId>',
-        'Resolve a Cloud workspace UUID, unified rw_ ID, or workspace key and mint using the stored login'
+        'Resolve a Cloud workspace UUID or unified rw_ ID and mint using the stored login'
       ).conflicts('token')
     )
     .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')

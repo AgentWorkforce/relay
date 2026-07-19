@@ -808,7 +808,7 @@ describe('registerCloudCommands', () => {
     const { program, deps } = createHarness();
 
     await expect(
-      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_cloud_123'])
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
     ).rejects.toThrow('exit:1');
 
     expect(deps.error).toHaveBeenCalledWith('Cloud login required. Run `agent-relay cloud login` and retry.');
@@ -819,12 +819,12 @@ describe('registerCloudCommands', () => {
     {
       status: 403,
       body: { error: 'Forbidden' },
-      message: 'You do not have permission to enroll nodes in workspace rw_cloud_123',
+      message: 'You do not have permission to enroll nodes in workspace rw_7ccfea89',
     },
     {
       status: 404,
       body: { error: 'Workspace not found' },
-      message: 'Workspace rw_cloud_123 was not found',
+      message: 'Workspace rw_7ccfea89 was not found',
     },
   ])('cloud enroll --workspace maps a $status mint response', async ({ status, body, message }) => {
     const auth = {
@@ -852,7 +852,7 @@ describe('registerCloudCommands', () => {
     const { program, deps } = createHarness();
 
     await expect(
-      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_cloud_123'])
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
     ).rejects.toThrow('exit:1');
 
     expect(deps.error).toHaveBeenCalledWith(expect.stringContaining(message));
@@ -885,41 +885,31 @@ describe('registerCloudCommands', () => {
     const { program, deps } = createHarness();
 
     await expect(
-      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_cloud_123'])
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
     ).rejects.toThrow('exit:1');
 
     expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('Retry-After: 180 seconds'));
     expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
   });
 
-  it('cloud enroll --workspace rejects a Relaycast-only workspace ID before minting', async () => {
-    const auth = {
-      apiUrl: 'https://cloud.test',
-      accessToken: 'access-secret',
-      refreshToken: 'refresh-secret',
-      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
-    };
-    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
-    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
-      response: new Response(JSON.stringify({ error: 'Workspace not found' }), {
-        status: 404,
-        headers: { 'content-type': 'application/json' },
-      }),
-      auth,
-    });
-    const { program, deps } = createHarness();
+  it.each(['204337648549896192', 'rk_live_SECRET'])(
+    'cloud enroll --workspace rejects unsupported identifier %s without disclosing it',
+    async (workspaceId) => {
+      const { program, deps } = createHarness();
 
-    await expect(
-      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', '204337648549896192'])
-    ).rejects.toThrow('exit:1');
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', workspaceId])
+      ).rejects.toThrow('exit:1');
 
-    expect(deps.error).toHaveBeenCalledWith(
-      'Workspace 204337648549896192 was not found by Agent Relay Cloud. ' +
-        'Use a Cloud workspace UUID, unified rw_ workspace ID, or workspace key.'
-    );
-    expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
-    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
-  });
+      expect(deps.error).toHaveBeenCalledWith(
+        'Unsupported Cloud workspace identifier. Use a Cloud workspace UUID or unified rw_ workspace ID.'
+      );
+      expect(deps.error.mock.calls.flat().join('\n')).not.toContain(workspaceId);
+      expect(ensureCloudSession).not.toHaveBeenCalled();
+      expect(authorizedApiFetch).not.toHaveBeenCalled();
+      expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+    }
+  );
 
   it('cloud enroll rejects --token and --workspace together before using either credential', async () => {
     const { program } = createHarness();
