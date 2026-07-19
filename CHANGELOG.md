@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay node up --background` now preserves persisted Cloud enrollment credentials and node identity through detached startup, and fails instead of reporting healthy when the enrolled node cannot connect.
+- `agent-relay-broker` now waits for a worker readiness handshake before completing a fleet spawn action, so a CLI that exits during startup produces `action.failed` instead of a false `spawned: true` result.
+- Strict-name MCP registration now fails atomically when another session already owns the identity, rather than rotating that session's token and causing both sessions to invalidate each other.
+- Broker dead-lettering now emits a structured warning with the worker, delivery, attempt count, and reason, making persisted undeliverable messages visible to operators.
 
 ## [10.6.1] - 2026-07-16
 
