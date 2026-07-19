@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     time::timeout,
 };
 
@@ -41,6 +41,11 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
 ];
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
 const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
+/// A spawned shim must prove it can receive `init_worker` and report readiness
+/// before the caller is told that the agent exists. PTY workers have their own
+/// 25-second readiness fallback, so this leaves enough headroom for that frame
+/// to traverse the broker pipe.
+const WORKER_STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Working/idle activity inference from PTY output comes from the
 // harness-agnostic `relay-pty` crate.
@@ -89,6 +94,7 @@ pub(crate) struct WorkerRegistry {
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
     worker_logs_dir: PathBuf,
+    worker_program_override: Option<PathBuf>,
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
@@ -114,9 +120,29 @@ impl WorkerRegistry {
             event_tx,
             worker_env,
             worker_logs_dir,
+            worker_program_override: None,
             initial_tasks: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_worker_program_override(&mut self, program: PathBuf) {
+        self.worker_program_override = Some(program);
+    }
+
+    async fn remove_failed_startup(&mut self, name: &WorkerName) {
+        let Some(mut handle) = self.workers.remove(name) else {
+            return;
+        };
+        self.initial_tasks.remove(name);
+        if let Err(error) = terminate_child(&mut handle.child, DEFAULT_RELEASE_GRACE).await {
+            tracing::warn!(
+                worker = %name,
+                error = %error,
+                "failed to terminate worker after startup readiness failure"
+            );
         }
     }
 
@@ -297,8 +323,11 @@ impl WorkerRegistry {
             "spawning worker"
         );
 
-        let mut command =
-            Command::new(std::env::current_exe().context("failed to locate current executable")?);
+        let worker_program = self.worker_program_override.clone();
+        let mut command = Command::new(
+            worker_program
+                .unwrap_or(std::env::current_exe().context("failed to locate current executable")?),
+        );
         let mut harness_env: Vec<(String, String)> = Vec::new();
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
@@ -800,6 +829,7 @@ impl WorkerRegistry {
         let stdout = child.stdout.take().context("worker missing stdout pipe")?;
         let stderr = child.stderr.take().context("worker missing stderr pipe")?;
         let log_file = self.worker_log_path(&spec.name);
+        let (startup_ready_tx, startup_ready_rx) = oneshot::channel();
 
         spawn_worker_reader(
             self.event_tx.clone(),
@@ -808,6 +838,7 @@ impl WorkerRegistry {
             stdout,
             true,
             log_file.clone(),
+            Some(startup_ready_tx),
         );
         spawn_worker_reader(
             self.event_tx.clone(),
@@ -816,6 +847,7 @@ impl WorkerRegistry {
             stderr,
             false,
             log_file,
+            None,
         );
 
         let handle = WorkerHandle {
@@ -833,15 +865,38 @@ impl WorkerRegistry {
         };
         self.workers.insert(spec.name.clone(), handle);
 
-        self.send_to_worker(
-            &spec.name,
-            "init_worker",
-            None,
-            json!({
-                "agent": spec,
-            }),
-        )
-        .await?;
+        if let Err(error) = self
+            .send_to_worker(
+                &spec.name,
+                "init_worker",
+                None,
+                json!({
+                    "agent": spec,
+                }),
+            )
+            .await
+        {
+            self.remove_failed_startup(&spec.name).await;
+            return Err(error).context("failed to initialise worker during startup");
+        }
+
+        let startup_result = match timeout(WORKER_STARTUP_READY_TIMEOUT, startup_ready_rx).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(error))) => Err(anyhow::anyhow!(error)),
+            Ok(Err(_)) => Err(anyhow::anyhow!(
+                "worker '{}' closed its startup stream before worker_ready",
+                spec.name
+            )),
+            Err(_) => Err(anyhow::anyhow!(
+                "worker '{}' did not emit worker_ready within {} seconds",
+                spec.name,
+                WORKER_STARTUP_READY_TIMEOUT.as_secs()
+            )),
+        };
+        if let Err(error) = startup_result {
+            self.remove_failed_startup(&spec.name).await;
+            return Err(error).context("worker failed startup readiness handshake");
+        }
 
         tracing::info!(
             target = "broker::spawn",
@@ -1486,6 +1541,7 @@ fn spawn_worker_reader<R>(
     reader: R,
     parse_json: bool,
     log_file_path: Option<PathBuf>,
+    startup_ready_tx: Option<oneshot::Sender<std::result::Result<(), String>>>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -1535,6 +1591,7 @@ fn spawn_worker_reader<R>(
     }
 
     tokio::spawn(async move {
+        let mut startup_ready_tx = startup_ready_tx;
         let mut log_file = match log_file_path.as_ref() {
             Some(path) => match tokio::fs::OpenOptions::new()
                 .create(true)
@@ -1562,6 +1619,21 @@ fn spawn_worker_reader<R>(
         while let Ok(Some(line)) = lines.next_line().await {
             if parse_json {
                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                    let msg_type = value.get("type").and_then(Value::as_str);
+                    if let Some(readiness_tx) = startup_ready_tx.take() {
+                        match msg_type {
+                            Some("worker_ready") => {
+                                let _ = readiness_tx.send(Ok(()));
+                            }
+                            Some("worker_exited") => {
+                                let _ = readiness_tx.send(Err(format!(
+                                    "worker '{}' exited before worker_ready",
+                                    name
+                                )));
+                            }
+                            _ => startup_ready_tx = Some(readiness_tx),
+                        }
+                    }
                     if value
                         .get("type")
                         .and_then(Value::as_str)
@@ -1636,13 +1708,19 @@ fn spawn_worker_reader<R>(
                 break;
             }
         }
+        if let Some(readiness_tx) = startup_ready_tx {
+            let _ = readiness_tx.send(Err(format!(
+                "worker '{}' closed its startup stream before worker_ready",
+                name
+            )));
+        }
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppServerHarnessAuth, AppServerHarnessHost};
+    use crate::protocol::{AppServerHarnessAuth, AppServerHarnessHost, PtyHarnessConfig};
 
     fn make_registry(env: Vec<(String, String)>) -> WorkerRegistry {
         let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
@@ -1686,6 +1764,72 @@ mod tests {
         let reg = make_registry(env);
         assert_eq!(reg.env_value("KEY"), Some("val"));
         assert_eq!(reg.env_value("MISSING"), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn immediately_exiting_cli_is_not_reported_as_spawned() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temporary worker test directory");
+        let shim = temp.path().join("pty-shim");
+        // The broker launches its own `pty` subcommand. This shim waits for
+        // `init_worker`, then executes the deliberately failing CLI named in
+        // the harness config below (`false`). Before the readiness gate, this
+        // sequence returned `Ok` after the OS-level process spawn.
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\nIFS= read -r init\nwhile [ \"$1\" != \"false\" ]; do shift; done\nexec \"$@\"\n",
+        )
+        .expect("write pty shim");
+        let mut permissions = std::fs::metadata(&shim)
+            .expect("pty shim metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shim, permissions).expect("make pty shim executable");
+
+        let mut registry = make_registry(Vec::new());
+        registry.set_worker_program_override(shim);
+        let spec = AgentSpec {
+            name: WorkerName::from("immediate-exit"),
+            runtime: AgentRuntime::Pty,
+            provider: None,
+            cli: Some("false".to_string()),
+            session_id: None,
+            harness_config: Some(ResolvedHarnessConfig::Pty(PtyHarnessConfig {
+                command: "false".to_string(),
+                args: Vec::new(),
+                cwd: None,
+                env: None,
+                session_id: None,
+                delivery: None,
+                metadata: None,
+            })),
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            registry.spawn(spec, None, None, None, true, None, None),
+        )
+        .await
+        .expect("startup readiness must resolve promptly");
+
+        assert!(
+            result.is_err(),
+            "a CLI that exits before emitting worker_ready must not be reported as spawned"
+        );
+        assert!(
+            !registry.has_worker("immediate-exit"),
+            "failed startup must not leave a dead worker registered"
+        );
     }
 
     fn make_app_server_config() -> HeadlessHarnessConfig {
