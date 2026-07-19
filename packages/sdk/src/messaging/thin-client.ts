@@ -91,6 +91,8 @@ export interface RelayRawGroupConversation {
 export interface RelayWorkspaceThinClient {
   readonly agents: {
     list(options?: RelayListAgentsOptions): Promise<unknown[]>;
+    /** Register a new agent and fail if that identity already exists. */
+    register(input: RelayRegisterAgentInput): Promise<RelayRawAgentRegistration>;
     /** Register an agent, rotating its token when the name already exists. */
     registerOrRotate(input: RelayRegisterAgentInput): Promise<RelayRawAgentRegistration>;
     /** Ask the relay to spawn a provider-backed worker. */

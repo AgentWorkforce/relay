@@ -37,17 +37,19 @@ describe('registerAgentWithRebind', () => {
     });
   });
 
-  it('re-registers when the strict-named identity was dropped from the agents map', async () => {
+  it('uses conflict-safe registration when the strict-named identity was dropped from the agents map', async () => {
     // After an `agent_token_invalid` recovery, the active token is null and
     // the identity is missing from session.agents. The short-circuit must
-    // fall through to registerOrRotate instead of handing back the dead token.
+    // fall through to plain registration instead of handing back the dead
+    // token or rotating a different live session's token.
     const setSession = vi.fn();
-    const registerOrRotate = vi.fn().mockResolvedValue({
+    const register = vi.fn().mockResolvedValue({
       id: 'agent_456',
       name: 'WorkerA',
       token: 'at_live_fresh',
       status: 'online',
     });
+    const registerOrRotate = vi.fn();
 
     const payload = await registerAgentWithRebind({
       session: {
@@ -59,14 +61,15 @@ describe('registerAgentWithRebind', () => {
       setSession,
       getRelay: () =>
         ({
-          agents: { registerOrRotate },
+          agents: { register, registerOrRotate },
         }) as never,
       name: 'WorkerA',
       strictAgentName: true,
       preferredAgentName: 'WorkerA',
     });
 
-    expect(registerOrRotate).toHaveBeenCalledOnce();
+    expect(register).toHaveBeenCalledOnce();
+    expect(registerOrRotate).not.toHaveBeenCalled();
     expect(payload).toMatchObject({ token: 'at_live_fresh', registered_name: 'WorkerA' });
   });
 
@@ -74,12 +77,13 @@ describe('registerAgentWithRebind', () => {
     // Edge case: token is still set but the identity was evicted. The session
     // is in an inconsistent state, so a fresh registration is the safe path.
     const setSession = vi.fn();
-    const registerOrRotate = vi.fn().mockResolvedValue({
+    const register = vi.fn().mockResolvedValue({
       id: 'agent_789',
       name: 'WorkerA',
       token: 'at_live_rotated',
       status: 'online',
     });
+    const registerOrRotate = vi.fn();
 
     await registerAgentWithRebind({
       session: {
@@ -91,14 +95,15 @@ describe('registerAgentWithRebind', () => {
       setSession,
       getRelay: () =>
         ({
-          agents: { registerOrRotate },
+          agents: { register, registerOrRotate },
         }) as never,
       name: 'WorkerA',
       strictAgentName: true,
       preferredAgentName: 'WorkerA',
     });
 
-    expect(registerOrRotate).toHaveBeenCalledOnce();
+    expect(register).toHaveBeenCalledOnce();
+    expect(registerOrRotate).not.toHaveBeenCalled();
   });
 
   it('prefers the per-identity token from the agents map when available', async () => {
@@ -126,14 +131,15 @@ describe('registerAgentWithRebind', () => {
     expect(payload).toMatchObject({ token: 'at_live_per_identity' });
   });
 
-  it('registers or rotates and updates the bound session token', async () => {
+  it('uses conflict-safe registration for a strict worker identity', async () => {
     const setSession = vi.fn();
-    const registerOrRotate = vi.fn().mockResolvedValue({
+    const register = vi.fn().mockResolvedValue({
       id: 'agent_123',
       name: 'WorkerA',
       token: 'at_live_rotated',
       status: 'online',
     });
+    const registerOrRotate = vi.fn();
 
     const payload = await registerAgentWithRebind({
       session: {
@@ -145,6 +151,7 @@ describe('registerAgentWithRebind', () => {
       getRelay: () =>
         ({
           agents: {
+            register,
             registerOrRotate,
           },
         }) as never,
@@ -156,7 +163,7 @@ describe('registerAgentWithRebind', () => {
       preferredAgentName: 'WorkerA',
     });
 
-    expect(registerOrRotate).toHaveBeenCalledWith({
+    expect(register).toHaveBeenCalledWith({
       name: 'WorkerA',
       type: 'agent',
       persona: 'Test worker',
@@ -173,6 +180,34 @@ describe('registerAgentWithRebind', () => {
       registered_name: 'WorkerA',
       warnings: [],
     });
+    expect(registerOrRotate).not.toHaveBeenCalled();
+  });
+
+  it('does not rotate a strict identity when plain registration reports a name conflict', async () => {
+    const setSession = vi.fn();
+    const conflict = Object.assign(new Error('agent name already exists'), { code: 'name_conflict' });
+    const register = vi.fn().mockRejectedValue(conflict);
+    const registerOrRotate = vi.fn();
+
+    await expect(
+      registerAgentWithRebind({
+        session: {
+          workspaceKey: 'rk_live_test',
+          agentToken: null,
+          agentName: 'WorkerA',
+          agents: new Map(),
+        },
+        setSession,
+        getRelay: () => ({ agents: { register, registerOrRotate } }) as never,
+        name: 'WorkerA',
+        strictAgentName: true,
+        preferredAgentName: 'WorkerA',
+      })
+    ).rejects.toBe(conflict);
+
+    expect(register).toHaveBeenCalledOnce();
+    expect(registerOrRotate).not.toHaveBeenCalled();
+    expect(setSession).not.toHaveBeenCalled();
   });
 });
 
