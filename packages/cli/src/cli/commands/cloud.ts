@@ -188,7 +188,7 @@ function enrollmentTokenMintError(response: Response, payload: unknown, workspac
   return new Error(`Failed to mint a Cloud enrollment token: ${detail}`);
 }
 
-function workspaceResolveError(response: Response, payload: unknown): Error {
+function workspaceResolveError(response: Response): Error {
   if (response.status === 401) {
     return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
   }
@@ -201,11 +201,16 @@ function workspaceResolveError(response: Response, payload: unknown): Error {
         'Use a Cloud workspace UUID or unified rw_ workspace ID.'
     );
   }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    return new Error(
+      `Cloud workspace resolution rate limit exceeded.${
+        retryAfter ? ` Retry-After: ${retryAfter} seconds.` : ' Wait and retry.'
+      }`
+    );
+  }
 
-  const detail =
-    isObject(payload) && typeof payload.error === 'string' && payload.error.trim()
-      ? payload.error.trim()
-      : `${response.status} ${response.statusText}`.trim();
+  const detail = `${response.status} ${response.statusText}`.trim();
   return new Error(`Failed to resolve the Cloud workspace: ${detail}`);
 }
 
@@ -223,15 +228,15 @@ async function resolveCloudWorkspace(
   const payload = (await response.json().catch(() => null)) as unknown;
 
   if (!response.ok) {
-    throw workspaceResolveError(response, payload);
+    throw workspaceResolveError(response);
   }
   if (!isObject(payload) || typeof payload.cloudWorkspaceId !== 'string') {
-    throw new Error('That identifier is not linked to a Cloud workspace and cannot be enrolled.');
+    throw new Error('Cloud workspace resolver returned an invalid response.');
   }
 
   const cloudWorkspaceId = payload.cloudWorkspaceId.trim();
-  if (!cloudWorkspaceId) {
-    throw new Error('That identifier is not linked to a Cloud workspace and cannot be enrolled.');
+  if (!CLOUD_WORKSPACE_UUID_PATTERN.test(cloudWorkspaceId)) {
+    throw new Error('Cloud workspace resolver returned an invalid response.');
   }
 
   return { cloudWorkspaceId, auth: activeAuth };

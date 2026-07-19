@@ -892,6 +892,101 @@ describe('registerCloudCommands', () => {
     expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      status: 403,
+      body: { error: 'Forbidden: rw_7ccfea89' },
+      message: 'You do not have access to that Cloud workspace.',
+    },
+    {
+      status: 404,
+      body: { error: 'Workspace rw_7ccfea89 was not found' },
+      message:
+        'The workspace identifier was not found by Agent Relay Cloud. Use a Cloud workspace UUID or unified rw_ workspace ID.',
+    },
+  ])(
+    'cloud enroll --workspace maps a $status resolver response without minting',
+    async ({ status, body, message }) => {
+      const workspaceId = 'rw_7ccfea89';
+      const auth = {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      };
+      vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+        response: new Response(JSON.stringify(body), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        }),
+        auth,
+      });
+      const { program, deps } = createHarness();
+
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', workspaceId])
+      ).rejects.toThrow('exit:1');
+
+      expect(deps.error).toHaveBeenCalledWith(message);
+      expect(deps.error.mock.calls.flat().join('\n')).not.toContain(workspaceId);
+      expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+      expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+    }
+  );
+
+  it('cloud enroll --workspace preserves Retry-After from the resolver without minting', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: new Response(JSON.stringify({ error: 'Rate limit exceeded' }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '90' },
+      }),
+      auth,
+    });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('Retry-After: 90 seconds'));
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new Response('not-json', { status: 200, headers: { 'content-type': 'application/json' } }),
+    new Response(JSON.stringify({ workspaceId: 'rw_7ccfea89' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  ])('cloud enroll --workspace rejects an invalid resolver descriptor without minting', async (response) => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({ response, auth });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith('Cloud workspace resolver returned an invalid response.');
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
   it.each(['204337648549896192', 'rk_live_SECRET'])(
     'cloud enroll --workspace rejects unsupported identifier %s without disclosing it',
     async (workspaceId) => {
