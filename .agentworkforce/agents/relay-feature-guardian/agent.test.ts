@@ -23,6 +23,9 @@ import guardian, {
 } from './agent.ts';
 
 const persona = JSON.parse(readFileSync(new URL('./persona.json', import.meta.url), 'utf8')) as {
+  harness?: string;
+  model?: string;
+  useSubscription?: boolean;
   integrations: Record<
     string,
     {
@@ -325,6 +328,14 @@ describe('relay-feature-guardian runtime paths', () => {
 
   it('defaults delivery to the relay feature-check channel', () => {
     expect(persona.inputs.SLACK_CHANNEL.default).toBe('C0AEKNLDNKW');
+  });
+
+  it('uses a dedicated low-reasoning model path instead of shared subscription quota', () => {
+    expect(persona).toMatchObject({
+      harness: 'opencode',
+      model: 'deepseek-v4-flash-free',
+    });
+    expect(persona).not.toHaveProperty('useSubscription');
   });
 
   it('declares bounded manifest and memory reads plus configured Slack output', () => {
@@ -882,6 +893,29 @@ describe('relay-feature-guardian exact HTTP state', () => {
 });
 
 describe('relay-feature-guardian delayed Slack receipts', () => {
+  it('rejects the run when the Slack post fails so the runner records handler.error', async () => {
+    const failure = new Error('simulated Slack writeback failure');
+    const { ctx, files } = exactStateContext(JSON.stringify(progressState(1)));
+    const createSlackClient = (() => ({
+      messages: {
+        write: vi.fn(async () => {
+          throw failure;
+        }),
+      },
+    })) as unknown as typeof slackClient;
+
+    await expect(runGuardian(ctx, { type: 'cron.tick' } as never, { createSlackClient })).rejects.toBe(
+      failure
+    );
+
+    expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
+    expect(ctx.log).toHaveBeenCalledWith('error', 'relay-feature-guardian.post-failed', {
+      channel: 'C0AEKNLDNKW',
+      feature: 'broker-status',
+      err: String(failure),
+    });
+  });
+
   it('passes the production receipt deadline and poll interval to the Slack helper', async () => {
     const transport = new IdempotentSlackTransport();
     const restore = bindPreviewTransport(transport);

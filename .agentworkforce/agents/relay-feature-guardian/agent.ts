@@ -780,7 +780,7 @@ export async function runGuardian(
       feature: feature.id,
       err: String(err),
     });
-    return;
+    throw err;
   }
   const ts = deliveredSlackTs(result);
   if (!ts) {
