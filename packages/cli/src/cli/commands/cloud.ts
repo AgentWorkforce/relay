@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Command, InvalidArgumentError } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 
 import {
   ensureAuthenticated,
@@ -55,6 +55,8 @@ export interface CloudDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  ensureCloudSession: typeof ensureCloudSession;
+  authorizedApiFetch: typeof authorizedApiFetch;
   enrollFleetNode: typeof enrollFleetNode;
   upsertFleetNodeEnrollment: typeof upsertFleetNodeEnrollment;
   /**
@@ -72,6 +74,8 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
+    ensureCloudSession,
+    authorizedApiFetch,
     enrollFleetNode,
     upsertFleetNodeEnrollment,
     writeEnrollmentRecoveryFile: (record: unknown) => {
@@ -131,6 +135,135 @@ function parseEnvAssignment(value: string, previous: Record<string, string> = {}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+type MintedFleetNodeEnrollment = {
+  token: string;
+  enrollmentUrl: string;
+};
+
+function isCloudLoginError(error: unknown): boolean {
+  if (!isObject(error) || typeof error.code !== 'string') {
+    return false;
+  }
+  return error.code === 'AUTH_BROWSER_REQUIRED' || error.code === 'AUTH_REFRESH_EXPIRED';
+}
+
+function enrollmentTokenMintError(response: Response, payload: unknown, workspaceId: string): Error {
+  if (response.status === 401) {
+    return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+  }
+  if (response.status === 403) {
+    return new Error(
+      `You do not have permission to enroll nodes in workspace ${workspaceId}. ` +
+        'An organization owner or admin must run this command.'
+    );
+  }
+  if (response.status === 404) {
+    return new Error(`Workspace ${workspaceId} was not found. Check the workspace ID and retry.`);
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    return new Error(
+      `Cloud enrollment token rate limit exceeded.${
+        retryAfter ? ` Retry-After: ${retryAfter} seconds.` : ' Wait and retry.'
+      }`
+    );
+  }
+
+  const detail =
+    isObject(payload) && typeof payload.error === 'string' && payload.error.trim()
+      ? payload.error.trim()
+      : `${response.status} ${response.statusText}`.trim();
+  return new Error(`Failed to mint a Cloud enrollment token: ${detail}`);
+}
+
+async function mintFleetNodeEnrollment(
+  options: { workspaceId: string; name?: string; maxAgents?: number },
+  deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
+): Promise<MintedFleetNodeEnrollment> {
+  const workspaceId = options.workspaceId.trim();
+  if (!workspaceId) {
+    throw new Error('A workspace ID is required for session-based enrollment.');
+  }
+
+  try {
+    const session = await deps.ensureCloudSession({
+      apiUrl: defaultApiUrl(),
+      interactive: false,
+    });
+    const { response } = await deps.authorizedApiFetch(
+      session.auth,
+      '/api/v1/fleet/enrollment-tokens',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId,
+          ...(options.name ? { name: options.name } : {}),
+          ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
+        }),
+      },
+      { interactive: false }
+    );
+    const payload = (await response.json().catch(() => null)) as unknown;
+
+    if (!response.ok) {
+      throw enrollmentTokenMintError(response, payload, workspaceId);
+    }
+    if (
+      !isObject(payload) ||
+      typeof payload.token !== 'string' ||
+      !payload.token.trim() ||
+      typeof payload.enrollmentUrl !== 'string' ||
+      !payload.enrollmentUrl.trim()
+    ) {
+      throw new Error('Cloud enrollment token response is missing the token or enrollment URL.');
+    }
+
+    return {
+      token: payload.token.trim(),
+      enrollmentUrl: payload.enrollmentUrl.trim(),
+    };
+  } catch (error) {
+    if (isCloudLoginError(error)) {
+      throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+    }
+    throw error;
+  }
+}
+
+async function resolveFleetNodeEnrollmentInput(
+  options: {
+    token?: string;
+    workspace?: string;
+    enrollmentUrl?: string;
+    name?: string;
+    maxAgents?: number;
+  },
+  deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
+): Promise<{ enrollmentToken: string; enrollmentUrl: string }> {
+  if (!options.token && !options.workspace) {
+    throw new Error('Either --token or --workspace is required to enroll a fleet node.');
+  }
+  if (!options.workspace) {
+    return {
+      enrollmentToken: options.token ?? '',
+      enrollmentUrl: options.enrollmentUrl ?? '',
+    };
+  }
+
+  const minted = await mintFleetNodeEnrollment(
+    {
+      workspaceId: options.workspace,
+      ...(options.name ? { name: options.name } : {}),
+      ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
+    },
+    deps
+  );
+  return {
+    enrollmentToken: minted.token,
+    enrollmentUrl: minted.enrollmentUrl,
+  };
 }
 
 function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => void): void {
@@ -437,23 +570,36 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
   cloudCommand
     .command('enroll')
     .description('Enroll this machine as a Cloud-managed fleet node')
-    .requiredOption('--token <token>', 'One-time Cloud enrollment token (ocl_node_enr_...)')
+    .addOption(
+      new Option('--token <token>', 'One-time Cloud enrollment token (ocl_node_enr_...)').conflicts(
+        'workspace'
+      )
+    )
+    .addOption(
+      new Option(
+        '--workspace <workspaceId>',
+        'Mint an enrollment token using the stored Cloud login'
+      ).conflicts('token')
+    )
     .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')
     .option('--name <name>', 'Override the node name')
     .option('--max-agents <n>', 'Maximum managed agents for this node', parsePositiveInteger)
     .option('--json', 'Print the persisted enrollment record as JSON (never the token)', false)
     .action(
       async (options: {
-        token: string;
+        token?: string;
+        workspace?: string;
         enrollmentUrl?: string;
         name?: string;
         maxAgents?: number;
         json?: boolean;
       }) => {
         try {
+          const { enrollmentToken, enrollmentUrl } = await resolveFleetNodeEnrollmentInput(options, deps);
+
           const enrollment = await deps.enrollFleetNode({
-            enrollmentToken: options.token,
-            enrollmentUrl: options.enrollmentUrl ?? '',
+            enrollmentToken,
+            enrollmentUrl,
             ...(options.name ? { name: options.name } : {}),
             ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
           });
