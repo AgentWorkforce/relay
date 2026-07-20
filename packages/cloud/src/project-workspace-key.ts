@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -47,7 +48,8 @@ export function writeProjectWorkspaceKey(dataDir: string, workspaceKey: string |
   if (!key) return;
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = projectWorkspaceKeyPath(dataDir);
-  const tmp = `${file}.tmp.${process.pid}`;
+  // Worker threads share a PID, so include a per-write nonce as well as the PID.
+  const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
   const data = `${JSON.stringify({ workspaceKey: key } satisfies ProjectWorkspaceKeyFile, null, 2)}\n`;
 
   let fd: number;
