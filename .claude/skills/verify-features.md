@@ -22,11 +22,25 @@ Use when you need to verify that a specific feature or set of features works cor
 ### 1. Read the manifest to find the feature
 
 ```bash
-# View all features in a category
-grep -A 60 "^  messaging-messages:" .agentworkforce/features/manifest.yaml
-
-# Find a feature by id
-grep -A 8 "id: message-post" .agentworkforce/features/manifest.yaml
+# Prefer a structural query: category/feature length and indentation can change.
+if command -v yq >/dev/null 2>&1; then
+  yq '.categories."messaging-messages"' .agentworkforce/features/manifest.yaml
+  yq '.. | select(type == "!!map" and .id == "message-post")' .agentworkforce/features/manifest.yaml
+else
+  # Fallback for environments without mikefarah/yq: stop at the next sibling
+  # category/feature instead of assuming a fixed number of following lines.
+  awk '
+    $0 == "  messaging-messages:" { in_category = 1 }
+    in_category && $0 != "  messaging-messages:" && /^  [[:alnum:]][[:alnum:]-]*:$/ { exit }
+    in_category { print }
+  ' .agentworkforce/features/manifest.yaml
+  awk '
+    $0 == "      - id: message-post" { in_feature = 1 }
+    in_feature && $0 != "      - id: message-post" && /^      - id: / { exit }
+    in_feature && /^  [[:alnum:]][[:alnum:]-]*:$/ { exit }
+    in_feature { print }
+  ' .agentworkforce/features/manifest.yaml
+fi
 ```
 
 The manifest tells you:

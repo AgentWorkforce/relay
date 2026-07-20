@@ -27,6 +27,28 @@ cleanup_agents() { relay agent remove "audit-a-$RUN" 2>/dev/null || true; relay 
 
 SDK-backed CLI commands emit JSON already; do not add an unsupported `--json` flag.
 
+## Externally provisioned fixtures
+
+Two procedures need fixtures that the Relay CLI cannot create. Create only the
+fixture required by the procedure you are about to run; its command block
+performs the corresponding fail-fast check.
+
+```bash
+# A Cloud *worker* enrollment token minted for the disposable Cloud workspace.
+# This is not the node-enrollment token used by `relay cloud enroll`.
+export WORKER_TOKEN='<disposable Cloud worker enrollment token>'
+
+# A unique, internet-reachable receiver owned by the test harness. It must
+# accept the webhook POST, retain request headers and body for assertion, and
+# return a 2xx response. Localhost is suitable only when the tested Relay API
+# is local; hosted APIs require a tunneled or CI-provisioned receiver.
+export CAPTURE_URL='https://controlled-test-receiver.example/unique-run-path'
+```
+
+Do not substitute a public request-bin or a shared endpoint: webhook payloads
+and signatures are test data that must remain isolated. Each run gets its own
+receiver path and destroys it after the webhook/subscription cleanup below.
+
 ## broker-lifecycle
 
 **Features:** `broker-up`, `broker-down`, `broker-status`, `broker-metrics`, `broker-deadletters`, `broker-redeliver`.
@@ -55,7 +77,10 @@ relay agent list | jq -e --arg n "audit-a-$RUN" '.[] | select(.name == $n)'
 relay agent add "audit-extra-$RUN" | jq -e '.token'
 relay capabilities register "$CAP" --description 'audit capability' --handler "audit-a-$RUN"
 relay capabilities list | jq -e --arg c "$CAP" '.[] | select(.command == $c)'
-relay capabilities delete "$CAP"; relay agent remove "audit-extra-$RUN"
+relay capabilities delete "$CAP"
+relay capabilities list | jq -e --arg c "$CAP" 'all(.[]; .command != $c)'
+relay agent remove "audit-extra-$RUN"
+relay agent list | jq -e --arg n "audit-extra-$RUN" 'all(.[]; .name != $n)'
 relay status | grep -Eiq 'Workspace:|Local broker:|Cloud:'
 ```
 
@@ -70,10 +95,18 @@ Assert list visibility after every create and absence after every delete; finish
 ```bash
 CH="audit-channel-$RUN"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create "$CH" --topic 'first topic'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel list | jq -e --arg n "$CH" \
+  '.[] | select(.name == $n)'
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel join "$CH"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel set_topic "$CH" 'second topic'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel list | jq -e --arg n "$CH" --arg topic 'second topic' \
+  '.[] | select(.name == $n and .topic == $topic)'
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel invite "$CH" "audit-b-$RUN"
-RELAY_AGENT_TOKEN="$TOKEN_B" relay channel list | jq -e --arg n "$CH" '.[] | select(.name == $n)'
+RELAY_AGENT_TOKEN="$TOKEN_B" relay channel list | jq -e --arg n "$CH" --arg agent "audit-b-$RUN" \
+  '.[] | select(
+    .name == $n and
+    ((.members // []) | map(if type == "string" then . else (.agentName // .name) end) | index($agent))
+  )'
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel leave "$CH"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive "$CH"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel list --archived | jq -e --arg n "$CH" '.[] | select(.name == $n)'
@@ -113,7 +146,9 @@ Assert that the returned parent ID links the reply, search filters return the un
 C_JSON="$(relay agent register "audit-c-$RUN")"; TOKEN_C="$(jq -er .token <<<"$C_JSON")"
 DM="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send "audit-b-$RUN" "dm $RUN")"; CONV="$(jq -er '.conversationId // .conversation_id' <<<"$DM")"
 RELAY_AGENT_TOKEN="$TOKEN_B" relay message dm list "$CONV" | jq -e --arg t "dm $RUN" 'tostring | contains($t)'
-RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send_group "group $RUN" --to "audit-b-$RUN" "audit-c-$RUN"
+GROUP="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send_group "group $RUN" --to "audit-b-$RUN" "audit-c-$RUN")"; GROUP_CONV="$(jq -er '.conversationId // .conversation_id' <<<"$GROUP")"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message dm list "$GROUP_CONV" | jq -e --arg t "group $RUN" 'tostring | contains($t)'
+RELAY_AGENT_TOKEN="$TOKEN_C" relay message dm list "$GROUP_CONV" | jq -e --arg t "group $RUN" 'tostring | contains($t)'
 relay agent remove "audit-c-$RUN"
 ```
 
@@ -127,9 +162,19 @@ Use `list_dms` through the MCP client and assert the same conversation appears. 
 
 ```bash
 CH="audit-read-$RUN"; RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create "$CH"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay channel join "$CH"
 POST="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message post "$CH" "read $RUN")"; MSG_ID="$(jq -er '.id // .messageId' <<<"$POST")"
 RELAY_AGENT_TOKEN="$TOKEN_B" relay message reaction add "$MSG_ID" thumbsup
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message list "$CH" --limit 10 | jq -e --arg id "$MSG_ID" '
+  .[] | select((.id == $id) or (.messageId == $id))
+  | .reactions[]? | select(.emoji == "thumbsup" and (.count // 0) >= 1)
+'
 RELAY_AGENT_TOKEN="$TOKEN_B" relay message reaction remove "$MSG_ID" thumbsup
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message list "$CH" --limit 10 | jq -e --arg id "$MSG_ID" '
+  [ .[] | select((.id == $id) or (.messageId == $id))
+    | .reactions[]? | select(.emoji == "thumbsup" and (.count // 0) > 0) ]
+  | length == 0
+'
 DM="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send "audit-b-$RUN" "inbox $RUN")"; DM_ID="$(jq -er '.id // .messageId' <<<"$DM")"
 RELAY_AGENT_TOKEN="$TOKEN_B" relay message inbox check | jq -e --arg t "inbox $RUN" 'tostring | contains($t)'
 RELAY_AGENT_TOKEN="$TOKEN_B" relay message inbox mark_read "$DM_ID"
@@ -147,12 +192,13 @@ Assert the reaction is observable after add and absent after remove, and B's unr
 
 ```bash
 AGENT="audit-worker-$RUN"
+PROVIDER="${PROVIDER:-claude}" # installed and authenticated fixture provider
 relay node agent list | jq -e 'type == "array"'
 relay node agent spawn "$PROVIDER" --name "$AGENT" --task 'Reply relay-e2e-ok' --spawn-mode task-exit --exit-after-task
 relay node agent list | jq -e --arg n "$AGENT" '.[] | select(.name == $n)'
 relay node agent message hold "$AGENT" | jq -e 'tostring | test("manual|hold"; "i")'
 relay node agent message auto "$AGENT" | jq -e 'tostring | test("auto"; "i")'
-relay node agent release "$AGENT" || true
+relay node agent release "$AGENT"
 ```
 
 `new` and `attach` are attended PTY checks; verify `drive`, `view`, and `passthrough`. `tail` streams until interrupted: filter by agent, create output, assert it, then stop its exact child process. A model switch proves broker acceptance only, not provider-side model change.
@@ -196,6 +242,7 @@ Use a no-op workflow, long disposable workflow for cancel, and only `sync --dry-
 **Prerequisites:** dedicated enrollment token and isolated worker state.
 
 ```bash
+: "${WORKER_TOKEN:?See Externally provisioned fixtures}"
 relay cloud worker register --token "$WORKER_TOKEN" --name "audit-worker-$RUN" --json | jq -e '.workerId'
 relay cloud worker start --name "audit-worker-$RUN" --daemon
 relay cloud worker status --name "audit-worker-$RUN" --json | jq -e '.localDaemon'
@@ -257,10 +304,11 @@ Assert the downloaded skill and delete only this disposable project. Do not run 
 **Prerequisites:** disposable workspace, identity, externally reachable controlled receiver. Relayfile also needs compatible authenticated daemon, connected provider, real provider resource, and provider observation API; first connection can require browser OAuth.
 
 ```bash
-HOOK="$(relay integration webhook create "$CAPTURE_URL" --event message.created)"; HOOK_ID="$(jq -er '.id // .webhookId' <<<"$HOOK")"
-relay integration webhook trigger "$HOOK_ID" --payload '{"audit":true}'
-relay integration webhook list | jq -e --arg id "$HOOK_ID" 'tostring | contains($id)'
-relay integration webhook delete "$HOOK_ID"
+: "${CAPTURE_URL:?See Externally provisioned fixtures}"
+HOOK="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook create "$CAPTURE_URL" --event message.created)"; HOOK_ID="$(jq -er '.id // .webhookId' <<<"$HOOK")"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook trigger "$HOOK_ID" --payload '{"audit":true}'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook list | jq -e --arg id "$HOOK_ID" 'tostring | contains($id)'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook delete "$HOOK_ID"
 ```
 
 Assert exact receiver payload/signature, then delete it. For inbound, create channel/hook, POST the returned URL with token and documented payload, assert message, delete hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.

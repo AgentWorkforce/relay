@@ -17,7 +17,8 @@ The first status must report running and the last must report stopped. Use an is
 
 ## Path 2: Cross-Agent Channel Message
 
-**Prerequisite:** disposable hosted workspace with `TOKEN_A` and `TOKEN_B` from two registrations.
+**Prerequisite:** disposable hosted workspace; `TOKEN_A` must be the token returned for
+`critical-a`, and `TOKEN_B` must be the token returned for `critical-b`.
 
 ```bash
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create critical-path
@@ -34,6 +35,7 @@ Agent B must see the exact text from A. Remove both test identities after archiv
 **Prerequisite:** a locally installed and authenticated provider CLI.
 
 ```bash
+PROVIDER="${PROVIDER:-claude}" # installed and authenticated fixture provider
 relay node up --background --no-spawn
 relay node agent spawn "$PROVIDER" --name critical-worker --task 'Reply critical-ok' --spawn-mode task-exit --exit-after-task
 relay node agent list
@@ -74,7 +76,8 @@ Assert completed status and the sentinel output. Run it in a disposable project 
 
 ## Path 6: Direct Message and Read Receipt
 
-**Prerequisite:** disposable hosted workspace with two identities.
+**Prerequisite:** disposable hosted workspace; `TOKEN_A` must be the token returned for
+`critical-a`, and `TOKEN_B` must be the token returned for `critical-b`.
 
 ```bash
 DM="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send critical-b 'critical-dm')"
