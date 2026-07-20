@@ -4,7 +4,7 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 type Feature = { id: string; cli?: string; mcp?: string; mcp_prompt?: string; location?: string };
-type Category = { features: Feature[] };
+type Category = { features?: Feature[] };
 type Manifest = {
   version: string;
   verification: { document: string; categories: Record<string, string> };
@@ -15,7 +15,7 @@ const manifestPath = new URL('../../features/manifest.yaml', import.meta.url);
 const proceduresPath = new URL('../../features/verify/procedures.md', import.meta.url);
 const manifest = parse(readFileSync(manifestPath, 'utf8')) as Manifest;
 const procedures = readFileSync(proceduresPath, 'utf8');
-const features = Object.values(manifest.categories).flatMap((category) => category.features);
+const features = Object.values(manifest.categories).flatMap((category) => category.features ?? []);
 
 describe('feature manifest contract', () => {
   it('maps every category to a detailed verification procedure', () => {
