@@ -49,7 +49,7 @@ export function writeProjectWorkspaceKey(dataDir: string, workspaceKey: string |
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = projectWorkspaceKeyPath(dataDir);
   // Worker threads share a PID, so include a per-write nonce as well as the PID.
-  const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
+  let tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
   const data = `${JSON.stringify({ workspaceKey: key } satisfies ProjectWorkspaceKeyFile, null, 2)}\n`;
 
   let fd: number;
@@ -57,7 +57,9 @@ export function writeProjectWorkspaceKey(dataDir: string, workspaceKey: string |
     fd = fs.openSync(tmp, 'wx', 0o600);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    fs.rmSync(tmp, { force: true });
+    // The colliding path belongs to another writer. Never remove it; retry
+    // exclusive creation with a new nonce so that writer can finish safely.
+    tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
     fd = fs.openSync(tmp, 'wx', 0o600);
   }
   try {
