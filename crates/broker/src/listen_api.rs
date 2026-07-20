@@ -556,6 +556,7 @@ pub(crate) fn listen_api_health_payload(
         "memberships": memberships,
         "agentCount": 0,
         "pendingDeliveryCount": 0,
+        "deadLetterCount": 0,
         "wsConnections": 0,
         "memoryMb": 0,
         "relaycastConnected": startup_error_code.is_none(),
@@ -597,6 +598,9 @@ fn merge_status_into_health_payload(payload: &mut Value, status: &Value) {
     }
     if let Some(pending_count) = status.get("pending_delivery_count").and_then(Value::as_u64) {
         object.insert("pendingDeliveryCount".to_string(), json!(pending_count));
+    }
+    if let Some(dead_letter_count) = status.get("dead_letter_count").and_then(Value::as_u64) {
+        object.insert("deadLetterCount".to_string(), json!(dead_letter_count));
     }
     let token_present = status
         .get("node_delivery")
@@ -3750,6 +3754,21 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn health_payload_surfaces_dead_letter_count_from_runtime_status() {
+        let mut payload = super::listen_api_health_payload(None, vec![]);
+        super::merge_status_into_health_payload(
+            &mut payload,
+            &json!({
+                "pending_delivery_count": 0,
+                "dead_letter_count": 353,
+            }),
+        );
+
+        assert_eq!(payload["pendingDeliveryCount"], 0);
+        assert_eq!(payload["deadLetterCount"], 353);
     }
 
     #[tokio::test]

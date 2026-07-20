@@ -12,12 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relay harnesses and `agent-relay node agent spawn|new --backend ai-sdk` can run Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents through official AI SDK harness adapters, while `--backend pty` remains available for terminal sessions and unsupported harnesses.
 - Relaycast exposes canonical agent activity and agent events with capability, source, and fidelity metadata across native and PTY runtimes.
 
-### Fixed
-
-- `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
-- `AgentRelaySDK` now maps Relaycast lifecycle states onto its existing Swift presence states, so root-package consumers compile with Relaycast 6.1 and later while package-local builds remain compatible with 6.0.5.
-- `relay-feature-guardian` now reads the scoped Relay clone, posts to its configured channel, and checkpoints receipt-confirmed cycle progress so retries do not repeat a feature check.
-
 ### Breaking Changes
 
 - Agent Relay now requires Node.js 22 or newer.
@@ -25,6 +19,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Migration Guidance
 
 - Upgrade Node.js to version 22 or newer before installing this Agent Relay release.
+
+## [10.6.6] - 2026-07-19
+
+### Fixed
+
+- `agent-relay cloud enroll --workspace` now validates and resolves Cloud UUIDs and unified `rw_` IDs before minting, and reports unresolvable identifiers instead of mislabeling them as permission failures.
+
+## [10.6.5] - 2026-07-19
+
+### Added
+
+- `agent-relay cloud enroll --workspace <id>` now mints and redeems a fleet-node enrollment token from the stored Cloud login, so admins can enroll machines without copying tokens from the dashboard.
+- `agent-relay-broker` `/health` now reports `deadLetterCount`, making terminal delivery loss visible alongside the pending queue.
+
+### Fixed
+
+- `agent-relay-broker` now keeps wait-mode PTY deliveries pending through busy turns and enrolls spawned workers in their declared Relaycast channels, preventing premature dead-lettering and missing channel mentions.
+
+## [10.6.4] - 2026-07-18
+
+### Fixed
+
+- `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
+- `AgentRelaySDK` now maps Relaycast lifecycle states onto its existing Swift presence states, so root-package consumers compile with Relaycast 6.1 and later while package-local builds remain compatible with 6.0.5.
+- `relay-feature-guardian` now limits read mirrors to the feature manifest and workspace memory while keeping Slack write-only to its configured output channel, and advances its exact, revision-safe cycle checkpoint only after a bounded wait returns a real Slack receipt while safely reconciling retired manifest features.
+- `agent-relay-broker` and `@agent-relay/utils` now preserve mise/asdf/rtx-style CLI shims when spawning provider workers, so Codex, Claude, Gemini, and other agent CLIs installed via a version manager receive their own permission flags (e.g. `--dangerously-bypass-approvals-and-sandbox`) instead of the manager binary rejecting them.
 
 ## [10.6.3] - 2026-07-17
 

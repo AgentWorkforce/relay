@@ -405,6 +405,30 @@ impl BrokerRuntime {
                         }
                     }
                 };
+                if let Some(token) = worker_relay_key.as_deref() {
+                    // Node registration returns a token without populating the
+                    // HTTP client's worker cache. Seed it before authenticating
+                    // as the worker so channel reconciliation cannot rotate an
+                    // already-live identity's token.
+                    seed_supplied_agent_token(relaycast_http, &name, token);
+                    if let Err(error) = relaycast_http
+                        .ensure_agent_channels(&name, Some(&cli), &effective_channels)
+                        .await
+                    {
+                        tracing::error!(
+                            worker = %name,
+                            channels = ?effective_channels,
+                            error = %error,
+                            "worker channel membership reconciliation failed"
+                        );
+                        let membership_warning =
+                            format!("worker channel membership was not fully reconciled: {error}");
+                        preregistration_warning = Some(match preregistration_warning.take() {
+                            Some(existing) => format!("{existing}; {membership_warning}"),
+                            None => membership_warning,
+                        });
+                    }
+                }
 
                 let mut effective_task = if exit_after_task {
                     Some(apply_exit_after_task_instruction(task))
@@ -1683,7 +1707,7 @@ impl BrokerRuntime {
                 channels,
                 reply,
             } => {
-                let (workspace_id, parent, spec, pid, added, all_channels) = {
+                let (workspace_id, cli_hint, parent, spec, pid, added, all_channels) = {
                     let Some(handle) = workers.workers.get_mut(&name) else {
                         let _ = reply.send(Err(format!("unknown worker '{}'", name)));
                         return;
@@ -1702,6 +1726,7 @@ impl BrokerRuntime {
                     }
                     (
                         handle.workspace_id.clone(),
+                        handle.spec.cli.clone(),
                         handle.parent.clone(),
                         handle.spec.clone(),
                         handle.child.id(),
@@ -1709,6 +1734,30 @@ impl BrokerRuntime {
                         handle.spec.channels.clone(),
                     )
                 };
+
+                let mut membership_error = None;
+                if !channels.is_empty() {
+                    let workspace = workspace_for_channel_update(
+                        workspace_id.as_deref(),
+                        workspace_lookup,
+                        default_workspace_id.as_deref(),
+                        default_workspace,
+                    );
+                    if let Err(error) = workspace
+                        .http_client
+                        .ensure_agent_channels(&name, cli_hint.as_deref(), &channels)
+                        .await
+                    {
+                        tracing::error!(
+                            worker = %name,
+                            workspace_id = %workspace.workspace_id,
+                            channels = ?channels,
+                            error = %error,
+                            "failed to reconcile worker channel subscriptions"
+                        );
+                        membership_error = Some(error.to_string());
+                    }
+                }
 
                 if !added.is_empty() {
                     let workspace = workspace_for_channel_update(
@@ -1752,17 +1801,22 @@ impl BrokerRuntime {
                         );
                     }
                 }
-                let _ = reply.send(Ok(json!({
-                    "name": name,
-                    "channels": all_channels,
-                })));
+                let _ = match membership_error {
+                    Some(error) => reply.send(Err(format!(
+                        "failed to reconcile worker channel subscriptions: {error}"
+                    ))),
+                    None => reply.send(Ok(json!({
+                        "name": name,
+                        "channels": all_channels,
+                    }))),
+                };
             }
             ListenApiRequest::UnsubscribeChannels {
                 name,
                 channels,
                 reply,
             } => {
-                let (workspace_id, parent, spec, pid, removed, remaining) = {
+                let (workspace_id, cli_hint, parent, spec, pid, removed, remaining) = {
                     let Some(handle) = workers.workers.get_mut(&name) else {
                         let _ = reply.send(Err(format!("unknown worker '{}'", name)));
                         return;
@@ -1783,6 +1837,7 @@ impl BrokerRuntime {
                         .collect::<Vec<_>>();
                     (
                         handle.workspace_id.clone(),
+                        handle.spec.cli.clone(),
                         handle.parent.clone(),
                         handle.spec.clone(),
                         handle.child.id(),
@@ -1790,6 +1845,30 @@ impl BrokerRuntime {
                         remaining,
                     )
                 };
+
+                let mut membership_error = None;
+                if !channels.is_empty() {
+                    let workspace = workspace_for_channel_update(
+                        workspace_id.as_deref(),
+                        workspace_lookup,
+                        default_workspace_id.as_deref(),
+                        default_workspace,
+                    );
+                    if let Err(error) = workspace
+                        .http_client
+                        .leave_agent_channels(&name, cli_hint.as_deref(), &channels)
+                        .await
+                    {
+                        tracing::error!(
+                            worker = %name,
+                            workspace_id = %workspace.workspace_id,
+                            channels = ?channels,
+                            error = %error,
+                            "failed to reconcile worker channel removals"
+                        );
+                        membership_error = Some(error.to_string());
+                    }
+                }
 
                 if !removed.is_empty() {
                     let workspace = workspace_for_channel_update(
@@ -1843,10 +1922,15 @@ impl BrokerRuntime {
                         );
                     }
                 }
-                let _ = reply.send(Ok(json!({
-                    "name": name,
-                    "channels": remaining,
-                })));
+                let _ = match membership_error {
+                    Some(error) => reply.send(Err(format!(
+                        "failed to reconcile worker channel removals: {error}"
+                    ))),
+                    None => reply.send(Ok(json!({
+                        "name": name,
+                        "channels": remaining,
+                    }))),
+                };
             }
             ListenApiRequest::GetInboundDeliveryMode { name, reply } => {
                 if !workers.has_worker(&name) {

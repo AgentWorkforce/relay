@@ -188,6 +188,7 @@ fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> Pen
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 1,
+        failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
@@ -437,6 +438,7 @@ fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 1,
+        failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
@@ -447,10 +449,9 @@ fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
 fn shutdown_persists_nonempty_pending_deliveries() {
     let dir = tempfile::tempdir().expect("tempdir should create");
     let path = dir.path().join("pending-deliveries.json");
-    let deliveries = HashMap::from([(
-        DeliveryId::new("del_keep"),
-        make_pending_delivery("del_keep", "worker-a"),
-    )]);
+    let mut delivery = make_pending_delivery("del_keep", "worker-a");
+    delivery.failed_attempts = 2;
+    let deliveries = HashMap::from([(DeliveryId::new("del_keep"), delivery)]);
 
     persist_pending_on_shutdown(&path, true, &deliveries);
 
@@ -462,6 +463,32 @@ fn shutdown_persists_nonempty_pending_deliveries() {
     assert_eq!(pending.worker_name, WorkerName::from("worker-a"));
     assert_eq!(pending.delivery.event_id, EventId::new("evt_del_keep"));
     assert_eq!(pending.attempts, 1);
+    assert_eq!(pending.failed_attempts, 2);
+}
+
+#[test]
+fn pending_delivery_load_defaults_legacy_failure_count() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let delivery = make_pending_delivery("del_legacy", "worker-a");
+    let deliveries = HashMap::from([(DeliveryId::new("del_legacy"), delivery)]);
+    super::save_pending_deliveries(&path, &deliveries).expect("pending delivery should save");
+    let mut json: Value = serde_json::from_slice(
+        &std::fs::read(&path).expect("pending delivery snapshot should read"),
+    )
+    .expect("pending delivery snapshot should parse");
+    json[0]
+        .as_object_mut()
+        .expect("pending delivery entry should be an object")
+        .remove("failed_attempts");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json).expect("legacy snapshot encodes"),
+    )
+    .expect("legacy pending snapshot should write");
+
+    let loaded = load_pending_deliveries(&path);
+    assert_eq!(loaded["del_legacy"].failed_attempts, 0);
 }
 
 #[test]
@@ -782,6 +809,7 @@ async fn retry_exhaustion_dead_letters_instead_of_discarding() {
     );
     let mut exhausted = make_pending_delivery("del_exhausted", "ghost");
     exhausted.attempts = MAX_DELIVERY_RETRIES;
+    exhausted.failed_attempts = MAX_DELIVERY_RETRIES;
     exhausted.last_error = Some("failed writing frame".to_string());
     let mut pending_deliveries =
         HashMap::from([(DeliveryId::new("del_exhausted"), exhausted.clone())]);
@@ -858,6 +886,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 3,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("failed writing frame".to_string()),
@@ -895,6 +924,52 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
 }
 
 #[tokio::test]
+async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut pending_deliveries = HashMap::new();
+
+    let error = super::queue_and_try_delivery_raw(
+        &mut workers,
+        &mut pending_deliveries,
+        "ghost",
+        "evt_initial_failure",
+        "orchestrator",
+        "ghost",
+        "must remain auditable",
+        None,
+        Some(WorkspaceId::new("ws_demo")),
+        None,
+        2,
+        MessageInjectionMode::Wait,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect_err("missing recipient should fail the initial handoff");
+
+    assert!(error.to_string().contains("recipient gone"));
+    assert_eq!(
+        pending_deliveries.len(),
+        1,
+        "the no-DLQ raw path must retain ownership for the maintenance dead-letter path"
+    );
+    let pending = pending_deliveries
+        .values()
+        .next()
+        .expect("failed initial delivery remains pending");
+    assert_eq!(
+        pending.delivery.event_id,
+        EventId::new("evt_initial_failure")
+    );
+    assert_eq!(pending.delivery.body, "must remain auditable");
+}
+
+#[tokio::test]
 async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     let worker_name = "worker-blip";
     let mut workers = make_worker_registry_with_worker(worker_name).await;
@@ -928,6 +1003,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 0,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -1067,6 +1143,7 @@ async fn delivery_retry_success_clears_stale_last_error() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 1,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("old transient failure".to_string()),
@@ -1089,6 +1166,62 @@ async fn delivery_retry_success_clears_stale_last_error() {
             .and_then(|pending| pending.last_error.as_ref()),
         None
     );
+    assert_eq!(
+        pending_deliveries["del_clear"].failed_attempts, 0,
+        "a successful broker-to-worker handoff resets consecutive failures"
+    );
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn wait_delivery_successful_handoffs_do_not_exhaust_failure_budget() {
+    let worker_name = "worker-busy-wait";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    let mut pending = make_pending_delivery("del_busy_wait", worker_name);
+    pending.attempts = MAX_DELIVERY_RETRIES - 1;
+    pending.delivery.injection_mode = MessageInjectionMode::Wait;
+    let mut pending_deliveries = HashMap::from([(pending.delivery.delivery_id.clone(), pending)]);
+
+    let first = retry_pending_delivery(
+        &DeliveryId::new("del_busy_wait"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("live worker should accept the tenth handoff");
+    assert!(matches!(
+        first,
+        DeliveryAttemptOutcome::Attempted {
+            attempts: MAX_DELIVERY_RETRIES,
+            ..
+        }
+    ));
+
+    let second = retry_pending_delivery(
+        &DeliveryId::new("del_busy_wait"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("a successful handoff must remain redeliverable while its wait ack is pending");
+
+    assert!(matches!(
+        second,
+        DeliveryAttemptOutcome::Attempted {
+            attempts,
+            ..
+        } if attempts == MAX_DELIVERY_RETRIES + 1
+    ));
+    let pending = pending_deliveries
+        .get("del_busy_wait")
+        .expect("successful wait handoffs must not be dead-lettered");
+    assert!(
+        pending.next_retry_at.duration_since(Instant::now()) > Duration::from_secs(60),
+        "wait-mode acknowledgements need a minutes-scale verification window"
+    );
+
     cleanup_worker_registry(workers).await;
 }
 
@@ -1399,6 +1532,19 @@ fn contract_timeout_fixture_requires_terminal_failed_guard_before_late_ack() {
         "delivery_ack branch lacks terminal guard for timeout status \"{}\" and late event \"{}\"",
         expected_terminal_status,
         late_event_kind
+    );
+}
+
+#[test]
+fn worker_reported_delivery_failures_use_the_dead_letter_path() {
+    let source = include_str!("worker_events.rs");
+    let failure_branch = source
+        .split("msg_type == \"delivery_failed\"")
+        .nth(1)
+        .expect("worker_events.rs must include delivery_failed handling");
+    assert!(
+        failure_branch.contains("emit_dropped_delivery_failures"),
+        "worker-reported terminal failures must be retained in the dead-letter store"
     );
 }
 
@@ -1907,6 +2053,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -1929,6 +2076,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -1958,6 +2106,7 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 2,
+        failed_attempts: 1,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: Some("previous blip".to_string()),
@@ -2027,6 +2176,7 @@ fn should_clear_pending_delivery_when_event_id_matches() {
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 1,
+        failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
@@ -2061,6 +2211,7 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -2477,6 +2628,7 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 1,
+        failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
