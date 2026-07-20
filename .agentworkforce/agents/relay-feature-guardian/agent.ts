@@ -546,9 +546,13 @@ function pickNextFeature(features: Feature[], checkedIds: Set<string>): Feature 
 // ── quiz generation ───────────────────────────────────────────────────────────
 
 async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise<string> {
-  const mcpNote = feature.mcp ? `\nMCP tool: \`${feature.mcp}\`` : '';
-  const mcpPromptNote = feature.mcpPrompt ? `\nMCP prompt: \`${feature.mcpPrompt}\`` : '';
-  const surface = feature.cli ? `CLI: ${feature.cli}` : 'CLI: (MCP-only surface)';
+  const surface = [
+    feature.cli ? `CLI command: ${feature.cli}` : null,
+    feature.mcp ? `MCP tool: ${feature.mcp}` : null,
+    feature.mcpPrompt ? `MCP prompt: ${feature.mcpPrompt}` : null,
+  ]
+    .filter((entry): entry is string => entry !== null)
+    .join('\n');
   const tierLabel =
     {
       1: 'isolated local CLI/filesystem',
@@ -561,13 +565,13 @@ async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise
 
   const prompt = [
     'You are the Relay Feature Guardian, a proactive Slack bot for the Agent Relay team.',
-    'Write a brief, conversational Slack message (3-5 sentences, no markdown headers) asking the team to confirm whether a specific CLI feature is working as intended.',
-    'Be specific: name the feature, describe what it should do, show the CLI command, and ask if it behaves this way or if anything has drifted.',
+    'Write a brief, conversational Slack message (3-5 sentences, no markdown headers) asking the team to confirm whether a specific feature is working as intended. The feature can be a CLI command or an MCP tool/prompt.',
+    'Be specific: name the feature, describe what it should do, show the relevant CLI command or MCP tool/prompt, and ask if it behaves this way or if anything has drifted.',
     'End with: "React ✅ if working as expected, 🔧 if something is off, or ❓ if untested."',
     'Keep it casual and direct — this is an internal team check.',
     '',
     `Feature: ${feature.name}`,
-    `${surface}${mcpNote}${mcpPromptNote}`,
+    surface,
     `What it should do: ${feature.desc}`,
     `Verify tier: ${feature.tier} (${tierLabel})`,
     `Criticality: ${feature.criticality}`,

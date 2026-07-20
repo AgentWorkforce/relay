@@ -6,12 +6,68 @@ Use `relay` (or the equivalent `agent-relay` binary). Run all mutations in a dis
 
 ## Shared fixtures
 
-For a local broker, use a disposable project and only stop the broker it created:
+Start every procedure in a Bash shell with an isolated run identifier, strict
+failure handling, and cleanup. The trap safely cleans only resources named for
+this run, whether the procedure uses a broker, hosted APIs, or both:
 
 ```bash
-RUN="feature-$(date +%s)"; TMP="$(mktemp -d)"; cd "$TMP"
+set -Eeuo pipefail
+RUN_ID="${CI_RUN_ID:-${GITHUB_RUN_ID:-local}}"
+RUN_RANDOM="$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')"
+RUN="feature-${RUN_ID}-$(date +%s)-$RUN_RANDOM"
+TMP="$(mktemp -d)"
+TAIL_PID=""
+CLOUD_WORKER_PID=""
+CLOUD_WORKER_ID=""
+cleanup_cloud_worker_daemon() {
+  [[ -n "$CLOUD_WORKER_PID" && -n "$CLOUD_WORKER_ID" ]] || return 0
+  kill -0 "$CLOUD_WORKER_PID" 2>/dev/null || return 0
+
+  local command
+  command="$(ps -p "$CLOUD_WORKER_PID" -o command= 2>/dev/null || true)"
+  if ! printf '%s\n' "$command" | grep -F -- "cloud worker start --worker-id $CLOUD_WORKER_ID" >/dev/null || \
+    ! printf '%s\n' "$command" | grep -F -- '--foreground-child' >/dev/null; then
+    printf 'Refusing to terminate unexpected cloud-worker process %s\n' "$CLOUD_WORKER_PID" >&2
+    return 1
+  fi
+
+  kill -TERM "$CLOUD_WORKER_PID" 2>/dev/null || return 0
+  for _ in 1 2 3 4 5; do
+    kill -0 "$CLOUD_WORKER_PID" 2>/dev/null || return 0
+    sleep 1
+  done
+
+  # Recheck the command before escalating in case the PID was reused.
+  command="$(ps -p "$CLOUD_WORKER_PID" -o command= 2>/dev/null || true)"
+  if printf '%s\n' "$command" | grep -F -- "cloud worker start --worker-id $CLOUD_WORKER_ID" >/dev/null && \
+    printf '%s\n' "$command" | grep -F -- '--foreground-child' >/dev/null; then
+    kill -KILL "$CLOUD_WORKER_PID" 2>/dev/null || true
+  fi
+}
+cleanup() {
+  local status=$?
+  if [[ -n "$TAIL_PID" ]]; then
+    kill "$TAIL_PID" 2>/dev/null || true
+    wait "$TAIL_PID" 2>/dev/null || true
+  fi
+  cleanup_cloud_worker_daemon || true
+  relay agent remove "audit-extra-$RUN" 2>/dev/null || true
+  relay agent remove "audit-c-$RUN" 2>/dev/null || true
+  relay agent remove "audit-b-$RUN" 2>/dev/null || true
+  relay agent remove "audit-a-$RUN" 2>/dev/null || true
+  relay node down --force 2>/dev/null || true
+  rm -rf "$TMP" || true
+  exit "$status"
+}
+trap cleanup EXIT
+```
+
+For a local broker, use the shared temporary project and only stop the broker it
+created:
+
+```bash
+cd "$TMP"
 relay node up --background --no-spawn
-trap 'relay node down --force 2>/dev/null || true; rm -rf "$TMP"' EXIT
 ```
 
 For hosted APIs, use explicit disposable credentials rather than an operator's active workspace:
@@ -19,10 +75,8 @@ For hosted APIs, use explicit disposable credentials rather than an operator's a
 ```bash
 export RELAY_WORKSPACE_KEY='<disposable workspace key>'
 export RELAY_BASE_URL='<test API URL>'
-RUN="feature-$(date +%s)"
 A_JSON="$(relay agent register "audit-a-$RUN")"; TOKEN_A="$(jq -er .token <<<"$A_JSON")"
 B_JSON="$(relay agent register "audit-b-$RUN")"; TOKEN_B="$(jq -er .token <<<"$B_JSON")"
-cleanup_agents() { relay agent remove "audit-a-$RUN" 2>/dev/null || true; relay agent remove "audit-b-$RUN" 2>/dev/null || true; }
 ```
 
 SDK-backed CLI commands emit JSON already; do not add an unsupported `--json` flag.
@@ -43,6 +97,8 @@ export WORKER_TOKEN='<disposable Cloud worker enrollment token>'
 # return a 2xx response. Localhost is suitable only when the tested Relay API
 # is local; hosted APIs require a tunneled or CI-provisioned receiver.
 export CAPTURE_URL='https://controlled-test-receiver.example/unique-run-path'
+# Fetch only this run's captured requests from the same controlled receiver.
+export CAPTURE_FETCH_URL='https://controlled-test-receiver.example/unique-run-path/requests'
 ```
 
 Do not substitute a public request-bin or a shared endpoint: webhook payloads
@@ -84,7 +140,7 @@ relay agent list | jq -e --arg n "audit-extra-$RUN" 'all(.[]; .name != $n)'
 relay status | grep -Eiq 'Workspace:|Local broker:|Cloud:'
 ```
 
-Assert list visibility after every create and absence after every delete; finish with `cleanup_agents`.
+Assert list visibility after every create and absence after every delete; the shared exit trap removes all disposable identities.
 
 ## channel-messaging
 
@@ -134,7 +190,7 @@ RELAY_AGENT_TOKEN="$TOKEN_A" relay message list "$CH" --limit 20 | jq -e 'tostri
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive "$CH"
 ```
 
-Assert that the returned parent ID links the reply, search filters return the unique text, and the attachment is listed. Remove the temp file, archive, and call `cleanup_agents`.
+Assert that the returned parent ID links the reply, search filters return the unique text, and the attachment is listed. Remove the temp file, archive, and let the shared exit trap remove identities.
 
 ## direct-messages
 
@@ -191,17 +247,27 @@ Assert the reaction is observable after add and absent after remove, and B's unr
 **Prerequisites:** local broker; spawn/new/set-model need an installed authenticated provider CLI and can incur cost.
 
 ```bash
-AGENT="audit-worker-$RUN"
 PROVIDER="${PROVIDER:-claude}" # installed and authenticated fixture provider
+TASK_AGENT="audit-task-$RUN"
+TASK_TAIL="$TMP/$TASK_AGENT.tail"
 relay node agent list | jq -e 'type == "array"'
-relay node agent spawn "$PROVIDER" --name "$AGENT" --task 'Reply relay-e2e-ok' --spawn-mode task-exit --exit-after-task
+relay node tail --agent "$TASK_AGENT" >"$TASK_TAIL" 2>&1 & TAIL_PID=$!
+relay node agent spawn "$PROVIDER" --name "$TASK_AGENT" --task 'Reply with exactly relay-e2e-ok, then exit.' --spawn-mode task-exit --exit-after-task
+for _ in $(seq 1 60); do
+  grep -Fq 'relay-e2e-ok' "$TASK_TAIL" && break
+  sleep 1
+done
+grep -Fq 'relay-e2e-ok' "$TASK_TAIL"
+kill "$TAIL_PID" 2>/dev/null || true; wait "$TAIL_PID" 2>/dev/null || true; TAIL_PID=""
+AGENT="audit-worker-$RUN"
+relay node agent spawn "$PROVIDER" --name "$AGENT"
 relay node agent list | jq -e --arg n "$AGENT" '.[] | select(.name == $n)'
 relay node agent message hold "$AGENT" | jq -e 'tostring | test("manual|hold"; "i")'
 relay node agent message auto "$AGENT" | jq -e 'tostring | test("auto"; "i")'
 relay node agent release "$AGENT"
 ```
 
-`new` and `attach` are attended PTY checks; verify `drive`, `view`, and `passthrough`. `tail` streams until interrupted: filter by agent, create output, assert it, then stop its exact child process. A model switch proves broker acceptance only, not provider-side model change.
+The bounded task-exit worker proves task output through `relay node tail` before it exits; the separate interactive worker proves hold, auto, and release. `new` and `attach` are attended PTY checks; verify `drive`, `view`, and `passthrough`. A model switch proves broker acceptance only, not provider-side model change.
 
 ## local-workflow-lifecycle
 
@@ -243,13 +309,23 @@ Use a no-op workflow, long disposable workflow for cancel, and only `sync --dry-
 
 ```bash
 : "${WORKER_TOKEN:?See Externally provisioned fixtures}"
-relay cloud worker register --token "$WORKER_TOKEN" --name "audit-worker-$RUN" --json | jq -e '.workerId'
-relay cloud worker start --name "audit-worker-$RUN" --daemon
-relay cloud worker status --name "audit-worker-$RUN" --json | jq -e '.localDaemon'
-relay cloud worker logs --name "audit-worker-$RUN"
+export AGENT_RELAY_HOME="$TMP/cloud-worker-state"
+WORKER_NAME="audit-worker-$RUN"
+REGISTERED="$(relay cloud worker register --token "$WORKER_TOKEN" --name "$WORKER_NAME" --json)"
+WORKER_ID="$(jq -er '.workerId | strings | select(length > 0)' <<<"$REGISTERED")"
+relay cloud worker start --worker-id "$WORKER_ID" --daemon
+WORKER_STATUS="$(relay cloud worker status --worker-id "$WORKER_ID" --json)"
+CLOUD_WORKER_PID="$(jq -er '.localDaemon.pid | numbers | select(. > 0)' <<<"$WORKER_STATUS")"
+CLOUD_WORKER_ID="$WORKER_ID"
+CLOUD_WORKER_LOG_PATH="$(jq -er '.localDaemon.logPath | strings | select(length > 0)' <<<"$WORKER_STATUS")"
+jq -e '.localDaemon.running == true' <<<"$WORKER_STATUS"
+test -r "$CLOUD_WORKER_LOG_PATH"
+relay cloud worker logs --worker-id "$WORKER_ID" >/dev/null
+cleanup_cloud_worker_daemon
+CLOUD_WORKER_PID=""; CLOUD_WORKER_ID=""
 ```
 
-Record the daemon PID/log path and terminate only that daemon; no worker-stop command exists. Use `--once` when a bounded assignment fixture is available.
+The CLI persists the daemon PID and log path in its isolated local worker state, so the procedure derives both through `status --json` rather than parsing command output. Cleanup checks that the PID is still the `--foreground-child` process for this worker ID before sending `TERM` (then `KILL` only after the same check); it never kills a PID merely because it was recorded. There is no worker stop or deregister CLI command: this terminates only the local daemon, while its local record and remote registration remain for the disposable test workspace/Cloud control plane to clean up. For a fixture with one bounded assignment, add `--once` to `start`; it exits after that assignment, but retain the cleanup check in case it is still running.
 
 ## fleet-management
 
@@ -301,17 +377,37 @@ Assert the downloaded skill and delete only this disposable project. Do not run 
 
 **Features:** `integration-subscribe`, `integration-unsubscribe`, `integration-list-bindings`, all `webhook-*`, and all `subscription-*` entries.
 
-**Prerequisites:** disposable workspace, identity, externally reachable controlled receiver. Relayfile also needs compatible authenticated daemon, connected provider, real provider resource, and provider observation API; first connection can require browser OAuth.
+**Prerequisites:** disposable workspace, identity, externally reachable controlled receiver. Relayfile also needs compatible authenticated daemon, connected provider, real provider resource, and provider observation API; first connection can require browser OAuth. The test-owned receiver must expose `CAPTURE_URL` for delivery and a run-scoped `CAPTURE_FETCH_URL` that returns `{"requests":[{"body":<parsed JSON>,"headers":{"lowercase-header-name":"string value"}}]}`. It must retain requests until this test reads them.
 
 ```bash
 : "${CAPTURE_URL:?See Externally provisioned fixtures}"
+: "${CAPTURE_FETCH_URL:?GET endpoint returning the current run captured requests}"
 HOOK="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook create "$CAPTURE_URL" --event message.created)"; HOOK_ID="$(jq -er '.id // .webhookId' <<<"$HOOK")"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook trigger "$HOOK_ID" --payload '{"audit":true}'
+DELIVERED=false
+for _ in $(seq 1 15); do
+  CAPTURE="$(curl --fail --silent --show-error "$CAPTURE_FETCH_URL")"
+  if jq -e '
+    .requests[]
+    | select(.body == {"audit": true})
+    | select(
+        [.headers | to_entries[]
+         | select(.key | contains("signature"))
+         | select(.value | (type == "string" and length > 0))]
+        | length > 0
+      )
+  ' <<<"$CAPTURE" >/dev/null; then
+    DELIVERED=true
+    break
+  fi
+  sleep 1
+done
+test "$DELIVERED" = true
 RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook list | jq -e --arg id "$HOOK_ID" 'tostring | contains($id)'
 RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook delete "$HOOK_ID"
 ```
 
-Assert exact receiver payload/signature, then delete it. For inbound, create channel/hook, POST the returned URL with token and documented payload, assert message, delete hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
+The capture assertion requires the exact parsed payload `{"audit":true}` and a nonempty header whose lowercased name contains `signature`; it runs before deletion. For inbound, create channel/hook, POST the returned URL with token and documented payload, assert message, delete hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
 
 ## reflex-history
 

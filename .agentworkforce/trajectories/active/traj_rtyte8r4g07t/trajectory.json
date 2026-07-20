@@ -64,6 +64,18 @@
             "focal:drift-prevention",
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1784581060376,
+          "type": "decision",
+          "content": "Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child: Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child",
+          "raw": {
+            "question": "Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child",
+            "chosen": "Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child",
+            "alternatives": [],
+            "reasoning": "The daemon is detached and persisted locally; checking worker ID plus --foreground-child before TERM/KILL prevents a stale or reused PID from targeting an unrelated process."
+          },
+          "significance": "high"
         }
       ]
     }
