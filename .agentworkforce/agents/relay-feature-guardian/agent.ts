@@ -29,10 +29,11 @@ type Criticality = 'critical' | 'hot' | 'standard';
 interface ManifestFeature {
   id: string;
   name: string;
-  cli: string;
+  cli?: string;
   description: string;
   verify_tier: number;
   mcp?: string;
+  mcp_prompt?: string;
   location?: string;
 }
 
@@ -53,11 +54,12 @@ interface Manifest {
 interface Feature {
   id: string;
   name: string;
-  cli: string;
+  cli?: string;
   desc: string;
   tier: number;
   criticality: Criticality;
   mcp?: string;
+  mcpPrompt?: string;
 }
 
 const MANIFEST_RELPATH = '.agentworkforce/features/manifest.yaml';
@@ -88,6 +90,7 @@ async function loadFeatures(ctx: WorkforceCtx): Promise<Feature[]> {
         tier: f.verify_tier,
         criticality: category.criticality,
         mcp: f.mcp,
+        mcpPrompt: f.mcp_prompt,
       });
     }
   }
@@ -544,16 +547,17 @@ function pickNextFeature(features: Feature[], checkedIds: Set<string>): Feature 
 
 async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise<string> {
   const mcpNote = feature.mcp ? `\nMCP tool: \`${feature.mcp}\`` : '';
+  const mcpPromptNote = feature.mcpPrompt ? `\nMCP prompt: \`${feature.mcpPrompt}\`` : '';
+  const surface = feature.cli ? `CLI: ${feature.cli}` : 'CLI: (MCP-only surface)';
   const tierLabel =
-    feature.tier === 1
-      ? 'no broker needed'
-      : feature.tier === 2
-        ? 'broker required'
-        : feature.tier === 3
-          ? 'broker + agent token'
-          : feature.tier === 4
-            ? 'broker + two agents'
-            : 'cloud auth required';
+    {
+      1: 'isolated local CLI/filesystem',
+      2: 'local broker required',
+      3: 'hosted workspace + agent token',
+      4: 'hosted workspace + two agents',
+      5: 'authenticated disposable external service',
+      6: 'interactive or pre-provisioned integration',
+    }[feature.tier] ?? 'see feature procedure';
 
   const prompt = [
     'You are the Relay Feature Guardian, a proactive Slack bot for the Agent Relay team.',
@@ -563,7 +567,7 @@ async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise
     'Keep it casual and direct — this is an internal team check.',
     '',
     `Feature: ${feature.name}`,
-    `CLI: ${feature.cli}${mcpNote}`,
+    `${surface}${mcpNote}${mcpPromptNote}`,
     `What it should do: ${feature.desc}`,
     `Verify tier: ${feature.tier} (${tierLabel})`,
     `Criticality: ${feature.criticality}`,
@@ -576,7 +580,7 @@ async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise
     return [
       `🔍 *Relay Feature Check: ${feature.name}*`,
       ``,
-      `\`${feature.cli}\`${mcpNote}`,
+      `\`${feature.cli ?? feature.mcp ?? feature.mcpPrompt ?? feature.name}\`${mcpNote}${mcpPromptNote}`,
       ``,
       `This should: ${feature.desc}`,
       ``,

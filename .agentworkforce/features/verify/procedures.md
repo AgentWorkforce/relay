@@ -1,402 +1,385 @@
 # Feature Verification Procedures
 
-How an agent verifies that each feature works from a user perspective. Organized by tier (what's required to run). Always run lower tiers first — they establish prerequisites for higher ones.
+This document is the executable companion to `../manifest.yaml`. Its `verification.categories` map assigns every feature in a category to one procedure below. The tier orders work, but never replaces the stated prerequisites, assertions, cleanup, or automation limitation.
 
----
+Use `relay` (or the equivalent `agent-relay` binary). Run all mutations in a disposable project, workspace, account, configuration directory, or provider fixture. Never use global `update`, non-dry-run `sync`/`uninstall`, `node down --all`, or production credentials in an unattended test.
 
-## Tier 1 — No dependencies
+## Shared fixtures
 
-Features that can be verified with just the CLI installed. Run these first.
-
-### CLI Health
+For a local broker, use a disposable project and only stop the broker it created:
 
 ```bash
-relay version
-# → prints version string like "10.x.x"
-
-relay --help
-# → shows command list without error
-
-relay telemetry status
-# → prints "enabled" or "disabled"
-
-relay workspace list
-# → prints list (may be empty) without error
+RUN="feature-$(date +%s)"; TMP="$(mktemp -d)"; cd "$TMP"
+relay node up --background --no-spawn
+trap 'relay node down --force 2>/dev/null || true; rm -rf "$TMP"' EXIT
 ```
 
-### Setup and Doctor
+For hosted APIs, use explicit disposable credentials rather than an operator's active workspace:
 
 ```bash
-relay version
-# → confirms CLI is installed (relay setup does not exist)
-
-relay node --help
-# → shows node subcommand options without error
+export RELAY_WORKSPACE_KEY='<disposable workspace key>'
+export RELAY_BASE_URL='<test API URL>'
+RUN="feature-$(date +%s)"
+A_JSON="$(relay agent register "audit-a-$RUN")"; TOKEN_A="$(jq -er .token <<<"$A_JSON")"
+B_JSON="$(relay agent register "audit-b-$RUN")"; TOKEN_B="$(jq -er .token <<<"$B_JSON")"
+cleanup_agents() { relay agent remove "audit-a-$RUN" 2>/dev/null || true; relay agent remove "audit-b-$RUN" 2>/dev/null || true; }
 ```
 
-Pass criteria: all commands exit 0, output is non-empty and sensibly formatted.
+SDK-backed CLI commands emit JSON already; do not add an unsupported `--json` flag.
 
----
+## broker-lifecycle
 
-## Tier 2 — Broker running
+**Features:** `broker-up`, `broker-down`, `broker-status`, `broker-metrics`, `broker-deadletters`, `broker-redeliver`.
 
-Start the broker first: `relay node up --background`
-
-Confirm it started: `relay status` should show "running".
-
-### Broker Lifecycle
+**Prerequisites:** local fixture and broker binary.
 
 ```bash
-relay node up --background
-relay status
-# → shows "running", agent count, queue stats
-
-relay metrics
-# → shows memory, CPU, message throughput
-
-relay deadletters
-# → shows empty list or existing dead letters (not an error)
-
-relay node down
-relay status
-# → shows "stopped" or "not running"
-
-relay node up --background   # restart for subsequent tests
+relay node status | grep -Eiq 'running|stopped'
+relay node metrics | jq -e 'type == "object"'
+relay node deadletters --json | jq -e 'type == "object" or type == "array"'
+relay status | grep -Eiq 'Local broker:'
+relay node down; relay node status | grep -Eiq 'stopped|not running'
 ```
 
-### Agent Management
+Assert daemon state and structured metrics/deadletters, then restart only when a later local test needs it. A successful redelivery needs a real dead-letter addressed to a live worker; the public CLI cannot seed one. Use the broker integration fixture, run exactly one of `relay node redeliver <id>` or `relay node redeliver --all`, and assert the delivery leaves the dead-letter queue.
+
+## workspace-agents-and-capabilities
+
+**Features:** `agent-register`, `agent-add`, `agent-list`, `agent-remove`, `agent-capabilities`, `capabilities-register`, `capabilities-delete`, `system-status`.
+
+**Prerequisites:** hosted fixture; a local broker is not the dependency.
 
 ```bash
-# Register agents
-relay agent register verify-agent-1
-# → prints token: RELAY_AGENT_TOKEN=<token>
-
-relay agent list
-# → shows verify-agent-1 in list
-
-relay agent remove verify-agent-1
-relay agent list
-# → verify-agent-1 no longer appears
+CAP="audit-cap-$RUN"
+relay agent list | jq -e --arg n "audit-a-$RUN" '.[] | select(.name == $n)'
+relay agent add "audit-extra-$RUN" | jq -e '.token'
+relay capabilities register "$CAP" --description 'audit capability' --handler "audit-a-$RUN"
+relay capabilities list | jq -e --arg c "$CAP" '.[] | select(.command == $c)'
+relay capabilities delete "$CAP"; relay agent remove "audit-extra-$RUN"
+relay status | grep -Eiq 'Workspace:|Local broker:|Cloud:'
 ```
 
-### Local Agent Orchestration
+Assert list visibility after every create and absence after every delete; finish with `cleanup_agents`.
+
+## channel-messaging
+
+**Features:** `channel-create`, `channel-list`, `channel-join`, `channel-leave`, `channel-invite`, `channel-set-topic`, `channel-archive`.
+
+**Prerequisites:** hosted fixture with two identities.
 
 ```bash
-relay node agent list
-# → shows empty list or running agents
-
-# If claude harness is available:
-relay node agent spawn claude --name test-worker
-relay node agent list
-# → shows test-worker with status active
-
-relay node agent message hold test-worker
-# → message delivery paused
-
-relay node agent message auto test-worker
-# → message delivery resumed
-
-relay node agent release test-worker
-relay node agent list
-# → test-worker no longer appears
+CH="audit-channel-$RUN"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create "$CH" --topic 'first topic'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel join "$CH"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel set_topic "$CH" 'second topic'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel invite "$CH" "audit-b-$RUN"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay channel list | jq -e --arg n "$CH" '.[] | select(.name == $n)'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel leave "$CH"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive "$CH"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel list --archived | jq -e --arg n "$CH" '.[] | select(.name == $n)'
 ```
 
-### Local Workflow
+Assert the new topic and invited-agent membership, not just success output. Archive the test channel and remove test identities.
+
+## message-round-trip
+
+**Features:** `message-post`, `message-list`, `message-reply`, `message-get-thread`, `message-search`, `message-file-upload`.
+
+**Prerequisites:** hosted fixture and a channel owned by A.
 
 ```bash
-# Requires a minimal workflow file; check examples/ or create one:
-cat > /tmp/test-workflow.yaml << 'EOF'
-version: "1"
-swarm:
-  agents:
-    - name: test-agent
-      harness: claude
-  workflows:
-    - name: health-check
-      steps:
-        - agent: test-agent
-          prompt: "Reply with just: OK"
-EOF
-
-relay node workflow run /tmp/test-workflow.yaml
-# → executes without crashing, agent responds
+CH="audit-messages-$RUN"; TEXT="audit message $RUN"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create "$CH"
+POST="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message post "$CH" "$TEXT")"; MSG_ID="$(jq -er '.id // .messageId' <<<"$POST")"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message list "$CH" --limit 10 | jq -e --arg t "$TEXT" '.[] | select(.text == $t)'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message reply "$MSG_ID" 'audit reply'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message get_thread "$MSG_ID" | jq -e 'tostring | contains("audit reply")'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message search "$RUN" --channel "$CH" --from "audit-a-$RUN" | jq -e 'tostring | contains("audit message")'
+echo "attachment $RUN" > "$TMP/attachment.txt"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message file upload "$TMP/attachment.txt" --channel "$CH" --text 'attachment audit'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message list "$CH" --limit 20 | jq -e 'tostring | contains("attachment audit")'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive "$CH"
 ```
 
-### Workspace
+Assert that the returned parent ID links the reply, search filters return the unique text, and the attachment is listed. Remove the temp file, archive, and call `cleanup_agents`.
+
+## direct-messages
+
+**Features:** `dm-send`, `dm-list`, `dm-list-conversations`, `dm-send-group`.
+
+**Prerequisites:** hosted fixture; group DM needs third identity C.
 
 ```bash
-relay workspace active
-# → prints active workspace name/id
-
-relay workspace list
-# → lists stored workspaces
+C_JSON="$(relay agent register "audit-c-$RUN")"; TOKEN_C="$(jq -er .token <<<"$C_JSON")"
+DM="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send "audit-b-$RUN" "dm $RUN")"; CONV="$(jq -er '.conversationId // .conversation_id' <<<"$DM")"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message dm list "$CONV" | jq -e --arg t "dm $RUN" 'tostring | contains($t)'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send_group "group $RUN" --to "audit-b-$RUN" "audit-c-$RUN"
+relay agent remove "audit-c-$RUN"
 ```
 
-### Fleet Status
+Use `list_dms` through the MCP client and assert the same conversation appears. Assert both group recipients see it before cleanup.
+
+## reactions-and-read-status
+
+**Features:** `reaction-add`, `reaction-remove`, `inbox-check`, `inbox-mark-read`, `inbox-get-readers`.
+
+**Prerequisites:** hosted fixture with two identities.
 
 ```bash
-relay fleet status
-# → shows local broker status and provider attachment (even if no fleet configured)
+CH="audit-read-$RUN"; RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create "$CH"
+POST="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message post "$CH" "read $RUN")"; MSG_ID="$(jq -er '.id // .messageId' <<<"$POST")"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message reaction add "$MSG_ID" thumbsup
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message reaction remove "$MSG_ID" thumbsup
+DM="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send "audit-b-$RUN" "inbox $RUN")"; DM_ID="$(jq -er '.id // .messageId' <<<"$DM")"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message inbox check | jq -e --arg t "inbox $RUN" 'tostring | contains($t)'
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message inbox mark_read "$DM_ID"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message inbox get_readers "$DM_ID" | jq -e --arg n "audit-b-$RUN" 'tostring | contains($n)'
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive "$CH"
 ```
 
-Pass criteria: each command exits 0, output matches expected description.
+Assert the reaction is observable after add and absent after remove, and B's unread message becomes A-visible read receipt. Archive and remove identities.
 
----
+## local-agent-lifecycle
 
-## Tier 3 — Broker running + agent token
+**Features:** `local-agent-spawn`, `local-agent-new`, `local-agent-release`, `local-agent-list`, `local-agent-set-model`, `local-agent-attach`, `local-agent-flush`, `local-agent-hold`, `local-agent-auto`, `local-agent-tail`.
 
-Register at least one agent (`relay agent register <name>`) and export its token:
+**Prerequisites:** local broker; spawn/new/set-model need an installed authenticated provider CLI and can incur cost.
 
 ```bash
-export RELAY_AGENT_TOKEN=$(relay agent register verify-agent | jq -r '.token')
+AGENT="audit-worker-$RUN"
+relay node agent list | jq -e 'type == "array"'
+relay node agent spawn "$PROVIDER" --name "$AGENT" --task 'Reply relay-e2e-ok' --spawn-mode task-exit --exit-after-task
+relay node agent list | jq -e --arg n "$AGENT" '.[] | select(.name == $n)'
+relay node agent message hold "$AGENT" | jq -e 'tostring | test("manual|hold"; "i")'
+relay node agent message auto "$AGENT" | jq -e 'tostring | test("auto"; "i")'
+relay node agent release "$AGENT" || true
 ```
 
-Or pass `--token <value>` to commands that support it.
+`new` and `attach` are attended PTY checks; verify `drive`, `view`, and `passthrough`. `tail` streams until interrupted: filter by agent, create output, assert it, then stop its exact child process. A model switch proves broker acceptance only, not provider-side model change.
 
-### Channel Operations
+## local-workflow-lifecycle
+
+**Features:** `local-workflow-run`, `local-workflow-logs`, `local-workflow-sync`.
+
+**Prerequisites:** disposable local project and selected workflow runtime; no broker.
 
 ```bash
-# Create
-relay channel create verify-test-channel
-# → success message
-
-# List
-relay channel list
-# → shows verify-test-channel
-
-# Join
-relay channel join verify-test-channel
-# → success message
-
-# Set topic
-relay channel set_topic verify-test-channel "verification test"
-# → success message
-
-# Leave
-relay channel leave verify-test-channel
-# → success message
-
-# Archive
-relay channel archive verify-test-channel
-# → success message
-relay channel list
-# → verify-test-channel absent (or present with archived flag if --archived passed)
+echo 'console.log("relay-workflow-e2e")' > "$TMP/workflow.js"
+RUN_JSON="$(relay node workflow run "$TMP/workflow.js" --json)"; RUN_ID="$(jq -er .runId <<<"$RUN_JSON")"
+relay node workflow logs "$RUN_ID" --follow --json | jq -e 'tostring | contains("relay-workflow-e2e")'
+relay node workflow sync "$RUN_ID" --dry-run --json | jq -e 'type == "object"'
 ```
 
-### Message Operations
+Assert completed status and log content. Local run records have no delete command; remove only the disposable state/project directory.
 
-```bash
-# Post
-relay channel create verify-msgs
-relay channel join verify-msgs
-relay message post verify-msgs "verification message $(date +%s)"
-# → success
+## cloud-workflows
 
-# List and confirm delivery
-relay message list verify-msgs --limit 1
-# → shows the message just posted with correct text
+**Features:** `cloud-login`, `cloud-logout`, `cloud-whoami`, `cloud-session`, `cloud-connect`, `cloud-enroll`, `cloud-run`, `cloud-schedule`, `cloud-schedules`, `cloud-status`, `cloud-logs`, `cloud-sync`, `cloud-cancel`.
 
-# Reply (create thread)
-MSG_ID=$(relay message list verify-msgs --limit 1 --json | jq -r '.[0].id')
-relay message reply "$MSG_ID" "thread reply"
-# → success
-
-# Get thread
-relay message get_thread --message-id "$MSG_ID"
-# → shows original message + the reply
-
-# Search
-relay message search --query "verification"
-# → returns at least one result containing the posted message
-
-# Inbox
-relay message inbox check
-# → shows unread count (may be 0 if no messages directed to this agent)
-
-# Mark read
-relay message inbox mark_read --message-id "$MSG_ID"
-# → success
-```
-
-### Reactions
-
-```bash
-relay message reaction add --message-id "$MSG_ID" --emoji thumbsup
-# → success
-
-relay message reaction remove --message-id "$MSG_ID" --emoji thumbsup
-# → success
-```
-
-### Webhooks (requires auth token)
-
-```bash
-relay integration webhook list
-# → success (empty or populated)
-
-HOOK_ID=$(relay integration webhook create https://example.com/hook --event message.created | jq -r '.id')
-# → prints webhook id
-
-relay integration webhook delete "$HOOK_ID"
-# → success
-```
-
-### Subscriptions
-
-```bash
-relay integration subscription list
-# → success (empty or populated)
-```
-
-Pass criteria: all channel/message round-trips show data that matches what was written.
-
----
-
-## Tier 4 — Broker running + two agents
-
-Register two agents and test cross-agent features:
-
-```bash
-export TOKEN_A=$(relay agent register verify-alice | jq -r '.token')
-export TOKEN_B=$(relay agent register verify-bob | jq -r '.token')
-```
-
-### Channel Invite
-
-```bash
-RELAY_AGENT_TOKEN=$TOKEN_A relay channel create private-verify
-RELAY_AGENT_TOKEN=$TOKEN_A relay channel join private-verify
-RELAY_AGENT_TOKEN=$TOKEN_A relay channel invite private-verify verify-bob
-# → success
-
-RELAY_AGENT_TOKEN=$TOKEN_B relay channel list
-# → shows private-verify as a channel bob is in
-```
-
-### Direct Messages
-
-```bash
-# Send DM and capture conversationId from JSON output:
-DM_RESPONSE=$(RELAY_AGENT_TOKEN=$TOKEN_A relay message dm send verify-bob "hello bob")
-CONV_ID=$(echo "$DM_RESPONSE" | jq -r '.conversationId')
-# → success; conversationId captured
-
-# Verify recipient can list the conversation:
-RELAY_AGENT_TOKEN=$TOKEN_B relay message dm list "$CONV_ID"
-# → shows the DM from verify-alice
-
-RELAY_AGENT_TOKEN=$TOKEN_A relay message dm send_group "group hello" --to verify-bob
-# → success
-```
-
-### Read Receipts
-
-```bash
-MSG_ID=$(RELAY_AGENT_TOKEN=$TOKEN_A relay message list private-verify --limit 1 --json | jq -r '.[0].id')
-RELAY_AGENT_TOKEN=$TOKEN_B relay message inbox mark_read --message-id "$MSG_ID"
-
-RELAY_AGENT_TOKEN=$TOKEN_A relay message inbox get_readers --message-id "$MSG_ID"
-# → shows verify-bob has read the message
-```
-
-### Cleanup
-
-```bash
-relay agent remove verify-alice
-relay agent remove verify-bob
-```
-
-Pass criteria: messages posted by agent A appear in agent B's list, DMs route correctly.
-
----
-
-## Tier 5 — Cloud auth required
-
-Requires `relay cloud login` to have been completed.
-
-### Auth Checks
+**Prerequisites:** dedicated Cloud account/workspace. Login and connect are browser/SSH interactive; enrollment needs a one-time test token or test-workspace mint.
 
 ```bash
 relay cloud whoami
-# → shows authenticated user/org
-
-relay cloud session
-# → shows session details (workspace, expiry, etc.)
+relay cloud session --json | jq -e '.apiUrl'
+RUN_JSON="$(relay cloud run "$TMP/noop.yaml" --no-sync-code --json)"; CLOUD_RUN="$(jq -er '.runId // .id' <<<"$RUN_JSON")"
+relay cloud status "$CLOUD_RUN" --json | jq -e 'type == "object"'
+relay cloud logs "$CLOUD_RUN" --follow --json | jq -e 'type == "object"'
+relay cloud sync "$CLOUD_RUN" --dry-run
 ```
 
-### Cloud Workflow Run
+Use a no-op workflow, long disposable workflow for cancel, and only `sync --dry-run`. Schedules lack a CLI delete, so create them only in an isolated workspace and remove through Cloud control plane. Logout only an isolated account.
+
+## cloud-workers
+
+**Features:** `cloud-worker-register`, `cloud-worker-start`, `cloud-worker-status`, `cloud-worker-logs`.
+
+**Prerequisites:** dedicated enrollment token and isolated worker state.
 
 ```bash
-relay cloud run examples/basic-workflow.yaml
-# → prints run ID
-
-RUN_ID=<id from above>
-relay cloud status "$RUN_ID"
-# → shows run status (queued, running, completed)
-
-relay cloud logs "$RUN_ID"
-# → shows log output from the run
+relay cloud worker register --token "$WORKER_TOKEN" --name "audit-worker-$RUN" --json | jq -e '.workerId'
+relay cloud worker start --name "audit-worker-$RUN" --daemon
+relay cloud worker status --name "audit-worker-$RUN" --json | jq -e '.localDaemon'
+relay cloud worker logs --name "audit-worker-$RUN"
 ```
 
-### Schedules
+Record the daemon PID/log path and terminate only that daemon; no worker-stop command exists. Use `--once` when a bounded assignment fixture is available.
+
+## fleet-management
+
+**Features:** `fleet-nodes`, `fleet-config`, `fleet-enable`, `fleet-disable`, `fleet-inherit`, `fleet-status`.
+
+**Prerequisites:** disposable workspace; `fleet-status` additionally benefits from a local broker.
 
 ```bash
-relay cloud schedule examples/basic-workflow.yaml --cron "0 * * * *"
-# → prints schedule ID
-
-relay cloud schedules
-# → shows the schedule just created
+relay fleet nodes | jq -e '.nodes'
+BEFORE="$(relay fleet config)"
+relay fleet enable; relay fleet config | jq -e 'type == "object"'
+relay fleet disable; relay fleet inherit; relay fleet status | jq -e '.broker'
 ```
 
-Pass criteria: cloud commands return data consistent with the authenticated account.
+Snapshot and restore configuration or discard the workspace. For full two-node dispatch/enrollment coverage, run `npm run test:e2e` with `tests/e2e/fleet/README.md` prerequisites.
 
----
+## workspace-management
 
-## Tier 6 — Manual / Browser
+**Features:** `workspace-active`, `workspace-create`, `workspace-list`, `workspace-set-key`, `workspace-join`, `workspace-switch`.
 
-These cannot be automated from CLI. A human must verify them.
-
-| Feature                              | How to Verify                                                               |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `relay cloud login`                  | Open browser OAuth flow, complete auth, check `relay cloud whoami` succeeds |
-| Cursor harness                       | Open Cursor, run cursor-agent, confirm PTY injection works                  |
-| Web dashboard (relay-dashboard repo) | Navigate to dashboard, confirm agents/channels visible                      |
-| `relay cloud connect`                | SSH session must complete provider auth interactively                       |
-| `relay cloud enroll`                 | Machine enrollment requires cloud account and browser confirmation          |
-
----
-
-## Verification Checklist by Change Type
-
-Use this to determine which tiers to run:
-
-| Change area                                                        | Tiers to run                         |
-| ------------------------------------------------------------------ | ------------------------------------ |
-| Broker Rust code (`crates/broker/`)                                | 1, 2, 3, 4                           |
-| PTY/harness code (`crates/relay-pty/`, `packages/harness-driver/`) | 2 (spawn tests)                      |
-| CLI commands (`packages/cli/src/cli/commands/`)                    | 1 + tier matching the command        |
-| MCP tools (`packages/cli/src/cli/mcp/`)                            | 2, 3 (MCP server + tool calls)       |
-| SDK (`packages/sdk/`)                                              | 3, 4                                 |
-| Cloud client (`packages/cloud/`)                                   | 5                                    |
-| Any auth/token change                                              | 2, 3, 4                              |
-| Message ordering/delivery                                          | 3, 4 (post then list, confirm order) |
-| Harness definitions (`packages/harnesses/`)                        | 2 (spawn that harness)               |
-
----
-
-## Quick Sanity Check (Run After Any Change)
+**Prerequisites:** isolated `AGENT_RELAY_HOME`; active/create also require Cloud API/auth.
 
 ```bash
-relay version && relay status || relay node up --background && relay status
-AGENT_NAME="quick-check-$(date +%s)"
-export RELAY_AGENT_TOKEN=$(relay agent register "$AGENT_NAME" | jq -r '.token')
-relay agent list
-relay channel create quick-check-ch
-relay channel join quick-check-ch
-relay message post quick-check-ch "sanity $(date)"
-relay message list quick-check-ch --limit 1
-relay channel archive quick-check-ch
-relay agent remove "$AGENT_NAME"
+export AGENT_RELAY_HOME="$(mktemp -d)"
+relay workspace set_key audit-one rk_live_example
+relay workspace join audit-two rk_live_example_two
+relay workspace switch audit-one
+relay workspace list | jq -e '.active == "audit-one"'
+rm -rf "$AGENT_RELAY_HOME"
 ```
 
-All steps should succeed. Total runtime: under 10 seconds.
+Create remote workspaces only in a test tenant, assert `workspace active --json` returns canonical IDs, and delete them through the control plane.
+
+## skills-installation
+
+**Features:** `skills-add`.
+
+**Prerequisites:** network and disposable project/configuration.
+
+```bash
+mkdir -p "$TMP/skills-project"; cd "$TMP/skills-project"
+relay skills add --local --harness codex
+test -e .agents/skills/orchestrate/SKILL.md
+```
+
+Assert the downloaded skill and delete only this disposable project. Do not run `--global` in automation.
+
+## integrations-and-webhooks
+
+**Features:** `integration-subscribe`, `integration-unsubscribe`, `integration-list-bindings`, all `webhook-*`, and all `subscription-*` entries.
+
+**Prerequisites:** disposable workspace, identity, externally reachable controlled receiver. Relayfile also needs compatible authenticated daemon, connected provider, real provider resource, and provider observation API; first connection can require browser OAuth.
+
+```bash
+HOOK="$(relay integration webhook create "$CAPTURE_URL" --event message.created)"; HOOK_ID="$(jq -er '.id // .webhookId' <<<"$HOOK")"
+relay integration webhook trigger "$HOOK_ID" --payload '{"audit":true}'
+relay integration webhook list | jq -e --arg id "$HOOK_ID" 'tostring | contains($id)'
+relay integration webhook delete "$HOOK_ID"
+```
+
+Assert exact receiver payload/signature, then delete it. For inbound, create channel/hook, POST the returned URL with token and documented payload, assert message, delete hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
+
+## reflex-history
+
+**Features:** `reflex-on`, `reflex-off`, `reflex-status`.
+
+**Prerequisites:** isolated home; `on` is interactive and can use Cloud login.
+
+```bash
+echo y | relay reflex on; relay reflex status | grep -Eiq 'on'
+relay reflex off; relay reflex status | grep -Eiq 'off'
+```
+
+Run only against a disposable home/configuration and assert cleanup leaves Reflex off.
+
+## mcp-stdio
+
+**Features:** `mcp-server-start` and all `mcp-*` tool/prompt entries.
+
+**Prerequisites:** Node MCP SDK client, disposable hosted workspace, registered identities. `add_agent`, `spawn`, and `submit_result` need real provider/callback fixtures.
+
+Launch `relay mcp` as stdio child. Initialize it, call `tools/list` and `prompts/list`, and assert all 31 static tool names in the manifest plus prompt `system`. Call `set_workspace_key`/`register_agent` for A and B; repeat channel/message/thread/DM/reaction/read assertions through MCP fields (`message_id`, `include_archived`, `participants`, `as`). Register an action before `list_actions`/`invoke_action`. Spawn only a disposable worker then `remove_agent`. Configure result callback environment before testing conditional `submit_result`, assert receiver payload, and close the child cleanly.
+
+## harnesses
+
+**Features:** all `harness-*` entries.
+
+**Prerequisites:** named provider CLI installed/authenticated, disposable project, and budget; custom harness only needs the SDK contract.
+
+Run the bounded local-agent spawn test for each installed provider with `--task`, `--spawn-mode task-exit`, and `--exit-after-task`; assert list, sentinel response, and release. PTY providers need attended verification. For a custom harness, run `npm test --workspace @agent-relay/harnesses` plus a `defineHarness` create/send/release fixture.
+
+## typescript-sdk
+
+**Features:** all `sdk-*` entries.
+
+**Prerequisites:** local engine or disposable hosted workspace.
+
+```bash
+node tests/integration/sdk/v8-api-smoke.mjs
+```
+
+Assert bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior. Release all identities and clean up remote workspace through its control plane; the smoke script does not delete it.
+
+## python-sdk
+
+**Features:** all `python-sdk-*` entries.
+
+```bash
+cd packages/sdk-py && python -m pytest
+```
+
+For true E2E, create a disposable Relay, send/receive unique message, then release agents and shut down. Adapter/workflow tests require their provider CLI and must clean up spawned work.
+
+## swift-sdk
+
+**Features:** `swift-sdk-hosted`, `swift-sdk-broker`.
+
+```bash
+cd packages/sdk-swift && swift test
+```
+
+Run hosted and local-broker round trips, assert receipt/listener behavior, then release identities and clean up the disposable workspace.
+
+## opencode-plugin
+
+**Features:** all `opencode-relay-*` entries.
+
+```bash
+npm --prefix plugins/opencode-relay-plugin test
+```
+
+Connect two disposable OpenCode sessions, prove each native tool, spawn one worker, use `relay_dismiss`, and assert idle/compaction/end hooks preserve then clean state.
+
+## codex-relay-skill
+
+**Features:** all `codex-relay-*` entries.
+
+Copy the skill into a temporary `.agents/skills/agent-relay`, run setup twice, and diff resulting `.codex/config.toml`, hooks, and worker template to prove idempotence. In disposable Codex, require a relay-worker ACK/STATUS/DONE via MCP and assert hooks connect, surface inbox, and protect completion with unread work.
+
+## gemini-relay-extension
+
+**Features:** all `gemini-relay-*` entries.
+
+Install with `gemini extensions install AgentWorkforce/relay`; with experimental agents and disposable workspace run `/relay:status`, `/relay:team <bounded task>`, `/relay:fanout <bounded task>`. Assert worker ACK/DONE and session-start/after-tool/before-model/stop/session-end hook behavior, including cleanup.
+
+## cli-maintenance
+
+**Features:** `cli-version`, `cli-update`, `cli-uninstall`.
+
+```bash
+relay version | grep -E '.'
+relay update --check
+relay uninstall --dry-run --keep-data
+```
+
+Assert version/update/removal-plan output. Mutating update/uninstall requires isolated OS/container and attended approval.
+
+## telemetry
+
+**Features:** `telemetry-enable`, `telemetry-disable`, `telemetry-status`.
+
+```bash
+export AGENT_RELAY_DATA_DIR="$(mktemp -d)"
+relay telemetry disable; relay telemetry status | grep -Eiq 'Enabled: No'
+relay telemetry enable; relay telemetry status | grep -Eiq 'Enabled: Yes'
+rm -rf "$AGENT_RELAY_DATA_DIR"
+```
+
+Assert both persisted states; unset telemetry opt-out environment variables because they override stored preference.
+
+## node-command-discovery
+
+**Features:** `node-up`, `node-workflow`.
+
+```bash
+relay node up --help | grep -Eiq 'config|no-spawn'
+relay node workflow --help | grep -Eiq 'run|logs|sync'
+```
+
+Use `broker-lifecycle` for start behavior and `local-workflow-lifecycle` for the three workflow leaves. This group procedure is discoverability only, not workflow execution.

@@ -1,138 +1,101 @@
 # Critical Paths
 
-The features and sequences that must work for the product to function. These are the first things to verify after any change, and the last things to break.
+These are the product sequences to run first after a related change. They use the exact public surface recorded in `manifest.yaml`; detailed fixtures, assertions, and cleanup live in `verify/procedures.md`.
 
----
-
-## Path 1: Broker + Agent Registration (Foundation)
-
-Everything depends on this. If it breaks, nothing works.
+## Path 1: Local Broker Lifecycle
 
 ```bash
-relay node up --background
-relay agent register <name>   → produces a token
-relay agent list              → shows the registered agent
-relay status                  → shows broker running with agent count
+relay node up --background --no-spawn
+relay node status
+relay node metrics
+relay node deadletters --json
+relay node down
+relay node status
 ```
 
-**What breaks if this fails:** All messaging, local agent orchestration, MCP tools, workflow execution.
+The first status must report running and the last must report stopped. Use an isolated project/state directory and never stop all brokers system-wide.
 
----
+## Path 2: Cross-Agent Channel Message
 
-## Path 2: Channel Messaging (Core Coordination Loop)
-
-The primary way agents communicate.
+**Prerequisite:** disposable hosted workspace with `TOKEN_A` and `TOKEN_B` from two registrations.
 
 ```bash
-relay node up --background
-relay agent register alice    → TOKEN_A
-relay agent register bob      → TOKEN_B
-
-# As alice:
-RELAY_AGENT_TOKEN=<TOKEN_A> relay channel create team
-RELAY_AGENT_TOKEN=<TOKEN_A> relay channel join team
-RELAY_AGENT_TOKEN=<TOKEN_A> relay message post team "hello from alice"
-
-# Verify bob receives it:
-RELAY_AGENT_TOKEN=<TOKEN_B> relay channel join team
-RELAY_AGENT_TOKEN=<TOKEN_B> relay message list team --limit 1
-# → should show alice's message
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel create critical-path
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel invite critical-path critical-b
+POST="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message post critical-path 'critical-path-message')"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message list critical-path --limit 10
+RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive critical-path
 ```
 
-**What breaks if this fails:** All multi-agent coordination, workflow communication, the entire product premise.
+Agent B must see the exact text from A. Remove both test identities after archiving the channel.
 
----
+## Path 3: Managed Local Agent
 
-## Path 3: Local Agent Spawn + Message Injection
-
-The mechanism for spawning real AI agents and injecting messages into them.
+**Prerequisite:** a locally installed and authenticated provider CLI.
 
 ```bash
-relay node up --background
-relay node agent spawn claude --name worker-1
-relay node agent list           → shows worker-1 as active
-relay node agent message hold worker-1
-relay node agent message flush worker-1
-relay node agent release worker-1
+relay node up --background --no-spawn
+relay node agent spawn "$PROVIDER" --name critical-worker --task 'Reply critical-ok' --spawn-mode task-exit --exit-after-task
+relay node agent list
+relay node agent message hold critical-worker
+relay node agent message auto critical-worker
+relay node agent release critical-worker
 ```
 
-**What breaks if this fails:** All multi-agent orchestration workflows, the local workflow engine.
+Assert that the worker appears, receives its bounded task, and is released. Provider credentials/cost make this a pre-provisioned integration check, not a generic CI test.
 
----
+## Path 4: MCP Stdio Round Trip
 
-## Path 4: MCP Server Integration
+**Prerequisite:** disposable hosted workspace and an MCP JSON-RPC client.
 
-The path used when an agent operates inside a harness (Claude Code, Cursor, etc.).
+```text
+start relay mcp over stdio
+initialize → tools/list → prompts/list
+set_workspace_key or create_workspace → register_agent(A and B)
+create_channel → post_message → list_messages
+reply_to_thread → get_message_thread
+send_dm → list_dms → check_inbox → mark_message_read → get_message_readers
+close the stdio child
+```
+
+Assert every static MCP tool in the manifest is listed and that the returned content reflects the values written by the test. The server itself does not require a local broker, but the messaging tools require a workspace and agent identities.
+
+## Path 5: Local Workflow Run, Logs, and Sync
 
 ```bash
-relay mcp                       → starts MCP server on stdio
-# From a harness MCP call:
-list_channels                   → returns channel list
-post_message(channel, text)     → posts message
-list_messages(channel)          → returns messages including the one just posted
+echo 'console.log("critical-workflow-ok")' > workflow.js
+RUN_JSON="$(relay node workflow run workflow.js --json)"
+RUN_ID="$(jq -er .runId <<<"$RUN_JSON")"
+relay node workflow logs "$RUN_ID" --follow --json
+relay node workflow sync "$RUN_ID" --dry-run --json
 ```
 
-**What breaks if this fails:** All usage from within harness tools (the primary user workflow for most users).
+Assert completed status and the sentinel output. Run it in a disposable project because local workflow records are retained.
 
----
+## Path 6: Direct Message and Read Receipt
 
-## Path 5: Workflow Execution (Local)
-
-A workflow YAML or JS file drives multiple agents to complete a task.
+**Prerequisite:** disposable hosted workspace with two identities.
 
 ```bash
-relay node up --background
-relay node workflow run examples/basic-workflow.yaml
-# → spawns agents, coordinates them, produces output, terminates cleanly
+DM="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay message dm send critical-b 'critical-dm')"
+DM_ID="$(jq -er '.id // .messageId' <<<"$DM")"
+CONV_ID="$(jq -er '.conversationId // .conversation_id' <<<"$DM")"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message dm list "$CONV_ID"
+RELAY_AGENT_TOKEN="$TOKEN_B" relay message inbox mark_read "$DM_ID"
+RELAY_AGENT_TOKEN="$TOKEN_A" relay message inbox get_readers "$DM_ID"
 ```
 
-**What breaks if this fails:** The primary value proposition for multi-agent task execution.
+Assert B reads the exact DM and A sees B in readers. Remove the disposable agents afterward.
 
----
-
-## Path 6: Direct Messaging Between Agents
+## Fast Health Triage
 
 ```bash
-relay node up --background
-relay agent register orchestrator  → TOKEN_O
-relay agent register worker        → TOKEN_W
-
-# Send DM and capture conversationId from JSON output:
-RELAY_AGENT_TOKEN=<TOKEN_O> relay message dm send worker "your task"
-# dm list requires the conversationId returned by send
-# RELAY_AGENT_TOKEN=<TOKEN_W> relay message dm list <conversationId>
+relay version
+relay status
+relay node status
+relay node up --background --no-spawn
+relay node status
+relay node metrics
 ```
 
-**What breaks if this fails:** Lead/worker orchestration patterns, any workflow that routes tasks via DM.
-
----
-
-## Hot Paths (Sensitive, Frequently Touched)
-
-These are not foundational but are exercised constantly and failures are immediately noticeable.
-
-| Path                          | Risk                                     | Code Area                                                    |
-| ----------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
-| PTY message injection timing  | Race conditions in TMUX wrapper          | crates/relay-pty/, packages/harness-driver/                  |
-| Dead letter queue + redeliver | Messages lost silently                   | crates/broker/src/queue.rs                                   |
-| Agent token auth validation   | Auth bypass or silent rejection          | crates/broker/src/auth.rs (or equivalent)                    |
-| Message delivery ordering     | Out-of-order delivery corrupts workflows | crates/broker/                                               |
-| Hold/flush state machine      | Stuck agents that never receive messages | crates/broker/, packages/cli/src/cli/commands/local-agent.ts |
-| MCP tool schema validation    | Tool calls rejected silently by harness  | packages/cli/src/cli/mcp/                                    |
-
----
-
-## What an Agent Should Check First
-
-When unsure if the system is healthy, run this sequence in order:
-
-```bash
-relay version            # CLI is installed and not corrupt
-relay status             # Broker state (running or not)
-relay node up --background  # Start if not running
-relay status             # Confirm running
-relay agent list         # Workspace is reachable and has agents
-relay message list general --limit 1  # Messaging works end to end
-```
-
-If any step fails, diagnose before proceeding. The failure at each step points to a specific subsystem.
+If any command fails, diagnose that subsystem before testing higher-level paths. Do not treat top-level `relay status` as the broker statistics command; `relay node status` is the direct broker check.
