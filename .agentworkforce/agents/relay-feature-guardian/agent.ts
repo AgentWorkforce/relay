@@ -584,7 +584,7 @@ async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise
     return [
       `🔍 *Relay Feature Check: ${feature.name}*`,
       ``,
-      `\`${feature.cli ?? feature.mcp ?? feature.mcpPrompt ?? feature.name}\`${mcpNote}${mcpPromptNote}`,
+      surface,
       ``,
       `This should: ${feature.desc}`,
       ``,
