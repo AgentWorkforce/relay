@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay cloud enroll --workspace` now validates and resolves Cloud UUIDs and unified `rw_` IDs before minting, and reports unresolvable identifiers instead of mislabeling them as permission failures.
+- `relay-feature-guardian` now picker-gates its Slack mirror to the configured output channel, moves checks off the fleet's shared Claude subscription, and surfaces failed posts as failed runs instead of silently reporting success.
 
 ## [10.6.5] - 2026-07-19
 

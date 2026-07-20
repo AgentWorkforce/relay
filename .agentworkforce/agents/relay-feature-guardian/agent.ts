@@ -780,12 +780,12 @@ export async function runGuardian(
       feature: feature.id,
       err: String(err),
     });
-    return;
+    throw err;
   }
   const ts = deliveredSlackTs(result);
   if (!ts) {
     ctx.log('error', 'relay-feature-guardian.post-failed', { channel, feature: feature.id });
-    return;
+    throw new Error(`Slack post failed: no timestamp returned for feature ${feature.id}`);
   }
 
   // Checkpoint immediately after the confirmed provider receipt. The stable
