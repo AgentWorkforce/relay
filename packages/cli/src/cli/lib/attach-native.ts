@@ -101,7 +101,12 @@ function defaultDependencies(options: NativeAttachOptions): NativeAttachDependen
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     },
-    createReadline: () => createInterface({ input: process.stdin, terminal: Boolean(process.stdin.isTTY) }),
+    createReadline: () =>
+      createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: Boolean(process.stdin.isTTY),
+      }),
     onSignal: (handler) => {
       process.once('SIGINT', handler);
       return () => process.off('SIGINT', handler);
@@ -142,6 +147,7 @@ export async function attachNative(
     brokerCursor = await client.currentEventSeq();
   } catch (error) {
     deps.output.stderr(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+    client.disconnect();
     return 1;
   }
   const stream = client.subscribeAgentEvents(name, { sinceSequence: 0, sinceBrokerSeq: brokerCursor });
@@ -185,6 +191,11 @@ export async function attachNative(
 
     if (mode === 'drive') {
       readline = deps.createReadline();
+      const showPrompt = () => {
+        if (stopped || options.json || !readline?.terminal) return;
+        readline.setPrompt('> ');
+        readline.prompt();
+      };
       readline.on('line', (line) => {
         const text = line.trim();
         if (!text) return;
@@ -229,8 +240,12 @@ export async function attachNative(
           .then(() => undefined);
         commandChain = pendingCommand.catch(() => undefined);
         pendingCommands.add(pendingCommand);
-        void pendingCommand.finally(() => pendingCommands.delete(pendingCommand));
+        void pendingCommand.finally(() => {
+          pendingCommands.delete(pendingCommand);
+          showPrompt();
+        });
       });
+      showPrompt();
     }
 
     while (!stopped) {
@@ -249,6 +264,7 @@ export async function attachNative(
     unsubscribeDiagnostics();
     readline?.close();
     await iterator.return?.();
+    client.disconnect();
   }
 }
 

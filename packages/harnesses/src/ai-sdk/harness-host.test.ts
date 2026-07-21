@@ -98,6 +98,10 @@ describe('HarnessHost', () => {
     turns[0].emit({ type: 'text-delta', id: 'text-1', delta: 'hi' });
     turns[0].emit({ type: 'text-end', id: 'text-1' });
     turns[0].emit({
+      type: 'error',
+      error: { name: 'Error', message: 'bridge process failed' },
+    });
+    turns[0].emit({
       type: 'finish',
       finishReason: { unified: 'stop' },
       totalUsage: { inputTokens: {}, outputTokens: {} },
@@ -119,6 +123,7 @@ describe('HarnessHost', () => {
     );
     const sequences = events.map((event) => (event.observability as { sequence: number }).sequence);
     expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
+    expect(events.find((event) => event.type === 'error')?.error).toBe('bridge process failed');
     await host.destroy();
   });
 

@@ -30,6 +30,7 @@ describe('native harness attach rendering', () => {
 
   it('waits for broker acknowledgement before reporting line input accepted', async () => {
     const output: string[] = [];
+    let disconnected = false;
     let finishStream: ((value: IteratorResult<never>) => void) | undefined;
     const iterator = {
       next: () => new Promise<IteratorResult<never>>((resolve) => (finishStream = resolve)),
@@ -50,6 +51,9 @@ describe('native harness attach rendering', () => {
         gap: false,
       }),
       onEvent: () => () => undefined,
+      disconnect: () => {
+        disconnected = true;
+      },
       sendNativeHarnessCommand: async () => ({
         protocol_version: 1,
         request_id: 'req-1',
@@ -58,7 +62,16 @@ describe('native harness attach rendering', () => {
       }),
     };
     const readline = new EventEmitter() as EventEmitter & { close(): void };
+    let promptText = '';
+    let promptCount = 0;
     readline.close = () => undefined;
+    Object.assign(readline, {
+      terminal: true,
+      setPrompt: (value: string) => (promptText = value),
+      prompt: () => {
+        promptCount += 1;
+      },
+    });
     await expect(
       attachNative(
         'Worker',
@@ -79,6 +92,9 @@ describe('native harness attach rendering', () => {
       )
     ).resolves.toBe(0);
     expect(output).toContain('[input] accepted\n');
+    expect(promptText).toBe('> ');
+    expect(promptCount).toBeGreaterThanOrEqual(1);
+    expect(disconnected).toBe(true);
   });
 
   it('renders text and compact normalized activity without protocol JSON', () => {
