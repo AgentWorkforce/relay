@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   readWorkspaceStore,
+  resolveActiveWorkspaceEntry,
   resolveActiveWorkspaceKey,
   setActiveWorkspace,
   setWorkspaceKey,
@@ -51,5 +52,32 @@ describe('workspace store', () => {
   it('rejects reserved object-property workspace names', () => {
     expect(() => setWorkspaceKey('__proto__', 'rk_bad')).toThrow(/Invalid workspace name/);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('caches cloudWorkspaceId only when explicitly supplied, and clears it on a plain key update', () => {
+    setWorkspaceKey('ops', 'rk_ops', undefined, 'rw_ops');
+    expect(resolveActiveWorkspaceEntry()).toEqual({
+      name: 'ops',
+      entry: { key: 'rk_ops', cloudWorkspaceId: 'rw_ops' },
+    });
+
+    // A plain key update with no explicit cloudWorkspaceId must NOT carry the
+    // old id forward. If it did, a user repointing this alias at a different
+    // workspace via `workspace set_key`/`workspace join` could have self-heal
+    // silently rejoin the OLD workspace if the new key transiently fails to
+    // resolve, instead of surfacing the real failure.
+    setWorkspaceKey('ops', 'rk_ops_rotated');
+    expect(resolveActiveWorkspaceEntry()).toEqual({
+      name: 'ops',
+      entry: { key: 'rk_ops_rotated' },
+    });
+
+    // An explicit cloudWorkspaceId is stored as given.
+    setWorkspaceKey('ops', 'rk_ops_rotated', undefined, 'rw_ops_new');
+    expect(resolveActiveWorkspaceEntry()?.entry.cloudWorkspaceId).toBe('rw_ops_new');
+  });
+
+  it('resolveActiveWorkspaceEntry returns undefined when there is no active workspace', () => {
+    expect(resolveActiveWorkspaceEntry()).toBeUndefined();
   });
 });

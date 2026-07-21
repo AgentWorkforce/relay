@@ -7,9 +7,22 @@ import path from 'node:path';
  * canonical Agent Relay workspace pin consumed by cloud, workforce, and
  * relayfile integrations.
  */
+export interface WorkspaceStoreEntry {
+  key: string;
+  /**
+   * The canonical Cloud workspace id this key was last resolved against
+   * (e.g. `rw_7ccfea89`), cached opportunistically on a successful resolve.
+   * Lets `resolveActiveWorkspace` self-heal via `joinWorkspace` if this key
+   * later stops resolving (rotated/orphaned) without the caller needing to
+   * remember or re-supply the workspace id. Absent for a key that has never
+   * successfully resolved.
+   */
+  cloudWorkspaceId?: string;
+}
+
 export interface WorkspaceStore {
   active?: string;
-  workspaces: Record<string, { key: string }>;
+  workspaces: Record<string, WorkspaceStoreEntry>;
 }
 
 const RESERVED_WORKSPACE_NAMES = new Set(['__proto__', 'prototype', 'constructor']);
@@ -57,11 +70,22 @@ export function writeWorkspaceStore(store: WorkspaceStore, env: NodeJS.ProcessEn
 export function setWorkspaceKey(
   name: string,
   key: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  cloudWorkspaceId?: string
 ): WorkspaceStore {
   const workspaceName = validateWorkspaceName(name);
   const store = readWorkspaceStore(env);
-  store.workspaces[workspaceName] = { key };
+  // Only cache cloudWorkspaceId when the caller explicitly supplies it — NOT
+  // carried forward from a prior entry. A plain key update (e.g. `workspace
+  // set_key <name> <key>` repointing an alias at a different workspace) must
+  // not silently retain the OLD cached id: if the new key transiently fails
+  // to resolve, self-heal would otherwise rejoin the old workspace instead of
+  // surfacing the failure. Callers that know the id (a fresh resolve, a
+  // fresh create, a successful join) always pass it explicitly.
+  store.workspaces[workspaceName] = {
+    key,
+    ...(cloudWorkspaceId ? { cloudWorkspaceId } : {}),
+  };
   store.active ??= workspaceName;
   writeWorkspaceStore(store, env);
   return store;
@@ -88,3 +112,13 @@ export function resolveActiveWorkspaceKey(env: NodeJS.ProcessEnv = process.env):
 }
 
 export const activeWorkspaceKey = resolveActiveWorkspaceKey;
+
+/** The active workspace's name plus its full stored entry (key + cached cloudWorkspaceId hint). */
+export function resolveActiveWorkspaceEntry(
+  env: NodeJS.ProcessEnv = process.env
+): { name: string; entry: WorkspaceStoreEntry } | undefined {
+  const store = readWorkspaceStore(env);
+  if (!store.active) return undefined;
+  const entry = store.workspaces[store.active];
+  return entry ? { name: store.active, entry } : undefined;
+}

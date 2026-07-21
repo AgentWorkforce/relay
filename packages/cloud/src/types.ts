@@ -81,12 +81,30 @@ export type AuthSessionResponse = {
 export type WorkspaceCreateResponse = {
   workspaceId: string;
   name?: string;
+  /**
+   * The Relaycast `rk_live_` key for this workspace, minted as part of the
+   * unified Cloud create so it resolves via `resolveActiveWorkspace` (unlike
+   * a key from a direct Relaycast-only create, which has no Cloud Postgres
+   * row and 404s on resolve).
+   */
+  relaycastApiKey?: string;
   relayfileUrl?: string;
   relaycronUrl?: string;
   relaycastUrl?: string;
   relayauthUrl?: string;
   joinCommand?: string;
   createdAt?: string;
+};
+
+/**
+ * Response from `POST /api/v1/workspaces/{workspaceId}/join`: session-authenticated
+ * access to a workspace the caller already owns/belongs to, keyed by its canonical
+ * Cloud workspace id (NOT a Relaycast-only `workspace create`). Used by
+ * `joinWorkspace` to self-heal a `relaycastApiKey` that stops resolving.
+ */
+export type WorkspaceJoinResponse = {
+  workspaceId: string;
+  relaycastApiKey: string;
 };
 
 export type WorkspaceTokenRecord = {
