@@ -1706,7 +1706,10 @@ mod tests {
         );
         assert!(reg.supervisor.is_supervised(name));
 
-        let error = reg.release(name).await.expect_err("missing process is still reported");
+        let error = reg
+            .release(name)
+            .await
+            .expect_err("missing process is still reported");
         assert!(error.to_string().contains("unknown worker"));
         assert!(!reg.supervisor.is_supervised(name));
         assert!(reg.supervisor.pending_restarts().is_empty());
