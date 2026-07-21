@@ -222,14 +222,19 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
           {
             id: delivery.event_id,
             messageId: delivery.event_id,
+            kind: delivery.thread_id ? 'thread_reply' : delivery.target.startsWith('#') ? 'channel' : 'dm',
             text: delivery.body,
             from: { id: delivery.from, name: delivery.from, type: 'agent' },
+            target: delivery.target.startsWith('#')
+              ? { kind: 'channel', channelName: delivery.target.slice(1) }
+              : { kind: 'agent', agentName: delivery.target },
+            threadId: delivery.thread_id,
           } as RelayMessage,
           {
             id: delivery.delivery_id,
             idempotencyKey: delivery.delivery_id,
             mode: delivery.injection_mode === 'wait' ? 'on-idle' : 'immediate',
-            reason: 'message',
+            reason: delivery.thread_id ? 'thread-reply' : delivery.target.startsWith('#') ? 'mention' : 'dm',
           }
         );
         if (receipt.status === 'failed') throw new Error(receipt.reason);

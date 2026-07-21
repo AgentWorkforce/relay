@@ -2,13 +2,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { RelayMessage } from '../../../packages/sdk/src/index.js';
 import { aiSdkAdapterRegistry } from '../../../packages/harnesses/src/ai-sdk/adapter-registry.js';
 import { HarnessHost } from '../../../packages/harnesses/src/ai-sdk/harness-host.js';
 import { LocalHostSandboxProvider } from '../../../packages/harnesses/src/ai-sdk/local-host-sandbox.js';
 import { NATIVE_RELAY_INSTRUCTIONS } from '../../../packages/harnesses/src/ai-sdk/native-relay-tools.js';
+import { RelayHarnessSession } from '../../../packages/harnesses/src/ai-sdk/relay-session.js';
 
 const REAL_MODE = process.env.RELAY_INTEGRATION_REAL_CLI === '1';
-const AUTH_OR_CLI_ERROR = /auth|credential|api[-_ ]?key|login|not found|unavailable|enoent|pnpm/i;
+const AUTH_OR_CLI_ERROR = /auth|credential|api[-_ ]?key|login|enoent|pnpm/i;
 
 async function withTimeout<T>(promise: PromiseLike<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -29,6 +31,7 @@ describe('real AI SDK adapters (explicit opt-in)', () => {
     it.skipIf(!REAL_MODE)(
       `real adapter ${entry.name}: create, turn, and cleanup`,
       async (context) => {
+        const verifiesRelayReply = entry.name === 'claude' || entry.name === 'codex';
         const root = await mkdtemp(join(tmpdir(), `relay-real-${entry.name}-`));
         const workspace = join(root, 'workspace');
         const provider = new LocalHostSandboxProvider({
@@ -50,8 +53,8 @@ describe('real AI SDK adapters (explicit opt-in)', () => {
             harness,
             sandboxProvider: provider,
             workspace,
-            ...(entry.name === 'codex' ? { instructions: NATIVE_RELAY_INSTRUCTIONS } : {}),
-            ...(entry.name === 'codex'
+            ...(verifiesRelayReply ? { instructions: NATIVE_RELAY_INSTRUCTIONS } : {}),
+            ...(verifiesRelayReply
               ? {
                   tools: [
                     {
@@ -81,16 +84,36 @@ describe('real AI SDK adapters (explicit opt-in)', () => {
             if (event.type === 'text.delta') text.push(String(event.delta));
           });
           await host.start();
-          const turn = await host.startTurn(
-            entry.name === 'codex'
-              ? 'Send nativeClaude the text RELAY_TOOL_PROBE. After it succeeds, reply with exactly RELAY_CONTRACT_OK.'
-              : 'Reply with exactly RELAY_CONTRACT_OK.'
-          );
-          await withTimeout(turn.done, 120_000);
+          if (verifiesRelayReply) {
+            const session = new RelayHarnessSession({
+              identity: { id: entry.name, name: entry.name, handle: entry.name },
+              host,
+            });
+            let markSettled!: () => void;
+            const settled = new Promise<void>((resolve) => (markSettled = resolve));
+            session.onEvent?.((event) => {
+              if (event.type === 'turn.settled') markSettled();
+            });
+            await session.receiveMessage(
+              {
+                id: 'relay-probe-message',
+                messageId: 'relay-probe-message',
+                kind: 'dm',
+                text: 'Reply to this message with exactly RELAY_CONTRACT_OK.',
+                from: { id: 'native-peer', name: 'nativePeer' },
+                target: { kind: 'agent', agentName: entry.name },
+              } satisfies RelayMessage,
+              { id: 'relay-probe-delivery', mode: 'immediate', reason: 'dm' }
+            );
+            await withTimeout(settled, 120_000);
+          } else {
+            const turn = await host.startTurn('Reply with exactly RELAY_CONTRACT_OK.');
+            await withTimeout(turn.done, 120_000);
+          }
           expect(text.join('')).toContain('RELAY_CONTRACT_OK');
-          if (entry.name === 'codex') {
+          if (verifiesRelayReply) {
             expect(relayToolCalls).toEqual([
-              expect.objectContaining({ to: 'nativeClaude', text: 'RELAY_TOOL_PROBE' }),
+              expect.objectContaining({ to: 'nativePeer', text: 'RELAY_CONTRACT_OK' }),
             ]);
           }
         } catch (error) {

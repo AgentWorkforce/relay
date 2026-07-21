@@ -4,6 +4,7 @@ import { aiSdkAdapterRegistry } from '../../../packages/harnesses/src/ai-sdk/ada
 import { HarnessHost } from '../../../packages/harnesses/src/ai-sdk/harness-host.js';
 import {
   AI_SDK_OBSERVABILITY_CAPABILITIES,
+  formatInboundRelayPrompt,
   RelayHarnessSession,
 } from '../../../packages/harnesses/src/ai-sdk/relay-session.js';
 import { FakeHarnessController, FakeSandboxProvider, TEST_IDENTITY, message, settleEvents } from './fakes.js';
@@ -171,8 +172,8 @@ describe('RelayHarnessSession delivery contract', () => {
       status: 'accepted',
     });
 
-    expect(controller.prompts).toEqual(['prompt-1']);
-    expect(controller.activeMessages).toEqual(['prompt-2']);
+    expect(controller.prompts).toEqual([formatInboundRelayPrompt(first.message)]);
+    expect(controller.activeMessages).toEqual([formatInboundRelayPrompt(second.message)]);
     controller.complete();
     await settleEvents();
     await session.release();
@@ -197,8 +198,8 @@ describe('RelayHarnessSession delivery contract', () => {
 
     expect(duplicateReceipts).toEqual([firstReceipt, firstReceipt]);
     expect(concurrentReceipts.every((receipt) => receipt.status === 'accepted')).toBe(true);
-    expect(controller.prompts).toEqual(['prompt-1']);
-    expect(controller.activeMessages).toEqual(['prompt-2', 'prompt-3', 'prompt-4']);
+    expect(controller.prompts).toEqual([formatInboundRelayPrompt(first.message)]);
+    expect(controller.activeMessages).toEqual(inputs.map((input) => formatInboundRelayPrompt(input.message)));
     controller.complete();
     await settleEvents();
     await session.release();
@@ -226,7 +227,7 @@ describe('RelayHarnessSession delivery contract', () => {
     controller.complete();
     await settleEvents();
 
-    expect(controller.prompts).toEqual(['prompt-1']);
+    expect(controller.prompts).toEqual([formatInboundRelayPrompt(first.message)]);
     expect(events.filter((event) => event.type === 'delivery.accepted')).toHaveLength(1);
     expect(runtime.state).toBe('destroyed');
   });

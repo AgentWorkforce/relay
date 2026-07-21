@@ -101,6 +101,33 @@ describe('AI SDK native harness sidecar', () => {
         v: 2,
         type: 'deliver_relay',
         payload: {
+          delivery_id: 'delivery-channel',
+          event_id: 'event-channel',
+          from: 'Human',
+          target: '#general',
+          body: 'channel update',
+        },
+      })}\n`
+    );
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'delivery-thread',
+          event_id: 'event-thread',
+          from: 'Human',
+          target: '#general',
+          thread_id: 'thread-root',
+          body: 'thread update',
+        },
+      })}\n`
+    );
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
           delivery_id: 'delivery-1',
           event_id: 'event-1',
           from: 'Human',
@@ -134,10 +161,13 @@ describe('AI SDK native harness sidecar', () => {
     await running;
 
     expect(output.some((frame) => frame.type === 'worker_ready')).toBe(true);
-    expect(output.filter((frame) => frame.type === 'delivery_ack')).toHaveLength(2);
+    expect(output.filter((frame) => frame.type === 'delivery_ack')).toHaveLength(4);
     expect(fixture.session.doPromptTurn).toHaveBeenCalledTimes(1);
     expect(fixture.session.doPromptTurn).toHaveBeenCalledWith(
       expect.objectContaining({
+        prompt: expect.stringMatching(
+          /<agent-relay-message-json>[\s\S]*"from":"Human"[\s\S]*calling send_dm with to "Human"/
+        ),
         instructions: expect.stringContaining('Relay collaboration tools are installed'),
         tools: expect.arrayContaining([expect.objectContaining({ name: 'send_dm' })]),
       })
@@ -169,7 +199,15 @@ describe('AI SDK native harness sidecar', () => {
     expect(responses).toHaveLength(3);
     expect(responses[0].payload.accepted).toBe(true);
     expect(responses[1].payload.duplicate).toBe(true);
-    expect(fixture.submitUserMessage).toHaveBeenCalledTimes(1);
+    expect(fixture.submitUserMessage.mock.calls.map(([prompt]) => prompt)).toEqual([
+      expect.stringMatching(
+        /"kind":"channel"[\s\S]*"channelName":"general"[\s\S]*calling post_message with channel "general"/
+      ),
+      expect.stringMatching(
+        /"kind":"thread_reply"[\s\S]*"threadId":"thread-root"[\s\S]*calling reply_to_thread with message_id "thread-root"/
+      ),
+      'active',
+    ]);
     expect(fixture.session.doDestroy).toHaveBeenCalledTimes(1);
   });
 

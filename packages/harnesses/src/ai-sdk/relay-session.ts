@@ -26,6 +26,34 @@ interface QueuedMessage {
   key: string;
 }
 
+function senderName(message: RelayMessage): string {
+  return message.from.name?.trim() || message.from.id?.trim() || 'unknown sender';
+}
+
+function relayReplyInstruction(message: RelayMessage): string {
+  const sender = senderName(message);
+  if (message.threadId) {
+    return `Reply through Agent Relay by calling reply_to_thread with message_id ${JSON.stringify(message.threadId)}. Do not only print the reply in your terminal.`;
+  }
+  if (message.target?.kind === 'channel') {
+    return `Reply through Agent Relay by calling post_message with channel ${JSON.stringify(message.target.channelName)}. Do not only print the reply in your terminal.`;
+  }
+  return `Reply through Agent Relay by calling send_dm with to ${JSON.stringify(sender)}. Do not only print the reply in your terminal.`;
+}
+
+export function formatInboundRelayPrompt(message: RelayMessage): string {
+  const metadata = {
+    from: senderName(message),
+    kind: message.kind ?? 'unknown',
+    target: message.target,
+    messageId: message.id,
+    threadId: message.threadId,
+    text: message.text,
+  };
+  const encoded = JSON.stringify(metadata).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
+  return `<agent-relay-message-json>\n${encoded}\n</agent-relay-message-json>\n\n${relayReplyInstruction(message)}`;
+}
+
 const EXACT = { available: true, fidelities: ['exact'] } as const;
 
 export const AI_SDK_OBSERVABILITY_CAPABILITIES: AgentObservabilityCapabilities = {
@@ -349,8 +377,9 @@ export class RelayHarnessSession implements AgentSession {
   }
 
   async #accept(message: RelayMessage, context: MessageContext): Promise<MessageReceipt> {
-    if (this.host.hasActiveTurn) await this.host.submitUserMessage(message.text);
-    else await this.host.startTurn(message.text, context.id);
+    const prompt = formatInboundRelayPrompt(message);
+    if (this.host.hasActiveTurn) await this.host.submitUserMessage(prompt);
+    else await this.host.startTurn(prompt, context.id);
     const receipt: MessageReceipt = { status: 'accepted', deliveryId: context.id };
     await this.#emit({ type: 'message.received', message });
     await this.#emit({ type: 'delivery.accepted', messageId: message.id, deliveryId: context.id });
