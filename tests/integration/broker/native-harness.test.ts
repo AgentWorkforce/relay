@@ -343,6 +343,19 @@ test('native harness: broker spawn, events, commands, and release', { timeout: 3
     assert.equal(listed.runtime_kind, 'native');
     assert.equal(listed.native_harness_protocol_version, 1);
 
+    const relayIdentity = await eventually(async () => {
+      const history = await harness.client.getAgentEventHistory(name);
+      const warning = history.events.find((entry) => entry.event.kind === 'warning');
+      if (!warning || typeof warning.event.message !== 'string') return undefined;
+      return JSON.parse(warning.event.message) as Record<string, unknown>;
+    });
+    assert.deepEqual(relayIdentity, {
+      relayAgentName: name,
+      relayAgentTokenPresent: true,
+      relayAgentType: 'agent',
+      relayStrictAgentName: '1',
+    });
+
     const starting = await eventually(async () => {
       const history = await harness.client.getAgentEventHistory(name);
       return history.events.find(

@@ -43,6 +43,14 @@ for await (const line of lines) {
       reason: 'fixture_start',
     });
     event('session.started');
+    event('warning', {
+      message: JSON.stringify({
+        relayAgentName: process.env.RELAY_AGENT_NAME ?? null,
+        relayAgentTokenPresent: Boolean(process.env.RELAY_AGENT_TOKEN),
+        relayAgentType: process.env.RELAY_AGENT_TYPE ?? null,
+        relayStrictAgentName: process.env.RELAY_STRICT_AGENT_NAME ?? null,
+      }),
+    });
     event('activity.changed', {
       activity: 'idle',
       previousActivity: 'starting',

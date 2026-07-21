@@ -812,7 +812,11 @@ impl WorkerRegistry {
                 command.env(key, value);
             }
         }
-        if !skip_relay_prompt && matches!(spec.runtime, AgentRuntime::Pty) {
+        if should_inject_relay_participant_env(
+            &spec.runtime,
+            direct_native_harness_sidecar,
+            skip_relay_prompt,
+        ) {
             if let Some(relay_key) = worker_relay_api_key {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }
@@ -1070,6 +1074,14 @@ impl WorkerRegistry {
         }
         Ok(exited)
     }
+}
+
+fn should_inject_relay_participant_env(
+    runtime: &AgentRuntime,
+    direct_native_harness_sidecar: bool,
+    skip_relay_prompt: bool,
+) -> bool {
+    !skip_relay_prompt && (matches!(runtime, AgentRuntime::Pty) || direct_native_harness_sidecar)
 }
 
 /// Runtime metadata is deliberately carried in the harness config so the
@@ -1817,6 +1829,30 @@ mod tests {
         let reg = make_registry(env);
         assert_eq!(reg.env_value("KEY"), Some("val"));
         assert_eq!(reg.env_value("MISSING"), None);
+    }
+
+    #[test]
+    fn relay_participant_credentials_cover_pty_and_direct_native_sidecars() {
+        assert!(should_inject_relay_participant_env(
+            &AgentRuntime::Pty,
+            false,
+            false
+        ));
+        assert!(should_inject_relay_participant_env(
+            &AgentRuntime::Headless,
+            true,
+            false
+        ));
+        assert!(!should_inject_relay_participant_env(
+            &AgentRuntime::Headless,
+            false,
+            false
+        ));
+        assert!(!should_inject_relay_participant_env(
+            &AgentRuntime::Headless,
+            true,
+            true
+        ));
     }
 
     fn make_app_server_config() -> HeadlessHarnessConfig {
