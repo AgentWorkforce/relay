@@ -94,6 +94,16 @@ export {
 } from './workspace-store.js';
 
 export {
+  projectWorkspaceKeyPath,
+  readProjectWorkspaceKey,
+  resolveWorkspaceKey,
+  resolveWorkspaceKeyWithSource,
+  writeProjectWorkspaceKey,
+  type ResolveWorkspaceKeyOptions,
+  type WorkspaceKeySource,
+} from './project-workspace-key.js';
+
+export {
   deployProactiveAgent,
   listProactiveAgents,
   inspectProactiveAgent,

@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relay harnesses and `agent-relay node agent spawn|new --runtime native` can run Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents through official AI SDK harness adapters, while `--runtime pty` remains available for terminal sessions and unsupported harnesses.
 - Relaycast exposes canonical agent activity and agent events with capability, source, and fidelity metadata across native and PTY runtimes.
 
+### Changed
+
+- Feature verification catalog now records the exact CLI and MCP surfaces, adds previously unlisted SDK and plugin integrations, and maps every category to an end-to-end procedure with prerequisites, assertions, cleanup, and automation limits.
+
+### Fixed
+
+- `agent-relay-broker` now orders fleet `agent.deregister` before acknowledging a local worker release, so a restarted node can immediately recover the same agent name without an active-location collision, and fails fast instead of stalling the runtime API when fleet-control delivery is backpressured.
+
 ### Breaking Changes
 
 - Agent Relay now requires Node.js 22 or newer.
@@ -20,11 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Upgrade Node.js to version 22 or newer before installing this Agent Relay release.
 
+## [10.6.7] - 2026-07-21
+
+### Fixed
+
+- `@agent-relay/cloud` now exposes project-aware workspace resolution, and SDK-backed CLI consumers prefer the workspace recorded by the broker in the current checkout over an unrelated machine-global active workspace.
+
 ## [10.6.6] - 2026-07-19
 
 ### Fixed
 
 - `agent-relay cloud enroll --workspace` now validates and resolves Cloud UUIDs and unified `rw_` IDs before minting, and reports unresolvable identifiers instead of mislabeling them as permission failures.
+- `relay-feature-guardian` now picker-gates its Slack mirror to the configured output channel, moves checks off the fleet's shared Claude subscription, and surfaces failed posts as failed runs instead of silently reporting success.
 
 ## [10.6.5] - 2026-07-19
 

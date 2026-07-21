@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/harnesses",
-  "version": "10.6.6",
+  "version": "10.6.7",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -26,8 +26,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "10.6.6",
-    "@agent-relay/sdk": "10.6.6",
+    "@agent-relay/harness-driver": "10.6.7",
+    "@agent-relay/sdk": "10.6.7",
     "@ai-sdk/harness": "1.0.34",
     "@ai-sdk/harness-claude-code": "1.0.35",
     "@ai-sdk/harness-codex": "1.0.36",

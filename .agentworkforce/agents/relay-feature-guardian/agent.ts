@@ -29,10 +29,11 @@ type Criticality = 'critical' | 'hot' | 'standard';
 interface ManifestFeature {
   id: string;
   name: string;
-  cli: string;
+  cli?: string;
   description: string;
   verify_tier: number;
   mcp?: string;
+  mcp_prompt?: string;
   location?: string;
 }
 
@@ -53,11 +54,12 @@ interface Manifest {
 interface Feature {
   id: string;
   name: string;
-  cli: string;
+  cli?: string;
   desc: string;
   tier: number;
   criticality: Criticality;
   mcp?: string;
+  mcpPrompt?: string;
 }
 
 const MANIFEST_RELPATH = '.agentworkforce/features/manifest.yaml';
@@ -88,6 +90,7 @@ async function loadFeatures(ctx: WorkforceCtx): Promise<Feature[]> {
         tier: f.verify_tier,
         criticality: category.criticality,
         mcp: f.mcp,
+        mcpPrompt: f.mcp_prompt,
       });
     }
   }
@@ -543,27 +546,32 @@ function pickNextFeature(features: Feature[], checkedIds: Set<string>): Feature 
 // ── quiz generation ───────────────────────────────────────────────────────────
 
 async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise<string> {
-  const mcpNote = feature.mcp ? `\nMCP tool: \`${feature.mcp}\`` : '';
+  const surface = [
+    feature.cli ? `CLI command: ${feature.cli}` : null,
+    feature.mcp ? `MCP tool: ${feature.mcp}` : null,
+    feature.mcpPrompt ? `MCP prompt: ${feature.mcpPrompt}` : null,
+  ]
+    .filter((entry): entry is string => entry !== null)
+    .join('\n');
   const tierLabel =
-    feature.tier === 1
-      ? 'no broker needed'
-      : feature.tier === 2
-        ? 'broker required'
-        : feature.tier === 3
-          ? 'broker + agent token'
-          : feature.tier === 4
-            ? 'broker + two agents'
-            : 'cloud auth required';
+    {
+      1: 'isolated local CLI/filesystem',
+      2: 'local broker required',
+      3: 'hosted workspace + agent token',
+      4: 'hosted workspace + two agents',
+      5: 'authenticated disposable external service',
+      6: 'interactive or pre-provisioned integration',
+    }[feature.tier] ?? 'see feature procedure';
 
   const prompt = [
     'You are the Relay Feature Guardian, a proactive Slack bot for the Agent Relay team.',
-    'Write a brief, conversational Slack message (3-5 sentences, no markdown headers) asking the team to confirm whether a specific CLI feature is working as intended.',
-    'Be specific: name the feature, describe what it should do, show the CLI command, and ask if it behaves this way or if anything has drifted.',
+    'Write a brief, conversational Slack message (3-5 sentences, no markdown headers) asking the team to confirm whether a specific feature is working as intended. The feature can be a CLI command or an MCP tool/prompt.',
+    'Be specific: name the feature, describe what it should do, show the relevant CLI command or MCP tool/prompt, and ask if it behaves this way or if anything has drifted.',
     'End with: "React ✅ if working as expected, 🔧 if something is off, or ❓ if untested."',
     'Keep it casual and direct — this is an internal team check.',
     '',
     `Feature: ${feature.name}`,
-    `CLI: ${feature.cli}${mcpNote}`,
+    surface,
     `What it should do: ${feature.desc}`,
     `Verify tier: ${feature.tier} (${tierLabel})`,
     `Criticality: ${feature.criticality}`,
@@ -576,7 +584,7 @@ async function generateQuizMessage(ctx: WorkforceCtx, feature: Feature): Promise
     return [
       `🔍 *Relay Feature Check: ${feature.name}*`,
       ``,
-      `\`${feature.cli}\`${mcpNote}`,
+      surface,
       ``,
       `This should: ${feature.desc}`,
       ``,
@@ -780,12 +788,12 @@ export async function runGuardian(
       feature: feature.id,
       err: String(err),
     });
-    return;
+    throw err;
   }
   const ts = deliveredSlackTs(result);
   if (!ts) {
     ctx.log('error', 'relay-feature-guardian.post-failed', { channel, feature: feature.id });
-    return;
+    throw new Error(`Slack post failed: no timestamp returned for feature ${feature.id}`);
   }
 
   // Checkpoint immediately after the confirmed provider receipt. The stable

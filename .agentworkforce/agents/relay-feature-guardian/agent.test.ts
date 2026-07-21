@@ -23,9 +23,16 @@ import guardian, {
 } from './agent.ts';
 
 const persona = JSON.parse(readFileSync(new URL('./persona.json', import.meta.url), 'utf8')) as {
+  harness?: string;
+  model?: string;
+  useSubscription?: boolean;
   integrations: Record<
     string,
-    { relayfileMount?: { requiredReadPaths?: unknown; writeOnlyPaths?: unknown } }
+    {
+      optional?: boolean;
+      enabledByInput?: string;
+      relayfileMount?: { requiredReadPaths?: unknown; writeOnlyPaths?: unknown };
+    }
   >;
   inputs: { SLACK_CHANNEL: { default: string } };
   memory: { enabled: boolean; scopes: string[]; ttlDays: number };
@@ -323,6 +330,33 @@ describe('relay-feature-guardian runtime paths', () => {
     expect(persona.inputs.SLACK_CHANNEL.default).toBe('C0AEKNLDNKW');
   });
 
+  it('falls back with every declared MCP surface when quiz generation fails', async () => {
+    const transport = new IdempotentSlackTransport();
+    const restore = bindPreviewTransport(transport);
+    const mcpOnlyManifest = manifest.replace('        cli: relay node up', '        mcp: create_workspace');
+    const { ctx } = exactStateContext(JSON.stringify(progressState(0)), mcpOnlyManifest);
+    ctx.llm.complete = vi.fn(async () => {
+      throw new Error('simulated quiz model failure');
+    });
+
+    try {
+      await guardian.handler(ctx, { type: 'cron.tick' } as never);
+      const text = (transport.attempts[0]?.body as { text: string }).text;
+      expect(text).toContain('MCP tool: create_workspace');
+      expect(text).not.toContain('CLI command:');
+    } finally {
+      restore();
+    }
+  });
+
+  it('uses a dedicated low-reasoning model path instead of shared subscription quota', () => {
+    expect(persona).toMatchObject({
+      harness: 'opencode',
+      model: 'deepseek-v4-flash-free',
+    });
+    expect(persona).not.toHaveProperty('useSubscription');
+  });
+
   it('declares bounded manifest and memory reads plus configured Slack output', () => {
     expect(persona.integrations.github?.relayfileMount).toEqual({
       requiredReadPaths: ['/github/repos/AgentWorkforce/relay/.agentworkforce/features/**'],
@@ -333,9 +367,13 @@ describe('relay-feature-guardian runtime paths', () => {
       scopes: ['workspace'],
       ttlDays: 14,
     });
-    expect(persona.integrations.slack?.relayfileMount).toEqual({
-      requiredReadPaths: [],
-      writeOnlyPaths: ['/slack/channels/${SLACK_CHANNEL}/**'],
+    expect(persona.integrations.slack).toMatchObject({
+      optional: true,
+      enabledByInput: 'SLACK_CHANNEL',
+      relayfileMount: {
+        requiredReadPaths: [],
+        writeOnlyPaths: ['/slack/channels/${SLACK_CHANNEL}/**'],
+      },
     });
   });
 
@@ -874,6 +912,29 @@ describe('relay-feature-guardian exact HTTP state', () => {
 });
 
 describe('relay-feature-guardian delayed Slack receipts', () => {
+  it('rejects the run when the Slack post fails so the runner records handler.error', async () => {
+    const failure = new Error('simulated Slack writeback failure');
+    const { ctx, files } = exactStateContext(JSON.stringify(progressState(1)));
+    const createSlackClient = (() => ({
+      messages: {
+        write: vi.fn(async () => {
+          throw failure;
+        }),
+      },
+    })) as unknown as typeof slackClient;
+
+    await expect(runGuardian(ctx, { type: 'cron.tick' } as never, { createSlackClient })).rejects.toBe(
+      failure
+    );
+
+    expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
+    expect(ctx.log).toHaveBeenCalledWith('error', 'relay-feature-guardian.post-failed', {
+      channel: 'C0AEKNLDNKW',
+      feature: 'broker-status',
+      err: String(failure),
+    });
+  });
+
   it('passes the production receipt deadline and poll interval to the Slack helper', async () => {
     const transport = new IdempotentSlackTransport();
     const restore = bindPreviewTransport(transport);
@@ -918,12 +979,14 @@ describe('relay-feature-guardian delayed Slack receipts', () => {
     }
   });
 
-  it('never advances on a receipt-shaped draft without provider ts', async () => {
+  it('rejects and never advances on a receipt-shaped draft without provider ts', async () => {
     const transport = new ReceiptlessSlackTransport();
     const restore = bindPreviewTransport(transport);
     const { ctx, files } = exactStateContext(JSON.stringify(progressState(1)));
     try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
+      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+        'Slack post failed: no timestamp returned for feature broker-status'
+      );
       expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
       expect(ctx.log).toHaveBeenCalledWith('error', 'relay-feature-guardian.post-failed', {
         channel: 'C0AEKNLDNKW',

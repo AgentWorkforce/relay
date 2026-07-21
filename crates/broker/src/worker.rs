@@ -942,6 +942,11 @@ impl WorkerRegistry {
     pub(crate) async fn release(&mut self, name: &str) -> Result<()> {
         tracing::info!(target = "broker::release", name = %name, "releasing worker");
         self.initial_tasks.remove(name);
+        // An explicit release is terminal even when the process already exited
+        // and disappeared from `workers`. Cancel any pending restart before
+        // looking up the handle so maintenance cannot resurrect the released
+        // name after the API has acknowledged teardown.
+        self.supervisor.unregister(name);
         let mut handle = self
             .workers
             .remove(name)
@@ -1741,6 +1746,57 @@ mod tests {
         let reg = make_registry(vec![]);
         let workspace = crate::ids::WorkspaceId::new("ws_1".to_string());
         assert!(!reg.has_worker_in_workspace("nonexistent", &workspace));
+    }
+
+    #[tokio::test]
+    async fn release_cancels_pending_restart_for_an_already_exited_worker() {
+        let mut reg = make_registry(vec![]);
+        let name = "released-stale-worker";
+        let restart_policy = crate::supervisor::RestartPolicy {
+            cooldown_ms: 0,
+            ..crate::supervisor::RestartPolicy::default()
+        };
+        let spec = AgentSpec {
+            name: WorkerName::from(name),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: None,
+            session_id: None,
+            harness_config: None,
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: Some(restart_policy.clone()),
+        };
+        reg.supervisor.register(
+            name,
+            crate::supervisor::SupervisedAgent {
+                spec,
+                parent: None,
+                initial_task: None,
+                skip_relay_prompt: false,
+                agent_result: None,
+            },
+            restart_policy,
+        );
+        assert!(reg.supervisor.is_supervised(name));
+        assert!(matches!(
+            reg.supervisor.on_exit(name, Some(1), None),
+            Some(crate::supervisor::RestartDecision::Restart { .. })
+        ));
+        assert!(!reg.supervisor.pending_restarts().is_empty());
+
+        let error = reg
+            .release(name)
+            .await
+            .expect_err("missing process is still reported");
+        assert!(error.to_string().contains("unknown worker"));
+        assert!(!reg.supervisor.is_supervised(name));
+        assert!(reg.supervisor.pending_restarts().is_empty());
     }
 
     #[test]
