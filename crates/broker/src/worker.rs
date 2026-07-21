@@ -1677,6 +1677,10 @@ mod tests {
     async fn release_cancels_pending_restart_for_an_already_exited_worker() {
         let mut reg = make_registry(vec![]);
         let name = "released-stale-worker";
+        let restart_policy = crate::supervisor::RestartPolicy {
+            cooldown_ms: 0,
+            ..crate::supervisor::RestartPolicy::default()
+        };
         let spec = AgentSpec {
             name: WorkerName::from(name),
             runtime: AgentRuntime::Headless,
@@ -1691,7 +1695,7 @@ mod tests {
             shadow_mode: None,
             args: Vec::new(),
             channels: Vec::new(),
-            restart_policy: Some(crate::supervisor::RestartPolicy::default()),
+            restart_policy: Some(restart_policy.clone()),
         };
         reg.supervisor.register(
             name,
@@ -1702,9 +1706,14 @@ mod tests {
                 skip_relay_prompt: false,
                 agent_result: None,
             },
-            crate::supervisor::RestartPolicy::default(),
+            restart_policy,
         );
         assert!(reg.supervisor.is_supervised(name));
+        assert!(matches!(
+            reg.supervisor.on_exit(name, Some(1), None),
+            Some(crate::supervisor::RestartDecision::Restart { .. })
+        ));
+        assert!(!reg.supervisor.pending_restarts().is_empty());
 
         let error = reg
             .release(name)
