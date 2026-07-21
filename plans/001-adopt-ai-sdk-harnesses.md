@@ -42,7 +42,7 @@ Applications built on Relay should receive the richest portable view of an agent
 Harness creation accepts:
 
 ```ts
-backend?: 'auto' | 'ai-sdk' | 'pty';
+runtime?: 'auto' | 'native' | 'pty';
 ```
 
 - `auto` selects a validated AI SDK adapter when registered; otherwise it selects PTY.
@@ -403,20 +403,20 @@ npm run build:cli
 
 Expected: replay plus live events render once in order; human mode contains no protocol JSON; NDJSON is valid; input, rejection, detach, interrupt, and passthrough behavior pass.
 
-### Step 7: Wire backend selection and observability profiles
+### Step 7: Wire runtime selection and observability profiles
 
-Add `backend` selection to harness creation and route registered adapters through the sidecar runtime.
+Add `runtime` selection to harness creation and route registered adapters through the sidecar runtime.
 
 - Claude Code, Codex, and OpenCode begin as `experimental`, leaving PTY as their `auto` selection during validation.
-- Pi is exported as an experimental AI SDK-only harness.
-- Deep Agents is exported as an experimental AI SDK-only harness with its tested capability subset.
+- Pi is exported as an experimental native-only harness.
+- Deep Agents is exported as an experimental native-only harness with its tested capability subset.
 - Unsupported harnesses continue through PTY.
 
 Add an observability profile to every AI SDK and PTY registry entry. AI SDK entries target the complete reference profile. PTY entries declare a baseline from broker lifecycle signals and add structured or inferred signals available from that CLI.
 
 Build PTY translators behind the same canonical event interface. Prefer structured JSON/event modes exposed by the CLI. Use stable terminal markers for remaining activity and label those events `pty-terminal` plus `inferred`. At minimum, every PTY harness reports exact broker-owned `starting` and runtime failure, its best supported idle/busy boundary, and an honest capability matrix for reasoning, text, tools, approvals, files, compaction, usage, and lifecycle.
 
-After an adapter passes Step 8, update only that registry entry's rollout state. `default` makes `auto` select AI SDK; `backend: 'pty'` remains the terminal-runtime override for shared harnesses.
+After an adapter passes Step 8, update only that registry entry's rollout state. `default` makes `auto` select native; `runtime: 'pty'` remains the terminal-runtime override for shared harnesses.
 
 **Verify**:
 
@@ -482,7 +482,7 @@ Expected: deterministic tests pass, configured real adapters pass their declared
 Update harness and root documentation with:
 
 - Node 22 requirement;
-- support matrix and backend selection;
+- support matrix and runtime selection;
 - native harness `view`, `drive`, `--json`, reasoning, and diagnostics behavior;
 - canonical activities, agent-event families, capability discovery, source, and fidelity;
 - the AI SDK reference profile and per-PTY-runtime observability matrix;

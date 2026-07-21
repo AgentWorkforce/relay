@@ -28,16 +28,16 @@ vi.mock('@agent-relay/harness-driver', () => {
 });
 
 vi.mock('@agent-relay/harnesses', () => ({
-  resolveHarnessBackend: (cli: string, backend = 'auto') => {
-    if (backend === 'ai-sdk') {
+  resolveHarnessRuntime: (cli: string, runtime = 'auto') => {
+    if (runtime === 'native') {
       if (!['claude', 'codex', 'opencode', 'pi', 'deepagents'].includes(cli)) {
-        throw new Error(`No AI SDK harness adapter is registered for ${cli}`);
+        throw new Error(`No native harness adapter is registered for ${cli}`);
       }
-      return 'ai-sdk';
+      return 'native';
     }
-    if (backend === 'pty') return 'pty';
+    if (runtime === 'pty') return 'pty';
     if (cli === 'pi' || cli === 'deepagents') {
-      throw new Error(`${cli} is an experimental AI SDK-only harness`);
+      throw new Error(`${cli} is an experimental native-only harness`);
     }
     return 'pty';
   },
@@ -125,7 +125,7 @@ describe('client-factory', () => {
     expect(spawnPty).toHaveBeenCalledWith(options);
   });
 
-  it('spawns an explicit AI SDK backend through the native sidecar launch', async () => {
+  it('spawns an explicit native runtime through the AI SDK sidecar launch', async () => {
     const spawnHeadless = vi.fn(async () => undefined);
 
     await spawnAgentWithClient({ spawnHeadless } as any, {
@@ -133,13 +133,13 @@ describe('client-factory', () => {
       cli: 'codex',
       channels: ['general'],
       task: 'inspect the repository',
-      backend: 'ai-sdk',
+      runtime: 'native',
     });
 
     expect(createNativeHarnessLaunchSpy).toHaveBeenCalledWith(
       'codex',
       expect.objectContaining({
-        backend: 'ai-sdk',
+        runtime: 'native',
         name: 'worker-native',
         task: 'inspect the repository',
       }),
@@ -162,13 +162,13 @@ describe('client-factory', () => {
     expect(nativeSidecarLaunch(['node', '/repo/dist/cli/index.js'], '/usr/bin/node')).toBeUndefined();
   });
 
-  it('keeps auto on PTY for experimental dual-backend harnesses', async () => {
+  it('keeps auto on PTY for experimental dual-runtime harnesses', async () => {
     const spawnPty = vi.fn(async () => undefined);
     await spawnAgentWithClient({ spawnPty } as any, {
       name: 'worker-auto',
       cli: 'codex',
       channels: ['general'],
-      backend: 'auto',
+      runtime: 'auto',
     });
     expect(spawnPty).toHaveBeenCalledOnce();
   });
@@ -179,16 +179,16 @@ describe('client-factory', () => {
         name: 'gemini-native',
         cli: 'gemini',
         channels: ['general'],
-        backend: 'ai-sdk',
+        runtime: 'native',
       })
-    ).rejects.toThrow(/No AI SDK harness adapter/);
+    ).rejects.toThrow(/No native harness adapter/);
 
     await expect(
       spawnAgentWithClient({} as any, {
         name: 'codex-native',
         cli: 'codex',
         channels: ['general'],
-        backend: 'ai-sdk',
+        runtime: 'native',
         spawnMode: 'task-exit',
       })
     ).rejects.toThrow(/only interactive spawn mode/);

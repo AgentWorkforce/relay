@@ -133,10 +133,10 @@ describe('create({ relay }) — live PTY spawn', () => {
     expect(agent.cli).toBe('claude');
   });
 
-  it('spawns an explicit AI SDK backend through the broker-owned native harness sidecar', async () => {
+  it('spawns an explicit native runtime through the broker-owned AI SDK sidecar', async () => {
     const agent = await claude.create({
       relay: fakeRelay('rk_live_native'),
-      backend: 'ai-sdk',
+      runtime: 'native',
       model: 'sonnet',
       cwd: '/tmp/relay-native-harness-test',
     });
@@ -174,13 +174,13 @@ describe('create({ relay }) — live PTY spawn', () => {
       workspace: '/tmp/relay-native-harness-test',
       settings: { model: 'sonnet' },
     });
-    expect(agent).toMatchObject({ runtime: 'native', backend: 'ai-sdk' });
+    expect(agent).toMatchObject({ runtime: 'native', adapter: 'claude' });
     expect(observeAgentEventsMock).toHaveBeenCalledTimes(1);
   });
 
   it('bridges broker normalized activity into AgentRelay listeners without manual emission', async () => {
     const relay = fakeRelay('rk_live_agent_events');
-    await claude.create({ relay, backend: 'ai-sdk', name: 'Observed' });
+    await claude.create({ relay, runtime: 'native', name: 'Observed' });
     expect(relay.emitSessionEvent).toHaveBeenCalledWith(
       'Observed',
       expect.objectContaining({
@@ -192,23 +192,22 @@ describe('create({ relay }) — live PTY spawn', () => {
   });
 
   it('keeps experimental shared adapters on PTY in auto mode', async () => {
-    const descriptor = claude.new({ backend: 'auto' });
-    expect(descriptor).toMatchObject({ runtime: 'pty', backend: 'pty' });
+    const descriptor = claude.new({ runtime: 'auto' });
+    expect(descriptor).toMatchObject({ runtime: 'pty' });
   });
 
-  it('requires explicit opt-in for experimental AI SDK-only adapters', async () => {
-    await expect(pi.create()).rejects.toThrow(/experimental AI SDK-only harness/);
-    const descriptor = await pi.create({ backend: 'ai-sdk' });
+  it('requires explicit opt-in for experimental native-only adapters', async () => {
+    await expect(pi.create()).rejects.toThrow(/experimental native-only harness/);
+    const descriptor = await pi.create({ runtime: 'native' });
     expect(descriptor).toMatchObject({
       runtime: 'native',
-      backend: 'ai-sdk',
       adapter: 'pi',
     });
   });
 
-  it('rejects AI SDK selection for unsupported PTY harnesses', async () => {
-    await expect(gemini.create({ backend: 'ai-sdk' })).rejects.toThrow(
-      /No AI SDK harness adapter is registered/
+  it('rejects native selection for unsupported PTY harnesses', async () => {
+    await expect(gemini.create({ runtime: 'native' })).rejects.toThrow(
+      /No native harness adapter is registered/
     );
   });
 });

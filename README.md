@@ -92,17 +92,17 @@ const taskManager = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 ```
 
-Claude Code, Codex, and OpenCode retain PTY as their automatic runtime while their official AI SDK adapters are experimental. Select a native harness session explicitly with `backend: 'ai-sdk'`; use `backend: 'pty'` when terminal emulation is required. Pi and Deep Agents are experimental AI SDK-only harnesses. Native harness sessions expose structured attach output and portable activity, capability, source, and fidelity metadata through Relaycast.
+Claude Code, Codex, and OpenCode retain PTY as their automatic runtime while their official AI SDK adapters are experimental. Select a native harness session explicitly with `runtime: 'native'`; use `runtime: 'pty'` when terminal emulation is required. Pi and Deep Agents are experimental native-only harnesses. Native harness sessions expose structured attach output and portable activity, capability, source, and fidelity metadata through Relaycast.
 
-The local CLI uses the same backend selector:
+The local CLI uses the same runtime selector:
 
 ```bash
-agent-relay node agent spawn codex --backend ai-sdk --name NativeCodex
-agent-relay node agent new claude --backend ai-sdk --name NativeClaude
+agent-relay node agent spawn codex --runtime native --name NativeCodex
+agent-relay node agent new claude --runtime native --name NativeClaude
 agent-relay node agent attach NativeCodex --mode view --json
 ```
 
-`--backend auto` is the default. It keeps experimental dual-backend harnesses on PTY; Pi and Deep Agents require an explicit `--backend ai-sdk`. Native attach supports `view` and line-oriented `drive`, but not terminal `passthrough`.
+`--runtime auto` is the default. It keeps experimental dual-runtime harnesses on PTY; Pi and Deep Agents require an explicit `--runtime native`. Native attach supports `view` and line-oriented `drive`, but not terminal `passthrough`.
 
 ### Define your own harness
 

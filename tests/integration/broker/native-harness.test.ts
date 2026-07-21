@@ -118,8 +118,8 @@ test(
           'agent',
           'spawn',
           'pi',
-          '--backend',
-          'ai-sdk',
+          '--runtime',
+          'native',
           '--name',
           name,
           '--model',
@@ -131,7 +131,7 @@ test(
         [binary]
       );
       assert.equal(spawned.exitCode, 0, `Standalone native spawn failed:\n${spawned.stderr}`);
-      assert.match(spawned.stdout, /\(pi, ai-sdk\)/);
+      assert.match(spawned.stdout, /\(pi, native\)/);
 
       const listed = await eventually(async () =>
         (await client!.listAgents()).find((agent) => agent.name === name)
@@ -184,8 +184,8 @@ test(
         'agent',
         'spawn',
         'pi',
-        '--backend',
-        'ai-sdk',
+        '--runtime',
+        'native',
         '--name',
         name,
         '--model',
@@ -194,7 +194,7 @@ test(
         cwd,
       ]);
       assert.equal(result.exitCode, 0, `CLI failed:\n${result.stderr}`);
-      assert.match(result.stdout, /\(pi, ai-sdk\)/);
+      assert.match(result.stdout, /\(pi, native\)/);
 
       const listed = await eventually(async () =>
         (await client!.listAgents()).find((agent) => agent.name === name)

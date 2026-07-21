@@ -26,8 +26,8 @@ import {
   getPtyObservabilityProfile,
 } from './observability.js';
 
-export type HarnessBackend = 'auto' | 'ai-sdk' | 'pty';
-export type SelectedHarnessBackend = Exclude<HarnessBackend, 'auto'>;
+export type HarnessRuntime = 'auto' | 'native' | 'pty';
+export type SelectedHarnessRuntime = Exclude<HarnessRuntime, 'auto'>;
 
 export interface NativeHarnessSidecarLaunch {
   command: string;
@@ -37,7 +37,7 @@ export interface NativeHarnessSidecarLaunch {
 /** Options accepted when creating an agent from a harness. */
 export interface HarnessCreateInput {
   /** Runtime selection. `auto` uses only adapters promoted to default. */
-  backend?: HarnessBackend;
+  runtime?: HarnessRuntime;
   /** Explicit agent name/handle. Defaults to `<command>-<n>`. */
   name?: string;
   /** Model passed through to the harness CLI (e.g. `sonnet`, `gpt-5.5`). */
@@ -66,7 +66,6 @@ export interface HarnessCreateInput {
  */
 export interface HarnessAgent extends RelayHarnessAgent {
   kind: 'pty';
-  backend: 'pty';
   cli: string;
   /** Driver runtime tag — the harness-driver `AgentRuntime` this agent maps to. */
   runtime: 'pty';
@@ -82,7 +81,6 @@ export interface HarnessAgent extends RelayHarnessAgent {
 
 export interface NativeHarnessAgent extends RelayHarnessAgent {
   kind: 'native';
-  backend: 'ai-sdk';
   cli: string;
   runtime: 'native';
   adapter: string;
@@ -135,7 +133,6 @@ export function definePtyHarness(definition: StaticPtyHarnessDefinition): PtyHar
     return {
       ...handle,
       kind: 'pty',
-      backend: 'pty',
       cli: definition.command,
       runtime: 'pty',
       model: input.model,
@@ -210,7 +207,6 @@ export function definePtyHarness(definition: StaticPtyHarnessDefinition): PtyHar
     return {
       ...handle,
       kind: 'pty',
-      backend: 'pty',
       cli: definition.command,
       runtime: 'pty',
       model: input.model,
@@ -228,8 +224,8 @@ export function definePtyHarness(definition: StaticPtyHarnessDefinition): PtyHar
     ...definition,
     name: definition.command,
     create: async (input = {}) => {
-      if (input.backend === 'ai-sdk') {
-        throw new Error(`No AI SDK harness adapter is registered for ${definition.command}`);
+      if (input.runtime === 'native') {
+        throw new Error(`No native harness adapter is registered for ${definition.command}`);
       }
       return input.relay ? spawnLive(input, input.relay) : build(input);
     },
@@ -237,35 +233,35 @@ export function definePtyHarness(definition: StaticPtyHarnessDefinition): PtyHar
   };
 }
 
-export function selectHarnessBackend(
+export function selectHarnessRuntime(
   adapter: AiSdkAdapterRegistryEntry,
-  requested: HarnessBackend = 'auto'
-): SelectedHarnessBackend {
-  if (requested === 'ai-sdk') return 'ai-sdk';
+  requested: HarnessRuntime = 'auto'
+): SelectedHarnessRuntime {
+  if (requested === 'native') return 'native';
   if (requested === 'pty') {
-    if (!adapter.ptyAvailable) throw new Error(`${adapter.name} does not provide a PTY backend`);
+    if (!adapter.ptyAvailable) throw new Error(`${adapter.name} does not provide a PTY runtime`);
     return 'pty';
   }
-  if (adapter.rollout === 'default') return 'ai-sdk';
+  if (adapter.rollout === 'default') return 'native';
   if (adapter.ptyAvailable) return 'pty';
   throw new Error(
-    `${adapter.name} is an experimental AI SDK-only harness; select backend: 'ai-sdk' explicitly`
+    `${adapter.name} is an experimental native-only harness; select runtime: 'native' explicitly`
   );
 }
 
-/** Resolve a public harness name or alias to the backend the CLI should launch. */
-export function resolveHarnessBackend(
+/** Resolve a public harness name or alias to the runtime the CLI should launch. */
+export function resolveHarnessRuntime(
   harness: string,
-  requested: HarnessBackend = 'auto'
-): SelectedHarnessBackend {
+  requested: HarnessRuntime = 'auto'
+): SelectedHarnessRuntime {
   const adapter = aiSdkAdapterRegistry.get(harness);
   if (!adapter) {
-    if (requested === 'ai-sdk') {
-      throw new Error(`No AI SDK harness adapter is registered for ${harness}`);
+    if (requested === 'native') {
+      throw new Error(`No native harness adapter is registered for ${harness}`);
     }
     return 'pty';
   }
-  return selectHarnessBackend(adapter, requested);
+  return selectHarnessRuntime(adapter, requested);
 }
 
 function nativeDescriptor(
@@ -277,7 +273,6 @@ function nativeDescriptor(
   return {
     ...handle,
     kind: 'native',
-    backend: 'ai-sdk',
     cli: adapter.name,
     runtime: 'native',
     adapter: adapter.name,
@@ -398,8 +393,8 @@ export function defineManagedHarness(
   const pty = ptyDefinition ? definePtyHarness(ptyDefinition) : undefined;
 
   const build = (input: HarnessCreateInput = {}): ManagedHarnessAgent => {
-    const backend = selectHarnessBackend(adapter, input.backend);
-    return backend === 'pty' ? pty!.new({ ...input, backend: 'pty' }) : nativeDescriptor(adapter, input);
+    const runtime = selectHarnessRuntime(adapter, input.runtime);
+    return runtime === 'pty' ? pty!.new({ ...input, runtime: 'pty' }) : nativeDescriptor(adapter, input);
   };
 
   return {
@@ -408,8 +403,8 @@ export function defineManagedHarness(
     command: ptyDefinition?.command ?? adapter.name,
     adapter,
     create: async (input = {}) => {
-      const backend = selectHarnessBackend(adapter, input.backend);
-      if (backend === 'pty') return pty!.create({ ...input, backend: 'pty' });
+      const runtime = selectHarnessRuntime(adapter, input.runtime);
+      if (runtime === 'pty') return pty!.create({ ...input, runtime: 'pty' });
       return input.relay
         ? spawnNative(adapter, input, getHarnessDriver(input.relay), input.relay)
         : nativeDescriptor(adapter, input);

@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import type { HarnessBackend } from '@agent-relay/harnesses';
+import type { HarnessRuntime } from '@agent-relay/harnesses';
 
 import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 import { createBrokerClient } from '../lib/attach-broker.js';
@@ -15,7 +15,7 @@ import {
   resolveBrokerConnection,
   type BrokerConnectionOptions,
 } from '../lib/broker-connection.js';
-import { resolvedSpawnBackend, spawnAgentWithClient } from '../lib/client-factory.js';
+import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
 import { defaultExit } from '../lib/exit.js';
 
 // ── Auto-routing model resolution ─────────────────────────────────────────────
@@ -163,23 +163,23 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
-function parseBackendOption(deps: LocalAgentDependencies, value: unknown): HarnessBackend | undefined {
-  const backend = (value ?? 'auto') as string;
-  if (backend === 'auto' || backend === 'ai-sdk' || backend === 'pty') return backend;
-  deps.error(`Unknown backend "${backend}". Expected one of: auto, ai-sdk, pty.`);
+function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): HarnessRuntime | undefined {
+  const runtime = (value ?? 'auto') as string;
+  if (runtime === 'auto' || runtime === 'native' || runtime === 'pty') return runtime;
+  deps.error(`Unknown runtime "${runtime}". Expected one of: auto, native, pty.`);
   deps.exit(1);
   return undefined;
 }
 
-function resolveBackendOption(
+function resolveRuntimeOption(
   deps: LocalAgentDependencies,
   provider: string,
   value: unknown
-): { requested: HarnessBackend; selected: ReturnType<typeof resolvedSpawnBackend> } | undefined {
-  const requested = parseBackendOption(deps, value);
+): { requested: HarnessRuntime; selected: ReturnType<typeof resolvedSpawnRuntime> } | undefined {
+  const requested = parseRuntimeOption(deps, value);
   if (!requested) return undefined;
   try {
-    return { requested, selected: resolvedSpawnBackend({ cli: provider, backend: requested }) };
+    return { requested, selected: resolvedSpawnRuntime({ cli: provider, runtime: requested }) };
   } catch (error) {
     deps.error(error instanceof Error ? error.message : String(error));
     deps.exit(1);
@@ -202,25 +202,25 @@ function parseSpawnModeOption(
 function validateNativeOptions(
   deps: LocalAgentDependencies,
   options: {
-    backend: ReturnType<typeof resolvedSpawnBackend>;
+    runtime: ReturnType<typeof resolvedSpawnRuntime>;
     spawnMode: 'interactive' | 'task_exit';
     exitAfterTask: boolean;
     attachMode?: AttachMode;
   }
 ): boolean {
-  if (options.backend !== 'ai-sdk') return true;
+  if (options.runtime !== 'native') return true;
   if (options.attachMode === 'passthrough') {
-    deps.error('Native AI SDK harnesses do not support passthrough attach mode; use drive or view.');
+    deps.error('Native harnesses do not support passthrough attach mode; use drive or view.');
     deps.exit(1);
     return false;
   }
   if (options.spawnMode !== 'interactive') {
-    deps.error('Native AI SDK harnesses currently support only interactive spawn mode.');
+    deps.error('Native harnesses currently support only interactive spawn mode.');
     deps.exit(1);
     return false;
   }
   if (options.exitAfterTask) {
-    deps.error('Native AI SDK harnesses do not currently support --exit-after-task.');
+    deps.error('Native harnesses do not currently support --exit-after-task.');
     deps.exit(1);
     return false;
   }
@@ -258,17 +258,17 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
-    .option('--backend <backend>', 'Harness backend: auto | ai-sdk | pty', 'auto')
+    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
     .action(async (provider: string, opts: Record<string, unknown>) => {
-      const backend = resolveBackendOption(deps, provider, opts.backend);
+      const runtime = resolveRuntimeOption(deps, provider, opts.runtime);
       const spawnMode = parseSpawnModeOption(deps, opts.spawnMode);
-      if (!backend || !spawnMode) return;
+      if (!runtime || !spawnMode) return;
       if (
         !validateNativeOptions(deps, {
-          backend: backend.selected,
+          runtime: runtime.selected,
           spawnMode,
           exitAfterTask: Boolean(opts.exitAfterTask),
         })
@@ -291,10 +291,10 @@ export function registerLocalAgentCommands(
           cwd: opts.cwd as string | undefined,
           spawnMode,
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
-          backend: backend.requested,
+          runtime: runtime.requested,
         });
         const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
-        deps.log(`Spawned ${resolved.name} (${provider}, ${backend.selected})${autoNote}.`);
+        deps.log(`Spawned ${resolved.name} (${provider}, ${runtime.selected})${autoNote}.`);
       });
     });
 
@@ -310,7 +310,7 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
-    .option('--backend <backend>', 'Harness backend: auto | ai-sdk | pty', 'auto')
+    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
@@ -321,12 +321,12 @@ export function registerLocalAgentCommands(
         deps.exit(1);
         return;
       }
-      const backend = resolveBackendOption(deps, provider, options.backend);
+      const runtime = resolveRuntimeOption(deps, provider, options.runtime);
       const spawnMode = parseSpawnModeOption(deps, options.spawnMode);
-      if (!backend || !spawnMode) return;
+      if (!runtime || !spawnMode) return;
       if (
         !validateNativeOptions(deps, {
-          backend: backend.selected,
+          runtime: runtime.selected,
           spawnMode,
           exitAfterTask: Boolean(options.exitAfterTask),
           attachMode: mode,
@@ -350,11 +350,11 @@ export function registerLocalAgentCommands(
           cwd: options.cwd as string | undefined,
           spawnMode,
           exitAfterTask: options.exitAfterTask as boolean | undefined,
-          backend: backend.requested,
+          runtime: runtime.requested,
         });
         const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(
-          `Spawned ${resolved.name} (${provider}, ${backend.selected}). Attaching (${mode})${autoNote}…`
+          `Spawned ${resolved.name} (${provider}, ${runtime.selected}). Attaching (${mode})${autoNote}…`
         );
       });
       // `new` spawns and attaches on the same default local broker — broker

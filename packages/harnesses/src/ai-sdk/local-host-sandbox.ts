@@ -457,7 +457,7 @@ export class LocalHostSandboxProvider implements HarnessV1SandboxProvider {
     assertNotAborted(options.abortSignal);
     if (process.platform === 'win32') {
       throw new Error(
-        'The Relay local-host AI SDK runtime currently supports macOS and Linux; use the PTY backend on Windows'
+        'The Relay local-host AI SDK runtime currently supports macOS and Linux; use the PTY runtime on Windows'
       );
     }
     await mkdir(this.workspace, { recursive: true });

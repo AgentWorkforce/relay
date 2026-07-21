@@ -12,22 +12,22 @@ Claude Code, Codex, and OpenCode offer both an official AI SDK native harness ru
 import { claude } from '@agent-relay/harnesses';
 
 await claude.create({ relay }); // auto: PTY while the adapter is experimental
-await claude.create({ relay, backend: 'ai-sdk' }); // explicit native harness runtime
-await claude.create({ relay, backend: 'pty' }); // explicit terminal runtime
+await claude.create({ relay, runtime: 'native' }); // explicit native harness runtime
+await claude.create({ relay, runtime: 'pty' }); // explicit terminal runtime
 ```
 
 Runtime selection is final before the session starts. Relay does not switch a running session between PTY and AI SDK.
 
 | Harness         | AI SDK adapter                       | PTY | Initial selection                        |
 | --------------- | ------------------------------------ | --- | ---------------------------------------- |
-| Claude Code     | `@ai-sdk/harness-claude-code@1.0.35` | yes | PTY; AI SDK is explicit and experimental |
-| Codex           | `@ai-sdk/harness-codex@1.0.36`       | yes | PTY; AI SDK is explicit and experimental |
-| OpenCode        | `@ai-sdk/harness-opencode@1.0.35`    | yes | PTY; AI SDK is explicit and experimental |
-| Pi              | `@ai-sdk/harness-pi@1.0.34`          | no  | explicit experimental AI SDK             |
-| Deep Agents     | `@ai-sdk/harness-deepagents@1.0.33`  | no  | explicit experimental AI SDK             |
+| Claude Code     | `@ai-sdk/harness-claude-code@1.0.35` | yes | PTY; native is explicit and experimental |
+| Codex           | `@ai-sdk/harness-codex@1.0.36`       | yes | PTY; native is explicit and experimental |
+| OpenCode        | `@ai-sdk/harness-opencode@1.0.35`    | yes | PTY; native is explicit and experimental |
+| Pi              | `@ai-sdk/harness-pi@1.0.34`          | no  | explicit experimental native             |
+| Deep Agents     | `@ai-sdk/harness-deepagents@1.0.33`  | no  | explicit experimental native             |
 | Other built-ins | none                                 | yes | PTY                                      |
 
-Pi and Deep Agents require `backend: 'ai-sdk'` while experimental. Deep Agents does not advertise manual compaction, and stopping its current adapter does not preserve in-memory conversation.
+Pi and Deep Agents require `runtime: 'native'` while experimental. Deep Agents does not advertise manual compaction, and stopping its current adapter does not preserve in-memory conversation.
 
 Harness execution is `pty` or `native`. The broker may internally wrap native harnesses and attached app servers as `headless` processes, but `headless` is not an observability mode. Both execution paths publish the same normalized `AgentEvent` contract.
 
@@ -67,6 +67,6 @@ Hosted publication is operational observability, not a lossless audit ledger. Th
 
 The AI SDK local-host provider is a process and filesystem lifecycle boundary, not an operating-system sandbox. It rejects lexical traversal and static symlink escapes on a best-effort basis for adapter file operations, holds bridge ports on loopback until handing them to the adapter process, and terminates only child processes it started. Concurrent filesystem mutation by another process is outside this boundary, so the path guard is not TOCTOU-safe and must not be used as isolation for untrusted code.
 
-The local-host AI SDK runtime currently supports macOS and Linux. On Windows, use the PTY backend; an explicit AI SDK selection fails with a typed platform error instead of attempting POSIX adapter bootstrap commands. Preflight checks the platform, Node.js 22, `pnpm`, workspace access, cache access, and loopback port allocation. If startup fails, verify those commands and permissions first. Bootstrap work is cached by stable adapter identity under the runtime cache; deleting unrelated workspace files is never part of cleanup.
+The local-host AI SDK runtime currently supports macOS and Linux. On Windows, use the PTY runtime; an explicit native selection fails with a typed platform error instead of attempting POSIX adapter bootstrap commands. Preflight checks the platform, Node.js 22, `pnpm`, workspace access, cache access, and loopback port allocation. If startup fails, verify those commands and permissions first. Bootstrap work is cached by stable adapter identity under the runtime cache; deleting unrelated workspace files is never part of cleanup.
 
 Adapter upgrades must keep the `@ai-sdk/harness@1.0.34` family coherent and pass the registry, lifecycle, agent-event replay, observability, real-CLI, and 100-cycle soak contracts before changing an adapter's rollout state.
