@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `@agent-relay/cloud` now exposes project-aware workspace resolution, and SDK-backed CLI consumers prefer the workspace recorded by the broker in the current checkout over an unrelated machine-global active workspace.
 
+## [Unreleased - Patch]
+
+### Changed
+
+- Feature verification catalog now records the exact CLI and MCP surfaces, adds previously unlisted SDK and plugin integrations, and maps every category to an end-to-end procedure with prerequisites, assertions, cleanup, and automation limits.
+
 ## [10.6.6] - 2026-07-19
 
 ### Fixed

@@ -330,6 +330,25 @@ describe('relay-feature-guardian runtime paths', () => {
     expect(persona.inputs.SLACK_CHANNEL.default).toBe('C0AEKNLDNKW');
   });
 
+  it('falls back with every declared MCP surface when quiz generation fails', async () => {
+    const transport = new IdempotentSlackTransport();
+    const restore = bindPreviewTransport(transport);
+    const mcpOnlyManifest = manifest.replace('        cli: relay node up', '        mcp: create_workspace');
+    const { ctx } = exactStateContext(JSON.stringify(progressState(0)), mcpOnlyManifest);
+    ctx.llm.complete = vi.fn(async () => {
+      throw new Error('simulated quiz model failure');
+    });
+
+    try {
+      await guardian.handler(ctx, { type: 'cron.tick' } as never);
+      const text = (transport.attempts[0]?.body as { text: string }).text;
+      expect(text).toContain('MCP tool: create_workspace');
+      expect(text).not.toContain('CLI command:');
+    } finally {
+      restore();
+    }
+  });
+
   it('uses a dedicated low-reasoning model path instead of shared subscription quota', () => {
     expect(persona).toMatchObject({
       harness: 'opencode',
