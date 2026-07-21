@@ -808,6 +808,17 @@ impl BrokerRuntime {
                                 &name,
                             )
                             .await;
+                        } else {
+                            // Do not advertise the gone worker in the next
+                            // inventory sync. Keep only its authoritative
+                            // delivery-book binding so an idempotent release
+                            // retry can emit the missing deregistration.
+                            super::fleet::prune_fleet_inventory_entry(
+                                fleet_control_tx,
+                                fleet_inventory,
+                                &name,
+                            )
+                            .await;
                         }
                         super::fleet::publish_fleet_load_snapshot(
                             fleet_control_tx,
@@ -862,6 +873,13 @@ impl BrokerRuntime {
                                     fleet_control_tx,
                                     fleet_inventory,
                                     fleet_delivery_book,
+                                    &name,
+                                )
+                                .await;
+                            } else {
+                                super::fleet::prune_fleet_inventory_entry(
+                                    fleet_control_tx,
+                                    fleet_inventory,
                                     &name,
                                 )
                                 .await;

@@ -688,6 +688,7 @@ impl FleetDeliveryBook {
     pub(crate) fn active_agent_id(&self, agent: &str) -> Option<&str> {
         self.active_agent_bindings_by_name
             .get(agent)
+            .filter(|binding| binding.authoritative)
             .map(|binding| binding.agent_id.as_str())
     }
 

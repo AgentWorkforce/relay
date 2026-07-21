@@ -1564,6 +1564,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn release_does_not_deregister_nonauthoritative_http_identity() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(1);
+        let mut delivery_book = FleetDeliveryBook::default();
+        let delivery = test_deliver(
+            "http-only",
+            "delivery-http-only",
+            "message-http-only",
+            json!({"text": "legacy delivery"}),
+        );
+        delivery_book.commit_received(&delivery);
+
+        assert!(
+            !deregister_fleet_agent(&tx, &delivery_book, &WorkerName::from("http-only"))
+                .await
+                .expect("non-authoritative identity should be a no-op")
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn failed_release_deregister_retains_identity_for_retry() {
         let (tx, rx) = mpsc::channel::<FleetControlCommand>(1);
         drop(rx);
