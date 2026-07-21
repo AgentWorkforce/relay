@@ -31,6 +31,8 @@ Pi and Deep Agents require `runtime: 'native'` while experimental. Deep Agents d
 
 Harness execution is `pty` or `native`. The broker may internally wrap native harnesses and attached app servers as `headless` processes, but `headless` is not an observability mode. Both execution paths publish the same normalized `AgentEvent` contract.
 
+Native sessions receive authenticated Agent Relay host tools and collaboration instructions at startup. They can discover agents and channels, check or search messages, send DMs, post to channels, and reply to threads without relying on a provider-global MCP configuration or extra prompting from the user.
+
 ## Native harness attach
 
 AI SDK sessions expose agent-event history and live events instead of terminal bytes:

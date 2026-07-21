@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { aiSdkAdapterRegistry } from '../../../packages/harnesses/src/ai-sdk/adapter-registry.js';
 import { HarnessHost } from '../../../packages/harnesses/src/ai-sdk/harness-host.js';
 import { LocalHostSandboxProvider } from '../../../packages/harnesses/src/ai-sdk/local-host-sandbox.js';
+import { NATIVE_RELAY_INSTRUCTIONS } from '../../../packages/harnesses/src/ai-sdk/native-relay-tools.js';
 
 const REAL_MODE = process.env.RELAY_INTEGRATION_REAL_CLI === '1';
 const AUTH_OR_CLI_ERROR = /auth|credential|api[-_ ]?key|login|not found|unavailable|enoent|pnpm/i;
@@ -44,14 +45,54 @@ describe('real AI SDK adapters (explicit opt-in)', () => {
           }
           const harness = await entry.createHarness();
           const text: string[] = [];
-          host = new HarnessHost({ harness, sandboxProvider: provider, workspace });
+          const relayToolCalls: unknown[] = [];
+          host = new HarnessHost({
+            harness,
+            sandboxProvider: provider,
+            workspace,
+            ...(entry.name === 'codex' ? { instructions: NATIVE_RELAY_INSTRUCTIONS } : {}),
+            ...(entry.name === 'codex'
+              ? {
+                  tools: [
+                    {
+                      spec: {
+                        name: 'send_dm',
+                        description: 'Send a direct message to another Relay agent.',
+                        inputSchema: {
+                          type: 'object' as const,
+                          properties: {
+                            to: { type: 'string' as const },
+                            text: { type: 'string' as const },
+                          },
+                          required: ['to', 'text'],
+                          additionalProperties: false,
+                        },
+                      },
+                      execute: (input: unknown) => {
+                        relayToolCalls.push(input);
+                        return { delivered: true };
+                      },
+                    },
+                  ],
+                }
+              : {}),
+          });
           host.onEvent((event) => {
             if (event.type === 'text.delta') text.push(String(event.delta));
           });
           await host.start();
-          const turn = await host.startTurn('Reply with exactly RELAY_CONTRACT_OK.');
+          const turn = await host.startTurn(
+            entry.name === 'codex'
+              ? 'Send nativeClaude the text RELAY_TOOL_PROBE. After it succeeds, reply with exactly RELAY_CONTRACT_OK.'
+              : 'Reply with exactly RELAY_CONTRACT_OK.'
+          );
           await withTimeout(turn.done, 120_000);
           expect(text.join('')).toContain('RELAY_CONTRACT_OK');
+          if (entry.name === 'codex') {
+            expect(relayToolCalls).toEqual([
+              expect.objectContaining({ to: 'nativeClaude', text: 'RELAY_TOOL_PROBE' }),
+            ]);
+          }
         } catch (error) {
           const detail =
             error instanceof Error ? `${error.message}\n${String(error.cause ?? '')}` : String(error);

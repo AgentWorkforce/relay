@@ -10,7 +10,7 @@ import type {
   HarnessV1StreamPart,
 } from '@ai-sdk/harness';
 import { describe, expect, it, vi } from 'vitest';
-import { HarnessHost } from './harness-host.js';
+import { HarnessHost, type HarnessHostTool } from './harness-host.js';
 import { LocalHostSandboxProvider } from './local-host-sandbox.js';
 
 function deferred<T = void>() {
@@ -23,13 +23,15 @@ function deferred<T = void>() {
   return { promise, resolve: resolvePromise, reject: rejectPromise };
 }
 
-async function fakeHost() {
+async function fakeHost(tools: readonly HarnessHostTool[] = []) {
   const root = await mkdtemp(resolve(tmpdir(), 'relay-host-'));
   const turns: Array<{
     prompt: unknown;
     emit: (part: HarnessV1StreamPart) => void;
     done: ReturnType<typeof deferred>;
     submitUserMessage: ReturnType<typeof vi.fn>;
+    submitToolResult: ReturnType<typeof vi.fn>;
+    tools: unknown;
   }> = [];
   const resumeState: HarnessV1ResumeSessionState = {
     type: 'resume-session',
@@ -49,11 +51,19 @@ async function fakeHost() {
     doPromptTurn: vi.fn((options) => {
       const done = deferred();
       const submitUserMessage = vi.fn(async () => undefined);
-      turns.push({ prompt: options.prompt, emit: options.emit, done, submitUserMessage });
+      const submitToolResult = vi.fn(async () => undefined);
+      turns.push({
+        prompt: options.prompt,
+        emit: options.emit,
+        done,
+        submitUserMessage,
+        submitToolResult,
+        tools: options.tools,
+      });
       return Promise.resolve({
         done: done.promise,
         submitUserMessage,
-        submitToolResult: vi.fn(async () => undefined),
+        submitToolResult,
         submitToolApproval: vi.fn(async () => undefined),
       } satisfies HarnessV1PromptControl);
     }),
@@ -83,6 +93,7 @@ async function fakeHost() {
     }),
     workspace: resolve(root, 'workspace'),
     sessionId: 'session',
+    tools,
     onEvent: (event) => events.push(event),
   });
   return { host, harness, session, turns, events };
@@ -124,6 +135,41 @@ describe('HarnessHost', () => {
     const sequences = events.map((event) => (event.observability as { sequence: number }).sequence);
     expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
     expect(events.find((event) => event.type === 'error')?.error).toBe('bridge process failed');
+    await host.destroy();
+  });
+
+  it('installs and executes host-provided tools for the native runtime', async () => {
+    const execute = vi.fn(async (input) => ({ delivered: input }));
+    const { host, turns } = await fakeHost([
+      {
+        spec: {
+          name: 'send_dm',
+          description: 'Send a direct message.',
+          inputSchema: { type: 'object' },
+        },
+        execute,
+      },
+    ]);
+    await host.start();
+    const turn = await host.startTurn('contact the other agent');
+    expect(turns[0].tools).toEqual([expect.objectContaining({ name: 'send_dm' })]);
+    turns[0].emit({
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'send_dm',
+      input: JSON.stringify({ to: 'Worker', text: 'hello' }),
+    });
+    await vi.waitFor(() => expect(turns[0].submitToolResult).toHaveBeenCalledOnce());
+    expect(execute).toHaveBeenCalledWith(
+      { to: 'Worker', text: 'hello' },
+      expect.objectContaining({ abortSignal: expect.any(AbortSignal) })
+    );
+    expect(turns[0].submitToolResult).toHaveBeenCalledWith({
+      toolCallId: 'call-1',
+      output: { delivered: { to: 'Worker', text: 'hello' } },
+    });
+    turns[0].done.resolve();
+    await turn.done;
     await host.destroy();
   });
 

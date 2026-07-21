@@ -49,10 +49,15 @@ async function waitFor(predicate: () => boolean) {
   throw new Error('Timed out waiting for sidecar output');
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe('AI SDK native harness sidecar', () => {
   it('speaks worker and native harness protocols with command deduplication', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_native');
     const fixture = fakeHarness();
     vi.spyOn(aiSdkAdapterRegistry, 'require').mockReturnValue({
       ...aiSdkAdapterRegistry.require('codex'),
@@ -131,6 +136,12 @@ describe('AI SDK native harness sidecar', () => {
     expect(output.some((frame) => frame.type === 'worker_ready')).toBe(true);
     expect(output.filter((frame) => frame.type === 'delivery_ack')).toHaveLength(2);
     expect(fixture.session.doPromptTurn).toHaveBeenCalledTimes(1);
+    expect(fixture.session.doPromptTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instructions: expect.stringContaining('Relay collaboration tools are installed'),
+        tools: expect.arrayContaining([expect.objectContaining({ name: 'send_dm' })]),
+      })
+    );
     const agentEvents = output.filter((frame) => frame.type === 'agent_event') as Array<{
       payload: {
         sequence: number;

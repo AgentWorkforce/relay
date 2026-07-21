@@ -16,6 +16,7 @@ import type { HarnessV1Diagnostic } from '@ai-sdk/harness';
 import { aiSdkAdapterRegistry, type RelayAdapterSettings } from './adapter-registry.js';
 import { HarnessHost } from './harness-host.js';
 import { LocalHostSandboxProvider } from './local-host-sandbox.js';
+import { createNativeRelayTools, NATIVE_RELAY_INSTRUCTIONS } from './native-relay-tools.js';
 import { RelayHarnessSession } from './relay-session.js';
 
 export interface AiSdkSidecarConfig {
@@ -112,6 +113,10 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     workspace: config.workspace,
     runtimeRoot: config.runtimeRoot,
   });
+  const relayTools = createNativeRelayTools();
+  const instructions = [relayTools.length > 0 ? NATIVE_RELAY_INSTRUCTIONS : undefined, config.instructions]
+    .filter((value): value is string => Boolean(value))
+    .join('\n\n');
   let diagnosticSequence = 0;
   let agentEventSequence = 0;
   let agentEventWrites = Promise.resolve();
@@ -135,7 +140,8 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     sandboxProvider: provider,
     workspace: config.workspace,
     sessionId: config.sessionId,
-    instructions: config.instructions,
+    instructions: instructions || undefined,
+    tools: relayTools,
     permissionMode: config.permissionMode,
     onDiagnostic: async (diagnostic) => {
       const envelope: Omit<NativeHarnessDiagnosticEnvelope, 'name'> = {

@@ -14,6 +14,7 @@ import type {
   HarnessV1Session,
   HarnessV1Skill,
   HarnessV1StreamPart,
+  HarnessV1ToolSpec,
 } from '@ai-sdk/harness';
 import type { Experimental_SandboxSession as SandboxSession } from '@ai-sdk/provider-utils';
 
@@ -52,6 +53,7 @@ export interface HarnessHostOptions {
   permissionMode?: HarnessV1PermissionMode;
   skills?: readonly HarnessV1Skill[];
   instructions?: string;
+  tools?: readonly HarnessHostTool[];
   observability?: HarnessV1Observability;
   abortSignal?: AbortSignal;
   resumeFrom?: HarnessV1ResumeSessionState;
@@ -60,6 +62,11 @@ export interface HarnessHostOptions {
   onDiagnostic?: (diagnostic: HarnessV1Diagnostic) => void | Promise<void>;
   /** Bounded retries with a fresh local port when an adapter bridge loses a bind race. */
   portBindRetries?: number;
+}
+
+export interface HarnessHostTool {
+  spec: HarnessV1ToolSpec;
+  execute(input: unknown, options: { abortSignal?: AbortSignal }): Promise<unknown> | unknown;
 }
 
 export interface HarnessTurnHandle {
@@ -252,6 +259,7 @@ export class HarnessHost {
   readonly #permissionMode?: HarnessV1PermissionMode;
   readonly #skills?: readonly HarnessV1Skill[];
   readonly #instructions?: string;
+  readonly #tools: ReadonlyMap<string, HarnessHostTool>;
   readonly #observability?: HarnessV1Observability;
   readonly #abortSignal?: AbortSignal;
   readonly #initialResume?: HarnessV1ResumeSessionState;
@@ -276,6 +284,7 @@ export class HarnessHost {
     this.#permissionMode = options.permissionMode;
     this.#skills = options.skills;
     this.#instructions = options.instructions;
+    this.#tools = new Map((options.tools ?? []).map((tool) => [tool.spec.name, tool]));
     this.#abortSignal = options.abortSignal;
     this.#initialResume = options.resumeFrom;
     this.#initialContinue = options.continueFrom;
@@ -329,6 +338,31 @@ export class HarnessHost {
       () => undefined
     );
     return result;
+  }
+
+  async #executeHostTool(
+    call: { toolCallId: string; toolName: string; input: string },
+    controlReady: Promise<HarnessV1PromptControl>,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
+    const tool = this.#tools.get(call.toolName);
+    if (!tool) return;
+    try {
+      const output = await tool.execute(parseToolInput(call.input), { abortSignal });
+      const control = await controlReady;
+      await control.submitToolResult({ toolCallId: call.toolCallId, output });
+    } catch (error) {
+      try {
+        const control = await controlReady;
+        await control.submitToolResult({
+          toolCallId: call.toolCallId,
+          output: { error: errorMessage(error) },
+          isError: true,
+        });
+      } catch (submitError) {
+        await this.#emit({ type: 'error', error: errorMessage(submitError) });
+      }
+    }
   }
 
   async #sandboxForStart(resuming: boolean, bootstrap?: HarnessV1Bootstrap) {
@@ -419,16 +453,29 @@ export class HarnessHost {
       this.#state = 'running';
       await this.#emit({ type: 'turn.started', turnId }, turnId);
       let control: HarnessV1PromptControl;
+      let resolveControl!: (value: HarnessV1PromptControl) => void;
+      let rejectControl!: (reason: unknown) => void;
+      const controlReady = new Promise<HarnessV1PromptControl>((resolve, reject) => {
+        resolveControl = resolve;
+        rejectControl = reject;
+      });
+      void controlReady.catch(() => undefined);
       try {
         control = await this.#session.doPromptTurn({
           prompt,
+          tools: [...this.#tools.values()].map((tool) => tool.spec),
           instructions: this.#instructions,
           abortSignal: turnSignal,
           emit: (part) => {
             for (const event of streamEvents(part)) void this.#emit({ ...event, turnId }, turnId);
+            if (part.type === 'tool-call' && part.providerExecuted !== true) {
+              void this.#executeHostTool(part, controlReady, turnSignal);
+            }
           },
         });
+        resolveControl(control);
       } catch (error) {
+        rejectControl(error);
         this.#state = 'ready';
         this.#turnId = undefined;
         await this.#emit({ type: 'error', error: errorMessage(error), turnId }, turnId);
