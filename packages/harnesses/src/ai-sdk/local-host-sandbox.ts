@@ -22,6 +22,8 @@ function stateSegment(value: string): string {
 export interface LocalHostSandboxProviderOptions {
   workspace: string;
   runtimeRoot?: string;
+  /** Host path used by official adapters for their derived `/tmp/harness/*` bootstrap files. */
+  adapterBootstrapRoot?: string;
   env?: Record<string, string>;
   gracefulShutdownMs?: number;
 }
@@ -96,6 +98,7 @@ class LocalHostSandboxSession implements HarnessV1NetworkSandboxSession {
   readonly id: string;
   readonly defaultWorkingDirectory: string;
   readonly #runtimeRoot: string;
+  readonly #adapterBootstrapRoot: string;
   readonly #env: Record<string, string>;
   readonly #gracefulShutdownMs: number;
   readonly #children = new Set<ChildProcess>();
@@ -109,6 +112,7 @@ class LocalHostSandboxSession implements HarnessV1NetworkSandboxSession {
     id: string;
     workspace: string;
     runtimeRoot: string;
+    adapterBootstrapRoot: string;
     env: Record<string, string>;
     port: number;
     gracefulShutdownMs: number;
@@ -119,6 +123,7 @@ class LocalHostSandboxSession implements HarnessV1NetworkSandboxSession {
     this.id = options.id;
     this.defaultWorkingDirectory = options.workspace;
     this.#runtimeRoot = options.runtimeRoot;
+    this.#adapterBootstrapRoot = options.adapterBootstrapRoot;
     this.#env = options.env;
     this.#ports = [options.port];
     this.#gracefulShutdownMs = options.gracefulShutdownMs;
@@ -138,9 +143,13 @@ class LocalHostSandboxSession implements HarnessV1NetworkSandboxSession {
       ? this.defaultWorkingDirectory
       : isInside(this.#runtimeRoot, resolved)
         ? this.#runtimeRoot
-        : undefined;
+        : isInside(this.#adapterBootstrapRoot, resolved)
+          ? this.#adapterBootstrapRoot
+          : undefined;
     if (!root) {
-      throw new Error(`Path is outside the local harness workspace and runtime cache: ${path}`);
+      throw new Error(
+        `Path is outside the local harness workspace, runtime cache, and adapter bootstrap cache: ${path}`
+      );
     }
     return { path: resolved, root };
   }
@@ -278,7 +287,16 @@ class LocalHostSandboxSession implements HarnessV1NetworkSandboxSession {
     }
     const child = spawnChild('/bin/sh', ['-lc', options.command], {
       cwd: await this.#workingDirectory(options.workingDirectory),
-      env: { ...process.env, ...this.#env, ...options.env },
+      env: {
+        ...process.env,
+        // Official adapters bootstrap their pinned bridge dependencies with
+        // `pnpm --dir /tmp/harness/<adapter>`. Corepack otherwise inspects the
+        // Relay workspace cwd first and rejects pnpm because Relay declares npm
+        // as its package manager. Explicit caller/provider env still wins.
+        COREPACK_ENABLE_PROJECT_SPEC: '0',
+        ...this.#env,
+        ...options.env,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     });
@@ -403,6 +421,7 @@ export class LocalHostSandboxProvider implements HarnessV1SandboxProvider {
   readonly providerId = 'relay-local-host';
   readonly workspace: string;
   readonly runtimeRoot: string;
+  readonly adapterBootstrapRoot: string;
   readonly #env: Record<string, string>;
   readonly #gracefulShutdownMs: number;
   readonly #ports = new Set<number>();
@@ -415,8 +434,11 @@ export class LocalHostSandboxProvider implements HarnessV1SandboxProvider {
     if (!isAbsolute(options.workspace)) throw new Error('Local host workspace must be absolute');
     this.workspace = resolve(options.workspace);
     this.runtimeRoot = resolve(options.runtimeRoot ?? resolve(tmpdir(), 'agent-relay', 'harness'));
-    if (this.workspace === '/' || this.runtimeRoot === '/') {
-      throw new Error('Local host workspace and runtime cache cannot be the filesystem root');
+    this.adapterBootstrapRoot = resolve(options.adapterBootstrapRoot ?? '/tmp/harness');
+    if (this.workspace === '/' || this.runtimeRoot === '/' || this.adapterBootstrapRoot === '/') {
+      throw new Error(
+        'Local host workspace, runtime cache, and adapter bootstrap cache cannot be the filesystem root'
+      );
     }
     this.#env = { ...options.env };
     this.#gracefulShutdownMs = options.gracefulShutdownMs ?? 1_000;
@@ -462,12 +484,14 @@ export class LocalHostSandboxProvider implements HarnessV1SandboxProvider {
     }
     await mkdir(this.workspace, { recursive: true });
     await mkdir(this.runtimeRoot, { recursive: true });
+    await mkdir(this.adapterBootstrapRoot, { recursive: true });
     const id = options.sessionId ?? randomUUID();
     if (this.#sessions.has(id)) throw new Error(`Local sandbox session ${id} already exists`);
     const session = new LocalHostSandboxSession({
       id,
       workspace: this.workspace,
       runtimeRoot: this.runtimeRoot,
+      adapterBootstrapRoot: this.adapterBootstrapRoot,
       env: this.#env,
       port: await this.#port(),
       gracefulShutdownMs: this.#gracefulShutdownMs,
@@ -518,8 +542,12 @@ export class LocalHostSandboxProvider implements HarnessV1SandboxProvider {
   async preflight(): Promise<LocalHostPreflightResult> {
     await mkdir(this.workspace, { recursive: true });
     await mkdir(this.runtimeRoot, { recursive: true });
+    await mkdir(this.adapterBootstrapRoot, { recursive: true });
     const command = async (value: string) => {
-      const child = spawnChild(value, ['--version'], { stdio: 'ignore' });
+      const child = spawnChild(value, ['--version'], {
+        stdio: 'ignore',
+        env: { ...process.env, COREPACK_ENABLE_PROJECT_SPEC: '0', ...this.#env },
+      });
       return new Promise<boolean>((resolveCheck) => {
         child.once('error', () => resolveCheck(false));
         child.once('exit', (code) => resolveCheck(code === 0));
@@ -540,7 +568,10 @@ export class LocalHostSandboxProvider implements HarnessV1SandboxProvider {
         () => false
       ),
       port,
-      cache: await access(this.runtimeRoot, constants.R_OK | constants.W_OK).then(
+      cache: await Promise.all([
+        access(this.runtimeRoot, constants.R_OK | constants.W_OK),
+        access(this.adapterBootstrapRoot, constants.R_OK | constants.W_OK),
+      ]).then(
         () => true,
         () => false
       ),

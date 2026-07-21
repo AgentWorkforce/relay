@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -9,17 +9,30 @@ async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), 'relay-local-sandbox-'));
   const workspace = resolve(root, 'workspace');
   const runtimeRoot = resolve(root, 'runtime');
+  const adapterBootstrapRoot = resolve(root, 'tmp', 'harness');
   return {
     root,
     workspace,
     runtimeRoot,
-    provider: new LocalHostSandboxProvider({ workspace, runtimeRoot, gracefulShutdownMs: 20 }),
+    adapterBootstrapRoot,
+    provider: new LocalHostSandboxProvider({
+      workspace,
+      runtimeRoot,
+      adapterBootstrapRoot,
+      gracefulShutdownMs: 20,
+    }),
   };
 }
 
 describe('LocalHostSandboxProvider', () => {
   it('requires an explicit absolute workspace', () => {
     expect(() => new LocalHostSandboxProvider({ workspace: 'relative' })).toThrow(/absolute/);
+  });
+
+  it('uses the official adapters fixed bootstrap root by default', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-local-sandbox-default-'));
+    const provider = new LocalHostSandboxProvider({ workspace: resolve(root, 'workspace') });
+    expect(provider.adapterBootstrapRoot).toBe(resolve('/tmp/harness'));
   });
 
   it('reads, writes, streams, and runs inside the workspace', async () => {
@@ -34,6 +47,25 @@ describe('LocalHostSandboxProvider', () => {
     await expect(session.readTextFile({ path: resolve(workspace, '..', 'escape') })).rejects.toThrow(
       /outside/
     );
+    await session.destroy?.();
+  });
+
+  it('allows official adapter bootstrap files only inside the adapter bootstrap cache', async () => {
+    const { provider, adapterBootstrapRoot } = await fixture();
+    const session = await provider.createSession({ sessionId: 'adapter-bootstrap' });
+    const packageFile = resolve(adapterBootstrapRoot, 'codex', 'package.json');
+    await session.writeTextFile({ path: packageFile, content: '{"private":true}' });
+    expect(await session.readTextFile({ path: packageFile })).toBe('{"private":true}');
+    const corepack = await session.run({ command: 'printf %s "$COREPACK_ENABLE_PROJECT_SPEC"' });
+    expect(corepack.stdout).toBe('0');
+    const pwd = await session.run({
+      command: 'pwd',
+      workingDirectory: resolve(adapterBootstrapRoot, 'codex'),
+    });
+    expect(await realpath(pwd.stdout.trim())).toBe(await realpath(resolve(adapterBootstrapRoot, 'codex')));
+    await expect(
+      session.writeTextFile({ path: resolve(adapterBootstrapRoot, '..', 'escape'), content: 'no' })
+    ).rejects.toThrow(/outside/);
     await session.destroy?.();
   });
 
