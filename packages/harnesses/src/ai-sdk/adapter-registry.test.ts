@@ -29,6 +29,12 @@ describe('AI SDK adapter registry', () => {
   });
 
   it('maps only settings understood by each adapter', () => {
+    expect(aiSdkAdapterRegistry.require('codex').mapSettings({})).toEqual({
+      model: 'gpt-5.6-terra',
+    });
+    expect(
+      aiSdkAdapterRegistry.require('codex').mapSettings({ model: 'gpt-5.6-sol', webSearch: true })
+    ).toEqual({ model: 'gpt-5.6-sol', webSearch: true });
     expect(
       aiSdkAdapterRegistry.require('claude').mapSettings({
         model: 'opus',

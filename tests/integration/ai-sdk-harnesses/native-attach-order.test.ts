@@ -39,6 +39,7 @@ describe('native harness attach replay contract', () => {
       }),
       onEvent: () => () => undefined,
       sendNativeHarnessCommand: vi.fn(),
+      disconnect: vi.fn(),
     };
 
     await expect(
@@ -81,6 +82,7 @@ describe('native harness attach replay contract', () => {
       }),
       onEvent: () => () => undefined,
       sendNativeHarnessCommand: vi.fn(),
+      disconnect: vi.fn(),
     };
 
     await attachNative(

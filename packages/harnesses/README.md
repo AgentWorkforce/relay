@@ -21,7 +21,7 @@ Runtime selection is final before the session starts. Relay does not switch a ru
 | Harness         | AI SDK adapter                       | PTY | Initial selection                        |
 | --------------- | ------------------------------------ | --- | ---------------------------------------- |
 | Claude Code     | `@ai-sdk/harness-claude-code@1.0.35` | yes | PTY; native is explicit and experimental |
-| Codex           | `@ai-sdk/harness-codex@1.0.36`       | yes | PTY; native is explicit and experimental |
+| Codex           | `@ai-sdk/harness-codex@1.0.40`       | yes | PTY; native is explicit and experimental |
 | OpenCode        | `@ai-sdk/harness-opencode@1.0.35`    | yes | PTY; native is explicit and experimental |
 | Pi              | `@ai-sdk/harness-pi@1.0.34`          | no  | explicit experimental native             |
 | Deep Agents     | `@ai-sdk/harness-deepagents@1.0.33`  | no  | explicit experimental native             |

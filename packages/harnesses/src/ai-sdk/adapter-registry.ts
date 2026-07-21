@@ -88,8 +88,15 @@ const FULL_LIFECYCLE: AiSdkLifecycleCapabilities = {
   stopPreservesConversation: true,
 };
 
-const codexSettings = (settings: RelayAdapterSettings) =>
-  pickSettings(settings, ['model', 'auth', 'port', 'startupTimeoutMs', 'reasoningEffort', 'webSearch']);
+// The upstream adapter currently defaults to gpt-5.3-codex, which ChatGPT-account
+// authentication no longer accepts. Keep Relay's default aligned with Codex CLI
+// while still allowing callers to select another supported model explicitly.
+const DEFAULT_CODEX_MODEL = 'gpt-5.6-terra';
+
+const codexSettings = (settings: RelayAdapterSettings) => ({
+  model: settings.model ?? DEFAULT_CODEX_MODEL,
+  ...pickSettings(settings, ['auth', 'port', 'startupTimeoutMs', 'reasoningEffort', 'webSearch']),
+});
 
 const openCodeSettings = (settings: RelayAdapterSettings) =>
   pickSettings(settings, ['model', 'auth', 'port', 'startupTimeoutMs', 'provider', 'reasoningVariant']);
