@@ -757,6 +757,18 @@ impl BrokerRuntime {
                 workers.metrics.on_release(&name);
                 match workers.release(&name).await {
                     Ok(()) => {
+                        if let Err(error) = super::fleet::deregister_fleet_agent(
+                            fleet_control_tx,
+                            fleet_delivery_book,
+                            &name,
+                        )
+                        .await
+                        {
+                            let _ = reply.send(Err(format!(
+                                "failed to deregister released worker from fleet control: {error}"
+                            )));
+                            return;
+                        }
                         if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
                             tracing::warn!(
                                 worker = %name,
@@ -816,6 +828,18 @@ impl BrokerRuntime {
                     Err(e) => {
                         let message = e.to_string();
                         if is_unknown_worker_error_message(&message) {
+                            if let Err(error) = super::fleet::deregister_fleet_agent(
+                                fleet_control_tx,
+                                fleet_delivery_book,
+                                &name,
+                            )
+                            .await
+                            {
+                                let _ = reply.send(Err(format!(
+                                    "failed to deregister released worker from fleet control: {error}"
+                                )));
+                                return;
+                            }
                             relaycast_http.forget_agent_registration(&name);
                             state.agents.remove(&name);
                             if paths.persist {

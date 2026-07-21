@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     fleet_wire::{
         ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
-        AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, RelaycastToBroker,
-        FLEET_WIRE_VERSION,
+        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode,
+        RelaycastToBroker, FLEET_WIRE_VERSION,
     },
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
 };
@@ -705,6 +705,37 @@ pub(super) async fn publish_fleet_load_snapshot(
             .send(FleetControlCommand::HeartbeatNow)
             .await;
     }
+}
+
+/// Queue an `agent.deregister` frame before a released name can be reused.
+///
+/// HTTP release and a subsequent same-name spawn are separate broker API
+/// requests, but both converge on this single FIFO fleet-control channel. By
+/// awaiting the enqueue here before replying to release, the control plane
+/// observes deregistration before any later `agent.register`, including when a
+/// restarted broker has a new node id. Agents registered only through the
+/// legacy HTTP fallback have no authoritative fleet identity and remain
+/// covered by the REST offline call.
+pub(super) async fn deregister_fleet_agent(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_delivery_book: &FleetDeliveryBook,
+    name: &WorkerName,
+) -> Result<bool, String> {
+    let Some(agent_id) = fleet_delivery_book.active_agent_id(name.as_str()) else {
+        return Ok(false);
+    };
+    fleet_control_tx
+        .send(FleetControlCommand::Send(
+            BrokerToRelaycast::AgentDeregister(AgentDeregister {
+                v: FLEET_WIRE_VERSION,
+                id: None,
+                agent_id: agent_id.to_string(),
+                name: Some(name.as_str().to_string()),
+            }),
+        ))
+        .await
+        .map_err(|_| "fleet_control_unavailable".to_string())?;
+    Ok(true)
 }
 
 pub(super) async fn publish_fleet_inventory_snapshot(
@@ -1497,6 +1528,39 @@ mod tests {
             delivery_book.observe(&mismatch),
             DeliveryDecision::IdentityReject
         );
+    }
+
+    #[tokio::test]
+    async fn release_queues_fleet_deregister_with_authoritative_identity() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(1);
+        let mut delivery_book = FleetDeliveryBook::default();
+        delivery_book.bind_authoritative_identity("agent-a", "agent-a-id");
+
+        assert!(
+            deregister_fleet_agent(&tx, &delivery_book, &WorkerName::from("agent-a"))
+                .await
+                .expect("deregister should enqueue")
+        );
+
+        let command = rx.recv().await.expect("deregister command emitted");
+        let FleetControlCommand::Send(BrokerToRelaycast::AgentDeregister(request)) = command else {
+            panic!("expected AgentDeregister command");
+        };
+        assert_eq!(request.agent_id, "agent-a-id");
+        assert_eq!(request.name.as_deref(), Some("agent-a"));
+    }
+
+    #[tokio::test]
+    async fn release_without_fleet_identity_does_not_emit_deregister() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(1);
+        let delivery_book = FleetDeliveryBook::default();
+
+        assert!(
+            !deregister_fleet_agent(&tx, &delivery_book, &WorkerName::from("http-only"))
+                .await
+                .expect("missing identity should be a no-op")
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

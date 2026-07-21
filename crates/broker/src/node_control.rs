@@ -681,6 +681,16 @@ impl FleetDeliveryBook {
         self.bind_identity(&agent, &agent_id, true);
     }
 
+    /// Return the immutable identity currently bound to an agent name.
+    ///
+    /// Release paths need this before pruning the delivery book so they can
+    /// send an ordered `agent.deregister` frame to the fleet control plane.
+    pub(crate) fn active_agent_id(&self, agent: &str) -> Option<&str> {
+        self.active_agent_bindings_by_name
+            .get(agent)
+            .map(|binding| binding.agent_id.as_str())
+    }
+
     /// Seed Relaycast's cumulative cursor after identity authority is bound.
     ///
     /// The immutable `agent_id` is the key: a later agent reusing the same name
