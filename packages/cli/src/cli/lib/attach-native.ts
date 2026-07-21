@@ -154,6 +154,12 @@ export async function attachNative(
   const iterator = stream[Symbol.asyncIterator]();
   let highWater = 0;
   let stopped = false;
+  let disconnected = false;
+  let iteratorClosed = false;
+  let resolveStop!: () => void;
+  const stopSignal = new Promise<void>((resolve) => {
+    resolveStop = resolve;
+  });
   let readline: ReadlineInterface | undefined;
   const pendingCommands = new Set<Promise<void>>();
   let commandChain = Promise.resolve();
@@ -168,11 +174,25 @@ export async function attachNative(
     const text = renderNativeHarnessDiagnostic(event, options);
     if (text !== null) deps.output.stdout(text);
   });
+  const disconnect = () => {
+    if (disconnected) return;
+    disconnected = true;
+    client.disconnect();
+  };
+  const closeIterator = () => {
+    if (iteratorClosed) return;
+    iteratorClosed = true;
+    void Promise.resolve(iterator.return?.()).catch(() => undefined);
+  };
   const stop = () => {
     if (stopped) return;
     stopped = true;
     readline?.close();
-    void iterator.return?.();
+    // Close the broker before iterator cleanup and resolve our own stop signal.
+    // An idle adapter stream is not required to unblock iterator.next()/return().
+    disconnect();
+    closeIterator();
+    resolveStop();
   };
   const removeSignal = deps.onSignal(stop);
 
@@ -249,7 +269,10 @@ export async function attachNative(
     }
 
     while (!stopped) {
-      const next = await iterator.next();
+      const next = await Promise.race([
+        iterator.next(),
+        stopSignal.then(() => ({ done: true as const, value: undefined as never })),
+      ]);
       if (next.done) break;
       render(next.value);
     }
@@ -263,8 +286,9 @@ export async function attachNative(
     removeSignal();
     unsubscribeDiagnostics();
     readline?.close();
-    await iterator.return?.();
-    client.disconnect();
+    disconnect();
+    closeIterator();
+    resolveStop();
   }
 }
 

@@ -97,6 +97,63 @@ describe('native harness attach rendering', () => {
     expect(disconnected).toBe(true);
   });
 
+  it('disconnects an idle event stream before awaiting iterator cleanup', async () => {
+    let disconnected = false;
+    let returnCalled = false;
+    const iterator = {
+      next: () => new Promise<IteratorResult<never>>(() => undefined),
+      return: () => {
+        expect(disconnected).toBe(true);
+        returnCalled = true;
+        return new Promise<IteratorResult<never>>(() => undefined);
+      },
+    };
+    const client = {
+      currentEventSeq: async () => 12,
+      subscribeAgentEvents: () => ({ [Symbol.asyncIterator]: () => iterator }),
+      getAgentEventHistory: async () => ({
+        protocol_version: 1,
+        name: 'Worker',
+        events: [],
+        high_water_sequence: 0,
+        oldest_available_sequence: null,
+        gap: false,
+      }),
+      onEvent: () => () => undefined,
+      disconnect: () => {
+        disconnected = true;
+      },
+      sendNativeHarnessCommand: async () => ({
+        protocol_version: 1,
+        request_id: 'unused',
+        idempotency_key: 'unused',
+        accepted: true,
+      }),
+    };
+    const readline = new EventEmitter() as EventEmitter & { close(): void };
+    readline.close = () => undefined;
+    Object.assign(readline, { terminal: true, setPrompt: () => undefined, prompt: () => undefined });
+
+    await expect(
+      attachNative(
+        'Worker',
+        'drive',
+        { brokerUrl: 'http://broker' },
+        {
+          connect: () => client as never,
+          output: { stdout: () => undefined, stderr: () => undefined },
+          createReadline: () => {
+            queueMicrotask(() => readline.emit('line', '/detach'));
+            return readline as never;
+          },
+          onSignal: () => () => undefined,
+        }
+      )
+    ).resolves.toBe(0);
+    expect(disconnected).toBe(true);
+    expect(returnCalled).toBe(true);
+  });
+
   it('renders text and compact normalized activity without protocol JSON', () => {
     expect(renderAgentEvent(envelope('text.delta', { delta: 'hello' }))).toBe('hello');
     expect(

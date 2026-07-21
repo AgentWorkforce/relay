@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Native Codex sessions now use an AI SDK adapter that avoids the macOS XProtect false positive affecting its previous bundled Codex executable and defaults to a model accepted by ChatGPT-account authentication.
+- Native `node agent attach --mode drive` now disconnects idle event streams before cleanup, so `/detach` and Ctrl-C return immediately.
 - `agent-relay-broker` now orders fleet `agent.deregister` before acknowledging a local worker release, so a restarted node can immediately recover the same agent name without an active-location collision, and fails fast instead of stalling the runtime API when fleet-control delivery is backpressured.
 - Native AI SDK harnesses now permit official adapter bootstrap files under their fixed cache root and invoke pnpm independently of Relay's npm workspace, preventing successful-looking spawns from immediately disappearing.
 - Native `node agent attach --mode drive` sessions now show an interactive prompt, preserve structured adapter error messages, and close their broker connection when detached.
