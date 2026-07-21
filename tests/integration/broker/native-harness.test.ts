@@ -35,6 +35,24 @@ async function eventually<T>(read: () => Promise<T | undefined>, timeoutMs = 5_0
   throw new Error(`Timed out after ${timeoutMs}ms`);
 }
 
+async function waitForNativeSessionReady(client: HarnessDriverClient, name: string, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const listed = (await client.listAgents()).find((agent) => agent.name === name);
+    if (!listed) {
+      throw new Error(`Native agent ${name} disappeared before its session became ready`);
+    }
+    const history = await client.getAgentEventHistory(name);
+    const failure = history.events.find((event) => event.event.kind === 'session.failed');
+    if (failure) {
+      throw new Error(`Native agent ${name} failed during startup: ${String(failure.event.error)}`);
+    }
+    if (history.events.some((event) => event.event.kind === 'session.started')) return listed;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for native agent ${name} to become ready`);
+}
+
 async function runCli(
   cwd: string,
   args: string[],
@@ -201,6 +219,77 @@ test(
       );
       assert.equal(listed.runtime_kind, 'native');
       assert.equal(listed.native_harness_protocol_version, 1);
+
+      await client.release(name);
+    } finally {
+      await client?.shutdown().catch(() => {});
+      client?.disconnect();
+      await eventually(async () => {
+        try {
+          fs.rmSync(cwd, { recursive: true, force: true });
+          return true;
+        } catch {
+          return undefined;
+        }
+      });
+    }
+  }
+);
+
+test(
+  'native harness: Codex adapter bootstraps and stays registered after readiness',
+  { timeout: 150_000 },
+  async (t) => {
+    if (skipIfMissing(t)) return;
+
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-native-codex-e2e-'));
+    const name = `native-codex-${uniqueSuffix()}`;
+    let client: HarnessDriverClient | undefined;
+
+    try {
+      // Reproduce a normal Relay checkout: Corepack sees npm at the project
+      // root while the official Codex adapter bootstraps its pinned pnpm bridge
+      // under /tmp/harness/codex.
+      fs.writeFileSync(
+        path.join(cwd, 'package.json'),
+        JSON.stringify({ private: true, packageManager: 'npm@10.9.8' })
+      );
+      const apiKey = await ensureApiKey();
+      const started = await runCli(cwd, ['node', 'up', '--background', '--no-spawn'], {
+        AGENT_RELAY_BIN: resolveBinaryPath(),
+        RELAY_API_KEY: apiKey,
+      });
+      assert.equal(started.exitCode, 0, `CLI broker startup failed:\n${started.stderr}`);
+      client = await eventually(async () => {
+        try {
+          return HarnessDriverClient.connect({ cwd });
+        } catch {
+          return undefined;
+        }
+      });
+
+      const result = await runCli(cwd, [
+        'node',
+        'agent',
+        'spawn',
+        'codex',
+        '--runtime',
+        'native',
+        '--name',
+        name,
+        '--cwd',
+        cwd,
+      ]);
+      assert.equal(result.exitCode, 0, `CLI failed:\n${result.stderr}`);
+      assert.match(result.stdout, /\(codex, native\)/);
+
+      const listed = await waitForNativeSessionReady(client, name);
+      assert.equal(listed.runtime_kind, 'native');
+      assert.equal(listed.native_harness_protocol_version, 1);
+      assert.equal(
+        (await client.listAgents()).some((agent) => agent.name === name),
+        true
+      );
 
       await client.release(name);
     } finally {
