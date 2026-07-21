@@ -1,8 +1,8 @@
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
-import { getProjectPaths } from '@agent-relay/config';
-
-import { activeWorkspaceKey } from './workspace-store.js';
-import { readProjectWorkspaceKey } from './project-workspace-key.js';
+import {
+  resolveWorkspaceKeyWithSource as resolveCloudWorkspaceKeyWithSource,
+  type WorkspaceKeySource,
+} from '@agent-relay/cloud/workspace-key';
 
 /** Options shared by the SDK-backed (Relaycast) CLI command groups. */
 export interface SdkClientOptions {
@@ -22,7 +22,7 @@ function trimOrUndefined(value: string | undefined): string | undefined {
 }
 
 /** Where a resolved workspace key came from, in precedence order. */
-export type WorkspaceKeySource = 'flag' | 'env' | 'project' | 'store';
+export type { WorkspaceKeySource };
 
 /**
  * Resolve the workspace key and report which source it came from. Precedence:
@@ -35,15 +35,11 @@ export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
   key: string;
   source: WorkspaceKeySource;
 } {
-  const e = env(options);
-  const flag = trimOrUndefined(options.workspaceKey);
-  if (flag) return { key: flag, source: 'flag' };
-  const envKey = trimOrUndefined(e.RELAY_WORKSPACE_KEY) ?? trimOrUndefined(e.RELAY_API_KEY);
-  if (envKey) return { key: envKey, source: 'env' };
-  const project = trimOrUndefined(projectWorkspaceKey());
-  if (project) return { key: project, source: 'project' };
-  const store = trimOrUndefined(activeWorkspaceKey(e));
-  if (store) return { key: store, source: 'store' };
+  const resolved = resolveCloudWorkspaceKeyWithSource({
+    workspaceKey: options.workspaceKey,
+    env: env(options),
+  });
+  if (resolved) return resolved;
   throw new Error(
     'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
   );
@@ -51,19 +47,6 @@ export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
 
 export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
   return resolveWorkspaceKeyWithSource(options).key;
-}
-
-/**
- * Read the workspace key recorded by `relay up` for the current project
- * directory, or `undefined` when there is none / the project root cannot be
- * resolved. Never throws — a resolution failure just falls through.
- */
-function projectWorkspaceKey(): string | undefined {
-  try {
-    return readProjectWorkspaceKey(getProjectPaths().dataDir);
-  } catch {
-    return undefined;
-  }
 }
 
 export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {

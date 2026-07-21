@@ -35,6 +35,47 @@
             "reasoning": "Panic may occur on a tokio worker thread and the process may abort before the async sender loop drains; a dedicated std::thread with its own runtime avoids nested-runtime panic, and the reqwest timeout bounds process teardown"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1784578305956,
+          "type": "decision",
+          "content": "Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose: Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose",
+          "raw": {
+            "question": "Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose",
+            "chosen": "Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose",
+            "alternatives": [],
+            "reasoning": "The manifest already contains stale aliases and incomplete argument syntax, so repository source is the authoritative contract."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784579530918,
+          "type": "reflection",
+          "content": "Parallel audits reconciled the manifest with Commander registrations, MCP tools, SDKs, harnesses, and plugins. The catalog now uses explicit category-to-procedure mappings with contract tests so CLI and MCP drift fails locally before review.",
+          "raw": {
+            "focalPoints": ["surface-accuracy", "e2e-verification", "drift-prevention"],
+            "adjustments": "Added executable procedures and a manifest contract test; retained explicit external/interactive limits rather than claiming unsupported automation.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:surface-accuracy",
+            "focal:e2e-verification",
+            "focal:drift-prevention",
+            "confidence:0.9"
+          ]
+        },
+        {
+          "ts": 1784581060376,
+          "type": "decision",
+          "content": "Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child: Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child",
+          "raw": {
+            "question": "Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child",
+            "chosen": "Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child",
+            "alternatives": [],
+            "reasoning": "The daemon is detached and persisted locally; checking worker ID plus --foreground-child before TERM/KILL prevents a stale or reused PID from targeting an unrelated process."
+          },
+          "significance": "high"
         }
       ]
     }

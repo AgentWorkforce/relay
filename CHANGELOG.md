@@ -5,11 +5,21 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
 
 ### Fixed
 
-- `agent-relay-broker` now orders fleet `agent.deregister` before acknowledging a local worker release, so a restarted node can immediately recover the same agent name without an active-location collision.
+- `@agent-relay/cloud` now exposes project-aware workspace resolution, and SDK-backed CLI consumers prefer the workspace recorded by the broker in the current checkout over an unrelated machine-global active workspace.
+
+## [Unreleased - Patch]
+
+### Changed
+
+- Feature verification catalog now records the exact CLI and MCP surfaces, adds previously unlisted SDK and plugin integrations, and maps every category to an end-to-end procedure with prerequisites, assertions, cleanup, and automation limits.
+
+### Fixed
+
+- `agent-relay-broker` now orders fleet `agent.deregister` before acknowledging a local worker release, so a restarted node can immediately recover the same agent name without an active-location collision, and fails fast instead of stalling the runtime API when fleet-control delivery is backpressured.
 
 ## [10.6.6] - 2026-07-19
 
