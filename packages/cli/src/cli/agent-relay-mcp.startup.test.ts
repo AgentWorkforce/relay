@@ -30,6 +30,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const telemetryShutdown = vi.fn(async () => undefined);
   const relayInstances: Array<{
     config: Record<string, unknown>;
+    register: ReturnType<typeof vi.fn>;
     registerOrRotate: ReturnType<typeof vi.fn>;
     agentsList: ReturnType<typeof vi.fn>;
     nodesList: ReturnType<typeof vi.fn>;
@@ -164,6 +165,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   });
 
   const RelayCast = vi.fn(function (this: unknown, config: Record<string, unknown>) {
+    const register = vi.fn(async (input: { name: string; type?: string }) => behavior.registerImpl(input));
     const registerOrRotate = vi.fn(async (input: { name: string; type?: string }) =>
       behavior.registerImpl(input)
     );
@@ -183,9 +185,10 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       reason: input.reason ?? null,
     }));
     const as = vi.fn((token: string) => createAgentClient(token));
-    relayInstances.push({ config, registerOrRotate, agentsList, nodesList, spawn, release, as });
+    relayInstances.push({ config, register, registerOrRotate, agentsList, nodesList, spawn, release, as });
     return {
       agents: {
+        register,
         registerOrRotate,
         list: agentsList,
         spawn,
@@ -805,6 +808,26 @@ describe('resolveStdioBootstrapOptions', () => {
       type: 'agent',
     });
     expect(result.agentToken).toBe('at_live_minted');
+  });
+
+  it('uses conflict-safe registration for a strict worker bootstrap', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+
+    await mod.resolveStdioBootstrapOptions({
+      apiKey: 'rk_live_workspace',
+      agentName: 'WorkerA',
+      agentType: 'agent',
+      strictAgentName: true,
+    });
+
+    const bootstrapRelay = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'rk_live_workspace'
+    );
+    expect(bootstrapRelay?.register).toHaveBeenCalledWith({
+      name: 'WorkerA',
+      type: 'agent',
+    });
+    expect(bootstrapRelay?.registerOrRotate).not.toHaveBeenCalled();
   });
 });
 

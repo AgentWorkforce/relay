@@ -343,7 +343,7 @@ export async function registerAgentWithRebind({
     // If the session tracks per-identity agents, only short-circuit when the
     // strict-named identity is still registered. After an `agent_token_invalid`
     // recovery the entry is dropped from the map, which lets this fall through
-    // to a fresh registerOrRotate instead of handing back the dead token.
+    // to a conflict-safe registration instead of handing back the dead token.
     const cachedAgent = session.agents?.get(effectiveName);
     const knowsIdentities = session.agents !== undefined;
     if (!knowsIdentities || cachedAgent) {
@@ -357,12 +357,19 @@ export async function registerAgentWithRebind({
   }
 
   const relay = getRelay();
-  const result = await relay.agents.registerOrRotate({
+  const registration = {
     name: effectiveName,
     type: effectiveType,
     persona,
     metadata,
-  });
+  };
+  // A strict worker name is bound to one agent identity. Rotating that
+  // identity's token from another live MCP session silently disconnects the
+  // first session and creates a re-registration ping-pong. Plain registration
+  // is an atomic server-side conflict instead, so its token remains valid.
+  const result = strictAgentName
+    ? await relay.agents.register(registration)
+    : await relay.agents.registerOrRotate(registration);
   const reboundName = result.name?.trim() ? result.name : effectiveName;
   setSession({ agentToken: result.token, agentName: reboundName });
 
@@ -915,10 +922,15 @@ export async function resolveStdioBootstrapOptions(
 
   const relay = createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
 
-  const registered = await relay.agents.registerOrRotate({
+  const registration = {
     name: options.agentName,
     type: options.agentType,
-  });
+  };
+  // Match the tool path: a strict injected worker must never rotate the token
+  // held by another session with the same fixed identity during bootstrap.
+  const registered = options.strictAgentName
+    ? await relay.agents.register(registration)
+    : await relay.agents.registerOrRotate(registration);
   return {
     ...options,
     agentToken: registered.token,
