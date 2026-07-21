@@ -757,17 +757,19 @@ impl BrokerRuntime {
                 workers.metrics.on_release(&name);
                 match workers.release(&name).await {
                     Ok(()) => {
-                        if let Err(error) = super::fleet::deregister_fleet_agent(
+                        let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                             fleet_control_tx,
                             fleet_delivery_book,
                             &name,
                         )
                         .await
-                        {
-                            let _ = reply.send(Err(format!(
-                                "failed to deregister released worker from fleet control: {error}"
-                            )));
-                            return;
+                        .err();
+                        if let Some(error) = &fleet_deregistration_error {
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "released worker fleet deregistration was not queued; retaining its identity for retry"
+                            );
                         }
                         if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
                             tracing::warn!(
@@ -798,13 +800,15 @@ impl BrokerRuntime {
                         if paths.persist {
                             let _ = state.save(&paths.state);
                         }
-                        super::fleet::prune_fleet_agent_state(
-                            fleet_control_tx,
-                            fleet_inventory,
-                            fleet_delivery_book,
-                            &name,
-                        )
-                        .await;
+                        if fleet_deregistration_error.is_none() {
+                            super::fleet::prune_fleet_agent_state(
+                                fleet_control_tx,
+                                fleet_inventory,
+                                fleet_delivery_book,
+                                &name,
+                            )
+                            .await;
+                        }
                         super::fleet::publish_fleet_load_snapshot(
                             fleet_control_tx,
                             u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
@@ -823,35 +827,45 @@ impl BrokerRuntime {
                             Some("http_api_release"),
                         )
                         .await;
-                        let _ = reply.send(Ok(json!({ "success": true, "name": name })));
+                        let response = match fleet_deregistration_error {
+                            Some(error) => Err(format!(
+                                "failed to deregister released worker from fleet control: {error}"
+                            )),
+                            None => Ok(json!({ "success": true, "name": name })),
+                        };
+                        let _ = reply.send(response);
                     }
                     Err(e) => {
                         let message = e.to_string();
                         if is_unknown_worker_error_message(&message) {
-                            if let Err(error) = super::fleet::deregister_fleet_agent(
+                            let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                                 fleet_control_tx,
                                 fleet_delivery_book,
                                 &name,
                             )
                             .await
-                            {
-                                let _ = reply.send(Err(format!(
-                                    "failed to deregister released worker from fleet control: {error}"
-                                )));
-                                return;
+                            .err();
+                            if let Some(error) = &fleet_deregistration_error {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %error,
+                                    "already-exited worker fleet deregistration was not queued; retaining its identity for retry"
+                                );
                             }
                             relaycast_http.forget_agent_registration(&name);
                             state.agents.remove(&name);
                             if paths.persist {
                                 let _ = state.save(&paths.state);
                             }
-                            super::fleet::prune_fleet_agent_state(
-                                fleet_control_tx,
-                                fleet_inventory,
-                                fleet_delivery_book,
-                                &name,
-                            )
-                            .await;
+                            if fleet_deregistration_error.is_none() {
+                                super::fleet::prune_fleet_agent_state(
+                                    fleet_control_tx,
+                                    fleet_inventory,
+                                    fleet_delivery_book,
+                                    &name,
+                                )
+                                .await;
+                            }
                             super::fleet::publish_fleet_load_snapshot(
                                 fleet_control_tx,
                                 u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
@@ -864,7 +878,13 @@ impl BrokerRuntime {
                                 worker = %name,
                                 "ignoring duplicate HTTP API release for already exited worker"
                             );
-                            let _ = reply.send(Ok(json!({ "success": true, "name": name })));
+                            let response = match fleet_deregistration_error {
+                                Some(error) => Err(format!(
+                                    "failed to deregister released worker from fleet control: {error}"
+                                )),
+                                None => Ok(json!({ "success": true, "name": name })),
+                            };
+                            let _ = reply.send(response);
                         } else {
                             eprintln!(
                                 "[agent-relay] HTTP API: failed to release '{}': {}",

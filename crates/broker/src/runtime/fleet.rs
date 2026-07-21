@@ -1563,6 +1563,20 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    #[tokio::test]
+    async fn failed_release_deregister_retains_identity_for_retry() {
+        let (tx, rx) = mpsc::channel::<FleetControlCommand>(1);
+        drop(rx);
+        let mut delivery_book = FleetDeliveryBook::default();
+        delivery_book.bind_authoritative_identity("agent-a", "agent-a-id");
+
+        assert_eq!(
+            deregister_fleet_agent(&tx, &delivery_book, &WorkerName::from("agent-a")).await,
+            Err("fleet_control_unavailable".to_string())
+        );
+        assert_eq!(delivery_book.active_agent_id("agent-a"), Some("agent-a-id"));
+    }
+
     #[test]
     fn relaycast_spawn_session_ref_is_none_without_harness_session() {
         // A spawn with no harnessConfig session id yields None — the spawn is a
