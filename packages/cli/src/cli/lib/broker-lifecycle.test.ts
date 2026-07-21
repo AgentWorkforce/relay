@@ -182,6 +182,9 @@ describe('waitForNodeDelivery', () => {
 // fs) with everything broker-shaped mocked out through CoreDependencies.
 
 vi.mock('../telemetry/index.js', () => ({ track: vi.fn() }));
+vi.mock('./reflex-capture.js', () => ({
+  startReflexCapture: vi.fn(() => ({ stop: vi.fn(async () => undefined) })),
+}));
 vi.mock('@agent-relay/fleet', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@agent-relay/fleet')>();
   return {

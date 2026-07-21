@@ -293,6 +293,8 @@ pub(super) async fn spawn_worker_from_request(
     node_name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
+    hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
+    pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
 ) {
     let workspace_http = &workspace_state.http_client;
     eprintln!(
@@ -578,6 +580,14 @@ pub(super) async fn spawn_worker_from_request(
                 }),
             )
             .await;
+            if effective_spec.runtime == AgentRuntime::Pty {
+                publish_pty_starting(
+                    pty_observability,
+                    hosted_agent_event_tx,
+                    &name,
+                    Some(workspace_id.clone()),
+                );
+            }
             publish_agent_state_transition(
                 &workspace_state.ws_control_tx,
                 &name,

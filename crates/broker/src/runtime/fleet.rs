@@ -439,6 +439,8 @@ impl BrokerRuntime {
             &self.fleet_node_name,
             Some(invoke.invocation_id.clone()),
             session_ref,
+            &self.hosted_agent_event_tx,
+            &mut self.pty_observability,
         )
         .await;
 
@@ -494,6 +496,7 @@ impl BrokerRuntime {
         // Drop any resize ownership for the released worker so a later worker
         // reusing the name isn't rejected by a stale single-resizer entry.
         self.resize_owners.remove(&name);
+        self.pty_observability.remove(&name);
 
         prune_fleet_agent_state(
             &self.fleet_control_tx,

@@ -52,7 +52,18 @@ export interface HeadlessAppServerHarnessConfig {
   metadata?: Record<string, unknown>;
 }
 
-export type ResolvedHarnessConfig = PtyHarnessConfig | HeadlessAppServerHarnessConfig;
+/** Broker-owned native harness sidecar launched directly with JSON-over-stdio. */
+export interface NativeHarnessConfig {
+  runtime: 'native';
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  sessionId: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type ResolvedHarnessConfig = PtyHarnessConfig | HeadlessAppServerHarnessConfig | NativeHarnessConfig;
 
 export interface StaticPtyHarnessDefinition {
   runtime: 'pty';
@@ -78,7 +89,14 @@ export interface StaticHeadlessAppServerHarnessDefinition {
   metadata?: Record<string, unknown>;
 }
 
-export type StaticHarnessDefinition = StaticPtyHarnessDefinition | StaticHeadlessAppServerHarnessDefinition;
+export interface StaticNativeHarnessDefinition extends Omit<NativeHarnessConfig, 'args'> {
+  args?: string[];
+}
+
+export type StaticHarnessDefinition =
+  | StaticPtyHarnessDefinition
+  | StaticHeadlessAppServerHarnessDefinition
+  | StaticNativeHarnessDefinition;
 export type HarnessDefinition = StaticHarnessDefinition;
 
 export interface ResolveStaticHarnessInput {
@@ -97,6 +115,22 @@ const DEFAULT_MODEL_ARGS = ['--model', '{model}'] as const;
 
 export function resolveStaticHarnessConfig(input: ResolveStaticHarnessInput): ResolvedHarnessConfig {
   const { definition } = input;
+  if (definition.runtime === 'native') {
+    return {
+      runtime: 'native',
+      command: expandHome(definition.command),
+      args: renderTemplate(definition.args ?? [], {
+        args: input.args ?? [],
+        task: input.task,
+        model: input.model,
+        modelArgs: [],
+      }),
+      sessionId: definition.sessionId,
+      ...((input.cwd ?? definition.cwd) ? { cwd: input.cwd ?? definition.cwd } : {}),
+      ...(definition.env || input.env ? { env: { ...definition.env, ...input.env } } : {}),
+      ...(definition.metadata ? { metadata: { ...definition.metadata } } : {}),
+    };
+  }
   if (definition.runtime === 'headless') {
     return {
       runtime: 'headless',

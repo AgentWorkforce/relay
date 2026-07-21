@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/harness-driver",
   "version": "10.6.7",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Managed harness driver for Agent Relay — attach, wrap, spawn, inject, and observe agent runtimes",
   "type": "module",
   "main": "dist/index.js",

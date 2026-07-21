@@ -58,6 +58,10 @@ pub enum ListenApiRequest {
         harness_config: Option<ResolvedHarnessConfig>,
         agent_token: Option<String>,
         agent_result_schema: Option<Value>,
+        /// Shared agent-event replay store. The runtime resets the previous
+        /// generation immediately before launching this worker, rather than
+        /// racing startup events with the later `agent_spawned` broadcast.
+        replay_buffer: ReplayBuffer,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
@@ -466,6 +470,14 @@ fn listen_api_router_with_auth(
             routing::get(listen_api_snapshot),
         )
         .route(
+            "/api/spawned/{name}/agent-events/history",
+            routing::get(listen_api_agent_event_history),
+        )
+        .route(
+            "/api/spawned/{name}/native-harness/command",
+            routing::post(listen_api_native_harness_command),
+        )
+        .route(
             "/api/spawned/{name}/delivery-mode",
             routing::get(listen_api_get_inbound_delivery_mode)
                 .put(listen_api_set_inbound_delivery_mode),
@@ -681,6 +693,206 @@ async fn listen_api_replay(
             .unwrap_or(0),
         "currentSeq": current_seq,
     }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AgentEventHistoryQuery {
+    #[serde(rename = "sinceSequence")]
+    since_sequence_camel: Option<u64>,
+    #[serde(rename = "since_sequence")]
+    since_sequence_snake: Option<u64>,
+}
+
+impl AgentEventHistoryQuery {
+    fn since_sequence(&self) -> u64 {
+        self.since_sequence_camel
+            .or(self.since_sequence_snake)
+            .unwrap_or(0)
+    }
+}
+
+async fn listen_api_agent_event_history(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<AgentEventHistoryQuery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::List { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    let agents = match reply_rx.await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            return api_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                error,
+            )
+        }
+        Err(_) => return internal_error(),
+    };
+    let agent = agents
+        .get("agents")
+        .and_then(Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("name").and_then(Value::as_str) == Some(name.as_str()))
+        });
+    let Some(agent) = agent else {
+        return api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "agent_not_found",
+            format!("no worker named '{name}'"),
+        );
+    };
+    if agent.get("runtime_kind").and_then(Value::as_str) != Some("native") {
+        return api_error(
+            axum::http::StatusCode::CONFLICT,
+            "unsupported_runtime",
+            format!("worker '{name}' does not expose agent-event history"),
+        );
+    }
+    let snapshot = state
+        .replay_buffer
+        .replay_agent_events_since(&name, query.since_sequence())
+        .await;
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(json!({
+            "protocol_version": 1,
+            "name": name,
+            "events": snapshot.events,
+            "high_water_sequence": snapshot.high_water_sequence,
+            "oldest_available_sequence": snapshot.oldest_available_sequence,
+            "gap": snapshot.gap,
+        })),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeHarnessCommandBody {
+    protocol_version: u64,
+    kind: String,
+    idempotency_key: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    approval_id: Option<String>,
+    #[serde(default)]
+    instructions: Option<String>,
+}
+
+async fn listen_api_native_harness_command(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<NativeHarnessCommandBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    if body.protocol_version != 1 {
+        return api_error(
+            axum::http::StatusCode::CONFLICT,
+            "unsupported_protocol_version",
+            format!(
+                "native harness protocol version {} is unsupported (expected 1)",
+                body.protocol_version
+            ),
+        );
+    }
+    if body.idempotency_key.trim().is_empty() {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_idempotency_key",
+            "native harness command idempotency_key must not be empty",
+        );
+    }
+    let valid_kind = matches!(
+        body.kind.as_str(),
+        "submit_user_message"
+            | "interrupt"
+            | "approve_tool"
+            | "reject_tool"
+            | "compact"
+            | "release"
+    );
+    if !valid_kind {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_command",
+            format!("unsupported native harness command '{}'", body.kind),
+        );
+    }
+    if body.kind == "submit_user_message"
+        && body
+            .text
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+    {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_input",
+            "submit_user_message requires non-empty text",
+        );
+    }
+    if matches!(body.kind.as_str(), "approve_tool" | "reject_tool")
+        && body
+            .approval_id
+            .as_deref()
+            .is_none_or(|approval_id| approval_id.trim().is_empty())
+    {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_approval",
+            "approve_tool and reject_tool require a non-empty approval_id",
+        );
+    }
+    if body
+        .mode
+        .as_deref()
+        .is_some_and(|mode| !matches!(mode, "auto" | "active" | "idle"))
+    {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_input_mode",
+            "native harness input mode must be auto, active, or idle",
+        );
+    }
+
+    let payload = json!({
+        "protocol_version": body.protocol_version,
+        "kind": body.kind,
+        "idempotency_key": body.idempotency_key,
+        "text": body.text,
+        "mode": body.mode,
+        "approval_id": body.approval_id,
+        "instructions": body.instructions,
+    });
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::WorkerRequest {
+            name: WorkerName::new(name),
+            kind: "native_harness_command".to_string(),
+            payload,
+            timeout: DEFAULT_REQUEST_TIMEOUT,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => worker_request_error_to_response(&error),
+        Err(_) => internal_error(),
+    }
 }
 
 fn unauthorized_error_envelope() -> Value {
@@ -913,6 +1125,7 @@ async fn listen_api_spawn(
             harness_config,
             agent_token,
             agent_result_schema,
+            replay_buffer: state.replay_buffer.clone(),
             reply: reply_tx,
         })
         .await
@@ -3666,6 +3879,7 @@ mod auth_tests {
                     harness_config,
                     agent_token: _,
                     agent_result_schema,
+                    replay_buffer: _,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
@@ -5458,6 +5672,8 @@ mod auth_tests {
             ("PUT", "/api/spawned/worker-a/delivery-mode"),
             ("GET", "/api/spawned/worker-a/pending"),
             ("POST", "/api/spawned/worker-a/flush"),
+            ("GET", "/api/spawned/worker-a/agent-events/history"),
+            ("POST", "/api/spawned/worker-a/native-harness/command"),
         ] {
             let response = router
                 .clone()
@@ -5477,5 +5693,88 @@ mod auth_tests {
                 "{method} {path} should require auth"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn native_harness_command_route_forwards_versioned_idempotent_input() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::WorkerRequest {
+                    name,
+                    kind,
+                    payload,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(kind, "native_harness_command");
+                    assert_eq!(payload["protocol_version"], json!(1));
+                    assert_eq!(payload["kind"], json!("submit_user_message"));
+                    assert_eq!(payload["idempotency_key"], json!("input-1"));
+                    assert_eq!(payload["text"], json!("continue"));
+                    let _ = reply.send(Ok(json!({
+                        "protocol_version": 1,
+                        "request_id": "req-1",
+                        "idempotency_key": "input-1",
+                        "accepted": true
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/native-harness/command")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "protocol_version": 1,
+                            "kind": "submit_user_message",
+                            "idempotency_key": "input-1",
+                            "text": "continue",
+                            "mode": "auto"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["accepted"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn native_harness_approval_command_requires_an_approval_id() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/native-harness/command")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "protocol_version": 1,
+                            "kind": "approve_tool",
+                            "idempotency_key": "approval-1"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_json(response).await["code"],
+            json!("invalid_native_harness_approval")
+        );
     }
 }

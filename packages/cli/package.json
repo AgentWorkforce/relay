@@ -47,6 +47,7 @@
     "@agent-relay/config": "10.6.7",
     "@agent-relay/fleet": "10.6.7",
     "@agent-relay/harness-driver": "10.6.7",
+    "@agent-relay/harnesses": "10.6.7",
     "@agent-relay/sdk": "10.6.7",
     "@agent-relay/utils": "10.6.7",
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -67,7 +68,7 @@
     "esbuild": "^0.27.2"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=22.0.0"
   },
   "keywords": [
     "agent",

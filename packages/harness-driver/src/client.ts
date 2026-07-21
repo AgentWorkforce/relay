@@ -33,6 +33,10 @@ import type {
   PtySnapshot,
   InboundDeliveryMode,
   SnapshotFormat,
+  NativeHarnessCommand,
+  NativeHarnessCommandAck,
+  AgentEventEnvelope,
+  AgentEventHistoryResponse,
 } from './protocol.js';
 import type {
   SpawnAgentResult,
@@ -170,6 +174,13 @@ export interface WorkerStreamSubscriptionOptions {
    * zero, or negative values are ignored and fall back to the default rather
    * than silently disabling the bound. Default: 10000.
    */
+  maxQueueSize?: number;
+}
+
+export interface AgentEventSubscriptionOptions {
+  sinceSequence?: number;
+  /** Broker event cursor used to make subscribe-before-history gap-free. */
+  sinceBrokerSeq?: number;
   maxQueueSize?: number;
 }
 
@@ -796,6 +807,96 @@ export class HarnessDriverClient {
     return this.transport.request<PtySnapshot>(
       `/api/spawned/${encodeURIComponent(name)}/snapshot?format=${encodeURIComponent(format)}`
     );
+  }
+
+  async getAgentEventHistory(name: string, sinceSequence = 0): Promise<AgentEventHistoryResponse> {
+    return this.transport.request<AgentEventHistoryResponse>(
+      `/api/spawned/${encodeURIComponent(name)}/agent-events/history?sinceSequence=${encodeURIComponent(String(sinceSequence))}`
+    );
+  }
+
+  async sendNativeHarnessCommand(
+    name: string,
+    command: Omit<NativeHarnessCommand, 'protocol_version'>
+  ): Promise<NativeHarnessCommandAck> {
+    return this.transport.request<NativeHarnessCommandAck>(
+      `/api/spawned/${encodeURIComponent(name)}/native-harness/command`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ protocol_version: 1, ...command }),
+      }
+    );
+  }
+
+  subscribeAgentEvents(
+    name: string,
+    options: AgentEventSubscriptionOptions = {}
+  ): AsyncIterable<AgentEventEnvelope> {
+    this.connectEvents(options.sinceBrokerSeq);
+    const maxQueueSize = normalizeMaxQueueSize(options.maxQueueSize);
+    let highWater = options.sinceSequence ?? 0;
+    return {
+      [Symbol.asyncIterator]: () => {
+        const queue: AgentEventEnvelope[] = [];
+        let pending:
+          | {
+              resolve: (result: IteratorResult<AgentEventEnvelope>) => void;
+              reject: (error: unknown) => void;
+            }
+          | undefined;
+        let done = false;
+        let failure: Error | undefined;
+        const unsubscribe = this.onEvent((event) => {
+          if (event.kind !== 'agent_event' || event.name !== name || event.sequence <= highWater) return;
+          highWater = event.sequence;
+          if (pending) {
+            const { resolve } = pending;
+            pending = undefined;
+            resolve({ done: false, value: event });
+            return;
+          }
+          if (queue.length >= maxQueueSize) {
+            failure = new Error(
+              `agent event subscription for ${JSON.stringify(name)} exceeded ${maxQueueSize} buffered events; reconnect with the last processed sequence`
+            );
+            queue.length = 0;
+            done = true;
+            unsubscribe();
+            return;
+          }
+          queue.push(event);
+        });
+        const close = (): IteratorResult<AgentEventEnvelope> => {
+          done = true;
+          unsubscribe();
+          pending?.resolve({ done: true, value: undefined as never });
+          pending = undefined;
+          return { done: true, value: undefined as never };
+        };
+        return {
+          next: () => {
+            const value = queue.shift();
+            if (value) return Promise.resolve({ done: false, value });
+            if (failure) return Promise.reject(failure);
+            if (done) return Promise.resolve({ done: true, value: undefined as never });
+            return new Promise<IteratorResult<AgentEventEnvelope>>((resolve, reject) => {
+              pending = { resolve, reject };
+            });
+          },
+          return: () => Promise.resolve(close()),
+          throw: (error?: unknown) => {
+            done = true;
+            unsubscribe();
+            pending?.reject(error);
+            pending = undefined;
+            return Promise.reject(error);
+          },
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+        };
+      },
+    };
   }
 
   /**

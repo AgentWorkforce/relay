@@ -4,6 +4,8 @@ A thin operator console for a local agent workforce: stand up the broker, staff 
 
 ## Install
 
+Requires Node.js 22 or newer.
+
 ```bash
 npm install -g agent-relay
 ```
@@ -34,10 +36,16 @@ agent-relay node workflow logs <run-id> --follow
 agent-relay node workflow sync <run-id>
 
 agent-relay node agent new claude            # spawn + attach
+agent-relay node agent new codex --runtime native
+agent-relay node agent spawn opencode --runtime pty
 agent-relay node agent list
 agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
+
+`node agent spawn` and `node agent new` accept `--runtime auto|native|pty`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`.
+
+For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
 To run as a Cloud-managed node, first redeem a one-time enrollment token, then start the node:
 

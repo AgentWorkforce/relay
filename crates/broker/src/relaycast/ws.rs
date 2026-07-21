@@ -5,8 +5,9 @@ use relaycast::{
     agent::DmOptions, format_registration_error,
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    CompleteInvocationRequest, CreateObserverTokenRequest, MessageListQuery, ObserverToken,
-    RegisterActionRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
+    CompleteInvocationRequest, CreateObserverTokenRequest, EmitSessionEventRequest,
+    MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast, RelayCastOptions,
+    RelayError, ReleaseAgentRequest,
 };
 use serde_json::Value;
 
@@ -93,6 +94,29 @@ impl RelaycastHttpClient {
 
     pub(crate) fn relay_client(&self) -> Option<&RelayCast> {
         self.relay.as_ref().as_ref()
+    }
+
+    /// Record a canonical harness event in Relaycast's durable per-agent log.
+    pub async fn emit_agent_event(
+        &self,
+        agent_name: &str,
+        event_type: impl Into<String>,
+        payload: serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("Relaycast client is unavailable")?;
+        relay
+            .emit_agent_event(
+                agent_name,
+                EmitSessionEventRequest {
+                    event_type: event_type.into(),
+                    payload: Some(payload),
+                },
+            )
+            .await
+            .context("failed to publish agent session event")?;
+        Ok(())
     }
 
     pub fn forget_agent_registration(&self, agent_name: &str) {
@@ -829,6 +853,43 @@ mod tests {
         let message = format_worker_preregistration_error("worker-a", &error);
         assert!(message.contains("worker-a"));
         assert!(message.contains("pre-register"));
+    }
+
+    #[tokio::test]
+    async fn emit_agent_event_records_canonical_payload() {
+        let server = MockServer::start();
+        let publish = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/Worker/events")
+                .header("authorization", "Bearer rk_live_test")
+                .json_body(json!({
+                    "type": "activity.changed",
+                    "payload": { "activity": "thinking", "sequence": 7 }
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "evt_1",
+                    "agent_id": "agent_1",
+                    "type": "activity.changed",
+                    "payload": { "activity": "thinking", "sequence": 7 },
+                    "sequence": 7,
+                    "created_at": "2026-07-16T00:00:00Z"
+                }
+            }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        client
+            .emit_agent_event(
+                "Worker",
+                "activity.changed",
+                serde_json::from_value(json!({ "activity": "thinking", "sequence": 7 }))
+                    .expect("object payload"),
+            )
+            .await
+            .expect("event should publish");
+        publish.assert_hits(1);
     }
 
     #[tokio::test]

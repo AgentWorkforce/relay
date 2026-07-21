@@ -1,5 +1,12 @@
 export const PROTOCOL_VERSION = 2 as const;
+/** Version of the broker <-> native harness sidecar protocol. */
+export const NATIVE_HARNESS_PROTOCOL_VERSION = 1 as const;
 
+/**
+ * Broker process wrapper, not the public harness execution mode. Native
+ * harnesses and attached app servers both use the `headless` process wrapper;
+ * inspect `harness_config.runtime` for `pty | native | headless` execution.
+ */
 export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
 export type InboundDeliveryMode = 'auto_inject' | 'manual_flush';
@@ -93,6 +100,77 @@ export interface ProtocolEnvelope<TPayload> {
 }
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export type NativeHarnessInputMode = 'auto' | 'active' | 'idle';
+export type NativeHarnessCommandKind =
+  | 'submit_user_message'
+  | 'interrupt'
+  | 'approve_tool'
+  | 'reject_tool'
+  | 'compact'
+  | 'release';
+
+/**
+ * Portable normalized agent-event payload. The SDK owns the canonical event discriminants;
+ * the driver intentionally preserves adapter additions as JSON instead of
+ * coupling protocol compatibility to one SDK package release.
+ */
+export interface AgentEventPayload {
+  kind: string;
+  [key: string]: JsonValue;
+}
+
+export interface NativeHarnessDiagnosticPayload {
+  level: 'debug' | 'info' | 'warning' | 'error';
+  message: string;
+  [key: string]: JsonValue;
+}
+
+export interface AgentEventEnvelope {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
+  name: string;
+  sequence: number;
+  timestamp: string;
+  event: AgentEventPayload;
+}
+
+export interface NativeHarnessDiagnosticEnvelope {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
+  name: string;
+  sequence: number;
+  timestamp: string;
+  diagnostic: NativeHarnessDiagnosticPayload;
+}
+
+export interface NativeHarnessCommand {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
+  kind: NativeHarnessCommandKind;
+  idempotency_key: string;
+  text?: string;
+  mode?: NativeHarnessInputMode;
+  approval_id?: string;
+  /** Optional adapter-specific compaction guidance. Valid only for `compact`. */
+  instructions?: string;
+}
+
+export interface NativeHarnessCommandAck {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
+  request_id: string;
+  idempotency_key: string;
+  accepted: boolean;
+  duplicate?: boolean;
+  active_turn?: boolean;
+  error?: ProtocolError;
+}
+
+export interface AgentEventHistoryResponse {
+  protocol_version: typeof NATIVE_HARNESS_PROTOCOL_VERSION;
+  name: string;
+  events: AgentEventEnvelope[];
+  high_water_sequence: number;
+  oldest_available_sequence: number | null;
+  gap: boolean;
+}
 
 export interface NodeCapabilityManifest {
   name: string;
@@ -316,6 +394,8 @@ export type BrokerEvent =
        */
       offset?: number;
     }
+  | ({ kind: 'agent_event' } & AgentEventEnvelope)
+  | ({ kind: 'native_harness_diagnostic' } & NativeHarnessDiagnosticEnvelope)
   | {
       kind: 'delivery_retry';
       name: string;
@@ -551,6 +631,11 @@ export type BrokerToWorker =
        */
       type: 'flush_injections';
       payload: Record<string, never>;
+    }
+  | {
+      type: 'native_harness_command';
+      request_id?: string;
+      payload: NativeHarnessCommand;
     };
 
 export type WorkerToBroker =
@@ -585,4 +670,17 @@ export type WorkerToBroker =
   | {
       type: 'pong';
       payload: { ts_ms: number };
+    }
+  | {
+      type: 'agent_event';
+      payload: Omit<AgentEventEnvelope, 'name'>;
+    }
+  | {
+      type: 'native_harness_diagnostic';
+      payload: Omit<NativeHarnessDiagnosticEnvelope, 'name'>;
+    }
+  | {
+      type: 'native_harness_command_response';
+      request_id?: string;
+      payload: NativeHarnessCommandAck;
     };

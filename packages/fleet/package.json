@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/fleet",
   "version": "10.6.7",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Fleet node SDK for Agent Relay.",
   "type": "module",
   "main": "dist/index.js",

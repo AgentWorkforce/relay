@@ -10,12 +10,16 @@ const sdkMocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('@agent-relay/sdk', () => ({
-  AgentRelay: vi.fn(function (this: unknown, options: unknown) {
-    sdkMocks.AgentRelay(options);
-    return { triggers: sdkMocks.triggers };
-  }),
-}));
+vi.mock('@agent-relay/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/sdk')>();
+  return {
+    ...actual,
+    AgentRelay: vi.fn(function (this: unknown, options: unknown) {
+      sdkMocks.AgentRelay(options);
+      return { triggers: sdkMocks.triggers };
+    }),
+  };
+});
 
 import { defineNode, spawn } from '@agent-relay/fleet';
 

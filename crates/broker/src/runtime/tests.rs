@@ -14,7 +14,8 @@ use crate::ids::{
 use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
-    HeadlessHarnessDriver, MessageInjectionMode, RelayDelivery, ResolvedHarnessConfig,
+    HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, RelayDelivery,
+    ResolvedHarnessConfig,
 };
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
@@ -3284,6 +3285,43 @@ fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_config() {
     assert!(matches!(
         spec.harness_config,
         Some(ResolvedHarnessConfig::Headless(_))
+    ));
+}
+
+#[test]
+fn http_api_spawn_spec_uses_native_harness_command_without_provider_allowlist() {
+    let harness_config = ResolvedHarnessConfig::Native(NativeHarnessConfig {
+        command: "/usr/bin/node".to_string(),
+        args: vec!["sidecar.js".to_string()],
+        cwd: Some("/tmp/workspace".to_string()),
+        env: None,
+        session_id: "native_123".to_string(),
+        metadata: None,
+    });
+
+    let spec = build_http_api_spawn_spec(
+        WorkerName::from("worker-a"),
+        "codex".to_string(),
+        Some("headless".to_string()),
+        None,
+        vec![],
+        vec![ChannelName::from("general")],
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(harness_config),
+    )
+    .expect("native harness config should supply its own command");
+
+    assert!(matches!(spec.runtime, AgentRuntime::Headless));
+    assert!(spec.provider.is_none());
+    assert_eq!(spec.cli.as_deref(), Some("codex"));
+    assert_eq!(spec.session_id.as_deref(), Some("native_123"));
+    assert!(matches!(
+        spec.harness_config,
+        Some(ResolvedHarnessConfig::Native(_))
     ));
 }
 

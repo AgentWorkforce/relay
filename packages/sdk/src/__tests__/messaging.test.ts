@@ -41,6 +41,10 @@ function createWorkspace() {
       })),
       delete: vi.fn(async () => undefined),
       presence: vi.fn(async () => [{ agent_id: 'agent-1', agent_name: 'WorkerA', status: 'online' }]),
+      events: {
+        emit: vi.fn(async (_name: string, data: unknown) => data),
+        list: vi.fn(async () => []),
+      },
     },
     channels: {
       list: vi.fn(async () => [
@@ -270,6 +274,34 @@ function createAgentClient() {
 }
 
 describe('RelaycastMessagingClient', () => {
+  it('publishes canonical session events to local listeners and Relaycast storage', async () => {
+    const workspace = createWorkspace();
+    const messaging = new RelaycastMessagingClient({ relaycast: workspace });
+    const relay = new AgentRelay({ messaging, actions: new ActionRegistry() });
+    const listener = vi.fn();
+    relay.addListener('agent.activity.changed', listener);
+    const event = {
+      type: 'activity.changed' as const,
+      activity: 'thinking' as const,
+      previousActivity: 'starting' as const,
+      reason: 'turn_started',
+      observability: {
+        source: 'ai-sdk' as const,
+        fidelity: 'exact' as const,
+        sequence: 2,
+        timestamp: '2026-07-16T00:00:00.000Z',
+      },
+    };
+
+    await relay.publishSessionEvent('Worker', event);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(workspace.agents.events.emit).toHaveBeenCalledWith('Worker', {
+      type: 'activity.changed',
+      payload: expect.objectContaining({ activity: 'thinking', reason: 'turn_started' }),
+    });
+  });
+
   it('exposes a public AgentRelay facade over messaging and actions', async () => {
     const workspace = createWorkspace();
     const { client: agentClient } = createAgentClient();

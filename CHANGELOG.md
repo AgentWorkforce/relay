@@ -5,15 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
 
-## [10.6.7] - 2026-07-21
+### Added
 
-### Fixed
-
-- `@agent-relay/cloud` now exposes project-aware workspace resolution, and SDK-backed CLI consumers prefer the workspace recorded by the broker in the current checkout over an unrelated machine-global active workspace.
-
-## [Unreleased - Patch]
+- Relay harnesses and `agent-relay node agent spawn|new --runtime native` can run Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents through official AI SDK harness adapters, while `--runtime pty` remains available for terminal sessions and unsupported harnesses.
+- Relaycast exposes canonical agent activity and agent events with capability, source, and fidelity metadata across native and PTY runtimes.
 
 ### Changed
 
@@ -21,7 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native Codex sessions now use an AI SDK adapter that avoids the macOS XProtect false positive affecting its previous bundled Codex executable and defaults to a model accepted by ChatGPT-account authentication.
+- Native `node agent attach --mode drive` now disconnects idle event streams before cleanup, so `/detach` and Ctrl-C return immediately.
+- Native harness sidecars now start with authenticated Relay messaging and discovery tools plus collaboration instructions, so agents can coordinate without user setup or global MCP configuration.
+- Native harnesses now preserve sender and routing context on inbound Relay messages, so Claude and Codex reply through Relay instead of only printing responses in attached terminals.
 - `agent-relay-broker` now orders fleet `agent.deregister` before acknowledging a local worker release, so a restarted node can immediately recover the same agent name without an active-location collision, and fails fast instead of stalling the runtime API when fleet-control delivery is backpressured.
+- Native AI SDK harnesses now permit official adapter bootstrap files under their fixed cache root and invoke pnpm independently of Relay's npm workspace, preventing successful-looking spawns from immediately disappearing.
+- Native `node agent attach --mode drive` sessions now show an interactive prompt, preserve structured adapter error messages, and close their broker connection when detached.
+
+### Breaking Changes
+
+- Agent Relay now requires Node.js 22 or newer.
+
+### Migration Guidance
+
+- Upgrade Node.js to version 22 or newer before installing this Agent Relay release.
+
+## [10.6.7] - 2026-07-21
+
+### Fixed
+
+- `@agent-relay/cloud` now exposes project-aware workspace resolution, and SDK-backed CLI consumers prefer the workspace recorded by the broker in the current checkout over an unrelated machine-global active workspace.
 
 ## [10.6.6] - 2026-07-19
 

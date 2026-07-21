@@ -118,6 +118,7 @@ export interface AgentRelayAgent {
   action(name: string): ActionPredicate;
   agent(input: AgentHandleInput): RelayAgentHandle;
   emitSessionEvent(agentId: string, event: AgentSessionEvent): void;
+  publishSessionEvent(agentId: string, event: AgentSessionEvent): Promise<void>;
 }
 
 export class AgentRelay implements AgentRelayAgent {
@@ -401,6 +402,19 @@ export class AgentRelay implements AgentRelayAgent {
     this.listenerHub.emitSessionEvent(agentId, event);
   }
 
+  async publishSessionEvent(agentId: string, event: AgentSessionEvent): Promise<void> {
+    this.listenerHub.emitSessionEvent(agentId, event);
+    try {
+      await this.messaging.sessionEvents?.emit(agentId, event);
+    } catch (error) {
+      this.reportError(error, {
+        source: 'listener',
+        selector: event.type,
+        operation: 'publish_session_event',
+      });
+    }
+  }
+
   private messagingForToken(token: string): RelayMessaging {
     let client = this.clientsByToken.get(token);
     if (!client) {
@@ -480,6 +494,10 @@ export function agentRelayAgent(
     action: (name) => hub.action(name),
     agent: (input) => hub.agent(input),
     emitSessionEvent: (agentId, event) => hub.emitSessionEvent(agentId, event),
+    publishSessionEvent: async (agentId, event) => {
+      hub.emitSessionEvent(agentId, event);
+      await messaging.sessionEvents?.emit(agentId, event);
+    },
   };
 }
 

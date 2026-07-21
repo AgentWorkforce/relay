@@ -50,6 +50,7 @@ import {
   normalizeSearchResult,
   normalizeThread,
 } from './normalize.js';
+import type { AgentSessionEvent } from '../session/index.js';
 import type {
   RelayActionInvocation,
   RelayActionInvocationAck,
@@ -181,6 +182,23 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     presence: async (): Promise<RelayAgentPresence[]> => {
       const presence = await this.relaycast.agents.presence();
       return presence.map(normalizeAgentPresence);
+    },
+  };
+
+  readonly sessionEvents = {
+    emit: async (agentName: string, event: AgentSessionEvent): Promise<unknown> => {
+      const events = this.relaycast.agents.events;
+      if (!events) throw new Error('Relaycast agent session events API is unavailable.');
+      const { type, ...payload } = event;
+      return events.emit(agentName, { type, payload });
+    },
+    list: async (
+      agentName: string,
+      options?: { type?: AgentSessionEvent['type']; limit?: number }
+    ): Promise<unknown[]> => {
+      const events = this.relaycast.agents.events;
+      if (!events) throw new Error('Relaycast agent session events API is unavailable.');
+      return events.list(agentName, options);
     },
   };
 

@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/policy",
   "version": "10.6.7",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Agent policy management with multi-level fallback (repo, local PRPM, cloud workspace)",
   "type": "module",
   "main": "dist/index.js",

@@ -86,6 +86,7 @@ mod system;
 mod tests;
 mod util;
 mod worker_events;
+use worker_events::{publish_pty_error, publish_pty_starting};
 
 #[cfg(test)]
 pub(crate) use api::{

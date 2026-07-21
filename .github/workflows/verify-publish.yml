@@ -267,7 +267,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
 
       - name: Get package spec
         id: pkg
@@ -371,7 +371,7 @@ jobs:
       - name: Setup Node.js (for npm view)
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
 
       - name: Wait for package metadata
         if: inputs.version != 'latest'
@@ -410,7 +410,6 @@ jobs:
           echo "### Native Tests" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 20 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node 22 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### macOS Tests (broker binary)" >> $GITHUB_STEP_SUMMARY
@@ -421,7 +420,6 @@ jobs:
           echo "### Docker Tests (Linux)" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 20 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node 22 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Overall" >> $GITHUB_STEP_SUMMARY

@@ -1,4 +1,5 @@
 import type * as wire from '@relaycast/types';
+import type { AgentSessionEvent } from '../session/index.js';
 
 // The `Relay*` types below are derived from the canonical wire contract in
 // `@relaycast/types` (snake_case zod schemas shared with the Relaycast
@@ -848,6 +849,14 @@ export interface RelayMessagingClient {
     update(name: string, input: RelayUpdateAgentInput): Promise<RelayAgent>;
     delete(name: string): Promise<void>;
     presence(): Promise<RelayAgentPresence[]>;
+  };
+  /** Durable canonical harness events stored on the Relaycast agent record. */
+  readonly sessionEvents?: {
+    emit(agentName: string, event: AgentSessionEvent): Promise<unknown>;
+    list(
+      agentName: string,
+      options?: { type?: AgentSessionEvent['type']; limit?: number }
+    ): Promise<unknown[]>;
   };
   readonly channels: {
     list(options?: RelayListChannelsOptions): Promise<RelayChannel[]>;

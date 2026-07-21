@@ -32,6 +32,10 @@ export type RelaycastWorkspaceLike = {
     update(name: string, input: unknown): Promise<unknown>;
     delete(name: string): Promise<void>;
     presence(): Promise<unknown[]>;
+    events?: {
+      emit(name: string, data: { type: string; payload?: Record<string, unknown> }): Promise<unknown>;
+      list(name: string, query?: { type?: string; limit?: number }): Promise<unknown[]>;
+    };
   };
   channels: {
     list(options?: Record<string, unknown>): Promise<unknown[]>;
