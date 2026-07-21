@@ -1,0 +1,76 @@
+{
+  "id": "traj_t8kdxk32okbu",
+  "version": 1,
+  "task": {
+    "title": "Unify project-aware Relay workspace key resolution for Factory and CLI"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-20T19:26:57.644Z",
+  "completedAt": "2026-07-20T19:36:59.651Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-20T19:31:36.220Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_kct4jagc9eik",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-20T19:31:36.220Z",
+      "endedAt": "2026-07-20T19:36:59.651Z",
+      "events": [
+        {
+          "ts": 1784575896221,
+          "type": "decision",
+          "content": "Made project-aware workspace resolution a public @agent-relay/cloud contract: Made project-aware workspace resolution a public @agent-relay/cloud contract",
+          "raw": {
+            "question": "Made project-aware workspace resolution a public @agent-relay/cloud contract",
+            "chosen": "Made project-aware workspace resolution a public @agent-relay/cloud contract",
+            "alternatives": [],
+            "reasoning": "Factory and other SDK consumers must use the same explicit/env/project/global precedence as the CLI; centralizing the existing project workspace-key store prevents cross-workspace agent_not_found failures."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784576219351,
+          "type": "reflection",
+          "content": "Centralized workspace resolution in @agent-relay/cloud with explicit flag and environment precedence, then the project broker key before the global active store. A dedicated workspace-key package subpath avoids cloud barrel side effects and works in source tests and packed output.",
+          "raw": {
+            "focalPoints": [
+              "public SDK boundary",
+              "project/global precedence",
+              "package subpath",
+              "test isolation"
+            ],
+            "adjustments": "Added a source-level workspace-key entrypoint after Vitest aliases exposed that the package subpath name must map to a real source module.",
+            "confidence": 0.98
+          },
+          "significance": "high",
+          "tags": [
+            "focal:public SDK boundary",
+            "focal:project/global precedence",
+            "focal:package subpath",
+            "focal:test isolation",
+            "confidence:0.98"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added and verified a public project-aware workspace-key resolver, migrated the CLI to it, retained compatibility re-exports, documented the patch, and validated 1300 tests plus typecheck, formatting, core build, and package contents.",
+    "approach": "Moved the existing secure project-key persistence into the cloud package, encoded resolution precedence in one public API, exposed a side-effect-minimal subpath, and regression-tested every source and malformed-state fallback.",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "09d2e359c17d741ba66f8403cdd7bb06c3a63d2e",
+    "endRef": "09d2e359c17d741ba66f8403cdd7bb06c3a63d2e"
+  }
+}
