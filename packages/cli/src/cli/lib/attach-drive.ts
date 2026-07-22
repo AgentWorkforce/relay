@@ -789,7 +789,16 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     };
 
     // ---- stdin handling ----
+    let stdinReady = false;
     const stdinDataHandler = (chunk: Buffer): void => {
+      // Raw mode starts before snapshot replay so terminal input reports cannot
+      // echo. Until the predictive echo model is seeded, discard all input
+      // except Ctrl+C: forwarding stale mouse/focus reports (or echoing user
+      // input against an unseeded screen) would be worse than dropping it.
+      if (!stdinReady) {
+        if (chunk.includes(0x03)) finish(0);
+        return;
+      }
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
         const stream = inputStream;
@@ -988,6 +997,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           closeInputStream();
           return;
         }
+        // Register the temporary input handler before raw mode. Ctrl+C is an
+        // ordinary byte in raw mode, so this keeps detach available while a
+        // snapshot fetch or initial resize is still pending.
+        deps.stdin.resume();
+        deps.stdin.on('data', stdinDataHandler);
         if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false && !deps.stdin.isRaw) {
           deps.stdin.setRawMode(true);
           rawModeWasSet = true;
@@ -1003,8 +1017,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     const takeStdin = (): void => {
       try {
         if (settled) return;
-        deps.stdin.resume();
-        deps.stdin.on('data', stdinDataHandler);
+        stdinReady = true;
         // Subscribe to local-terminal resize events at the same point
         // we take over stdin so the lifecycles match — both go away in
         // `teardownStdin` on any exit path.
@@ -1069,7 +1082,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           );
           break;
       }
-      if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
+      if (predictiveEcho) {
+        try {
+          await predictiveEcho.seed(snapshotBytes);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          deps.log(`[drive] could not seed predictive echo: ${message}`);
+          finish(1);
+          return;
+        }
+        if (settled) return;
+      }
       terminalRows = pickInitialTerminalRows(state.initialLocalSize, snapshot.rows);
       // Track the snapshot bytes for boundary state before the first repaint.
       statusController.observeOutput(snapshotBytes);

@@ -528,6 +528,54 @@ describe('runPassthroughSession', () => {
     expect(stdin.rawModeCalls).toEqual([true, false]);
   });
 
+  it('keeps Ctrl+C available while a raw-mode snapshot is pending', async () => {
+    let releaseSnapshot!: () => void;
+    const snapshotPending = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const { deps, sockets, stdin, inputStreams } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      await snapshotPending;
+      return { status: 'ok' };
+    }) as PassthroughDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.isRaw).toBe(true);
+
+    stdin.type(Buffer.from('\x1b[0A'));
+    stdin.type(Buffer.from([0x03]));
+    await expect(sessionPromise).resolves.toBe(0);
+    expect(inputStreams[0].writes).toEqual([]);
+    releaseSnapshot();
+  });
+
+  it('waits for predictive echo seeding before forwarding initial input', async () => {
+    let releaseSeed!: () => void;
+    const seedPending = new Promise<void>((resolve) => {
+      releaseSeed = resolve;
+    });
+    const predictiveEcho = new FakePredictiveEcho();
+    predictiveEcho.seed = vi.fn(() => seedPending);
+    const { deps, sockets, stdin, inputStreams } = createHarness({ predictiveEcho });
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from('before'));
+    expect(inputStreams[0].writes).toEqual([]);
+    expect(predictiveEcho.inputs).toEqual([]);
+
+    releaseSeed();
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+    stdin.type(Buffer.from('after'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(inputStreams[0].writes).toEqual(['after']);
+    expect(predictiveEcho.inputs).toEqual(['after']);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
   it('takes stdin raw before replaying a TUI snapshot', async () => {
     const { deps, sockets, stdin } = createHarness();
     deps.captureAndRenderSnapshot = vi.fn(async () => {

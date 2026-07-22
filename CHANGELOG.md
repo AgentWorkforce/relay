@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay agent attach --mode drive|passthrough` now takes raw input before replaying terminal state and restores an inherited raw mode on detach, preventing mouse-report escape characters and parent-TUI input regressions.
+- `agent-relay agent attach --mode drive|passthrough` now takes raw input before replaying terminal state and preserves inherited raw mode on detach, preventing mouse-report escape characters and parent-TUI input regressions.
 
 ## [11.0.1] - 2026-07-22
 
