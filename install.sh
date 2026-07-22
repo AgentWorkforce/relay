@@ -200,7 +200,7 @@ get_latest_version() {
 check_node() {
     if command -v node &> /dev/null; then
         NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-        if [ "$NODE_VERSION" -ge 18 ]; then
+        if [ "$NODE_VERSION" -ge 22 ]; then
             HAS_NODE=true
             info "Node.js $(node -v) detected"
             return 0
@@ -477,10 +477,10 @@ install_via_npm() {
     step "Installing via npm..."
 
     if ! check_node; then
-        error "Node.js 18+ is required for npm installation. Please install Node.js first:
+        error "Node.js 22+ is required for npm installation. Please install Node.js first:
 
   macOS:   brew install node
-  Linux:   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs
+  Linux:   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
 
 Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash"
     fi
@@ -582,7 +582,7 @@ install_from_source() {
     step "Installing from source..."
 
     if ! check_node; then
-        error "Node.js 18+ is required for source installation"
+        error "Node.js 22+ is required for source installation"
     fi
 
     mkdir -p "$INSTALL_DIR"
@@ -743,7 +743,7 @@ main() {
         if [ -n "$STANDALONE_FAILURE_REASON" ]; then
             warn "Standalone install was cleaned up after verification failed."
             echo "  $STANDALONE_FAILURE_REASON"
-            echo "  Install Node.js 18+ to use the npm fallback, then rerun this installer."
+            echo "  Install Node.js 22+ to use the npm fallback, then rerun this installer."
             echo ""
         fi
         warn "No standalone binary available and Node.js not found."
@@ -752,12 +752,12 @@ main() {
         echo ""
         echo "  1. Wait for standalone binaries (coming soon for your platform)"
         echo ""
-        echo "  2. Install Node.js 18+ using one of these methods:"
+        echo "  2. Install Node.js 22+ using one of these methods:"
         echo ""
         echo "     # Using nvm (recommended - works on macOS and Linux)"
         echo "     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
         echo "     source ~/.bashrc  # or ~/.zshrc"
-        echo "     nvm install 20"
+        echo "     nvm install 22"
         echo ""
 
         if [ "$OS" = "darwin" ]; then
@@ -770,7 +770,7 @@ main() {
             # Detect package manager
             if command -v apt-get &> /dev/null; then
                 echo "     # Ubuntu/Debian"
-                echo "     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
+                echo "     curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -"
                 echo "     sudo apt-get install -y nodejs"
             elif command -v dnf &> /dev/null; then
                 echo "     # Fedora/RHEL"
