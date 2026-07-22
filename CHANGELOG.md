@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay agent attach --mode view` now consumes local input while viewing, preventing mouse-wheel reports from appearing as scroll-up and scroll-down escape characters.
 
 ## [11.0.0] - 2026-07-21
 
@@ -27,8 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-broker` now orders fleet `agent.deregister` before acknowledging a local worker release, so a restarted node can immediately recover the same agent name without an active-location collision, and fails fast instead of stalling the runtime API when fleet-control delivery is backpressured.
 - Native AI SDK harnesses now permit official adapter bootstrap files under their fixed cache root and invoke pnpm independently of Relay's npm workspace, preventing successful-looking spawns from immediately disappearing.
 - Native `node agent attach --mode drive` sessions now show an interactive prompt, preserve structured adapter error messages, and close their broker connection when detached.
-
-- `agent-relay agent attach --mode view` now consumes local input while viewing, preventing mouse-wheel reports from appearing as scroll-up and scroll-down escape characters.
 
 ### Breaking Changes
 
