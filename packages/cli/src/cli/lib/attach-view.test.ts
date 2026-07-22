@@ -64,6 +64,36 @@ interface HarnessOverrides {
   stdoutIsTty?: boolean;
 }
 
+class FakeStdin {
+  isTTY = true;
+  isRaw = false;
+  readonly listeners = new Map<string, Array<(chunk: Buffer) => void>>();
+  readonly setRawMode = vi.fn((mode: boolean) => {
+    this.isRaw = mode;
+  });
+  readonly resume = vi.fn();
+  readonly pause = vi.fn();
+
+  on(event: 'data', listener: (chunk: Buffer) => void): this {
+    const listeners = this.listeners.get(event) ?? [];
+    listeners.push(listener);
+    this.listeners.set(event, listeners);
+    return this;
+  }
+
+  off(event: 'data', listener: (chunk: Buffer) => void): this {
+    this.listeners.set(
+      event,
+      (this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener)
+    );
+    return this;
+  }
+
+  emitData(chunk: Buffer): void {
+    for (const listener of this.listeners.get('data') ?? []) listener(chunk);
+  }
+}
+
 function createHarness(overrides: HarnessOverrides = {}): {
   deps: ViewDependencies;
   writes: string[];
@@ -71,17 +101,20 @@ function createHarness(overrides: HarnessOverrides = {}): {
   logs: unknown[][];
   signals: Map<NodeJS.Signals, () => void | Promise<void>>;
   sockets: FakeWebSocket[];
+  stdin: FakeStdin;
 } {
   const writes: string[] = [];
   const errors: unknown[][] = [];
   const logs: unknown[][] = [];
   const signals = new Map<NodeJS.Signals, () => void | Promise<void>>();
   const sockets: FakeWebSocket[] = [];
+  const stdin = new FakeStdin();
 
   const deps: ViewDependencies = {
     readConnectionFile: vi.fn(() => overrides.connectionFile ?? null),
     getDefaultStateDir: vi.fn(() => overrides.defaultStateDir ?? '/tmp/fake/.agentworkforce/relay'),
     env: overrides.env ?? {},
+    stdin,
     createWebSocket: vi.fn((url: string, headers: Record<string, string>) => {
       const socket = new FakeWebSocket(url, headers);
       sockets.push(socket);
@@ -115,7 +148,7 @@ function createHarness(overrides: HarnessOverrides = {}): {
     stdoutIsTty: overrides.stdoutIsTty ?? false,
   };
 
-  return { deps, writes, errors, logs, signals, sockets };
+  return { deps, writes, errors, logs, signals, sockets, stdin };
 }
 
 afterEach(() => {
@@ -475,6 +508,28 @@ describe('runViewSession', () => {
 
     await sessionPromise;
     expect(writes).toEqual(['\x1b[?1049hSCREEN', 'out', 'more']);
+  });
+
+  it('consumes local input in raw mode so alternate-scroll reports are not echoed', async () => {
+    const { deps, sockets, stdin } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stdin.setRawMode).toHaveBeenCalledWith(true);
+    expect(stdin.resume).toHaveBeenCalledOnce();
+
+    // These are the bytes a terminal produces for mouse-wheel movement when
+    // alternate-scroll is enabled. View must consume them rather than let
+    // cooked stdin echo them as `^[[0A` and `^[[0B`.
+    stdin.emitData(Buffer.from('\x1b[0A\x1b[0B'));
+    expect(sockets[0].closed).toBe(false);
+
+    stdin.emitData(Buffer.from([0x03]));
+    await expect(sessionPromise).resolves.toBe(0);
+    expect(stdin.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(stdin.pause).toHaveBeenCalledOnce();
   });
 
   it('exits cleanly on SIGINT without surfacing an error', async () => {
