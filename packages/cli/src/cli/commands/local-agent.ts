@@ -3,6 +3,7 @@ import type { Command } from 'commander';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import type { ListAgent } from '@agent-relay/harness-driver';
 import type { HarnessRuntime } from '@agent-relay/harnesses';
+import { stripAnsiFast } from '@agent-relay/utils';
 
 import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 import { createBrokerClient } from '../lib/attach-broker.js';
@@ -150,6 +151,12 @@ function formatRelativeTime(value: string | undefined, now: Date): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+/** Keep broker-provided text from escaping its table cell or controlling the terminal. */
+function sanitizeTerminalCell(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return stripAnsiFast(value).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '�');
+}
+
 /** Render a compact terminal view while retaining JSON as the script-friendly default. */
 export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
   if (agents.length === 0) return 'No agents running.';
@@ -157,10 +164,12 @@ export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
   const rows = agents.map((agent) => {
     const state = agent.current_state ? AGENT_STATE_DISPLAY[agent.current_state] : undefined;
     return {
-      name: agent.name,
-      cliModel: [agent.cli ?? agent.provider ?? agent.runtime, agent.model].filter(Boolean).join(' / '),
-      state: state ? `${state.symbol} ${state.label}` : '· unknown',
-      lastActive: formatRelativeTime(agent.last_activity_at, now),
+      name: sanitizeTerminalCell(agent.name),
+      cliModel: sanitizeTerminalCell(
+        [agent.cli ?? agent.provider ?? agent.runtime, agent.model].filter(Boolean).join(' / ')
+      ),
+      state: sanitizeTerminalCell(state ? `${state.symbol} ${state.label}` : '· unknown'),
+      lastActive: sanitizeTerminalCell(formatRelativeTime(agent.last_activity_at, now)),
     };
   });
   const columns = [

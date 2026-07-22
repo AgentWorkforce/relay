@@ -131,6 +131,27 @@ describe('local agent subtree', () => {
     expect(formatPrettyAgentList([], new Date())).toBe('No agents running.');
   });
 
+  it('removes terminal control sequences from broker-provided cells', () => {
+    const [, , row] = formatPrettyAgentList(
+      [
+        {
+          name: 'Lead\x1b[2J\nAgent',
+          runtime: 'pty',
+          cli: 'codex\nunsafe',
+          model: 'gpt-5\x1b[0m',
+          channels: [],
+          current_state: 'working',
+          last_activity_at: '2026-07-22T17:00:00.000Z',
+        },
+      ],
+      new Date('2026-07-22T17:00:00.000Z')
+    ).split('\n');
+
+    expect(row).toContain('Lead�Agent');
+    expect(row).toContain('codex�unsafe / gpt-5');
+    expect(row).not.toContain('\x1b');
+  });
+
   it('spawn forwards task-exit lifecycle options', async () => {
     const { program, client } = harness();
     await program.parseAsync(
