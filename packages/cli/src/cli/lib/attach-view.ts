@@ -55,6 +55,8 @@ export interface ViewWebSocket {
   on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown;
   on(event: 'error', listener: (err: Error) => void): unknown;
   close(code?: number, reason?: string): void;
+  /** Immediately tear down the underlying connection when a local detach must not wait for a close handshake. */
+  terminate?(): void;
 }
 
 export type ViewWebSocketFactory = (url: string, headers: Record<string, string>) => ViewWebSocket;
@@ -473,6 +475,15 @@ export async function runViewSession(
       }
       try {
         socket.close(1000, 'view client exiting');
+      } catch {
+        // best effort — already closed
+      }
+      try {
+        // A graceful WebSocket close can leave its underlying socket alive
+        // while waiting for the broker's close acknowledgement. A local
+        // detach has no state to flush, so terminate it immediately rather
+        // than requiring another Ctrl-C to make Node leave the event loop.
+        socket.terminate?.();
       } catch {
         // best effort — already closed
       }
