@@ -123,8 +123,28 @@ UP_LOG="$TMP_ROOT/up.log"
 run_cli node up >"$UP_LOG" 2>&1 &
 UP_PID=$!
 
-sleep 8
 UP_EXIT=""
+UP_READY=false
+# Startup can legitimately need to retry a Relaycast handshake on a loaded
+# macOS runner. Do not begin teardown on a fixed timer while that retry is in
+# flight; wait for the CLI's explicit readiness line instead.
+STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-30}"
+STARTUP_DEADLINE=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+while true; do
+  if grep -q 'Broker started\.' "$UP_LOG"; then
+    UP_READY=true
+    break
+  fi
+  if ! kill -0 "$UP_PID" 2>/dev/null; then
+    break
+  fi
+  if [ "$SECONDS" -ge "$STARTUP_DEADLINE" ]; then
+    echo "Standalone broker did not report readiness within ${STARTUP_TIMEOUT_SECONDS}s" >&2
+    break
+  fi
+  sleep 0.25
+done
+
 if kill -0 "$UP_PID" 2>/dev/null; then
   run_cli node down --force --timeout 5000 >/dev/null 2>&1 || true
   # Hard-kill after 15s if down --force didn't terminate the process (e.g. macOS 26 hang)
@@ -146,6 +166,13 @@ if [ -n "$UP_EXIT" ] && [ "$UP_EXIT" -ne 0 ]; then
   echo "AGENT_RELAY_STARTUP_DEBUG=1 was enabled for startup diagnostics." >&2
   print_output_excerpt "$UP_OUTPUT"
   exit "$UP_EXIT"
+fi
+
+if [ "$UP_READY" != true ]; then
+  echo "Standalone broker startup command did not become ready" >&2
+  echo "AGENT_RELAY_STARTUP_DEBUG=1 was enabled for startup diagnostics." >&2
+  print_output_excerpt "$UP_OUTPUT"
+  exit 1
 fi
 
 assert_exact_count "$UP_OUTPUT" 'Broker started\.' 1 'broker start line'
