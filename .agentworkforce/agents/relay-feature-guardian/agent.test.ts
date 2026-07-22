@@ -220,14 +220,16 @@ class DelayedSlackTransport extends IdempotentSlackTransport {
   }
 }
 
-class ReceiptlessSlackTransport extends IdempotentSlackTransport {
+class LateReceiptReplaySlackTransport extends IdempotentSlackTransport {
+  private readonly receiptlessKeys = new Set<string>();
+
   override async write(request: RelayTransportWriteRequest): Promise<WritebackResult> {
-    this.attempts.push(request);
-    return {
-      path: '/slack/draft.json',
-      absolutePath: '/slack/draft.json',
-      receipt: { id: 'mountcmd-without-provider-ts' },
-    };
+    const result = await super.write(request);
+    const body = request.body as { idempotencyKey?: string };
+    const key = body.idempotencyKey ?? `unkeyed:${this.attempts.length}`;
+    if (this.receiptlessKeys.has(key)) return result;
+    this.receiptlessKeys.add(key);
+    return { ...result, receipt: { id: 'mountcmd-without-provider-ts' } };
   }
 }
 
@@ -979,19 +981,28 @@ describe('relay-feature-guardian delayed Slack receipts', () => {
     }
   });
 
-  it('rejects and never advances on a receipt-shaped draft without provider ts', async () => {
-    const transport = new ReceiptlessSlackTransport();
+  it('keeps a delayed receipt retryable and replays the stable key without a second Slack post', async () => {
+    const formerFatalError = 'Slack post failed: no timestamp returned for feature broker-status';
+    const transport = new LateReceiptReplaySlackTransport();
     const restore = bindPreviewTransport(transport);
     const { ctx, files } = exactStateContext(JSON.stringify(progressState(1)));
     try {
-      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
-        'Slack post failed: no timestamp returned for feature broker-status'
-      );
+      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).resolves.toBeUndefined();
       expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
-      expect(ctx.log).toHaveBeenCalledWith('error', 'relay-feature-guardian.post-failed', {
+      expect(ctx.log).toHaveBeenCalledWith('warn', 'relay-feature-guardian.post-receipt-pending', {
         channel: 'C0AEKNLDNKW',
         feature: 'broker-status',
+        path: expect.any(String),
       });
+      expect(JSON.stringify(vi.mocked(ctx.log).mock.calls)).not.toContain(formerFatalError);
+
+      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).resolves.toBeUndefined();
+      const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
+      expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
+      expect(state.lastPost?.ts).toBe('1710000001.000100');
+      expect(transport.providerCreates).toBe(1);
+      expect(transport.attempts).toHaveLength(2);
+      expect(transport.attempts[0]?.body).toMatchObject(transport.attempts[1]?.body as object);
     } finally {
       restore();
     }
