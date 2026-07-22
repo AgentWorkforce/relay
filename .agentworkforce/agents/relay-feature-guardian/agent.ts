@@ -792,8 +792,16 @@ export async function runGuardian(
   }
   const ts = deliveredSlackTs(result);
   if (!ts) {
-    ctx.log('error', 'relay-feature-guardian.post-failed', { channel, feature: feature.id });
-    throw new Error(`Slack post failed: no timestamp returned for feature ${feature.id}`);
+    // A successful helper return means the draft was admitted, not that the
+    // provider receipt is already visible. Leave the exact checkpoint alone so
+    // the next tick replays the stable idempotency key instead of turning an
+    // eventually-consistent receipt into a terminal handler failure.
+    ctx.log('warn', 'relay-feature-guardian.post-receipt-pending', {
+      channel,
+      feature: feature.id,
+      path: result.path,
+    });
+    return;
   }
 
   // Checkpoint immediately after the confirmed provider receipt. The stable
