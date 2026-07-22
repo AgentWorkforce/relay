@@ -57,6 +57,7 @@ class FakeWebSocket implements PassthroughWebSocket {
 
 class FakeStdin implements PassthroughStdin {
   isTTY = true;
+  isRaw = false;
   setRawMode = vi.fn<(mode: boolean) => unknown>(() => undefined);
   resume = vi.fn(() => undefined);
   pause = vi.fn(() => undefined);
@@ -66,6 +67,7 @@ class FakeStdin implements PassthroughStdin {
   constructor() {
     this.setRawMode = vi.fn((mode: boolean) => {
       this.rawModeCalls.push(mode);
+      this.isRaw = mode;
       return undefined;
     });
   }
@@ -524,6 +526,32 @@ describe('runPassthroughSession', () => {
       { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
     expect(stdin.rawModeCalls).toEqual([true, false]);
+  });
+
+  it('takes stdin raw before replaying a TUI snapshot', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      expect(stdin.isRaw).toBe(true);
+      return { status: 'ok' };
+    }) as PassthroughDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('preserves an already-raw stdin on detach', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    stdin.isRaw = true;
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.rawModeCalls).toEqual([]);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(stdin.rawModeCalls).toEqual([]);
   });
 
   it('flips to auto_inject even when the worker was in manual_flush mode on attach, then restores on detach', async () => {

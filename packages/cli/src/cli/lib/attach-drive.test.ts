@@ -57,6 +57,7 @@ class FakeWebSocket implements DriveWebSocket {
 
 class FakeStdin implements DriveStdin {
   isTTY = true;
+  isRaw = false;
   setRawMode = vi.fn<(mode: boolean) => unknown>(() => undefined);
   resume = vi.fn(() => undefined);
   pause = vi.fn(() => undefined);
@@ -66,6 +67,7 @@ class FakeStdin implements DriveStdin {
   constructor() {
     this.setRawMode = vi.fn((mode: boolean) => {
       this.rawModeCalls.push(mode);
+      this.isRaw = mode;
       return undefined;
     });
   }
@@ -601,6 +603,32 @@ describe('runDriveSession', () => {
       expected_mode: 'manual_flush',
       expected_revision: '1',
     });
+  });
+
+  it('takes stdin raw before replaying a TUI snapshot', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      expect(stdin.isRaw).toBe(true);
+      return { status: 'ok' };
+    }) as DriveDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('preserves an already-raw stdin on detach', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    stdin.isRaw = true;
+
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.rawModeCalls).toEqual([]);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(stdin.rawModeCalls).toEqual([]);
   });
 
   it('aborts before opening the WS when the broker rejects the mode flip', async () => {
