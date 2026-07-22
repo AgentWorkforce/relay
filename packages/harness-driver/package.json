@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/harness-driver",
-  "version": "10.6.7",
+  "version": "11.0.0",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -56,16 +56,16 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/sdk": "10.6.7",
+    "@agent-relay/sdk": "11.0.0",
     "ws": "^8.18.3",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
-    "@agent-relay/broker-darwin-arm64": "10.6.7",
-    "@agent-relay/broker-darwin-x64": "10.6.7",
-    "@agent-relay/broker-linux-arm64": "10.6.7",
-    "@agent-relay/broker-linux-x64": "10.6.7",
-    "@agent-relay/broker-win32-x64": "10.6.7"
+    "@agent-relay/broker-darwin-arm64": "11.0.0",
+    "@agent-relay/broker-darwin-x64": "11.0.0",
+    "@agent-relay/broker-linux-arm64": "11.0.0",
+    "@agent-relay/broker-linux-x64": "11.0.0",
+    "@agent-relay/broker-win32-x64": "11.0.0"
   },
   "publishConfig": {
     "access": "public"
