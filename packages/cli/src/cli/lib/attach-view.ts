@@ -63,6 +63,23 @@ export interface ViewSignalRegistrar {
   (signal: NodeJS.Signals, handler: () => void | Promise<void>): void | (() => void);
 }
 
+/**
+ * Stdin surface used by view. Unlike drive and passthrough, view deliberately
+ * consumes and discards input: it is read-only, but taking stdin out of cooked
+ * echo mode prevents a terminal's mouse/focus reports from being painted as
+ * literal escape characters when a TUI has enabled them.
+ */
+export interface ViewStdin {
+  setRawMode?: (mode: boolean) => unknown;
+  isTTY?: boolean;
+  isRaw?: boolean;
+  resume(): unknown;
+  pause(): unknown;
+  on(event: 'data', listener: (chunk: Buffer) => void): unknown;
+  off?(event: 'data', listener: (chunk: Buffer) => void): unknown;
+  removeListener?(event: 'data', listener: (chunk: Buffer) => void): unknown;
+}
+
 export interface ViewDependencies {
   /** Reads `<state-dir>/connection.json` and returns parsed JSON, or null. */
   readConnectionFile: (stateDir: string) => unknown;
@@ -70,6 +87,8 @@ export interface ViewDependencies {
   getDefaultStateDir: () => string;
   /** Environment variables (so tests can inject). */
   env: NodeJS.ProcessEnv;
+  /** Local input, held in raw mode and discarded for the read-only session. */
+  stdin: ViewStdin;
   /** Factory for the WebSocket — overridden in tests with a mock. */
   createWebSocket: ViewWebSocketFactory;
   /** Where the PTY chunks get written. Defaults to `process.stdout.write`. */
@@ -125,6 +144,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
+    stdin: process.stdin,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as ViewWebSocket,
     writeChunk: writer.write,
     disposeWriter: writer.dispose,
@@ -396,6 +416,7 @@ export async function runViewSession(
 
   return new Promise<number>((resolve) => {
     let settled = false;
+    let rawModeWasSet = false;
     const cleanupSignals: Array<() => void> = [];
     // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
     // is painted and reconciled, so no output around attach time is lost and
@@ -409,6 +430,36 @@ export async function runViewSession(
     const writeAgentOutput = (chunk: string): void => {
       const filtered = inputModeFilter.push(chunk);
       if (filtered.length > 0) deps.writeChunk(filtered);
+    };
+    // `view` never forwards stdin. Still consume it in raw mode so mouse,
+    // focus, and alternate-scroll reports cannot be cooked-mode echoed into
+    // the viewer as visible `^[[0A` / `^[[0B` garbage. Ctrl+C must be handled
+    // here because raw mode disables the terminal driver's SIGINT handling.
+    const stdinDataHandler = (chunk: Buffer): void => {
+      if (chunk.includes(0x03)) finish(0);
+    };
+    const teardownStdin = (): void => {
+      try {
+        if (deps.stdin.off) {
+          deps.stdin.off('data', stdinDataHandler);
+        } else if (deps.stdin.removeListener) {
+          deps.stdin.removeListener('data', stdinDataHandler);
+        }
+      } catch {
+        // best effort
+      }
+      try {
+        if (rawModeWasSet && typeof deps.stdin.setRawMode === 'function') {
+          deps.stdin.setRawMode(false);
+        }
+      } catch {
+        // best effort
+      }
+      try {
+        deps.stdin.pause();
+      } catch {
+        // best effort
+      }
     };
     const finish = (code: number) => {
       if (settled) return;
@@ -434,6 +485,7 @@ export async function runViewSession(
       } catch {
         // best effort
       }
+      teardownStdin();
       // Drop the writer's pending queue and unhook its drain listener so no
       // buffered chunk flushes to stdout after detach.
       deps.disposeWriter?.();
@@ -485,6 +537,20 @@ export async function runViewSession(
     };
 
     const socket = deps.createWebSocket(wsUrl, headers);
+
+    // Do this before rendering the snapshot: a source TUI may have enabled
+    // mouse or alternate-scroll already, and raw input is the final safeguard
+    // even if an unusual escape sequence evades the output filter.
+    try {
+      if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false && !deps.stdin.isRaw) {
+        deps.stdin.setRawMode(true);
+        rawModeWasSet = true;
+      }
+      deps.stdin.resume();
+      deps.stdin.on('data', stdinDataHandler);
+    } catch {
+      // Read-only viewing still works on non-TTY or unusual stdin surfaces.
+    }
 
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const cleanup = deps.onSignal(signal, () => finish(0));

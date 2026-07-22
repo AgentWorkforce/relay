@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native AI SDK harnesses now permit official adapter bootstrap files under their fixed cache root and invoke pnpm independently of Relay's npm workspace, preventing successful-looking spawns from immediately disappearing.
 - Native `node agent attach --mode drive` sessions now show an interactive prompt, preserve structured adapter error messages, and close their broker connection when detached.
 
+- `agent-relay agent attach --mode view` now consumes local input while viewing, preventing mouse-wheel reports from appearing as scroll-up and scroll-down escape characters.
 ### Breaking Changes
 
 - Agent Relay now requires Node.js 22 or newer.
