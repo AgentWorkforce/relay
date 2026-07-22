@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
 - `agent-relay agent attach --mode view` now consumes local input while viewing, preventing mouse-wheel reports from appearing as scroll-up and scroll-down escape characters.
 
 ## [11.0.0] - 2026-07-21
