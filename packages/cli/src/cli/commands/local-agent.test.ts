@@ -9,7 +9,11 @@ vi.mock('@agent-relay/harness-driver', () => ({
   },
 }));
 
-import { registerLocalAgentCommands, type LocalAgentDependencies } from './local-agent.js';
+import {
+  formatPrettyAgentList,
+  registerLocalAgentCommands,
+  type LocalAgentDependencies,
+} from './local-agent.js';
 
 function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const client = {
@@ -74,10 +78,57 @@ describe('local agent subtree', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
-  it('list queries the broker', async () => {
-    const { program, client } = harness();
+  it('list queries the broker and keeps JSON as the default output', async () => {
+    const { program, client, log } = harness();
     await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
     expect(client.listAgents).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('[\n  {\n    "name": "lead"\n  }\n]');
+  });
+
+  it('list --pretty shows the compact human-readable view', async () => {
+    const { program, log } = harness({
+      connect: vi.fn(
+        async () =>
+          ({
+            listAgents: vi.fn(async () => [
+              {
+                name: 'Lead',
+                runtime: 'pty' as const,
+                cli: 'codex',
+                model: 'gpt-5.4',
+                channels: [],
+                current_state: 'working' as const,
+                last_activity_at: '2026-07-22T16:59:57.000Z',
+              },
+            ]),
+          }) as never
+      ),
+      now: () => new Date('2026-07-22T17:00:00.000Z'),
+    });
+
+    await program.parseAsync(['local', 'agent', 'list', '--pretty'], { from: 'user' });
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Lead  codex / gpt-5.4  ● working  now'));
+  });
+
+  it('formats agent state and activity time for the pretty list', () => {
+    expect(
+      formatPrettyAgentList(
+        [
+          {
+            name: 'Review',
+            runtime: 'pty',
+            cli: 'claude',
+            channels: [],
+            current_state: 'blocked_on_send',
+            last_activity_at: '2026-07-22T16:58:00.000Z',
+          },
+          { name: 'Worker', runtime: 'headless', channels: [], current_state: 'idle' },
+        ],
+        new Date('2026-07-22T17:00:00.000Z')
+      )
+    ).toMatch(/Review\s+claude\s+◐ waiting\s+2 minutes ago/);
+    expect(formatPrettyAgentList([], new Date())).toBe('No agents running.');
   });
 
   it('spawn forwards task-exit lifecycle options', async () => {
