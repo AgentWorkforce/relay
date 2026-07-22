@@ -105,6 +105,7 @@ export interface DriveSignalRegistrar {
 export interface DriveStdin {
   setRawMode?: (mode: boolean) => unknown;
   isTTY?: boolean;
+  isRaw?: boolean;
   resume(): unknown;
   pause(): unknown;
   on(event: 'data', listener: (chunk: Buffer) => void): unknown;
@@ -788,7 +789,16 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     };
 
     // ---- stdin handling ----
+    let stdinReady = false;
     const stdinDataHandler = (chunk: Buffer): void => {
+      // Raw mode starts before snapshot replay so terminal input reports cannot
+      // echo. Until the predictive echo model is seeded, discard all input
+      // except Ctrl+C: forwarding stale mouse/focus reports (or echoing user
+      // input against an unseeded screen) would be worse than dropping it.
+      if (!stdinReady) {
+        if (chunk.includes(0x03)) finish(0);
+        return;
+      }
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
         const stream = inputStream;
@@ -979,7 +989,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
 
     const socket = deps.createWebSocket(wsUrl, headers);
 
-    const openInputStreamAndTakeStdin = async (): Promise<void> => {
+    const openInputStreamAndSetRawMode = async (): Promise<void> => {
       try {
         inputStream = deps.openInputStream(connection, name);
         await inputStream.waitUntilOpen();
@@ -987,12 +997,27 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           closeInputStream();
           return;
         }
-        if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false) {
+        // Register the temporary input handler before raw mode. Ctrl+C is an
+        // ordinary byte in raw mode, so this keeps detach available while a
+        // snapshot fetch or initial resize is still pending.
+        deps.stdin.resume();
+        deps.stdin.on('data', stdinDataHandler);
+        if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false && !deps.stdin.isRaw) {
           deps.stdin.setRawMode(true);
           rawModeWasSet = true;
         }
-        deps.stdin.resume();
-        deps.stdin.on('data', stdinDataHandler);
+      } catch (err: unknown) {
+        if (settled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        deps.error(`[drive] could not open PTY input stream: ${message}`);
+        finish(1);
+      }
+    };
+
+    const takeStdin = (): void => {
+      try {
+        if (settled) return;
+        stdinReady = true;
         // Subscribe to local-terminal resize events at the same point
         // we take over stdin so the lifecycles match — both go away in
         // `teardownStdin` on any exit path.
@@ -1021,17 +1046,18 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       } catch (err: unknown) {
         if (settled) return;
         const message = err instanceof Error ? err.message : String(err);
-        deps.error(`[drive] could not open PTY input stream: ${message}`);
+        deps.error(`[drive] could not take terminal input: ${message}`);
         finish(1);
       }
     };
 
-    // Runs once the event WS is subscribed: paint the snapshot, seed
-    // predictive echo, reconcile buffered live output against the snapshot
-    // offset, forward the initial resize (now that we're subscribed, so its
-    // SIGWINCH repaint lands in the live stream instead of a dead zone before
-    // subscription), then open the input stream and take over stdin.
+    // Runs once the event WS is subscribed. Take over stdin before replaying
+    // the snapshot: a source TUI can enable mouse/focus/alternate-scroll
+    // reporting in that replay, and cooked-mode stdin would echo those reports
+    // as visible escape text until the later input-stream setup completed.
     const onSubscribed = async (): Promise<void> => {
+      await openInputStreamAndSetRawMode();
+      if (settled) return;
       const snapshot = await deps.captureAndRenderSnapshot(
         { url: connection.url, apiKey: connection.apiKey },
         name,
@@ -1056,7 +1082,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           );
           break;
       }
-      if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
+      if (predictiveEcho) {
+        try {
+          await predictiveEcho.seed(snapshotBytes);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          deps.log(`[drive] could not seed predictive echo: ${message}`);
+          finish(1);
+          return;
+        }
+        if (settled) return;
+      }
       terminalRows = pickInitialTerminalRows(state.initialLocalSize, snapshot.rows);
       // Track the snapshot bytes for boundary state before the first repaint.
       statusController.observeOutput(snapshotBytes);
@@ -1073,10 +1109,10 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       trackResize(initialResize);
       await initialResize;
       if (settled) return;
-      // Open the SDK input stream before taking over stdin. A failed stream
-      // should not leave the user's terminal in raw mode with nowhere to
-      // send bytes.
-      await openInputStreamAndTakeStdin();
+      // Input forwarding starts only after predictive echo has been seeded by
+      // the snapshot. Raw mode was already enabled above, so terminal reports
+      // could not echo during the setup window.
+      takeStdin();
     };
 
     // Hand off from the early restore handlers (installed before the awaited

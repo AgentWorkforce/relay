@@ -84,6 +84,7 @@ export interface PassthroughSignalRegistrar {
 export interface PassthroughStdin {
   setRawMode?: (mode: boolean) => unknown;
   isTTY?: boolean;
+  isRaw?: boolean;
   resume(): unknown;
   pause(): unknown;
   on(event: 'data', listener: (chunk: Buffer) => void): unknown;
@@ -444,7 +445,16 @@ export async function runPassthroughSession(
       paintStatus();
     };
 
+    let stdinReady = false;
     const stdinDataHandler = (chunk: Buffer): void => {
+      // Raw mode starts before snapshot replay so terminal input reports cannot
+      // echo. Until the predictive echo model is seeded, discard all input
+      // except Ctrl+C: forwarding stale mouse/focus reports (or echoing user
+      // input against an unseeded screen) would be worse than dropping it.
+      if (!stdinReady) {
+        if (chunk.includes(0x03)) finish(0);
+        return;
+      }
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
         const stream = inputStream;
@@ -611,7 +621,7 @@ export async function runPassthroughSession(
 
     const socket = deps.createWebSocket(wsUrl, headers);
 
-    const openInputStreamAndTakeStdin = async (): Promise<void> => {
+    const openInputStreamAndSetRawMode = async (): Promise<void> => {
       try {
         inputStream = deps.openInputStream(connection, name);
         await inputStream.waitUntilOpen();
@@ -619,12 +629,27 @@ export async function runPassthroughSession(
           closeInputStream();
           return;
         }
-        if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false) {
+        // Register the temporary input handler before raw mode. Ctrl+C is an
+        // ordinary byte in raw mode, so this keeps detach available while a
+        // snapshot fetch or initial resize is still pending.
+        deps.stdin.resume();
+        deps.stdin.on('data', stdinDataHandler);
+        if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false && !deps.stdin.isRaw) {
           deps.stdin.setRawMode(true);
           rawModeWasSet = true;
         }
-        deps.stdin.resume();
-        deps.stdin.on('data', stdinDataHandler);
+      } catch (err: unknown) {
+        if (settled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        deps.error(`[passthrough] could not open PTY input stream: ${message}`);
+        finish(1);
+      }
+    };
+
+    const takeStdin = (): void => {
+      try {
+        if (settled) return;
+        stdinReady = true;
         unsubscribeResize = deps.terminal.onResize(resizeHandler);
         // Periodic ownership re-assert (see `ownershipReassertMs`): keeps the
         // single-resizer lease alive on an idle-but-live session; the broker
@@ -651,16 +676,18 @@ export async function runPassthroughSession(
       } catch (err: unknown) {
         if (settled) return;
         const message = err instanceof Error ? err.message : String(err);
-        deps.error(`[passthrough] could not open PTY input stream: ${message}`);
+        deps.error(`[passthrough] could not take terminal input: ${message}`);
         finish(1);
       }
     };
 
-    // Runs once the event WS is subscribed: paint the snapshot, seed
-    // predictive echo, reconcile buffered live output, forward the initial
-    // resize (now that we're subscribed, so its SIGWINCH repaint lands in the
-    // live stream rather than a dead zone), then take over stdin.
+    // Runs once the event WS is subscribed. Take over stdin before replaying
+    // the snapshot: a source TUI can enable mouse/focus/alternate-scroll
+    // reporting in that replay, and cooked-mode stdin would echo those reports
+    // as visible escape text until the later input-stream setup completed.
     const onSubscribed = async (): Promise<void> => {
+      await openInputStreamAndSetRawMode();
+      if (settled) return;
       const snapshot = await deps.captureAndRenderSnapshot(
         { url: connection.url, apiKey: connection.apiKey },
         name,
@@ -685,7 +712,17 @@ export async function runPassthroughSession(
           );
           break;
       }
-      if (predictiveEcho) void predictiveEcho.seed(snapshotBytes);
+      if (predictiveEcho) {
+        try {
+          await predictiveEcho.seed(snapshotBytes);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          deps.log(`[passthrough] could not seed predictive echo: ${message}`);
+          finish(1);
+          return;
+        }
+        if (settled) return;
+      }
       terminalRows = pickInitialTerminalRows(initialLocalSize, snapshot.rows);
       // Track the snapshot bytes for boundary state before the first repaint.
       statusController.observeOutput(snapshotBytes);
@@ -702,7 +739,10 @@ export async function runPassthroughSession(
       trackResize(initialResize);
       await initialResize;
       if (settled) return;
-      await openInputStreamAndTakeStdin();
+      // Input forwarding starts only after predictive echo has been seeded by
+      // the snapshot. Raw mode was already enabled above, so terminal reports
+      // could not echo during the setup window.
+      takeStdin();
     };
 
     // Hand off from the early restore handlers to the fuller loop handlers.
