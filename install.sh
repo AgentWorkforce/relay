@@ -200,7 +200,7 @@ get_latest_version() {
 check_node() {
     if command -v node &> /dev/null; then
         NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-        if [ "$NODE_VERSION" -ge 22 ]; then
+        if [ "$NODE_VERSION" -ge 18 ]; then
             HAS_NODE=true
             info "Node.js $(node -v) detected"
             return 0
