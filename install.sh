@@ -200,7 +200,7 @@ get_latest_version() {
 check_node() {
     if command -v node &> /dev/null; then
         NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-        if [ "$NODE_VERSION" -ge 18 ]; then
+        if [ "$NODE_VERSION" -ge 22 ]; then
             HAS_NODE=true
             info "Node.js $(node -v) detected"
             return 0
@@ -582,7 +582,7 @@ install_from_source() {
     step "Installing from source..."
 
     if ! check_node; then
-        error "Node.js 18+ is required for source installation"
+        error "Node.js 22+ is required for source installation"
     fi
 
     mkdir -p "$INSTALL_DIR"
@@ -743,7 +743,7 @@ main() {
         if [ -n "$STANDALONE_FAILURE_REASON" ]; then
             warn "Standalone install was cleaned up after verification failed."
             echo "  $STANDALONE_FAILURE_REASON"
-            echo "  Install Node.js 18+ to use the npm fallback, then rerun this installer."
+            echo "  Install Node.js 22+ to use the npm fallback, then rerun this installer."
             echo ""
         fi
         warn "No standalone binary available and Node.js not found."
