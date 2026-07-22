@@ -69,6 +69,7 @@ describe('registerWorkspaceCommands', () => {
       apiUrl: 'https://cloud.test',
       interactive: false,
       refreshTimeoutMs: 25,
+      bootstrapFromCloud: true,
     });
     expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
       name: 'Ops',

@@ -3,11 +3,12 @@ import {
   type ActiveWorkspaceDescriptor,
   type ActiveWorkspaceUrls,
   defaultApiUrl,
+  type WhoAmIResponse,
   type WorkspaceCreateResponse,
   type WorkspaceTokenIssueResponse,
   type WorkspaceTokenRecord,
 } from './types.js';
-import { resolveActiveWorkspaceKey } from './workspace-store.js';
+import { resolveActiveWorkspaceKey, setActiveWorkspace, setWorkspaceKey } from './workspace-store.js';
 
 type WorkspaceClientOptions = {
   apiUrl?: string;
@@ -21,6 +22,8 @@ type ResolveActiveWorkspaceOptions = WorkspaceClientOptions & {
   interactive?: boolean;
   refreshTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Bootstrap an empty local workspace store from the authenticated Cloud session. */
+  bootstrapFromCloud?: boolean;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -135,6 +138,39 @@ function normalizeWorkspaceTokenIssueResponse(
     key,
     ...(workspaceToken ? { workspaceToken } : {}),
   };
+}
+
+function workspaceJoinAgentName(name: string | undefined): string {
+  const normalized = name
+    ?.trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .slice(0, 128);
+  return normalized || 'agent-relay-cli';
+}
+
+async function joinWorkspaceKey(
+  workspaceId: string,
+  name: string | undefined,
+  options: WorkspaceClientOptions
+): Promise<string> {
+  const endpoint = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/join`;
+  const { response, payload } = await tryPostJson(
+    endpoint,
+    { agentName: workspaceJoinAgentName(name) },
+    options
+  );
+  if (!response.ok) {
+    throw buildEndpointError('Workspace join', endpoint, response, payload);
+  }
+  if (!isObject(payload)) {
+    throw new Error(`Workspace join failed at ${endpoint}: response was not valid JSON.`);
+  }
+  const key = readString(payload, 'relaycastApiKey');
+  if (!key) {
+    throw new Error(`Workspace join failed at ${endpoint}: response is missing relaycastApiKey.`);
+  }
+  return key;
 }
 
 function readUrls(payload: JsonRecord): ActiveWorkspaceUrls {
@@ -317,13 +353,11 @@ export async function issueWorkspaceToken(
     `/api/v1/workspaces/${encodedWorkspaceId}/workspace-token`,
     `/api/v1/workspaces/${encodedWorkspaceId}/token`,
   ];
-  let lastUnsupported: Error | null = null;
 
   for (const endpoint of endpoints) {
     const { response, payload } = await tryPostJson(endpoint, body, options);
 
     if (response.status === 404 || response.status === 405) {
-      lastUnsupported = buildEndpointError('Workspace token issue', endpoint, response, payload);
       continue;
     }
 
@@ -334,21 +368,23 @@ export async function issueWorkspaceToken(
     return normalizeWorkspaceTokenIssueResponse(payload, workspaceId);
   }
 
-  throw (
-    lastUnsupported ?? new Error('Workspace token issuance is not supported by the configured cloud API.')
-  );
+  // Current Cloud deployments expose canonical workspace key recovery via the
+  // membership-aware /join contract. Keep the dedicated token endpoints first
+  // for forward compatibility, then use /join when those routes are absent.
+  return { key: await joinWorkspaceKey(workspaceId, options.name, options) };
 }
 
-export async function resolveActiveWorkspace(
-  options: ResolveActiveWorkspaceOptions = {}
-): Promise<ActiveWorkspaceDescriptor> {
-  const key = resolveActiveWorkspaceKey(options.env);
-  if (!key) {
-    throw new Error(
-      'No active Agent Relay workspace found. Run `agent-relay workspace set_key <name> <key>` or `agent-relay workspace join <name> <key>`.'
-    );
+class WorkspaceResolveMissError extends Error {
+  constructor(cause: Error) {
+    super(cause.message, { cause });
+    this.name = 'WorkspaceResolveMissError';
   }
+}
 
+async function resolveWorkspaceKey(
+  key: string,
+  options: ResolveActiveWorkspaceOptions
+): Promise<ActiveWorkspaceDescriptor> {
   const encodedKey = encodeURIComponent(key);
   const endpoints = [
     `/api/v1/workspaces/${encodedKey}/resolve`,
@@ -376,5 +412,63 @@ export async function resolveActiveWorkspace(
     return normalizeActiveWorkspaceDescriptor(payload, key, apiUrl);
   }
 
-  throw lastUnsupported ?? new Error('Workspace resolution is not supported by the configured cloud API.');
+  throw new WorkspaceResolveMissError(
+    lastUnsupported ?? new Error('Workspace resolution is not supported by the configured cloud API.')
+  );
+}
+
+async function repairActiveWorkspace(
+  options: ResolveActiveWorkspaceOptions
+): Promise<ActiveWorkspaceDescriptor> {
+  const apiUrl = options.apiUrl || defaultApiUrl();
+  const auth = await ensureAuthenticated(apiUrl, {
+    interactive: options.interactive ?? false,
+    refreshTimeoutMs: options.refreshTimeoutMs,
+  });
+  const { response } = await authorizedApiFetch(
+    auth,
+    '/api/v1/auth/whoami',
+    { method: 'GET' },
+    {
+      interactive: options.interactive ?? false,
+      refreshTimeoutMs: options.refreshTimeoutMs,
+    }
+  );
+  const payload = (await readJson(response)) as (WhoAmIResponse & { error?: string }) | null;
+  if (!response.ok || !payload?.authenticated || !payload.currentWorkspace?.id) {
+    const detail = payload?.error ?? (response.statusText || 'Failed to resolve auth status');
+    throw new Error(`Active workspace repair failed: ${response.status} ${detail}`.trim());
+  }
+
+  const workspaceName = payload.currentWorkspace.name?.trim() || payload.currentWorkspace.id;
+  const workspaceKey = await joinWorkspaceKey(payload.currentWorkspace.id, 'agent-relay-cli', {
+    apiUrl: auth.apiUrl,
+  });
+  setWorkspaceKey(workspaceName, workspaceKey, options.env);
+  setActiveWorkspace(workspaceName, options.env);
+
+  return resolveWorkspaceKey(workspaceKey, options);
+}
+
+export async function resolveActiveWorkspace(
+  options: ResolveActiveWorkspaceOptions = {}
+): Promise<ActiveWorkspaceDescriptor> {
+  const key = resolveActiveWorkspaceKey(options.env);
+  if (!key) {
+    if (options.bootstrapFromCloud) {
+      return repairActiveWorkspace(options);
+    }
+    throw new Error(
+      'No active Agent Relay workspace found. Run `agent-relay workspace set_key <name> <key>` or `agent-relay workspace join <name> <key>`.'
+    );
+  }
+
+  try {
+    return await resolveWorkspaceKey(key, options);
+  } catch (error) {
+    if (!(error instanceof WorkspaceResolveMissError)) {
+      throw error;
+    }
+    return repairActiveWorkspace(options);
+  }
 }
