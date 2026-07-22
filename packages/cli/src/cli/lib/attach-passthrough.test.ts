@@ -57,6 +57,7 @@ class FakeWebSocket implements PassthroughWebSocket {
 
 class FakeStdin implements PassthroughStdin {
   isTTY = true;
+  isRaw = false;
   setRawMode = vi.fn<(mode: boolean) => unknown>(() => undefined);
   resume = vi.fn(() => undefined);
   pause = vi.fn(() => undefined);
@@ -66,6 +67,7 @@ class FakeStdin implements PassthroughStdin {
   constructor() {
     this.setRawMode = vi.fn((mode: boolean) => {
       this.rawModeCalls.push(mode);
+      this.isRaw = mode;
       return undefined;
     });
   }
@@ -524,6 +526,80 @@ describe('runPassthroughSession', () => {
       { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
     expect(stdin.rawModeCalls).toEqual([true, false]);
+  });
+
+  it('keeps Ctrl+C available while a raw-mode snapshot is pending', async () => {
+    let releaseSnapshot!: () => void;
+    const snapshotPending = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const { deps, sockets, stdin, inputStreams } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      await snapshotPending;
+      return { status: 'ok' };
+    }) as PassthroughDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.isRaw).toBe(true);
+
+    stdin.type(Buffer.from('\x1b[0A'));
+    stdin.type(Buffer.from([0x03]));
+    await expect(sessionPromise).resolves.toBe(0);
+    expect(inputStreams[0].writes).toEqual([]);
+    releaseSnapshot();
+  });
+
+  it('waits for predictive echo seeding before forwarding initial input', async () => {
+    let releaseSeed!: () => void;
+    const seedPending = new Promise<void>((resolve) => {
+      releaseSeed = resolve;
+    });
+    const predictiveEcho = new FakePredictiveEcho();
+    predictiveEcho.seed = vi.fn(() => seedPending);
+    const { deps, sockets, stdin, inputStreams } = createHarness({ predictiveEcho });
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from('before'));
+    expect(inputStreams[0].writes).toEqual([]);
+    expect(predictiveEcho.inputs).toEqual([]);
+
+    releaseSeed();
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+    stdin.type(Buffer.from('after'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(inputStreams[0].writes).toEqual(['after']);
+    expect(predictiveEcho.inputs).toEqual(['after']);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('takes stdin raw before replaying a TUI snapshot', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      expect(stdin.isRaw).toBe(true);
+      return { status: 'ok' };
+    }) as PassthroughDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('preserves an already-raw stdin on detach', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    stdin.isRaw = true;
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.rawModeCalls).toEqual([]);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(stdin.rawModeCalls).toEqual([]);
   });
 
   it('flips to auto_inject even when the worker was in manual_flush mode on attach, then restores on detach', async () => {

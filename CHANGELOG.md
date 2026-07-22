@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `relay node agent list --pretty` now provides a compact agent view with each agent's name, CLI/model, state, and relative last activity time.
 
+## [Unreleased]
+
+## [11.0.2] - 2026-07-22
+
+### Fixed
+
+- `agent-relay agent attach --mode drive|passthrough` now takes raw input before replaying terminal state and preserves inherited raw mode on detach, preventing mouse-report escape characters and parent-TUI input regressions.
+- `relay-feature-guardian` now treats an admitted Slack write without a provider receipt as a retry-pending warning, retaining its checkpoint and idempotency key instead of failing the guardian run.
+
+## [11.0.1] - 2026-07-22
+
 ### Fixed
 
 - `agent-relay agent attach --mode view` now consumes local input while viewing, preventing mouse-wheel reports from appearing as scroll-up and scroll-down escape characters.

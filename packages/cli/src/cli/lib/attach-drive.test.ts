@@ -57,6 +57,7 @@ class FakeWebSocket implements DriveWebSocket {
 
 class FakeStdin implements DriveStdin {
   isTTY = true;
+  isRaw = false;
   setRawMode = vi.fn<(mode: boolean) => unknown>(() => undefined);
   resume = vi.fn(() => undefined);
   pause = vi.fn(() => undefined);
@@ -66,6 +67,7 @@ class FakeStdin implements DriveStdin {
   constructor() {
     this.setRawMode = vi.fn((mode: boolean) => {
       this.rawModeCalls.push(mode);
+      this.isRaw = mode;
       return undefined;
     });
   }
@@ -160,6 +162,23 @@ class FakeInputStream implements CliPtyInputStream {
   }
 }
 
+class FakePredictiveEcho {
+  readonly seeded: string[] = [];
+  readonly inputs: string[] = [];
+
+  async seed(data: string): Promise<void> {
+    this.seeded.push(data);
+  }
+
+  async onServerOutput(): Promise<void> {}
+  onUserInput(forward: Buffer): void {
+    this.inputs.push(forward.toString('utf-8'));
+  }
+  rollback(): void {}
+  onResize(): void {}
+  reset(): void {}
+}
+
 /** Routed fetch — keyed on `${method} ${pathSuffix}`. */
 type FetchRoute = (init?: RequestInit) => Promise<Response>;
 
@@ -185,6 +204,7 @@ interface FetchScript {
   /** Ownership re-assert interval (ms). Defaults to disabled (0) in tests so
    *  the keep-alive timer doesn't interfere; the re-assert test sets it small. */
   ownershipReassertMs?: number;
+  predictiveEcho?: FakePredictiveEcho;
 }
 
 function createHarness(opts: FetchScript = {}): {
@@ -198,6 +218,7 @@ function createHarness(opts: FetchScript = {}): {
   signals: Map<NodeJS.Signals, () => void | Promise<void>>;
   fetchLog: Array<{ url: string; method: string; body?: unknown; headers: Record<string, string> }>;
   inputStreams: FakeInputStream[];
+  predictiveEcho?: FakePredictiveEcho;
 } {
   const writes: string[] = [];
   const errors: unknown[][] = [];
@@ -395,6 +416,7 @@ function createHarness(opts: FetchScript = {}): {
       inputStreams.push(stream);
       return stream;
     }),
+    createPredictiveEcho: opts.predictiveEcho ? () => opts.predictiveEcho ?? null : undefined,
     // Immediate, deterministic status repaints in tests (no coalescing timer).
     statusRepaintCoalesceMs: 0,
     // Disable the ownership re-assert timer by default so it can't perturb
@@ -402,7 +424,19 @@ function createHarness(opts: FetchScript = {}): {
     ownershipReassertMs: opts.ownershipReassertMs ?? 0,
   };
 
-  return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog, inputStreams };
+  return {
+    deps,
+    stdin,
+    terminal,
+    sockets,
+    writes,
+    errors,
+    logs,
+    signals,
+    fetchLog,
+    inputStreams,
+    predictiveEcho: opts.predictiveEcho,
+  };
 }
 
 afterEach(() => {
@@ -601,6 +635,80 @@ describe('runDriveSession', () => {
       expected_mode: 'manual_flush',
       expected_revision: '1',
     });
+  });
+
+  it('takes stdin raw before replaying a TUI snapshot', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      expect(stdin.isRaw).toBe(true);
+      return { status: 'ok' };
+    }) as DriveDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('keeps Ctrl+C available while a raw-mode snapshot is pending', async () => {
+    let releaseSnapshot!: () => void;
+    const snapshotPending = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const { deps, sockets, stdin, inputStreams } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      await snapshotPending;
+      return { status: 'ok' };
+    }) as DriveDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.isRaw).toBe(true);
+
+    stdin.type(Buffer.from('\x1b[0A'));
+    stdin.type(Buffer.from([0x03]));
+    await expect(sessionPromise).resolves.toBe(0);
+    expect(inputStreams[0].writes).toEqual([]);
+    releaseSnapshot();
+  });
+
+  it('waits for predictive echo seeding before forwarding initial input', async () => {
+    let releaseSeed!: () => void;
+    const seedPending = new Promise<void>((resolve) => {
+      releaseSeed = resolve;
+    });
+    const predictiveEcho = new FakePredictiveEcho();
+    predictiveEcho.seed = vi.fn(() => seedPending);
+    const { deps, sockets, stdin, inputStreams } = createHarness({ predictiveEcho });
+
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from('before'));
+    expect(inputStreams[0].writes).toEqual([]);
+    expect(predictiveEcho.inputs).toEqual([]);
+
+    releaseSeed();
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+    stdin.type(Buffer.from('after'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(inputStreams[0].writes).toEqual(['after']);
+    expect(predictiveEcho.inputs).toEqual(['after']);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('preserves an already-raw stdin on detach', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    stdin.isRaw = true;
+
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.rawModeCalls).toEqual([]);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(stdin.rawModeCalls).toEqual([]);
   });
 
   it('aborts before opening the WS when the broker rejects the mode flip', async () => {
