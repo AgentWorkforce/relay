@@ -125,9 +125,8 @@ function createRawObserverStream(
     if (!WebSocketImpl) {
       report(
         new Error(
-          'No WebSocket implementation available for the observer stream. Node exposes a ' +
-            'global `WebSocket` only from v22; on earlier supported runtimes (Node >= 20.9) ' +
-            'install one as `globalThis.WebSocket` (e.g. the `ws` package) or pass ' +
+          'No WebSocket implementation available for the observer stream. Node 22+ exposes a ' +
+            'global `WebSocket`; otherwise install one as `globalThis.WebSocket` (e.g. the `ws` package) or pass ' +
             '`webSocketImpl`/`createLiveStream` to observer mode.'
         )
       );

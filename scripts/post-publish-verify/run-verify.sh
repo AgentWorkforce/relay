@@ -7,7 +7,7 @@
 #   ./run-verify.sh                    # Test latest version
 #   ./run-verify.sh 2.0.25             # Test specific version
 #   ./run-verify.sh latest --parallel  # Run all versions in parallel
-#   ./run-verify.sh 2.0.25 --node 20   # Test specific Node.js version only
+#   ./run-verify.sh 2.0.25 --node 22   # Test specific Node.js version only
 
 set -e
 
@@ -52,14 +52,14 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --parallel, -p   Run all Node versions in parallel"
-            echo "  --node, -n VER   Test only specific Node.js version (18, 20, or 22)"
+            echo "  --node, -n VER   Test only specific Node.js version (22 or 24)"
             echo "  --help, -h       Show this help"
             echo ""
             echo "Examples:"
             echo "  $0                     # Test latest across all Node versions"
             echo "  $0 2.0.25              # Test version 2.0.25"
             echo "  $0 latest --parallel   # Test in parallel"
-            echo "  $0 2.0.25 --node 20    # Test only Node 20"
+            echo "  $0 2.0.25 --node 22    # Test only Node 22"
             exit 0
             ;;
         *)
@@ -68,6 +68,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "$SPECIFIC_NODE" ] && [ "$SPECIFIC_NODE" != "22" ] && [ "$SPECIFIC_NODE" != "24" ]; then
+    log_error "Unsupported Node.js version: $SPECIFIC_NODE (supported: 22, 24)"
+    exit 1
+fi
 
 log_header "Agent Relay Post-Publish Verification"
 log_info "Package version: $PACKAGE_VERSION"
@@ -83,7 +88,7 @@ export PACKAGE_VERSION
 if [ -n "$SPECIFIC_NODE" ]; then
     SERVICES="node${SPECIFIC_NODE}"
 else
-    SERVICES="node18 node20 node22"
+    SERVICES="node22 node24"
 fi
 
 # Build images

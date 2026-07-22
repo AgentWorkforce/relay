@@ -1,12 +1,9 @@
 import WebSocketImpl from 'ws';
 
 /**
- * Node exposes a global `WebSocket` only from v22 (unflagged). Relay supports
- * Node >=20.9 (root `engines`), where `@relaycast/sdk`'s WebSocket transport
- * (`AgentClient`, `NodeProviderClient`) would otherwise throw
- * `WebSocket is not defined` at connect time. Install the bundled `ws`
- * implementation as the global when the runtime lacks its own; a no-op on
- * Node 22+ and in browsers.
+ * Node exposes a global `WebSocket` from v22. Relay supports Node 22+, but
+ * install the bundled `ws` implementation when a non-Node runtime lacks one;
+ * this is a no-op on supported Node versions and in browsers.
  */
 export function ensureWebSocketGlobal(): void {
   const target = globalThis as { WebSocket?: unknown };

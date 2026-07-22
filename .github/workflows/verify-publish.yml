@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['22.14.0', '24']
 
     steps:
       - name: Checkout (for scripts)
@@ -410,7 +410,7 @@ jobs:
           echo "### Native Tests" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 22 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Node 22 and 24 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### macOS Tests (broker binary)" >> $GITHUB_STEP_SUMMARY
           echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
@@ -420,7 +420,7 @@ jobs:
           echo "### Docker Tests (Linux)" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 22 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Node 22 and 24 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Overall" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.verify.result }}" = "success" ] && [ "${{ needs.verify-macos-arm64.result }}" = "success" ] && [ "${{ needs.verify-docker.result }}" = "success" ]; then
