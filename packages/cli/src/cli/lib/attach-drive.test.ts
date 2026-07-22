@@ -424,7 +424,19 @@ function createHarness(opts: FetchScript = {}): {
     ownershipReassertMs: opts.ownershipReassertMs ?? 0,
   };
 
-  return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog, inputStreams, predictiveEcho: opts.predictiveEcho };
+  return {
+    deps,
+    stdin,
+    terminal,
+    sockets,
+    writes,
+    errors,
+    logs,
+    signals,
+    fetchLog,
+    inputStreams,
+    predictiveEcho: opts.predictiveEcho,
+  };
 }
 
 afterEach(() => {
