@@ -41,6 +41,8 @@ const expectedLeafCommands = [
   'fleet enable',
   'fleet inherit',
   'fleet nodes',
+  'fleet release',
+  'fleet spawn',
   'fleet status',
   // cloud
   'cloud login',

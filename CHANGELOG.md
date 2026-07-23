@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `relay node agent list --pretty` now provides a compact agent view with each agent's name, CLI/model, state, and relative last activity time.
+- `agent-relay fleet spawn|release` can create, target, and release agents across live Fleet nodes directly from the terminal.
 - `agent-relay fleet nodes --all` includes offline and direct fleet-history records when they are needed for diagnostics.
 
 ### Changed
