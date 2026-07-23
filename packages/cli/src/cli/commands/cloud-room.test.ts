@@ -125,7 +125,56 @@ describe('registerCloudRoomCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('herdr_inv_single_use_secret');
   });
 
-  it('requires one explicit invitation-token output sink before authenticating', async () => {
+  it('sends an invitation by email without returning its one-time token', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        invite: {
+          id: 'invite_1',
+          email: 'person@example.com',
+          role: 'participant',
+          expiresAt: '2026-07-30T00:00:00.000Z',
+          createdAt: '2026-07-23T00:00:00.000Z',
+        },
+        delivery: { mode: 'email', status: 'sent' },
+      }),
+      auth,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'room',
+      'invite',
+      '--workspace',
+      'rw_7ccfea89',
+      '--email',
+      'person@example.com',
+      '--email-delivery',
+      '--json',
+    ]);
+
+    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
+      auth,
+      '/api/v1/workspaces/rw_7ccfea89/room/invites',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          email: 'person@example.com',
+          role: 'participant',
+          expiresInSeconds: 604800,
+          delivery: 'email',
+        }),
+      },
+      { interactive: false }
+    );
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('"status": "sent"');
+    expect(output).not.toContain('herdr_inv_');
+  });
+
+  it('requires explicit email delivery or one token sink before authenticating', async () => {
     const { program, deps } = createHarness();
 
     await expect(
@@ -144,8 +193,30 @@ describe('registerCloudRoomCommands', () => {
 
     expect(deps.ensureCloudSession).not.toHaveBeenCalled();
     expect(deps.error).toHaveBeenCalledWith(
-      'Use exactly one invitation-token sink: --token-stdout, --token-file, or --json.'
+      'Use --email-delivery (optionally with --json), or exactly one manual token sink: --token-stdout, --token-file, or --json.'
     );
+  });
+
+  it('rejects combining email delivery with a manual token sink before authenticating', async () => {
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'room',
+        'invite',
+        '--workspace',
+        'rw_7ccfea89',
+        '--email',
+        'person@example.com',
+        '--email-delivery',
+        '--token-stdout',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.ensureCloudSession).not.toHaveBeenCalled();
   });
 
   it('writes an invitation token only to a new owner-only file', async () => {
@@ -187,9 +258,7 @@ describe('registerCloudRoomCommands', () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
-    expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).not.toContain(
-      'herdr_inv_file_secret'
-    );
+    expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).not.toContain('herdr_inv_file_secret');
   });
 
   it('revokes a newly created invite when its token file cannot be created', async () => {
@@ -245,9 +314,7 @@ describe('registerCloudRoomCommands', () => {
       { interactive: false }
     );
     expect(
-      [...vi.mocked(deps.log).mock.calls, ...vi.mocked(deps.error).mock.calls]
-        .flat()
-        .join('\n')
+      [...vi.mocked(deps.log).mock.calls, ...vi.mocked(deps.error).mock.calls].flat().join('\n')
     ).not.toContain('herdr_inv_lost_secret');
   });
 
@@ -277,14 +344,7 @@ describe('registerCloudRoomCommands', () => {
       response: null,
     },
     {
-      args: [
-        'revoke-session',
-        '--workspace',
-        'rw_7ccfea89',
-        '--device-id',
-        'herdr-desktop-1',
-        '--json',
-      ],
+      args: ['revoke-session', '--workspace', 'rw_7ccfea89', '--device-id', 'herdr-desktop-1', '--json'],
       path: '/api/v1/workspaces/rw_7ccfea89/room/session',
       method: 'DELETE',
       body: JSON.stringify({ deviceId: 'herdr-desktop-1' }),
@@ -299,12 +359,9 @@ describe('registerCloudRoomCommands', () => {
 
     await program.parseAsync(['node', 'agent-relay', 'cloud', 'room', ...args]);
 
-    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
-      auth,
-      path,
-      body ? { method, body } : { method },
-      { interactive: false }
-    );
+    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(auth, path, body ? { method, body } : { method }, {
+      interactive: false,
+    });
   });
 
   it('accepts an invitation without echoing its token', async () => {
@@ -698,10 +755,7 @@ describe('registerCloudRoomCommands', () => {
   );
 
   it.each([
-    [
-      'invitation',
-      ['invite', '--workspace', 'rw_7ccfea89', '--email', 'p@example.com', '--token-stdout'],
-    ],
+    ['invitation', ['invite', '--workspace', 'rw_7ccfea89', '--email', 'p@example.com', '--token-stdout']],
     ['invitation list', ['invites', '--workspace', 'rw_7ccfea89']],
     ['member list', ['members', '--workspace', 'rw_7ccfea89']],
     ['membership', ['accept', '--token-stdin']],

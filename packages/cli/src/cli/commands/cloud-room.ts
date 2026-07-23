@@ -119,6 +119,22 @@ function normalizeInviteCreate(payload: unknown): { invite: RoomInvite & { token
   };
 }
 
+function normalizeEmailInviteCreate(payload: unknown): {
+  invite: RoomInvite;
+  delivery: { mode: 'email'; status: 'sent' };
+} {
+  const response = requireObject(payload, 'email invitation');
+  const delivery = requireObject(response.delivery, 'email invitation delivery');
+  if (delivery.mode !== 'email' || delivery.status !== 'sent') {
+    throw new Error('Cloud room returned an invalid email invitation response.');
+  }
+  const invite = normalizeInvite(response.invite, false);
+  if (containsForbiddenCredentialField(response) || 'token' in requireObject(response.invite, 'invitation')) {
+    throw new Error('Cloud room returned a forbidden invitation credential.');
+  }
+  return { invite, delivery: { mode: 'email', status: 'sent' } };
+}
+
 function normalizeInviteList(payload: unknown): { invites: RoomInvite[] } {
   const response = requireObject(payload, 'invitation list');
   if (!Array.isArray(response.invites)) {
@@ -354,8 +370,7 @@ function requireRelaycastBaseUrl(value: string): string {
   } catch {
     throw new Error('Cloud room returned an invalid session response.');
   }
-  const loopback =
-    url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
   if (
     (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) ||
     url.username ||
@@ -375,8 +390,7 @@ function canonicalApiBaseUrl(value: string): string {
   } catch {
     throw new Error('Invalid Cloud API URL.');
   }
-  const loopback =
-    url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
   if (
     (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) ||
     url.username ||
@@ -430,10 +444,7 @@ async function requestRoom(
     apiUrl: requestedApiUrl,
     interactive: false,
   });
-  if (
-    apiUrl &&
-    canonicalApiBaseUrl(session.auth.apiUrl) !== canonicalApiBaseUrl(requestedApiUrl)
-  ) {
+  if (apiUrl && canonicalApiBaseUrl(session.auth.apiUrl) !== canonicalApiBaseUrl(requestedApiUrl)) {
     throw new Error(
       `Cloud login is bound to ${canonicalApiBaseUrl(
         session.auth.apiUrl
@@ -529,9 +540,10 @@ export function registerCloudRoomCommands(
       parsePositiveInteger,
       DEFAULT_INVITATION_LIFETIME_SECONDS
     )
+    .option('--email-delivery', 'Send the invitation through Agent Relay Cloud email')
     .option('--token-stdout', 'Print only the one-time invitation token')
     .option('--token-file <path>', 'Write the token to a new owner-only 0600 file')
-    .option('--json', 'Output the full invitation, including its one-time token, as JSON')
+    .option('--json', 'Output the invitation as JSON; manual delivery includes its one-time token')
     .action(
       async (options: {
         workspace: string;
@@ -539,38 +551,49 @@ export function registerCloudRoomCommands(
         role: RoomRole;
         expiresIn: number;
         apiUrl?: string;
+        emailDelivery?: boolean;
         tokenStdout?: boolean;
         tokenFile?: string;
         json?: boolean;
       }) => {
         await runRoomAction(deps, async () => {
-          const outputCount = [
-            options.tokenStdout,
-            Boolean(options.tokenFile),
-            options.json,
-          ].filter(Boolean).length;
-          if (outputCount !== 1) {
+          const manualSinkCount = [options.tokenStdout, Boolean(options.tokenFile), options.json].filter(
+            Boolean
+          ).length;
+          if (
+            (options.emailDelivery && (options.tokenStdout || options.tokenFile)) ||
+            (!options.emailDelivery && manualSinkCount !== 1)
+          ) {
             throw new Error(
-              'Use exactly one invitation-token sink: --token-stdout, --token-file, or --json.'
+              'Use --email-delivery (optionally with --json), or exactly one manual token sink: --token-stdout, --token-file, or --json.'
             );
           }
           const workspaceId = requireWorkspaceId(options.workspace);
           const email = requireEmail(options.email);
-          const payload = normalizeInviteCreate(
-            await requestRoom(
-              deps,
-              `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/room/invites`,
-              {
-                method: 'POST',
-                body: JSON.stringify({
-                  email,
-                  role: options.role,
-                  expiresInSeconds: options.expiresIn,
-                }),
-              },
-              options.apiUrl
-            )
+          const response = await requestRoom(
+            deps,
+            `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/room/invites`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                email,
+                role: options.role,
+                expiresInSeconds: options.expiresIn,
+                ...(options.emailDelivery ? { delivery: 'email' } : {}),
+              }),
+            },
+            options.apiUrl
           );
+          if (options.emailDelivery) {
+            const payload = normalizeEmailInviteCreate(response);
+            if (options.json) {
+              logJson(deps, payload);
+              return;
+            }
+            deps.log(`Sent ${options.role} room invitation to ${email}.`);
+            return;
+          }
+          const payload = normalizeInviteCreate(response);
           if (options.json) {
             logJson(deps, payload);
             return;
@@ -601,7 +624,9 @@ export function registerCloudRoomCommands(
             throw writeError;
           }
           deps.log(`Created ${options.role} room invitation for ${email}.`);
-          deps.log(`Wrote the one-time invitation token to ${sanitizeTerminalCell(options.tokenFile ?? '')}.`);
+          deps.log(
+            `Wrote the one-time invitation token to ${sanitizeTerminalCell(options.tokenFile ?? '')}.`
+          );
         });
       }
     );
@@ -753,33 +778,26 @@ export function registerCloudRoomCommands(
     .requiredOption('--device-id <device-id>', 'Stable non-secret identifier for this client')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--json', 'Output the revocation response as JSON')
-    .action(
-      async (options: {
-        workspace: string;
-        deviceId: string;
-        apiUrl?: string;
-        json?: boolean;
-      }) => {
-        await runRoomAction(deps, async () => {
-          const workspaceId = requireWorkspaceId(options.workspace);
-          const deviceId = requireDeviceId(options.deviceId);
-          await requestRoom(
-            deps,
-            `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/room/session`,
-            {
-              method: 'DELETE',
-              body: JSON.stringify({ deviceId }),
-            },
-            options.apiUrl
-          );
-          if (options.json) {
-            logJson(deps, { ok: true });
-            return;
-          }
-          deps.log(`Revoked room session for device ${sanitizeTerminalCell(deviceId)}.`);
-        });
-      }
-    );
+    .action(async (options: { workspace: string; deviceId: string; apiUrl?: string; json?: boolean }) => {
+      await runRoomAction(deps, async () => {
+        const workspaceId = requireWorkspaceId(options.workspace);
+        const deviceId = requireDeviceId(options.deviceId);
+        await requestRoom(
+          deps,
+          `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/room/session`,
+          {
+            method: 'DELETE',
+            body: JSON.stringify({ deviceId }),
+          },
+          options.apiUrl
+        );
+        if (options.json) {
+          logJson(deps, { ok: true });
+          return;
+        }
+        deps.log(`Revoked room session for device ${sanitizeTerminalCell(deviceId)}.`);
+      });
+    });
 
   room
     .command('session')

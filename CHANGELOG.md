@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay cloud room` can invite workspace-scoped participants through explicit secret sinks, manage members, and establish per-device multiplayer sessions without sharing a Relay workspace key.
+- `agent-relay cloud integration` can discover truthful provider capabilities, connect providers, manage room-member path grants, and mint or revoke device-scoped Relayfile credential leases.
 - `agent-relay agent me|presence` use scoped agent credentials for room-safe identity and presence checks.
 
 ## [11.1.1] - 2026-07-23

@@ -96,12 +96,16 @@ agent-relay cloud room invite \
   --workspace rw_7ccfea89 \
   --email teammate@example.com \
   --role participant \
-  --token-file ./teammate.room-invite
+  --email-delivery
 agent-relay cloud room invites --workspace rw_7ccfea89
 agent-relay cloud room members --workspace rw_7ccfea89
 
-# Share the owner-only token file over a secure channel. The invitee keeps the
-# single-use token out of shell history and process arguments.
+# Manual fallback: create an owner-only token file and share it over a secure
+# channel. The invitee keeps the token out of shell history and process arguments.
+agent-relay cloud room invite \
+  --workspace rw_7ccfea89 \
+  --email teammate@example.com \
+  --token-file ./teammate.room-invite
 read -rs ROOM_INVITATION_TOKEN
 printf '%s' "$ROOM_INVITATION_TOKEN" |
   agent-relay cloud room accept --token-stdin
@@ -128,6 +132,34 @@ agent-relay agent presence \
 
 # Owner: revoke access and active room sessions.
 agent-relay cloud room remove-member <membership-id> --workspace rw_7ccfea89
+```
+
+Room membership grants chat only. Integration access is separately connected,
+granted to one room member, and issued as a short-lived, revocable lease:
+
+```bash
+# Owner: inspect capability truth, connect a provider, then grant exact paths.
+agent-relay cloud integration catalog --workspace rw_7ccfea89
+agent-relay cloud integration connect linear --workspace rw_7ccfea89
+agent-relay cloud integration grant \
+  --workspace rw_7ccfea89 \
+  --member <membership-id> \
+  --provider linear \
+  --path '/linear/issues/**' \
+  --access write
+
+# Member or Herdr: capture the delegated bundle explicitly. Caller identity is
+# derived from Cloud auth; it is never accepted from command flags.
+agent-relay cloud integration credential \
+  --workspace rw_7ccfea89 \
+  --device-id herdr-room-device \
+  --access write \
+  --output-file ./relayfile-credential.json
+
+# Herdr uses the JSON form only for in-process capture, keeps the lease ID (not
+# its token) as durable cleanup state, and revokes it on close or session reset.
+agent-relay cloud integration revoke-credential <lease-id> \
+  --workspace rw_7ccfea89
 ```
 
 `local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).
