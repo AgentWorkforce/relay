@@ -12,6 +12,7 @@ type CloudRoomDependencies = Pick<
   CloudDependencies,
   'log' | 'error' | 'exit' | 'ensureCloudSession' | 'authorizedApiFetch'
 >;
+type CloudAuth = Awaited<ReturnType<CloudDependencies['ensureCloudSession']>>['auth'];
 
 type RoomRole = 'viewer' | 'participant';
 
@@ -433,37 +434,51 @@ function cloudRoomError(response: Response): Error {
   return new Error(`Cloud room request failed (${response.status}).`);
 }
 
+async function requestRoomWithAuth(
+  deps: CloudRoomDependencies,
+  path: string,
+  init: RequestInit,
+  apiUrl?: string,
+  priorAuth?: CloudAuth
+): Promise<{ payload: unknown; auth: CloudAuth }> {
+  const requestedApiUrl = apiUrl ?? defaultApiUrl();
+  const auth =
+    priorAuth ??
+    (
+      await deps.ensureCloudSession({
+        apiUrl: requestedApiUrl,
+        interactive: false,
+      })
+    ).auth;
+  if (apiUrl && canonicalApiBaseUrl(auth.apiUrl) !== canonicalApiBaseUrl(requestedApiUrl)) {
+    throw new Error(
+      `Cloud login is bound to ${canonicalApiBaseUrl(
+        auth.apiUrl
+      )}. Run \`agent-relay cloud login --api-url ${canonicalApiBaseUrl(
+        requestedApiUrl
+      )} --force\` before using this host.`
+    );
+  }
+  const result = await deps.authorizedApiFetch(auth, path, init, {
+    interactive: false,
+  });
+  const payload = (await result.response.json().catch(() => null)) as unknown;
+  if (!result.response.ok) {
+    throw cloudRoomError(result.response);
+  }
+  if (containsForbiddenCredentialField(payload)) {
+    throw new Error('Cloud room returned a forbidden workspace or integration credential.');
+  }
+  return { payload, auth: result.auth };
+}
+
 async function requestRoom(
   deps: CloudRoomDependencies,
   path: string,
   init: RequestInit,
   apiUrl?: string
 ): Promise<unknown> {
-  const requestedApiUrl = apiUrl ?? defaultApiUrl();
-  const session = await deps.ensureCloudSession({
-    apiUrl: requestedApiUrl,
-    interactive: false,
-  });
-  if (apiUrl && canonicalApiBaseUrl(session.auth.apiUrl) !== canonicalApiBaseUrl(requestedApiUrl)) {
-    throw new Error(
-      `Cloud login is bound to ${canonicalApiBaseUrl(
-        session.auth.apiUrl
-      )}. Run \`agent-relay cloud login --api-url ${canonicalApiBaseUrl(
-        requestedApiUrl
-      )} --force\` before using this host.`
-    );
-  }
-  const { response } = await deps.authorizedApiFetch(session.auth, path, init, {
-    interactive: false,
-  });
-  const payload = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    throw cloudRoomError(response);
-  }
-  if (containsForbiddenCredentialField(payload)) {
-    throw new Error('Cloud room returned a forbidden workspace or integration credential.');
-  }
-  return payload;
+  return (await requestRoomWithAuth(deps, path, init, apiUrl)).payload;
 }
 
 async function runRoomAction(deps: CloudRoomDependencies, action: () => Promise<void>): Promise<void> {
@@ -570,7 +585,7 @@ export function registerCloudRoomCommands(
           }
           const workspaceId = requireWorkspaceId(options.workspace);
           const email = requireEmail(options.email);
-          const response = await requestRoom(
+          const created = await requestRoomWithAuth(
             deps,
             `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/room/invites`,
             {
@@ -585,7 +600,7 @@ export function registerCloudRoomCommands(
             options.apiUrl
           );
           if (options.emailDelivery) {
-            const payload = normalizeEmailInviteCreate(response);
+            const payload = normalizeEmailInviteCreate(created.payload);
             if (options.json) {
               logJson(deps, payload);
               return;
@@ -593,7 +608,7 @@ export function registerCloudRoomCommands(
             deps.log(`Sent ${options.role} room invitation to ${email}.`);
             return;
           }
-          const payload = normalizeInviteCreate(response);
+          const payload = normalizeInviteCreate(created.payload);
           if (options.json) {
             logJson(deps, payload);
             return;
@@ -606,13 +621,14 @@ export function registerCloudRoomCommands(
             await io.writeSecretFile(options.tokenFile ?? '', payload.invite.token);
           } catch (writeError) {
             try {
-              await requestRoom(
+              await requestRoomWithAuth(
                 deps,
                 `/api/v1/workspaces/${encodeURIComponent(
                   workspaceId
                 )}/room/invites/${encodeURIComponent(payload.invite.id)}`,
                 { method: 'DELETE' },
-                options.apiUrl
+                options.apiUrl,
+                created.auth
               );
             } catch {
               throw new Error(

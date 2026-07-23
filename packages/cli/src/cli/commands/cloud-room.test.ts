@@ -22,6 +22,11 @@ const auth = {
   refreshToken: 'refresh-secret',
   accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
 };
+const refreshedAuth = {
+  ...auth,
+  accessToken: 'refreshed-access-secret',
+  refreshToken: 'rotated-refresh-secret',
+};
 
 function jsonResponse(body: unknown, status = 200, headers?: HeadersInit): Response {
   return new Response(JSON.stringify(body), {
@@ -278,11 +283,11 @@ describe('registerCloudRoomCommands', () => {
             createdAt: '2026-07-23T00:00:00.000Z',
           },
         }),
-        auth,
+        auth: refreshedAuth,
       })
       .mockResolvedValueOnce({
         response: new Response(null, { status: 204 }),
-        auth,
+        auth: refreshedAuth,
       });
 
     try {
@@ -308,11 +313,12 @@ describe('registerCloudRoomCommands', () => {
 
     expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
       2,
-      auth,
+      refreshedAuth,
       '/api/v1/workspaces/rw_7ccfea89/room/invites/invite_1',
       { method: 'DELETE' },
       { interactive: false }
     );
+    expect(deps.ensureCloudSession).toHaveBeenCalledTimes(1);
     expect(
       [...vi.mocked(deps.log).mock.calls, ...vi.mocked(deps.error).mock.calls].flat().join('\n')
     ).not.toContain('herdr_inv_lost_secret');

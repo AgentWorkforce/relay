@@ -19,6 +19,11 @@ const auth = {
   refreshToken: 'refresh-secret',
   accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
 };
+const refreshedAuth = {
+  ...auth,
+  accessToken: 'refreshed-access-secret',
+  refreshToken: 'rotated-refresh-secret',
+};
 
 function response(value: unknown, status = 200): Response {
   return new Response(value === null ? null : JSON.stringify(value), {
@@ -287,8 +292,8 @@ describe('registerCloudIntegrationCommands', () => {
     fs.writeFileSync(target, 'preserve', { mode: 0o600 });
     const { program, deps } = harness();
     vi.mocked(deps.authorizedApiFetch)
-      .mockResolvedValueOnce({ response: response(credential()), auth })
-      .mockResolvedValueOnce({ response: new Response(null, { status: 204 }), auth });
+      .mockResolvedValueOnce({ response: response(credential()), auth: refreshedAuth })
+      .mockResolvedValueOnce({ response: new Response(null, { status: 204 }), auth: refreshedAuth });
     try {
       await expect(
         program.parseAsync([
@@ -313,11 +318,12 @@ describe('registerCloudIntegrationCommands', () => {
     }
     expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
       2,
-      auth,
+      refreshedAuth,
       '/api/v1/workspaces/rw_7ccfea89/relayfile/delegated-token/lease_1',
       { method: 'DELETE' },
       { interactive: false }
     );
+    expect(deps.ensureCloudSession).toHaveBeenCalledTimes(1);
   });
 
   it('revokes a device-scoped credential lease without putting secrets in argv', async () => {

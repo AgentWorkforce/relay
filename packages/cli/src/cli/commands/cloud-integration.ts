@@ -11,6 +11,7 @@ type Dependencies = Pick<
   CloudDependencies,
   'log' | 'error' | 'exit' | 'ensureCloudSession' | 'authorizedApiFetch'
 >;
+type CloudAuth = Awaited<ReturnType<CloudDependencies['ensureCloudSession']>>['auth'];
 
 const WORKSPACE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RELAY_WORKSPACE = /^rw_[a-z0-9]{8}$/;
@@ -171,29 +172,39 @@ function cloudError(response: Response): Error {
   return new Error(`Cloud integration request failed (${response.status}).`);
 }
 
+async function requestWithAuth(
+  deps: Dependencies,
+  path: string,
+  init: RequestInit,
+  apiUrl?: string,
+  priorAuth?: CloudAuth
+): Promise<{ payload: unknown; auth: CloudAuth }> {
+  const requested = apiUrl ?? defaultApiUrl();
+  const auth = priorAuth ?? (await deps.ensureCloudSession({ apiUrl: requested, interactive: false })).auth;
+  if (apiUrl && canonicalApiUrl(auth.apiUrl) !== canonicalApiUrl(requested)) {
+    throw new Error(
+      `Cloud login is bound to ${canonicalApiUrl(
+        auth.apiUrl
+      )}. Run \`agent-relay cloud login --api-url ${canonicalApiUrl(
+        requested
+      )} --force\` before using this host.`
+    );
+  }
+  const result = await deps.authorizedApiFetch(auth, path, init, {
+    interactive: false,
+  });
+  const payload = (await result.response.json().catch(() => null)) as unknown;
+  if (!result.response.ok) throw cloudError(result.response);
+  return { payload, auth: result.auth };
+}
+
 async function request(
   deps: Dependencies,
   path: string,
   init: RequestInit,
   apiUrl?: string
 ): Promise<unknown> {
-  const requested = apiUrl ?? defaultApiUrl();
-  const session = await deps.ensureCloudSession({ apiUrl: requested, interactive: false });
-  if (apiUrl && canonicalApiUrl(session.auth.apiUrl) !== canonicalApiUrl(requested)) {
-    throw new Error(
-      `Cloud login is bound to ${canonicalApiUrl(
-        session.auth.apiUrl
-      )}. Run \`agent-relay cloud login --api-url ${canonicalApiUrl(
-        requested
-      )} --force\` before using this host.`
-    );
-  }
-  const { response } = await deps.authorizedApiFetch(session.auth, path, init, {
-    interactive: false,
-  });
-  const payload = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) throw cloudError(response);
-  return payload;
+  return (await requestWithAuth(deps, path, init, apiUrl)).payload;
 }
 
 async function action(deps: Dependencies, fn: () => Promise<void>): Promise<void> {
@@ -650,23 +661,22 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
             throw new Error('Credential TTL exceeds the Cloud maximum.');
           }
           const id = workspaceId(options.workspace);
-          const credential = normalizeCredential(
-            await request(
-              deps,
-              `/api/v1/workspaces/${encodeURIComponent(id)}/relayfile/delegated-token`,
-              {
-                method: 'POST',
-                body: JSON.stringify({
-                  deviceId: options.deviceId,
-                  scopes: options.access === 'write' ? ['fs:read', 'fs:write'] : ['fs:read'],
-                  ...(options.path.length > 0 ? { relayfileMountPaths: options.path } : {}),
-                  ttlSeconds: options.ttl,
-                  delegationTtlSeconds: options.delegationTtl,
-                }),
-              },
-              options.apiUrl
-            )
+          const minted = await requestWithAuth(
+            deps,
+            `/api/v1/workspaces/${encodeURIComponent(id)}/relayfile/delegated-token`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                deviceId: options.deviceId,
+                scopes: options.access === 'write' ? ['fs:read', 'fs:write'] : ['fs:read'],
+                ...(options.path.length > 0 ? { relayfileMountPaths: options.path } : {}),
+                ttlSeconds: options.ttl,
+                delegationTtlSeconds: options.delegationTtl,
+              }),
+            },
+            options.apiUrl
           );
+          const credential = normalizeCredential(minted.payload);
           if (options.json) {
             json(deps, credential);
             return;
@@ -675,13 +685,14 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
             await writeCredentialFile(options.outputFile ?? '', credential);
           } catch (writeError) {
             try {
-              await request(
+              await requestWithAuth(
                 deps,
                 `/api/v1/workspaces/${encodeURIComponent(
                   id
                 )}/relayfile/delegated-token/${encodeURIComponent(credential.leaseId)}`,
                 { method: 'DELETE' },
-                options.apiUrl
+                options.apiUrl,
+                minted.auth
               );
             } catch {
               throw new Error(
