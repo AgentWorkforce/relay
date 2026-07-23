@@ -6,7 +6,7 @@
 //! Opt-out:
 //!   - Set `AGENT_RELAY_TELEMETRY_DISABLED=1` (or `true`)
 //!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
-//!   - Or write `{"enabled": false}` to `~/.agent-relay/telemetry.json`
+//!   - Or write `{"enabled": false}` to `~/.agentworkforce/relay/telemetry.json`
 
 use std::path::PathBuf;
 
@@ -22,12 +22,14 @@ use tokio::sync::mpsc;
 /// binaries report to the production PostHog project.
 const POSTHOG_API_KEY: Option<&str> = option_env!("AGENT_RELAY_POSTHOG_KEY");
 const POSTHOG_HOST: &str = "https://us.i.posthog.com";
+const UNKNOWN_ORCHESTRATOR_HARNESS: &str = "unknown";
+const ORCHESTRATOR_HARNESS_ENV: &str = "AGENT_RELAY_ORCHESTRATOR_HARNESS";
 
 /// Returns the configured PostHog key iff it's non-empty. Empty strings are
 /// treated the same as "unset" so an accidentally-blank secret doesn't trip
 /// us into trying to talk to PostHog with an invalid key.
 fn posthog_api_key() -> Option<&'static str> {
-    POSTHOG_API_KEY.and_then(|k| if k.is_empty() { None } else { Some(k) })
+    POSTHOG_API_KEY.filter(|k| !k.is_empty())
 }
 
 const FIRST_RUN_NOTICE: &str = "\
@@ -41,7 +43,7 @@ Run `agent-relay telemetry disable` to opt out.";
 /// Telemetry events emitted by the broker at key lifecycle points.
 ///
 /// Schema aligns with the TypeScript definitions in
-/// `packages/telemetry/src/events.ts` — when you add or change a field here,
+/// `packages/cli/src/cli/telemetry/events.ts` — when you add or change a field here,
 /// update that file too so dashboards stay coherent across the CLI/broker
 /// boundary.
 pub enum TelemetryEvent {
@@ -82,6 +84,13 @@ pub enum TelemetryEvent {
         exit_code: Option<i32>,
         lifetime_seconds: u64,
     },
+    /// The broker process itself panicked. Emitted synchronously from the
+    /// panic hook (see [`install_panic_hook`]). PII-safe by construction — it
+    /// carries only the compile-time source location, never the panic message.
+    BrokerPanic {
+        /// Source location of the panic as `file:line`.
+        location: String,
+    },
     MessageSend {
         is_broadcast: bool,
         has_thread: bool,
@@ -96,7 +105,6 @@ pub enum TelemetryEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionSource {
     HumanCli,
-    HumanDashboard,
     Agent,
     Protocol,
 }
@@ -105,7 +113,6 @@ impl ActionSource {
     fn as_str(&self) -> &'static str {
         match self {
             Self::HumanCli => "human_cli",
-            Self::HumanDashboard => "human_dashboard",
             Self::Agent => "agent",
             Self::Protocol => "protocol",
         }
@@ -121,6 +128,7 @@ impl TelemetryEvent {
             Self::AgentSpawn { .. } => "agent_spawn",
             Self::AgentRelease { .. } => "agent_release",
             Self::AgentCrash { .. } => "agent_crash",
+            Self::BrokerPanic { .. } => "broker_panic",
             Self::MessageSend { .. } => "message_send",
             Self::CliCommandRun { .. } => "cli_command_run",
         }
@@ -170,6 +178,9 @@ impl TelemetryEvent {
                 "exit_code": exit_code,
                 "lifetime_seconds": lifetime_seconds,
             }),
+            Self::BrokerPanic { location } => json!({
+                "panic_location": location,
+            }),
             Self::MessageSend {
                 is_broadcast,
                 has_thread,
@@ -185,7 +196,7 @@ impl TelemetryEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Preferences file (~/.agent-relay/telemetry.json)
+// Preferences file (~/.agentworkforce/relay/telemetry.json)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -197,7 +208,7 @@ struct TelemetryPrefs {
 }
 
 fn prefs_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agent-relay").join("telemetry.json"))
+    dirs::home_dir().map(|h| h.join(".agentworkforce/relay").join("telemetry.json"))
 }
 
 fn load_prefs() -> TelemetryPrefs {
@@ -232,7 +243,8 @@ fn machine_id_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| {
         h.join(".local")
             .join("share")
-            .join("agent-relay")
+            .join("agentworkforce")
+            .join("relay")
             .join("machine-id")
     })
 }
@@ -296,6 +308,184 @@ fn env_nonempty(key: &str) -> Option<String> {
     })
 }
 
+fn sanitize_orchestrator_harness(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                ' ' | '.' | '_' | '-' | '/' | '(' | ')' | ':' | '=' | ';' | ',' | '+'
+            )
+    }) {
+        return None;
+    }
+    Some(trimmed.chars().take(120).collect::<String>().to_lowercase())
+}
+
+/// Map a CLI command (e.g. `claude`, `codex`, `gemini`) to its canonical
+/// harness id. Used for orchestrator detection and for per-worker origin_actor
+/// attribution (the broker knows the CLI it spawns).
+pub(crate) fn infer_harness_from_command(command: &str) -> Option<&'static str> {
+    let lower = command.to_lowercase();
+    let normalized = lower.replace('\\', "/");
+    let base = normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized.as_str())
+        .trim_end_matches(".exe");
+    let base = base
+        .strip_suffix(".cmd")
+        .or_else(|| base.strip_suffix(".bat"))
+        .unwrap_or(base);
+
+    if base == "claude" || lower.contains("claude-code") {
+        return Some("claude-code");
+    }
+    if base == "codex" || normalized.contains("/codex") {
+        return Some("codex");
+    }
+    if base == "cursor" || base == "cursor-agent" || lower.contains("cursor") {
+        return Some("cursor");
+    }
+    if base == "gemini" || base == "gemini-cli" || lower.contains("gemini-cli") {
+        return Some("gemini-cli");
+    }
+    if base == "aider" || lower.contains("aider") {
+        return Some("aider");
+    }
+    if base == "opencode" || lower.contains("opencode") {
+        return Some("opencode");
+    }
+    if base == "goose" || lower.contains("goose") {
+        return Some("goose");
+    }
+    if base == "droid" || lower.contains("droid") {
+        return Some("droid");
+    }
+    if base == "amp" || normalized.contains("/amp") {
+        return Some("amp");
+    }
+    if lower.contains("copilot") {
+        return Some("github-copilot");
+    }
+    if base == "zed" || lower.contains("zed") {
+        return Some("zed");
+    }
+
+    None
+}
+
+#[cfg(unix)]
+fn lookup_process_info(pid: i32) -> Option<(i32, String)> {
+    if pid <= 0 {
+        return None;
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-o", "comm=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut parts = stdout.split_whitespace();
+    let ppid = parts.next()?.parse::<i32>().ok()?;
+    let command = parts.collect::<Vec<_>>().join(" ");
+    if command.is_empty() {
+        None
+    } else {
+        Some((ppid, command))
+    }
+}
+
+#[cfg(unix)]
+fn detect_process_orchestrator_harness() -> Option<String> {
+    use std::collections::HashSet;
+
+    let mut pid = nix::unistd::getppid().as_raw();
+    let mut seen = HashSet::new();
+
+    for _ in 0..8 {
+        if pid <= 0 || !seen.insert(pid) {
+            break;
+        }
+        let Some((ppid, command)) = lookup_process_info(pid) else {
+            break;
+        };
+        if let Some(harness) = infer_harness_from_command(&command) {
+            return Some(harness.to_string());
+        }
+        if ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+
+    None
+}
+
+#[cfg(not(unix))]
+fn detect_process_orchestrator_harness() -> Option<String> {
+    None
+}
+
+fn detect_orchestrator_harness() -> String {
+    for key in [
+        ORCHESTRATOR_HARNESS_ENV,
+        "RELAYCAST_HARNESS",
+        "X_RELAYCAST_HARNESS",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            if let Some(harness) = sanitize_orchestrator_harness(&value) {
+                return harness;
+            }
+        }
+    }
+
+    detect_process_orchestrator_harness()
+        .unwrap_or_else(|| UNKNOWN_ORCHESTRATOR_HARNESS.to_string())
+}
+
+/// Process-wide cached orchestrator harness: explicit env override, else
+/// process-tree detection (claude-code / codex / cursor / …). Detection walks
+/// the parent-process chain, so we resolve it once and reuse the result for
+/// both our own PostHog events and the harness we forward to the relaycast
+/// backend. Returns the [`UNKNOWN_ORCHESTRATOR_HARNESS`] sentinel when
+/// undetectable.
+pub(crate) fn orchestrator_harness() -> &'static str {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(detect_orchestrator_harness)
+}
+
+/// Like [`orchestrator_harness`] but `None` instead of the `"unknown"`
+/// sentinel, so callers can skip forwarding a non-informative value (the
+/// relaycast backend already defaults a missing harness to `"unknown"`).
+pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
+    let harness = orchestrator_harness();
+    (harness != UNKNOWN_ORCHESTRATOR_HARNESS).then_some(harness)
+}
+
+/// `origin_actor` path for the broker's own relaycast traffic (the workspace
+/// stream + agent registration the broker performs on behalf of the CLI). The
+/// agent-relay CLI is the actor; spawned agents are attributed separately as
+/// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
+pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
+
+/// Build the `origin_actor` path for a spawned agent:
+/// `agent-relay-cli/agent/<harness>[@<model>]`. The model (when the broker knows
+/// it from the spawn request) is appended so server telemetry can segment by
+/// model; cloud parses a digit-less `@`-suffix as a model. See
+/// cloud/plans/origin-actor.md.
+pub(crate) fn agent_origin_actor(harness: &str, model: Option<&str>) -> String {
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(model) => format!("agent-relay-cli/agent/{harness}@{model}"),
+        None => format!("agent-relay-cli/agent/{harness}"),
+    }
+}
+
 /// Best-effort OS release string for telemetry tagging. Shells out to
 /// `uname -r` on unix (broker is unix-only anyway); returns `None` on
 /// failure so we just omit the property rather than risking a crash.
@@ -343,6 +533,8 @@ pub struct TelemetryClient {
     /// OS release string (best-effort via `uname -r`, empty on failure /
     /// platforms where that isn't meaningful).
     os_version: Option<String>,
+    /// Harness or agent CLI that appears to be driving Agent Relay.
+    orchestrator_harness: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -371,6 +563,7 @@ impl TelemetryClient {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            orchestrator_harness: UNKNOWN_ORCHESTRATOR_HARNESS.to_string(),
         }
     }
 
@@ -418,6 +611,7 @@ impl TelemetryClient {
             cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
             sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
             os_version: detect_os_version(),
+            orchestrator_harness: orchestrator_harness().to_string(),
         }
     }
 
@@ -436,26 +630,8 @@ impl TelemetryClient {
         };
 
         let mut props = event.properties();
-        // Merge common properties. Version identification mirrors the
-        // TypeScript `CommonProperties` shape so dashboards can filter on
-        // `cli_version` / `sdk_version` / `broker_version` independent of
-        // which component emitted the event. `agent_relay_version` is kept
-        // as a back-compat alias that mirrors `broker_version` here.
         if let Some(obj) = props.as_object_mut() {
-            let broker_version = crate::util::version::broker_version();
-            obj.insert("agent_relay_version".to_string(), json!(broker_version));
-            obj.insert("broker_version".to_string(), json!(broker_version));
-            if let Some(ref v) = self.cli_version {
-                obj.insert("cli_version".to_string(), json!(v));
-            }
-            if let Some(ref v) = self.sdk_version {
-                obj.insert("sdk_version".to_string(), json!(v));
-            }
-            obj.insert("os".to_string(), json!(std::env::consts::OS));
-            if let Some(ref v) = self.os_version {
-                obj.insert("os_version".to_string(), json!(v));
-            }
-            obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+            obj.append(&mut self.common_properties());
         }
 
         // `posthog_api_key()` is guaranteed `Some` here — `TelemetryClient::new`
@@ -473,6 +649,53 @@ impl TelemetryClient {
 
         // Send is non-blocking; ignore errors (channel closed = shutting down).
         let _ = tx.send(capture);
+    }
+
+    /// Common properties merged onto every event. Version identification
+    /// mirrors the TypeScript `CommonProperties` shape so dashboards can filter
+    /// on `cli_version` / `sdk_version` / `broker_version` independent of which
+    /// component emitted the event. `agent_relay_version` is kept as a
+    /// back-compat alias that mirrors `broker_version` here.
+    fn common_properties(&self) -> serde_json::Map<String, Value> {
+        let mut obj = serde_json::Map::new();
+        let broker_version = crate::util::version::broker_version();
+        obj.insert("app".to_string(), json!("broker"));
+        obj.insert("surface".to_string(), json!("broker"));
+        obj.insert(
+            "orchestrator_harness".to_string(),
+            json!(self.orchestrator_harness.as_str()),
+        );
+        obj.insert("agent_relay_version".to_string(), json!(broker_version));
+        obj.insert("broker_version".to_string(), json!(broker_version));
+        if let Some(ref v) = self.cli_version {
+            obj.insert("cli_version".to_string(), json!(v));
+        }
+        if let Some(ref v) = self.sdk_version {
+            obj.insert("sdk_version".to_string(), json!(v));
+        }
+        obj.insert("os".to_string(), json!(std::env::consts::OS));
+        if let Some(ref v) = self.os_version {
+            obj.insert("os_version".to_string(), json!(v));
+        }
+        obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+        obj
+    }
+
+    /// Build a [`PanicReporter`] snapshot for use in a `std::panic` hook, or
+    /// `None` when telemetry is disabled (so callers install nothing). The
+    /// snapshot owns everything needed to emit `broker_panic` synchronously,
+    /// since the async sender loop and tokio runtime may already be gone by the
+    /// time the process panics.
+    pub fn panic_reporter(&self) -> Option<PanicReporter> {
+        if !self.enabled {
+            return None;
+        }
+        let api_key = posthog_api_key()?.to_string();
+        Some(PanicReporter {
+            api_key,
+            distinct_id: self.distinct_id.clone(),
+            common: self.common_properties(),
+        })
     }
 
     /// Flush pending events and shut down the background sender.
@@ -505,6 +728,141 @@ impl TelemetryClient {
         }
         true
     }
+}
+
+// ---------------------------------------------------------------------------
+// Panic reporting
+// ---------------------------------------------------------------------------
+
+/// Owned snapshot of everything needed to synchronously emit a `broker_panic`
+/// event from a `std::panic` hook. Built via [`TelemetryClient::panic_reporter`]
+/// while the client is alive, then captured by the panic hook closure so the
+/// event can be sent even after the async sender loop has stopped.
+pub struct PanicReporter {
+    api_key: String,
+    distinct_id: String,
+    common: serde_json::Map<String, Value>,
+}
+
+impl PanicReporter {
+    /// Synchronously emit a `broker_panic` event for the given source location.
+    /// `location` is a sanitized compile-time `file:line` — never the panic
+    /// message, which can contain user data.
+    fn report(&self, location: &str) {
+        // Serialize through the shared event contract so the event name and
+        // payload can't drift from `TelemetryEvent`/the TypeScript schema.
+        let event = TelemetryEvent::BrokerPanic {
+            location: location.to_string(),
+        };
+        let mut props = event.properties();
+        if let Some(obj) = props.as_object_mut() {
+            for (key, value) in &self.common {
+                obj.insert(key.clone(), value.clone());
+            }
+        }
+        let capture = PostHogCapture {
+            api_key: self.api_key.clone(),
+            event: event.name().to_string(),
+            distinct_id: self.distinct_id.clone(),
+            properties: props,
+        };
+        send_capture_blocking(capture);
+    }
+}
+
+/// Reduce a panic source path to a PII-safe form before it leaves the process.
+///
+/// `PanicHookInfo::location().file()` is the path as passed to rustc. First-party
+/// workspace code compiles with repo-relative paths (`crates/broker/src/...`),
+/// which are safe. A panic inside a dependency can instead carry an absolute
+/// path such as `/home/<user>/.cargo/registry/.../src/lib.rs`, which embeds the
+/// OS username. Strip a leading home-directory prefix (replacing it with `~`) so
+/// no username leaks; if an absolute path remains outside the home dir, keep only
+/// the file name so no machine-specific directory structure is reported.
+fn sanitize_panic_file(file: &str, home: Option<&str>) -> String {
+    if let Some(rest) = home
+        .map(|h| h.trim_end_matches(['/', '\\']))
+        .filter(|h| !h.is_empty())
+        .and_then(|h| file.strip_prefix(h))
+        // Require a path-component boundary after the home prefix so a sibling
+        // dir like `/home/alice2` isn't mistaken for `/home/alice` (which would
+        // leak the `2` — i.e. a different username).
+        .filter(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+    {
+        return format!("~{rest}");
+    }
+    if std::path::Path::new(file).is_absolute() {
+        return std::path::Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+    }
+    file.to_string()
+}
+
+/// Best-effort synchronous POST used only from the panic hook, where the shared
+/// async sender loop can't be relied on. Runs on a freshly-spawned OS thread
+/// with its own current-thread runtime so it's safe even when the panic
+/// originated on a tokio worker thread (creating a runtime inside a runtime
+/// thread would itself panic). The reqwest client timeout bounds how long the
+/// thread — and therefore process teardown — can wait on the network.
+fn send_capture_blocking(capture: PostHogCapture) {
+    let handle = std::thread::Builder::new()
+        .name("broker-panic-telemetry".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+            runtime.block_on(async {
+                let client = match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(3))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let url = format!("{}/capture/", POSTHOG_HOST);
+                let _ = client.post(&url).json(&capture).send().await;
+            });
+        });
+    // Wait for the send to finish (bounded by the reqwest timeout above) so the
+    // event has a chance to leave the process before it unwinds or aborts.
+    if let Ok(handle) = handle {
+        let _ = handle.join();
+    }
+}
+
+/// Install a process-global panic hook that emits a PII-safe `broker_panic`
+/// telemetry event before delegating to the previously-installed hook (so the
+/// default message/backtrace still prints). Call once during startup with the
+/// reporter from [`TelemetryClient::panic_reporter`]; a no-op reporter isn't
+/// built when telemetry is disabled, so callers simply skip installation then.
+pub fn install_panic_hook(reporter: PanicReporter) {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| {
+                format!(
+                    "{}:{}",
+                    sanitize_panic_file(l.file(), home.as_deref()),
+                    l.line()
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        // A panic inside the panic hook aborts the process, so guard the
+        // telemetry send — a failed report must never mask the real panic.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reporter.report(&location);
+        }));
+        previous(info);
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +932,9 @@ mod tests {
                 exit_code: Some(1),
                 lifetime_seconds: 10,
             },
+            TelemetryEvent::BrokerPanic {
+                location: "crates/broker/src/wrap.rs:1862".into(),
+            },
             TelemetryEvent::MessageSend {
                 is_broadcast: true,
                 has_thread: false,
@@ -594,6 +955,86 @@ mod tests {
     }
 
     #[test]
+    fn broker_panic_event_is_pii_safe() {
+        let event = TelemetryEvent::BrokerPanic {
+            location: "crates/broker/src/wrap.rs:42".into(),
+        };
+        assert_eq!(event.name(), "broker_panic");
+        let props = event.properties();
+        assert_eq!(
+            props["panic_location"],
+            json!("crates/broker/src/wrap.rs:42")
+        );
+        // Only the source location is carried — no message/payload key that
+        // could leak user data.
+        let obj = props.as_object().expect("object props");
+        assert_eq!(obj.len(), 1, "unexpected extra props: {obj:?}");
+    }
+
+    #[test]
+    fn sanitize_panic_file_keeps_relative_paths() {
+        // First-party workspace code is already repo-relative — leave it intact.
+        assert_eq!(
+            sanitize_panic_file("crates/broker/src/telemetry.rs", Some("/home/alice")),
+            "crates/broker/src/telemetry.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_strips_home_prefix() {
+        // A dependency panic under the home dir must not leak the username.
+        assert_eq!(
+            sanitize_panic_file(
+                "/home/alice/.cargo/registry/src/index/tokio-1.0/src/lib.rs",
+                Some("/home/alice")
+            ),
+            "~/.cargo/registry/src/index/tokio-1.0/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_requires_home_path_boundary() {
+        // A sibling dir sharing the home string prefix must NOT be treated as
+        // home (`/home/alice2` != `/home/alice`) — it would leak `alice2`.
+        assert_eq!(
+            sanitize_panic_file("/home/alice2/secret/lib.rs", Some("/home/alice")),
+            "lib.rs"
+        );
+        // Exact home dir maps to `~`, trailing separators on home are ignored.
+        assert_eq!(
+            sanitize_panic_file("/home/alice/x/lib.rs", Some("/home/alice/")),
+            "~/x/lib.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_reduces_other_absolute_paths_to_basename() {
+        // Absolute path outside the home dir (and no home known) → file name only.
+        assert_eq!(
+            sanitize_panic_file("/opt/build/secret-dir/src/lib.rs", None),
+            "lib.rs"
+        );
+        assert_eq!(
+            sanitize_panic_file("/opt/build/secret-dir/src/lib.rs", Some("/home/alice")),
+            "lib.rs"
+        );
+    }
+
+    #[test]
+    fn disabled_client_reports_no_panic_reporter() {
+        let client = TelemetryClient {
+            enabled: false,
+            distinct_id: String::new(),
+            tx: None,
+            cli_version: None,
+            sdk_version: None,
+            os_version: None,
+            orchestrator_harness: UNKNOWN_ORCHESTRATOR_HARNESS.to_string(),
+        };
+        assert!(client.panic_reporter().is_none());
+    }
+
+    #[test]
     fn disabled_client_does_not_panic() {
         // Set env var to disable, then construct.
         std::env::set_var("AGENT_RELAY_TELEMETRY_DISABLED", "1");
@@ -604,6 +1045,7 @@ mod tests {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            orchestrator_harness: UNKNOWN_ORCHESTRATOR_HARNESS.to_string(),
         };
         assert!(!client.is_enabled());
         client.track(TelemetryEvent::BrokerStart);
@@ -629,7 +1071,6 @@ mod tests {
     #[test]
     fn action_source_serializes_to_snake_case_strings() {
         assert_eq!(ActionSource::HumanCli.as_str(), "human_cli");
-        assert_eq!(ActionSource::HumanDashboard.as_str(), "human_dashboard");
         assert_eq!(ActionSource::Agent.as_str(), "agent");
         assert_eq!(ActionSource::Protocol.as_str(), "protocol");
     }
@@ -639,14 +1080,14 @@ mod tests {
         let event = TelemetryEvent::AgentSpawn {
             cli: "claude".into(),
             runtime: "pty".into(),
-            spawn_source: ActionSource::HumanDashboard,
+            spawn_source: ActionSource::HumanCli,
             has_task: true,
             is_shadow: false,
         };
         let props = event.properties();
         assert_eq!(props["cli"], "claude");
         assert_eq!(props["runtime"], "pty");
-        assert_eq!(props["spawn_source"], "human_dashboard");
+        assert_eq!(props["spawn_source"], "human_cli");
         assert_eq!(props["has_task"], true);
         assert_eq!(props["is_shadow"], false);
     }
@@ -688,6 +1129,50 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_orchestrator_harness_normalizes_safe_values() {
+        assert_eq!(
+            sanitize_orchestrator_harness("  Codex CLI  "),
+            Some("codex cli".to_string())
+        );
+        assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
+        assert_eq!(sanitize_orchestrator_harness(""), None);
+    }
+
+    #[test]
+    fn agent_origin_actor_appends_model_when_present() {
+        assert_eq!(
+            agent_origin_actor("codex", Some("gpt-5")),
+            "agent-relay-cli/agent/codex@gpt-5"
+        );
+        assert_eq!(
+            agent_origin_actor("claude-code", None),
+            "agent-relay-cli/agent/claude-code"
+        );
+        // blank/whitespace model is treated as absent
+        assert_eq!(
+            agent_origin_actor("claude-code", Some("  ")),
+            "agent-relay-cli/agent/claude-code"
+        );
+    }
+
+    #[test]
+    fn infer_harness_from_command_recognizes_known_parents() {
+        assert_eq!(
+            infer_harness_from_command("/usr/local/bin/codex"),
+            Some("codex")
+        );
+        assert_eq!(
+            infer_harness_from_command("/Applications/Cursor.app/Contents/MacOS/Cursor"),
+            Some("cursor")
+        );
+        assert_eq!(
+            infer_harness_from_command(r"C:\Users\will\AppData\Roaming\npm\gemini.cmd"),
+            Some("gemini-cli")
+        );
+        assert_eq!(infer_harness_from_command("/usr/bin/zsh"), None);
+    }
+
+    #[test]
     fn prefs_default_is_enabled() {
         let prefs = TelemetryPrefs::default();
         // None means not explicitly disabled.
@@ -705,13 +1190,13 @@ mod tests {
         // it from a test. What we can guarantee is the wrapper's contract:
         // a `Some("")` from `option_env!` must round-trip to `None` so the
         // disabled path takes over. Verify that contract on a synthetic
-        // `Option<&str>` matching the same `and_then` shape.
+        // `Option<&str>` matching the same `filter` shape.
         let synthetic: Option<&str> = Some("");
-        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        let normalized = synthetic.filter(|k| !k.is_empty());
         assert!(normalized.is_none());
 
         let synthetic: Option<&str> = Some("phc_abc");
-        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        let normalized = synthetic.filter(|k| !k.is_empty());
         assert_eq!(normalized, Some("phc_abc"));
     }
 }

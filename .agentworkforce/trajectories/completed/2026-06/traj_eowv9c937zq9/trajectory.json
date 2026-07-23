@@ -1,0 +1,25 @@
+{
+  "id": "traj_eowv9c937zq9",
+  "version": 1,
+  "task": {
+    "title": "Probe Relay create_node HTTP status for local-up node conflict"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-30T15:35:59.618Z",
+  "completedAt": "2026-06-30T15:37:06.842Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Captured create_node probe: current restarted local-up workspace returned HTTP 500 internal_error with failed nodes insert for reused node_id; reported status/body to lead.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "05d586b789623067f35a1fd2e9c0a4c1cdc1a96e",
+    "endRef": "05d586b789623067f35a1fd2e9c0a4c1cdc1a96e"
+  }
+}

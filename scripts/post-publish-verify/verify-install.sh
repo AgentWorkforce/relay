@@ -221,15 +221,15 @@ else
 fi
 
 # ============================================
-# Test 4: broker binary resolution via SDK resolver
+# Test 4: broker binary resolution via harness driver resolver
 # ============================================
 # The broker is delivered as a platform-specific optional dependency
 # (@agent-relay/broker-<platform>-<arch>). getBrokerBinaryPath() is the
-# canonical way clients locate it at runtime.
+# canonical way harness owners locate it at runtime.
 log_header "Test 4: broker binary resolution"
 
 BROKER_TEST=$(node --input-type=module -e "
-import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
 import { accessSync, constants } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 try {
@@ -275,10 +275,10 @@ try {
     const exports = Object.keys(pkg);
     console.log('Exports:', exports.join(', '));
 
-    if (typeof pkg.AgentRelayClient === 'function') {
+    if (typeof pkg.AgentRelay === 'function') {
         console.log('SDK_OK');
     } else {
-        console.log('NO_CLIENT');
+        console.log('NO_AGENT_RELAY');
     }
 } catch (e) {
     console.log('ERROR:', e.message);
@@ -287,9 +287,9 @@ try {
 
 log_info "SDK test output: $SDK_TEST"
 if echo "$SDK_TEST" | grep -q "SDK_OK"; then
-    record_pass "AgentRelayClient is accessible"
-elif echo "$SDK_TEST" | grep -q "NO_CLIENT"; then
-    record_fail "AgentRelayClient not found in exports"
+    record_pass "AgentRelay is accessible"
+elif echo "$SDK_TEST" | grep -q "NO_AGENT_RELAY"; then
+    record_fail "AgentRelay not found in exports"
 else
     record_fail "Failed to load agent-relay package: $SDK_TEST"
 fi

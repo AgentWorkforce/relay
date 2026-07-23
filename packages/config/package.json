@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/config",
-  "version": "7.1.1",
+  "version": "11.0.2",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Shared configuration schemas and loaders for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
@@ -89,7 +92,7 @@
   "devDependencies": {
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.0"
   },
   "publishConfig": {
     "access": "public"

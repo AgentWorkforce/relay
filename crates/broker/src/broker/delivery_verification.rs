@@ -14,7 +14,13 @@ pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
+    /// Delivery confirmed by echo verification.
     Success,
+    /// Delivery acked via timeout fallback without echo verification.
+    /// Neither speeds up nor backs off the throttle, but breaks the
+    /// consecutive-success streak so unverified deliveries never drive
+    /// the delay down.
+    Unverified,
     Failed,
 }
 
@@ -50,6 +56,9 @@ impl ThrottleState {
                     let halved = Duration::from_millis(self.delay.as_millis() as u64 / 2);
                     self.delay = halved.max(Duration::from_millis(100));
                 }
+            }
+            DeliveryOutcome::Unverified => {
+                self.consecutive_successes = 0;
             }
             DeliveryOutcome::Failed => {
                 self.consecutive_successes = 0;
@@ -264,6 +273,41 @@ mod tests {
         throttle.record(DeliveryOutcome::Success);
         throttle.record(DeliveryOutcome::Success);
         assert_eq!(throttle.delay(), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn throttle_unverified_keeps_delay_unchanged() {
+        let mut throttle = ThrottleState::default();
+        for _ in 0..3 {
+            throttle.record(DeliveryOutcome::Failed);
+        }
+        assert_eq!(throttle.delay(), Duration::from_millis(500));
+        for _ in 0..10 {
+            throttle.record(DeliveryOutcome::Unverified);
+        }
+        assert_eq!(
+            throttle.delay(),
+            Duration::from_millis(500),
+            "unverified deliveries must not change the delay in either direction"
+        );
+    }
+
+    #[test]
+    fn throttle_unverified_breaks_success_streak() {
+        let mut throttle = ThrottleState::default();
+        for _ in 0..3 {
+            throttle.record(DeliveryOutcome::Failed);
+        }
+        assert_eq!(throttle.delay(), Duration::from_millis(500));
+        throttle.record(DeliveryOutcome::Success);
+        throttle.record(DeliveryOutcome::Success);
+        throttle.record(DeliveryOutcome::Unverified);
+        throttle.record(DeliveryOutcome::Success);
+        assert_eq!(
+            throttle.delay(),
+            Duration::from_millis(500),
+            "unverified deliveries must not count toward the success streak"
+        );
     }
 
     #[test]

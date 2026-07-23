@@ -1,15 +1,54 @@
 import { Command } from 'commander';
+import nodeFs from 'node:fs';
+import os from 'node:os';
+import nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
-  getSession: vi.fn(async () => ({ workspace_key: '' }) as { workspace_key?: string }),
+  getSession: vi.fn(
+    async () =>
+      ({ workspace_key: '' }) as {
+        workspace_key?: string;
+        node_id?: string;
+        node_name?: string;
+      }
+  ),
   disconnect: vi.fn(() => undefined),
 };
 
-vi.mock('@agent-relay/sdk', () => ({
-  AgentRelayClient: vi.fn().mockImplementation(() => sdkStatusClient),
+const harnessConnectMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: Object.assign(
+    vi.fn(function () {
+      return sdkStatusClient;
+    }),
+    { connect: harnessConnectMock }
+  ),
 }));
+
+const telemetryMocks = vi.hoisted(() => ({
+  track: vi.fn(),
+}));
+
+vi.mock('../telemetry/index.js', () => ({
+  track: telemetryMocks.track,
+}));
+
+vi.mock('../lib/reflex-capture.js', () => ({
+  startReflexCapture: vi.fn(() => ({ stop: vi.fn(async () => undefined) })),
+}));
+
+vi.mock('@agent-relay/fleet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/fleet')>();
+  return {
+    ...actual,
+    startServeNode: vi.fn(() => ({ stop: vi.fn(async () => undefined), done: Promise.resolve() })),
+  };
+});
 
 beforeEach(() => {
   sdkStatusClient.getStatus.mockReset();
@@ -17,11 +56,13 @@ beforeEach(() => {
   sdkStatusClient.getSession.mockReset();
   sdkStatusClient.getSession.mockResolvedValue({ workspace_key: '' });
   sdkStatusClient.disconnect.mockClear();
+  harnessConnectMock.mockReset();
+  telemetryMocks.track.mockClear();
 });
 
 import {
   registerCoreCommands,
-  type BridgeProject,
+  registerCoreMaintenance,
   type CoreDependencies,
   type CoreFileSystem,
   type CoreRelay,
@@ -91,34 +132,30 @@ function createHarness(options?: {
   relay?: CoreRelay;
   createRelay?: CoreDependencies['createRelay'];
   teamsConfig?: CoreTeamsConfig | null;
-  dashboardBinary?: string | null;
   env?: NodeJS.ProcessEnv;
-  bridgeProjects?: BridgeProject[];
-  validBridgeProjects?: BridgeProject[];
-  missingBridgeProjects?: BridgeProject[];
   spawnedProcess?: SpawnedProcess;
   spawnImpl?: CoreDependencies['spawnProcess'];
   execCommand?: CoreDependencies['execCommand'];
   killImpl?: CoreDependencies['killProcess'];
   nowImpl?: CoreDependencies['now'];
   sleepImpl?: CoreDependencies['sleep'];
+  holdOpen?: CoreDependencies['holdOpen'];
   execPath?: string;
   cliScript?: string;
   argv?: string[];
   checkForUpdatesResult?: Awaited<ReturnType<CoreDependencies['checkForUpdates']>>;
 }) {
   const projectRoot = '/tmp/project';
-  const dataDir = '/tmp/project/.agent-relay';
-  const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
-  const connectionPath = '/tmp/project/.agent-relay/connection.json';
-  const runtimePath = '/tmp/project/.agent-relay/runtime.json';
+  const dataDir = '/tmp/project/.agentworkforce/relay';
+  const relaySockPath = '/tmp/project/.agentworkforce/relay/relay.sock';
+  const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+  const runtimePath = '/tmp/project/.agentworkforce/relay/runtime.json';
 
   const fs = options?.fs ?? createFsMock();
   const relay = options?.relay ?? createRelayMock();
   const spawnedProcess = options?.spawnedProcess ?? createSpawnedProcessMock();
-  const bridgeProjects = options?.bridgeProjects ?? [];
-  const validBridgeProjects = options?.validBridgeProjects ?? bridgeProjects;
-  const missingBridgeProjects = options?.missingBridgeProjects ?? [];
+  const env = options?.env ?? {};
+  env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE ??= '1';
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -128,16 +165,12 @@ function createHarness(options?: {
     getProjectPaths: vi.fn(() => ({
       projectRoot,
       dataDir,
-      teamDir: '/tmp/project/.agent-relay/teams',
-      dbPath: '/tmp/project/.agent-relay/messages.db',
+      teamDir: '/tmp/project/.agentworkforce/relay/teams',
+      dbPath: '/tmp/project/.agentworkforce/relay/messages.db',
       projectId: 'project',
     })),
     loadTeamsConfig: vi.fn(() => options?.teamsConfig ?? null),
-    resolveBridgeProjects: vi.fn(() => bridgeProjects),
-    validateBridgeBrokers: vi.fn(() => ({ valid: validBridgeProjects, missing: missingBridgeProjects })),
-    getAgentOutboxTemplate: vi.fn(() => '/tmp/project/.agent-relay/outbox'),
     createRelay: options?.createRelay ?? vi.fn(() => relay),
-    findDashboardBinary: vi.fn(() => options?.dashboardBinary ?? '/usr/local/bin/relay-dashboard-server'),
     spawnProcess:
       options?.spawnImpl ?? (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
     execCommand: options?.execCommand ?? vi.fn(async () => ({ stdout: '', stderr: '' })),
@@ -148,17 +181,16 @@ function createHarness(options?: {
       async () => options?.checkForUpdatesResult ?? { updateAvailable: false, latestVersion: '1.2.3' }
     ) as unknown as CoreDependencies['checkForUpdates'],
     getVersion: vi.fn(() => '1.2.3'),
-    env: options?.env ?? {},
+    env,
     argv: options?.argv ?? ['node', '/tmp/agent-relay.js', 'up'],
     execPath: options?.execPath ?? '/usr/bin/node',
     cliScript: options?.cliScript ?? '/tmp/agent-relay.js',
     pid: 4242,
     now: options?.nowImpl ?? vi.fn(() => Date.now()),
     isPortInUse: vi.fn(async () => false),
-    findBrokerApiPort: vi.fn(async () => 3889),
     sleep: options?.sleepImpl ?? vi.fn(async () => undefined),
     onSignal: vi.fn(() => undefined),
-    holdOpen: vi.fn(async () => undefined),
+    holdOpen: options?.holdOpen ?? vi.fn(async () => undefined),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     warn: vi.fn(() => undefined),
@@ -201,8 +233,9 @@ describe('registerCoreCommands', () => {
     const commandNames = program.commands.map((cmd) => cmd.name());
 
     expect(commandNames).toEqual(
-      expect.arrayContaining(['up', 'start', 'down', 'status', 'uninstall', 'version', 'update', 'bridge'])
+      expect.arrayContaining(['up', 'down', 'status', 'metrics', 'deadletters', 'redeliver'])
     );
+    expect(commandNames).not.toEqual(expect.arrayContaining(['bridge', 'uninstall', 'version', 'update']));
   });
 
   it('up forwards --broker-name to createRelay', async () => {
@@ -211,57 +244,33 @@ describe('registerCoreCommands', () => {
     });
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--port', '4999', '--broker-name', 'relayfile-dev']);
+    const exitCode = await runCommand(program, ['up', '--broker-name', 'relayfile-dev']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, 'relayfile-dev');
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'relayfile-dev', undefined);
   });
 
-  it('up starts broker and dashboard process', async () => {
-    const relay = createRelayMock({
-      getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
-    });
-    const { program, deps, fs } = createHarness({ relay });
-
-    const exitCode = await runCommand(program, ['up', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, undefined);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
-      expect.any(Object)
-    );
-    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][1] as string[];
-    expect(dashboardArgs).not.toContain('--no-spawn');
-    expect(relay.getStatus).toHaveBeenCalledTimes(1);
-    expect(fs.writeFileSync).not.toHaveBeenCalled();
-  });
-
-  it('start dashboard.js logs a focused cli-tools dashboard URL', async () => {
+  it('up --verbose forwards the flag to createRelay and logs startup step markers', async () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
     });
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
+    const exitCode = await runCommand(program, ['up', '--verbose']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, undefined);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
-      expect.any(Object)
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, true);
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[verbose\] Resolving a free API port starting near/)
     );
-    const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(logCalls).toEqual(
-      expect.arrayContaining([['Dashboard: http://localhost:4999/dev/cli-tools?tool=claude']])
+    expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/^\[verbose\] API port resolved: 3889/));
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[verbose\] Broker status check passed\.$/)
     );
   });
 
   it('up exits early when connection metadata points to a running process', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(3030) });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 3030 && signal === 0) {
@@ -286,7 +295,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => {
         throw new Error(
-          'broker exited (code=1, signal=null): Error: another broker instance is already running in this directory (/tmp/project/.agent-relay)'
+          'broker exited (code=1, signal=null): Error: another broker instance is already running in this directory (/tmp/project/.agentworkforce/relay)'
         );
       }),
     });
@@ -296,7 +305,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith(
-      'Broker already running for this project (lock: /tmp/project/.agent-relay).'
+      'Broker already running for this project (lock: /tmp/project/.agentworkforce/relay).'
     );
     expect(deps.error).toHaveBeenCalledWith(
       'Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.'
@@ -306,91 +315,15 @@ describe('registerCoreCommands', () => {
     );
   });
 
-  it('up infers static-dir for local dashboard JS entrypoint', async () => {
-    const staticDir = '/tmp/relay-dashboard/packages/dashboard-server/out';
-    const fs = createFsMock({ [staticDir]: '' });
-    const { program, deps } = createHarness({
-      fs,
-      dashboardBinary: '/tmp/relay-dashboard/packages/dashboard-server/dist/start.js',
-    });
-
-    const exitCode = await runCommand(program, ['up', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][1] as string[];
-    const dashboardOptions = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][2] as { env?: NodeJS.ProcessEnv };
-    expect(dashboardArgs).toEqual(expect.arrayContaining(['--relay-url', 'http://127.0.0.1:5000']));
-    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
-    expect(dashboardOptions.env?.RELAY_URL).toBe('http://127.0.0.1:5000');
-  });
-
-  it('up infers static-dir for standalone dashboard binary install layout', async () => {
-    const home = '/Users/tester';
-    const staticDir = `${home}/.relay/dashboard/out`;
-    const fs = createFsMock({
-      [staticDir]: '',
-      [`${staticDir}/index.html`]: '<html></html>',
-    });
-    const { program, deps } = createHarness({
-      fs,
-      env: { HOME: home },
-      dashboardBinary: `${home}/.local/bin/relay-dashboard-server`,
-    });
-
-    const exitCode = await runCommand(program, ['up', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][1] as string[];
-    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
-  });
-
-  it('up prefers static-dir candidate that includes metrics page', async () => {
-    const dashboardServerOut = '/tmp/relay-dashboard/packages/dashboard-server/out';
-    const dashboardOut = '/tmp/relay-dashboard/packages/dashboard/out';
-    const fs = createFsMock({
-      [dashboardServerOut]: '',
-      [dashboardOut]: '',
-      [`${dashboardOut}/metrics.html`]: '<html></html>',
-    });
-    const { program, deps } = createHarness({
-      fs,
-      dashboardBinary: '/tmp/relay-dashboard/packages/dashboard-server/dist/start.js',
-    });
-
-    const exitCode = await runCommand(program, ['up', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][1] as string[];
-    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', dashboardOut]));
-  });
-
-  it('up prefers static-dir candidate that includes nested metrics page', async () => {
-    const dashboardServerOut = '/tmp/relay-dashboard/packages/dashboard-server/out';
-    const dashboardOut = '/tmp/relay-dashboard/packages/dashboard/out';
-    const fs = createFsMock({
-      [dashboardServerOut]: '',
-      [dashboardOut]: '',
-      [`${dashboardOut}/metrics/index.html`]: '<html></html>',
-    });
-    const { program, deps } = createHarness({
-      fs,
-      dashboardBinary: '/tmp/relay-dashboard/packages/dashboard-server/dist/start.js',
-    });
-
-    const exitCode = await runCommand(program, ['up', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][1] as string[];
-    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', dashboardOut]));
-  });
-
   it('up auto-spawns agents from teams config', async () => {
-    const relay = createRelayMock();
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({
+        agent_count: 0,
+        pending_delivery_count: 0,
+        node_connected: true,
+        node_delivery: { token_present: true, connected: true },
+      })),
+    });
     const { program } = createHarness({
       relay,
       teamsConfig: {
@@ -400,7 +333,7 @@ describe('registerCoreCommands', () => {
       },
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     expect(relay.spawn).toHaveBeenCalledWith({
@@ -412,8 +345,16 @@ describe('registerCoreCommands', () => {
     });
   });
 
-  it('up skips teams auto-spawn when dashboard mode manages broker', async () => {
-    const relay = createRelayMock();
+  it('up refuses auto-spawn when node delivery is down', async () => {
+    let now = 0;
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({
+        agent_count: 0,
+        pending_delivery_count: 0,
+        node_connected: false,
+        node_delivery: { token_present: false, connected: false },
+      })),
+    });
     const { program, deps } = createHarness({
       relay,
       teamsConfig: {
@@ -421,65 +362,57 @@ describe('registerCoreCommands', () => {
         autoSpawn: true,
         agents: [{ name: 'WorkerA', cli: 'codex', task: 'Ship tests' }],
       },
+      nowImpl: vi.fn(() => {
+        const current = now;
+        now += 10_000;
+        return current;
+      }),
     });
 
     const exitCode = await runCommand(program, ['up']);
 
-    expect(exitCode).toBeUndefined();
-    expect(relay.spawn).toHaveBeenCalledTimes(0);
-    expect(deps.warn).toHaveBeenCalledWith(
-      'Warning: auto-spawn from teams.json is skipped when dashboard mode manages the broker'
-    );
-  });
-
-  it('up exits when dashboard port is already in use', async () => {
-    const spawnImpl = vi.fn(() => {
-      const error = new Error('listen EADDRINUSE') as Error & { code?: string };
-      error.code = 'EADDRINUSE';
-      throw error;
-    }) as unknown as CoreDependencies['spawnProcess'];
-
-    const { program, deps } = createHarness({ spawnImpl });
-
-    const exitCode = await runCommand(program, ['up', '--port', '3888']);
-
     expect(exitCode).toBe(1);
-    expect(deps.error).toHaveBeenCalledWith('Dashboard port 3888 is already in use.');
+    expect(relay.spawn).not.toHaveBeenCalled();
+    expect(relay.shutdown).toHaveBeenCalled();
+    expect(deps.error).toHaveBeenCalledWith(
+      'Refusing to auto-spawn agents because broker node delivery is not connected.'
+    );
+    expect(deps.error).toHaveBeenCalledWith('Node delivery: DOWN (no node token)');
   });
 
   it('up probes for a free API port before spawning the broker', async () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--port', '3888']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     // Port probing happens before createRelay — only one broker is spawned
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
-    // API port = dashboard port (3888) + 1 = 3889
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
+    // API port = base port (3888) + 1 = 3889
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
-  it('up without dashboard still enables the local broker API', async () => {
+  it('up enables the local broker API', async () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground', '--port', '3888']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
-  it('up --no-dashboard detaches by default for headless sessions', async () => {
+  it('up --background detaches for headless sessions', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if ((pid === 9001 || pid === 4242) && signal === 0) return;
@@ -493,18 +426,14 @@ describe('registerCoreCommands', () => {
       sleepImpl,
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/usr/bin/node',
-      ['/tmp/agent-relay.js', 'up', '--no-dashboard', '--foreground'],
-      {
-        detached: true,
-        stdio: 'ignore',
-        env: deps.env,
-      }
-    );
+    expect(deps.spawnProcess).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', 'up'], {
+      detached: true,
+      stdio: 'ignore',
+      env: deps.env,
+    });
     expect(spawnedProcess.unref).toHaveBeenCalled();
     expect(sleepImpl).toHaveBeenCalledWith(500);
     expect(sdkStatusClient.getStatus).toHaveBeenCalledTimes(1);
@@ -514,7 +443,7 @@ describe('registerCoreCommands', () => {
     expect(relay.getStatus).not.toHaveBeenCalled();
   });
 
-  it('up --background --no-dashboard preserves state and workspace args in the foreground child', async () => {
+  it('up --background preserves state and workspace args in the detached child', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
     const fs = createFsMock();
@@ -539,7 +468,6 @@ describe('registerCoreCommands', () => {
       '/tmp/agent-relay.js',
       'up',
       '--background',
-      '--no-dashboard',
       '--state-dir',
       stateDir,
       '--workspace-key',
@@ -551,7 +479,6 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, [
       'up',
       '--background',
-      '--no-dashboard',
       '--state-dir',
       stateDir,
       '--workspace-key',
@@ -566,14 +493,12 @@ describe('registerCoreCommands', () => {
       [
         '/tmp/agent-relay.js',
         'up',
-        '--no-dashboard',
         '--state-dir',
         stateDir,
         '--workspace-key',
         'rk_live_custom',
         '--broker-name',
         'relayfile-dev',
-        '--foreground',
       ],
       {
         detached: true,
@@ -586,54 +511,282 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
   });
 
-  it('up rejects mutually exclusive background and foreground flags', async () => {
-    const { program, deps } = createHarness();
+  it('up --state-dir records the workspace key in the default project dir, not the state dir', async () => {
+    // SDK commands (fleet nodes, …) read the key from the default project data
+    // dir and never accept --state-dir, so a redirected broker state dir must
+    // NOT be where the key lands — otherwise those commands miss it.
+    const stateDir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-statedir-'));
+    const relay = createRelayMock({ workspaceKey: 'rk_statedir_regression' });
+    const { program } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--background', '--foreground']);
+    try {
+      const exitCode = await runCommand(program, [
+        'up',
+        '--state-dir',
+        stateDir,
+        '--workspace-key',
+        'rk_statedir_regression',
+      ]);
 
-    expect(exitCode).toBe(1);
-    expect(deps.error).toHaveBeenCalledWith('Cannot use --background and --foreground together.');
-    expect(deps.spawnProcess).not.toHaveBeenCalled();
+      expect(exitCode).toBeUndefined();
+      // Persisted at the default project data dir (the harness's mocked path)…
+      expect(readProjectWorkspaceKey('/tmp/project/.agentworkforce/relay')).toBe('rk_statedir_regression');
+      // …and NOT in the redirected state dir.
+      expect(readProjectWorkspaceKey(stateDir)).toBeUndefined();
+    } finally {
+      nodeFs.rmSync(stateDir, { recursive: true, force: true });
+      // The key is written to the real default project dir; clean it up so it
+      // doesn't leak into other tests running in this process.
+      nodeFs.rmSync('/tmp/project/.agentworkforce/relay/workspace-key.json', { force: true });
+    }
   });
 
-  it('up --no-dashboard re-execs a Bun standalone binary without adding its virtual entrypoint', async () => {
+  it('up --background preserves an enrolled identity through a Bun standalone re-exec', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if ((pid === 9001 || pid === 4242) && signal === 0) return;
       throw new Error('unexpected kill check');
     });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      agent_count: 0,
+      pending_delivery_count: 0,
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'sf-mini',
+    });
     const { program, deps } = createHarness({
       fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_enrolled',
+      },
       spawnedProcess,
       killImpl,
       nowImpl: vi.fn(() => now),
       sleepImpl,
       execPath: '/tmp/agent-relay-darwin-arm64',
       cliScript: '/$bunfs/root/agent-relay-darwin-arm64',
-      argv: ['bun', '/$bunfs/root/agent-relay-darwin-arm64', 'up', '--no-dashboard'],
+      argv: [
+        'bun',
+        '/$bunfs/root/agent-relay-darwin-arm64',
+        'node',
+        'up',
+        '--background',
+        '--config',
+        'agent-relay.mjs',
+      ],
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
 
     expect(exitCode).toBe(0);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/tmp/agent-relay-darwin-arm64',
-      ['up', '--no-dashboard', '--foreground'],
+      ['node', 'up', '--config', 'agent-relay.mjs', '--broker-name', 'sf-mini'],
       {
         detached: true,
         stdio: 'ignore',
-        env: deps.env,
+        env: expect.objectContaining({
+          RELAY_NODE_ID: 'node_enrolled',
+          RELAY_NODE_TOKEN: 'nt_enrolled',
+        }),
       }
     );
   });
 
-  it('up --no-dashboard exits non-zero when the detached broker never becomes ready', async () => {
+  it('up --background fails loudly when the broker reports the wrong enrolled identity', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
+    });
+    const stopped = new Set<number>();
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0 && !stopped.has(pid)) return;
+      if ((pid === 9001 || pid === 4242) && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        stopped.add(pid);
+        return;
+      }
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'project',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_enrolled',
+      },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Cloud enrollment identity mismatch: expected node name "sf-mini", got "project".'
+    );
+    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('up --background rejects an enrolled node token without a node id', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
+    });
+    const stopped = new Set<number>();
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0 && !stopped.has(pid)) return;
+      if ((pid === 9001 || pid === 4242) && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        stopped.add(pid);
+        return;
+      }
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: { RELAY_NODE_ID: '   ', RELAY_NODE_TOKEN: 'nt_incomplete' },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Cloud enrollment credentials are incomplete: RELAY_NODE_ID is required when RELAY_NODE_TOKEN is set.'
+    );
+    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('up --background retains broker state when failed enrollment cleanup cannot stop the broker', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync(connectionPath, connectionFile(4242));
+    });
+    const runningPids = new Set([9001, 4242]);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      if (pid === 9001 && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        runningPids.delete(pid);
+      }
+    });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'project',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_enrolled',
+      },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Failed to stop broker process after Cloud enrollment startup failed (pid: 4242). ' +
+        'Run `agent-relay down --force` to retry cleanup.'
+    );
+    expect(fs.existsSync(connectionPath)).toBe(true);
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('up --background fails when enrolled node delivery never connects', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
+    });
+    const stopped = new Set<number>();
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 4242) && signal === 0 && !stopped.has(pid)) return;
+      if ((pid === 9001 || pid === 4242) && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+        stopped.add(pid);
+        return;
+      }
+      throw new Error('unexpected kill check');
+    });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      node_connected: false,
+      node_delivery: { token_present: true, connected: false },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_enrolled',
+      node_id: 'node_enrolled',
+      node_name: 'sf-mini',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_expired',
+      },
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--broker-name', 'sf-mini']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Cloud enrollment for node "sf-mini" did not become ready. Node delivery: DOWN (node websocket disconnected)'
+    );
+    expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+  });
+
+  it('up --background exits non-zero when the detached broker never becomes ready', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
     let childRunning = true;
@@ -655,7 +808,7 @@ describe('registerCoreCommands', () => {
       sleepImpl,
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith(
@@ -679,10 +832,10 @@ describe('registerCoreCommands', () => {
             'khaliqgant 111 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -lc BROKER=/tmp/project/target/release/agent-relay-broker node /tmp/agent-relay.js down --force',
             'khaliqgant 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
             'khaliqgant 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
-            'khaliqgant 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/.agent-relay --persist',
-            'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agent-relay --persist',
-            'khaliqgant 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay up --no-dashboard --foreground',
-            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay status --wait-for=30',
+            'khaliqgant 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/.agentworkforce/relay --persist',
+            'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agentworkforce/relay --persist',
+            'khaliqgant 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay up',
+            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay status --wait-for=30',
           ].join('\n'),
           stderr: '',
         };
@@ -731,7 +884,7 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Cleaned up (was not running)');
   });
 
-  it('up --no-dashboard reaps a foreground child orphan before starting cleanly', async () => {
+  it('up --background reaps a broker orphan before starting cleanly', async () => {
     const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
     const runningPids = new Set([777, 9001, 4242]);
     const fs = createFsMock();
@@ -741,7 +894,7 @@ describe('registerCoreCommands', () => {
         return {
           stdout: [
             'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
-            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay up --no-dashboard --foreground',
+            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay up',
           ].join('\n'),
           stderr: '',
         };
@@ -753,7 +906,7 @@ describe('registerCoreCommands', () => {
     });
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
@@ -771,7 +924,7 @@ describe('registerCoreCommands', () => {
       sleepImpl,
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(0);
     expect(killImpl).toHaveBeenCalledWith(777, 'SIGTERM');
@@ -781,14 +934,14 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 4242');
   });
 
-  it('up --no-dashboard replaces a live broker PID whose API never becomes ready', async () => {
+  it('up --background replaces a live broker PID whose API never becomes ready', async () => {
     const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
     const runningPids = new Set([3030, 9001, 4242]);
-    const fs = createFsMock({ ['/tmp/project/.agent-relay/connection.json']: connectionFile(3030) });
+    const fs = createFsMock({ ['/tmp/project/.agentworkforce/relay/connection.json']: connectionFile(3030) });
     let now = 0;
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
@@ -808,11 +961,11 @@ describe('registerCoreCommands', () => {
       sleepImpl,
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(0);
     expect(killImpl).toHaveBeenCalledWith(3030, 'SIGTERM');
-    expect(fs.unlinkSync).toHaveBeenCalledWith('/tmp/project/.agent-relay/connection.json');
+    expect(fs.unlinkSync).toHaveBeenCalledWith('/tmp/project/.agentworkforce/relay/connection.json');
     expect(deps.warn).toHaveBeenCalledWith(
       'Broker process is running but the API is not ready; killing half-started broker (pid: 3030).'
     );
@@ -820,14 +973,14 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 4242');
   });
 
-  it('up --no-dashboard reports the broker PID when the detached broker is live but API-unready', async () => {
+  it('up --background reports the broker PID when the detached broker is live but API-unready', async () => {
     const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
     let now = 0;
     const runningPids = new Set([9001, 4242]);
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
@@ -849,7 +1002,7 @@ describe('registerCoreCommands', () => {
       sleepImpl,
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith(
@@ -860,45 +1013,38 @@ describe('registerCoreCommands', () => {
     expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
   });
 
-  it('up --no-dashboard reports spawn failures without claiming background success', async () => {
+  it('up --background reports spawn failures without claiming background success', async () => {
     const { program, deps } = createHarness({
       spawnImpl: vi.fn(() => {
         throw new Error('spawn EACCES');
       }) as unknown as CoreDependencies['spawnProcess'],
     });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+    const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith('Failed to start broker in background: spawn EACCES');
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
-  it('up force exits on repeated SIGINT during hung shutdown and suppresses expected dashboard signal noise', async () => {
+  it('up force exits on repeated SIGINT during a hung shutdown', async () => {
     const relay = createRelayMock({
       shutdown: vi.fn(() => new Promise(() => undefined)),
     });
-    let dashboardExitHandler: ((...args: unknown[]) => void) | undefined;
 
-    const spawnedProcess = {
-      pid: 9001,
-      killed: false,
-      kill: vi.fn((signal?: NodeJS.Signals | number) => {
-        spawnedProcess.killed = true;
-        dashboardExitHandler?.(null, typeof signal === 'string' ? signal : null);
-      }),
-      unref: vi.fn(() => undefined),
-      on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'exit') {
-          dashboardExitHandler = cb;
-        }
-      }),
-      stderr: { on: vi.fn(() => undefined) },
-    } as unknown as SpawnedProcess;
+    const { program, deps } = createHarness({
+      relay,
+      holdOpen: vi.fn(() => new Promise(() => undefined)),
+    });
+    void runCommand(program, ['up']);
 
-    const { program, deps } = createHarness({ relay, spawnedProcess });
-    const exitCode = await runCommand(program, ['up']);
-    expect(exitCode).toBeUndefined();
+    for (
+      let i = 0;
+      i < 10 && (deps.onSignal as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
+      i += 1
+    ) {
+      await Promise.resolve();
+    }
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
@@ -917,17 +1063,12 @@ describe('registerCoreCommands', () => {
 
     const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(logCalls.filter((call) => call[0] === '\nStopping...')).toHaveLength(1);
-
-    const errorCalls = (deps.error as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(
-      errorCalls.filter((call) => String(call[0]).includes('Dashboard process killed by signal'))
-    ).toHaveLength(0);
   });
 
   it('down stops broker and cleans stale files', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
-    const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
-    const runtimePath = '/tmp/project/.agent-relay/runtime.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const relaySockPath = '/tmp/project/.agentworkforce/relay/relay.sock';
+    const runtimePath = '/tmp/project/.agentworkforce/relay/runtime.json';
 
     const fs = createFsMock({
       [connectionPath]: connectionFile(3030),
@@ -971,10 +1112,14 @@ describe('registerCoreCommands', () => {
   });
 
   it('status checks broker status and prints metrics', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 4, pending_delivery_count: 2 });
-    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_test123' });
+    sdkStatusClient.getSession.mockResolvedValueOnce({
+      workspace_key: 'rk_live_test123',
+      node_id: 'node_enrolled',
+      node_name: 'sf-mini',
+    });
 
     const { program, deps } = createHarness({ fs });
 
@@ -984,13 +1129,14 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
     expect(deps.log).toHaveBeenCalledWith('Agents: 4');
     expect(deps.log).toHaveBeenCalledWith('Pending deliveries: 2');
+    expect(deps.log).toHaveBeenCalledWith('Node: sf-mini (node_enrolled)');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_test123');
     expect(deps.log).toHaveBeenCalledWith('Observer: https://agentrelay.com/observer?key=rk_live_test123');
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
   });
 
   it('status omits workspace key and observer when broker has no workspace_key', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 0, pending_delivery_count: 0 });
     sdkStatusClient.getSession.mockResolvedValueOnce({});
@@ -1007,7 +1153,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status cleans stale connection metadata when broker is not running', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(9999) });
     const killImpl = vi.fn(() => {
       const err = new Error('gone') as Error & { code?: string };
@@ -1029,7 +1175,7 @@ describe('registerCoreCommands', () => {
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 4242 && signal === 0) return;
@@ -1052,7 +1198,7 @@ describe('registerCoreCommands', () => {
 
   it('status --wait-for waits for the broker API after the PID appears', async () => {
     let now = 0;
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
@@ -1086,7 +1232,7 @@ describe('registerCoreCommands', () => {
 
   it('status --wait-for treats getStatus success as ready even when session lookup fails', async () => {
     const now = 0;
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 4242 && signal === 0) return;
@@ -1123,7 +1269,7 @@ describe('registerCoreCommands', () => {
 
   it('status --wait-for reports STARTING and exits non-zero when the PID is live but the API is unready', async () => {
     let now = 0;
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
@@ -1169,7 +1315,9 @@ describe('registerCoreCommands', () => {
   });
 
   it('version prints current version', async () => {
-    const { program, deps } = createHarness();
+    const { deps } = createHarness();
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
 
     const exitCode = await runCommand(program, ['version']);
 
@@ -1178,96 +1326,137 @@ describe('registerCoreCommands', () => {
   });
 
   it('update in --check mode reports available version without installing', async () => {
-    const { program, deps } = createHarness({
+    const { deps } = createHarness({
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
     });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
 
     const exitCode = await runCommand(program, ['update', '--check']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('New version available: 2.0.0');
     expect(deps.execCommand).not.toHaveBeenCalled();
+    expect(telemetryMocks.track).not.toHaveBeenCalledWith('cli_update', expect.any(Object));
   });
 
-  it('bridge connects projects and spawns architect with model override', async () => {
-    const projectA: BridgeProject = { id: 'alpha', path: '/tmp/alpha', leadName: 'LeadA' };
-    const projectB: BridgeProject = { id: 'beta', path: '/tmp/beta', leadName: 'LeadB' };
-
-    const relayA = createRelayMock();
-    const relayB = createRelayMock();
-
-    const createRelay = vi.fn((cwd: string) => (cwd === '/tmp/alpha' ? relayA : relayB));
-
-    const { program } = createHarness({
-      bridgeProjects: [projectA, projectB],
-      validBridgeProjects: [projectA, projectB],
-      createRelay: createRelay as unknown as CoreDependencies['createRelay'],
+  it('update tracks successful install attempts', async () => {
+    const { deps } = createHarness({
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand: vi.fn(async () => ({ stdout: 'updated\n', stderr: '' })),
     });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
 
-    const exitCode = await runCommand(program, [
-      'bridge',
-      '--architect=claude:sonnet',
-      '/tmp/alpha',
-      '/tmp/beta',
-    ]);
+    const exitCode = await runCommand(program, ['update']);
 
     expect(exitCode).toBeUndefined();
-    expect(relayA.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'Architect',
-        cli: 'claude',
-        args: ['--model', 'sonnet'],
-      })
-    );
+    expect(deps.execCommand).toHaveBeenCalledWith('npm install -g agent-relay@latest');
+    expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
+      from_version: '1.2.3',
+      to_version: '2.0.0',
+      success: true,
+    });
+  });
+
+  it('update tracks failed install attempts without leaking messages', async () => {
+    const { deps } = createHarness({
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand: vi.fn(async () => {
+        throw new Error('registry token /tmp/private');
+      }),
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBe(1);
+    expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
+      from_version: '1.2.3',
+      to_version: '2.0.0',
+      success: false,
+      error_class: 'Error',
+    });
+  });
+
+  it('uninstall dry-run covers renamed and legacy installer bin directories', async () => {
+    const { deps } = createHarness();
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+    const home = os.homedir();
+    const paths = [`${home}/.agentworkforce/relay/bin`, `${home}/.agent-relay/bin`];
+    for (const filePath of paths) {
+      deps.fs.writeFileSync(filePath, '');
+    }
+
+    const exitCode = await runCommand(program, ['uninstall', '--dry-run']);
+
+    expect(exitCode).toBeUndefined();
+    for (const filePath of paths) {
+      expect(deps.log).toHaveBeenCalledWith(`[dry-run] Would remove directory: ${filePath}`);
+    }
+    expect(deps.execCommand).not.toHaveBeenCalled();
   });
 
   it('up always logs the workspace key after broker starts', async () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_default');
   });
 
-  it('up logs the auto-created workspace key with dashboard enabled', async () => {
+  it('up logs the auto-created workspace key', async () => {
     const relay = createRelayMock({ workspaceKey: 'rk_live_auto456' });
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_auto456');
   });
 
-  it('up --workspace-key sets RELAY_API_KEY in env before broker starts', async () => {
+  it('up --workspace-key sets RELAY_WORKSPACE_KEY in env before broker starts', async () => {
     const env: NodeJS.ProcessEnv = {};
     const relay = createRelayMock({ workspaceKey: 'rk_live_custom' });
     const { program, deps } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, [
-      'up',
-      '--no-dashboard',
-      '--foreground',
-      '--workspace-key',
-      'rk_live_custom',
-    ]);
+    const exitCode = await runCommand(program, ['up', '--workspace-key', 'rk_live_custom']);
 
     expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_custom');
     expect(env.RELAY_API_KEY).toBe('rk_live_custom');
     expect(deps.createRelay).toHaveBeenCalled();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_custom');
   });
 
-  it('up without --workspace-key does not set RELAY_API_KEY in env', async () => {
+  it('up --wk is an alias for --workspace-key', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock({ workspaceKey: 'rk_live_alias' });
+    const { program, deps } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up', '--wk', 'rk_live_alias']);
+
+    expect(exitCode).toBeUndefined();
+    // The alias is folded into workspaceKey, so the broker sees the same env the
+    // explicit flag would have set.
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
+    expect(env.RELAY_API_KEY).toBe('rk_live_alias');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_alias');
+  });
+
+  it('up without --workspace-key does not set workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = {};
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBeUndefined();
     expect(env.RELAY_API_KEY).toBeUndefined();
   });
 
@@ -1277,7 +1466,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env, fs });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     expect(env.AGENT_RELAY_MCP_COMMAND).toBe('/usr/bin/node /tmp/agent-relay-mcp.js');
@@ -1289,7 +1478,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env, fs });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     expect(env.AGENT_RELAY_MCP_COMMAND).toBe('node /custom/agent-relay-mcp.js');
@@ -1299,65 +1488,132 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({ workspaceKey: undefined });
     const { program, deps } = createHarness({ relay });
 
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
+    const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: unknown');
   });
 
-  it('start dashboard.js logs workspace key when reusing existing broker', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
-    const fs = createFsMock({ [connectionPath]: connectionFile(3030) });
-    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
-      if (pid === 3030 && (signal === 0 || signal === undefined)) {
-        return; // process is running
-      }
-      if (signal === 'SIGTERM') {
-        return;
-      }
-    });
-    const relay = createRelayMock({ workspaceKey: 'rk_live_reused' });
-    const { program, deps } = createHarness({ fs, killImpl, relay });
-
-    const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_reused');
-    expect(deps.log).toHaveBeenCalledWith(
-      'Broker already running for this project; reusing existing broker.'
-    );
-  });
-
-  it('up --workspace-key overrides existing RELAY_API_KEY in env', async () => {
+  it('up --workspace-key overrides existing workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = { RELAY_API_KEY: 'rk_live_old' };
     const relay = createRelayMock({ workspaceKey: 'rk_live_new' });
     const { program, deps } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, [
-      'up',
-      '--no-dashboard',
-      '--foreground',
-      '--workspace-key',
-      'rk_live_new',
-    ]);
+    const exitCode = await runCommand(program, ['up', '--workspace-key', 'rk_live_new']);
 
     expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_new');
     expect(env.RELAY_API_KEY).toBe('rk_live_new');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
   });
+});
 
-  it('bridge exits when no projects have running brokers', async () => {
-    const projectA: BridgeProject = { id: 'alpha', path: '/tmp/alpha', leadName: 'LeadA' };
+describe('dead-letter commands', () => {
+  function deadLetterEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      delivery_id: 'del_1',
+      worker_name: 'Worker',
+      event_id: 'evt_1',
+      from: 'Lead',
+      to: 'Worker',
+      attempts: 10,
+      reason: 'max delivery retries exceeded',
+      queued_at_ms: 1,
+      failed_at_ms: 2,
+      age_ms: 65_000,
+      ...overrides,
+    };
+  }
 
-    const { program, deps } = createHarness({
-      bridgeProjects: [projectA],
-      validBridgeProjects: [],
-      missingBridgeProjects: [projectA],
-    });
+  it('deadletters lists entries from the broker', async () => {
+    const client = {
+      getDeadLetters: vi.fn(async () => ({ count: 1, dead_letters: [deadLetterEntry()] })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
 
-    const exitCode = await runCommand(program, ['bridge', '/tmp/alpha']);
+    const exitCode = await runCommand(program, ['deadletters']);
 
-    expect(exitCode).toBe(1);
-    expect(deps.error).toHaveBeenCalledWith('No projects have running brokers. Start them first.');
+    expect(exitCode).toBeUndefined();
+    expect(client.getDeadLetters).toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('del_1'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('recipient=Worker'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('reason=max delivery retries exceeded'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('age=1m'));
+    expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it('deadletters reports an empty queue', async () => {
+    const client = {
+      getDeadLetters: vi.fn(async () => ({ count: 0, dead_letters: [] })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['deadletters']);
+
+    expect(deps.log).toHaveBeenCalledWith('No dead-letter deliveries.');
+  });
+
+  it('deadletters --json prints the raw response', async () => {
+    const response = { count: 1, dead_letters: [deadLetterEntry()] };
+    const client = {
+      getDeadLetters: vi.fn(async () => response),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['deadletters', '--json']);
+
+    expect(deps.log).toHaveBeenCalledWith(JSON.stringify(response, null, 2));
+  });
+
+  it('redeliver requeues a single entry by id', async () => {
+    const client = {
+      redeliverDeadLetters: vi.fn(async () => ({
+        redelivered: [{ delivery_id: 'del_1', worker_name: 'Worker', event_id: 'evt_1' }],
+        skipped: [],
+      })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['redeliver', 'del_1']);
+
+    expect(exitCode).toBeUndefined();
+    expect(client.redeliverDeadLetters).toHaveBeenCalledWith({ id: 'del_1' });
+    expect(deps.log).toHaveBeenCalledWith('Redelivered del_1 to Worker');
+    expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it('redeliver --all requeues everything and reports skips', async () => {
+    const client = {
+      redeliverDeadLetters: vi.fn(async () => ({
+        redelivered: [{ delivery_id: 'del_1', worker_name: 'Worker', event_id: 'evt_1' }],
+        skipped: [{ delivery_id: 'del_2', worker_name: 'Ghost', reason: 'recipient not running' }],
+      })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['redeliver', '--all']);
+
+    expect(client.redeliverDeadLetters).toHaveBeenCalledWith({ all: true });
+    expect(deps.log).toHaveBeenCalledWith('Redelivered del_1 to Worker');
+    expect(deps.warn).toHaveBeenCalledWith('Skipped del_2 (Ghost): recipient not running');
+  });
+
+  it('redeliver requires exactly one of id or --all', async () => {
+    const { program, deps } = createHarness();
+
+    expect(await runCommand(program, ['redeliver'])).toBe(1);
+    expect(await runCommand(program, ['redeliver', 'del_1', '--all'])).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Provide exactly one of <id> or --all.');
+    expect(harnessConnectMock).not.toHaveBeenCalled();
   });
 });

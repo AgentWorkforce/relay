@@ -60,7 +60,7 @@ class TestClaudeSdkAdapterE2E:
 
     @pytest.mark.asyncio
     async def test_on_relay_injects_mcp_and_hooks(self, monkeypatch):
-        """on_relay() injects the relaycast MCP config and wraps hooks."""
+        """on_relay() injects the Agent Relay MCP config and wraps hooks."""
         types_mod = _install_claude_sdk_module(monkeypatch)
 
         from agent_relay.communicate.adapters.claude_sdk import on_relay
@@ -75,7 +75,7 @@ class TestClaudeSdkAdapterE2E:
 
             assert result is options
             mcp_names = [s["name"] for s in options.mcp_servers]
-            assert "relaycast" in mcp_names
+            assert "agent-relay" in mcp_names
             assert callable(options.hooks.post_tool_use)
             assert callable(options.hooks.stop)
         finally:
@@ -83,7 +83,7 @@ class TestClaudeSdkAdapterE2E:
 
     @pytest.mark.asyncio
     async def test_on_relay_preserves_existing_mcp_servers(self, monkeypatch):
-        """on_relay() appends relaycast MCP without clobbering existing servers."""
+        """on_relay() appends Agent Relay MCP without clobbering existing servers."""
         _install_claude_sdk_module(monkeypatch)
 
         from agent_relay.communicate.adapters.claude_sdk import on_relay
@@ -104,7 +104,7 @@ class TestClaudeSdkAdapterE2E:
             assert len(options.mcp_servers) == 2
             names = [s["name"] for s in options.mcp_servers]
             assert "custom-tool" in names
-            assert "relaycast" in names
+            assert "agent-relay" in names
         finally:
             await relay.close()
 

@@ -8,6 +8,6 @@ Follow this protocol:
    - @relay-worker for general implementation tasks
    - @relay-researcher for investigation and analysis
    - @relay-reviewer for code review and quality checks
-5. Delegate each task to the appropriate sub-agent. Tell each worker your agent name so they can send ACK/DONE messages back to you via mcp_relaycast_send_dm.
-6. Monitor ACK messages via mcp_relaycast_check_inbox and relay missing context or corrections
+5. Delegate each task to the appropriate sub-agent. Tell each worker your agent name so they can send ACK/DONE messages back to you via mcp_agent_relay_send_dm.
+6. Monitor ACK messages via mcp_agent_relay_check_inbox and relay missing context or corrections
 7. Track DONE messages, resolve blockers, and synthesize the final result when the critical work is complete"""

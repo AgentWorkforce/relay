@@ -9,31 +9,36 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
-import { initTelemetry, shutdown as shutdownTelemetry, track } from '@agent-relay/telemetry';
+import {
+  ORCHESTRATOR_HARNESS_ENV,
+  detectOrchestratorHarness,
+  getDistinctId,
+  initTelemetry,
+  isEnabled as isTelemetryEnabled,
+  shutdown as shutdownTelemetry,
+  track,
+} from './telemetry/index.js';
 
+import { ensureWebSocketGlobal } from './lib/ensure-websocket.js';
+import { assertSupportedNodeVersion } from './lib/node-version.js';
 import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
-import { registerAgentManagementCommands } from './commands/agent-management.js';
-import { registerMessagingCommands } from './commands/messaging.js';
-import { registerCloudCommands } from './commands/cloud.js';
-import { registerProactiveBootstrapCommands } from './commands/proactive-bootstrap.js';
-import { registerMonitoringCommands } from './commands/monitoring.js';
-import { registerAuthCommands } from './commands/auth.js';
 import { registerSetupCommands } from './commands/setup.js';
-import { registerCoreCommands } from './commands/core.js';
-import { registerRelayRuntimeCommands } from './commands/relay-runtime.js';
-import { registerSwarmCommands } from './commands/swarm.js';
-import { registerConnectCommands } from './commands/connect.js';
-import { registerOnCommands } from './commands/on.js';
-import { registerDlqCommands } from './commands/dlq.js';
-import { registerViewCommands } from './commands/view.js';
-import { registerDriveCommands } from './commands/drive.js';
-import { registerPassthroughCommands } from './commands/passthrough.js';
-import { registerNewCommands } from './commands/new.js';
-import { registerRmCommands } from './commands/rm.js';
-import { registerActivityCommands } from './commands/activity.js';
-import { registerLogCommands } from './commands/log.js';
-import { parseVerblessAlias, runVerblessAliasDispatch } from './lib/spawn-and-attach.js';
+import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
+import { registerNodeCommands } from './commands/node.js';
+import { registerStatusCommand } from './commands/status.js';
+import { registerLocalAgentCommands } from './commands/local-agent.js';
+import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
+import { registerCloudCommands } from './commands/cloud.js';
+import { registerReflexCommands } from './commands/reflex.js';
+import { registerWorkspaceCommands } from './commands/workspace.js';
+import { registerAgentCommands } from './commands/agent.js';
+import { registerChannelCommands } from './commands/channel.js';
+import { registerMessageCommands } from './commands/message.js';
+import { registerIntegrationCommands } from './commands/integration.js';
+import { registerCapabilitiesCommands } from './commands/capabilities.js';
+import { registerFleetCommands } from './commands/fleet.js';
+import { registerSkillsCommands } from './commands/skills.js';
 
 dotenvConfig({ quiet: true });
 
@@ -90,6 +95,13 @@ function resolveSdkVersion(): string | undefined {
 
 export const SDK_VERSION = resolveSdkVersion();
 
+const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
+const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
+
+function hasConfiguredTelemetryKey(): boolean {
+  return Boolean(process.env.POSTHOG_API_KEY?.trim() || process.env.AGENT_RELAY_POSTHOG_KEY?.trim());
+}
+
 function resolveProgramName(argv: string[] = process.argv): string {
   const invocationPath = String(argv[1] ?? '').trim();
   if (!invocationPath) {
@@ -102,20 +114,33 @@ function resolveProgramName(argv: string[] = process.argv): string {
 
 /**
  * Export the resolved CLI + SDK versions on the current process env so that
- * any child process we spawn (the Rust broker, the dashboard server, etc.)
+ * any child process we spawn (the Rust broker, etc.)
  * inherits them and can attach them as common telemetry properties without
  * having to re-resolve `package.json`s on its own.
  *
  * We only set these if they're not already present — so a parent caller that
  * has set its own values (e.g. in tests or in nested CLI invocations) wins.
  */
-function propagateVersionsToChildren(): void {
+function propagateTelemetryContextToChildren(): string {
+  const orchestratorHarness = detectOrchestratorHarness();
+
   if (!process.env.AGENT_RELAY_CLI_VERSION) {
     process.env.AGENT_RELAY_CLI_VERSION = VERSION;
   }
   if (SDK_VERSION && !process.env.AGENT_RELAY_SDK_VERSION) {
     process.env.AGENT_RELAY_SDK_VERSION = SDK_VERSION;
   }
+  if (!process.env[ORCHESTRATOR_HARNESS_ENV]) {
+    process.env[ORCHESTRATOR_HARNESS_ENV] = orchestratorHarness;
+  }
+  if (!process.env[TELEMETRY_CLIENT_ENV]) {
+    process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
+  }
+  if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
+    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getDistinctId();
+  }
+
+  return orchestratorHarness;
 }
 
 // Commands that should skip the update check / first-run-notice entirely.
@@ -127,17 +152,7 @@ const STDIO_SERVER_COMMANDS = new Set(['mcp']);
 // Commands for which we run the background update-check. Keep this narrow to
 // the interactive / long-lived commands — we don't want short-lived programmatic
 // invocations (spawn, send, etc.) to hit the npm registry on every call.
-const UPDATE_CHECK_COMMANDS = new Set([
-  'up',
-  'start',
-  'down',
-  'status',
-  'version',
-  '--version',
-  '-V',
-  '--help',
-  '-h',
-]);
+const UPDATE_CHECK_COMMANDS = new Set(['node', 'local', 'version', '--version', '-V', '--help', '-h']);
 
 function detectCi(): boolean {
   const env = process.env;
@@ -196,6 +211,9 @@ interface CommandContext {
 
 let currentCommand: CommandContext | null = null;
 
+/** One-shot guard so the deprecated `local` alias warns at most once per process. */
+let localDeprecationWarned = false;
+
 function installTelemetryHooks(program: Command): void {
   program.hook('preAction', (_thisCommand, actionCommand) => {
     const commandPath = getCommandPath(actionCommand);
@@ -211,8 +229,8 @@ function installTelemetryHooks(program: Command): void {
       command_name: commandPath,
       flags_used: flags,
       // stdin, not stdout — this property exists to distinguish interactive
-      // runs from scripted ones. `agent-relay status > file.txt` still has
-      // a TTY on stdin (human at the keyboard); `echo x | agent-relay spawn`
+      // runs from scripted ones. `agent-relay local status > file.txt` still has
+      // a TTY on stdin (human at the keyboard); `echo x | agent-relay send`
       // doesn't (piped input). stdout.isTTY would get both wrong.
       is_tty: Boolean(process.stdin.isTTY),
       is_ci: detectCi(),
@@ -277,29 +295,38 @@ export function createProgram(options: { name?: string } = {}): Command {
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
-  registerCoreCommands(program);
-  registerAgentManagementCommands(program);
-  registerMessagingCommands(program);
-  registerCloudCommands(program);
-  registerProactiveBootstrapCommands(program);
-  registerMonitoringCommands(program);
-  registerAuthCommands(program);
-  registerRelayRuntimeCommands(program);
+  registerNodeCommands(program);
+
+  // `local` is a hidden, deprecated alias of `node`. It keeps the pre-rename flat
+  // surface (`local up|run|logs|sync`, `local agent …`) so existing scripts keep
+  // working, and warns once per process on first use.
+  const local = program.command('local', { hidden: true }).description('Deprecated alias of "node"');
+  registerCoreCommands(local);
+  registerLocalAgentCommands(local);
+  registerLocalWorkflowCommands(local);
+  local.hook('preAction', () => {
+    if (localDeprecationWarned) {
+      return;
+    }
+    localDeprecationWarned = true;
+    process.stderr.write(
+      "Warning: 'local' is deprecated and will be removed in a future major; use 'relay node ...' instead.\n"
+    );
+  });
+
+  registerCoreMaintenance(program);
+  registerFleetCommands(program);
+  registerStatusCommand(program);
   registerSetupCommands(program);
-  registerSwarmCommands(program);
-  registerOnCommands(program);
-  registerConnectCommands(program);
-  registerDlqCommands(program);
-  registerViewCommands(program);
-  registerActivityCommands(program);
-  registerDriveCommands(program);
-  registerPassthroughCommands(program);
-  // The `run` command (registered by `registerSetupCommands` above) is the
-  // workflow-file runner and is intentionally untouched. The spawn-and-attach
-  // composition lives on `new --attach` — see `src/cli/commands/new.ts`.
-  registerNewCommands(program);
-  registerRmCommands(program);
-  registerLogCommands(program);
+  registerCloudCommands(program);
+  registerReflexCommands(program);
+  registerWorkspaceCommands(program);
+  registerAgentCommands(program);
+  registerChannelCommands(program);
+  registerMessageCommands(program);
+  registerIntegrationCommands(program);
+  registerCapabilitiesCommands(program);
+  registerSkillsCommands(program);
 
   program
     .command('mcp')
@@ -325,6 +352,11 @@ function shouldSkipTelemetryInit(argv: string[]): boolean {
   );
 }
 
+function isStdioServerCommand(argv: string[]): boolean {
+  const commandName = argv[2];
+  return Boolean(commandName && STDIO_SERVER_COMMANDS.has(commandName));
+}
+
 /**
  * Top-level verb names that the verbless `-n NAME CLI` silent alias
  * must NOT swallow. Built once from the program's leaf+group command
@@ -343,50 +375,25 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 }
 
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
+  assertSupportedNodeVersion();
+  ensureWebSocketGlobal();
   maybeRunUpdateCheck(VERSION, argv);
-  propagateVersionsToChildren();
+  const orchestratorHarness = propagateTelemetryContextToChildren();
 
   if (!shouldSkipTelemetryInit(argv)) {
     initTelemetry({
       showNotice: true,
       cliVersion: VERSION,
       sdkVersion: SDK_VERSION,
+      app: 'cli',
+      surface: 'cli',
+      orchestratorHarness,
     });
   }
 
   const program = createProgram({ name: resolveProgramName(argv) });
   installTelemetryHooks(program);
   installExitHooks();
-
-  // Bare `-n NAME CLI` shorthand. `agent-relay -n NAME CLI [args...]`
-  // dispatches to `runSpawnAndAttach` with mode='passthrough' and ephemeral=true,
-  // which is equivalent to `agent-relay new NAME CLI --attach --mode passthrough --ephemeral`.
-  // Detected here BEFORE commander parses so the shorthand routes
-  // identically to the verbose form. See `parseVerblessAlias` in
-  // `lib/spawn-and-attach.ts`.
-  const knownVerbs = collectTopLevelVerbs(program);
-  const aliasMatch = parseVerblessAlias(argv.slice(2), knownVerbs);
-  if (aliasMatch) {
-    try {
-      const code = await runVerblessAliasDispatch(aliasMatch);
-      try {
-        await shutdownTelemetry();
-      } catch {
-        // Never let telemetry shutdown mask the real exit code.
-      }
-      if (code !== 0) {
-        process.exit(code);
-      }
-      return program;
-    } catch (err) {
-      try {
-        await shutdownTelemetry();
-      } catch {
-        // ignore
-      }
-      throw err;
-    }
-  }
 
   try {
     await program.parseAsync(argv);
@@ -430,10 +437,12 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
     throw err;
   }
 
-  try {
-    await shutdownTelemetry();
-  } catch {
-    // Ignore — the command succeeded.
+  if (!isStdioServerCommand(argv)) {
+    try {
+      await shutdownTelemetry();
+    } catch {
+      // Ignore — the command succeeded.
+    }
   }
 
   return program;

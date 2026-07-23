@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # E2E Test for Agent Relay
-# Tests broker lifecycle and agent lifecycle without relying on legacy socket daemon behavior.
+# Tests broker lifecycle and agent lifecycle through the supported local commands.
 #
 # Usage:
 #   ./scripts/e2e-test.sh                    # Run with ANTHROPIC_API_KEY from env
@@ -18,7 +18,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Configuration
 AGENT_NAME="e2e-test-agent"
-DASHBOARD_PORT=3889  # Use different port to avoid conflicts with running instances
+BROKER_PORT=3889  # Broker API binds BROKER_PORT+1; kept distinct to avoid conflicts
 SPAWN_TIMEOUT=120
 DAEMON_ONLY=false
 
@@ -30,11 +30,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --port)
-      DASHBOARD_PORT="$2"
+      BROKER_PORT="$2"
       shift 2
       ;;
     --port=*)
-      DASHBOARD_PORT="${1#*=}"
+      BROKER_PORT="${1#*=}"
       shift
       ;;
     *)
@@ -57,7 +57,7 @@ log_phase() { echo -e "\n${CYAN}========================================${NC}"; 
 
 broker_is_running() {
   local status_output
-  status_output=$(run_with_timeout 5 "$CLI_CMD" status 2>/dev/null || true)
+  status_output=$(run_with_timeout 5 "$CLI_CMD" node status 2>/dev/null || true)
   echo "$status_output" | grep -q "Status: RUNNING"
 }
 
@@ -118,7 +118,7 @@ fi
 
 log_info "Configuration:"
 log_info "  Agent name:     $AGENT_NAME"
-log_info "  Dashboard port: $DASHBOARD_PORT"
+log_info "  Broker port:     $BROKER_PORT"
 log_info "  Daemon only:    $DAEMON_ONLY"
 log_info "  CLI command:    $CLI_CMD"
 
@@ -129,10 +129,7 @@ cleanup() {
 
   # Stop daemon (with timeout to prevent hanging)
   log_info "Ensuring daemon is stopped..."
-  run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
-
-  # Force kill any remaining processes if timeout occurred
-  pkill -9 -f "relay-dashboard-server.*--port.*$DASHBOARD_PORT" 2>/dev/null || true
+  run_with_timeout 10 "$CLI_CMD" node down --force --timeout 5000 2>/dev/null || true
 
   log_info "Cleanup complete."
 }
@@ -145,25 +142,25 @@ if [ ! -f "$PROJECT_DIR/packages/cli/dist/cli/index.js" ]; then
   log_info "Building project..."
   npm run build
 else
-  log_info "Build exists, skipping initial rebuild (Phase 4 will rebuild before SDK lifecycle)"
+  log_info "Build exists, skipping rebuild"
 fi
 
 # Phase 1: Broker startup smoke test
 log_phase "Phase 1: Broker Startup"
 
 # Kill any existing daemon (with timeout to prevent hanging)
-run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
+run_with_timeout 10 "$CLI_CMD" node down --force --timeout 5000 2>/dev/null || true
 
-# Kill any process using our target port (ensures dashboard can bind)
+# Kill any process using our target port (ensures the broker can bind)
 if command -v lsof &> /dev/null; then
-  lsof -ti:$DASHBOARD_PORT | xargs kill -9 2>/dev/null || true
+  lsof -ti:$BROKER_PORT | xargs kill -9 2>/dev/null || true
 fi
 sleep 1
 
-# Start broker+dashboard in background, redirect output to log file
-DAEMON_LOG="$PROJECT_DIR/.agent-relay/e2e-daemon.log"
+# Start broker in background, redirect output to log file
+DAEMON_LOG="$PROJECT_DIR/.agentworkforce/relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-"$CLI_CMD" up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
+AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" node up > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"
@@ -191,7 +188,7 @@ done
 # If daemon-only mode, stop here
 if [ "$DAEMON_ONLY" = true ]; then
   log_phase "Daemon-Only Test Complete"
-  run_with_timeout 5 "$CLI_CMD" status || true
+  run_with_timeout 5 "$CLI_CMD" node status || true
   echo ""
   log_info "=== DAEMON TEST PASSED ==="
   exit 0
@@ -218,9 +215,9 @@ if ! "$CLI_CMD" version > /dev/null 2>&1; then
 fi
 
 # Test status command (with timeout to ensure it doesn't hang)
-log_info "Testing: agent-relay status (with 10s timeout)"
+log_info "Testing: agent-relay node status (with 10s timeout)"
 STATUS_EXIT=0
-run_with_timeout 10 "$CLI_CMD" status || STATUS_EXIT=$?
+run_with_timeout 10 "$CLI_CMD" node status || STATUS_EXIT=$?
 if [ $STATUS_EXIT -ne 0 ]; then
   if [ $STATUS_EXIT -eq 124 ]; then
     log_error "status command timed out (hung for >10s)"
@@ -231,98 +228,21 @@ if [ $STATUS_EXIT -ne 0 ]; then
 fi
 log_info "  status command completed without hanging"
 
-# Test agents command (should not error even with no user agents)
-log_info "Testing: agent-relay agents"
-"$CLI_CMD" agents || true
-
-# Test agents --json and verify no user agents
-log_info "Testing: agent-relay agents --json"
-# Filter to only get JSON line (skip any log output like dotenv messages)
-AGENTS_JSON=$("$CLI_CMD" agents --json 2>/dev/null | grep '^\[')
-if [ -z "$AGENTS_JSON" ]; then
-  log_error "agents --json returned empty output"
-  exit 1
-fi
-
-# Count user agents (filter known internal agent names if present)
-AGENT_COUNT=$(echo "$AGENTS_JSON" | jq '[.[] | select(.name != "Dashboard" and .name != "__cli_read__" and .name != "__cli_history__" and .name != "__cli_inbox__")] | length' 2>/dev/null || echo "0")
-log_info "  User agents before spawn: $AGENT_COUNT"
-if [ "$AGENT_COUNT" != "0" ]; then
-  log_error "Expected 0 user agents before spawn, got $AGENT_COUNT"
-  echo "$AGENTS_JSON" | jq . 2>/dev/null || echo "$AGENTS_JSON"
-  exit 1
-fi
-log_info "  VERIFIED: No user agents connected (as expected)"
-
-# Test who command
-log_info "Testing: agent-relay who"
-"$CLI_CMD" who || true
-
-# Test history command (hidden but functional)
-log_info "Testing: agent-relay history"
-"$CLI_CMD" history --limit 5 2>/dev/null || true
-
-# Test read command (should fail gracefully with invalid ID)
-log_info "Testing: agent-relay read (with invalid ID)"
-"$CLI_CMD" read invalid-id 2>/dev/null || true
-
 # Test update --check (just checks, doesn't install)
 log_info "Testing: agent-relay update --check"
 "$CLI_CMD" update --check 2>/dev/null || true
 
-# Test doctor command
-log_info "Testing: agent-relay doctor"
-"$CLI_CMD" doctor 2>/dev/null || true
-
-# Test health command
-log_info "Testing: agent-relay health"
-"$CLI_CMD" health 2>/dev/null || true
-
-# Test cloud status (should work even if not linked)
-log_info "Testing: agent-relay cloud status"
-"$CLI_CMD" cloud status 2>/dev/null || true
-
-# Test create-agent --help (don't actually wrap anything)
-log_info "Testing: agent-relay create-agent --help"
-"$CLI_CMD" create-agent --help > /dev/null 2>&1 || true
-
-# Test bridge --help
-log_info "Testing: agent-relay bridge --help"
-"$CLI_CMD" bridge --help > /dev/null 2>&1 || true
+# Test node agent command help
+log_info "Testing: agent-relay node agent list --help"
+"$CLI_CMD" node agent list --help > /dev/null 2>&1
 
 log_info "All CLI command tests passed!"
 
-# Phase 3: Stop broker before SDK-managed lifecycle
-log_phase "Phase 3: Transition to SDK Lifecycle"
-log_info "Stopping CLI broker before SDK lifecycle test..."
-if ! run_with_timeout 15 "$CLI_CMD" down --timeout 10000; then
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
-    log_error "down command timed out while preparing SDK lifecycle test"
-    exit 1
-  fi
-fi
+# Phase 3: Final cleanup down (verify no hang)
+log_phase "Phase 3: Final Down Check"
 
-# Phase 4: SDK lifecycle test (spawn/list/release)
-log_phase "Phase 4: SDK Agent Lifecycle"
-log_info "Rebuilding before SDK lifecycle test to ensure dist matches current source..."
-npm run build > /dev/null
-if ! node "$PROJECT_DIR/scripts/e2e-sdk-lifecycle.mjs" \
-  --name "$AGENT_NAME" \
-  --cli "claude" \
-  --timeout "$SPAWN_TIMEOUT" \
-  --cwd "$PROJECT_DIR" \
-  --task "You are a test agent. Say 'Ready for testing' and then wait. Do not exit until you receive a message telling you to exit."; then
-  log_error "SDK lifecycle test failed"
-  exit 1
-fi
-log_info "SDK lifecycle test passed"
-
-# Phase 7: Final cleanup down (verify no hang)
-log_phase "Phase 7: Final Down Check"
-
-log_info "Testing: agent-relay down (with 15s timeout)"
-if ! run_with_timeout 15 "$CLI_CMD" down --timeout 10000; then
+log_info "Testing: agent-relay node down (with 15s timeout)"
+if ! run_with_timeout 15 "$CLI_CMD" node down --timeout 10000; then
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 124 ]; then
     log_error "down command timed out (hung for >15s)"
@@ -336,7 +256,7 @@ else
 fi
 
 # Verify broker is actually stopped
-STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" status 2>/dev/null || true)
+STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" node status 2>/dev/null || true)
 if echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
   log_error "Broker still reported as running after down command"
   echo "$STATUS_OUTPUT"

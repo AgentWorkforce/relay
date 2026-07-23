@@ -9,14 +9,25 @@ on:
     # Run weekly on Sundays at midnight
     - cron: '0 0 * * 0'
 
+# Reusable workflows cannot elevate the caller's token permissions.
+# detect-changes.yml reads pull-request file lists and commit comparisons.
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    uses: ./.github/workflows/detect-changes.yml
+
   # NPM audit for known vulnerabilities
   npm-audit:
     name: NPM Audit
+    needs: changes
+    if: needs.changes.outputs.node_changed == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -65,6 +76,8 @@ jobs:
   # CodeQL analysis for code security
   codeql:
     name: CodeQL Analysis
+    needs: changes
+    if: needs.changes.outputs.node_changed == 'true'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -121,6 +134,8 @@ jobs:
   # License compliance check
   license-check:
     name: License Compliance
+    needs: changes
+    if: needs.changes.outputs.node_changed == 'true'
     runs-on: ubuntu-latest
 
     steps:

@@ -1,25 +1,52 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { AgentRelayClient } from '@agent-relay/sdk';
-import { track } from '@agent-relay/telemetry';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
+import { createLogger } from '@agent-relay/utils';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
+import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-sidecar.js';
+import {
+  discoverNodeConfigPath,
+  discoverPythonNodeConfigPath,
+  loadNodeDefinition,
+} from './node-definition-loader.js';
+import {
+  describeNodeDefinitionViaNode,
+  descriptorCapacitySource,
+  startNodeJsNodeProvider,
+  type NodeDefinitionDescriptor,
+  type RunningNodeProviderChild,
+} from './node-provider-child.js';
+import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
+import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 type UpOptions = {
-  dashboard?: boolean;
-  port?: string;
   spawn?: boolean;
   background?: boolean;
-  foreground?: boolean;
   verbose?: boolean;
-  dashboardPath?: string;
-  reuseExistingBroker?: boolean;
   workspaceKey?: string;
   stateDir?: string;
   brokerName?: string;
+  config?: string;
+  /**
+   * Opt-in to auto-discovering an `agent-relay.*` node definition in the
+   * project root. Only `node up` sets this — the deprecated `local up` alias
+   * (and any other legacy caller) must keep its pre-`node` behavior of never
+   * touching such files.
+   */
+  discoverConfig?: boolean;
+  /** Registered node name override (e.g. from a persisted Cloud enrollment). */
+  nodeName?: string;
+  /** Write structured node logs (capabilities, action invocations) to this file. */
+  logFile?: string;
+  /** Log verbosity floor: debug | info | warn | error. Defaults to info. */
+  logLevel?: string;
+  /** Emit logs as JSON lines instead of human-readable text. */
+  logJson?: boolean;
 };
 
 type DownOptions = {
@@ -30,13 +57,18 @@ type DownOptions = {
 };
 
 const MAX_API_PORT_ATTEMPTS = 25;
-const MAX_DASHBOARD_PORT_ATTEMPTS = 25;
 const MAX_PORT = 65535;
+const DEFAULT_BROKER_BASE_PORT = 3888;
 
 /** The broker writes this file with URL, port, API key, and PID. */
 const CONNECTION_FILENAME = 'connection.json';
 const STATUS_POLL_INTERVAL_MS = 500;
 const DETACHED_START_READY_TIMEOUT_MS = 10_000;
+const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
+// Bounded wait for the broker's background-minted node token to surface on
+// `/api/session` when serving a capability definition without an explicit
+// RELAY_NODE_TOKEN.
+const NODE_TOKEN_WAIT_MS = 15_000;
 
 export interface BrokerConnection {
   url: string;
@@ -46,8 +78,18 @@ export interface BrokerConnection {
 }
 
 type BrokerStatusDetails = {
-  status: Awaited<ReturnType<AgentRelayClient['getStatus']>>;
-  session: Awaited<ReturnType<AgentRelayClient['getSession']>> | null;
+  status: Awaited<ReturnType<HarnessDriverClient['getStatus']>>;
+  session: Awaited<ReturnType<HarnessDriverClient['getSession']>> | null;
+};
+
+type EnrolledNodeExpectation = {
+  nodeId: string;
+  nodeName?: string;
+};
+
+type NodeDeliveryStatus = {
+  tokenPresent: boolean;
+  connected: boolean;
 };
 
 type BrokerReadiness =
@@ -111,7 +153,73 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Emit a `[verbose]`-prefixed step marker via `deps.log` when `--verbose` is set. */
+function vlog(deps: CoreDependencies, verbose: boolean | undefined, message: string): void {
+  if (verbose) {
+    deps.log(`[verbose] ${message}`);
+  }
+}
+
+/** True when any log flag (or `--verbose`) opts the node into structured logging. */
+function nodeLoggingEnabled(options: UpOptions): boolean {
+  return Boolean(options.logFile || options.logLevel || options.logJson || options.verbose);
+}
+
+/**
+ * Translate the `--log-*` (and `--verbose`) flags into the `AGENT_RELAY_LOG_*`
+ * environment the shared `createLogger` reads. `--verbose` alone raises the
+ * floor to DEBUG so per-capability registration lines surface; an explicit
+ * `--log-level` always wins. Called before the fleet sidecar starts.
+ */
+function applyNodeLogEnv(options: UpOptions, deps: CoreDependencies): void {
+  if (options.logFile) {
+    deps.env.AGENT_RELAY_LOG_FILE = options.logFile;
+  }
+  const level = options.logLevel ?? (options.verbose ? 'debug' : undefined);
+  if (level) {
+    deps.env.AGENT_RELAY_LOG_LEVEL = level.toUpperCase();
+  }
+  if (options.logJson) {
+    deps.env.AGENT_RELAY_LOG_JSON = '1';
+  }
+}
+
 type ErrorWithCode = { code?: unknown };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function readNodeDeliveryStatus(status: unknown): NodeDeliveryStatus | null {
+  if (!isRecord(status)) {
+    return null;
+  }
+  const snake = isRecord(status.node_delivery) ? status.node_delivery : null;
+  const tokenPresent = typeof snake?.token_present === 'boolean' ? snake.token_present : false;
+  const connected =
+    typeof status.node_connected === 'boolean'
+      ? status.node_connected
+      : typeof snake?.connected === 'boolean'
+        ? snake.connected
+        : false;
+  return { tokenPresent, connected };
+}
+
+function nodeDeliveryReady(status: unknown): boolean {
+  const delivery = readNodeDeliveryStatus(status);
+  return Boolean(delivery?.tokenPresent && delivery.connected);
+}
+
+function formatNodeDeliveryStatus(status: unknown): string {
+  const delivery = readNodeDeliveryStatus(status);
+  if (!delivery) {
+    return 'unknown';
+  }
+  if (!delivery.tokenPresent) {
+    return 'DOWN (no node token)';
+  }
+  return delivery.connected ? 'CONNECTED' : 'DOWN (node websocket disconnected)';
+}
 
 function errorCode(err: unknown): string | undefined {
   if (!err || typeof err !== 'object') return undefined;
@@ -175,8 +283,7 @@ export function classifyBrokerStartError(err: unknown): string {
 }
 
 /** Exported for testing. */
-export function classifyBrokerStartStage(err: unknown, message: string, wantsDashboard: boolean): string {
-  if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) return 'dashboard_port';
+export function classifyBrokerStartStage(_err: unknown, message: string): string {
   if (isBrokerAlreadyRunningError(message)) return 'already_running';
   if (/fetch failed/i.test(message)) return 'connect';
   if (/Broker did not report API port/i.test(message)) return 'spawn';
@@ -207,41 +314,298 @@ async function resolveApiPortWithFallback(
   throw new Error(`Failed to find an available API port near ${startApiPort}.`);
 }
 
-async function startBrokerWithPortFallback(
+/**
+ * The broker base port. `AGENT_RELAY_BROKER_PORT` overrides the default so
+ * multiple brokers can run side by side (e.g. in tests); the broker HTTP API
+ * binds near `basePort + 1` with fallback scanning.
+ */
+export function resolveBrokerBasePort(deps: Pick<CoreDependencies, 'env'>): number {
+  const raw = Number.parseInt(deps.env.AGENT_RELAY_BROKER_PORT ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BROKER_BASE_PORT;
+}
+
+export async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
-  dashboardPort: number,
+  basePort: number,
   deps: CoreDependencies,
-  brokerName?: string
+  brokerName?: string,
+  verbose?: boolean
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
-  const startApiPort = dashboardPort + 1;
+  const startApiPort = basePort + 1;
+  vlog(deps, verbose, `Resolving a free API port starting near ${startApiPort}...`);
   const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
+  vlog(deps, verbose, `API port resolved: ${apiPort}`);
 
-  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName);
+  vlog(deps, verbose, 'Creating broker client (spawns broker process, waits for handshake)...');
+  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
+  vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
   await candidate.getStatus();
+  vlog(deps, verbose, 'Broker status check passed.');
   return { relay: candidate, apiPort };
 }
 
-async function resolveDashboardPortWithFallback(
-  dashboardPort: number,
-  dashboardPortCandidates: number,
-  deps: CoreDependencies
-): Promise<number> {
-  for (let attempt = 0; attempt < dashboardPortCandidates; attempt += 1) {
-    const candidatePort = dashboardPort + attempt;
-    const inUse = await deps.isPortInUse(candidatePort);
-    if (!inUse) {
-      if (attempt > 0) {
-        deps.warn(`Dashboard port ${dashboardPort} is already in use; trying ${candidatePort}`);
+/** A handle to stop the capability providers started alongside the broker. */
+export interface RunningNodeProviders {
+  /** Rejects when a supervised provider exits before broker shutdown. */
+  done?: Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface BrokerNodeIdentity {
+  nodeId: string;
+  nodeName: string;
+  nodeToken?: string;
+}
+
+interface SessionSnapshot {
+  node_id?: string;
+  node_name?: string;
+  node_token?: string;
+}
+
+/** Reject if `promise` doesn't settle within `ms`, clearing the timer on settle. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('session read exceeded token-wait budget')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
       }
-      return candidatePort;
+    );
+  });
+}
+
+/**
+ * Resolve the broker's node identity from repeated `/api/session` reads.
+ *
+ * The broker publishes its node id as soon as the workspace handshake completes,
+ * but mints the node token off the API-readiness path (in the background), so a
+ * freshly started broker can report `node_id` before `node_token`. When
+ * `awaitTokenMs` is set, poll until the token appears (or the budget elapses) so
+ * a provider that needs the broker-minted token isn't skipped over a startup
+ * race. A transient session-read error yields the best identity seen so far
+ * (identity without token), or `null` if no `node_id` was ever read.
+ */
+export async function resolveNodeIdentityFromSession(
+  getSession: () => Promise<SessionSnapshot>,
+  options: { awaitTokenMs?: number; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<BrokerNodeIdentity | null> {
+  const awaitTokenMs = options.awaitTokenMs ?? 0;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = Date.now() + awaitTokenMs;
+  let identity: BrokerNodeIdentity | null = null;
+  for (;;) {
+    let session: SessionSnapshot;
+    try {
+      // Bound each read to the remaining token-wait budget so a single stalled
+      // `/api/session` can't hold startup past `awaitTokenMs` (the transport's
+      // own request timeout is far longer). The non-await path issues one read
+      // and doesn't need the bound.
+      session =
+        awaitTokenMs > 0
+          ? await withTimeout(getSession(), Math.max(0, deadline - Date.now()))
+          : await getSession();
+    } catch {
+      return identity;
+    }
+    if (!session.node_id) return identity;
+    identity = {
+      nodeId: session.node_id,
+      nodeName: session.node_name ?? session.node_id,
+      ...(session.node_token ? { nodeToken: session.node_token } : {}),
+    };
+    if (session.node_token || awaitTokenMs <= 0 || Date.now() >= deadline) {
+      return identity;
+    }
+    await sleep(250);
+  }
+}
+
+/**
+ * Read the node id/name the broker registered as, from its HTTP session. The
+ * capability providers attach to this same node so they share its identity.
+ */
+async function readBrokerNodeIdentity(
+  conn: BrokerConnection,
+  options: { awaitTokenMs?: number; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<BrokerNodeIdentity | null> {
+  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  try {
+    return await resolveNodeIdentityFromSession(() => client.getSession(), options);
+  } finally {
+    client.disconnect();
+  }
+}
+
+/**
+ * Serve the project's capability definitions as node providers connected
+ * directly to the engine, alongside the broker provider: an `agent-relay.{ts,…}`
+ * definition via {@link startServeNode}, and an `agent-relay.py` script spawned
+ * as a supervised `python` child with the node token in its env. When no
+ * definition exists, nothing is served — the broker's capacity already brings
+ * the node online. Best-effort: a provider setup failure never aborts `up`.
+ */
+async function startNodeCapabilityProviders(
+  paths: CoreProjectPaths,
+  relay: CoreRelay,
+  options: UpOptions,
+  deps: CoreDependencies,
+  nodePlan: NodeDefinitionPlan | undefined
+): Promise<RunningNodeProviders | undefined> {
+  // Definition discovery is opt-in (`node up` only), matching the TS config scan.
+  const pythonConfig =
+    options.discoverConfig === true ? discoverPythonNodeConfigPath(paths.projectRoot) : undefined;
+  if (!nodePlan && !pythonConfig) {
+    return undefined;
+  }
+
+  const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
+  if (!conn) {
+    deps.warn('Capability providers skipped: broker connection file was not available.');
+    return undefined;
+  }
+  const baseUrl = deps.env.RELAY_BASE_URL?.trim();
+  // Serving a definition needs the node token. When no explicit RELAY_NODE_TOKEN
+  // is set we rely on the broker's background-minted token, which can lag its
+  // node id by a Relaycast round-trip — wait a bounded window for it rather than
+  // racing the mint and skipping the provider.
+  const awaitTokenMs = deps.env.RELAY_NODE_TOKEN?.trim() ? 0 : NODE_TOKEN_WAIT_MS;
+  const identity = await readBrokerNodeIdentity(conn, { awaitTokenMs });
+  if (!identity) {
+    deps.warn('Capability providers skipped: the broker did not report its node id yet.');
+    return undefined;
+  }
+  // The broker mints its own node token when RELAY_NODE_TOKEN is unset (local,
+  // un-enrolled); all providers on the node share that token, so fall back to
+  // the one it reports on its session rather than requiring pre-enrollment.
+  const nodeToken = deps.env.RELAY_NODE_TOKEN?.trim() || identity.nodeToken;
+  if (!nodeToken) {
+    deps.warn('Capability providers skipped: no node token available from the broker or environment.');
+    return undefined;
+  }
+
+  const served: RunningNode[] = [];
+  let pythonChild: SpawnedProcess | undefined;
+  let nodeJsChild: RunningNodeProviderChild | undefined;
+
+  if (nodePlan?.mode === 'in-process') {
+    const nodeDefinition = nodePlan.definition;
+    try {
+      const workspaceKey = relay.workspaceKey;
+      served.push(
+        startServeNode({
+          definition: nodeDefinition,
+          connection: {
+            ...(baseUrl ? { baseUrl } : {}),
+            nodeToken,
+            nodeId: identity.nodeId,
+          },
+          nameOverride: options.nodeName ?? identity.nodeName,
+          // The served definition attaches as its own provider, distinct from the
+          // broker ("broker") on the same node.
+          providerName: nodeDefinition.name,
+          ...(workspaceKey ? { triggers: createTriggerSyncClient({ workspaceKey, baseUrl }) } : {}),
+          reconnect: true,
+          // With any --log-* flag (or --verbose), surface the node's full lifecycle
+          // — capabilities registered, every action invoked/completed — through the
+          // shared logger, which honors AGENT_RELAY_LOG_FILE/_LEVEL/_JSON. Without a
+          // flag, keep the prior behavior: the registration summary via log, warnings
+          // via warn.
+          ...(nodeLoggingEnabled(options)
+            ? { logger: createLogger('fleet') }
+            : { warn: (message) => deps.warn(message), log: (message) => deps.log(message) }),
+        })
+      );
+    } catch (err) {
+      deps.warn(`Capability provider skipped: ${toErrorMessage(err)}`);
     }
   }
 
-  throw new Error(`Failed to find an available dashboard port near ${dashboardPort}.`);
+  if (nodePlan?.mode === 'child-node') {
+    nodeJsChild = await startNodeJsNodeProvider(
+      nodePlan.configPath,
+      {
+        nodeToken,
+        baseUrl,
+        nodeId: identity.nodeId,
+        nodeName: options.nodeName ?? identity.nodeName,
+        ...(relay.workspaceKey ? { workspaceKey: relay.workspaceKey } : {}),
+      },
+      deps
+    );
+  }
+
+  if (pythonConfig) {
+    pythonChild = startPythonNodeProvider(
+      pythonConfig,
+      {
+        nodeToken,
+        baseUrl,
+        nodeId: identity.nodeId,
+        // Prefer the enrolled/override name so a Cloud-enrolled py provider
+        // registers under the same name as the TS provider, not the broker default.
+        nodeName: options.nodeName ?? identity.nodeName,
+      },
+      deps
+    );
+  }
+
+  if (served.length === 0 && !pythonChild && !nodeJsChild) {
+    return undefined;
+  }
+
+  return {
+    ...(nodeJsChild ? { done: nodeJsChild.done } : {}),
+    stop: async () => {
+      await Promise.all([...served.map((node) => node.stop().catch(() => undefined)), nodeJsChild?.stop()]);
+      if (pythonChild?.pid) {
+        try {
+          deps.killProcess(pythonChild.pid, 'SIGTERM');
+        } catch {
+          // Already exited.
+        }
+      }
+    },
+  };
+}
+
+/**
+ * Spawn `python agent-relay.py` as a supervised child with the node credentials
+ * in its environment. The child connects to the engine on its own via the SDK's
+ * `NodeProvider.from_enrollment()`.
+ */
+function startPythonNodeProvider(
+  configPath: string,
+  credentials: { nodeToken: string; baseUrl?: string; nodeId: string; nodeName: string },
+  deps: CoreDependencies
+): SpawnedProcess | undefined {
+  const python = deps.env.AGENT_RELAY_PYTHON?.trim() || 'python3';
+  const env: NodeJS.ProcessEnv = {
+    ...deps.env,
+    RELAY_NODE_TOKEN: credentials.nodeToken,
+    RELAY_NODE_ID: credentials.nodeId,
+    RELAY_NODE_NAME: credentials.nodeName,
+    ...(credentials.baseUrl ? { RELAY_BASE_URL: credentials.baseUrl } : {}),
+  };
+  try {
+    const child = deps.spawnProcess(python, [configPath], { stdio: 'inherit', env });
+    deps.log(
+      `Serving Python node provider: ${python} ${path.basename(configPath)} (pid: ${child.pid ?? 'unknown'}).`
+    );
+    return child;
+  } catch (err) {
+    deps.warn(`Python node provider skipped: ${toErrorMessage(err)}`);
+    return undefined;
+  }
 }
 
 function isBrokerAlreadyRunningError(message: string): boolean {
@@ -323,18 +687,20 @@ function isBrokerExecutableCommand(command: string): boolean {
   return basename === 'agent-relay-broker' || basename.startsWith('agent-relay-broker-');
 }
 
-function isForegroundBrokerCliCommand(command: string): boolean {
+function isAttachedBrokerCliCommand(command: string): boolean {
   if (command.includes('agent-relay-mcp')) {
     return false;
   }
-  if (!/(?:^|\s)up(?:\s|$)/.test(command) || !/(?:^|\s)--foreground(?:\s|=|$)/.test(command)) {
+  // The attached `up` process holds the broker. Skip the transient
+  // `up --background` launcher, which exits as soon as the child is ready.
+  if (!/(?:^|\s)up(?:\s|$)/.test(command) || /(?:^|\s)--background(?:\s|=|$)/.test(command)) {
     return false;
   }
   return /(?:^|\s)(?:\S*agent-relay(?:\.js)?|\S*agent-relay-[^\s]+)(?:\s|$)/.test(command);
 }
 
 function isBrokerProcessCommand(command: string): boolean {
-  return isBrokerExecutableCommand(command) || isForegroundBrokerCliCommand(command);
+  return isBrokerExecutableCommand(command) || isAttachedBrokerCliCommand(command);
 }
 
 function escapeRegExp(value: string): string {
@@ -491,7 +857,7 @@ async function recoverHalfStartedBroker(
     if (!stopped) {
       deps.error(
         `Failed to stop half-started broker process (pid: ${readiness.conn.pid}). ` +
-          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
       );
       return 'blocked';
     }
@@ -504,7 +870,7 @@ async function recoverHalfStartedBroker(
     if (orphanCleanup.killedCount < orphanCleanup.matchedCount) {
       deps.error(
         'Failed to stop all half-started broker processes. ' +
-          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the processes.'
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the processes.'
       );
       return 'blocked';
     }
@@ -549,12 +915,7 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies): string[] {
-  const args = cliUserArgs(deps).filter(
-    (arg) => !['--background', '--foreground'].some((name) => matchesCliOption(arg, name))
-  );
-  if (options.dashboard === false && !args.includes('--no-dashboard')) {
-    args.push('--no-dashboard');
-  }
+  const args = cliUserArgs(deps).filter((arg) => !matchesCliOption(arg, '--background'));
   if (options.stateDir && !hasCliOption(args, '--state-dir')) {
     args.push('--state-dir', path.resolve(options.stateDir));
   }
@@ -566,9 +927,6 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
   }
   if (options.verbose === true && !args.includes('--verbose')) {
     args.push('--verbose');
-  }
-  if (options.dashboard === false && !args.includes('--foreground')) {
-    args.push('--foreground');
   }
   return args;
 }
@@ -611,9 +969,13 @@ function isCliScriptEntrypoint(deps: CoreDependencies): boolean {
   );
 }
 
-function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
+export function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
   // Bun --compile exposes argv[1] as a virtual path for the embedded executable.
-  return deps.argv[0] === 'bun' && deps.cliScript.startsWith('/$bunfs/root/');
+  const entrypoint = deps.cliScript.replace(/\\/g, '/');
+  return (
+    deps.argv[0] === 'bun' &&
+    (entrypoint.startsWith('/$bunfs/root/') || /^[A-Z]:\/~BUN\/root\//i.test(entrypoint))
+  );
 }
 
 function sameCliPath(left: string, right: string): boolean {
@@ -656,579 +1018,195 @@ async function waitForBrokerReadiness(
   paths: CoreProjectPaths,
   deps: CoreDependencies,
   waitMs: number,
-  requireApi: boolean
+  requireApi: boolean,
+  verbose?: boolean
 ): Promise<BrokerReadiness> {
   const deadline = deps.now() + waitMs;
   let latest = await checkBrokerReadiness(paths, deps, requireApi);
+  vlog(deps, verbose, `Broker readiness: ${latest.state}`);
 
   while (latest.state !== 'running' && waitMs > 0 && deps.now() < deadline) {
     await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+    const previousState = latest.state;
     latest = await checkBrokerReadiness(paths, deps, requireApi);
+    if (latest.state !== previousState) {
+      vlog(deps, verbose, `Broker readiness: ${latest.state}`);
+    }
   }
 
   return latest;
 }
 
-function pickDashboardStaticDir(candidates: string[], deps: CoreDependencies): string | null {
-  const existingCandidates = Array.from(new Set(candidates)).filter((candidate) =>
-    deps.fs.existsSync(candidate)
-  );
-  if (existingCandidates.length === 0) {
-    return null;
-  }
-
-  const pageMarkerPriority = [
-    ['metrics.html', path.join('metrics', 'index.html')],
-    ['app.html'],
-    ['index.html'],
-  ];
-
-  for (const markerGroup of pageMarkerPriority) {
-    const withMarker = existingCandidates.find((candidate) =>
-      markerGroup.some((marker) => deps.fs.existsSync(path.join(candidate, marker)))
-    );
-    if (withMarker) {
-      return withMarker;
-    }
-  }
-
-  return existingCandidates[0];
-}
-
-function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDependencies): string | null {
-  const explicitStaticDir = deps.env.RELAY_DASHBOARD_STATIC_DIR ?? deps.env.STATIC_DIR;
-  if (explicitStaticDir && explicitStaticDir.trim()) {
-    return explicitStaticDir;
-  }
-
-  if (!dashboardBinary) {
-    return null;
-  }
-
-  if (dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
-    const dashboardServerOutDir = path.resolve(path.dirname(dashboardBinary), '..', 'out');
-    const siblingDashboardOutDir = path.resolve(
-      path.dirname(dashboardBinary),
-      '..',
-      '..',
-      'dashboard',
-      'out'
-    );
-    return pickDashboardStaticDir([dashboardServerOutDir, siblingDashboardOutDir], deps);
-  }
-
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
-  if (!homeDir) {
-    return null;
-  }
-
-  // Standalone installs download UI assets to ~/.relay/dashboard/out.
-  const standaloneDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  const legacyDashboardOutDir = path.join(homeDir, '.agent-relay', 'dashboard', 'out');
-  return pickDashboardStaticDir([standaloneDashboardOutDir, legacyDashboardOutDir], deps);
-}
-
-function normalizeLocalhostRelayUrl(relayUrl: string): string {
-  try {
-    const parsed = new URL(relayUrl);
-    if (parsed.hostname === 'localhost') {
-      parsed.hostname = '127.0.0.1';
-    }
-    return parsed.toString().replace(/\/+$/, '');
-  } catch {
-    return relayUrl;
-  }
-}
-
-function getDefaultDashboardRelayUrl(apiPort: number): string {
-  return normalizeLocalhostRelayUrl(`http://localhost:${apiPort}`);
-}
-
-function resolveDashboardRelayUrl(apiPort: number, deps: CoreDependencies): string {
-  const explicitRelayUrl = deps.env.RELAY_DASHBOARD_RELAY_URL;
-  if (explicitRelayUrl && explicitRelayUrl.trim()) {
-    return normalizeLocalhostRelayUrl(explicitRelayUrl.trim());
-  }
-
-  return getDefaultDashboardRelayUrl(apiPort);
-}
-
-function isDebugLikeLoggingEnabled(deps: CoreDependencies): boolean {
-  const rawLevel = String(deps.env.RUST_LOG ?? '').toLowerCase();
-  return rawLevel.includes('debug') || rawLevel.includes('trace');
-}
-
-function getDashboardSpawnEnv(
+async function waitForEnrolledNodeReadiness(
+  conn: BrokerConnection,
   deps: CoreDependencies,
-  relayUrl: string,
-  enableVerboseLogging: boolean,
-  relayApiKey?: string,
-  brokerApiKey?: string
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...deps.env,
-    RELAY_URL: relayUrl,
-    VERBOSE: enableVerboseLogging || deps.env.VERBOSE === 'true' ? 'true' : deps.env.VERBOSE,
-  };
-  // Pass the workspace API key so the dashboard can make Relaycast API calls
-  // (e.g. posting thread replies) without requiring a relaycast.json file.
-  if (relayApiKey && !env.RELAY_API_KEY) {
-    env.RELAY_API_KEY = relayApiKey;
-  }
-  // Pass the broker API key so the dashboard can authenticate with the
-  // broker's HTTP API (e.g. /api/spawn, /api/spawned).
-  if (brokerApiKey) {
-    env.RELAY_BROKER_API_KEY = brokerApiKey;
-  }
-  return env;
-}
+  expected: EnrolledNodeExpectation,
+  initialDetails?: BrokerStatusDetails | null
+): Promise<{ ready: boolean; reason?: string }> {
+  const deadline = deps.now() + DETACHED_START_READY_TIMEOUT_MS;
+  let details = initialDetails ?? null;
 
-function getDashboardSpawnArgs(
-  paths: CoreProjectPaths,
-  port: number,
-  apiPort: number,
-  dashboardBinary: string | null,
-  relayUrl: string,
-  enableVerboseLogging: boolean,
-  deps: CoreDependencies
-): string[] {
-  const args = ['--port', String(port), '--data-dir', paths.dataDir];
-  args.push('--relay-url', relayUrl);
-  const staticDir = resolveDashboardStaticDir(dashboardBinary, deps);
-  if (staticDir) {
-    args.push('--static-dir', staticDir);
-  }
-  if (enableVerboseLogging) {
-    args.push('--verbose');
-  }
-  return args;
-}
-
-function normalizeDashboardPath(rawDashboardPath: string | undefined): string | undefined {
-  const trimmed = rawDashboardPath?.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.startsWith('/')) {
-    return trimmed;
-  }
-  return `/${trimmed}`;
-}
-
-interface DashboardStartupProcess extends SpawnedProcess {
-  stdout?: {
-    on?: (event: string, cb: (chunk: Buffer) => void) => void;
-    removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
-    off?: (event: string, cb: (...args: unknown[]) => void) => void;
-  };
-  stderr?: {
-    on?: (event: string, cb: (chunk: Buffer) => void) => void;
-    removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
-    off?: (event: string, cb: (...args: unknown[]) => void) => void;
-  };
-}
-
-function startDashboard(
-  paths: CoreProjectPaths,
-  port: number,
-  apiPort: number,
-  deps: CoreDependencies,
-  enableVerboseLogging: boolean,
-  dashboardBinaryOverride?: string | null,
-  relayApiKey?: string,
-  brokerApiKey?: string
-): DashboardStartupProcess {
-  const dashboardBinary =
-    dashboardBinaryOverride === undefined ? deps.findDashboardBinary() : dashboardBinaryOverride;
-  const relayUrl = resolveDashboardRelayUrl(apiPort, deps);
-  const shouldEnableVerbose = enableVerboseLogging || isDebugLikeLoggingEnabled(deps);
-  const args = getDashboardSpawnArgs(
-    paths,
-    port,
-    apiPort,
-    dashboardBinary,
-    relayUrl,
-    shouldEnableVerbose,
-    deps
-  );
-  const launchTarget = dashboardBinary
-    ? dashboardBinary.endsWith('.js')
-      ? `node ${dashboardBinary}`
-      : dashboardBinary
-    : 'npx --yes @agent-relay/dashboard-server@latest';
-
-  const spawnOpts = {
-    stdio: ['ignore', 'pipe', 'pipe'] as unknown,
-    env: getDashboardSpawnEnv(deps, relayUrl, shouldEnableVerbose, relayApiKey, brokerApiKey),
-  };
-  if (shouldEnableVerbose) {
-    deps.log(`[dashboard] Starting: ${launchTarget} ${args.join(' ')}`);
-  }
-
-  let child: SpawnedProcess;
-  if (dashboardBinary) {
-    // If the binary is a .js file (local dev), run it with node
-    if (dashboardBinary.endsWith('.js')) {
-      child = deps.spawnProcess('node', [dashboardBinary, ...args], spawnOpts);
-    } else {
-      child = deps.spawnProcess(dashboardBinary, args, spawnOpts);
+  for (;;) {
+    details ??= await readBrokerStatusDetails(conn);
+    const actualNodeId = details?.session?.node_id?.trim();
+    const actualNodeName = details?.session?.node_name?.trim();
+    if (actualNodeId && actualNodeId !== expected.nodeId) {
+      return {
+        ready: false,
+        reason: `Cloud enrollment identity mismatch: expected node id "${expected.nodeId}", got "${actualNodeId}".`,
+      };
     }
-  } else {
-    child = deps.spawnProcess('npx', ['--yes', '@agent-relay/dashboard-server@latest', ...args], spawnOpts);
-  }
-
-  // Capture stderr for error reporting
-  const childAny = child as unknown as {
-    stdout?: { on?: (event: string, cb: (chunk: Buffer) => void) => void };
-    stderr?: { on?: (event: string, cb: (chunk: Buffer) => void) => void };
-    on?: (event: string, cb: (...args: unknown[]) => void) => void;
-  };
-  let stderrBuf = '';
-
-  const logChunk = (chunk: Buffer, logger: (line: string) => void, prefix: string) => {
-    if (!shouldEnableVerbose) {
-      return;
+    if (expected.nodeName && actualNodeName && actualNodeName !== expected.nodeName) {
+      return {
+        ready: false,
+        reason: `Cloud enrollment identity mismatch: expected node name "${expected.nodeName}", got "${actualNodeName}".`,
+      };
     }
-    const text = chunk.toString();
-    for (const line of text.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (trimmed) {
-        logger(`[dashboard] ${prefix}: ${trimmed}`);
-      }
+    if (
+      actualNodeId === expected.nodeId &&
+      (!expected.nodeName || actualNodeName === expected.nodeName) &&
+      nodeDeliveryReady(details?.status)
+    ) {
+      return { ready: true };
     }
-  };
-
-  childAny.stdout?.on?.('data', (chunk: Buffer) => {
-    logChunk(chunk, deps.log, 'stdout');
-  });
-  childAny.stderr?.on?.('data', (chunk: Buffer) => {
-    stderrBuf += chunk.toString();
-    logChunk(chunk, deps.warn, 'stderr');
-  });
-
-  // Report early crashes
-  childAny.on?.('exit', (...exitArgs: unknown[]) => {
-    const code = exitArgs[0] as number | null;
-    const signal = exitArgs[1] as string | null;
-    if (code !== null && code !== 0) {
-      deps.error(`Dashboard process exited with code ${code}`);
-      if (stderrBuf.trim()) {
-        deps.error(stderrBuf.trim().split('\n').slice(-5).join('\n'));
-      }
-    } else if (signal && signal !== 'SIGINT' && signal !== 'SIGTERM') {
-      deps.error(`Dashboard process killed by signal ${signal}`);
+    if (deps.now() >= deadline) {
+      return {
+        ready: false,
+        reason:
+          `Cloud enrollment for node "${expected.nodeName ?? expected.nodeId}" did not become ready. ` +
+          `Node delivery: ${formatNodeDeliveryStatus(details?.status)}`,
+      };
     }
-  });
-
-  return child;
-}
-
-async function resolveStartedDashboardPort(
-  process: DashboardStartupProcess,
-  preferredPort: number,
-  deps: CoreDependencies
-): Promise<number | null> {
-  return new Promise((resolve) => {
-    let resolved = false;
-    const processAny = process as DashboardStartupProcess & {
-      on?: (event: string, cb: (...args: unknown[]) => void) => void;
-      off?: (event: string, cb: (...args: unknown[]) => void) => void;
-      removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
-    };
-    const detach = () => {
-      process.stdout?.off?.('data', extractPort);
-      process.stdout?.removeListener?.('data', extractPort);
-      process.stderr?.off?.('data', extractPort);
-      process.stderr?.removeListener?.('data', extractPort);
-      processAny.off?.('exit', handleExit);
-      processAny.removeListener?.('exit', handleExit);
-      clearTimeout(timer);
-    };
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      detach();
-      deps.warn(`Dashboard did not report its bound port quickly; assuming requested port ${preferredPort}`);
-      resolve(preferredPort);
-    }, 3000);
-
-    const finalize = (port: number) => {
-      if (resolved) return;
-      resolved = true;
-      detach();
-      resolve(port);
-    };
-    const handleExit = (...exitArgs: unknown[]) => {
-      const code = exitArgs[0] as number | null;
-      const signal = exitArgs[1] as string | null;
-      if (resolved) {
-        return;
-      }
-      resolved = true;
-      detach();
-      if (code !== null && code !== 0) {
-        deps.warn(`Dashboard exited before reporting its port (code: ${code}).`);
-      } else if (signal && signal !== 'SIGINT' && signal !== 'SIGTERM') {
-        deps.warn(`Dashboard exited before reporting its port (signal: ${signal}).`);
-      } else {
-        deps.warn('Dashboard exited before reporting its bound port.');
-      }
-      resolve(null);
-    };
-
-    const extractPort = (...chunkArgs: unknown[]) => {
-      const firstChunk = chunkArgs[0];
-      if (!firstChunk) {
-        return;
-      }
-
-      const chunk = Buffer.isBuffer(firstChunk)
-        ? firstChunk
-        : typeof firstChunk === 'string'
-          ? Buffer.from(firstChunk)
-          : Buffer.from(JSON.stringify(firstChunk));
-
-      const match = chunk.toString().match(/Server running at http:\/\/localhost:(\d+)/i);
-      if (!match?.[1]) {
-        return;
-      }
-      const parsed = Number.parseInt(match[1], 10);
-      if (!Number.isNaN(parsed)) {
-        finalize(parsed);
-      }
-    };
-
-    process.stdout?.on?.('data', extractPort);
-    process.stderr?.on?.('data', extractPort);
-    processAny.on?.('exit', handleExit);
-  });
-}
-
-/**
- * Check if the cached dashboard UI assets match the installed dashboard-server
- * binary version. If they are stale (or missing a version marker), re-download
- * the latest assets from the relay-dashboard GitHub release.
- */
-async function refreshDashboardAssetsIfStale(
-  dashboardBinary: string | null,
-  deps: CoreDependencies
-): Promise<void> {
-  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
-    // Dev mode or npx — skip
-    return;
-  }
-
-  // Get installed binary version (async to avoid blocking event loop)
-  let binaryVersion: string;
-  try {
-    const versionResult = await deps.execCommand(`${JSON.stringify(dashboardBinary)} --version`);
-    binaryVersion = versionResult.stdout.trim();
-  } catch {
-    return; // Can't determine version — skip
-  }
-
-  if (!binaryVersion) {
-    return;
-  }
-
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
-  const assetsDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  const versionFile = path.join(homeDir, '.relay', 'dashboard', '.version');
-
-  // Check if assets match the binary version
-  try {
-    const cachedVersion = deps.fs.readFileSync(versionFile, 'utf-8').trim();
-    if (cachedVersion === binaryVersion) {
-      return; // Up to date
-    }
-  } catch {
-    // No version file — need to download if assets exist but are unversioned,
-    // or if assets don't exist at all
-    if (deps.fs.existsSync(assetsDir)) {
-      // Assets exist but no version marker — they're from an old install
-    } else {
-      // No assets at all — need to download
-    }
-  }
-
-  deps.log(`Updating dashboard UI assets (${binaryVersion})...`);
-
-  const uiUrl =
-    'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
-  const targetDir = path.join(homeDir, '.relay', 'dashboard');
-  let tempDir: string | undefined;
-  let tempFile: string | undefined;
-
-  try {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `dashboard-ui-${deps.pid}-`));
-    tempFile = path.join(tempDir, 'dashboard-ui.tar.gz');
-    // Download (async to avoid blocking event loop during network I/O)
-    await deps.execCommand(
-      `curl -fsSL --max-time 30 ${JSON.stringify(uiUrl)} -o ${JSON.stringify(tempFile)}`
-    );
-
-    // Verify it's a valid gzip
-    const header = Buffer.alloc(2);
-    const fd = fs.openSync(tempFile, 'r');
-    fs.readSync(fd, header, 0, 2, 0);
-    fs.closeSync(fd);
-    if (header[0] !== 0x1f || header[1] !== 0x8b) {
-      if (tempFile) deps.fs.unlinkSync(tempFile);
-      return; // Not a valid gzip file
-    }
-
-    // Remove old assets and extract (async to avoid blocking event loop)
-    deps.fs.rmSync(assetsDir, { recursive: true, force: true });
-    deps.fs.mkdirSync(targetDir, { recursive: true });
-    await deps.execCommand(`tar -xzf ${JSON.stringify(tempFile)} -C ${JSON.stringify(targetDir)}`);
-    if (tempFile) deps.fs.unlinkSync(tempFile);
-
-    // Write version marker only after confirming extraction succeeded
-    if (deps.fs.existsSync(path.join(assetsDir, 'index.html'))) {
-      deps.fs.writeFileSync(versionFile, binaryVersion);
-      deps.log(`Dashboard UI assets updated to ${binaryVersion}`);
-    } else {
-      deps.warn('Dashboard UI extraction may be incomplete — skipping version marker');
-    }
-  } catch {
-    // Best-effort — don't block startup
-    try {
-      if (tempFile) deps.fs.unlinkSync(tempFile);
-    } catch {
-      /* ignore */
-    }
-  } finally {
-    try {
-      if (tempDir) deps.fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
+    await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
+    details = null;
   }
 }
 
-async function startDashboardWithFallback(
-  paths: CoreProjectPaths,
-  dashboardPort: number,
-  apiPort: number,
-  deps: CoreDependencies,
-  enableVerboseLogging: boolean,
-  relayApiKey?: string,
-  brokerApiKey?: string
-): Promise<{ process: SpawnedProcess; port: number | null }> {
-  const preferredBinary = deps.findDashboardBinary();
-  await refreshDashboardAssetsIfStale(preferredBinary, deps);
-  let process = startDashboard(
-    paths,
-    dashboardPort,
-    apiPort,
-    deps,
-    enableVerboseLogging,
-    preferredBinary,
-    relayApiKey,
-    brokerApiKey
-  );
-  let port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
-
-  if (port === null && preferredBinary) {
-    deps.warn('Retrying dashboard startup using npx @agent-relay/dashboard-server@latest');
-    process = startDashboard(
-      paths,
-      dashboardPort,
-      apiPort,
-      deps,
-      enableVerboseLogging,
-      null,
-      relayApiKey,
-      brokerApiKey
-    );
-    port = await resolveStartedDashboardPort(process as DashboardStartupProcess, dashboardPort, deps);
-  }
-
-  return { process, port };
-}
-
-async function waitForDashboard(
-  port: number,
-  process: SpawnedProcess,
-  deps: Pick<CoreDependencies, 'warn'>,
-  isShuttingDown: () => boolean
-): Promise<void> {
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    if (process.killed) {
-      if (!isShuttingDown()) {
-        deps.warn(`Warning: Dashboard process exited before becoming ready on port ${port}`);
-      }
-      return;
-    }
-    try {
-      const resp = await fetch(`http://localhost:${port}/health`);
-      if (resp.ok) return; // Dashboard is up
-    } catch {
-      // Not ready yet
-    }
-  }
-  if (!isShuttingDown()) {
-    deps.warn(`Warning: Dashboard not responding on port ${port} after 10s`);
-  }
-}
-
-async function discoverExistingBrokerApiPort(
-  preferredApiPort: number,
-  maxAttempts: number,
-  deps: Pick<CoreDependencies, 'warn'>
-): Promise<number> {
-  const attempts = Math.max(1, maxAttempts);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const candidatePort = preferredApiPort + attempt;
-    if (candidatePort > MAX_PORT) {
-      return preferredApiPort;
-    }
-    try {
-      const response = await fetch(`http://localhost:${candidatePort}/health`);
-      if (response.ok) {
-        if (attempt > 0) {
-          deps.warn(`Detected existing broker API on port ${candidatePort}.`);
-        }
-        return candidatePort;
-      }
-    } catch {
-      // Keep scanning.
-    }
-  }
-  return preferredApiPort;
-}
-
-async function shutdownUpResources(
+export async function waitForNodeDelivery(
   relay: CoreRelay,
-  dashboardProcess: SpawnedProcess | undefined,
-  dataDir: string,
   deps: CoreDependencies,
-  ownsBroker: boolean
-): Promise<void> {
-  if (dashboardProcess && !dashboardProcess.killed) {
-    try {
-      dashboardProcess.kill('SIGTERM');
-    } catch {
-      // Best-effort cleanup.
-    }
-  }
+  waitMs = NODE_DELIVERY_READY_TIMEOUT_MS
+): Promise<{ ready: boolean; status: unknown }> {
+  const deadline = deps.now() + waitMs;
+  let latest: unknown = null;
 
-  await relay.shutdown().catch(() => undefined);
-  if (ownsBroker) {
-    safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
+  while (true) {
+    try {
+      latest = await relay.getStatus();
+    } catch {
+      latest = null;
+    }
+    if (nodeDeliveryReady(latest)) {
+      return { ready: true, status: latest };
+    }
+    if (waitMs <= 0 || deps.now() >= deadline) {
+      return { ready: false, status: latest };
+    }
+    await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
   }
+}
+
+async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: CoreDependencies): Promise<void> {
+  await relay.shutdown().catch(() => undefined);
+  safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
 }
 
 // eslint-disable-next-line complexity
+/**
+ * Resolve the node definition `up` should serve, if any.
+ *
+ * A discovered (or explicit --config) node definition takes over from the
+ * implicit teams.json-derived node. Discovery is opt-in (`node up` only): the
+ * deprecated `local up` alias never scanned for agent-relay.* files and must
+ * not start importing arbitrary modules from the project root. An explicit
+ * --config resolves against the invocation cwd and fails hard; implicit
+ * discovery scans the project root and merely warns on a file that doesn't
+ * load as defineNode(...) — a stray agent-relay.ts must not brick startup.
+ * When the implicit fleet node is disabled the sidecar never starts, so
+ * loading a config would be pointless — skip it entirely.
+ */
+async function resolveNodeDefinitionForUp(
+  paths: CoreProjectPaths,
+  options: UpOptions,
+  deps: CoreDependencies
+): Promise<NodeDefinitionPlan | undefined> {
+  const fleetNodeDisabled = deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1';
+  if (fleetNodeDisabled || (!options.config && options.discoverConfig !== true)) {
+    return undefined;
+  }
+  const explicitConfig = options.config ? path.resolve(process.cwd(), options.config) : undefined;
+  const configPath = discoverNodeConfigPath(paths.projectRoot, explicitConfig);
+  if (!configPath) {
+    return undefined;
+  }
+  vlog(deps, options.verbose, `Loading fleet node definition from ${configPath}...`);
+  if (explicitConfig) {
+    return loadNodeDefinitionPlan(configPath, deps);
+  }
+  try {
+    return await loadNodeDefinitionPlan(configPath, deps);
+  } catch (err) {
+    deps.warn(
+      `Ignoring discovered node config ${configPath}: ${toErrorMessage(err)}. ` +
+        'Serving the implicit local node instead; pass --config to fail hard on this file.'
+    );
+    return undefined;
+  }
+}
+
+/**
+ * How a discovered JS/TS node definition will be served.
+ *
+ * Under Node the definition is imported and served in-process, unchanged. Under
+ * a `bun build --compile` binary it cannot be imported at all — the compiled
+ * runtime fails to resolve a bare specifier out of the user's `node_modules`
+ * whenever the package's entry lives in a subdirectory (`dist/`), i.e. every
+ * TypeScript-built package, and the failure is transitive through the user's
+ * whole dependency graph — so the CLI only learns its descriptor (via a
+ * `--describe` child) and hands the file to a child `node` process to serve,
+ * exactly as `agent-relay.py` is handed to `python3`.
+ */
+type NodeDefinitionPlan =
+  | { mode: 'in-process'; definition: FleetNodeDefinition }
+  | { mode: 'child-node'; configPath: string; descriptor: NodeDefinitionDescriptor };
+
+/**
+ * Decide how to serve `configPath` and gather what the broker needs before it
+ * starts (capacity, and a hard failure on a bad explicit --config).
+ * @param configPath - Absolute path to the node definition file.
+ * @param deps - Core dependencies.
+ */
+export async function loadNodeDefinitionPlan(
+  configPath: string,
+  deps: CoreDependencies
+): Promise<NodeDefinitionPlan> {
+  if (!isBundledBunExecutableEntrypoint(deps)) {
+    return { mode: 'in-process', definition: await loadNodeDefinition(configPath) };
+  }
+  const descriptor = await describeNodeDefinitionViaNode(configPath, deps);
+  return { mode: 'child-node', configPath, descriptor };
+}
+
+/** The capability names a plan contributes to the broker's advertised capacity. */
+function planCapacitySource(
+  plan: NodeDefinitionPlan | undefined
+): { capabilities: Readonly<Record<string, unknown>> } | undefined {
+  if (!plan) {
+    return undefined;
+  }
+  return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
 
-  if (options.background && options.foreground) {
-    deps.error('Cannot use --background and --foreground together.');
-    deps.exit(1);
-    return;
-  }
-
   const paths = deps.getProjectPaths();
+  // The stable, default project data dir (`.agentworkforce/relay/`) captured
+  // BEFORE any --state-dir override below. SDK-backed commands resolve the
+  // recorded workspace key from this default location (they don't accept
+  // --state-dir), so the key must be persisted here even when broker state is
+  // redirected elsewhere.
+  const projectWorkspaceKeyDataDir = paths.dataDir;
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1236,7 +1214,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.env.AGENT_RELAY_STATE_DIR = resolved;
   }
 
-  if (options.background || (options.dashboard === false && !options.foreground)) {
+  if (options.background) {
     const preflight = await recoverHalfStartedBroker(paths, deps);
     if (preflight === 'running') {
       const pid = readBrokerPid(paths.dataDir, deps);
@@ -1269,7 +1247,18 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       return;
     }
     child.unref?.();
-    const readiness = await waitForBrokerReadiness(paths, deps, DETACHED_START_READY_TIMEOUT_MS, true);
+    vlog(
+      deps,
+      options.verbose,
+      `Spawned detached broker child (pid: ${child.pid ?? 'unknown'}), waiting for readiness...`
+    );
+    const readiness = await waitForBrokerReadiness(
+      paths,
+      deps,
+      DETACHED_START_READY_TIMEOUT_MS,
+      true,
+      options.verbose
+    );
     if (readiness.state !== 'running') {
       const pid = readiness.state === 'starting' ? readiness.conn.pid : child.pid;
       deps.error(
@@ -1296,11 +1285,56 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         if (!stopped) {
           deps.error(
             `Failed to stop half-started broker process (pid: ${cleanupPid}). ` +
-              'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+              'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
           );
         }
       }
       cleanupBrokerFiles(paths, deps);
+      deps.exit(1);
+      return;
+    }
+    const enrolledNodeToken = deps.env.RELAY_NODE_TOKEN?.trim();
+    const enrolledNodeId = enrolledNodeToken ? deps.env.RELAY_NODE_ID?.trim() : undefined;
+    let enrollmentFailureReason: string | undefined;
+    if (enrolledNodeToken && !enrolledNodeId) {
+      enrollmentFailureReason =
+        'Cloud enrollment credentials are incomplete: RELAY_NODE_ID is required when RELAY_NODE_TOKEN is set.';
+    } else if (enrolledNodeId) {
+      const enrolledReadiness = await waitForEnrolledNodeReadiness(
+        readiness.conn,
+        deps,
+        {
+          nodeId: enrolledNodeId,
+          ...(options.brokerName?.trim() ? { nodeName: options.brokerName.trim() } : {}),
+        },
+        readiness.statusDetails
+      );
+      if (!enrolledReadiness.ready) {
+        enrollmentFailureReason = enrolledReadiness.reason ?? 'Cloud enrollment did not become ready.';
+      }
+    }
+    if (enrollmentFailureReason) {
+      deps.error(enrollmentFailureReason);
+      const cleanupPids = new Set<number>();
+      if (typeof child.pid === 'number' && child.pid > 0) {
+        cleanupPids.add(child.pid);
+      }
+      cleanupPids.add(readiness.conn.pid);
+      let allStopped = true;
+      for (const cleanupPid of cleanupPids) {
+        deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
+        const stopped = await terminateProcess(cleanupPid, deps, true);
+        if (!stopped) {
+          allStopped = false;
+          deps.error(
+            `Failed to stop broker process after Cloud enrollment startup failed (pid: ${cleanupPid}). ` +
+              'Run `agent-relay down --force` to retry cleanup.'
+          );
+        }
+      }
+      if (allStopped) {
+        cleanupBrokerFiles(paths, deps);
+      }
       deps.exit(1);
       return;
     }
@@ -1311,26 +1345,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     return;
   }
 
-  const wantsDashboard = options.dashboard !== false;
-  const requestedDashboardPort = Number.parseInt(options.port ?? '3888', 10) || 3888;
-  const shouldReuseExistingBroker = options.reuseExistingBroker === true;
-  const dashboardPort = wantsDashboard
-    ? await resolveDashboardPortWithFallback(requestedDashboardPort, MAX_DASHBOARD_PORT_ATTEMPTS, deps)
-    : requestedDashboardPort;
-  if (wantsDashboard && dashboardPort !== requestedDashboardPort) {
-    deps.warn(
-      `Requested dashboard port ${requestedDashboardPort} is already in use; active dashboard will run on ${dashboardPort}.`
-    );
-  }
-
+  const basePort = resolveBrokerBasePort(deps);
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
-  let existingPid = readBrokerPid(paths.dataDir, deps);
-  let ownsBroker = true;
+  const existingPid = readBrokerPid(paths.dataDir, deps);
 
   let relay: CoreRelay | null = null;
-  let apiPort = dashboardPort + 1;
-  let dashboardProcess: SpawnedProcess | undefined;
-  const dashboardVerbose = Boolean(options.verbose) || isDebugLikeLoggingEnabled(deps);
+  let nodeProviders: RunningNodeProviders | undefined;
+  let reflexCapture: RunningReflexCapture | undefined;
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
@@ -1340,7 +1361,11 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       if (relay === null) {
         shutdownPromise = Promise.resolve();
       } else {
-        shutdownPromise = shutdownUpResources(relay, dashboardProcess, paths.dataDir, deps, ownsBroker);
+        shutdownPromise = (async () => {
+          await reflexCapture?.stop();
+          await nodeProviders?.stop();
+          await shutdownUpResources(relay, paths.dataDir, deps);
+        })();
       }
     }
     await shutdownPromise;
@@ -1348,200 +1373,111 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   try {
     if (existingPid !== null) {
       if (isProcessRunning(existingPid, deps)) {
-        if (!shouldReuseExistingBroker || !wantsDashboard) {
-          deps.error(`Broker already running for this project (pid: ${existingPid}).`);
-          deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
-          deps.exit(1);
-          return;
-        }
-
-        apiPort = await discoverExistingBrokerApiPort(Math.max(1, apiPort), MAX_API_PORT_ATTEMPTS, deps);
-        const reusableRelay = await deps.createRelay(paths.projectRoot, apiPort);
-        try {
-          await reusableRelay.getStatus();
-        } catch {
-          await reusableRelay.shutdown().catch(() => undefined);
-          deps.warn(
-            `Broker already running for this project (pid: ${existingPid}), but API port ${apiPort} is not responding.`
-          );
-          deps.warn('Treating this as stale broker state and starting a fresh broker.');
-          safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
-          existingPid = null;
-        }
-
-        if (existingPid === null) {
-          // fallthrough and start a fresh broker
-        } else {
-          relay = reusableRelay;
-          ownsBroker = false;
-          const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
-          const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
-          if (
-            deps.env.RELAY_DASHBOARD_RELAY_URL &&
-            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
-            deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
-          ) {
-            deps.warn(
-              `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
-                `but this session computed ${expectedRelayUrl}.`
-            );
-          }
-          deps.log(`Relay API: ${dashboardRelayUrl}`);
-          if (dashboardVerbose) {
-            deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
-          }
-          deps.log(`Project: ${paths.projectRoot}`);
-          deps.log('Mode: broker (stdio)');
-          deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
-          deps.log('Broker already running for this project; reusing existing broker.');
-
-          if (wantsDashboard) {
-            const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
-            const dashboardStart = await startDashboardWithFallback(
-              paths,
-              dashboardPort,
-              apiPort,
-              deps,
-              dashboardVerbose,
-              relay?.workspaceKey,
-              brokerConn?.api_key
-            );
-            dashboardProcess = dashboardStart.process;
-            const startedDashboardPort = dashboardStart.port;
-            if (startedDashboardPort === null) {
-              deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-            } else {
-              if (startedDashboardPort !== dashboardPort) {
-                deps.warn(
-                  `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-                );
-              }
-              const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-              const dashboardUrl = dashboardPath
-                ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-                : `http://localhost:${startedDashboardPort}`;
-              deps.log(`Dashboard: ${dashboardUrl}`);
-
-              waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(
-                () => {}
-              );
-            }
-          }
-
-          deps.onSignal('SIGINT', async () => {
-            sigintCount += 1;
-            if (shuttingDown) {
-              if (sigintCount >= 2) {
-                deps.warn('Force exiting...');
-                deps.exit(130);
-              }
-              return;
-            }
-            deps.log('\nStopping...');
-            await shutdownOnce();
-            deps.exit(0);
-          });
-          deps.onSignal('SIGTERM', async () => {
-            if (shuttingDown) {
-              return;
-            }
-            await shutdownOnce();
-            deps.exit(0);
-          });
-
-          await deps.holdOpen();
-          return;
-        }
+        deps.error(`Broker already running for this project (pid: ${existingPid}).`);
+        deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
+        deps.exit(1);
+        return;
       }
-
       safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
-      existingPid = null;
     }
 
     // If a workspace key was explicitly provided, inject it into the environment
-    // so the Rust broker picks it up via RELAY_API_KEY.
+    // for both current tools and older compatibility paths.
     if (options.workspaceKey) {
+      deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 
+    // Point the shared logger at a file / level / format before the fleet
+    // sidecar (which reads this env when it builds its logger) starts.
+    applyNodeLogEnv(options, deps);
+
+    // Resolved BEFORE the broker starts so an explicit bad --config fails
+    // fast instead of tearing down a broker that just came up.
+    const nodePlan = await resolveNodeDefinitionForUp(paths, options, deps);
+    const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
+
+    // The broker advertises spawn:<harness> capacity for this set. A pre-set
+    // AGENT_RELAY_NODE_HARNESSES is the operator's authoritative declaration of the
+    // node's real capacity and is used verbatim; otherwise the CLI computes it from
+    // the project's runnable harnesses (built-in defaults plus teams.json clis and
+    // any spawn:<harness> definitions) and passes it to the broker before it registers.
+    deps.env.AGENT_RELAY_NODE_HARNESSES = resolveNodeCapacityHarnesses(
+      deps.env.AGENT_RELAY_NODE_HARNESSES,
+      teamsConfig,
+      planCapacitySource(nodePlan)
+    );
+
     // Kill any orphaned broker processes for this project that lost their PID
-    // files (e.g. user deleted .agent-relay/ while broker was running).
+    // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
+    vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
-    const started = await startBrokerWithPortFallback(paths, dashboardPort, deps, options.brokerName);
+    const started = await startBrokerWithPortFallback(
+      paths,
+      basePort,
+      deps,
+      options.brokerName,
+      options.verbose
+    );
     relay = started.relay;
-    apiPort = started.apiPort;
-    const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
-    const expectedRelayUrl = getDefaultDashboardRelayUrl(apiPort);
-    if (
-      deps.env.RELAY_DASHBOARD_RELAY_URL &&
-      deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== '' &&
-      deps.env.RELAY_DASHBOARD_RELAY_URL.trim() !== expectedRelayUrl
-    ) {
-      deps.warn(
-        `RELAY_DASHBOARD_RELAY_URL is set to ${deps.env.RELAY_DASHBOARD_RELAY_URL.trim()}, ` +
-          `but this session computed ${expectedRelayUrl}.`
-      );
-    }
-    deps.log(`Relay API: ${dashboardRelayUrl}`);
-    if (dashboardVerbose) {
-      deps.log(`[dashboard] relay target resolved from config: ${dashboardRelayUrl}`);
-    }
 
+    deps.log(`Relay API: http://localhost:${started.apiPort}`);
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
     deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
     deps.log('Broker started.');
 
-    if (wantsDashboard) {
-      const brokerConn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
-      const dashboardStart = await startDashboardWithFallback(
-        paths,
-        dashboardPort,
-        apiPort,
-        deps,
-        dashboardVerbose,
-        relay?.workspaceKey,
-        brokerConn?.api_key
-      );
-      dashboardProcess = dashboardStart.process;
-      const startedDashboardPort = dashboardStart.port;
-      if (startedDashboardPort === null) {
-        deps.warn('Dashboard failed to start. Check dashboard error logs above.');
-      } else {
-        if (startedDashboardPort !== dashboardPort) {
-          deps.warn(
-            `Dashboard port ${dashboardPort} was already in use, so dashboard started on ${startedDashboardPort}`
-          );
-        }
-        const dashboardPath = normalizeDashboardPath(options.dashboardPath);
-        const dashboardUrl = dashboardPath
-          ? `http://localhost:${startedDashboardPort}${dashboardPath}`
-          : `http://localhost:${startedDashboardPort}`;
-        deps.log(`Dashboard: ${dashboardUrl}`);
-
-        // Verify the dashboard is actually reachable (non-blocking)
-        waitForDashboard(startedDashboardPort, dashboardProcess, deps, () => shuttingDown).catch(() => {});
-      }
+    // Record the workspace this broker joined (explicitly passed or auto-minted)
+    // in the DEFAULT project data dir (not any --state-dir override), so later
+    // SDK commands in this CWD resolve it instead of the machine-global active
+    // workspace. Persistence must never abort startup, so a write failure is
+    // swallowed.
+    try {
+      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined);
+    } catch {
+      // best-effort: a broker that came up should stay up even if the key file
+      // can't be written (read-only dir, etc.).
     }
 
-    const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
+    vlog(deps, options.verbose, 'Starting node capability providers (if any)...');
+    nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodePlan);
+    // When Reflex is enabled, periodically sync + push local session history to
+    // relayhistory-cloud in-process via the ai-hist-native addon (no subprocess).
+    // No-op when disabled or the addon isn't available.
+    reflexCapture = startReflexCapture({ log: (message) => deps.log(message) });
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
     if (shouldSpawn && teamsConfig && teamsConfig.agents.length > 0) {
-      if (wantsDashboard) {
-        deps.warn('Warning: auto-spawn from teams.json is skipped when dashboard mode manages the broker');
-      } else {
-        for (const agent of teamsConfig.agents) {
-          await relay.spawn({
-            name: agent.name,
-            cli: agent.cli,
-            channels: ['general'],
-            task: agent.task ?? '',
-            team: teamsConfig.team,
-          });
-        }
+      vlog(deps, options.verbose, 'Waiting for broker node delivery (/v1/node/ws) before auto-spawning...');
+      // Node delivery can't connect until the broker mints its node token, which
+      // now happens in the background after `Broker started.`. Budget for that
+      // mint window plus the connect so a slow mint doesn't abort auto-spawn.
+      const delivery = await waitForNodeDelivery(
+        relay,
+        deps,
+        NODE_TOKEN_WAIT_MS + NODE_DELIVERY_READY_TIMEOUT_MS
+      );
+      if (!delivery.ready) {
+        deps.error('Refusing to auto-spawn agents because broker node delivery is not connected.');
+        deps.error(`Node delivery: ${formatNodeDeliveryStatus(delivery.status)}`);
+        deps.error(
+          'Realtime injection depends on /v1/node/ws. Check broker logs for create_node/node token errors, then retry `agent-relay up --spawn`.'
+        );
+        await shutdownOnce();
+        deps.exit(1);
+        return;
+      }
+      for (const agent of teamsConfig.agents) {
+        vlog(deps, options.verbose, `Spawning agent '${agent.name}' (cli: ${agent.cli})...`);
+        await relay.spawn({
+          name: agent.name,
+          cli: agent.cli,
+          channels: ['general'],
+          task: agent.task ?? '',
+          team: teamsConfig.team,
+        });
       }
     } else if (options.spawn === true && !teamsConfig) {
       deps.warn('Warning: --spawn specified but no teams.json found');
@@ -1568,18 +1504,21 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.exit(0);
     });
 
-    await deps.holdOpen();
+    const holdOpen = deps.holdOpen();
+    if (nodeProviders?.done) {
+      await Promise.race([holdOpen, nodeProviders.done]);
+    } else {
+      await holdOpen;
+    }
   } catch (err: unknown) {
     await shutdownOnce();
     const message = toErrorMessage(err);
-    const stage = classifyBrokerStartStage(err, message, wantsDashboard);
+    const stage = classifyBrokerStartStage(err, message);
     track('broker_start_failed', {
       stage,
       error_class: classifyBrokerStartError(err),
     });
-    if (errorCode(err) === 'EADDRINUSE' && wantsDashboard) {
-      deps.error(`Dashboard port ${dashboardPort} is already in use.`);
-    } else if (isBrokerAlreadyRunningError(message)) {
+    if (isBrokerAlreadyRunningError(message)) {
       reportAlreadyRunningError(message, paths.dataDir, deps);
     } else {
       deps.error(`Failed to start broker: ${describeError(err)}`);
@@ -1753,6 +1692,10 @@ export async function runStatusCommand(
     if (typeof status.pending_delivery_count === 'number' && status.pending_delivery_count > 0) {
       deps.log(`Pending deliveries: ${status.pending_delivery_count}`);
     }
+    deps.log(`Node delivery: ${formatNodeDeliveryStatus(status)}`);
+    if (session?.node_id) {
+      deps.log(`Node: ${session.node_name?.trim() || session.node_id} (${session.node_id})`);
+    }
     if (session?.workspace_key) {
       deps.log(`Workspace Key: ${session.workspace_key}`);
       deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
@@ -1772,7 +1715,7 @@ function parseWaitForMs(rawValue: string | undefined, deps: CoreDependencies): n
 }
 
 async function readBrokerStatusDetails(conn: BrokerConnection): Promise<BrokerStatusDetails | null> {
-  const client = new AgentRelayClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
   try {
     const status = await client.getStatus();
     const session = await client.getSession().catch(() => null);

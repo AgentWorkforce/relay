@@ -1,6 +1,6 @@
 use std::{collections::HashMap, process::Stdio, time::Duration};
 
-use crate::relaycast::configure_relaycast_mcp_with_token;
+use crate::relaycast::configure_agent_relay_mcp_with_token;
 use anyhow::{Context, Result};
 use tokio::{
     process::{Child, Command},
@@ -77,7 +77,7 @@ impl Spawner {
             .find(|(k, _)| k == "RELAY_DEFAULT_WORKSPACE")
             .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args = configure_relaycast_mcp_with_token(
+        let mcp_args = configure_agent_relay_mcp_with_token(
             cli,
             child_name,
             api_key,
@@ -218,18 +218,35 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
 pub fn spawn_env_vars(
     name: &str,
     api_key: &str,
-    base_url: &str,
+    base_url: Option<&str>,
     channels: &str,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
+    harness: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut env = vec![
         ("RELAY_AGENT_NAME".to_string(), name.to_string()),
+        ("AGENT_RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
+        ("RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
         ("RELAY_API_KEY".to_string(), api_key.to_string()),
-        ("RELAY_BASE_URL".to_string(), base_url.to_string()),
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
+    // Pass RELAY_BASE_URL to the child only when an override is configured; when
+    // unset, the child inherits the SDK default.
+    if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
+        env.push(("RELAY_BASE_URL".to_string(), base_url.to_string()));
+    }
+    // Per-worker attribution: tell the spawned agent's JS SDK its origin_actor
+    // path (`agent-relay-cli/agent/<harness>`) via env, so its relaycast
+    // telemetry is attributed to the harness it runs rather than "unknown".
+    // See cloud/plans/origin-actor.md.
+    if let Some(harness) = harness {
+        env.push((
+            "AGENT_RELAY_ORIGIN_ACTOR".to_string(),
+            crate::telemetry::agent_origin_actor(harness, None),
+        ));
+    }
     if let Some(workspaces_json) = workspaces_json
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -268,7 +285,31 @@ mod tests {
     use nix::unistd::{getsid, Pid};
     use tokio::process::Command;
 
-    use super::{terminate_child, Spawner};
+    use super::{spawn_env_vars, terminate_child, Spawner};
+
+    #[test]
+    fn spawn_env_vars_sets_origin_actor_path_when_harness_present() {
+        let env = spawn_env_vars(
+            "a",
+            "rk_live_x",
+            Some("https://gw"),
+            "#c",
+            None,
+            None,
+            Some("codex"),
+        );
+        let origin_actor = env
+            .iter()
+            .find(|(k, _)| k == "AGENT_RELAY_ORIGIN_ACTOR")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(origin_actor, Some("agent-relay-cli/agent/codex"));
+    }
+
+    #[test]
+    fn spawn_env_vars_omits_origin_actor_when_absent() {
+        let env = spawn_env_vars("a", "rk_live_x", Some("https://gw"), "#c", None, None, None);
+        assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_ORIGIN_ACTOR"));
+    }
 
     #[tokio::test]
     async fn release_terminates_child_process() {

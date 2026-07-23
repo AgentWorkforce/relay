@@ -24,6 +24,8 @@ export const CLIVersions = {
   DROID: '0.1.0',
   /** OpenCode v1.2.24 */
   OPENCODE: '1.2.24',
+  /** Grok v0.1.0 */
+  GROK: '0.1.0',
   /** Aider v0.72.1 */
   AIDER: '0.72.1',
   /** Goose v1.0.16 */
@@ -40,6 +42,7 @@ export const CLIs = {
   CURSOR: 'cursor',
   DROID: 'droid',
   OPENCODE: 'opencode',
+  GROK: 'grok',
   AIDER: 'aider',
   GOOSE: 'goose',
 } as const;
@@ -420,6 +423,18 @@ export const OpencodeModels = {
 
 export type OpencodeModel = (typeof OpencodeModels)[keyof typeof OpencodeModels];
 
+/**
+ * Grok model identifiers.
+ */
+export const GrokModels = {
+  /** Grok Build (default) */
+  GROK_BUILD: 'grok-build',
+  /** Grok Composer 2.5 Fast */
+  GROK_COMPOSER_2_5_FAST: 'grok-composer-2.5-fast',
+} as const;
+
+export type GrokModel = (typeof GrokModels)[keyof typeof GrokModels];
+
 /** Reasoning effort levels supported by model providers. */
 export const ReasoningEfforts = {
   LOW: 'low',
@@ -638,6 +653,14 @@ export const OPENCODE_MODEL_OPTIONS: ModelOption[] = [
 ];
 
 /**
+ * Grok model options for UI dropdowns.
+ */
+export const GROK_MODEL_OPTIONS: ModelOption[] = [
+  { value: 'grok-build', label: 'Grok Build' },
+  { value: 'grok-composer-2.5-fast', label: 'Grok Composer 2.5 Fast' },
+];
+
+/**
  * Claude Code model metadata keyed by model id.
  */
 export const CLAUDE_MODEL_METADATA: Record<ClaudeModel, ModelOption> = {
@@ -837,6 +860,14 @@ export const OPENCODE_MODEL_METADATA: Record<OpencodeModel, ModelOption> = {
 };
 
 /**
+ * Grok model metadata keyed by model id.
+ */
+export const GROK_MODEL_METADATA: Record<GrokModel, ModelOption> = {
+  'grok-build': { value: 'grok-build', label: 'Grok Build' },
+  'grok-composer-2.5-fast': { value: 'grok-composer-2.5-fast', label: 'Grok Composer 2.5 Fast' },
+};
+
+/**
  * All models grouped by CLI tool.
  *
  * @example
@@ -854,6 +885,7 @@ export const Models = {
   Cursor: CursorModels,
   Droid: DroidModels,
   Opencode: OpencodeModels,
+  Grok: GrokModels,
 } as const;
 
 /**
@@ -875,6 +907,7 @@ export const ModelOptions = {
   Cursor: CURSOR_MODEL_OPTIONS,
   Droid: DROID_MODEL_OPTIONS,
   Opencode: OPENCODE_MODEL_OPTIONS,
+  Grok: GROK_MODEL_OPTIONS,
 } as const;
 
 /**
@@ -887,6 +920,7 @@ export const ModelMetadata = {
   Cursor: CURSOR_MODEL_METADATA,
   Droid: DROID_MODEL_METADATA,
   Opencode: OPENCODE_MODEL_METADATA,
+  Grok: GROK_MODEL_METADATA,
 } as const;
 
 const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
@@ -896,6 +930,7 @@ const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
   cursor: CURSOR_MODEL_METADATA,
   droid: DROID_MODEL_METADATA,
   opencode: OPENCODE_MODEL_METADATA,
+  grok: GROK_MODEL_METADATA,
   aider: {},
   goose: {},
 };
@@ -1001,6 +1036,13 @@ export const CLIRegistry = {
     install: 'npm install -g opencode-ai',
     npmLink: 'https://www.npmjs.com/package/opencode-ai',
   },
+  grok: {
+    name: 'Grok',
+    package: 'grok',
+    version: '0.1.0',
+    install: 'Install from x.ai (Grok CLI)',
+    npmLink: undefined,
+  },
   aider: {
     name: 'Aider',
     package: 'aider-chat',
@@ -1027,4 +1069,5 @@ export const DefaultModels = {
   cursor: 'composer-2-fast',
   droid: 'opus-4.6-fast',
   opencode: 'openai/gpt-5.2',
+  grok: 'grok-build',
 } as const;

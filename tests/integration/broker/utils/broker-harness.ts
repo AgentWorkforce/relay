@@ -9,15 +9,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  AgentRelayClient,
-  type AgentRelayBrokerInitArgs,
-  type AgentRelaySpawnOptions,
+  HarnessDriverClient,
+  type BrokerInitArgs,
+  type RuntimeSpawnOptions,
   type ListAgent,
   type SendMessageInput,
   type BrokerEvent,
-  AgentRelay,
-  RelayCast,
-} from '@agent-relay/sdk';
+} from '@agent-relay/harness-driver';
+import { RelayCast } from '@relaycast/sdk';
 
 // ── Dynamic API key provisioning ─────────────────────────────────────────────
 
@@ -50,7 +49,7 @@ export interface BrokerHarnessOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if not set. */
   binaryPath?: string;
   /** Structured broker init options mapped to the Rust CLI flags. */
-  binaryArgs?: AgentRelayBrokerInitArgs;
+  binaryArgs?: BrokerInitArgs;
   /** Unique broker name registered in Relaycast. Auto-generated if not set. */
   brokerName?: string;
   /** Channels for the broker to subscribe to. Default: ["general"] */
@@ -75,10 +74,8 @@ export interface EventWaiter {
 // ── Harness ──────────────────────────────────────────────────────────────────
 
 export class BrokerHarness {
-  /** High-level facade — use for spawning agents, sending messages. */
-  relay!: AgentRelay;
-  /** Low-level client — use for protocol-level tests. */
-  client!: AgentRelayClient;
+  /** Low-level client — use for spawning agents, sending messages, protocol-level tests. */
+  client!: HarnessDriverClient;
 
   private readonly opts: Required<BrokerHarnessOptions>;
   private events: BrokerEvent[] = [];
@@ -105,7 +102,6 @@ export class BrokerHarness {
 
   /**
    * Start the broker process, wait for hello_ack.
-   * Creates both a low-level client and a high-level facade.
    */
   async start(): Promise<void> {
     if (this.started) return;
@@ -114,7 +110,7 @@ export class BrokerHarness {
     const apiKey = await ensureApiKey();
     this.opts.env = { ...this.opts.env, RELAY_API_KEY: apiKey };
 
-    const clientOpts: AgentRelaySpawnOptions = {
+    const clientOpts: RuntimeSpawnOptions = {
       binaryPath: this.opts.binaryPath,
       binaryArgs: this.opts.binaryArgs,
       brokerName: this.opts.brokerName,
@@ -124,7 +120,7 @@ export class BrokerHarness {
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await AgentRelayClient.spawn(clientOpts);
+    this.client = await HarnessDriverClient.spawn(clientOpts);
 
     // Wire event collection
     this.unsubEvent = this.client.onEvent((event: BrokerEvent) => {
@@ -132,17 +128,6 @@ export class BrokerHarness {
       for (const listener of this.eventListeners) {
         listener(event);
       }
-    });
-
-    // Create a high-level facade sharing the same binary/options
-    this.relay = new AgentRelay({
-      binaryPath: this.opts.binaryPath,
-      binaryArgs: this.opts.binaryArgs,
-      brokerName: this.opts.brokerName,
-      channels: this.opts.channels,
-      cwd: this.opts.cwd,
-      requestTimeoutMs: this.opts.requestTimeoutMs,
-      env: this.opts.env,
     });
 
     this.started = true;
@@ -157,13 +142,6 @@ export class BrokerHarness {
     this.unsubEvent?.();
     this.unsubEvent = undefined;
     this.eventListeners = [];
-
-    // Shut down the facade first (it has its own client)
-    try {
-      await this.relay.shutdown();
-    } catch {
-      // Ignore — may already be down
-    }
 
     // Shut down the low-level client
     try {
@@ -185,7 +163,7 @@ export class BrokerHarness {
     name: string,
     cli = 'cat',
     channels?: string[],
-    options?: { task?: string; continueFrom?: string }
+    options?: { task?: string; continueFrom?: string; model?: string; exitAfterTask?: boolean }
   ): Promise<{ name: string; runtime: string }> {
     return this.client.spawnPty({
       name,
@@ -193,6 +171,8 @@ export class BrokerHarness {
       channels: channels ?? ['general'],
       task: options?.task,
       continueFrom: options?.continueFrom,
+      model: options?.model,
+      exitAfterTask: options?.exitAfterTask,
     });
   }
 

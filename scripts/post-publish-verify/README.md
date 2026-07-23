@@ -22,9 +22,8 @@ Automated tests to verify the `agent-relay` npm package works correctly after pu
 
 Tests run across all supported Node.js versions:
 
-- Node.js 18 (minimum supported)
-- Node.js 20 (LTS)
-- Node.js 22 (Current)
+- Node.js 22 (minimum supported)
+- Node.js 24 (current)
 
 ## Usage
 
@@ -41,7 +40,7 @@ Tests run across all supported Node.js versions:
 ./scripts/post-publish-verify/run-verify.sh latest --parallel
 
 # Test single Node.js version
-./scripts/post-publish-verify/run-verify.sh latest --node 20
+./scripts/post-publish-verify/run-verify.sh latest --node 22
 ```
 
 ### Docker Compose Directly
@@ -56,7 +55,7 @@ docker compose up --build
 PACKAGE_VERSION=2.0.25 docker compose up --build
 
 # Test single Node version
-docker compose up --build node20
+docker compose up --build node22
 
 # Cleanup
 docker compose down --rmi local

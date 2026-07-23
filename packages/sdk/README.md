@@ -1,245 +1,252 @@
 # @agent-relay/sdk
 
-TypeScript SDK for building multi-agent workflows with Agent Relay. Provides both low-level broker control and high-level workflow orchestration.
+Core TypeScript SDK for Agent Relay communication. The SDK gives agents and applications three public capabilities: messaging, delivery, and actions.
+
+Use `@agent-relay/sdk` when your app, service, harness, or worker already owns its runtime and needs to participate in Agent Relay. Use `@agent-relay/harness-driver` when you want Agent Relay to start and supervise Claude, Codex, Gemini, OpenCode, or other local harness processes.
+
+Full docs: [agentrelay.com/docs](https://agentrelay.com/docs/typescript-sdk) (markdown mirrors for agents and CLI tooling at [agentrelay.com/llms.txt](https://agentrelay.com/llms.txt)).
 
 ## Installation
 
 ```bash
-npm install @agent-relay/sdk
+npm install @agent-relay/sdk zod
 ```
 
-## Quick Start
+## Concepts
 
-### Workflow Builder (Recommended)
+- **Messaging** is durable agent communication: identities, channels, DMs, group DMs, threads, reactions, inbox, read state, presence, search, and events.
+- **Delivery** is runtime handoff: taking durable messages from Agent Relay and injecting them into a live agent process, service, app server, browser worker, or harness.
+- **Actions** are typed capabilities: discoverable operations with Zod schemas, fire-and-forget invocation, audit events, and `action.completed` results delivered to listeners.
+- **Runtime** is optional managed execution. Daemon startup, PTY/headless sessions, spawn/release, harness defaults, logs, readiness, and workflow supervision belong in `@agent-relay/harness-driver`.
 
-The workflow builder is the primary way to define and run multi-agent workflows:
+## Quick start
 
-```ts
-import { workflow } from '@relayflows/core';
-
-const result = await workflow('my-feature')
-  .pattern('dag')
-  .agent('planner', { cli: 'claude', role: 'Planning lead' })
-  .agent('builder', { cli: 'codex', role: 'Implementation engineer' })
-  .step('plan', { agent: 'planner', task: 'Create a detailed plan' })
-  .step('build', { agent: 'builder', task: 'Implement the plan', dependsOn: ['plan'] })
-  .run();
-```
-
-### High-Level Facade
-
-The `AgentRelay` class provides a clean API for spawning and managing agents:
+`relay.workspace.register(...)` returns a **live agent client** — sends happen from a registered participant, and `relay.addListener(...)` is the single event entry point.
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
 
-const relay = new AgentRelay();
+const relay = new AgentRelay({
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY!,
+});
 
-// Event hooks
-relay.onMessageReceived = (msg) => console.log(`${msg.from}: ${msg.text}`);
-relay.onAgentIdle = ({ name, idleSecs }) => console.log(`${name} idle for ${idleSecs}s`);
-relay.onAgentActivityChanged = ({ name, active, pendingDeliveries }) => {
-  updateThinkingBadge(name, active ? `Thinking (${pendingDeliveries})` : 'Idle');
+const reviewer = await relay.workspace.register({ name: 'reviewer', type: 'agent' });
+
+await reviewer.channels.join('reviews');
+
+relay.addListener('message.created', async ({ message, envelope }) => {
+  if (envelope.channel?.name !== 'reviews') return;
+
+  await reviewer.reply({
+    messageId: message.messageId,
+    text: 'Received. I will review this thread.',
+  });
+});
+
+await reviewer.sendMessage({
+  to: '#reviews',
+  text: 'Reviewer is online.',
+});
+```
+
+You can also create a new workspace directly:
+
+```ts
+const relay = await AgentRelay.createWorkspace({
+  name: 'review-workspace',
+});
+// persist relay.workspaceKey to reconnect later
+```
+
+Reconnect a registered agent in a fresh process with its persisted token:
+
+```ts
+const reviewer = await relay.workspace.reconnect({ apiToken: process.env.REVIEWER_TOKEN! });
+```
+
+## Messaging
+
+The live agent client covers the communication surface agents need during a run: channels, DMs, group DMs, threads, reactions, inbox, and search.
+
+```ts
+const lead = await relay.workspace.register({ name: 'lead', type: 'agent' });
+
+await lead.channels.create({
+  name: 'release',
+  topic: 'Release readiness',
+});
+
+// `to` is '#channel', '@handle' (DM), or ['@a', '@b'] (group DM)
+const { messageId } = await lead.sendMessage({
+  to: '#release',
+  text: 'Please review the migration guide.',
+});
+
+const reply = await lead.reply({
+  messageId,
+  text: 'Tracking docs feedback here.',
+});
+
+await lead.react({
+  messageId: reply.messageId,
+  emoji: ':eyes:',
+});
+
+const thread = await lead.threads.get(messageId, { limit: 50 });
+```
+
+## Actions
+
+Actions are **fire-and-forget**: invoking returns an acknowledgement immediately, the handler runs in the SDK process that registered it, and the relay emits `action.completed` (or `action.failed`) to listeners — not inline to the invoking agent. Registered actions are exposed as typed MCP tools to agents automatically.
+
+```ts
+import { z } from 'zod';
+
+const handle = relay.registerAction({
+  name: 'github.open_pr',
+  description: 'Open a GitHub pull request for a prepared branch.',
+  input: z.object({
+    repository: z.string(),
+    branch: z.string(),
+    title: z.string(),
+    body: z.string().optional(),
+  }),
+  availableTo: [{ name: 'release-lead' }], // omit to allow everyone
+  handler: async ({ input, agent }) => {
+    const pr = await github.openPullRequest(input);
+    // The return value reaches listeners, not the caller — message the caller directly.
+    await coordinator.sendMessage({ to: `@${agent.handle}`, text: `Opened ${pr.url}` });
+    return { url: pr.url, number: pr.number }; // becomes the action.completed payload
+  },
+});
+
+relay.addListener(relay.action('github.open_pr').completed(), (event) => {
+  console.log(event.output);
+});
+
+// Later, if this process should stop exposing the action:
+handle.unregister();
+```
+
+## Events
+
+`relay.addListener(selector, handler)` accepts a dotted event name, a `*`/prefix wildcard, or a fluent predicate, and always hands the handler one discriminated event object. It returns an unsubscribe function.
+
+```ts
+const unsubscribe = relay.addListener('message.created', ({ message, envelope }) => {
+  console.log(`${envelope.from.handle}: ${message.text}`);
+});
+
+relay.addListener('action.*', (event) => console.log(event.type));
+relay.addListener(reviewer.status.becomes('idle'), () => assignNextReview());
+
+unsubscribe();
+```
+
+## Delivery
+
+Delivery is the session handoff contract. Relay stores messages durably; a session is the thing that can receive those messages inside an agent, service, browser worker, or managed harness:
+
+- Harnesses create sessions with stable agent identity.
+- Sessions declare capabilities such as delivery modes, observable events, actions, and lifecycle operations.
+- Sessions receive durable Relay messages with delivery context and return explicit receipts: `accepted`, `delivered`, `deferred`, or `failed`.
+- `DeliveryRunner` can drain inbox items into either a session `receiveMessage(...)` contract or a legacy `inject(...)` adapter.
+- Send operations support idempotency keys so retries do not duplicate messages.
+
+Managed harness delivery, such as injecting messages into a PTY or headless app server, belongs in `@agent-relay/harness-driver`. The SDK stays responsible for the public delivery contract.
+
+Minimum session contract:
+
+```ts
+import {
+  DeliveryRunner,
+  MINIMAL_AGENT_SESSION_CAPABILITIES,
+  normalizeAgentIdentity,
+  type AgentSession,
+} from '@agent-relay/sdk';
+
+const session: AgentSession = {
+  identity: normalizeAgentIdentity({ id: 'agent_reviewer', name: 'reviewer', handle: '@reviewer' }),
+  capabilities: {
+    ...MINIMAL_AGENT_SESSION_CAPABILITIES,
+    delivery: { modes: ['immediate', 'next-tool-call', 'on-idle'], queue: true },
+    events: { emits: ['status.changed', 'tool.called', 'tool.completed', 'file.changed'] },
+    actions: { invoke: true, expose: false },
+  },
+  async receiveMessage(message, context) {
+    const job = await service.enqueue({
+      id: message.id,
+      text: message.text,
+      threadId: message.threadId,
+      priority: context.priority ?? 'normal',
+      deliveryMode: context.mode,
+    });
+
+    return job.ready
+      ? { status: 'delivered', deliveryId: job.id }
+      : { status: 'deferred', deliveryId: job.id, availableAt: job.availableAt };
+  },
+  onEvent(emit) {
+    return service.onStatus((status) => emit({ type: 'status.changed', status }));
+  },
+  async release(reason) {
+    await service.release(reason);
+  },
 };
 
-// Spawn a PTY-backed agent
-const worker = await relay.spawnAgent({
-  name: 'Worker1',
-  cli: 'claude',
-  channels: ['general'],
-  // Lifecycle hooks can be sync or async functions.
-  onStart: ({ name }) => console.log(`spawning ${name}`),
-  onSuccess: ({ name, runtime }) => console.log(`spawned ${name} (${runtime})`),
-  onError: ({ name, error }) => console.error(`failed to spawn ${name}`, error),
-});
-
-const agent = await relay.spawnAgent({
-  name: 'Worker2',
-  cli: 'codex',
-  task: 'Build the API',
-  channels: ['dev'],
-  model: 'gpt-4o',
-});
-
-const codex = await relay.spawnAgent({ cli: 'codex' }); // name: Codex, runtime: pty
-
-// Headless harnesses keep the same Agent handle surface
-const reviewer = await relay.spawnAgent({
-  name: 'HeadlessReviewer',
-  cli: 'opencode',
-  runtime: 'headless',
-  channels: ['reviews'],
-  task: 'Review the current branch',
-});
-
-// Wait for agent to finish (go idle or exit)
-const result = await agent.waitForIdle(120_000);
-
-// Release with lifecycle hooks
-await worker.release({
-  reason: 'done',
-  onStart: ({ name }) => console.log(`releasing ${name}`),
-  onSuccess: ({ name }) => console.log(`released ${name}`),
-});
-
-// Send messages
-const human = relay.human({ name: 'Orchestrator' });
-await human.sendMessage({ to: 'Worker1', text: 'Start the task' });
-
-// Clean up
-await relay.shutdown();
+await new DeliveryRunner({
+  messaging: reviewer.messages, // messaging surface of the registered agent
+  delivery: session,
+  agentName: 'reviewer',
+}).start();
 ```
 
-### Low-Level Client
+## Optional managed harnesses
 
-For direct broker control:
+Install the harness packages for managed local execution:
+
+```bash
+npm install @agent-relay/harnesses @agent-relay/harness-driver
+```
+
+`create({ relay })` spawns the agent **and** self-registers it, returning the same live client shape as `relay.workspace.register(...)`:
 
 ```ts
-import { AgentRelayClient } from '@agent-relay/sdk';
+import { claude, codex } from '@agent-relay/harnesses';
 
-// Spawn a local broker and connect over HTTP/WS
-const client = await AgentRelayClient.spawn({
-  cwd: '/my/project',
-  channels: ['general'],
-});
+const planner = await claude.create({ relay, model: 'sonnet' });
+const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 
-const unsubscribeBrokerExit = client.onBrokerExit((info) => {
-  console.error('broker exited', info.code, info.signal, info.recentStderr);
-  unsubscribeBrokerExit();
-});
-
-// Or connect to an already-running broker (reads connection.json)
-// const client = AgentRelayClient.connect({ cwd: '/my/project' });
-
-// Or connect to a remote broker directly
-// const client = new AgentRelayClient({ baseUrl: 'http://...', apiKey: 'br_...' });
-
-await client.spawnPty({
-  name: 'Worker1',
-  cli: 'claude',
-  channels: ['general'],
-  task: 'Implement user authentication',
-});
-
-const agents = await client.listAgents();
-await client.release('Worker1');
-await client.shutdown();
+await planner.sendMessage({ to: '#reviews', text: `${engineer.handle} let's pair on the migration.` });
 ```
 
-### Communicate Mode
+`@agent-relay/harness-driver` owns:
 
-Use communicate adapters when an agent framework owns the run loop and you want it to exchange Relaycast messages with other agents.
+- Local broker process startup and connection files.
+- PTY and headless harness transports.
+- Claude, Codex, Gemini, OpenCode, and custom CLI spawn defaults.
+- Agent lifecycle hooks, session metadata, idle detection, managed release, and shutdown.
+- Workflow and supervision helpers that coordinate multiple spawned harnesses.
 
-```ts
-import { Relay, onRelay } from '@agent-relay/sdk/communicate';
+Keep application-level messaging code on `@agent-relay/sdk`; add the harness packages only at the boundary that owns local agent processes.
 
-const relay = new Relay('CodexWorker');
-const codex = onRelay('CodexWorker', { framework: 'codex', cwd: process.cwd() }, relay);
+## Migration from the pre-v8 SDK
 
-await codex.ready;
-await codex.send('Review the current branch and report risks.');
-```
+| Previous SDK surface                                                                 | Version 8 replacement                                                         |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `relay.agents.register(...)` + `relay.as(agent)` token handoff                       | `relay.workspace.register(...)` returns the live client directly.             |
+| `relay.sendMessage(...)`, `relay.system()`                                           | Send from a registered participant: `agent.sendMessage(...)`.                 |
+| `agent.events.on(...)`, `relay.on(...)`                                              | `relay.addListener(selector, handler)` — the single listener entry point.     |
+| `relay.actions.register(...)` / `relay.actions.invoke(...)` returning inline results | `relay.registerAction(...)`; results reach listeners via `action.completed`.  |
+| Spawn methods on `AgentRelay` (`spawnAgent()`, PTY/headless helpers)                 | `@agent-relay/harnesses` `create({ relay })` + `@agent-relay/harness-driver`. |
 
-The Codex adapter uses `codex app-server` over stdio JSON-RPC instead of the foreground PTY path. That gives background workers structured `thread/*`, `turn/*`, and `item/*` events for steering and completion; it does not render the Codex TUI. On startup it ensures the `relaycast` MCP server is present in Codex config so the agent can use Relaycast tools in addition to injected inbox messages.
-
-### CLI + Transport Spawning (Opencode/Claude)
-
-Use CLI-first spawn helpers and set `transport` when you want headless mode.
-
-```ts
-import { AgentRelayClient } from '@agent-relay/sdk';
-
-const client = await AgentRelayClient.spawn({
-  channels: ['general'],
-});
-
-await client.spawnOpencode({
-  name: 'OpencodeWorker',
-  transport: 'headless',
-  channels: ['general'],
-  task: 'Review this PR and report risks',
-});
-
-await client.spawnClaude({
-  name: 'ClaudeHeadless',
-  transport: 'headless', // override default PTY transport
-  channels: ['general'],
-  task: 'Summarize release risks',
-});
-
-// ... interact with the worker via sendMessage/listAgents/events ...
-
-await client.shutdown();
-```
-
-Notes:
-
-- Transport is a setting (`'pty'` or `'headless'`) on CLI spawn methods.
-- `spawnClaude(...)` defaults to PTY unless you pass `transport: 'headless'`.
-- `spawnOpencode(...)` defaults to headless.
-- You can also use `client.spawnCli({ cli, transport, ... })` for generic CLI-driven spawning.
-
-## Features
-
-- **Workflow Builder** — Fluent API for defining DAG-based multi-agent workflows
-- **Agent Spawning** — Spawn Claude, Codex, Gemini, Aider, or Goose agents
-- **Idle Detection** — Configurable silence threshold with `onAgentIdle` hook and `waitForIdle()`
-- **Message Delivery** — Track message delivery states (queued, injected, active, verified)
-- **Event Streaming** — Real-time events for agent lifecycle, output, and messaging
-- **Shadow Agents** — Spawn observer agents that monitor other agents
-- **Consensus** — Multi-agent voting and consensus helpers
-
-## Subpath Exports
-
-```ts
-import { AgentRelayClient } from '@agent-relay/sdk/client';
-import { workflow, WorkflowBuilder } from '@relayflows/core';
-import { ConsensusCoordinator } from '@agent-relay/sdk/consensus';
-import { ShadowCoordinator } from '@agent-relay/sdk/shadow';
-```
-
-## Workflow Templates
-
-Built-in templates for common patterns:
-
-```ts
-import { fanOut, pipeline, dag } from '@relayflows/core';
-
-// Fan-out: parallel execution with synthesis
-const builder = fanOut('analysis', {
-  tasks: ['Analyze backend', 'Analyze frontend'],
-  synthesisTask: 'Combine analyses into action plan',
-});
-
-// Pipeline: sequential stages
-const builder = pipeline('release', {
-  stages: [
-    { name: 'plan', task: 'Create release plan' },
-    { name: 'implement', task: 'Implement changes' },
-    { name: 'verify', task: 'Run verification' },
-  ],
-});
-```
-
-## Relaycast Integration
-
-The SDK re-exports Relaycast client types for cloud-based relay coordination:
-
-```ts
-import { RelayCast, AgentClient } from '@agent-relay/sdk';
-```
+See the [migration guide](https://agentrelay.com/docs/migration) for details.
 
 ## Development
 
 ```bash
-# Build
 npm --prefix packages/sdk run build
-
-# Run tests
 npm --prefix packages/sdk test
-
-# Run demo
-npm --prefix packages/sdk run demo
 ```
 
 ## License

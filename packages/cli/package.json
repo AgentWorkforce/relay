@@ -1,13 +1,12 @@
 {
   "name": "agent-relay",
-  "version": "7.1.1",
+  "version": "11.0.2",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "scripts/postinstall.js",
     "scripts/build-cjs.mjs",
     "LICENSE",
     "README.md"
@@ -29,10 +28,7 @@
     "agent-relay": "dist/cli/index.js",
     "relay": "dist/cli/index.js"
   },
-  "bundledDependencies": [
-    "@relaycast/sdk",
-    "@relayfile/local-mount"
-  ],
+  "bundledDependencies": [],
   "publishConfig": {
     "access": "public"
   },
@@ -40,39 +36,39 @@
     "build": "tsc && npm run postbuild",
     "postbuild": "chmod +x dist/cli/bootstrap.js dist/cli/index.js && npm run build:cjs",
     "build:cjs": "node ./scripts/build-cjs.mjs",
-    "postinstall": "node scripts/postinstall.js",
-    "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build; else echo '⚠ node_modules not found, skipping prepack build'; fi && node scripts/prepack-materialize-workspaces.mjs && node scripts/verify-bundled-deps.mjs",
-    "prepublishOnly": "node scripts/verify-bundled-deps.mjs",
+    "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build:cli; else echo 'node_modules not found, skipping prepack build'; fi",
     "start": "node dist/cli/index.js",
     "lint": "eslint src --ext .ts",
-    "audit:deps": "node scripts/audit-bundled-deps.mjs",
-    "pack:validate": "node scripts/validate-npm-tarball.mjs"
+    "audit:deps": "echo 'No bundled dependency audit is required for the simplified CLI package.'",
+    "pack:validate": "npm pack --dry-run"
   },
   "dependencies": {
-    "@agent-relay/cloud": "7.1.1",
-    "@agent-relay/config": "7.1.1",
-    "@agent-relay/sdk": "7.1.1",
-    "@agent-relay/telemetry": "7.1.1",
-    "@agent-relay/utils": "7.1.1",
+    "@agent-relay/cloud": "11.0.2",
+    "@agent-relay/config": "11.0.2",
+    "@agent-relay/fleet": "11.0.2",
+    "@agent-relay/harness-driver": "11.0.2",
+    "@agent-relay/harnesses": "11.0.2",
+    "@agent-relay/sdk": "11.0.2",
+    "@agent-relay/utils": "11.0.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@relayauth/core": "^0.1.2",
-    "@relaycast/sdk": "^1.1.0",
-    "@relayfile/local-mount": "^0.2.2",
-    "@relayfile/sdk": "^0.6.0",
-    "@slack/web-api": "^7.16.0",
-    "agent-trajectories": "^0.6.0",
+    "@relayfile/client": "^0.10.27",
+    "@relayflows/cli": "^1.0.1",
+    "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
-    "esbuild": "^0.27.2",
-    "ignore": "^7.0.5",
-    "ssh2": "^1.17.0",
-    "tar": "^7.5.10",
+    "jiti": "^2.6.1",
+    "posthog-node": "^5.29.2",
     "ws": "^8.18.3",
-    "yaml": "^2.7.0",
     "zod": "^3.23.8"
   },
+  "optionalDependencies": {
+    "ai-hist-native": "^0.4.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.2"
+  },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "keywords": [
     "agent",
@@ -94,5 +90,6 @@
   "bugs": {
     "url": "https://github.com/AgentWorkforce/relay/issues"
   },
-  "homepage": "https://github.com/AgentWorkforce/relay#readme"
+  "homepage": "https://github.com/AgentWorkforce/relay#readme",
+  "bundleDependencies": []
 }

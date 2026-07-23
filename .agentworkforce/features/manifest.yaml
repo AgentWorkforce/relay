@@ -1,0 +1,1411 @@
+version: '1.1'
+updated: '2026-07-20'
+
+# Every user-facing feature in this repo, categorized and scored.
+#
+# criticality:
+#   critical - product cannot function without this; verify on every change
+#   hot      - commonly used path; verify for any related change
+#   standard - useful feature; verify periodically
+#
+# verify_tier (the primary environment needed to run verification):
+#   1 - isolated local CLI/filesystem
+#   2 - local broker running
+#   3 - hosted workspace plus one registered agent token
+#   4 - hosted workspace plus two or more registered agent identities
+#   5 - authenticated, disposable hosted workspace or external test service
+#   6 - interactive provider/browser/PTY or a pre-provisioned external system
+#
+# Tier alone is deliberately not a test plan. Every category is mapped below
+# to a procedure with precise prerequisites, setup, assertions, cleanup, and
+# any automation limitation. Procedures are in verify/procedures.md.
+verification:
+  document: .agentworkforce/features/verify/procedures.md
+  categories:
+    broker: broker-lifecycle
+    agent-management: workspace-agents-and-capabilities
+    messaging-channels: channel-messaging
+    messaging-messages: message-round-trip
+    messaging-dm: direct-messages
+    messaging-reactions: reactions-and-read-status
+    messaging-inbox: reactions-and-read-status
+    local-agents: local-agent-lifecycle
+    local-workflows: local-workflow-lifecycle
+    cloud: cloud-workflows
+    cloud-workers: cloud-workers
+    fleet: fleet-management
+    workspace: workspace-management
+    skills: skills-installation
+    integration: integrations-and-webhooks
+    reflex: reflex-history
+    mcp: mcp-stdio
+    harnesses: harnesses
+    sdk: typescript-sdk
+    python-sdk: python-sdk
+    swift-sdk: swift-sdk
+    opencode-plugin: opencode-plugin
+    codex-relay-skill: codex-relay-skill
+    gemini-relay-extension: gemini-relay-extension
+    setup: cli-maintenance
+    telemetry: telemetry
+    node: node-command-discovery
+
+categories:
+  broker:
+    name: Local Broker
+    description: The Rust daemon that routes all agent messages locally
+    criticality: critical
+    features:
+      - id: broker-up
+        name: Start Broker
+        cli: relay node up --background
+        description: Start the local broker daemon in the background
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 1
+
+      - id: broker-down
+        name: Stop Broker
+        cli: relay node down
+        description: Stop the running broker daemon
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 2
+
+      - id: broker-status
+        name: Broker Status
+        cli: relay node status [--wait-for <seconds>]
+        description: Check whether the local broker daemon is running and report its agent and delivery state
+        location: packages/cli/src/cli/commands/core.ts, packages/cli/src/cli/commands/node.ts
+        verify_tier: 2
+
+      - id: broker-metrics
+        name: Broker Metrics
+        cli: relay node metrics [--agent <name>]
+        description: Show resource usage for broker and its agents
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 2
+
+      - id: broker-deadletters
+        name: Dead Letter Queue
+        cli: relay node deadletters [--json]
+        description: List terminally-failed message deliveries retained in the broker
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 2
+
+      - id: broker-redeliver
+        name: Redeliver Messages
+        cli: relay node redeliver (<id> | --all)
+        description: Requeue dead-letter messages through the normal delivery path
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 2
+
+  agent-management:
+    name: Agent Management
+    description: Register and manage agents in the workspace
+    criticality: critical
+    features:
+      - id: agent-register
+        name: Register Agent
+        cli: relay agent register <name> [--type <type>] [--persona <persona>]
+        description: Register a new agent and print its auth token
+        location: packages/cli/src/cli/commands/agent.ts
+        verify_tier: 3
+
+      - id: agent-add
+        name: Add Agent
+        cli: relay agent add <name> [--type <type>]
+        description: Register an additional agent in the workspace
+        location: packages/cli/src/cli/commands/agent.ts
+        verify_tier: 3
+
+      - id: agent-list
+        name: List Agents
+        cli: relay agent list [--status <status>]
+        description: Show all agents in the workspace with status
+        location: packages/cli/src/cli/commands/agent.ts
+        verify_tier: 3
+
+      - id: agent-remove
+        name: Remove Agent
+        cli: relay agent remove <name>
+        description: Remove an agent from the workspace
+        location: packages/cli/src/cli/commands/agent.ts
+        verify_tier: 3
+
+      - id: agent-capabilities
+        name: List Capabilities
+        cli: relay capabilities list
+        description: Show available agent capabilities
+        location: packages/cli/src/cli/commands/capabilities.ts
+        verify_tier: 3
+
+      - id: capabilities-register
+        name: Register Capability
+        cli: relay capabilities register <command> --description <text> --handler <agent>
+        description: Register a named capability and the agent that handles it
+        location: packages/cli/src/cli/commands/capabilities.ts
+        verify_tier: 3
+
+      - id: capabilities-delete
+        name: Delete Capability
+        cli: relay capabilities delete <command>
+        description: Delete a previously registered capability
+        location: packages/cli/src/cli/commands/capabilities.ts
+        verify_tier: 3
+
+      - id: system-status
+        name: Composite System Status
+        cli: relay status
+        description: Show the current project path, local broker state, and Cloud-login state
+        location: packages/cli/src/cli/commands/status.ts
+        verify_tier: 1
+
+  messaging-channels:
+    name: Channel Messaging
+    description: Create and manage channels for agent communication
+    criticality: critical
+    features:
+      - id: channel-create
+        name: Create Channel
+        cli: relay channel create <name> [--topic <topic>]
+        mcp: create_channel
+        description: Create a new messaging channel
+        location: packages/cli/src/cli/commands/channel.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: channel-list
+        name: List Channels
+        cli: relay channel list [--archived]
+        mcp: list_channels
+        description: Show all channels in the workspace
+        location: packages/cli/src/cli/commands/channel.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: channel-join
+        name: Join Channel
+        cli: relay channel join <name>
+        mcp: join_channel
+        description: Join an existing channel as the current agent
+        location: packages/cli/src/cli/commands/channel.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: channel-leave
+        name: Leave Channel
+        cli: relay channel leave <name>
+        mcp: leave_channel
+        description: Leave a channel
+        location: packages/cli/src/cli/commands/channel.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: channel-invite
+        name: Invite to Channel
+        cli: relay channel invite <channel> <agent>
+        mcp: invite_to_channel
+        description: Invite another agent to a channel
+        location: packages/cli/src/cli/commands/channel.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+      - id: channel-set-topic
+        name: Set Channel Topic
+        cli: relay channel set_topic <channel> <topic>
+        mcp: set_channel_topic
+        description: Update the topic/description of a channel
+        location: packages/cli/src/cli/commands/channel.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: channel-archive
+        name: Archive Channel
+        cli: relay channel archive <name>
+        mcp: archive_channel
+        description: Archive a channel (soft delete, reversible)
+        location: packages/cli/src/cli/commands/channel.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+  messaging-messages:
+    name: Message Posting & Retrieval
+    description: Post, list, and search messages in channels
+    criticality: critical
+    features:
+      - id: message-post
+        name: Post Message
+        cli: relay message post <channel> <text>
+        mcp: post_message
+        description: Send a message to a channel as the current agent
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: message-list
+        name: List Messages
+        cli: relay message list <channel> [--limit <n>]
+        mcp: list_messages
+        description: Retrieve message history from a channel
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: message-reply
+        name: Reply to Message (Threads)
+        cli: relay message reply <messageId> <text>
+        mcp: reply_to_thread
+        description: Reply to a message, creating or extending a thread
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: message-get-thread
+        name: Get Thread
+        cli: relay message get_thread <messageId>
+        mcp: get_message_thread
+        description: Retrieve all messages in a thread
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: message-search
+        name: Search Messages
+        cli: relay message search <query> [--channel <channel>] [--from <agent>] [--limit <n>]
+        mcp: search_messages
+        description: Search for messages by content across the workspace
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 3
+
+      - id: message-file-upload
+        name: Upload File Attachment
+        cli: relay message file upload <path> --channel <channel> [--text <text>]
+        description: Send a channel message containing a local file attachment
+        location: packages/cli/src/cli/commands/message.ts
+        verify_tier: 3
+
+  messaging-dm:
+    name: Direct Messages
+    description: Private messaging between agents
+    criticality: hot
+    features:
+      - id: dm-send
+        name: Send DM
+        cli: relay message dm send <agent> <text>
+        mcp: send_dm
+        description: Send a private direct message to another agent
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+      - id: dm-list
+        name: List Messages in a DM Conversation
+        cli: relay message dm list <conversationId> [--limit <n>]
+        description: List the messages in a known direct-message conversation
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+      - id: dm-list-conversations
+        name: List DM Conversations
+        mcp: list_dms
+        description: List direct-message conversations visible to the current MCP identity
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+      - id: dm-send-group
+        name: Send Group DM
+        cli: relay message dm send_group <text> --to <agents...>
+        mcp: send_group_dm
+        description: Create a group DM and send the first message to multiple agents
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+  messaging-reactions:
+    name: Message Reactions
+    description: Emoji reactions on messages
+    criticality: standard
+    features:
+      - id: reaction-add
+        name: Add Reaction
+        cli: relay message reaction add <messageId> <emoji>
+        mcp: add_reaction
+        description: Add an emoji reaction to a message
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+      - id: reaction-remove
+        name: Remove Reaction
+        cli: relay message reaction remove <messageId> <emoji>
+        mcp: remove_reaction
+        description: Remove an emoji reaction from a message
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+  messaging-inbox:
+    name: Inbox & Read Status
+    description: Track unread messages and mark messages as read
+    criticality: hot
+    features:
+      - id: inbox-check
+        name: Check Inbox
+        cli: relay message inbox check [--limit <n>]
+        mcp: check_inbox
+        description: Show unread messages, mentions, and DMs directed to this agent
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+      - id: inbox-mark-read
+        name: Mark Message Read
+        cli: relay message inbox mark_read <messageId>
+        mcp: mark_message_read
+        description: Mark a message or thread as read for the current agent
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+      - id: inbox-get-readers
+        name: Get Readers
+        cli: relay message inbox get_readers <messageId>
+        mcp: get_message_readers
+        description: Show which agents have read a specific message
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 4
+
+  local-agents:
+    name: Local Agent Orchestration
+    description: Spawn and control AI agent processes on the local broker
+    criticality: critical
+    features:
+      - id: local-agent-spawn
+        name: Spawn Agent
+        cli: relay node agent spawn <provider> [--name <agent-name>] [--task <task>] [--spawn-mode task-exit] [--exit-after-task]
+        description: Launch an AI agent process attached to the local broker
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 2
+
+      - id: local-agent-new
+        name: Spawn and Attach
+        cli: relay node agent new <provider> [--name <agent-name>]
+        description: Spawn an agent and immediately attach your terminal to it
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 6
+
+      - id: local-agent-release
+        name: Release Agent
+        cli: relay node agent release <name>
+        description: Gracefully stop a running local agent
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 2
+
+      - id: local-agent-list
+        name: List Local Agents
+        cli: relay node agent list
+        description: Show all agents currently running on the local broker
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 2
+
+      - id: local-agent-set-model
+        name: Switch Agent Model
+        cli: relay node agent set-model <name> <model>
+        description: Request a best-effort /model switch from a running agent's provider TUI
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 2
+
+      - id: local-agent-attach
+        name: Attach to Agent
+        cli: relay node agent attach <name>
+        description: Interactively connect terminal to a running agent (drive/view/passthrough)
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 6
+
+      - id: local-agent-flush
+        name: Flush Agent Messages
+        cli: relay node agent message flush <name>
+        description: Immediately deliver all queued messages to a held agent
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 2
+
+      - id: local-agent-hold
+        name: Hold Agent Messages
+        cli: relay node agent message hold <name>
+        description: Pause message delivery to an agent (queue them)
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 2
+
+      - id: local-agent-auto
+        name: Resume Agent Messages
+        cli: relay node agent message auto <name>
+        description: Resume automatic message injection for an agent
+        location: packages/cli/src/cli/commands/local-agent.ts
+        verify_tier: 2
+
+      - id: local-agent-tail
+        name: Tail Broker Events
+        cli: relay node tail [--agent <name>]
+        description: Stream live broker events, optionally filtered to one agent
+        location: packages/cli/src/cli/commands/local-agent.ts, packages/cli/src/cli/commands/node.ts
+        verify_tier: 2
+
+  local-workflows:
+    name: Local Workflow Execution
+    description: Run multi-agent workflows on the local broker
+    criticality: hot
+    features:
+      - id: local-workflow-run
+        name: Run Local Workflow
+        cli: relay node workflow run <workflow> [--file-type <type>] [--json]
+        description: Run a local YAML, TypeScript, JavaScript, Python, or shell workflow and record its result locally
+        location: packages/cli/src/cli/commands/local-workflow.ts
+        verify_tier: 1
+
+      - id: local-workflow-logs
+        name: Read Local Workflow Logs
+        cli: relay node workflow logs <runId> [--follow] [--poll-interval <seconds>] [--offset <bytes>] [--json]
+        description: Read or follow the locally recorded output of a workflow run
+        location: packages/cli/src/cli/commands/local-workflow.ts
+        verify_tier: 1
+
+      - id: local-workflow-sync
+        name: Sync Local Workflow Result
+        cli: relay node workflow sync <runId> [--dry-run] [--json]
+        description: Report the local synchronization state for a completed workflow run
+        location: packages/cli/src/cli/commands/local-workflow.ts
+        verify_tier: 1
+
+  cloud:
+    name: Cloud Features
+    description: Cloud account management and remote workflow execution
+    criticality: hot
+    features:
+      - id: cloud-login
+        name: Cloud Login
+        cli: relay cloud login
+        description: Authenticate with Agent Relay Cloud via browser OAuth
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 6
+
+      - id: cloud-logout
+        name: Cloud Logout
+        cli: relay cloud logout
+        description: Clear stored cloud credentials (destructive — skip in automated tests)
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 6
+
+      - id: cloud-whoami
+        name: Cloud Whoami
+        cli: relay cloud whoami
+        description: Show current cloud authentication status (readable if already logged in)
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-session
+        name: Cloud Session
+        cli: relay cloud session
+        description: Show canonical cloud session details (readable if already logged in)
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-connect
+        name: Connect Provider
+        cli: relay cloud connect <provider> [--language <language>] [--timeout <seconds>]
+        description: Connect a provider via interactive SSH session
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 6
+
+      - id: cloud-enroll
+        name: Enroll Fleet Node
+        cli: relay cloud enroll (--token <token> | --workspace <workspaceId>) [--name <name>] [--max-agents <n>] [--json]
+        description: Register this machine as a cloud-managed fleet node
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-run
+        name: Submit Cloud Workflow
+        cli: relay cloud run <workflow> [--file-type <type>] [--no-sync-code] [--json]
+        description: Submit a workflow for remote cloud execution
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-schedule
+        name: Schedule Cloud Workflow
+        cli: relay cloud schedule <workflow> (--cron <expression> | --at <isoTimestamp>) [--timezone <timezone>] [--json]
+        description: Schedule a repeatable cloud workflow run with cron
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-schedules
+        name: List Cloud Schedules
+        cli: relay cloud schedules [--json]
+        description: List all scheduled workflow runs
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-status
+        name: Cloud Run Status
+        cli: relay cloud status <runId> [--json]
+        description: Fetch status of a workflow run
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-logs
+        name: Cloud Run Logs
+        cli: relay cloud logs <runId> [--follow] [--agent <name>] [--json]
+        description: Read logs from a workflow run
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-sync
+        name: Sync Cloud Results
+        cli: relay cloud sync <runId> [--dir <path>] [--dry-run]
+        description: Download and apply code changes from a completed cloud workflow run
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-cancel
+        name: Cancel Cloud Run
+        cli: relay cloud cancel <runId> [--json]
+        description: Cancel a running cloud workflow
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+  cloud-workers:
+    name: Cloud Worker Nodes
+    description: Register and manage machines as cloud worker nodes
+    criticality: standard
+    features:
+      - id: cloud-worker-register
+        name: Register Cloud Worker
+        cli: relay cloud worker register --token <token> --name <name> [--base-url <url>] [--json]
+        description: Register this machine as a cloud worker node
+        location: packages/cli/src/cli/commands/cloud-worker.ts
+        verify_tier: 5
+
+      - id: cloud-worker-start
+        name: Start Cloud Worker
+        cli: relay cloud worker start [--worker-id <id> | --name <name>] [--daemon] [--once]
+        description: Start the cloud worker service on this machine
+        location: packages/cli/src/cli/commands/cloud-worker.ts
+        verify_tier: 5
+
+      - id: cloud-worker-status
+        name: Cloud Worker Status
+        cli: relay cloud worker status [--worker-id <id> | --name <name>] [--json]
+        description: Show the state of a previously registered local Cloud worker
+        location: packages/cli/src/cli/commands/cloud-worker.ts
+        verify_tier: 5
+
+      - id: cloud-worker-logs
+        name: Cloud Worker Logs
+        cli: relay cloud worker logs [--worker-id <id> | --name <name>] [--follow]
+        description: Read local cloud worker daemon logs
+        location: packages/cli/src/cli/commands/cloud-worker.ts
+        verify_tier: 5
+
+  fleet:
+    name: Fleet Management
+    description: Distributed fleet node configuration for the workspace
+    criticality: standard
+    features:
+      - id: fleet-nodes
+        name: List Fleet Nodes
+        cli: relay fleet nodes
+        description: Show all fleet nodes registered in the workspace (returns empty list if none configured)
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-config
+        name: Fleet Config
+        cli: relay fleet config
+        description: Show the workspace fleet-node configuration
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-enable
+        name: Enable Fleet
+        cli: relay fleet enable
+        description: Enable fleet nodes for the workspace (modifies cloud state)
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-disable
+        name: Disable Fleet
+        cli: relay fleet disable
+        description: Disable fleet nodes for the workspace (modifies cloud state)
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-inherit
+        name: Inherit Fleet Config
+        cli: relay fleet inherit
+        description: Use deployment defaults for fleet node configuration (modifies cloud state)
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-status
+        name: Fleet Node Status
+        cli: relay fleet status
+        description: Show local broker status and this node's provider attachment
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 2
+
+  workspace:
+    name: Workspace Management
+    description: Create and switch between workspaces
+    criticality: hot
+    features:
+      - id: workspace-active
+        name: Show Active Workspace
+        cli: relay workspace active
+        description: Resolve and show the canonical Cloud identifiers for the active workspace
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 5
+
+      - id: workspace-create
+        name: Create Workspace
+        cli: relay workspace create <name> [--base-url <url>]
+        description: Create a new workspace and store its key
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 5
+
+      - id: workspace-list
+        name: List Workspaces
+        cli: relay workspace list
+        description: Show all locally stored workspaces
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 1
+
+      - id: workspace-set-key
+        name: Store Workspace Key
+        cli: relay workspace set_key <name> <key>
+        description: Store a workspace key under a name
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 1
+
+      - id: workspace-join
+        name: Join Workspace
+        cli: relay workspace join <name> <key>
+        description: Join a workspace by key and make it active
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 1
+
+      - id: workspace-switch
+        name: Switch Workspace
+        cli: relay workspace switch <name>
+        description: Switch the active workspace to a stored one
+        location: packages/cli/src/cli/commands/workspace.ts
+        verify_tier: 1
+
+  skills:
+    name: Skills Management
+    description: Install and manage agent skills in coding harnesses
+    criticality: standard
+    features:
+      - id: skills-add
+        name: Install Skills
+        cli: relay skills add
+        description: Install the /orchestrate skill into one or more AI harnesses
+        location: packages/cli/src/cli/commands/skills.ts
+        verify_tier: 5
+
+  integration:
+    name: Integrations & Webhooks
+    description: External integrations via relayfile subscriptions and webhooks
+    criticality: standard
+    features:
+      - id: integration-subscribe
+        name: Subscribe Integration
+        cli: relay integration subscribe <provider> --resource <value> --to <@agent|#channel> [--no-input]
+        description: Subscribe a relay recipient to a relayfile integration
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 6
+
+      - id: integration-unsubscribe
+        name: Unsubscribe Integration
+        cli: relay integration unsubscribe <provider> --resource <value>
+        description: Remove a relayfile integration subscription
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 6
+
+      - id: integration-list-bindings
+        name: List Relayfile Integration Bindings
+        cli: relay integration subscribe --list
+        description: List active Relayfile bindings and their Relay resources
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: webhook-create
+        name: Create Webhook
+        cli: relay integration webhook create <url> [--event <event>]
+        description: Register an outbound webhook
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: webhook-list
+        name: List Webhooks
+        cli: relay integration webhook list
+        description: Show all registered webhooks
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: webhook-delete
+        name: Delete Webhook
+        cli: relay integration webhook delete <id>
+        description: Remove a registered webhook
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: webhook-trigger
+        name: Trigger Webhook
+        cli: relay integration webhook trigger <id> [--payload <json>]
+        description: Manually fire a webhook for testing
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: webhook-inbound-create
+        name: Create Inbound Webhook
+        cli: relay integration webhook create-inbound <channel> [--name <name>]
+        description: Create an endpoint external services POST to, delivering into a channel
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: webhook-inbound-list
+        name: List Inbound Webhooks
+        cli: relay integration webhook list-inbound
+        description: Show all inbound webhook endpoints
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: webhook-inbound-delete
+        name: Delete Inbound Webhook
+        cli: relay integration webhook delete-inbound <webhookId>
+        description: Remove an inbound webhook endpoint
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: subscription-create
+        name: Create Event Subscription
+        cli: relay integration subscription create <event> [--filter <key=value>] [--url <url>] [--secret <secret>]
+        description: Subscribe to workspace events
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: subscription-list
+        name: List Subscriptions
+        cli: relay integration subscription list
+        description: Show all event subscriptions
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: subscription-get
+        name: Get Subscription
+        cli: relay integration subscription get <id>
+        description: Show details for a specific subscription
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+      - id: subscription-delete
+        name: Delete Subscription
+        cli: relay integration subscription delete <id>
+        description: Remove an event subscription
+        location: packages/cli/src/cli/commands/integration.ts
+        verify_tier: 5
+
+  reflex:
+    name: Reflex
+    description: Reflex history sync - syncs relay activity history for agent context
+    criticality: standard
+    features:
+      - id: reflex-on
+        name: Reflex On
+        cli: relay reflex on
+        description: Enable reflex history sync so agents receive relay activity context
+        location: packages/cli/src/cli/commands/reflex.ts
+        verify_tier: 6
+
+      - id: reflex-off
+        name: Reflex Off
+        cli: relay reflex off
+        description: Disable reflex history sync
+        location: packages/cli/src/cli/commands/reflex.ts
+        verify_tier: 1
+
+      - id: reflex-status
+        name: Reflex Status
+        cli: relay reflex status
+        description: Show whether reflex history sync is enabled
+        location: packages/cli/src/cli/commands/reflex.ts
+        verify_tier: 1
+
+  mcp:
+    name: MCP Server Mode
+    description: MCP tools exposed to AI harnesses (Claude Code, Cursor, etc.)
+    criticality: critical
+    features:
+      - id: mcp-server-start
+        name: Start MCP Server
+        cli: relay mcp
+        description: Run agent-relay as an MCP server so harnesses can use relay tools
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 1
+
+      - id: mcp-create-workspace
+        name: MCP create_workspace
+        mcp: create_workspace
+        description: Create a workspace and retain its key in the MCP session
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 5
+
+      - id: mcp-set-workspace-key
+        name: MCP set_workspace_key
+        mcp: set_workspace_key
+        description: Set the workspace key used by the MCP session
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 5
+
+      - id: mcp-register-agent
+        name: MCP register_agent
+        mcp: register_agent
+        description: Register a new agent from within a harness
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 5
+
+      - id: mcp-list-agents
+        name: MCP list_agents
+        mcp: list_agents
+        description: List workspace agents from within a harness
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 5
+
+      - id: mcp-query-nodes
+        name: MCP query_nodes
+        mcp: query_nodes
+        description: Query fleet nodes in the current workspace
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 5
+
+      - id: mcp-add-agent
+        name: MCP add_agent
+        mcp: add_agent
+        description: Spawn a managed worker through the workspace API
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 6
+
+      - id: mcp-spawn
+        name: MCP spawn
+        mcp: spawn
+        description: Invoke the workspace spawn action for an agent identity
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 6
+
+      - id: mcp-remove-agent
+        name: MCP remove_agent
+        mcp: remove_agent
+        description: Release a managed worker from active duty
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 6
+
+      - id: mcp-create-channel
+        name: MCP create_channel
+        mcp: create_channel
+        description: Create a channel from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-list-channels
+        name: MCP list_channels
+        mcp: list_channels
+        description: List channels from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-join-channel
+        name: MCP join_channel
+        mcp: join_channel
+        description: Join a channel as the current MCP identity
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-leave-channel
+        name: MCP leave_channel
+        mcp: leave_channel
+        description: Leave a channel as the current MCP identity
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-invite-to-channel
+        name: MCP invite_to_channel
+        mcp: invite_to_channel
+        description: Invite an agent to a channel
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-set-channel-topic
+        name: MCP set_channel_topic
+        mcp: set_channel_topic
+        description: Update a channel topic
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-archive-channel
+        name: MCP archive_channel
+        mcp: archive_channel
+        description: Archive a channel
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-post-message
+        name: MCP post_message
+        mcp: post_message
+        description: Post a message from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-list-messages
+        name: MCP list_messages
+        mcp: list_messages
+        description: Retrieve channel history from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-reply-to-message
+        name: MCP reply_to_thread
+        mcp: reply_to_thread
+        description: Reply in a thread from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-get-message-thread
+        name: MCP get_message_thread
+        mcp: get_message_thread
+        description: Retrieve a message thread from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-send-dm
+        name: MCP send_dm
+        mcp: send_dm
+        description: Send a DM from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-list-dms
+        name: MCP list_dms
+        mcp: list_dms
+        description: List direct-message conversations for the current MCP identity
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-send-group-dm
+        name: MCP send_group_dm
+        mcp: send_group_dm
+        description: Create a group direct-message conversation and post its first message
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-add-reaction
+        name: MCP add_reaction
+        mcp: add_reaction
+        description: Add a reaction from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-remove-reaction
+        name: MCP remove_reaction
+        mcp: remove_reaction
+        description: Remove a reaction from a message from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-search-messages
+        name: MCP search_messages
+        mcp: search_messages
+        description: Search messages from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-list-inbox
+        name: MCP check_inbox
+        mcp: check_inbox
+        description: Check unread inbox from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-mark-message-read
+        name: MCP mark_message_read
+        mcp: mark_message_read
+        description: Mark a message read from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-get-message-readers
+        name: MCP get_message_readers
+        mcp: get_message_readers
+        description: List the agents that read a message from within a harness
+        location: packages/cli/src/cli/mcp/messaging-tools.ts
+        verify_tier: 5
+
+      - id: mcp-invoke-action
+        name: MCP invoke_action
+        mcp: invoke_action
+        description: Fire an action from within a harness
+        location: packages/cli/src/cli/mcp/action-tools.ts
+        verify_tier: 5
+
+      - id: mcp-list-actions
+        name: MCP list_actions
+        mcp: list_actions
+        description: List available actions from within a harness
+        location: packages/cli/src/cli/mcp/action-tools.ts
+        verify_tier: 5
+
+      - id: mcp-system-prompt
+        name: MCP system prompt
+        mcp_prompt: system
+        description: Retrieve Agent Relay's default collaboration instructions through the MCP prompts interface
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 1
+
+      - id: mcp-submit-result
+        name: MCP submit_result
+        mcp: submit_result
+        description: Submit a structured task result when AGENT_RELAY_RESULT_URL and AGENT_RELAY_RESULT_TOKEN configure the callback
+        location: packages/cli/src/cli/agent-relay-mcp.ts
+        verify_tier: 6
+
+  harnesses:
+    name: AI Harness Integrations
+    description: PTY-based integrations with AI coding tools
+    criticality: hot
+    features:
+      - id: harness-claude
+        name: Claude Code Harness
+        description: Run agents using Claude Code (claude CLI) with PTY injection
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-codex
+        name: Codex Harness
+        description: Run agents using OpenAI Codex CLI
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-gemini
+        name: Gemini Harness
+        description: Run agents using Google Gemini CLI
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-cursor
+        name: Cursor Harness
+        description: Run agents using Cursor IDE cursor-agent command
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-aider
+        name: Aider Harness
+        description: Run agents using the Aider code editing tool
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-goose
+        name: Goose Harness
+        description: Run agents using Block's Goose automation tool
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-grok
+        name: Grok Harness
+        description: Run agents using xAI Grok CLI
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-opencode
+        name: OpenCode Harness
+        description: Run agents using the OpenCode extension
+        location: packages/harnesses/
+        verify_tier: 6
+
+      - id: harness-droid
+        name: Droid Harness
+        description: Run agents using Factory's Droid CLI
+        location: packages/harnesses/src/index.ts
+        verify_tier: 6
+
+      - id: harness-custom
+        name: Custom Harness
+        description: Define a bespoke harness via the defineHarness contract
+        location: packages/harnesses/
+        verify_tier: 3
+
+  sdk:
+    name: SDK (Programmatic API)
+    description: TypeScript SDK for building agent integrations
+    criticality: critical
+    features:
+      - id: sdk-messaging
+        name: SDK Messaging API
+        description: Send/receive messages and post to channels programmatically
+        location: packages/sdk/src/
+        verify_tier: 3
+
+      - id: sdk-actions
+        name: SDK Actions API
+        description: Register and invoke fire-and-forget actions programmatically
+        location: packages/sdk/src/
+        verify_tier: 3
+
+      - id: sdk-sessions
+        name: SDK Session Management
+        description: Manage agent sessions and lifecycle programmatically
+        location: packages/sdk/src/
+        verify_tier: 3
+
+      - id: sdk-delivery
+        name: SDK Delivery Control
+        description: Process inbox work with DeliveryRunner acknowledgements, failures, and deferrals
+        location: packages/sdk/src/
+        verify_tier: 3
+
+      - id: sdk-workspace
+        name: SDK Workspace and Identity
+        description: Create or reconnect to workspaces and register agent or human participants
+        location: packages/sdk/src/agent-relay.ts, packages/sdk/src/facade.ts
+        verify_tier: 5
+
+      - id: sdk-realtime
+        name: SDK Realtime Listeners
+        description: Consume workspace events through listeners, event fan-in, and observer mode
+        location: packages/sdk/src/listeners.ts, packages/sdk/src/messaging/
+        verify_tier: 5
+
+      - id: sdk-integrations
+        name: SDK Nodes and Integrations
+        description: Manage fleet nodes, triggers, event subscriptions, and inbound webhooks programmatically
+        location: packages/sdk/src/facade.ts, packages/sdk/src/messaging/
+        verify_tier: 5
+
+      - id: sdk-harness-contract
+        name: SDK Harness and Session Contracts
+        description: Define custom harnesses and session capabilities for Relay-connected agents
+        location: packages/sdk/src/session/, packages/sdk/src/agent-relay.ts
+        verify_tier: 3
+
+  python-sdk:
+    name: Python SDK
+    description: Python orchestration, Relay communication, adapters, and workflow building
+    criticality: hot
+    features:
+      - id: python-sdk-orchestration
+        name: Python AgentRelay Orchestration
+        description: Spawn, message, release, and wait for managed Python AgentRelay agents
+        location: packages/sdk-py/src/agent_relay/
+        verify_tier: 6
+
+      - id: python-sdk-communication
+        name: Python Relay Communication
+        description: Coordinate agents through the Relay communication interface
+        location: packages/sdk-py/src/agent_relay/
+        verify_tier: 3
+
+      - id: python-sdk-adapters
+        name: Python Relay Adapters
+        description: Attach Relay behavior to supported Python agent frameworks with on_relay adapters
+        location: packages/sdk-py/src/agent_relay/
+        verify_tier: 6
+
+      - id: python-sdk-workflows
+        name: Python Workflow Builder
+        description: Define Python workflow templates and multi-agent workflow steps
+        location: packages/sdk-py/src/agent_relay/
+        verify_tier: 6
+
+  swift-sdk:
+    name: Swift SDKs
+    description: Swift clients for hosted Agent Relay and the local broker
+    criticality: standard
+    features:
+      - id: swift-sdk-hosted
+        name: AgentRelaySDK
+        description: Use the hosted Swift Agent Relay client for workspaces, messaging, and events
+        location: packages/sdk-swift/Sources/
+        verify_tier: 5
+
+      - id: swift-sdk-broker
+        name: AgentRelayBrokerSDK
+        description: Use the local-broker Swift SDK for broker-backed agent coordination
+        location: packages/sdk-swift/Sources/
+        verify_tier: 2
+
+  opencode-plugin:
+    name: OpenCode Relay Plugin
+    description: OpenCode-native Relaycast tools and session lifecycle hooks
+    criticality: hot
+    features:
+      - id: opencode-relay-connect
+        name: OpenCode relay_connect
+        description: Connect an OpenCode session to an Agent Relay workspace
+        location: plugins/opencode-relay-plugin/src/tools.ts
+        verify_tier: 5
+
+      - id: opencode-relay-send
+        name: OpenCode relay_send
+        description: Send a direct message from an OpenCode session
+        location: plugins/opencode-relay-plugin/src/tools.ts
+        verify_tier: 5
+
+      - id: opencode-relay-inbox
+        name: OpenCode relay_inbox
+        description: Check the Relay inbox from an OpenCode session
+        location: plugins/opencode-relay-plugin/src/tools.ts
+        verify_tier: 5
+
+      - id: opencode-relay-agents
+        name: OpenCode relay_agents
+        description: List Relay agents from an OpenCode session
+        location: plugins/opencode-relay-plugin/src/tools.ts
+        verify_tier: 5
+
+      - id: opencode-relay-post
+        name: OpenCode relay_post
+        description: Post a channel message from an OpenCode session
+        location: plugins/opencode-relay-plugin/src/tools.ts
+        verify_tier: 5
+
+      - id: opencode-relay-spawn
+        name: OpenCode relay_spawn
+        description: Spawn a Relay-connected OpenCode worker
+        location: plugins/opencode-relay-plugin/src/tools.ts
+        verify_tier: 6
+
+      - id: opencode-relay-dismiss
+        name: OpenCode relay_dismiss
+        description: Stop and release a spawned OpenCode worker
+        location: plugins/opencode-relay-plugin/src/tools.ts
+        verify_tier: 6
+
+      - id: opencode-relay-hooks
+        name: OpenCode Relay Lifecycle Hooks
+        description: Preserve Relay state across compaction, poll while idle, and clean up workers on session end
+        location: plugins/opencode-relay-plugin/src/hooks.ts
+        verify_tier: 6
+
+  codex-relay-skill:
+    name: Codex Relay Skill
+    description: Codex-native Relay coordination skill, MCP setup, hooks, and relay-worker template
+    criticality: hot
+    features:
+      - id: codex-relay-install
+        name: Install Codex Relay Skill
+        description: Install the project or user-scoped skill and idempotently configure Codex Relay MCP support
+        location: plugins/codex-relay-skill/scripts/setup.sh
+        verify_tier: 5
+
+      - id: codex-relay-worker
+        name: Codex relay-worker
+        description: Delegate a bounded task to the Relay-aware Codex worker template
+        location: plugins/codex-relay-skill/codex-config/relay-worker.toml
+        verify_tier: 6
+
+      - id: codex-relay-hooks
+        name: Codex Relay Hooks
+        description: Connect on session start, inject inbox state, and protect completion while messages remain unread
+        location: plugins/codex-relay-skill/hooks/
+        verify_tier: 6
+
+  gemini-relay-extension:
+    name: Gemini CLI Relay Extension
+    description: Gemini-native Relay MCP integration, subagents, hooks, and orchestration commands
+    criticality: hot
+    features:
+      - id: gemini-relay-install
+        name: Install Gemini Relay Extension
+        description: Install the Relay extension into Gemini CLI and connect a Relay workspace
+        location: plugins/gemini-relay-extension/gemini-extension.json
+        verify_tier: 6
+
+      - id: gemini-relay-status
+        name: Gemini /relay:status
+        description: Show Relay connection and team status from Gemini CLI
+        location: plugins/gemini-relay-extension/commands/status/
+        verify_tier: 6
+
+      - id: gemini-relay-team
+        name: Gemini /relay:team
+        description: Delegate a coordinated team task to Relay-aware Gemini workers
+        location: plugins/gemini-relay-extension/commands/team/
+        verify_tier: 6
+
+      - id: gemini-relay-fanout
+        name: Gemini /relay:fanout
+        description: Fan out independent work to Relay-aware Gemini workers
+        location: plugins/gemini-relay-extension/commands/fanout/
+        verify_tier: 6
+
+      - id: gemini-relay-workers
+        name: Gemini Relay Worker Roles
+        description: Run the relay-worker, relay-researcher, or relay-reviewer Gemini subagent roles
+        location: plugins/gemini-relay-extension/agents/
+        verify_tier: 6
+
+      - id: gemini-relay-hooks
+        name: Gemini Relay Lifecycle Hooks
+        description: Auto-connect, poll/inject inbox content, guard stop, and clean up session workers
+        location: plugins/gemini-relay-extension/hooks/
+        verify_tier: 6
+
+  setup:
+    name: Setup & Health
+    description: Initial setup, diagnostics, and CLI lifecycle
+    criticality: hot
+    features:
+      - id: cli-version
+        name: Show Version
+        cli: relay version
+        description: Show current CLI version
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 1
+
+      - id: cli-update
+        name: Update CLI
+        cli: relay update [--check]
+        description: Check for and install CLI updates
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 1
+
+      - id: cli-uninstall
+        name: Uninstall CLI
+        cli: relay uninstall [--keep-data] [--force] [--dry-run]
+        description: Remove Agent Relay runtime data, configuration, and global binaries
+        location: packages/cli/src/cli/commands/core.ts
+        verify_tier: 6
+
+  telemetry:
+    name: Telemetry
+    description: Usage analytics opt-in/out
+    criticality: standard
+    features:
+      - id: telemetry-enable
+        name: Enable Telemetry
+        cli: relay telemetry enable
+        description: Opt in to usage telemetry reporting
+        location: packages/cli/src/cli/commands/setup.ts, packages/cli/src/cli/telemetry/config.ts
+        verify_tier: 1
+
+      - id: telemetry-disable
+        name: Disable Telemetry
+        cli: relay telemetry disable
+        description: Opt out of usage telemetry reporting
+        location: packages/cli/src/cli/commands/setup.ts, packages/cli/src/cli/telemetry/config.ts
+        verify_tier: 1
+
+      - id: telemetry-status
+        name: Telemetry Status
+        cli: relay telemetry status
+        description: Show current telemetry opt-in/out status
+        location: packages/cli/src/cli/commands/setup.ts, packages/cli/src/cli/telemetry/config.ts
+        verify_tier: 1
+
+  node:
+    name: Node Management
+    description: Manage this machine as a relay node
+    criticality: standard
+    features:
+      - id: node-up
+        name: Node Up
+        cli: relay node up [--no-spawn] [--config <file>]
+        description: Start this node in the foreground, optionally serving a node-definition file
+        location: packages/cli/src/cli/commands/node.ts
+        verify_tier: 1
+
+      - id: node-workflow
+        name: Workflow Command Discovery
+        cli: relay node workflow --help
+        description: Display the available local workflow commands; run, logs, and sync are cataloged separately
+        location: packages/cli/src/cli/commands/node.ts
+        verify_tier: 1

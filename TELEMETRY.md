@@ -75,7 +75,7 @@ export DO_NOT_TRACK=1
 
 **Option 3: Configuration file**
 
-Create or edit `~/.agent-relay/telemetry.json`:
+Create or edit `~/.agentworkforce/relay/telemetry.json`:
 
 ```json
 {

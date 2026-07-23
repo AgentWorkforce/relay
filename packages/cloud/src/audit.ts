@@ -10,7 +10,7 @@ export interface PermissionAuditEntry {
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
-const DEFAULT_PERMISSION_AUDIT_RELATIVE_PATH = path.join('.agent-relay', 'permission-audit.json');
+const DEFAULT_PERMISSION_AUDIT_RELATIVE_PATH = path.join('.agentworkforce/relay', 'permission-audit.json');
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

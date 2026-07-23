@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "relaycast",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/AgentWorkforce/relaycast.git",
+      "state" : {
+        "revision" : "f7e86a3c525abcd2d6fe2f9ea151baedbbe9b744",
+        "version" : "6.0.5"
+      }
+    }
+  ],
+  "version" : 2
+}

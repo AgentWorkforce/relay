@@ -11,8 +11,6 @@ ui-dist/
 
 # Bundled binaries (downloaded/built at install time)
 bin/tmux
-bin/relay-pty
-bin/relay-pty-*
 bin/agent-relay-test
 
 # Rust build artifacts
@@ -70,6 +68,7 @@ bin/agent-relay-standalone
 
 # SDK bundled broker binary (built/downloaded at install time)
 packages/sdk/bin/agent-relay-broker*
+packages/harness-driver/bin/agent-relay-broker*
 packages/broker-sdk/
 
 # Python
@@ -79,12 +78,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-.agent-relay/
+.agentworkforce/relay/
 .relay/
+.agent-relay/
 
-.sst
-web/waitlist.json
-web/.open-next
 .msd/
 /workflows/*
 .workflow-artifacts/*
@@ -92,3 +89,11 @@ web/.open-next
 !/workflows/refactor/
 !/workflows/relayauth-integration/
 !/workflows/cloud-connect/
+!/workflows/verify-features.ts
+
+# Eval harness JSON reports (generated per run)
+tests/integration/broker/evals-reports/
+
+# Per-harness runtime config written during eval/agent runs — contains live
+# workspace keys and agent tokens; must never be committed.
+/opencode.json

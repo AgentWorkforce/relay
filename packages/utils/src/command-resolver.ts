@@ -7,6 +7,7 @@
 
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 
 /**
  * Resolve the full path of a command using 'which' and resolve any symlinks
@@ -48,14 +49,39 @@ export function resolveCommand(command: string): string {
 }
 
 /**
- * Resolve symlinks to get the actual file path
- * Uses fs.realpathSync which handles all symlink levels
+ * Resolve symlinks to get the actual file path, preserving shim behaviour.
+ *
+ * Provider CLIs installed via version managers (mise, asdf, rtx, direnv,
+ * pkgx, jenv/pyenv/rbenv/nodenv/tfenv/volta, ...) are exposed as symlinked
+ * shims that all point at the manager binary. Those shims dispatch to the
+ * real tool based on `argv[0]` (the shim's own basename). If we canonicalise
+ * the shim we collapse it to the manager binary (`/opt/homebrew/bin/mise`) —
+ * the child then sees `argv[0] = "mise"` and the manager parses
+ * provider-specific flags like `--dangerously-bypass-approvals-and-sandbox`
+ * as its own arguments, aborting the worker before it can start.
+ *
+ * Rule: if realpath would change the executable's basename, treat it as a
+ * shim and keep the caller-facing path so `argv[0]` stays intact. Otherwise
+ * return the canonicalised path (still helps with posix_spawnp on hosts with
+ * quirky PATH handling, which is why this helper exists in the first place).
  */
 function resolveSymlinks(filePath: string): string {
   try {
     const resolved = fs.realpathSync(filePath);
-    // Debug log only - symlink resolution is noisy
-    if (resolved !== filePath && process.env.DEBUG_SPAWN === '1') {
+    if (resolved === filePath) {
+      return filePath;
+    }
+    const originalName = path.basename(filePath);
+    const resolvedName = path.basename(resolved);
+    if (originalName !== resolvedName) {
+      if (process.env.DEBUG_SPAWN === '1') {
+        console.log(
+          `[command-resolver] Preserving shim ${filePath} (target ${resolved} has a different basename — likely a mise/asdf-style dispatcher)`
+        );
+      }
+      return absolutizeShimPath(filePath);
+    }
+    if (process.env.DEBUG_SPAWN === '1') {
       console.log(`[command-resolver] Resolved symlink: ${filePath} -> ${resolved}`);
     }
     return resolved;
@@ -65,6 +91,24 @@ function resolveSymlinks(filePath: string): string {
     if (process.env.DEBUG_SPAWN === '1') {
       console.warn(`[command-resolver] realpath failed for ${filePath}:`, err.message);
     }
+    return filePath;
+  }
+}
+
+/**
+ * Return an absolute path for `filePath` without following the final
+ * component's symlink, so `argv[0]` stays as the shim's basename when the
+ * child is spawned.
+ */
+function absolutizeShimPath(filePath: string): string {
+  if (path.isAbsolute(filePath)) {
+    return filePath;
+  }
+  try {
+    const parent = path.dirname(filePath);
+    const canonicalParent = fs.realpathSync(parent === '' ? '.' : parent);
+    return path.join(canonicalParent, path.basename(filePath));
+  } catch {
     return filePath;
   }
 }

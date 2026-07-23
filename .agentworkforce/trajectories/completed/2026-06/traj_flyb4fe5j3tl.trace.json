@@ -1,0 +1,206 @@
+{
+  "version": "1.0.0",
+  "id": "df203e8b-b360-4f1d-9fae-7041a67b63d3",
+  "timestamp": "2026-06-02T14:37:31.938Z",
+  "trajectory": "traj_flyb4fe5j3tl",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_flyb4fe5j3tl/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 19,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/auth/relayauth.module.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 150,
+              "end_line": 160,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/file/relayfile.module.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 146,
+              "end_line": 156,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/globals.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 27,
+              "end_line": 80,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/landing.module.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 223,
+              "end_line": 233,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/message/relaycast.module.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 144,
+              "end_line": 154,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/pear/page.tsx",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 475,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/pear/pear.module.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 680,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/primitives/primitives.module.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 262,
+              "end_line": 272,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/schedule/relaycron.module.css",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 145,
+              "end_line": 155,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/app/sitemap.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 14,
+              "end_line": 25,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/public/img/pear-app.png",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    }
+  ]
+}

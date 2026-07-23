@@ -245,7 +245,7 @@ jobs:
 
       - name: Build standalone binary
         # `AGENT_RELAY_POSTHOG_KEY` (the code-side name read by
-        # packages/telemetry/src/posthog-config.ts via process.env) is
+        # packages/cli/src/cli/telemetry/posthog-config.ts via process.env) is
         # populated from the `POSTHOG_PROJECT_KEY` repository *variable*
         # (Settings → Variables, NOT Secrets). The bun standalone is an
         # end-user-shipped artifact, so we bake the key in via --define
@@ -461,13 +461,13 @@ jobs:
   # mocking. Each matrix leg:
   #   1. Stages the platform's broker binary into its package tree and
   #      injects os/cpu so the package validates like the published one.
-  #   2. `npm pack`s the SDK (with packages/sdk/bin emptied so the SDK
-  #      tarball cannot fall back to a bundled binary).
+  #   2. `npm pack`s the harness driver and SDK (with packages/sdk/bin emptied
+  #      so the SDK tarball cannot fall back to a bundled binary).
   #   3. `npm pack`s the matching broker package.
-  #   4. Installs both tarballs into a scratch project.
+  #   4. Installs the tarballs into a scratch project.
   #   5. Asserts getBrokerBinaryPath() resolves through the optional-dep
   #      package and returns an executable file.
-  #   6. Runs AgentRelayClient.spawn() end-to-end and shuts it down.
+  #   6. Runs HarnessDriverClient.spawn() end-to-end and shuts it down.
   # Gates publish-broker-packages — we do not ship if any platform fails.
   smoke-broker-packages:
     name: Smoke ${{ matrix.platform }}
@@ -560,7 +560,7 @@ jobs:
             fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      - name: Pack SDK, broker, and internal deps
+      - name: Pack harness driver, SDK, and broker
         shell: bash
         run: |
           set -euo pipefail
@@ -572,16 +572,9 @@ jobs:
           # resolution path instead of the legacy bundled fallback.
           rm -rf packages/sdk/bin
           mkdir -p packages/sdk/bin
+          (cd packages/harness-driver && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/sdk && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd "packages/${{ matrix.broker_pkg }}" && npm pack --ignore-scripts --pack-destination "$TARBALLS")
-          # The build job bumped every workspace to NEW_VERSION. The SDK pins
-          # several internal @agent-relay/* packages at that exact version,
-          # none of which are on the registry yet at this point in the
-          # workflow — so pack them locally and install them alongside the
-          # SDK. Keep this list in sync with packages/sdk/package.json's
-          # `dependencies` whenever a new internal dep is added.
-          (cd packages/cloud && npm pack --ignore-scripts --pack-destination "$TARBALLS")
-          (cd packages/config && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           ls -lh "$TARBALLS"
 
       - name: Install tarballs into scratch project
@@ -593,13 +586,12 @@ jobs:
           echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
           cd "$SCRATCH"
           npm init -y --silent >/dev/null
+          HARNESS_DRIVER_TGZ=$(ls "$TARBALLS"/agent-relay-harness-driver-*.tgz | head -n1)
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
           BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
-          CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
-          CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CLOUD_TGZ + $CONFIG_TGZ"
+          echo "Installing $HARNESS_DRIVER_TGZ + $SDK_TGZ + $BROKER_TGZ"
           npm install --ignore-scripts --no-audit --no-fund \
-            "$SDK_TGZ" "$BROKER_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ"
+            "$HARNESS_DRIVER_TGZ" "$SDK_TGZ" "$BROKER_TGZ"
           ls node_modules/@agent-relay/
 
       - name: Resolver smoke — getBrokerBinaryPath()
@@ -607,7 +599,7 @@ jobs:
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             const expectedPkg = getOptionalDepPackageName();
             const p = getBrokerBinaryPath();
@@ -622,19 +614,19 @@ jobs:
             console.log('OK: resolver returned executable binary from optional-dep package');
           "
 
-      - name: Spawn smoke — AgentRelayClient.spawn()
+      - name: Spawn smoke — HarnessDriverClient.spawn()
         shell: bash
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            import { AgentRelayClient } from '@agent-relay/sdk';
-            const client = await AgentRelayClient.spawn({
+            import { HarnessDriverClient } from '@agent-relay/harness-driver';
+            const client = await HarnessDriverClient.spawn({
               cwd: process.cwd(),
               channels: ['general'],
               startupTimeoutMs: 45000,
               onStderr: (line) => console.error('[broker]', line),
             });
-            console.log('OK: AgentRelayClient.spawn() returned');
+            console.log('OK: HarnessDriverClient.spawn() returned');
             await client.shutdown();
             console.log('OK: client.shutdown() completed');
           " || { echo 'SPAWN_FAILED'; exit 1; }
@@ -648,19 +640,17 @@ jobs:
           mkdir -p "$NEGATIVE"
           cd "$NEGATIVE"
           npm init -y --silent >/dev/null
+          HARNESS_DRIVER_TGZ=$(ls "$TARBALLS"/agent-relay-harness-driver-*.tgz | head -n1)
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
-          CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
-          CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          # Install SDK + every internal required dep whose bumped version
-          # isn't on the registry yet, but skip the broker optional deps
-          # entirely. The resolver should return null and spawn() should
-          # throw the clear error.
+          # Install harness driver and SDK, but skip the broker optional deps
+          # entirely. The resolver should return null and spawn() should throw
+          # the clear error.
           npm install --ignore-scripts --no-audit --no-fund --no-optional \
-            "$SDK_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ"
+            "$HARNESS_DRIVER_TGZ" "$SDK_TGZ"
           node --input-type=module -e "
-            import { AgentRelayClient } from '@agent-relay/sdk';
+            import { HarnessDriverClient } from '@agent-relay/harness-driver';
             try {
-              await AgentRelayClient.spawn({ cwd: process.cwd() });
+              await HarnessDriverClient.spawn({ cwd: process.cwd() });
               console.error('FAIL: spawn() should have thrown');
               process.exit(1);
             } catch (err) {
@@ -700,7 +690,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -778,7 +768,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -908,8 +898,9 @@ jobs:
           - utils
           - cloud
           - sdk
-          - telemetry
           - brand
+          - harness-driver
+          - integration-prompts
 
     steps:
       - name: Checkout code
@@ -918,7 +909,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -973,6 +964,112 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+  # Publish @agent-relay/harnesses and @agent-relay/evals after the
+  # publish-packages matrix, which is where their exact-version workspace deps
+  # (@agent-relay/sdk and @agent-relay/harness-driver) land on the registry.
+  # Publishing these before those exist would leave a window where
+  # `npm install @agent-relay/harnesses@<v>` or `@agent-relay/evals@<v>`
+  # cannot resolve their dependencies — the same install race the broker/sdk
+  # ordering above is built to avoid.
+  publish-harnesses:
+    name: Publish ${{ matrix.package }}
+    needs: [build, publish-packages]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        package:
+          - harnesses
+          - evals
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # Publish @agent-relay/fleet after @agent-relay/harnesses lands on the
+  # registry. fleet pins @agent-relay/{harnesses,harness-driver,sdk} by exact
+  # version, so publishing it before harnesses exists would leave a window where
+  # `npm install @agent-relay/fleet@<v>` cannot resolve its dependencies — the
+  # same install race the broker/sdk/harnesses ordering above is built to avoid.
+  # The root CLI depends on @agent-relay/fleet, so this must finish before
+  # publish-main (wired via publish-main's needs).
+  publish-fleet:
+    name: Publish fleet
+    needs: [build, publish-harnesses]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/fleet
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/fleet
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
   # package=main publishes only the root `agent-relay` tarball, but that
   # tarball pins several @agent-relay/* runtime dependencies to the freshly
   # bumped version. Publish those direct deps first so a main-only release
@@ -990,8 +1087,8 @@ jobs:
           - cloud
           - config
           - sdk
-          - telemetry
           - utils
+          - harness-driver
 
     steps:
       - name: Checkout code
@@ -1000,7 +1097,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -1059,7 +1156,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -1097,7 +1194,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -1314,7 +1411,7 @@ jobs:
   verify-standalone-macos:
     name: Verify Standalone (macOS)
     needs: [build-standalone, build-broker]
-    runs-on: macos-latest
+    runs-on: macos-15
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
       fail-fast: false
@@ -1394,7 +1491,7 @@ jobs:
   # Publish main package
   publish-main:
     name: Publish Main Package
-    needs: [build, verify-binaries, publish-packages, publish-main-runtime-deps]
+    needs: [build, verify-binaries, publish-packages, publish-fleet, publish-main-runtime-deps]
     runs-on: ubuntu-latest
     outputs:
       published: ${{ steps.publish_root.outputs.published }}
@@ -1404,6 +1501,7 @@ jobs:
       needs.build.result == 'success' &&
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
       (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped') &&
+      (needs.publish-fleet.result == 'success' || needs.publish-fleet.result == 'skipped') &&
       (needs.publish-main-runtime-deps.result == 'success' || needs.publish-main-runtime-deps.result == 'skipped')
 
     steps:
@@ -1413,7 +1511,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
@@ -1430,14 +1528,14 @@ jobs:
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
-      - name: Wait for root internal dependencies
+      - name: Wait for CLI internal dependencies
         if: github.event.inputs.dry_run != 'true'
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t INTERNAL_DEPS < <(node --input-type=module -e "
             import fs from 'node:fs';
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const pkg = JSON.parse(fs.readFileSync('packages/cli/package.json', 'utf8'));
             const deps = Object.entries(pkg.dependencies ?? {})
               .filter(([name]) => name.startsWith('@agent-relay/'))
               .map(([name, version]) => name + '@' + version);
@@ -1445,7 +1543,7 @@ jobs:
           ")
 
           if [ "${#INTERNAL_DEPS[@]}" -eq 0 ]; then
-            echo "No @agent-relay/* root dependencies to verify."
+            echo "No @agent-relay/* CLI dependencies to verify."
             exit 0
           fi
 
@@ -1460,7 +1558,7 @@ jobs:
             done
 
             if [ "${#missing[@]}" -eq 0 ]; then
-              echo "All root @agent-relay/* dependencies are available on npm."
+              echo "All CLI @agent-relay/* dependencies are available on npm."
               exit 0
             fi
 
@@ -1468,7 +1566,7 @@ jobs:
             sleep 10
           done
 
-          echo "Timed out waiting for root @agent-relay/* dependencies:"
+          echo "Timed out waiting for CLI @agent-relay/* dependencies:"
           printf '  - %s\n' "${missing[@]}"
           exit 1
 
@@ -1513,9 +1611,6 @@ jobs:
           echo "Packed tarball: ${TARBALLS[0]}"
           ls -lh "${TARBALLS[0]}"
 
-      - name: Validate npm tarball
-        run: node packages/cli/scripts/validate-npm-tarball.mjs "$NPM_TARBALL"
-
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         run: |
@@ -1539,13 +1634,18 @@ jobs:
   # Create git tag and release
   create-release:
     name: Create Release
-    needs: [build, build-broker, build-standalone, verify-binaries, publish-main]
+    needs: [build, build-broker, build-standalone, verify-binaries, publish-main, publish-harnesses]
     runs-on: ubuntu-latest
+    # publish-harnesses only runs for package=all; for a package=main release it
+    # is skipped, which must not block the tag. Gate on "not failed" rather than
+    # "succeeded" so a real harness publish failure stops the release but a
+    # skipped one does not.
     if: |
       always() &&
       github.event.inputs.package != 'cli-prerelease' &&
       github.event.inputs.dry_run != 'true' &&
       needs.publish-main.result == 'success' &&
+      (needs.publish-harnesses.result == 'success' || needs.publish-harnesses.result == 'skipped') &&
       needs.publish-main.outputs.published == 'true'
 
     steps:
@@ -1726,27 +1826,20 @@ jobs:
             return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
           }
 
-          function isWebOnlyCommit(files) {
-            const webOrLockfile = file =>
-              file === 'web' || file.startsWith('web/') || file === 'package-lock.json';
-            return files.length > 0 && files.some(file => file === 'web' || file.startsWith('web/')) && files.every(webOrLockfile);
-          }
-
-          function isWebRelatedTitle(text) {
-            return (
-              text.includes('@posthog/next') ||
-              text.includes('opennext') ||
-              text.includes('sst') ||
-              /\bnext\b/.test(text)
-            );
-          }
-
           function shouldSkip({ type, scope, title }, files) {
             const text = title.toLowerCase();
             if (type === 'chore' && (scope === 'release' || scope === 'prerelease')) return true;
-            if (scope === 'web' || isWebOnlyCommit(files)) return true;
-            if (isWebRelatedTitle(text)) return true;
             if (scope === 'trajectories' || scope === 'comments') return true;
+            // relay-feature-guardian is an internal Slack feature-check agent, not a
+            // user-facing Relay surface — keep its changes out of the release changelog.
+            if (scope === 'feature-guardian' || scope === 'relay-feature-guardian') return true;
+            if (text.includes('relay-feature-guardian')) return true;
+            if (
+              files.length > 0 &&
+              files.every(file => file.startsWith('.agentworkforce/agents/relay-feature-guardian/'))
+            ) {
+              return true;
+            }
             if (text.includes('compact trajectories')) return true;
             if (text.includes('record ') && text.includes('trajectory')) return true;
             if (text.includes('address pr review')) return true;
@@ -1791,34 +1884,52 @@ jobs:
             if (!entries.includes(parsed.title)) entries.push(parsed.title);
           }
 
-          if ([...sections.values()].every(entries => entries.length === 0)) {
-            console.log('No changelog-worthy commits since last tag, skipping changelog');
-            process.exit(0);
-          }
-
-          const lines = [];
-          lines.push(`## [${newVersion}] - ${today}`);
-          lines.push('');
-
-          for (const [section, entries] of sections) {
-            if (entries.length === 0) continue;
-            lines.push(`### ${section}`);
-            lines.push('');
-            for (const entry of entries) lines.push(`- ${entry}`);
-            lines.push('');
-          }
-
-          const newEntry = lines.join('\n').trimEnd() + '\n\n';
           const changelog = readFileSync('CHANGELOG.md', 'utf-8');
 
-          // Insert after the [Unreleased] block, before the first versioned entry
-          // Use \d to match versioned headings (e.g. ## [2.1.5]) and skip ## [Unreleased]
-          const match = changelog.match(/\n## \[\d/);
-          const insertAt = match ? match.index : -1;
-          if (insertAt === -1) {
-            writeFileSync('CHANGELOG.md', changelog.trimEnd() + '\n\n' + newEntry);
+          // Curated [Unreleased] entries are authoritative (AGENTS.md "Changelog"):
+          // move them under the new version and restore a bare, empty [Unreleased]
+          // heading. Commit subjects are only the fallback for an empty block.
+          const unreleased = changelog.match(
+            /^## \[Unreleased(?: - (?:Patch|Minor|Major))?\][ \t]*\n([\s\S]*?)(?=^## \[|(?![\s\S]))/m
+          );
+          const curated = unreleased ? unreleased[1].trim() : '';
+
+          let body = curated;
+          if (!body) {
+            if ([...sections.values()].every(entries => entries.length === 0)) {
+              console.log('No curated entries and no changelog-worthy commits since last tag, skipping changelog');
+              process.exit(0);
+            }
+            const lines = [];
+            for (const [section, entries] of sections) {
+              if (entries.length === 0) continue;
+              lines.push(`### ${section}`);
+              lines.push('');
+              for (const entry of entries) lines.push(`- ${entry}`);
+              lines.push('');
+            }
+            body = lines.join('\n').trimEnd();
+          }
+
+          const newEntry = `## [${newVersion}] - ${today}\n\n${body}\n\n`;
+
+          if (unreleased) {
+            const start = unreleased.index;
+            const end = start + unreleased[0].length;
+            writeFileSync(
+              'CHANGELOG.md',
+              changelog.slice(0, start) + '## [Unreleased]\n\n' + newEntry + changelog.slice(end)
+            );
           } else {
-            writeFileSync('CHANGELOG.md', changelog.slice(0, insertAt + 1) + newEntry + changelog.slice(insertAt + 1));
+            // No [Unreleased] heading: insert before the first versioned entry
+            // Use \d to match versioned headings (e.g. ## [2.1.5])
+            const match = changelog.match(/\n## \[\d/);
+            const insertAt = match ? match.index : -1;
+            if (insertAt === -1) {
+              writeFileSync('CHANGELOG.md', changelog.trimEnd() + '\n\n' + newEntry);
+            } else {
+              writeFileSync('CHANGELOG.md', changelog.slice(0, insertAt + 1) + newEntry + changelog.slice(insertAt + 1));
+            }
           }
 
           console.log(`Changelog updated for v${newVersion}`);
@@ -1990,23 +2101,20 @@ jobs:
     with:
       version: ${{ needs.build.outputs.new_version }}
 
-  # Post-publish cross-platform verification of @agent-relay/sdk and its
-  # per-platform broker optional deps. Installs from the registry on every
-  # target (macOS arm64/x64, Linux x64/arm64, Windows x64) and runs spawn
+  # Post-publish cross-platform verification of @agent-relay/harness-driver and
+  # its per-platform broker optional deps. Installs from the registry on every
+  # target (macOS arm64, Linux x64/arm64, Windows x64) and runs spawn
   # end-to-end. Catches registry-round-trip failures that smoke-broker-packages
   # can't see (missing/wrong os/cpu on published manifests, CDN propagation).
   verify-publish-sdk:
-    name: Verify Published SDK (Cross-Platform)
-    # publish-packages and publish-sdk-only are mutually exclusive: the first
-    # runs on package='all', the second on package='sdk'. Depend on both and
-    # accept a success from either so this gate fires for both release flows.
+    name: Verify Published Harness Driver (Cross-Platform)
     needs: [build, publish-broker-packages, publish-packages, publish-sdk-only]
     if: |
       always() &&
       github.event.inputs.dry_run != 'true' &&
-      (github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk') &&
+      github.event.inputs.package == 'all' &&
       needs.publish-broker-packages.result == 'success' &&
-      (needs.publish-packages.result == 'success' || needs.publish-sdk-only.result == 'success')
+      needs.publish-packages.result == 'success'
     uses: ./.github/workflows/verify-publish-sdk.yml
     with:
       version: ${{ needs.build.outputs.new_version }}
@@ -2025,6 +2133,7 @@ jobs:
         publish-sdk-internal-deps,
         publish-broker-packages,
         publish-packages,
+        publish-harnesses,
         publish-brand-only,
         publish-sdk-py,
         publish-main,
@@ -2067,6 +2176,7 @@ jobs:
           echo "| Publish SDK Internal Deps | ${{ needs.publish-sdk-internal-deps.result == 'success' && '✅' || (needs.publish-sdk-internal-deps.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-internal-deps.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Harnesses | ${{ needs.publish-harnesses.result == 'success' && '✅' || (needs.publish-harnesses.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-harnesses.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY

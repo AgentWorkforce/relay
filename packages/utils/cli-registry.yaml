@@ -1,6 +1,6 @@
 # CLI Registry
 # Single source of truth for CLI tools, versions, and models.
-# Used by: TS SDK, Python SDK, relay-cloud, relay-dashboard
+# Used by: TS SDK, Python SDK, relay-cloud
 #
 # To update: Edit this file, then run `npm run codegen:models`
 
@@ -564,6 +564,20 @@ clis:
       openai_o4_mini_deep_research:
         id: 'openai/o4-mini-deep-research'
         label: 'O4 Mini Deep Research'
+
+  grok:
+    name: 'Grok'
+    package: 'grok'
+    version: '0.1.0'
+    install: 'Install from x.ai (Grok CLI)'
+    models:
+      grok_build:
+        id: 'grok-build'
+        label: 'Grok Build'
+        default: true
+      grok_composer_2_5_fast:
+        id: 'grok-composer-2.5-fast'
+        label: 'Grok Composer 2.5 Fast'
 
   aider:
     name: 'Aider'

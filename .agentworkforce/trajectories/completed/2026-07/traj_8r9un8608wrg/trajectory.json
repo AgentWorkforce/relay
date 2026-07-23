@@ -1,0 +1,57 @@
+{
+  "id": "traj_8r9un8608wrg",
+  "version": 1,
+  "task": {
+    "title": "Fix #1247 B2",
+    "source": {
+      "system": "plain",
+      "id": "1247"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-07-12T21:18:18.032Z",
+  "completedAt": "2026-07-12T22:24:12.640Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Fixed all issue #1247 harness/PTY attach defects in 5 workstreams: stream-offset snapshot sync + subscribe-first attach, non-blocking PTY writes + ack-after-write + interactive hold, drive session robustness (signals/UTF-8/teardown/status line), snapshot terminal modes, transport reconnect guards + misc",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": ["f9da582", "1c08f61", "e2792f3", "4ff6854", "2b0ae52"],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_8r9un8608wrg/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/listen_api.rs",
+    "crates/broker/src/protocol.rs",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/headless.rs",
+    "crates/broker/src/runtime/worker_events.rs",
+    "crates/broker/src/worker_request.rs",
+    "crates/broker/src/wrap.rs",
+    "crates/relay-pty/src/snapshot.rs",
+    "packages/cli/src/cli/lib/attach-drive.test.ts",
+    "packages/cli/src/cli/lib/attach-drive.ts",
+    "packages/cli/src/cli/lib/attach-passthrough.test.ts",
+    "packages/cli/src/cli/lib/attach-passthrough.ts",
+    "packages/cli/src/cli/lib/attach-view.test.ts",
+    "packages/cli/src/cli/lib/attach-view.ts",
+    "packages/cli/src/cli/lib/attach.test.ts",
+    "packages/cli/src/cli/lib/attach.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/predictive-echo.ts",
+    "packages/harness-driver/src/protocol.ts",
+    "packages/harness-driver/src/pty-input-stream.test.ts",
+    "packages/harness-driver/src/subscribe-worker-stream.test.ts",
+    "packages/harness-driver/src/transport.test.ts",
+    "packages/harness-driver/src/transport.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4a77520ac143de68e49dca6700f437a5624b3076",
+    "endRef": "f9da58263cde1f6123f28b9ab0cb2eccbf586035",
+    "traceId": "443a7e4e-0168-4ffd-8485-e5bda87cef82"
+  }
+}

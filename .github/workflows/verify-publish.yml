@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['18', '20', '22']
+        node: ['22.14.0', '24']
 
     steps:
       - name: Checkout (for scripts)
@@ -163,8 +163,8 @@ jobs:
 
       # Test: broker binary resolution after installing agent-relay.
       # The broker is delivered as a platform-specific optional-dep of
-      # @agent-relay/sdk (itself a regular dep of agent-relay), so npm
-      # hoists both to node_modules/@agent-relay/ at install time.
+      # @agent-relay/harness-driver (itself a regular dep of agent-relay), so
+      # npm hoists both to node_modules/@agent-relay/ at install time.
       - name: 'Test: broker binary resolves after npm install agent-relay'
         run: |
           rm -rf ~/.npm/_npx 2>/dev/null || true
@@ -174,7 +174,7 @@ jobs:
           npm init -y --silent >/dev/null
           npm install --no-audit --no-fund "${{ steps.pkg.outputs.spec }}"
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             const expected = getOptionalDepPackageName();
             const p = getBrokerBinaryPath();
@@ -221,15 +221,15 @@ jobs:
             exit 1
           fi
 
-      # Test 4: Broker binary resolution via SDK resolver.
+      # Test 4: Broker binary resolution via harness driver resolver.
       # The broker ships as a platform-specific optional-dep package
       # (@agent-relay/broker-<platform>-<arch>); getBrokerBinaryPath()
-      # is the canonical way clients find it.
+      # is the canonical way harness owners find it.
       - name: 'Test: broker binary resolves and runs'
         run: |
           cd /tmp/test-project
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();
@@ -267,7 +267,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
 
       - name: Get package spec
         id: pkg
@@ -309,14 +309,14 @@ jobs:
           fi
 
       # Broker resolution on macOS arm64. Under the optional-dep model the
-      # SDK's resolver finds the binary at
+      # harness driver's resolver finds the binary at
       # node_modules/@agent-relay/broker-darwin-arm64/bin/agent-relay-broker;
       # running it also exercises macOS code signing end-to-end.
       - name: 'Test: broker binary resolves and runs (macOS arm64)'
         run: |
           cd /tmp/test-project
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();
@@ -362,7 +362,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['18', '20', '22']
+        node: ['22', '24']
 
     steps:
       - name: Checkout
@@ -371,7 +371,7 @@ jobs:
       - name: Setup Node.js (for npm view)
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
 
       - name: Wait for package metadata
         if: inputs.version != 'latest'
@@ -410,9 +410,7 @@ jobs:
           echo "### Native Tests" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 18 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 20 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 22 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Node 22 and 24 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### macOS Tests (broker binary)" >> $GITHUB_STEP_SUMMARY
           echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
@@ -422,9 +420,7 @@ jobs:
           echo "### Docker Tests (Linux)" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 18 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 20 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 22 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Node 22 and 24 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Overall" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.verify.result }}" = "success" ] && [ "${{ needs.verify-macos-arm64.result }}" = "success" ] && [ "${{ needs.verify-docker.result }}" = "success" ]; then

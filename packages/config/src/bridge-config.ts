@@ -22,7 +22,7 @@ export interface ProjectConfig {
 }
 
 const CONFIG_PATHS = [
-  path.join(os.homedir(), '.agent-relay', 'bridge.json'),
+  path.join(os.homedir(), '.agentworkforce/relay', 'bridge.json'),
   path.join(os.homedir(), '.config', 'agent-relay', 'bridge.json'),
 ];
 

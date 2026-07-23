@@ -30,9 +30,9 @@ function skipIfMissing(t: TestContext): boolean {
   return false;
 }
 
-/** Resolve the .agent-relay/continuity directory relative to cwd. */
+/** Resolve the .agentworkforce/relay/continuity directory relative to cwd. */
 function continuityDir(cwd: string): string {
-  return path.resolve(cwd, '.agent-relay', 'continuity');
+  return path.resolve(cwd, '.agentworkforce/relay', 'continuity');
 }
 
 /** Read a continuity JSON file for a given agent name. */

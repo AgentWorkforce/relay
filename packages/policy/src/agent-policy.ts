@@ -20,7 +20,7 @@ import os from 'node:os';
  *
  * Policy files are loaded from (in order of precedence):
  * 1. User-level: ~/.config/agent-relay/policies/*.yaml (NOT in source control)
- * 2. Cloud: Workspace config from dashboard (stored in database)
+ * 2. Cloud: Workspace config from the cloud web app (stored in database)
  *
  * PRPM packages install to the user-level location to avoid polluting repos.
  * Install via: prpm install @org/strict-agent-rules --global

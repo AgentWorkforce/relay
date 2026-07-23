@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/index.ts",
+    "src/agent-relay.ts",
+    "src/capabilities.ts",
+    "src/facade.ts",
+    "src/relaycast-errors.ts",
+    "src/messaging/**/*.ts",
+    "src/delivery/**/*.ts",
+    "src/actions/**/*.ts",
+    "src/session/**/*.ts",
+    "src/__tests__/**/*.test-d.ts"
+  ],
+  "exclude": []
+}

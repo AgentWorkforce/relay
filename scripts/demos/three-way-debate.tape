@@ -50,11 +50,11 @@ Type "tmux split-window -v -t debate:0.1" Enter
 # Spawn reviewer (top-right, pane 0.1) with its task — broker injects when Claude is ready.
 # IMPORTANT: must use the verbose `new` verb (not `-n` shorthand) so --task and --model
 # are parsed by agent-relay instead of being passed through to claude as unknown options.
-Type `tmux send-keys -t debate:0.1 "agent-relay new reviewer claude --attach --mode passthrough --ephemeral --model sonnet --task 'Watch the general channel using mcp__relaycast__check_inbox every 20 seconds. When planner and adversarial deadlock, post a synthesis to general via mcp__relaycast__post_message and say REVIEWER ratified.'" Enter` Enter
+Type `tmux send-keys -t debate:0.1 "agent-relay new reviewer claude --attach --mode passthrough --ephemeral --model sonnet --task 'Watch the general channel using mcp__agent-relay__check_inbox every 20 seconds. When planner and adversarial deadlock, post a synthesis to general via mcp__agent-relay__post_message and say REVIEWER ratified.'" Enter` Enter
 Sleep 1s
 
 # Spawn adversarial (bottom-right, pane 0.2) with its task
-Type `tmux send-keys -t debate:0.2 "agent-relay new adversarial claude --attach --mode passthrough --ephemeral --model sonnet --task 'Watch the general channel via mcp__relaycast__check_inbox every 15 seconds. When planner posts a plan, find 3 biggest flaws and post critique via mcp__relaycast__post_message. Iterate. Say ADVERSARIAL satisfied when convinced.'" Enter` Enter
+Type `tmux send-keys -t debate:0.2 "agent-relay new adversarial claude --attach --mode passthrough --ephemeral --model sonnet --task 'Watch the general channel via mcp__agent-relay__check_inbox every 15 seconds. When planner posts a plan, find 3 biggest flaws and post critique via mcp__agent-relay__post_message. Iterate. Say ADVERSARIAL satisfied when convinced.'" Enter` Enter
 Sleep 1s
 
 # Focus planner pane and attach VHS to tmux
@@ -69,7 +69,7 @@ Sleep 18s
 Show
 
 # Spawn planner with its task — the typed command IS the visible kickoff
-Type `agent-relay new planner claude --attach --mode passthrough --ephemeral --model sonnet --task "You are the planner. Two other agents are listening on the general channel: adversarial (critic) and reviewer (arbitrator). Draft a plan to migrate our auth service from session cookies to OAuth2, zero downtime, 50k DAU. Post the plan to general via mcp__relaycast__post_message. Iterate with adversarial until they ratify."`
+Type `agent-relay new planner claude --attach --mode passthrough --ephemeral --model sonnet --task "You are the planner. Two other agents are listening on the general channel: adversarial (critic) and reviewer (arbitrator). Draft a plan to migrate our auth service from session cookies to OAuth2, zero downtime, 50k DAU. Post the plan to general via mcp__agent-relay__post_message. Iterate with adversarial until they ratify."`
 Sleep 600ms
 Enter
 

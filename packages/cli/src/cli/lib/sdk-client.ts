@@ -1,39 +1,77 @@
-import { AgentRelayClient, AgentRelayProtocolError } from '@agent-relay/sdk';
+import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import {
+  resolveWorkspaceKeyWithSource as resolveCloudWorkspaceKeyWithSource,
+  type WorkspaceKeySource,
+} from '@agent-relay/cloud/workspace-key';
 
-import type { BrokerConnection } from './broker-connection.js';
+/** Options shared by the SDK-backed (Relaycast) CLI command groups. */
+export interface SdkClientOptions {
+  workspaceKey?: string;
+  token?: string;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}
 
-export function createBrokerClient(
-  connection: BrokerConnection,
-  fetchFn?: typeof globalThis.fetch
-): AgentRelayClient {
-  return new AgentRelayClient({
-    baseUrl: connection.url,
-    apiKey: connection.apiKey,
-    fetch: fetchFn,
+function env(options: SdkClientOptions): NodeJS.ProcessEnv {
+  return options.env ?? process.env;
+}
+
+function trimOrUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/** Where a resolved workspace key came from, in precedence order. */
+export type { WorkspaceKeySource };
+
+/**
+ * Resolve the workspace key and report which source it came from. Precedence:
+ * explicit flag → `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` env → the key the local
+ * broker in this CWD was started with (`relay up`) → the machine-global active
+ * workspace. Callers use the source to warn when the key was inferred from the
+ * project broker rather than named explicitly.
+ */
+export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
+  key: string;
+  source: WorkspaceKeySource;
+} {
+  const resolved = resolveCloudWorkspaceKeyWithSource({
+    workspaceKey: options.workspaceKey,
+    env: env(options),
   });
+  if (resolved) return resolved;
+  throw new Error(
+    'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
+  );
 }
 
-export interface BrokerSdkFailure {
-  status: number;
-  message: string;
+export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
+  return resolveWorkspaceKeyWithSource(options).key;
 }
 
-export function mapBrokerSdkFailure(error: unknown): BrokerSdkFailure {
-  if (error instanceof AgentRelayProtocolError) {
-    return {
-      status: error.status ?? parseHttpStatus(error.code) ?? 0,
-      message: error.message,
-    };
-  }
-  return {
-    status: 0,
-    message: error instanceof Error ? error.message : String(error),
-  };
+export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {
+  return trimOrUndefined(options.baseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
 }
 
-function parseHttpStatus(code: string): number | undefined {
-  const match = /^http_(\d{3})$/.exec(code);
-  if (!match) return undefined;
-  const status = Number(match[1]);
-  return Number.isInteger(status) ? status : undefined;
+export function resolveAgentToken(options: SdkClientOptions = {}): string | undefined {
+  return trimOrUndefined(options.token) ?? trimOrUndefined(env(options).RELAY_AGENT_TOKEN);
+}
+
+/** Workspace-scoped client (no agent token). */
+export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay {
+  return new AgentRelay({ workspaceKey: resolveWorkspaceKey(options), baseUrl: resolveBaseUrl(options) });
+}
+
+/**
+ * Agent-scoped client. When an agent token is available (flag or
+ * `RELAY_AGENT_TOKEN`), operations are attributed to that agent; otherwise the
+ * workspace-scoped client is returned.
+ */
+export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgent {
+  const token = resolveAgentToken(options);
+  return new AgentRelay({
+    workspaceKey: resolveWorkspaceKey(options),
+    baseUrl: resolveBaseUrl(options),
+    ...(token ? { agentToken: token } : {}),
+  });
 }

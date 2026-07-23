@@ -1,0 +1,47 @@
+{
+  "name": "@agent-relay/harnesses",
+  "version": "11.0.2",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "description": "Pre-built harness definitions for Agent Relay.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agent-relay/harness-driver": "11.0.2",
+    "@agent-relay/sdk": "11.0.2",
+    "@ai-sdk/harness": "1.0.34",
+    "@ai-sdk/harness-claude-code": "1.0.35",
+    "@ai-sdk/harness-codex": "1.0.40",
+    "@ai-sdk/harness-deepagents": "1.0.33",
+    "@ai-sdk/harness-opencode": "1.0.35",
+    "@ai-sdk/harness-pi": "1.0.34"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/harnesses"
+  },
+  "license": "Apache-2.0"
+}

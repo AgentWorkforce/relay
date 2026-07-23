@@ -7,12 +7,23 @@ impl BrokerRuntime {
         let sdk_out_tx = &self.sdk_out_tx;
         let ws_control_tx = &self.ws_control_tx;
         let relaycast_http = &self.relaycast_http;
+        let hosted_agent_event_tx = &self.hosted_agent_event_tx;
+        let pty_observability = &mut self.pty_observability;
         let workers = &mut self.workers;
+        let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_inventory = &mut self.fleet_inventory;
+        let fleet_delivery_book = &mut self.fleet_delivery_book;
+        let fleet_max_agents = self.fleet_max_agents;
+        // The broker provider's capacity handlers are live whenever it is
+        // connected, so node heartbeats always report handlers_live.
+        let fleet_handlers_live = true;
         let telemetry = &self.telemetry;
         let crash_insights = &mut self.crash_insights;
         let pending_deliveries = &mut self.pending_deliveries;
+        let dead_letters = &mut self.dead_letters;
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
+        let resize_owners = &mut self.resize_owners;
         let agent_result_tokens = &mut self.agent_result_tokens;
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
@@ -59,9 +70,14 @@ impl BrokerRuntime {
             .await
             {
                 Ok(outcome) => {
-                    let _ =
-                        emit_delivery_attempt_outcome(sdk_out_tx, &delivery_id, was_retry, outcome)
-                            .await;
+                    let _ = emit_delivery_attempt_outcome(
+                        sdk_out_tx,
+                        dead_letters,
+                        &delivery_id,
+                        was_retry,
+                        outcome,
+                    )
+                    .await;
                 }
                 Err(error) => {
                     let _ = send_error(
@@ -84,8 +100,24 @@ impl BrokerRuntime {
                 vec![]
             }
         };
+        let mut fleet_load_changed = !exited.is_empty();
         for (name, code, signal, exit_reason) in &exited {
             let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
+            if (code.is_some_and(|code| code != 0) || signal.is_some())
+                && state
+                    .agents
+                    .get(name)
+                    .is_some_and(|agent| agent.runtime == AgentRuntime::Pty)
+            {
+                publish_pty_error(
+                    pty_observability,
+                    hosted_agent_event_tx,
+                    name,
+                    lifecycle_reason,
+                    code.map(|code| code.to_string()).or_else(|| signal.clone()),
+                );
+            }
+            pty_observability.remove(name);
             // Record crash in insights
             let (category, description) =
                 crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
@@ -142,6 +174,10 @@ impl BrokerRuntime {
                         Some("restarting"),
                     )
                     .await;
+                    // The restart opens a fresh PTY, so any prior resize owner
+                    // is stale — clear it so the reattaching client can claim
+                    // the new PTY's size instead of being rejected.
+                    resize_owners.remove(name);
                 }
                 Some(RestartDecision::PermanentlyDead { reason }) => {
                     workers.metrics.on_permanent_death(name);
@@ -159,6 +195,7 @@ impl BrokerRuntime {
                         .await;
                         let _ = emit_dropped_delivery_failures(
                             sdk_out_tx,
+                            dead_letters,
                             &dropped,
                             "worker_permanently_dead",
                         )
@@ -170,6 +207,7 @@ impl BrokerRuntime {
                         "worker_permanently_dead",
                     );
                     delivery_states.remove(name);
+                    resize_owners.remove(name);
                     agent_result_tokens.retain(|_, agent| agent != name);
                     let _ = send_event(
                         sdk_out_tx,
@@ -196,6 +234,13 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
+                    super::fleet::prune_fleet_agent_state(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await;
                 }
                 None => {
                     // Not supervised — original behavior
@@ -211,12 +256,17 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        let _ =
-                            emit_dropped_delivery_failures(sdk_out_tx, &dropped, "worker_exited")
-                                .await;
+                        let _ = emit_dropped_delivery_failures(
+                            sdk_out_tx,
+                            dead_letters,
+                            &dropped,
+                            "worker_exited",
+                        )
+                        .await;
                     }
                     fail_pending_requests_for_worker(pending_requests, name, "worker_exited");
                     delivery_states.remove(name);
+                    resize_owners.remove(name);
                     agent_result_tokens.retain(|_, agent| agent != name);
                     let _ = send_event(
                         sdk_out_tx,
@@ -249,9 +299,21 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
+                    super::fleet::prune_fleet_agent_state(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await;
                 }
             }
         }
+        // NOTE: the fleet load snapshot is published *after* the restart
+        // handling below, not here. Reaping a dead worker and restarting it can
+        // both happen within a single maintenance tick; publishing here would
+        // broadcast the post-reap / pre-restart count and leave the broker
+        // advertising a stale under-count until the next periodic heartbeat.
 
         // Check for agents ready to restart (past cooldown)
         if !*shutdown {
@@ -267,11 +329,11 @@ impl BrokerRuntime {
                     continue;
                 }
 
-                let worker_relay_key = if rst.skip_relay_prompt {
+                let worker_relay_key = if rst.payload.skip_relay_prompt {
                     None
                 } else {
                     match relaycast_http
-                        .register_agent_token(&name, rst.spec.cli.as_deref())
+                        .register_agent_token(&name, rst.payload.spec.cli.as_deref())
                         .await
                     {
                         Ok(token) => Some(token),
@@ -297,23 +359,42 @@ impl BrokerRuntime {
                         }
                     }
                 };
+                if let Some(token) = worker_relay_key.as_deref() {
+                    seed_supplied_agent_token(relaycast_http, &name, token);
+                    if let Err(error) = relaycast_http
+                        .ensure_agent_channels(
+                            &name,
+                            rst.payload.spec.cli.as_deref(),
+                            &rst.payload.spec.channels,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            worker = %name,
+                            channels = ?rst.payload.spec.channels,
+                            error = %error,
+                            "worker channel membership reconciliation failed before restart"
+                        );
+                    }
+                }
 
                 match workers
                     .spawn(
-                        rst.spec.clone(),
-                        rst.parent.clone(),
+                        rst.payload.spec.clone(),
+                        rst.payload.parent.clone(),
                         None,
                         worker_relay_key,
-                        rst.skip_relay_prompt,
+                        rst.payload.skip_relay_prompt,
                         None,
-                        rst.agent_result.clone(),
+                        rst.payload.agent_result.clone(),
                     )
                     .await
                 {
                     Ok(effective_spec) => {
+                        fleet_load_changed = true;
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
-                        let initial_task = rst.initial_task.clone();
+                        let initial_task = rst.payload.initial_task.clone();
                         if let Some(task) = initial_task.clone() {
                             workers.initial_tasks.insert(name.clone(), task);
                         }
@@ -328,7 +409,7 @@ impl BrokerRuntime {
                             .entry(name.clone())
                             .and_modify(|agent| {
                                 agent.runtime = effective_spec.runtime.clone();
-                                agent.parent = rst.parent.clone();
+                                agent.parent = rst.payload.parent.clone();
                                 agent.channels = effective_spec.channels.clone();
                                 agent.pid = pid;
                                 agent.started_at = Some(unix_timestamp_secs());
@@ -338,7 +419,7 @@ impl BrokerRuntime {
                             })
                             .or_insert_with(|| broker::PersistedAgent {
                                 runtime: effective_spec.runtime.clone(),
-                                parent: rst.parent.clone(),
+                                parent: rst.payload.parent.clone(),
                                 channels: effective_spec.channels.clone(),
                                 pid,
                                 started_at: Some(unix_timestamp_secs()),
@@ -381,11 +462,22 @@ impl BrokerRuntime {
             }
         }
 
-        // Persist pending deliveries for crash recovery
-        if paths.persist {
-            if let Err(error) = save_pending_deliveries(&paths.pending, pending_deliveries) {
-                tracing::warn!(path = %paths.pending.display(), error = %error, "failed to persist pending deliveries");
-            }
+        // Publish the fleet load snapshot once, after both reaping and restart
+        // handling, so the broadcast count reflects the final post-restart live
+        // worker set rather than a same-tick post-reap intermediate.
+        if fleet_load_changed {
+            super::fleet::publish_fleet_load_snapshot(
+                fleet_control_tx,
+                u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                fleet_max_agents,
+                fleet_handlers_live,
+                true,
+            )
+            .await;
         }
+
+        // Pending deliveries are persisted by the event loop whenever the
+        // map is mutated (see `BrokerRuntime::flush_pending_deliveries`),
+        // so no tick-time snapshot is needed here.
     }
 }

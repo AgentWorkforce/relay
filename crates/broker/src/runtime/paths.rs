@@ -5,17 +5,22 @@ pub(crate) struct RuntimePaths {
     pub(super) persist: bool,
     pub(super) state: PathBuf,
     pub(super) pending: PathBuf,
+    /// Terminally-failed deliveries retained for `redeliver`.
+    pub(super) dead_letters: PathBuf,
+    /// Inbound-event dedup cache snapshot, so a restart that replays the
+    /// persisted pending file cannot re-inject duplicates.
+    pub(super) dedup: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
     pub(super) _lock: Option<std::fs::File>,
 }
 
 /// Returns the continuity directory path derived from the state file path.
-/// State path is always `{cwd}/.agent-relay/state.json`, so parent is `{cwd}/.agent-relay/`.
+/// State path is always `{cwd}/.agentworkforce/relay/state.json`, so parent is `{cwd}/.agentworkforce/relay/`.
 pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
     state_path
         .parent()
-        .expect("state_path always has a parent (.agent-relay/)")
+        .expect("state_path always has a parent (.agentworkforce/relay/)")
         .join("continuity")
 }
 
@@ -63,6 +68,8 @@ pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, broker_name: &str) -> Result<R
         persist: false,
         state: root.join("state.json"),
         pending: root.join("pending.json"),
+        dead_letters: root.join("dead-letters.json"),
+        dedup: root.join("dedup.json"),
         _lock: None,
     })
 }
@@ -74,7 +81,7 @@ pub(crate) fn ensure_runtime_paths(
 ) -> Result<RuntimePaths> {
     let root = state_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| cwd.join(".agent-relay"));
+        .unwrap_or_else(|| cwd.join(".agentworkforce/relay"));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
@@ -139,6 +146,8 @@ pub(crate) fn ensure_runtime_paths(
                         persist: true,
                         state: root.join(format!("state-{safe_name}.json")),
                         pending: root.join(format!("pending-{safe_name}.json")),
+                        dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+                        dedup: root.join(format!("dedup-{safe_name}.json")),
                         _lock: Some(lock_file),
                     });
                 } else {
@@ -150,7 +159,7 @@ pub(crate) fn ensure_runtime_paths(
                 }
             }
             // PID file missing or unreadable while lock is held — treat as stale.
-            // This happens when the user deletes .agent-relay/ while an old broker
+            // This happens when the user deletes .agentworkforce/relay/ while an old broker
             // is still alive, or during the shutdown race (PID deleted before flock
             // released).
             tracing::warn!(
@@ -175,6 +184,8 @@ pub(crate) fn ensure_runtime_paths(
                 persist: true,
                 state: root.join(format!("state-{safe_name}.json")),
                 pending: root.join(format!("pending-{safe_name}.json")),
+                dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+                dedup: root.join(format!("dedup-{safe_name}.json")),
                 _lock: Some(lock_file),
             });
         }
@@ -186,17 +197,8 @@ pub(crate) fn ensure_runtime_paths(
         persist: true,
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
+        dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+        dedup: root.join(format!("dedup-{safe_name}.json")),
         _lock: Some(lock_file),
     })
-}
-
-pub(crate) fn derive_ws_base_url_from_http(http_base: &str) -> String {
-    let trimmed = http_base.trim();
-    if let Some(rest) = trimmed.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else {
-        trimmed.to_string()
-    }
 }

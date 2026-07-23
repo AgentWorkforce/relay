@@ -11,11 +11,11 @@ pub(crate) struct BrokerConnection {
 ///
 /// 1. Explicit CLI args (`--broker-url`, `--api-key`). When `--broker-url`
 ///    is supplied without an API key, we still attempt to fall back to the
-///    API key from env / `.agent-relay/connection.json` so users don't have
+///    API key from env / `.agentworkforce/relay/connection.json` so users don't have
 ///    to repeat `--api-key` for every dump-pty invocation.
 /// 2. Env vars `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
 /// 3. `connection.json` in the supplied state dir, otherwise
-///    `.agent-relay/connection.json` directly under the current working
+///    `.agentworkforce/relay/connection.json` directly under the current working
 ///    directory. The bare `cwd` is intentionally NOT probed — an unrelated
 ///    `connection.json` sitting in the user's repo root must not silently
 ///    redirect the snapshot request (and its broker API key) elsewhere.
@@ -31,7 +31,7 @@ pub(crate) fn discover_broker_connection(
         let cwd = std::env::current_dir().ok()?;
         let roots: Vec<PathBuf> = match state_dir {
             Some(dir) => vec![dir.to_path_buf()],
-            None => vec![cwd.join(".agent-relay")],
+            None => vec![cwd.join(".agentworkforce/relay")],
         };
         for root in roots {
             let path = root.join("connection.json");
@@ -77,7 +77,7 @@ pub(crate) fn discover_broker_connection(
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let search_roots: Vec<PathBuf> = match state_dir {
         Some(dir) => vec![dir.to_path_buf()],
-        None => vec![cwd.join(".agent-relay")],
+        None => vec![cwd.join(".agentworkforce/relay")],
     };
 
     for root in &search_roots {
@@ -112,7 +112,7 @@ pub(crate) fn discover_broker_connection(
 
     anyhow::bail!(
         "could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, \
-         or run from a directory containing .agent-relay/connection.json"
+         or run from a directory containing .agentworkforce/relay/connection.json"
     );
 }
 

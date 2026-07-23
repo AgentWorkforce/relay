@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Command, InvalidArgumentError } from 'commander';
-import { track } from '@agent-relay/telemetry';
+import { Command, InvalidArgumentError, Option } from 'commander';
 
 import {
   ensureAuthenticated,
+  ensureCloudSession,
   authorizedApiFetch,
   readStoredAuth,
   clearStoredAuth,
@@ -22,6 +22,8 @@ import {
   connectProvider,
   getProviderHelpText,
   normalizeProvider,
+  enrollFleetNode,
+  upsertFleetNodeEnrollment,
   type WhoAmIResponse,
   type WorkflowFileType,
   type WorkflowSchedule,
@@ -29,6 +31,8 @@ import {
 
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
+import { track } from '../telemetry/index.js';
+import { registerCloudWorkerCommands } from './cloud-worker.js';
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
   '.agent-bin/**',
@@ -51,6 +55,16 @@ export interface CloudDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  ensureCloudSession: typeof ensureCloudSession;
+  authorizedApiFetch: typeof authorizedApiFetch;
+  enrollFleetNode: typeof enrollFleetNode;
+  upsertFleetNodeEnrollment: typeof upsertFleetNodeEnrollment;
+  /**
+   * Persist redeemed-but-unstorable enrollment credentials to a 0600 recovery
+   * file and return its path. Kept injectable so tests can simulate the
+   * "recovery write also failed" last resort.
+   */
+  writeEnrollmentRecoveryFile: (record: unknown) => string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -60,6 +74,21 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
+    ensureCloudSession,
+    authorizedApiFetch,
+    enrollFleetNode,
+    upsertFleetNodeEnrollment,
+    writeEnrollmentRecoveryFile: (record: unknown) => {
+      // The tmpdir is a different filesystem/permission domain than the failed
+      // enrollment store, so this write usually succeeds when the store's did not.
+      const file = path.join(
+        os.tmpdir(),
+        `agent-relay-enrollment-recovery-${process.pid}-${Date.now()}.json`
+      );
+      fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      fs.chmodSync(file, 0o600);
+      return file;
+    },
     ...overrides,
   };
 }
@@ -106,6 +135,205 @@ function parseEnvAssignment(value: string, previous: Record<string, string> = {}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+type MintedFleetNodeEnrollment = {
+  token: string;
+  enrollmentUrl: string;
+};
+
+type CloudAuth = Awaited<ReturnType<typeof ensureCloudSession>>['auth'];
+
+type ResolvedCloudWorkspace = {
+  cloudWorkspaceId: string;
+  auth: CloudAuth;
+};
+
+const CLOUD_WORKSPACE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UNIFIED_WORKSPACE_ID_PATTERN = /^rw_[a-z0-9]{8}$/;
+
+function isCloudLoginError(error: unknown): boolean {
+  if (!isObject(error) || typeof error.code !== 'string') {
+    return false;
+  }
+  return error.code === 'AUTH_BROWSER_REQUIRED' || error.code === 'AUTH_REFRESH_EXPIRED';
+}
+
+function enrollmentTokenMintError(response: Response, payload: unknown, workspaceId: string): Error {
+  if (response.status === 401) {
+    return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+  }
+  if (response.status === 403) {
+    return new Error(
+      `You do not have permission to enroll nodes in workspace ${workspaceId}. ` +
+        'An organization owner or admin must run this command.'
+    );
+  }
+  if (response.status === 404) {
+    return new Error(`Workspace ${workspaceId} was not found. Check the workspace ID and retry.`);
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    return new Error(
+      `Cloud enrollment token rate limit exceeded.${
+        retryAfter ? ` Retry-After: ${retryAfter} seconds.` : ' Wait and retry.'
+      }`
+    );
+  }
+
+  const detail =
+    isObject(payload) && typeof payload.error === 'string' && payload.error.trim()
+      ? payload.error.trim()
+      : `${response.status} ${response.statusText}`.trim();
+  return new Error(`Failed to mint a Cloud enrollment token: ${detail}`);
+}
+
+function workspaceResolveError(response: Response): Error {
+  if (response.status === 401) {
+    return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+  }
+  if (response.status === 403) {
+    return new Error('You do not have access to that Cloud workspace.');
+  }
+  if (response.status === 404) {
+    return new Error(
+      'The workspace identifier was not found by Agent Relay Cloud. ' +
+        'Use a Cloud workspace UUID or unified rw_ workspace ID.'
+    );
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    return new Error(
+      `Cloud workspace resolution rate limit exceeded.${
+        retryAfter ? ` Retry-After: ${retryAfter} seconds.` : ' Wait and retry.'
+      }`
+    );
+  }
+
+  const detail = `${response.status} ${response.statusText}`.trim();
+  return new Error(`Failed to resolve the Cloud workspace: ${detail}`);
+}
+
+async function resolveCloudWorkspace(
+  workspaceId: string,
+  auth: CloudAuth,
+  deps: Pick<CloudDependencies, 'authorizedApiFetch'>
+): Promise<ResolvedCloudWorkspace> {
+  const { response, auth: activeAuth } = await deps.authorizedApiFetch(
+    auth,
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve`,
+    { method: 'GET' },
+    { interactive: false }
+  );
+  const payload = (await response.json().catch(() => null)) as unknown;
+
+  if (!response.ok) {
+    throw workspaceResolveError(response);
+  }
+  if (!isObject(payload) || typeof payload.cloudWorkspaceId !== 'string') {
+    throw new Error('Cloud workspace resolver returned an invalid response.');
+  }
+
+  const cloudWorkspaceId = payload.cloudWorkspaceId.trim();
+  if (!CLOUD_WORKSPACE_UUID_PATTERN.test(cloudWorkspaceId)) {
+    throw new Error('Cloud workspace resolver returned an invalid response.');
+  }
+
+  return { cloudWorkspaceId, auth: activeAuth };
+}
+
+async function mintFleetNodeEnrollment(
+  options: { workspaceId: string; name?: string; maxAgents?: number },
+  deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
+): Promise<MintedFleetNodeEnrollment> {
+  const workspaceId = options.workspaceId.trim();
+  if (!workspaceId) {
+    throw new Error('A workspace ID is required for session-based enrollment.');
+  }
+  if (!CLOUD_WORKSPACE_UUID_PATTERN.test(workspaceId) && !UNIFIED_WORKSPACE_ID_PATTERN.test(workspaceId)) {
+    throw new Error(
+      'Unsupported Cloud workspace identifier. Use a Cloud workspace UUID or unified rw_ workspace ID.'
+    );
+  }
+
+  try {
+    const session = await deps.ensureCloudSession({
+      apiUrl: defaultApiUrl(),
+      interactive: false,
+    });
+    const resolved = await resolveCloudWorkspace(workspaceId, session.auth, deps);
+    const { response } = await deps.authorizedApiFetch(
+      resolved.auth,
+      '/api/v1/fleet/enrollment-tokens',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId: resolved.cloudWorkspaceId,
+          ...(options.name ? { name: options.name } : {}),
+          ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
+        }),
+      },
+      { interactive: false }
+    );
+    const payload = (await response.json().catch(() => null)) as unknown;
+
+    if (!response.ok) {
+      throw enrollmentTokenMintError(response, payload, workspaceId);
+    }
+    if (
+      !isObject(payload) ||
+      typeof payload.token !== 'string' ||
+      !payload.token.trim() ||
+      typeof payload.enrollmentUrl !== 'string' ||
+      !payload.enrollmentUrl.trim()
+    ) {
+      throw new Error('Cloud enrollment token response is missing the token or enrollment URL.');
+    }
+
+    return {
+      token: payload.token.trim(),
+      enrollmentUrl: payload.enrollmentUrl.trim(),
+    };
+  } catch (error) {
+    if (isCloudLoginError(error)) {
+      throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+    }
+    throw error;
+  }
+}
+
+async function resolveFleetNodeEnrollmentInput(
+  options: {
+    token?: string;
+    workspace?: string;
+    enrollmentUrl?: string;
+    name?: string;
+    maxAgents?: number;
+  },
+  deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
+): Promise<{ enrollmentToken: string; enrollmentUrl: string }> {
+  if (!options.token && !options.workspace) {
+    throw new Error('Either --token or --workspace is required to enroll a fleet node.');
+  }
+  if (!options.workspace) {
+    return {
+      enrollmentToken: options.token ?? '',
+      enrollmentUrl: options.enrollmentUrl ?? '',
+    };
+  }
+
+  const minted = await mintFleetNodeEnrollment(
+    {
+      workspaceId: options.workspace,
+      ...(options.name ? { name: options.name } : {}),
+      ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
+    },
+    deps
+  );
+  return {
+    enrollmentToken: minted.token,
+    enrollmentUrl: minted.enrollmentUrl,
+  };
 }
 
 function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => void): void {
@@ -186,6 +414,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
   const cloudCommand = program
     .command('cloud')
     .description('Cloud account, provider auth, and workflow commands');
+
+  registerCloudWorkerCommands(cloudCommand, deps);
 
   // ── login ──────────────────────────────────────────────────────────────────
 
@@ -278,6 +508,50 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
   // ── whoami ─────────────────────────────────────────────────────────────────
 
   cloudCommand
+    .command('session')
+    .description('Show the canonical Agent Relay Cloud session')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Output the session as JSON')
+    .option(
+      '--refresh-timeout <milliseconds>',
+      'Timeout for refreshing the cloud session',
+      parsePositiveInteger
+    )
+    .action(async (options: { apiUrl?: string; json?: boolean; refreshTimeout?: number }) => {
+      const apiUrl = options.apiUrl || defaultApiUrl();
+      const session = await ensureCloudSession({
+        apiUrl,
+        interactive: false,
+        refreshTimeoutMs: options.refreshTimeout,
+      });
+
+      if (options.json) {
+        deps.log(
+          JSON.stringify(
+            {
+              apiUrl: session.auth.apiUrl,
+              accessToken: session.auth.accessToken,
+              accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
+              ...(session.auth.refreshTokenExpiresAt
+                ? { refreshTokenExpiresAt: session.auth.refreshTokenExpiresAt }
+                : {}),
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+
+      deps.log(`API URL: ${session.auth.apiUrl}`);
+      deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
+      if (session.auth.refreshTokenExpiresAt) {
+        deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
+      }
+      deps.log(`Token file: ${AUTH_FILE_PATH}`);
+    });
+
+  cloudCommand
     .command('whoami')
     .description('Show current authentication status')
     .option('--api-url <url>', 'Cloud API base URL')
@@ -360,6 +634,102 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
       }
     });
+
+  // ── enroll ─────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('enroll')
+    .description('Enroll this machine as a Cloud-managed fleet node')
+    .addOption(
+      new Option('--token <token>', 'One-time Cloud enrollment token (ocl_node_enr_...)').conflicts(
+        'workspace'
+      )
+    )
+    .addOption(
+      new Option(
+        '--workspace <workspaceId>',
+        'Resolve a Cloud workspace UUID or unified rw_ ID and mint using the stored login'
+      ).conflicts('token')
+    )
+    .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')
+    .option('--name <name>', 'Override the node name')
+    .option('--max-agents <n>', 'Maximum managed agents for this node', parsePositiveInteger)
+    .option('--json', 'Print the persisted enrollment record as JSON (never the token)', false)
+    .action(
+      async (options: {
+        token?: string;
+        workspace?: string;
+        enrollmentUrl?: string;
+        name?: string;
+        maxAgents?: number;
+        json?: boolean;
+      }) => {
+        try {
+          const { enrollmentToken, enrollmentUrl } = await resolveFleetNodeEnrollmentInput(options, deps);
+
+          const enrollment = await deps.enrollFleetNode({
+            enrollmentToken,
+            enrollmentUrl,
+            ...(options.name ? { name: options.name } : {}),
+            ...(options.maxAgents !== undefined ? { maxAgents: options.maxAgents } : {}),
+          });
+          const record = { ...enrollment, enrolledAt: new Date().toISOString() };
+          // Persist BEFORE printing success: the enrollment token is one-time, so
+          // durable credentials must hit disk before we report success. If the
+          // write fails the token is already burned, so dump the credentials
+          // (token included) for manual recovery instead of losing them forever.
+          try {
+            deps.upsertFleetNodeEnrollment(record);
+          } catch (persistErr) {
+            deps.error(
+              `Enrollment succeeded but persisting credentials failed: ${
+                persistErr instanceof Error ? persistErr.message : String(persistErr)
+              }`
+            );
+            // The one-time token is already consumed, so the credentials must
+            // survive somewhere. Prefer a 0600 recovery file (never print the
+            // token); dump to stderr only if even that write fails — losing
+            // the credentials entirely is the strictly worse outcome.
+            try {
+              const recoveryPath = deps.writeEnrollmentRecoveryFile(record);
+              deps.error(
+                `The one-time enrollment token has been consumed. Credentials were saved to ${recoveryPath} (owner-only permissions).`
+              );
+              deps.error(
+                "Fix the store problem and re-add them from that file, or export RELAY_NODE_TOKEN/RELAY_NODE_ID/RELAY_BASE_URL from it before 'relay node up'. Delete the file afterwards."
+              );
+            } catch {
+              deps.error(
+                'The one-time enrollment token has been consumed and a recovery file could not be written. SAVE THESE CREDENTIALS NOW:'
+              );
+              deps.error(JSON.stringify(record, null, 2));
+              deps.error(
+                "Export RELAY_NODE_TOKEN/RELAY_NODE_ID/RELAY_BASE_URL from them before 'relay node up'."
+              );
+            }
+            deps.exit(1);
+            return;
+          }
+
+          if (options.json) {
+            // Never print the node token, even in JSON mode.
+            const { nodeToken: _nodeToken, ...safe } = record;
+            void _nodeToken;
+            deps.log(JSON.stringify(safe, null, 2));
+            return;
+          }
+
+          const nodeIdSuffix = record.nodeId ? ` (${record.nodeId})` : '';
+          deps.log(
+            `Enrolled node "${record.nodeName}"${nodeIdSuffix} in workspace ${record.relayWorkspaceId}. ` +
+              "Run 'relay node up' to serve it."
+          );
+        } catch (err) {
+          deps.error(err instanceof Error ? err.message : String(err));
+          deps.exit(1);
+        }
+      }
+    );
 
   // ── run ────────────────────────────────────────────────────────────────────
 

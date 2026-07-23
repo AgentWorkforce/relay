@@ -1,0 +1,25 @@
+{
+  "id": "traj_j2qa2s5hqvui",
+  "version": 1,
+  "task": {
+    "title": "Improve README examples for core categories"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T17:51:29.818Z",
+  "completedAt": "2026-05-27T17:55:30.014Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Reworked root and SDK READMEs as target product docs with explicit Messaging, Delivery, and Actions examples; removed public Relaycast framing from those READMEs and updated scope/changelog wording.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "c25ac02086edf4502979aa2a076b6d70448d8845",
+    "endRef": "c25ac02086edf4502979aa2a076b6d70448d8845"
+  }
+}

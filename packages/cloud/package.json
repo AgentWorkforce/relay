@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/cloud",
-  "version": "7.1.1",
+  "version": "11.0.2",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Cloud SDK for Agent Relay — auth, workflow execution, and provider connections",
   "type": "module",
   "main": "dist/index.js",
@@ -30,6 +33,10 @@
       "types": "./dist/audit.d.ts",
       "import": "./dist/audit.js"
     },
+    "./workspace-key": {
+      "types": "./dist/workspace-key.d.ts",
+      "import": "./dist/workspace-key.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -43,7 +50,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/config": "7.1.1",
+    "@agent-relay/config": "11.0.2",
     "@aws-sdk/client-s3": "3.1020.0",
     "ignore": "^7.0.5",
     "tar": "^7.5.10"
@@ -54,7 +61,7 @@
   "devDependencies": {
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.0"
   },
   "publishConfig": {
     "access": "public"

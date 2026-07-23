@@ -1,7 +1,8 @@
 dependencies:
   tools:
     - type: 'mcp'
-      value: 'relaycast'
+      value: 'agent-relay'
       description: 'Agent Relay real-time messaging for multi-agent coordination'
-      transport: 'streamable_http'
-      url: 'https://api.relaycast.dev/mcp'
+      transport: 'stdio'
+      command: 'agent-relay'
+      args: ['mcp']

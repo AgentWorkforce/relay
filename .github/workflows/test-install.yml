@@ -62,7 +62,7 @@ jobs:
         if: matrix.node == 'with-node'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
 
       - name: Remove Node.js (if testing no-node)
         if: matrix.node == 'no-node'
@@ -324,7 +324,7 @@ jobs:
       - name: Test error messages are helpful
         run: |
           # Verify helpful error messages exist
-          MESSAGES="Node.js 18+ is required|nvm|brew install node|apt-get install"
+          MESSAGES="Node\\.js 22\\+ is required|nvm|brew install node|apt-get install"
 
           for msg in $MESSAGES; do
             if grep -qE "$msg" install.sh; then

@@ -60,6 +60,12 @@ struct WorkspaceSource {
     api_key: String,
 }
 
+struct EnvWorkspaceKey {
+    source: &'static str,
+    key: String,
+    explicit_join: bool,
+}
+
 impl CredentialSet {
     pub fn from_json(raw: &str) -> Result<Self> {
         let value: Value = serde_json::from_str(raw).context("invalid credential set JSON")?;
@@ -265,14 +271,12 @@ fn deterministic_workspace_name() -> String {
 
 #[derive(Clone)]
 pub struct AuthClient {
-    base_url: String,
+    base_url: Option<String>,
 }
 
 impl AuthClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self {
-            base_url: base_url.into(),
-        }
+    pub fn new(base_url: Option<String>) -> Self {
+        Self { base_url }
     }
 
     pub async fn startup_session(&self, requested_name: Option<&str>) -> Result<AuthSession> {
@@ -415,7 +419,7 @@ impl AuthClient {
         let api_key = normalize_workspace_key(&cached.api_key)
             .context("cached api_key is not a valid workspace key")?;
 
-        let relay = build_relay_client(&api_key, &self.base_url)?;
+        let relay = build_relay_client(&api_key, self.base_url.as_deref())?;
         let result = relay
             .rotate_agent_token(agent_name)
             .await
@@ -444,15 +448,13 @@ impl AuthClient {
         strict_name: bool,
         agent_type: Option<&str>,
     ) -> Result<AuthSessionSet> {
-        let env_workspace_key = std::env::var("RELAY_API_KEY")
-            .ok()
-            .and_then(|s| normalize_workspace_key(&s));
+        let env_workspace_key = env_workspace_key()?;
 
         let mut workspace_id_hint: Option<String> = None;
 
-        let mut candidates: Vec<(&str, String)> = Vec::new();
+        let mut candidates: Vec<EnvWorkspaceKey> = Vec::new();
         if let Some(key) = env_workspace_key {
-            candidates.push(("env", key));
+            candidates.push(key);
         }
 
         let mut attempted_fresh_workspace = false;
@@ -460,24 +462,33 @@ impl AuthClient {
             let ws_name = deterministic_workspace_name();
             let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
             workspace_id_hint = Some(workspace_id);
-            candidates.push(("fresh", api_key));
+            candidates.push(EnvWorkspaceKey {
+                source: "fresh",
+                key: api_key,
+                explicit_join: false,
+            });
             attempted_fresh_workspace = true;
         }
 
         let preferred_name = requested_name;
         let mut auth_rejections = Vec::new();
 
-        for (source, key) in &candidates {
+        for candidate in &candidates {
             tracing::info!(
                 target = "relay_broker::auth",
-                source = %source,
+                source = %candidate.source,
                 preferred_name = ?preferred_name,
                 strict_name = %strict_name,
                 agent_type = ?agent_type,
                 "attempting registration with workspace key"
             );
             match self
-                .register_agent_with_workspace_key(key, preferred_name, strict_name, agent_type)
+                .register_agent_with_workspace_key(
+                    &candidate.key,
+                    preferred_name,
+                    strict_name,
+                    agent_type,
+                )
                 .await
             {
                 Ok(registration) => {
@@ -487,22 +498,38 @@ impl AuthClient {
                         returned_name = %registration.1,
                         "registration succeeded"
                     );
-                    let session =
-                        self.finish_session(key.clone(), workspace_id_hint.clone(), registration)?;
+                    let session = self.finish_session(
+                        candidate.key.clone(),
+                        workspace_id_hint.clone(),
+                        registration,
+                    )?;
                     return Ok(AuthSessionSet {
                         default_workspace_id: Some(session.credentials.workspace_id.clone()),
                         memberships: vec![session],
                     });
                 }
                 Err(error) if is_auth_rejection(&error) => {
-                    auth_rejections.push(format!("{source} key rejected"));
+                    if candidate.explicit_join {
+                        return Err(error).context(format!(
+                            "explicit workspace key from {} was rejected",
+                            candidate.source
+                        ));
+                    }
+                    auth_rejections.push(format!("{} key rejected", candidate.source));
                 }
                 Err(error) if is_rate_limited(&error) => {
-                    auth_rejections.push(format!("{source} key rate-limited"));
+                    if candidate.explicit_join {
+                        return Err(error).context(format!(
+                            "explicit workspace key from {} was rate-limited",
+                            candidate.source
+                        ));
+                    }
+                    auth_rejections.push(format!("{} key rate-limited", candidate.source));
                 }
                 Err(error) => {
                     return Err(error).context(format!(
-                        "failed registering agent with {source} workspace key"
+                        "failed registering agent with {} workspace key",
+                        candidate.source
                     ));
                 }
             }
@@ -627,7 +654,7 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
-        match RelayCast::create_workspace(name, Some(&self.base_url)).await {
+        match RelayCast::create_workspace(name, self.base_url.as_deref()).await {
             Ok(result) => Ok((result.workspace_id, result.api_key)),
             Err(error) if is_workspace_name_conflict(&error) => {
                 let suffix = Uuid::new_v4().simple().to_string();
@@ -637,7 +664,7 @@ impl AuthClient {
                     fallback_name = %fallback_name,
                     "workspace already exists; retrying with a fresh fallback name"
                 );
-                let result = RelayCast::create_workspace(&fallback_name, Some(&self.base_url))
+                let result = RelayCast::create_workspace(&fallback_name, self.base_url.as_deref())
                     .await
                     .map_err(relay_error_to_anyhow)?;
                 Ok((result.workspace_id, result.api_key))
@@ -653,7 +680,7 @@ impl AuthClient {
         strict_name: bool,
         agent_type: Option<&str>,
     ) -> Result<(String, String, String, Option<String>)> {
-        let relay = build_relay_client(workspace_key, &self.base_url)?;
+        let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
         let mut attempted_retry = false;
         let mut name = requested_name
             .map(ToOwned::to_owned)
@@ -670,12 +697,7 @@ impl AuthClient {
                 .register_or_get_agent(request)
                 .await
                 .map_err(relay_error_to_anyhow)?;
-            return Ok((
-                result.id,
-                result.name,
-                result.token,
-                None, // workspace_id not returned in CreateAgentResponse
-            ));
+            return Ok((result.id, result.name, result.token, result.workspace_id));
         }
 
         loop {
@@ -688,12 +710,7 @@ impl AuthClient {
 
             match relay.register_agent(request).await {
                 Ok(result) => {
-                    return Ok((
-                        result.id,
-                        result.name,
-                        result.token,
-                        None, // workspace_id not returned in CreateAgentResponse
-                    ));
+                    return Ok((result.id, result.name, result.token, result.workspace_id));
                 }
                 Err(RelayError::Api { code, status, .. })
                     if is_conflict_code(&code) || status == 409 =>
@@ -737,7 +754,7 @@ impl AuthClient {
         let Some(workspace_key) = normalize_workspace_key(workspace_key) else {
             return Ok(false);
         };
-        let relay = match build_relay_client(&workspace_key, &self.base_url) {
+        let relay = match build_relay_client(&workspace_key, self.base_url.as_deref()) {
             Ok(relay) => relay,
             Err(_) => return Ok(false),
         };
@@ -787,6 +804,33 @@ fn normalize_workspace_key(raw: &str) -> Option<String> {
     }
 }
 
+fn env_workspace_key() -> Result<Option<EnvWorkspaceKey>> {
+    for name in ["AGENT_RELAY_WORKSPACE_KEY", "RELAY_WORKSPACE_KEY"] {
+        if let Ok(raw) = std::env::var(name) {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let key = normalize_workspace_key(trimmed)
+                .with_context(|| format!("{name} is not a valid workspace key"))?;
+            return Ok(Some(EnvWorkspaceKey {
+                source: name,
+                key,
+                explicit_join: true,
+            }));
+        }
+    }
+
+    Ok(std::env::var("RELAY_API_KEY")
+        .ok()
+        .and_then(|value| normalize_workspace_key(&value))
+        .map(|key| EnvWorkspaceKey {
+            source: "RELAY_API_KEY",
+            key,
+            explicit_join: false,
+        }))
+}
+
 fn is_auth_rejection(err: &anyhow::Error) -> bool {
     auth_http_status(err)
         .is_some_and(|status| status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
@@ -809,9 +853,14 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
         })
 }
 
-/// Build a `RelayCast` workspace client from an API key and base URL.
-fn build_relay_client(api_key: &str, base_url: &str) -> Result<RelayCast> {
-    let opts = RelayCastOptions::new(api_key).with_base_url(base_url);
+/// Build a `RelayCast` workspace client from an API key and optional base URL.
+/// When `base_url` is `None`, the SDK applies its own default.
+fn build_relay_client(api_key: &str, base_url: Option<&str>) -> Result<RelayCast> {
+    let mut opts =
+        RelayCastOptions::new(api_key).with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+    if let Some(base_url) = base_url {
+        opts = opts.with_base_url(base_url);
+    }
     RelayCast::new(opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
@@ -962,6 +1011,8 @@ mod tests {
         // SAFETY: test-only; Rust warns about remove_var in multi-threaded
         // contexts but we accept the risk in test code.
         unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+            std::env::remove_var("RELAY_WORKSPACE_KEY");
             std::env::remove_var("RELAY_API_KEY");
             std::env::remove_var("RELAY_WORKSPACES_JSON");
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
@@ -988,7 +1039,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a1","name":"lead","token":"at_live_1","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
 
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.token, "at_live_1");
@@ -1006,22 +1057,128 @@ mod tests {
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
         unsafe {
-            std::env::set_var("RELAY_API_KEY", "rk_live_env");
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
         }
+        // The register response now carries workspace_id, so a join-by-key
+        // session records the real workspace instead of the "ws_unknown"
+        // fallback — no extra lookup required.
         let register = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_env");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a2","workspace_id":"ws_env","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
 
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.token, "at_live_2");
         assert_eq!(session.credentials.api_key, "rk_live_env");
+        assert_eq!(session.credentials.workspace_id, "ws_env");
+        register.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_explicit_workspace_key_does_not_create_workspace() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_rejected");
+        }
+        let rejected_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_rejected");
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
+        });
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let error = client.startup_session(Some("lead")).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("explicit workspace key from AGENT_RELAY_WORKSPACE_KEY was rejected"),
+            "unexpected error: {error:#}"
+        );
+        rejected_register.assert_hits(1);
+        workspace.assert_hits(0);
+
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn canonical_workspace_key_takes_precedence_over_legacy_api_key() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_canonical");
+            std::env::set_var("RELAY_API_KEY", "rk_live_legacy");
+        }
+        let canonical_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_canonical");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+        let legacy_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_legacy");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a3","name":"lead","token":"at_live_3","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let session = client.startup_session(Some("lead")).await.unwrap();
+        assert_eq!(session.credentials.api_key, "rk_live_canonical");
+        canonical_register.assert_hits(1);
+        legacy_register.assert_hits(0);
+
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_relay_api_key_still_joins_existing_workspace() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_legacy");
+        }
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_legacy");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+
+        let session = client.startup_session(Some("lead")).await.unwrap();
+        assert_eq!(session.credentials.api_key, "rk_live_legacy");
         register.assert_hits(1);
 
         unsafe {
@@ -1060,7 +1217,7 @@ mod tests {
             std::env::set_var("RELAY_API_KEY", "rk_live_stale");
         }
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.token, "at_live_9");
         assert_eq!(session.credentials.api_key, "rk_live_new");
@@ -1115,7 +1272,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
         });
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
         let session = client
             .startup_session_with_options(Some("lead"), true, None)
             .await
@@ -1166,7 +1323,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a10","name":"lead-suffixed","token":"at_live_10","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
         let session = client.startup_session(Some("lead")).await.unwrap();
 
         assert_eq!(session.token, "at_live_10");
@@ -1211,7 +1368,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a_fallback","name":"lead","token":"at_live_fallback","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
         let session = client.startup_session(Some("lead")).await.unwrap();
 
         assert_eq!(session.token, "at_live_fallback");
@@ -1235,7 +1392,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"token":"at_live_rotated","name":"lead"}}"#);
         });
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
 
         let cached = CredentialCache {
             workspace_id: "ws_cached".into(),
@@ -1276,7 +1433,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a_new","name":"lead","token":"at_live_reregistered","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
 
         let cached = CredentialCache {
             workspace_id: "ws_cached".into(),
@@ -1307,7 +1464,7 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":[]}"#);
         });
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
 
         let live = client
             .workspace_key_is_live("rk_live_cached")
@@ -1329,7 +1486,7 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
         });
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
 
         let live = client
             .workspace_key_is_live("rk_live_cached")
@@ -1390,7 +1547,7 @@ mod tests {
             std::env::set_var("RELAY_API_KEY", "rk_live_forbidden");
         }
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
         let session = client.startup_session(Some("broker")).await.unwrap();
 
         // Must return the FRESH workspace key, not the forbidden env key.
@@ -1441,7 +1598,7 @@ mod tests {
             std::env::set_var("RELAY_API_KEY", stale_key);
         }
 
-        let client = AuthClient::new(server.base_url());
+        let client = AuthClient::new(Some(server.base_url()));
         let session = client.startup_session(Some("broker")).await.unwrap();
 
         // The stale env key must NEVER appear in the returned session.

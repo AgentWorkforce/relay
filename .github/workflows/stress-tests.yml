@@ -34,7 +34,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: [20]
+        node-version: [22.14.0]
       fail-fast: false
 
     steps:
@@ -83,7 +83,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: [20]
+        node-version: [22.14.0]
       fail-fast: false
 
     steps:

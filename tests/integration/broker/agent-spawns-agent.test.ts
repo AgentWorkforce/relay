@@ -16,7 +16,8 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
-import { RelayCast, type BrokerEvent } from '@agent-relay/sdk';
+import type { BrokerEvent } from '@agent-relay/harness-driver';
+import { RelayCast } from '@relaycast/sdk';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import { eventsForAgent } from './utils/assert-helpers.js';
 import { skipIfNotRealCli, skipIfCliMissing, sleep } from './utils/cli-helpers.js';
@@ -64,7 +65,7 @@ async function testAgentAddSpawn(
   const spawnResult = await relay.agents.spawn({
     name: childName,
     cli,
-    task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
+    task: 'You are a test agent. When you receive a message, respond using the mcp__agent-relay__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     channel: 'general',
   });
   console.log(
@@ -119,7 +120,7 @@ async function testAgentAddSpawn(
 // CLAUDE
 // ══════════════════════════════════════════════════════════════════════════════
 
-test('agent-spawns-agent: claude via relaycast API has MCP tools', { timeout: 180_000 }, async (t) => {
+test('agent-spawns-agent: claude via Agent Relay API has MCP tools', { timeout: 180_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   if (skipIfNotRealCli(t)) return;
   if (skipIfCliMissing(t, 'claude')) return;
@@ -137,7 +138,7 @@ test('agent-spawns-agent: claude via relaycast API has MCP tools', { timeout: 18
 // CODEX
 // ══════════════════════════════════════════════════════════════════════════════
 
-test('agent-spawns-agent: codex via relaycast API has MCP tools', { timeout: 180_000 }, async (t) => {
+test('agent-spawns-agent: codex via Agent Relay API has MCP tools', { timeout: 180_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   if (skipIfNotRealCli(t)) return;
   if (skipIfCliMissing(t, 'codex')) return;
@@ -155,7 +156,7 @@ test('agent-spawns-agent: codex via relaycast API has MCP tools', { timeout: 180
 // GEMINI
 // ══════════════════════════════════════════════════════════════════════════════
 
-test('agent-spawns-agent: gemini via relaycast API has MCP tools', { timeout: 180_000 }, async (t) => {
+test('agent-spawns-agent: gemini via Agent Relay API has MCP tools', { timeout: 180_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   if (skipIfNotRealCli(t)) return;
   if (skipIfCliMissing(t, 'gemini')) return;

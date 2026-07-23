@@ -6,12 +6,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::fleet_wire::{BrokerToRelaycast, Deliver, DeliveryMode, FLEET_WIRE_VERSION};
 use crate::ids::{
-    ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias, WorkspaceId,
+    AgentId, ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias,
+    WorkspaceId,
 };
+use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
 use crate::protocol::{
-    AgentSpec, HarnessReleasePolicy, HeadlessHarnessConfig, HeadlessHarnessDriver,
-    MessageInjectionMode, RelayDelivery, ResolvedHarnessConfig,
+    AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
+    HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, RelayDelivery,
+    ResolvedHarnessConfig,
 };
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
@@ -28,23 +32,34 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use super::{
-    build_agent_state_transition_event, build_http_api_spawn_spec, build_thread_infos,
-    channels_from_csv, clear_pending_delivery_if_event_matches, continuity_dir,
-    delivery_retry_interval, derive_ws_base_url_from_http, display_target_for_dashboard,
-    drop_pending_for_worker, emit_delivery_attempt_outcome, emit_dropped_delivery_failures,
-    ensure_ephemeral_paths, extract_mcp_message_ids, http_api_event_emit_timeout,
-    http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
-    is_relaycast_self_control_target, is_unknown_worker_error_message, normalize_channel,
-    normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
-    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
-    relaycast_ws_spawn_token, retry_pending_delivery, sender_is_dashboard_label,
-    should_clear_pending_delivery_for_event, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
-    InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider, MAX_DELIVERY_RETRIES,
+    apply_exit_after_task_instruction, build_agent_state_transition_event,
+    build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
+    clear_pending_delivery_if_event_matches, continuity_dir, default_observer_token_scopes,
+    delivery_read_ack_is_relaycast_message, delivery_retry_interval, drop_pending_for_worker,
+    emit_delivery_attempt_outcome, emit_dropped_delivery_failures, ensure_ephemeral_paths,
+    extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
+    http_api_relaycast_send_timeout, is_relaycast_self_control_target,
+    is_unknown_worker_error_message, load_dead_letters, load_pending_deliveries,
+    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, mint_or_recover_observer_token,
+    normalize_channel, normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
+    persist_dead_letters_on_shutdown, persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
+    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
+    relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
+    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
+    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    synthetic_delivery_read_ack_reason, AgentRuntime, DeadLetterEntry, DeadLetterStore,
+    DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome, ObserverTokenMintError,
+    ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
+    RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
-use crate::relaycast::{format_worker_preregistration_error, RelaycastRegistrationError};
-use crate::types::{InboundDeliveryMode, InboundDeliveryState};
+use crate::relaycast::{
+    format_worker_preregistration_error, RelaycastHttpClient, RelaycastRegistrationError, WsControl,
+};
+use crate::types::{
+    InboundDeliveryMode, InboundDeliveryState, PendingRelayMessage, RelaycastDeliveryReceipt,
+};
+use relaycast::ObserverScope;
 
 fn env_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -118,6 +133,65 @@ fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {
         priority: 1,
         mode: MessageInjectionMode::Steer,
         event_id: Some(event_id),
+        relaycast_receipt: None,
+    }
+}
+
+fn fleet_deliver(seq: u64) -> Deliver {
+    Deliver {
+        v: FLEET_WIRE_VERSION,
+        agent: "worker-a".to_string(),
+        agent_id: "agent-worker-a".to_string(),
+        delivery_id: format!("delivery-{seq}"),
+        msg_id: format!("message-{seq}"),
+        seq,
+        mode: DeliveryMode::Wait,
+        payload: json!({"type": "message.created", "text": format!("message {seq}")}),
+    }
+}
+
+fn held_fleet_message(deliver: &Deliver) -> PendingRelayMessage {
+    PendingRelayMessage {
+        from: "Alice".to_string(),
+        body: format!("message {}", deliver.seq),
+        target: MessageTarget::new("worker-a"),
+        thread_id: None,
+        workspace_id: Some(WorkspaceId::new("ws_demo")),
+        workspace_alias: Some(WorkspaceAlias::new("Demo")),
+        priority: 2,
+        mode: MessageInjectionMode::Wait,
+        queued_at_ms: super::unix_timestamp_millis(),
+        event_id: Some(EventId::from(&deliver.msg_id)),
+        relaycast_receipt: Some(RelaycastDeliveryReceipt {
+            agent: WorkerName::from(&deliver.agent),
+            agent_id: AgentId::from(&deliver.agent_id),
+            delivery_id: DeliveryId::from(&deliver.delivery_id),
+            msg_id: EventId::from(&deliver.msg_id),
+            seq: deliver.seq,
+        }),
+    }
+}
+
+fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> PendingDelivery {
+    PendingDelivery {
+        worker_name: WorkerName::from(worker_name),
+        delivery: RelayDelivery {
+            delivery_id: DeliveryId::new(delivery_id),
+            event_id: EventId::new(event_id),
+            workspace_id: Some(WorkspaceId::new("ws_test")),
+            workspace_alias: Some(WorkspaceAlias::new("test")),
+            from: "sender".to_string(),
+            target: MessageTarget::new(worker_name),
+            body: "hello".to_string(),
+            thread_id: None,
+            priority: None,
+            injection_mode: MessageInjectionMode::Wait,
+        },
+        attempts: 1,
+        failed_attempts: 0,
+        next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
     }
 }
 
@@ -127,14 +201,15 @@ async fn inbound_queue_auto_inject_drains_immediately_with_full_context() {
     let workers = make_worker_registry_with_worker(worker_name).await;
     let mut delivery_states = HashMap::new();
 
-    let outcome = queue_inbound_for_delivery_mode(
+    let result = queue_inbound_for_delivery_mode(
         &mut delivery_states,
         &workers,
         worker_name,
         inbound_ctx("evt_auto"),
     );
 
-    match outcome {
+    assert_eq!(result.evicted_from, None);
+    match result.outcome {
         InboundQueueOutcome::DrainNow(messages) => {
             assert_eq!(messages.len(), 1);
             let msg = &messages[0];
@@ -171,14 +246,15 @@ async fn inbound_queue_manual_flush_holds_until_explicit_drain() {
         InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
     )]);
 
-    let outcome = queue_inbound_for_delivery_mode(
+    let result = queue_inbound_for_delivery_mode(
         &mut delivery_states,
         &workers,
         worker_name,
         inbound_ctx("evt_manual"),
     );
 
-    assert_eq!(outcome, InboundQueueOutcome::Queued);
+    assert_eq!(result.outcome, InboundQueueOutcome::Queued);
+    assert_eq!(result.evicted_from, None);
     let snapshot = delivery_states
         .get(worker_name)
         .expect("manual state should remain present")
@@ -201,15 +277,587 @@ async fn inbound_queue_worker_missing_does_not_create_state() {
     );
     let mut delivery_states = HashMap::new();
 
-    let outcome = queue_inbound_for_delivery_mode(
+    let result = queue_inbound_for_delivery_mode(
         &mut delivery_states,
         &workers,
         "ghost",
         inbound_ctx("evt_missing"),
     );
 
-    assert_eq!(outcome, InboundQueueOutcome::WorkerMissing);
+    assert_eq!(result.outcome, InboundQueueOutcome::WorkerMissing);
+    assert_eq!(result.evicted_from, None);
     assert!(delivery_states.is_empty());
+}
+
+#[tokio::test]
+async fn inbound_queue_rejects_overflow_without_evicting_held_message() {
+    let worker_name = "worker-a";
+    let workers = make_worker_registry_with_worker(worker_name).await;
+    let mut delivery_states = HashMap::from([(
+        WorkerName::from(worker_name),
+        InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
+    )]);
+
+    for _ in 0..crate::types::MAX_PENDING_PER_WORKER {
+        let result = queue_inbound_for_delivery_mode(
+            &mut delivery_states,
+            &workers,
+            worker_name,
+            inbound_ctx("evt_fill"),
+        );
+        assert_eq!(result.evicted_from, None);
+    }
+
+    let before = delivery_states
+        .get(worker_name)
+        .expect("state should exist")
+        .pending_snapshot();
+    let rejected_deliver = fleet_deliver(1);
+    let mut rejected_ctx = inbound_ctx("message-1");
+    rejected_ctx.relaycast_receipt = held_fleet_message(&rejected_deliver).relaycast_receipt;
+    let result =
+        queue_inbound_for_delivery_mode(&mut delivery_states, &workers, worker_name, rejected_ctx);
+
+    assert_eq!(result.outcome, InboundQueueOutcome::RejectedFull);
+    assert_eq!(result.evicted_from, None);
+    assert_eq!(
+        delivery_states
+            .get(worker_name)
+            .expect("state should exist")
+            .pending_snapshot(),
+        before,
+        "a full queue must remain byte-for-byte unchanged"
+    );
+    let delivery_book = FleetDeliveryBook::default();
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 0);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 0);
+
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let first_message = held_fleet_message(&first);
+    let second_message = held_fleet_message(&second);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(first_message);
+    state.accept_inbound(second_message);
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 2);
+    assert_eq!(result.failure, None);
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 2);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 2);
+    for expected_seq in [1, 2] {
+        match fleet_control_rx.recv().await {
+            Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack))) => {
+                assert_eq!(ack.agent, worker_name);
+                assert_eq!(ack.up_to_seq, expected_seq);
+            }
+            other => panic!("expected delivery ACK {expected_seq}, got {other:?}"),
+        }
+    }
+    assert!(fleet_control_rx.try_recv().is_err());
+
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn manual_flush_failure_retains_failed_message_and_suffix_without_ack() {
+    let worker_name = WorkerName::from("worker-a");
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+    let mut workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let expected = vec![held_fleet_message(&first), held_fleet_message(&second)];
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    for message in expected.iter().cloned() {
+        state.accept_inbound(message);
+    }
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &worker_name,
+        Duration::from_millis(50),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 0);
+    assert!(result.failure.is_some());
+    assert_eq!(delivery_states[&worker_name].pending_snapshot(), expected);
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 2);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 0);
+    assert!(fleet_control_rx.try_recv().is_err());
+}
+
+fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
+    PendingDelivery {
+        worker_name: WorkerName::from(worker),
+        delivery: RelayDelivery {
+            delivery_id: DeliveryId::new(delivery_id),
+            event_id: EventId::new(format!("evt_{delivery_id}")),
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
+            workspace_alias: None,
+            from: "Lead".to_string(),
+            target: MessageTarget::new("Worker"),
+            body: "hello".to_string(),
+            thread_id: None,
+            priority: Some(2),
+            injection_mode: MessageInjectionMode::Wait,
+        },
+        attempts: 1,
+        failed_attempts: 0,
+        next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
+    }
+}
+
+#[test]
+fn shutdown_persists_nonempty_pending_deliveries() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let mut delivery = make_pending_delivery("del_keep", "worker-a");
+    delivery.failed_attempts = 2;
+    let deliveries = HashMap::from([(DeliveryId::new("del_keep"), delivery)]);
+
+    persist_pending_on_shutdown(&path, true, &deliveries);
+
+    let reloaded = load_pending_deliveries(&path);
+    assert_eq!(reloaded.len(), 1, "pending delivery survives shutdown");
+    let pending = reloaded
+        .get("del_keep")
+        .expect("persisted delivery should reload by id");
+    assert_eq!(pending.worker_name, WorkerName::from("worker-a"));
+    assert_eq!(pending.delivery.event_id, EventId::new("evt_del_keep"));
+    assert_eq!(pending.attempts, 1);
+    assert_eq!(pending.failed_attempts, 2);
+}
+
+#[test]
+fn pending_delivery_load_defaults_legacy_failure_count() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let delivery = make_pending_delivery("del_legacy", "worker-a");
+    let deliveries = HashMap::from([(DeliveryId::new("del_legacy"), delivery)]);
+    super::save_pending_deliveries(&path, &deliveries).expect("pending delivery should save");
+    let mut json: Value = serde_json::from_slice(
+        &std::fs::read(&path).expect("pending delivery snapshot should read"),
+    )
+    .expect("pending delivery snapshot should parse");
+    json[0]
+        .as_object_mut()
+        .expect("pending delivery entry should be an object")
+        .remove("failed_attempts");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json).expect("legacy snapshot encodes"),
+    )
+    .expect("legacy pending snapshot should write");
+
+    let loaded = load_pending_deliveries(&path);
+    assert_eq!(loaded["del_legacy"].failed_attempts, 0);
+}
+
+#[test]
+fn shutdown_removes_pending_file_only_when_empty() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    std::fs::write(&path, "[]").expect("seed file should write");
+    let deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+
+    persist_pending_on_shutdown(&path, true, &deliveries);
+
+    assert!(
+        !path.exists(),
+        "clean shutdown with nothing pending removes the file"
+    );
+}
+
+#[test]
+fn shutdown_without_persist_writes_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let deliveries = HashMap::from([(
+        DeliveryId::new("del_lost"),
+        make_pending_delivery("del_lost", "worker-a"),
+    )]);
+
+    persist_pending_on_shutdown(&path, false, &deliveries);
+
+    assert!(
+        !path.exists(),
+        "persistence disabled — shutdown must not write state files"
+    );
+}
+
+#[test]
+fn pending_delivery_store_tracks_mutations() {
+    let mut store = PendingDeliveryStore::new(HashMap::new());
+    assert!(!store.take_dirty(), "fresh store starts clean");
+
+    // Read-only access goes through `Deref` and stays clean.
+    assert!(store.is_empty());
+    assert!(!store.take_dirty());
+
+    store.insert(
+        DeliveryId::new("del_1"),
+        make_pending_delivery("del_1", "worker-a"),
+    );
+    assert!(store.take_dirty(), "insert marks the store dirty");
+    assert!(!store.take_dirty(), "take_dirty clears the flag");
+
+    // `&mut HashMap` coercion — the path used by the free delivery
+    // helpers — must also mark the store dirty.
+    let map: &mut HashMap<DeliveryId, PendingDelivery> = &mut store;
+    map.remove("del_1");
+    assert!(store.take_dirty(), "mutation via DerefMut marks dirty");
+}
+
+fn make_dead_letter(delivery_id: &str, worker: &str, reason: &str) -> DeadLetterEntry {
+    DeadLetterEntry::from_pending(&make_pending_delivery(delivery_id, worker), reason)
+}
+
+#[test]
+fn dead_letter_store_caps_size_and_evicts_oldest() {
+    let mut store = DeadLetterStore::default();
+    for index in 0..MAX_DEAD_LETTERS {
+        assert!(
+            store
+                .push(make_dead_letter(&format!("del_{index}"), "worker-a", "x"))
+                .is_none(),
+            "no eviction below the cap"
+        );
+    }
+    assert_eq!(store.len(), MAX_DEAD_LETTERS);
+
+    let evicted = store
+        .push(make_dead_letter("del_overflow", "worker-a", "x"))
+        .expect("push past the cap evicts the oldest entry");
+    assert_eq!(evicted.delivery.delivery_id, DeliveryId::new("del_0"));
+    assert_eq!(store.len(), MAX_DEAD_LETTERS, "store stays at the cap");
+    assert!(store.get("del_0").is_none(), "oldest entry is gone");
+    assert!(store.get("del_overflow").is_some(), "newest entry is kept");
+}
+
+#[test]
+fn dead_letter_store_trims_oversized_load_and_marks_dirty() {
+    // A snapshot larger than the cap (older version, manual edit, or a bug)
+    // must be bounded on load, keeping the newest MAX_DEAD_LETTERS entries.
+    let oversized: Vec<DeadLetterEntry> = (0..MAX_DEAD_LETTERS + 5)
+        .map(|index| make_dead_letter(&format!("del_{index}"), "worker-a", "x"))
+        .collect();
+    let mut store = DeadLetterStore::new(oversized);
+
+    assert_eq!(
+        store.len(),
+        MAX_DEAD_LETTERS,
+        "oversized load is trimmed to cap"
+    );
+    assert!(
+        store.get("del_0").is_none(),
+        "oldest over-cap entries are dropped"
+    );
+    assert!(
+        store
+            .get(&format!("del_{}", MAX_DEAD_LETTERS + 4))
+            .is_some(),
+        "newest entries are kept"
+    );
+    assert!(
+        store.take_dirty(),
+        "trimming an oversized load marks the store dirty so the next flush rewrites the capped file"
+    );
+
+    // A within-cap load must not spuriously mark the store dirty.
+    let mut small = DeadLetterStore::new(vec![make_dead_letter("del_a", "worker-a", "x")]);
+    assert!(!small.take_dirty(), "a within-cap load stays clean");
+}
+
+#[test]
+fn dead_letter_store_tracks_mutations() {
+    let mut store = DeadLetterStore::default();
+    assert!(!store.take_dirty(), "fresh store starts clean");
+
+    store.push(make_dead_letter("del_1", "worker-a", "recipient gone"));
+    assert!(store.take_dirty(), "push marks the store dirty");
+    assert!(!store.take_dirty(), "take_dirty clears the flag");
+
+    assert!(store.get("del_1").is_some());
+    assert!(!store.take_dirty(), "reads stay clean");
+
+    assert!(store.remove("del_missing").is_none());
+    assert!(
+        !store.take_dirty(),
+        "removing a missing id is not a mutation"
+    );
+
+    assert!(store.remove("del_1").is_some());
+    assert!(store.take_dirty(), "remove marks the store dirty");
+}
+
+#[test]
+fn redeliver_requeues_dead_letter_and_resets_retries() {
+    let mut dead_letters = DeadLetterStore::default();
+    let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+    let mut source = make_pending_delivery("del_retry", "worker-a");
+    source.attempts = MAX_DELIVERY_RETRIES;
+    source.last_error = Some("max delivery retries exceeded".to_string());
+    dead_letters.push(DeadLetterEntry::from_pending(
+        &source,
+        "max delivery retries exceeded",
+    ));
+
+    let requeued = requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_retry")
+        .expect("dead letter should requeue by id");
+
+    assert!(dead_letters.is_empty(), "requeued entry leaves the DLQ");
+    assert_eq!(requeued.attempts, 0, "retry count resets on redeliver");
+    assert_eq!(requeued.last_error, None, "stale error clears on redeliver");
+    assert_ne!(
+        requeued.delivery.delivery_id.as_str(),
+        "del_retry",
+        "redeliver mints a fresh delivery id so late acks from the exhausted attempt cannot match"
+    );
+    assert_eq!(
+        requeued.delivery.event_id, source.delivery.event_id,
+        "event id (message identity) is preserved across redeliver"
+    );
+    let pending = pending_deliveries
+        .get(requeued.delivery.delivery_id.as_str())
+        .expect("requeued delivery joins the pending map under its new id");
+    assert_eq!(pending.delivery.body, source.delivery.body);
+    assert_eq!(pending.worker_name, source.worker_name);
+    assert_eq!(
+        pending.queued_at_ms, source.queued_at_ms,
+        "original queue time is preserved for age reporting"
+    );
+
+    assert!(
+        requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_retry").is_none(),
+        "redelivering an unknown id is a no-op"
+    );
+}
+
+#[test]
+fn redeliver_survives_a_stale_ack_from_the_previous_attempt() {
+    // A delivery exhausts its retries and is dead-lettered, then redelivered.
+    let mut dead_letters = DeadLetterStore::default();
+    let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+    let mut source = make_pending_delivery("del_stale", "worker-a");
+    source.attempts = MAX_DELIVERY_RETRIES;
+    let stale_event_id = source.delivery.event_id.as_str().to_string();
+    dead_letters.push(DeadLetterEntry::from_pending(
+        &source,
+        "max delivery retries exceeded",
+    ));
+
+    let requeued = requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_stale")
+        .expect("dead letter should requeue by id");
+    let new_id = requeued.delivery.delivery_id.as_str().to_string();
+
+    // A late ACK from the exhausted attempt arrives carrying the ORIGINAL
+    // delivery id (and its event id). It must not clear the redelivered entry.
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        "del_stale",
+        Some(&stale_event_id),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_none(),
+        "a stale ack for the old id matches nothing"
+    );
+    assert!(
+        pending_deliveries.contains_key(new_id.as_str()),
+        "the redelivered entry survives the stale ack from the previous attempt"
+    );
+
+    // The genuine ack for the redelivered attempt (new id) clears it normally.
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        &new_id,
+        Some(&stale_event_id),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_some(),
+        "the current attempt's ack clears the entry"
+    );
+    assert!(pending_deliveries.is_empty());
+}
+
+// `is_worker_live` only probes child liveness on Unix (`kill(pid, 0)`); the
+// `cfg(not(unix))` implementation always returns `true`, so the stopped-child
+// assertion below is Unix-specific.
+#[cfg(unix)]
+#[tokio::test]
+async fn is_worker_live_gates_redeliver_skip_on_child_liveness() {
+    // The redeliver handler skips entries whose recipient is not running by
+    // probing `is_worker_live` (not mere registration), so a dead-but-present
+    // worker is reported "recipient not running" instead of being requeued and
+    // immediately bounced back to the DLQ.
+    let mut workers = make_worker_registry_with_worker("worker-a").await;
+    assert!(
+        workers.is_worker_live("worker-a"),
+        "a running child is live"
+    );
+    assert!(
+        !workers.is_worker_live("ghost"),
+        "an unregistered recipient is not live"
+    );
+
+    // Kill the child but leave it in the registry (the reap sweep hasn't run).
+    if let Some(handle) = workers.workers.get_mut("worker-a") {
+        let _ = handle.child.start_kill();
+        let _ = handle.child.wait().await;
+    }
+    assert!(
+        !workers.is_worker_live("worker-a"),
+        "a stopped child is not live, so redeliver leaves the entry in the DLQ"
+    );
+    assert!(
+        workers.has_worker("worker-a"),
+        "has_worker still reports the stopped child as present — the gap is_worker_live closes"
+    );
+}
+
+#[test]
+fn dead_letters_round_trip_persistence() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("dead-letters.json");
+    let mut store = DeadLetterStore::default();
+    store.push(make_dead_letter("del_a", "worker-a", "recipient gone"));
+    store.push(make_dead_letter("del_b", "worker-b", "worker_exited"));
+
+    save_dead_letters(&path, &store).expect("dead letters should save");
+
+    let reloaded = DeadLetterStore::new(load_dead_letters(&path));
+    assert_eq!(reloaded.len(), 2);
+    let entry = reloaded.get("del_a").expect("entry reloads by id");
+    assert_eq!(entry.worker_name, WorkerName::from("worker-a"));
+    assert_eq!(entry.reason, "recipient gone");
+    assert_eq!(entry.delivery.event_id, EventId::new("evt_del_a"));
+    assert!(entry.failed_at_ms > 0, "failure timestamp survives reload");
+}
+
+#[test]
+fn shutdown_persists_dead_letters_and_removes_empty_file() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("dead-letters.json");
+
+    let mut store = DeadLetterStore::default();
+    store.push(make_dead_letter("del_keep", "worker-a", "worker_exited"));
+    persist_dead_letters_on_shutdown(&path, true, &store);
+    assert_eq!(
+        DeadLetterStore::new(load_dead_letters(&path)).len(),
+        1,
+        "dead letters survive shutdown"
+    );
+
+    persist_dead_letters_on_shutdown(&path, true, &DeadLetterStore::default());
+    assert!(!path.exists(), "empty store removes the file");
+
+    let mut store = DeadLetterStore::default();
+    store.push(make_dead_letter("del_lost", "worker-a", "worker_exited"));
+    persist_dead_letters_on_shutdown(&path, false, &store);
+    assert!(!path.exists(), "persistence disabled writes nothing");
+}
+
+#[tokio::test]
+async fn retry_exhaustion_dead_letters_instead_of_discarding() {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut exhausted = make_pending_delivery("del_exhausted", "ghost");
+    exhausted.attempts = MAX_DELIVERY_RETRIES;
+    exhausted.failed_attempts = MAX_DELIVERY_RETRIES;
+    exhausted.last_error = Some("failed writing frame".to_string());
+    let mut pending_deliveries =
+        HashMap::from([(DeliveryId::new("del_exhausted"), exhausted.clone())]);
+
+    let outcome = retry_pending_delivery(
+        &DeliveryId::new("del_exhausted"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("exhausted retries should classify as terminal failure");
+
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &DeliveryId::new("del_exhausted"),
+        true,
+        outcome,
+    )
+    .await
+    .expect("terminal outcome should emit");
+
+    assert!(
+        pending_deliveries.is_empty(),
+        "entry leaves the pending map"
+    );
+    let entry = dead_letters
+        .get("del_exhausted")
+        .expect("exhausted delivery is retained in the dead-letter store");
+    assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
+    assert_eq!(entry.reason, "failed writing frame");
+    assert_eq!(entry.delivery.body, exhausted.delivery.body);
+
+    let failed_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("message_delivery_failed should emit")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(failed_frame.payload["kind"], "message_delivery_failed");
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("dead_letter_added should emit")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_exhausted");
+    assert_eq!(dead_frame.payload["reason"], "failed writing frame");
 }
 
 #[tokio::test]
@@ -238,6 +886,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 3,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("failed writing frame".to_string()),
@@ -253,22 +902,71 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
     .await
     .expect("retry should classify missing recipient");
 
-    assert_eq!(
-        outcome,
+    match outcome {
         DeliveryAttemptOutcome::Failed {
-            worker_name: WorkerName::from("ghost"),
-            delivery_id: DeliveryId::new("del_gone"),
-            event_id: EventId::new("evt_gone"),
-            from: "Lead".to_string(),
-            to: MessageTarget::new("Worker"),
-            attempts: 3,
-            last_error: "recipient gone".to_string(),
+            pending,
+            last_error,
+        } => {
+            assert_eq!(pending.worker_name, WorkerName::from("ghost"));
+            assert_eq!(pending.delivery.delivery_id, DeliveryId::new("del_gone"));
+            assert_eq!(pending.delivery.event_id, EventId::new("evt_gone"));
+            assert_eq!(pending.delivery.from, "Lead");
+            assert_eq!(pending.delivery.target, MessageTarget::new("Worker"));
+            assert_eq!(pending.attempts, 3);
+            assert_eq!(last_error, "recipient gone");
         }
-    );
+        other => panic!("missing recipient should fail terminally, got {other:?}"),
+    }
     assert!(
         pending_deliveries.is_empty(),
         "terminal failed deliveries are removed so they cannot retry forever"
     );
+}
+
+#[tokio::test]
+async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut pending_deliveries = HashMap::new();
+
+    let error = super::queue_and_try_delivery_raw(
+        &mut workers,
+        &mut pending_deliveries,
+        "ghost",
+        "evt_initial_failure",
+        "orchestrator",
+        "ghost",
+        "must remain auditable",
+        None,
+        Some(WorkspaceId::new("ws_demo")),
+        None,
+        2,
+        MessageInjectionMode::Wait,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect_err("missing recipient should fail the initial handoff");
+
+    assert!(error.to_string().contains("recipient gone"));
+    assert_eq!(
+        pending_deliveries.len(),
+        1,
+        "the no-DLQ raw path must retain ownership for the maintenance dead-letter path"
+    );
+    let pending = pending_deliveries
+        .values()
+        .next()
+        .expect("failed initial delivery remains pending");
+    assert_eq!(
+        pending.delivery.event_id,
+        EventId::new("evt_initial_failure")
+    );
+    assert_eq!(pending.delivery.body, "must remain auditable");
 }
 
 #[tokio::test]
@@ -305,6 +1003,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 0,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -321,8 +1020,11 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         )
         .await
         {
-            Ok(outcome @ DeliveryAttemptOutcome::Failed { attempts, .. }) => {
-                assert_eq!(attempts, MAX_DELIVERY_RETRIES);
+            Ok(outcome @ DeliveryAttemptOutcome::Failed { .. }) => {
+                let DeliveryAttemptOutcome::Failed { ref pending, .. } = outcome else {
+                    unreachable!();
+                };
+                assert_eq!(pending.attempts, MAX_DELIVERY_RETRIES);
                 // Some platforms can accept a final pipe write after the child exits,
                 // so terminal failure may arrive on the immediate post-cap check.
                 assert!(
@@ -368,9 +1070,16 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     );
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
-    emit_delivery_attempt_outcome(&sdk_out_tx, &DeliveryId::new("del_blip"), true, outcome)
-        .await
-        .expect("failed outcome should emit to sdk_out_tx");
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &DeliveryId::new("del_blip"),
+        true,
+        outcome,
+    )
+    .await
+    .expect("failed outcome should emit to sdk_out_tx");
 
     let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
         .await
@@ -396,6 +1105,21 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         frame.payload.get("last_error").is_none(),
         "wire event should use the typed lastError field only"
     );
+
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("terminal failure should also emit dead_letter_added")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_blip");
+    assert_eq!(
+        dead_letters.len(),
+        1,
+        "terminal failure is retained in the dead-letter store, not discarded"
+    );
+    let entry = dead_letters.get("del_blip").expect("dead letter by id");
+    assert_eq!(entry.delivery.body, "transient auth blip");
+    assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
 }
 
 #[tokio::test]
@@ -419,6 +1143,7 @@ async fn delivery_retry_success_clears_stale_last_error() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 1,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("old transient failure".to_string()),
@@ -441,6 +1166,62 @@ async fn delivery_retry_success_clears_stale_last_error() {
             .and_then(|pending| pending.last_error.as_ref()),
         None
     );
+    assert_eq!(
+        pending_deliveries["del_clear"].failed_attempts, 0,
+        "a successful broker-to-worker handoff resets consecutive failures"
+    );
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn wait_delivery_successful_handoffs_do_not_exhaust_failure_budget() {
+    let worker_name = "worker-busy-wait";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    let mut pending = make_pending_delivery("del_busy_wait", worker_name);
+    pending.attempts = MAX_DELIVERY_RETRIES - 1;
+    pending.delivery.injection_mode = MessageInjectionMode::Wait;
+    let mut pending_deliveries = HashMap::from([(pending.delivery.delivery_id.clone(), pending)]);
+
+    let first = retry_pending_delivery(
+        &DeliveryId::new("del_busy_wait"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("live worker should accept the tenth handoff");
+    assert!(matches!(
+        first,
+        DeliveryAttemptOutcome::Attempted {
+            attempts: MAX_DELIVERY_RETRIES,
+            ..
+        }
+    ));
+
+    let second = retry_pending_delivery(
+        &DeliveryId::new("del_busy_wait"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("a successful handoff must remain redeliverable while its wait ack is pending");
+
+    assert!(matches!(
+        second,
+        DeliveryAttemptOutcome::Attempted {
+            attempts,
+            ..
+        } if attempts == MAX_DELIVERY_RETRIES + 1
+    ));
+    let pending = pending_deliveries
+        .get("del_busy_wait")
+        .expect("successful wait handoffs must not be dead-lettered");
+    assert!(
+        pending.next_retry_at.duration_since(Instant::now()) > Duration::from_secs(60),
+        "wait-mode acknowledgements need a minutes-scale verification window"
+    );
+
     cleanup_worker_registry(workers).await;
 }
 
@@ -511,78 +1292,48 @@ fn normalize_initial_task_keeps_non_empty_values() {
 }
 
 #[test]
-fn ws_base_derivation() {
-    assert_eq!(
-        derive_ws_base_url_from_http("https://api.relaycast.dev"),
-        "wss://api.relaycast.dev"
-    );
-    assert_eq!(
-        derive_ws_base_url_from_http("http://localhost:8787"),
-        "ws://localhost:8787"
-    );
+fn exit_after_task_instruction_appends_clean_exit_contract() {
+    let task = apply_exit_after_task_instruction(Some("Ship the patch".to_string()));
+    assert!(task.starts_with("Ship the patch\n\n## Post-task exit"));
+    assert!(task.contains("output `/exit` on its own line"));
 }
 
 #[test]
-fn relaycast_control_dedup_key_prefers_event_id() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "event_id": "evt_123",
-        "agent": { "name": "worker-a", "cli": "claude", "task": "Ship it" }
-    });
+fn resolve_exit_after_task_maps_spawn_mode_and_explicit_flag() {
+    // Interactive / absent spawn_mode keeps the agent running.
+    assert!(!resolve_exit_after_task(None, None).expect("absent is valid"));
+    assert!(!resolve_exit_after_task(Some("interactive"), None).expect("interactive is valid"));
+    assert!(!resolve_exit_after_task(Some(""), None).expect("blank is valid"));
 
-    assert_eq!(
-        relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
-        Some("control:ws_1:agent.spawn_requested:evt_123".to_string())
-    );
+    // Every accepted task-exit synonym flips the flag on, case/spacing-insensitive.
+    for mode in [
+        "task_exit",
+        "task-exit",
+        "single_shot",
+        "single-shot",
+        " Task_Exit ",
+    ] {
+        assert!(
+            resolve_exit_after_task(Some(mode), None).expect("task-exit synonym is valid"),
+            "spawn_mode '{mode}' should resolve to exit_after_task=true"
+        );
+    }
+
+    // An explicit exit_after_task=true wins even without a spawn_mode.
+    assert!(resolve_exit_after_task(None, Some(true)).expect("explicit flag is valid"));
+    // and does not override an interactive spawn_mode back off.
+    assert!(resolve_exit_after_task(Some("interactive"), Some(true)).expect("explicit flag wins"));
+    assert!(!resolve_exit_after_task(Some("interactive"), Some(false)).expect("both off"));
 }
 
 #[test]
-fn relaycast_control_dedup_key_prefers_spawn_token_for_spawn_requests() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "event_id": "evt_123",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it",
-            "token": "at_live_worker"
-        }
-    });
-
-    assert_eq!(
-        relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
-        Some("control:ws_1:agent.spawn_requested:at_live_worker".to_string())
+fn resolve_exit_after_task_rejects_unknown_spawn_mode() {
+    let error = resolve_exit_after_task(Some("detached"), None)
+        .expect_err("unknown spawn_mode must be rejected");
+    assert!(
+        error.contains("unsupported spawnMode 'detached'"),
+        "error should name the bad mode; got {error}"
     );
-}
-
-#[test]
-fn relaycast_control_dedup_key_falls_back_to_agent_name_for_spawn_requests() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it"
-        }
-    });
-
-    assert_eq!(
-        relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value),
-        Some("control:ws_1:agent.spawn_requested:worker-a".to_string())
-    );
-}
-
-#[test]
-fn relaycast_control_dedup_key_falls_back_to_serialized_payload() {
-    let value = json!({
-        "type": "agent.release_requested",
-        "agent": { "name": "worker-a" }
-    });
-
-    let key = relaycast_ws_control_dedup_key("ws_1", "agent.release_requested", &value)
-        .expect("fallback dedup key");
-    assert!(key.starts_with("control:ws_1:agent.release_requested:{"));
-    assert!(key.contains("\"worker-a\""));
 }
 
 #[test]
@@ -603,17 +1354,9 @@ fn relaycast_ws_spawn_token_extracts_agent_token() {
 
 #[test]
 fn relaycast_ws_spawn_name_only_control_key_skips_second_name_dedup() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it"
-        }
-    });
-
-    let control_key = relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value)
-        .expect("control dedup key");
+    // A control key keyed on the agent name matches the local spawn-echo key,
+    // so the second (name-based) dedup must NOT fire.
+    let control_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
     let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
 
     assert_eq!(control_key, local_key);
@@ -625,18 +1368,9 @@ fn relaycast_ws_spawn_name_only_control_key_skips_second_name_dedup() {
 
 #[test]
 fn relaycast_ws_spawn_event_id_echo_still_uses_local_name_dedup() {
-    let value = json!({
-        "type": "agent.spawn_requested",
-        "event_id": "evt_123",
-        "agent": {
-            "name": "worker-a",
-            "cli": "claude",
-            "task": "Ship it"
-        }
-    });
-
-    let control_key = relaycast_ws_control_dedup_key("ws_1", "agent.spawn_requested", &value)
-        .expect("control dedup key");
+    // A control key keyed on an event id differs from the name-based local
+    // spawn-echo key, so the local dedup must still apply.
+    let control_key = "control:ws_1:agent.spawn_requested:evt_123".to_string();
     let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
 
     assert_ne!(control_key, local_key);
@@ -798,6 +1532,19 @@ fn contract_timeout_fixture_requires_terminal_failed_guard_before_late_ack() {
         "delivery_ack branch lacks terminal guard for timeout status \"{}\" and late event \"{}\"",
         expected_terminal_status,
         late_event_kind
+    );
+}
+
+#[test]
+fn worker_reported_delivery_failures_use_the_dead_letter_path() {
+    let source = include_str!("worker_events.rs");
+    let failure_branch = source
+        .split("msg_type == \"delivery_failed\"")
+        .nth(1)
+        .expect("worker_events.rs must include delivery_failed handling");
+    assert!(
+        failure_branch.contains("emit_dropped_delivery_failures"),
+        "worker-reported terminal failures must be retained in the dead-letter store"
     );
 }
 
@@ -1028,6 +1775,130 @@ fn parse_sort_key_normalizes_numeric_seconds_to_millis() {
 }
 
 #[test]
+fn parse_sort_key_handles_edge_inputs() {
+    // The seconds/millis pivot: values below 4_102_444_800 (2100-01-01 in
+    // seconds) are treated as seconds, values at or above it as millis.
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("4102444799"),
+        Some(4_102_444_799_000)
+    );
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("4102444800"),
+        Some(4_102_444_800)
+    );
+    // Negative epochs are still scaled as seconds.
+    assert_eq!(parse_sort_key_from_raw_timestamp("-5"), Some(-5_000));
+    // RFC3339 with an offset normalizes to UTC millis.
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("2026-02-23T12:00:00+02:00"),
+        Some(1_771_840_800_000)
+    );
+    // Whitespace-only and unparseable inputs yield no sort key.
+    assert_eq!(parse_sort_key_from_raw_timestamp("   "), None);
+    assert_eq!(parse_sort_key_from_raw_timestamp("soon"), None);
+    assert_eq!(parse_sort_key_from_raw_timestamp("1.5e9"), None);
+}
+
+#[test]
+fn typed_thread_message_parses_broker_recorded_shape() {
+    let recorded = json!({
+        "event_id": "evt_recorded_1",
+        "from": "Lead",
+        "target": "#general",
+        "text": "typed lane",
+        "thread_id": null,
+        "workspace_id": "ws_1",
+        "workspace_alias": "main",
+        "timestamp": "2026-02-23T10:00:00Z",
+    });
+    assert!(
+        matches!(
+            TypedThreadMessage::parse(&recorded),
+            Some(TypedThreadMessage::Recorded(_))
+        ),
+        "broker-recorded thread history events must parse typed"
+    );
+
+    let self_names = HashSet::from(["broker".to_string()]);
+    let threads = build_thread_infos(std::slice::from_ref(&recorded), &self_names);
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].thread_id, "#general");
+    assert_eq!(threads[0].last_message.as_deref(), Some("typed lane"));
+    assert_eq!(
+        threads[0].last_message_at.as_deref(),
+        Some("2026-02-23T10:00:00Z")
+    );
+}
+
+#[test]
+fn typed_thread_message_parses_dm_history_shape() {
+    // `relaycast::MessageWithMeta` serialized to JSON with conversation_id
+    // and participants injected by `get_all_dms`.
+    let dm_history = json!({
+        "id": "184467440737095530",
+        "agent_name": "WorkerA",
+        "agent_id": "147298826957365248",
+        "text": "dm history payload",
+        "blocks": null,
+        "metadata": {},
+        "attachments": [],
+        "created_at": "2026-02-23T10:05:00Z",
+        "reply_count": 0,
+        "reactions": [],
+        "read_by_count": 0,
+        "injection_mode": null,
+        "conversation_id": "dm_456",
+        "participants": ["WorkerA", "WorkerB"],
+    });
+    assert!(
+        matches!(
+            TypedThreadMessage::parse(&dm_history),
+            Some(TypedThreadMessage::DmHistory(_))
+        ),
+        "REST DM history messages must parse typed"
+    );
+
+    let self_names = HashSet::from(["broker".to_string()]);
+    let threads = build_thread_infos(std::slice::from_ref(&dm_history), &self_names);
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].thread_id, "dm_456");
+    assert_eq!(threads[0].name, "WorkerA ↔ WorkerB");
+    assert_eq!(
+        threads[0].last_message.as_deref(),
+        Some("dm history payload")
+    );
+    assert_eq!(threads[0].unread_count, 1);
+}
+
+#[test]
+fn typed_and_tolerant_thread_grouping_agree_for_recorded_events() {
+    // The typed lane must group a broker-recorded event exactly like the
+    // tolerant probing lane groups its untyped equivalent (an event
+    // missing `event_id` falls back to field probing).
+    let typed_event = json!({
+        "event_id": "evt_recorded_2",
+        "from": "WorkerA",
+        "target": "broker",
+        "text": "status update",
+        "thread_id": null,
+        "timestamp": "2026-02-23T10:00:00Z",
+    });
+    let untyped_event = json!({
+        "from": "WorkerA",
+        "target": "broker",
+        "text": "status update",
+        "timestamp": "2026-02-23T10:00:00Z",
+    });
+    assert!(TypedThreadMessage::parse(&typed_event).is_some());
+    assert!(TypedThreadMessage::parse(&untyped_event).is_none());
+
+    let self_names = HashSet::from(["broker".to_string()]);
+    let typed_threads = build_thread_infos(std::slice::from_ref(&typed_event), &self_names);
+    let tolerant_threads = build_thread_infos(std::slice::from_ref(&untyped_event), &self_names);
+    assert_eq!(typed_threads, tolerant_threads);
+}
+
+#[test]
 fn build_agent_state_transition_event_has_expected_shape() {
     let payload = build_agent_state_transition_event("worker-a", "spawned", Some("sdk_spawn"));
     assert_eq!(payload["type"], "agent.state");
@@ -1065,14 +1936,14 @@ fn preregistration_error_message_does_not_invent_retry_after_for_transport_error
 fn injection_format_preserved() {
     let rendered = format_injection("alice", "evt_1", "hello", "bob");
     assert!(rendered.contains("<system-reminder>"));
-    assert!(rendered.contains("mcp__relaycast__send_dm"));
+    assert!(rendered.contains("mcp__agent-relay__send_dm"));
     assert!(rendered.contains("Relay message from alice [evt_1]: hello"));
 }
 
 #[test]
 fn injection_format_includes_channel() {
     let rendered = format_injection("alice", "evt_1", "hello", "#general");
-    assert!(rendered.contains("mcp__relaycast__post_message"));
+    assert!(rendered.contains("mcp__agent-relay__post_message"));
     assert!(rendered.contains("channel: \"general\""));
     assert!(rendered.contains("Relay message from alice in #general [evt_1]: hello"));
 }
@@ -1113,27 +1984,6 @@ fn sender_is_dashboard_label_accepts_legacy_dashboard_senders() {
     ));
     assert!(sender_is_dashboard_label("my-project", "my-project"));
     assert!(!sender_is_dashboard_label("Lead", "my-project"));
-}
-
-#[test]
-fn display_target_for_dashboard_maps_self_identity() {
-    let mut self_names = HashSet::new();
-    self_names.insert("broker-951762d5".to_string());
-    self_names.insert("DashProbe".to_string());
-    let primary = "my-project";
-
-    assert_eq!(
-        display_target_for_dashboard("broker-951762d5", &self_names, primary),
-        "my-project"
-    );
-    assert_eq!(
-        display_target_for_dashboard("dashprobe", &self_names, primary),
-        "my-project"
-    );
-    assert_eq!(
-        display_target_for_dashboard("Lead", &self_names, primary),
-        "Lead".to_string()
-    );
 }
 
 #[test]
@@ -1203,6 +2053,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -1225,6 +2076,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -1254,15 +2106,22 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 2,
+        failed_attempts: 1,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: Some("previous blip".to_string()),
     };
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
 
-    emit_dropped_delivery_failures(&sdk_out_tx, &[pending], "worker_permanently_dead")
-        .await
-        .expect("dropped delivery failure should emit");
+    emit_dropped_delivery_failures(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &[pending],
+        "worker_permanently_dead",
+    )
+    .await
+    .expect("dropped delivery failure should emit");
 
     let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
         .await
@@ -1277,6 +2136,27 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
     assert_eq!(frame.payload["to"], "A");
     assert_eq!(frame.payload["attempts"].as_u64(), Some(2));
     assert_eq!(frame.payload["lastError"], "worker_permanently_dead");
+
+    // The terminal failure is followed by the dead_letter_added event so
+    // consumers can track the capture, not just the failure.
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("dead_letter_added should be emitted after the failure")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.msg_type, "event");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_1");
+    assert_eq!(dead_frame.payload["reason"], "worker_permanently_dead");
+
+    assert_eq!(
+        dead_letters.len(),
+        1,
+        "dropped deliveries are retained in the dead-letter store"
+    );
+    assert_eq!(
+        dead_letters.get("del_1").expect("dead letter by id").reason,
+        "worker_permanently_dead"
+    );
 }
 
 #[test]
@@ -1296,6 +2176,7 @@ fn should_clear_pending_delivery_when_event_id_matches() {
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 1,
+        failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
@@ -1330,6 +2211,7 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
                 injection_mode: MessageInjectionMode::Wait,
             },
             attempts: 1,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
@@ -1349,6 +2231,387 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
 }
 
 #[test]
+fn delivery_read_ack_classification_skips_synthetic_event_ids() {
+    let cases = [
+        ("", Some("blank_event_id")),
+        ("   ", Some("blank_event_id")),
+        ("http_123", Some("http_api_synthetic_event_id")),
+        ("init_123", Some("initial_task_synthetic_event_id")),
+        ("cont_load_123", Some("continuity_synthetic_event_id")),
+        ("flush_123", Some("manual_flush_synthetic_event_id")),
+        ("msg_123", None),
+        ("1780911342_317109", None),
+    ];
+
+    for (event_id, expected) in cases {
+        let event_id = EventId::new(event_id);
+        assert_eq!(synthetic_delivery_read_ack_reason(&event_id), expected);
+        assert_eq!(
+            delivery_read_ack_is_relaycast_message(&event_id),
+            expected.is_none()
+        );
+    }
+}
+
+#[test]
+fn delivery_read_ack_event_shape_is_stable() {
+    let event = BrokerEvent::DeliveryReadAck {
+        name: WorkerName::new("Worker1"),
+        delivery_id: DeliveryId::new("del_1"),
+        event_id: EventId::new("msg_1"),
+        status: DeliveryReadAckStatus::SkippedSynthetic,
+        reason: Some("initial_task_synthetic_event_id".to_string()),
+    };
+
+    let encoded = serde_json::to_value(&event).expect("event serializes");
+    assert_eq!(encoded["kind"], "delivery_read_ack");
+    assert_eq!(encoded["name"], "Worker1");
+    assert_eq!(encoded["delivery_id"], "del_1");
+    assert_eq!(encoded["event_id"], "msg_1");
+    assert_eq!(encoded["status"], "skipped_synthetic");
+    assert_eq!(encoded["reason"], "initial_task_synthetic_event_id");
+}
+
+#[tokio::test]
+async fn confirmed_delivery_read_ack_marks_relaycast_exactly_once() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages/msg_1/read")
+            .header("authorization", "Bearer at_live_supplied_recipient");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "message_id": "msg_1",
+                "agent_id": "agent_supplied_recipient",
+                "read_at": "2026-06-08T10:00:00.000Z"
+            }
+        }));
+    });
+    let spawn_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "id": "agent_fresh_wrong",
+                "workspace_id": "ws_fresh_wrong",
+                "name": "recipient",
+                "status": "online",
+                "created_at": "2026-06-08T10:00:00.000Z",
+                "token": "at_live_fresh_wrong"
+            }
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_supplied_recipient");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut pending = HashMap::from([(
+        DeliveryId::new("del_1"),
+        pending_delivery("recipient", "del_1", "msg_1"),
+    )]);
+
+    let confirmed = clear_pending_delivery_if_event_matches(
+        &mut pending,
+        "del_1",
+        Some("msg_1"),
+        "recipient",
+        "delivery_ack",
+    )
+    .expect("matching delivery_ack confirms the pending delivery");
+
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &confirmed.delivery.delivery_id,
+        &confirmed.delivery.event_id,
+    );
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("delivery_read_ack telemetry should arrive")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(frame.msg_type, "event");
+    assert_eq!(frame.payload["kind"], "delivery_read_ack");
+    assert_eq!(frame.payload["name"], "recipient");
+    assert_eq!(frame.payload["delivery_id"], "del_1");
+    assert_eq!(frame.payload["event_id"], "msg_1");
+    assert_eq!(frame.payload["status"], "marked");
+    assert!(frame.payload.get("reason").is_none());
+    read_mock.assert_hits(1);
+    spawn_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn duplicate_delivery_read_ack_suppresses_repeat_mark_read() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages/msg_dup/read")
+            .header("authorization", "Bearer at_live_recipient_dup");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "message_id": "msg_dup",
+                "agent_id": "agent_recipient_dup",
+                "read_at": "2026-06-08T10:00:00.000Z"
+            }
+        }));
+    });
+    let spawn_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "id": "agent_fresh_wrong",
+                "workspace_id": "ws_fresh_wrong",
+                "name": "recipient",
+                "status": "online",
+                "created_at": "2026-06-08T10:00:00.000Z",
+                "token": "at_live_fresh_wrong"
+            }
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_recipient_dup");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_dup_1"),
+        &EventId::new("msg_dup"),
+    );
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_dup_2"),
+        &EventId::new("msg_dup"),
+    );
+
+    let mut statuses = Vec::new();
+    for _ in 0..2 {
+        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("delivery_read_ack telemetry should arrive")
+            .expect("delivery_read_ack event emitted");
+        assert_eq!(frame.payload["kind"], "delivery_read_ack");
+        statuses.push(
+            frame.payload["status"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+    }
+
+    assert!(statuses.iter().any(|status| status == "marked"));
+    assert!(statuses
+        .iter()
+        .any(|status| status == "suppressed_duplicate"));
+    read_mock.assert_hits(1);
+    spawn_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn stale_delivery_ack_event_id_does_not_mark_read() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages/msg_current/read");
+        then.status(200).json_body(json!({"ok": true, "data": {}}));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_recipient");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut pending = HashMap::from([(
+        DeliveryId::new("del_stale"),
+        pending_delivery("recipient", "del_stale", "msg_current"),
+    )]);
+
+    let confirmed = clear_pending_delivery_if_event_matches(
+        &mut pending,
+        "del_stale",
+        Some("msg_stale"),
+        "recipient",
+        "delivery_ack",
+    );
+    if let Some(confirmed) = confirmed {
+        mark_delivery_read_ack(
+            &client,
+            &tx,
+            &mut dedup,
+            &WorkerName::new("recipient"),
+            Some("codex"),
+            &confirmed.delivery.delivery_id,
+            &confirmed.delivery.event_id,
+        );
+    }
+
+    assert!(pending.contains_key("del_stale"));
+    read_mock.assert_hits(0);
+    assert!(tokio::time::timeout(Duration::from_millis(50), rx.recv())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn synthetic_delivery_read_ack_skips_mark_read() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages/init_123/read");
+        then.status(200).json_body(json!({"ok": true, "data": {}}));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_init"),
+        &EventId::new("init_123"),
+    );
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_init_duplicate"),
+        &EventId::new("init_123"),
+    );
+
+    let first = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("synthetic skip telemetry should arrive")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(first.payload["kind"], "delivery_read_ack");
+    assert_eq!(first.payload["status"], "skipped_synthetic");
+    assert_eq!(first.payload["reason"], "initial_task_synthetic_event_id");
+
+    let duplicate = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("duplicate synthetic telemetry should arrive")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(duplicate.payload["kind"], "delivery_read_ack");
+    assert_eq!(duplicate.payload["status"], "suppressed_duplicate");
+    assert_eq!(duplicate.payload["reason"], "duplicate_delivery_read_ack");
+    read_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn slow_delivery_read_ack_does_not_block_confirmation_path() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages/msg_slow/read")
+            .header("authorization", "Bearer at_live_slow_recipient");
+        then.status(200)
+            .delay(Duration::from_millis(200))
+            .json_body(json!({
+                "ok": true,
+                "data": {
+                    "message_id": "msg_slow",
+                    "agent_id": "agent_slow_recipient",
+                    "read_at": "2026-06-08T10:00:00.000Z"
+                }
+            }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_slow_recipient");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut pending = HashMap::from([(
+        DeliveryId::new("del_slow"),
+        pending_delivery("recipient", "del_slow", "msg_slow"),
+    )]);
+
+    let confirmed = clear_pending_delivery_if_event_matches(
+        &mut pending,
+        "del_slow",
+        Some("msg_slow"),
+        "recipient",
+        "delivery_ack",
+    )
+    .expect("matching delivery_ack confirms the pending delivery");
+    send_broker_event(
+        &tx,
+        BrokerEvent::MessageDeliveryConfirmed {
+            name: WorkerName::new("recipient"),
+            delivery_id: confirmed.delivery.delivery_id.clone(),
+            event_id: confirmed.delivery.event_id.clone(),
+            from: confirmed.delivery.from.clone(),
+            to: confirmed.delivery.target.clone(),
+        },
+    )
+    .await
+    .expect("confirmation event should enqueue before read-ack scheduling");
+
+    let start = Instant::now();
+    mark_delivery_read_ack_with_timeout(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &confirmed.delivery.delivery_id,
+        &confirmed.delivery.event_id,
+        Duration::from_millis(20),
+    );
+    assert!(
+        start.elapsed() < Duration::from_millis(50),
+        "read-ack scheduling must not wait for slow Relaycast mark_read"
+    );
+
+    let confirmation = tokio::time::timeout(Duration::from_millis(50), rx.recv())
+        .await
+        .expect("delivery confirmation must not wait on mark_read")
+        .expect("confirmation event emitted");
+    assert_eq!(confirmation.payload["kind"], "message_delivery_confirmed");
+    assert_eq!(confirmation.payload["delivery_id"], "del_slow");
+
+    let read_ack = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("read-ack failure telemetry should arrive after timeout")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(read_ack.payload["kind"], "delivery_read_ack");
+    assert_eq!(read_ack.payload["status"], "failed");
+    assert!(read_ack.payload["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("timed out"));
+    read_mock.assert_hits(1);
+}
+
+#[test]
 fn should_clear_pending_delivery_without_event_id_for_compatibility() {
     let pending = PendingDelivery {
         worker_name: WorkerName::from("A"),
@@ -1365,6 +2628,7 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
             injection_mode: MessageInjectionMode::Wait,
         },
         attempts: 1,
+        failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
@@ -1893,29 +3157,33 @@ fn is_pid_alive_eperm_means_alive() {
 
 #[test]
 fn continuity_dir_derives_correct_path_from_state_json() {
-    let state_path = std::path::Path::new("/project/.agent-relay/state.json");
+    let state_path = std::path::Path::new("/project/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
     assert_eq!(
         result,
-        std::path::PathBuf::from("/project/.agent-relay/continuity")
+        std::path::PathBuf::from("/project/.agentworkforce/relay/continuity")
     );
 }
 
 #[test]
 fn continuity_dir_works_with_nested_project_path() {
-    let state_path = std::path::Path::new("/home/user/projects/my-app/.agent-relay/state.json");
+    let state_path =
+        std::path::Path::new("/home/user/projects/my-app/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
     assert_eq!(
         result,
-        std::path::PathBuf::from("/home/user/projects/my-app/.agent-relay/continuity")
+        std::path::PathBuf::from("/home/user/projects/my-app/.agentworkforce/relay/continuity")
     );
 }
 
 #[test]
 fn continuity_dir_preserves_relative_paths() {
-    let state_path = std::path::Path::new(".agent-relay/state.json");
+    let state_path = std::path::Path::new(".agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
-    assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+    assert_eq!(
+        result,
+        std::path::PathBuf::from(".agentworkforce/relay/continuity")
+    );
 }
 
 #[test]
@@ -2021,6 +3289,43 @@ fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_config() {
 }
 
 #[test]
+fn http_api_spawn_spec_uses_native_harness_command_without_provider_allowlist() {
+    let harness_config = ResolvedHarnessConfig::Native(NativeHarnessConfig {
+        command: "/usr/bin/node".to_string(),
+        args: vec!["sidecar.js".to_string()],
+        cwd: Some("/tmp/workspace".to_string()),
+        env: None,
+        session_id: "native_123".to_string(),
+        metadata: None,
+    });
+
+    let spec = build_http_api_spawn_spec(
+        WorkerName::from("worker-a"),
+        "codex".to_string(),
+        Some("headless".to_string()),
+        None,
+        vec![],
+        vec![ChannelName::from("general")],
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(harness_config),
+    )
+    .expect("native harness config should supply its own command");
+
+    assert!(matches!(spec.runtime, AgentRuntime::Headless));
+    assert!(spec.provider.is_none());
+    assert_eq!(spec.cli.as_deref(), Some("codex"));
+    assert_eq!(spec.session_id.as_deref(), Some("native_123"));
+    assert!(matches!(
+        spec.harness_config,
+        Some(ResolvedHarnessConfig::Native(_))
+    ));
+}
+
+#[test]
 fn http_api_spawn_spec_rejects_unknown_headless_provider_without_harness_config() {
     let error = build_http_api_spawn_spec(
         WorkerName::from("worker-a"),
@@ -2069,7 +3374,7 @@ fn headless_provider_command_opencode_places_flags_before_task() {
     let (bin, args) = super::headless_provider_command(
         &ProtocolHeadlessProvider::Opencode,
         "hello world",
-        &["--agent".to_string(), "relaycast".to_string()],
+        &["--agent".to_string(), "agent-relay".to_string()],
     );
 
     assert_eq!(bin, "opencode");
@@ -2191,4 +3496,524 @@ fn model_flag_injected_with_other_args() {
         Some("gpt-4o".to_string()),
         "model should be injected when other unrelated args exist"
     );
+}
+
+// ---------------------------------------------------------------------------
+// resolve_workspace / observer-token scope selection
+//
+// Exercises the workspace-resolution precedence shared by `/api/send` and
+// `/api/observer-token` (see `resolve_workspace` in `runtime/api.rs`), and
+// the fixed read-only scope set minted for `/api/observer-token` — the
+// endpoint that lets Pear's "Join as observer" link stop embedding the raw
+// `rk_live_...` workspace key (see `default_observer_token_scopes`).
+// ---------------------------------------------------------------------------
+
+fn test_relay_workspace(workspace_id: &str, workspace_alias: Option<&str>) -> RelayWorkspace {
+    let (ws_control_tx, _ws_control_rx) = mpsc::channel::<WsControl>(1);
+    RelayWorkspace {
+        workspace_id: WorkspaceId::from(workspace_id.to_string()),
+        workspace_alias: workspace_alias.map(|alias| WorkspaceAlias::from(alias.to_string())),
+        relay_workspace_key: "rk_live_test".to_string(),
+        self_name: "broker".to_string(),
+        self_agent_id: AgentId::from("agent_broker".to_string()),
+        self_names: HashSet::from(["broker".to_string()]),
+        self_agent_ids: HashSet::from([AgentId::from("agent_broker".to_string())]),
+        http_client: RelaycastHttpClient::new(None, "rk_live_test", "broker", "codex"),
+        ws_control_tx,
+    }
+}
+
+fn test_workspace_lookup(workspaces: &[RelayWorkspace]) -> HashMap<WorkspaceId, RelayWorkspace> {
+    workspaces
+        .iter()
+        .map(|workspace| (workspace.workspace_id.clone(), workspace.clone()))
+        .collect()
+}
+
+#[test]
+fn resolve_workspace_picks_the_sole_attached_workspace_by_default() {
+    let workspaces = vec![test_relay_workspace("ws_1", Some("main"))];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(None, None, &workspaces, &lookup, None)
+        .expect("single attached workspace should resolve without a selector");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_1".to_string()));
+}
+
+#[test]
+fn resolve_workspace_matches_explicit_workspace_id() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("main")),
+        test_relay_workspace("ws_2", Some("secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(Some("ws_2"), None, &workspaces, &lookup, None)
+        .expect("explicit workspace_id should resolve");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_2".to_string()));
+}
+
+#[test]
+fn resolve_workspace_matches_alias_case_insensitively() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("Main")),
+        test_relay_workspace("ws_2", Some("Secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(None, Some("secondary"), &workspaces, &lookup, None)
+        .expect("workspace_alias lookup should be case-insensitive");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_2".to_string()));
+}
+
+#[test]
+fn resolve_workspace_falls_back_to_configured_default() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("main")),
+        test_relay_workspace("ws_2", Some("secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    let resolved = resolve_workspace(None, None, &workspaces, &lookup, Some("ws_2"))
+        .expect("default_workspace_id should resolve when no explicit selector is given");
+    assert_eq!(resolved.workspace_id, WorkspaceId::from("ws_2".to_string()));
+}
+
+#[test]
+fn resolve_workspace_is_ambiguous_with_multiple_workspaces_and_no_default() {
+    let workspaces = vec![
+        test_relay_workspace("ws_1", Some("main")),
+        test_relay_workspace("ws_2", Some("secondary")),
+    ];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    // `RelayWorkspace` doesn't implement `Debug` (it embeds SDK client
+    // handles), so assert via `match` instead of `expect_err`/`unwrap_err`.
+    match resolve_workspace(None, None, &workspaces, &lookup, None) {
+        Err(error) => assert!(
+            error.starts_with("ambiguous_workspace:"),
+            "unexpected error: {error}"
+        ),
+        Ok(_) => panic!("multiple attached workspaces with no selector should be ambiguous"),
+    }
+}
+
+#[test]
+fn resolve_workspace_reports_not_found_for_unknown_id() {
+    let workspaces = vec![test_relay_workspace("ws_1", Some("main"))];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    match resolve_workspace(Some("ws_missing"), None, &workspaces, &lookup, None) {
+        Err(error) => assert!(
+            error.starts_with("workspace_not_found:"),
+            "unexpected error: {error}"
+        ),
+        Ok(_) => panic!("unknown workspace_id should not resolve"),
+    }
+}
+
+#[test]
+fn resolve_workspace_reports_not_found_for_unknown_alias() {
+    let workspaces = vec![test_relay_workspace("ws_1", Some("main"))];
+    let lookup = test_workspace_lookup(&workspaces);
+
+    match resolve_workspace(None, Some("nope"), &workspaces, &lookup, None) {
+        Err(error) => assert!(
+            error.starts_with("workspace_not_found:"),
+            "unexpected error: {error}"
+        ),
+        Ok(_) => panic!("unknown workspace_alias should not resolve"),
+    }
+}
+
+#[test]
+fn default_observer_token_scopes_are_read_only_and_exclude_unneeded_scopes() {
+    let scopes = default_observer_token_scopes();
+
+    // Assert the *exact* set (not just "contains these 7"), so an
+    // accidentally-added extra scope -- including a write scope -- fails this
+    // test instead of silently widening the grant on a credential-minting
+    // endpoint.
+    let actual: HashSet<ObserverScope> = scopes.iter().copied().collect();
+    let expected: HashSet<ObserverScope> = [
+        ObserverScope::StreamRead,
+        ObserverScope::MessagesRead,
+        ObserverScope::ThreadsRead,
+        ObserverScope::DmsRead,
+        ObserverScope::ChannelsRead,
+        ObserverScope::ActivityRead,
+        ObserverScope::AgentsRead,
+        ObserverScope::ReactionsRead,
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        scopes.len(),
+        8,
+        "expected exactly 8 default observer token scopes, got {scopes:?}"
+    );
+    assert_eq!(
+        actual, expected,
+        "default observer token scopes must be exactly the minimal read-only set"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// mint_or_recover_observer_token
+//
+// `/api/observer-token` mints a fixed-name token (`pear-dashboard-observer`
+// by default) per workspace with no way for the caller to know in advance
+// whether a previous mint already claimed that name. relaycast enforces a
+// `(workspace_id, name)` unique index, so a repeat mint fails with
+// `observer_token_name_conflict` (409, relaycast#232). These tests cover
+// the list+rotate fallback that makes repeat minting succeed anyway.
+// ---------------------------------------------------------------------------
+
+/// The exact serialized scope set the `/api/observer-token` endpoint mints
+/// (`default_observer_token_scopes()`). A recovered token must carry exactly
+/// this set (and no filters) for the list+rotate fallback to rotate it, so
+/// the "happy path" test tokens are built with it.
+fn default_observer_token_scope_strings() -> Vec<&'static str> {
+    vec![
+        "stream:read",
+        "messages:read",
+        "threads:read",
+        "dms:read",
+        "channels:read",
+        "activity:read",
+        "agents:read",
+        "reactions:read",
+    ]
+}
+
+fn observer_token_json(id: &str, name: &str, token: Option<&str>) -> serde_json::Value {
+    observer_token_json_with_scopes(id, name, token, &default_observer_token_scope_strings())
+}
+
+fn observer_token_json_with_scopes(
+    id: &str,
+    name: &str,
+    token: Option<&str>,
+    scopes: &[&str],
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": name,
+        "description": null,
+        "scopes": scopes,
+        "filters": {},
+        "status": "active",
+        "expires_at": null,
+        "created_at": "2026-06-08T10:00:00.000Z",
+        "updated_at": null,
+        "revoked_at": null,
+        "last_used_at": null,
+        "token": token,
+    })
+}
+
+fn observer_token_name_conflict_body() -> serde_json::Value {
+    json!({
+        "ok": false,
+        "error": {
+            "code": "observer_token_name_conflict",
+            "message": "an observer token named 'pear-dashboard-observer' already exists",
+        },
+    })
+}
+
+#[tokio::test]
+async fn observer_token_name_conflict_falls_back_to_list_and_rotate() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": [
+                observer_token_json("ot_other", "some-other-observer", None),
+                observer_token_json("ot_existing", "pear-dashboard-observer", None),
+            ],
+        }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let outcome =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await
+            .expect("name conflict should fall back to a recovered token, not fail");
+
+    assert!(
+        outcome.is_recovered_via_rotate(),
+        "conflict fallback should report RecoveredViaRotate, not Created"
+    );
+    let token = outcome.into_token();
+    assert_eq!(token.id, "ot_existing");
+    assert_eq!(token.token.as_deref(), Some("ot_live_rotated"));
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    rotate_mock.assert_hits(1);
+}
+
+#[tokio::test]
+async fn observer_token_non_conflict_error_does_not_trigger_fallback() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(403).json_body(json!({
+            "ok": false,
+            "error": {
+                "code": "forbidden",
+                "message": "workspace key lacks permission to mint observer tokens",
+            },
+        }));
+    });
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200)
+            .json_body(json!({ "ok": true, "data": [] }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let result =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await;
+
+    match result {
+        Err(ObserverTokenMintError::Failed(message)) => {
+            assert!(
+                message.contains("forbidden"),
+                "unexpected error message: {message}"
+            );
+        }
+        Err(ObserverTokenMintError::TimedOut) => {
+            panic!("a 403 should propagate as a failure, not a timeout")
+        }
+        Ok(ObserverTokenMintOutcome::Created(_)) => {
+            panic!("a 403 create failure must not be reported as success")
+        }
+        Ok(ObserverTokenMintOutcome::RecoveredViaRotate(_)) => {
+            panic!("a non-conflict error must not trigger the list+rotate fallback")
+        }
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(0);
+    rotate_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn observer_token_conflict_without_matching_name_propagates_original_error() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    // The list doesn't contain a token under the attempted name -- e.g. a
+    // race with a concurrent revoke between the conflicting create and this
+    // recovery attempt. This must not panic; the original conflict error is
+    // propagated as-is.
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": [observer_token_json("ot_other", "some-other-observer", None)],
+        }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/observer-tokens/ot_other/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_other", "some-other-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let result =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await;
+
+    match result {
+        Err(ObserverTokenMintError::Failed(message)) => {
+            assert!(
+                message.contains("observer_token_name_conflict"),
+                "expected the original conflict error to propagate, got: {message}"
+            );
+        }
+        _ => panic!(
+            "expected the original conflict error to propagate when no matching name is \
+             found, got a different outcome"
+        ),
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    // Nothing matched `token_name`, so rotate must never be called against
+    // an unrelated token.
+    rotate_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn observer_token_conflict_with_mismatched_scopes_propagates_original_error() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    // A token under the attempted name exists, but it was minted with a
+    // broader scope set than `/api/observer-token` grants (here: an extra
+    // `files:read`). Rotating and returning it would hand the caller
+    // credentials with access this endpoint never promises, so the recovery
+    // path must treat it as a non-match and let the original conflict
+    // propagate rather than rotate it.
+    let mut broader_scopes = default_observer_token_scope_strings();
+    broader_scopes.push("files:read");
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": [observer_token_json_with_scopes(
+                "ot_existing",
+                "pear-dashboard-observer",
+                None,
+                &broader_scopes,
+            )],
+        }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let result =
+        mint_or_recover_observer_token(&client, "pear-dashboard-observer", Duration::from_secs(2))
+            .await;
+
+    match result {
+        Err(ObserverTokenMintError::Failed(message)) => {
+            assert!(
+                message.contains("observer_token_name_conflict"),
+                "expected the original conflict error to propagate, got: {message}"
+            );
+        }
+        _ => panic!(
+            "expected the original conflict error to propagate when the existing token's \
+             scopes don't match the endpoint contract, got a different outcome"
+        ),
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    // The named token's scopes didn't match the contract, so it must never be
+    // rotated.
+    rotate_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn observer_token_fallback_respects_the_supplied_timeout() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let create_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens");
+        then.status(409)
+            .json_body(observer_token_name_conflict_body());
+    });
+    // Slower than the timeout passed below, so the list+rotate fallback
+    // itself must be bounded rather than left to hang indefinitely.
+    let list_mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/observer-tokens");
+        then.status(200)
+            .delay(Duration::from_millis(300))
+            .json_body(json!({
+                "ok": true,
+                "data": [observer_token_json("ot_existing", "pear-dashboard-observer", None)],
+            }));
+    });
+    let rotate_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/observer-tokens/ot_existing/rotate");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": observer_token_json("ot_existing", "pear-dashboard-observer", Some("ot_live_rotated")),
+        }));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    // 200ms comfortably exceeds the near-instant mocked create (so the shared
+    // budget isn't exhausted before the conflict branch is even reached) yet
+    // stays below the 300ms list delay, so the timeout can only fire inside
+    // the list+rotate fallback -- which is exactly what this test exercises.
+    let result = mint_or_recover_observer_token(
+        &client,
+        "pear-dashboard-observer",
+        Duration::from_millis(200),
+    )
+    .await;
+
+    match result {
+        Err(ObserverTokenMintError::TimedOut) => {}
+        Err(ObserverTokenMintError::Failed(message)) => {
+            panic!("expected a timeout, got a non-timeout failure: {message}")
+        }
+        Ok(_) => panic!("a hung list+rotate fallback must not be reported as success"),
+    }
+
+    create_mock.assert_hits(1);
+    list_mock.assert_hits(1);
+    rotate_mock.assert_hits(0);
 }

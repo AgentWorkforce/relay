@@ -33,6 +33,15 @@ the cross-package, user-facing release narrative for Relay. It follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and Semantic
 Versioning.
 
+An empty post-release changelog starts with `[Unreleased]`. The first pending
+user-visible change must set the heading to `[Unreleased - Patch]`,
+`[Unreleased - Minor]`, or `[Unreleased - Major]` according to its SemVer
+impact. The pending release level is monotonic (`Patch < Minor < Major`):
+raise the heading when a higher-impact change arrives; never lower it for a
+later lower-impact change, and leave it unchanged for another change at the
+same level. When a release is cut, move the pending entries under the released
+version and restore an empty `[Unreleased]` heading with no release level.
+
 Changelog entries should be concise and impact-first. Prefer one short bullet
 per user-visible change: name the command, API, schema, or package touched and
 the practical effect. Drop issue/PR links, internal review notes,
@@ -47,11 +56,16 @@ Do not add web-only changes to the changelog. Omit unpublished or withdrawn
 versions as release headings; move their shipped user-visible changes into the
 corrected published release.
 
+Do not add `relay-feature-guardian` changes to the changelog. It is an internal
+Slack feature-check agent (`.agentworkforce/agents/relay-feature-guardian/`),
+not a user-facing Relay surface, so its fixes never belong in the release
+narrative. The release workflow also skips these commits automatically.
+
 ## .trajectories Must Be Tracked
 
-**CRITICAL: Never add `.trajectories/` to `.gitignore`.**
+**CRITICAL: Never add `.agentworkforce/trajectories/` to `.gitignore`.**
 
-The `.trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
+The `.agentworkforce/trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
 
 <!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.2 -->
 

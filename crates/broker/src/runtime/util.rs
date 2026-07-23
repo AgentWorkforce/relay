@@ -81,10 +81,10 @@ fn sanitize_filename_segment(value: &str) -> String {
 
 /// Platform-standard directory for broker tracing logs.
 ///
-/// - macOS: `~/Library/Logs/agent-relay`
-/// - Linux / other Unix: `$XDG_STATE_HOME/agent-relay/logs` (defaults to
-///   `~/.local/state/agent-relay/logs`)
-/// - Windows: `%LOCALAPPDATA%\agent-relay\Logs`
+/// - macOS: `~/Library/Logs/agentworkforce/relay`
+/// - Linux / other Unix: `$XDG_STATE_HOME/agentworkforce/relay/logs` (defaults to
+///   `~/.local/state/agentworkforce/relay/logs`)
+/// - Windows: `%LOCALAPPDATA%\agentworkforce\relay\Logs`
 ///
 /// Returns `None` only when neither the platform-specific directory nor the
 /// home directory can be resolved.
@@ -92,18 +92,23 @@ pub(crate) fn broker_log_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir()?;
-        Some(home.join("Library").join("Logs").join("agent-relay"))
+        Some(
+            home.join("Library")
+                .join("Logs")
+                .join("agentworkforce")
+                .join("relay"),
+        )
     }
     #[cfg(target_os = "windows")]
     {
         let local = dirs::data_local_dir()?;
-        Some(local.join("agent-relay").join("Logs"))
+        Some(local.join("agentworkforce").join("relay").join("Logs"))
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         let state = dirs::state_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("state")))?;
-        Some(state.join("agent-relay").join("logs"))
+        Some(state.join("agentworkforce").join("relay").join("logs"))
     }
 }
 
@@ -199,14 +204,19 @@ pub(crate) fn default_spawn_channels() -> Vec<ChannelName> {
     vec![ChannelName::new("general"), ChannelName::new("engineering")]
 }
 
-pub(crate) fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {
-    match cmd_event.handler_agent_id.as_deref() {
+pub(crate) fn action_targets_self(
+    action: &str,
+    invoked_by: &str,
+    handler_agent_id: Option<&str>,
+    self_agent_id: &str,
+) -> bool {
+    match handler_agent_id {
         Some(handler_id) => handler_id == self_agent_id,
         None => {
             tracing::warn!(
-                command = %cmd_event.command,
-                invoked_by = %cmd_event.invoked_by,
-                "command has no handler_agent_id; accepting by default (multi-broker setups should scope commands)"
+                action = %action,
+                invoked_by = %invoked_by,
+                "action has no handler_agent_id; accepting by default (multi-broker setups should scope actions)"
             );
             true
         }
@@ -227,6 +237,11 @@ pub(crate) fn delivery_retry_interval() -> Duration {
     Duration::from_millis(ms.max(50))
 }
 
+// No longer called from production code — the HTTP/sidecar send path
+// (runtime/api.rs) no longer attempts direct local delivery, so there's
+// nothing left to bound with a "local delivery" timeout. Kept (with its
+// env-var override still covered by unit tests) rather than deleted.
+#[allow(dead_code)]
 pub(crate) fn http_api_local_delivery_timeout() -> Duration {
     let ms = std::env::var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS")
         .ok()
@@ -240,6 +255,18 @@ pub(crate) fn http_api_relaycast_send_timeout() -> Duration {
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS);
+    Duration::from_millis(ms.max(500))
+}
+
+// Deliberately separate from `http_api_relaycast_send_timeout`: observer-token
+// minting is a distinct Relaycast SDK call from the `/api/send` publish path,
+// with its own latency characteristics, so it gets its own tunable timeout
+// rather than being coupled to send-path tuning.
+pub(crate) fn http_api_observer_token_timeout() -> Duration {
+    let ms = std::env::var("AGENT_RELAY_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS);
     Duration::from_millis(ms.max(500))
 }
 
@@ -308,7 +335,7 @@ pub(crate) fn get_terminal_size() -> Option<(u16, u16)> {
 ///
 /// Auto-suggestions are rendered with reverse-video cursor + dim ghost text,
 /// and often include the "↵ send" hint.
-/// Extract Relaycast message IDs from MCP tool response output.
+/// Extract Agent Relay message IDs from MCP tool response output.
 ///
 /// When the agent sends a message via MCP (send_dm, send_message, etc.),
 /// the response JSON contains `"id": "<snowflake>"`. We extract these IDs
@@ -447,17 +474,19 @@ mod tests {
 
         if cfg!(target_os = "macos") {
             assert!(
-                path_str.contains("/Library/Logs/agent-relay"),
+                path_str.contains("/Library/Logs/agentworkforce/relay"),
                 "expected macOS Library/Logs path, got: {path_str}"
             );
         } else if cfg!(target_os = "windows") {
             assert!(
-                path_str.to_ascii_lowercase().contains("agent-relay/logs"),
+                path_str
+                    .to_ascii_lowercase()
+                    .contains("agentworkforce/relay/logs"),
                 "expected Windows LocalAppData layout, got: {path_str}"
             );
         } else {
             assert!(
-                path_str.contains("agent-relay/logs"),
+                path_str.contains("agentworkforce/relay/logs"),
                 "expected Unix state path, got: {path_str}"
             );
         }

@@ -13,7 +13,7 @@ use crate::{
         HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
-    relaycast::configure_relaycast_mcp_with_result,
+    relaycast::configure_agent_relay_mcp_with_result,
     supervisor::Supervisor,
     types::AgentResultMcpConfig,
 };
@@ -29,7 +29,6 @@ use tokio::{
 
 use crate::{
     cli::command_parse::{normalize_cli_name, parse_cli_command},
-    routing,
     runtime::headless_provider_cli_name,
     spawner::terminate_child,
 };
@@ -43,7 +42,9 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
 const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 
-pub(crate) mod detection;
+// Working/idle activity inference from PTY output comes from the
+// harness-agnostic `relay-pty` crate.
+pub(crate) use relay_pty::detection;
 
 #[derive(Debug)]
 pub(crate) struct WorkerHandle {
@@ -142,6 +143,7 @@ impl WorkerRegistry {
         self.workers
             .iter()
             .map(|(name, handle)| {
+                let native_harness = native_harness_metadata(&handle.spec);
                 json!({
                     "name": name,
                     "runtime": handle.spec.runtime,
@@ -160,6 +162,9 @@ impl WorkerRegistry {
                         - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
                     "context_budget_pct": handle.context_budget_pct,
                     "current_state": handle.state.as_str(),
+                    "runtime_kind": if native_harness.is_some() { "native" } else if handle.spec.runtime == AgentRuntime::Pty { "pty" } else { "headless" },
+                    "native_harness_protocol_version": native_harness.as_ref().map(|(version, _)| *version),
+                    "native_harness_capabilities": native_harness.and_then(|(_, capabilities)| capabilities),
                 })
             })
             .collect()
@@ -184,14 +189,14 @@ impl WorkerRegistry {
         agent_result: Option<&AgentResultMcpConfig>,
     ) -> Result<Vec<String>> {
         // `skip_relay_prompt` is an explicit opt-out: the caller does not want the
-        // relaycast MCP server (messaging/channel/etc. tools) injected, e.g. to
+        // Agent Relay MCP server (messaging/channel/etc. tools) injected, e.g. to
         // save tokens. We honor that even when `agent_result` is configured —
         // `AGENT_RELAY_RESULT_*` env vars are still set on the worker process
-        // below, so a separately-configured relaycast MCP can pick them up.
+        // below, so a separately-configured Agent Relay MCP can pick them up.
         if skip_relay_prompt {
             return Ok(Vec::new());
         }
-        configure_relaycast_mcp_with_result(
+        configure_agent_relay_mcp_with_result(
             cli_name,
             agent_name,
             self.env_value("RELAY_API_KEY"),
@@ -208,6 +213,58 @@ impl WorkerRegistry {
 
     pub(crate) fn has_worker(&self, name: &str) -> bool {
         self.workers.contains_key(name)
+    }
+
+    /// True when a worker is registered AND its child process is still alive.
+    /// Registration alone (`has_worker`) can lag a dead child until the periodic
+    /// `reap_exited` sweep removes it, so callers that must not act on a
+    /// dead-but-present worker (e.g. dead-letter redelivery) probe liveness with
+    /// a non-blocking `kill(pid, 0)`, mirroring the reap sweep.
+    pub(crate) fn is_worker_live(&self, name: &str) -> bool {
+        let Some(handle) = self.workers.get(name) else {
+            return false;
+        };
+        #[cfg(unix)]
+        {
+            match handle.child.id() {
+                // Safety: kill(pid, 0) is a POSIX-safe probe that checks process
+                // existence without sending a signal. ESRCH => the process is gone.
+                Some(pid) => {
+                    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
+                    if ret == -1 {
+                        std::io::Error::last_os_error().raw_os_error().unwrap_or(0) != libc::ESRCH
+                    } else {
+                        true
+                    }
+                }
+                // `id()` returns None once the child has been waited/reaped.
+                None => false,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = handle;
+            true
+        }
+    }
+
+    /// True when a worker named `name` exists and either has no recorded
+    /// workspace or belongs to `workspace_id`. Gates sender impersonation on
+    /// Relaycast publish: a worker attached to workspace A must not be
+    /// impersonated when publishing into workspace B, which would register or
+    /// rotate that name's token in the wrong workspace.
+    pub(crate) fn has_worker_in_workspace(
+        &self,
+        name: &str,
+        workspace_id: &crate::ids::WorkspaceId,
+    ) -> bool {
+        match self.workers.get(name) {
+            Some(handle) => match &handle.workspace_id {
+                Some(worker_ws) => worker_ws == workspace_id,
+                None => true,
+            },
+            None => false,
+        }
     }
 
     pub(crate) fn worker_pid(&self, name: &str) -> Option<u32> {
@@ -249,6 +306,7 @@ impl WorkerRegistry {
         let mut harness_env: Vec<(String, String)> = Vec::new();
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
+        let mut direct_native_harness_sidecar = false;
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -280,6 +338,7 @@ impl WorkerRegistry {
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
+                let is_grok = cli_lower == "grok";
                 if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
@@ -313,6 +372,7 @@ impl WorkerRegistry {
                                         cwd,
                                         &self.worker_env,
                                         &effective_args,
+                                        crate::util::version::broker_version(),
                                     )
                                     .await
                                     {
@@ -356,6 +416,8 @@ impl WorkerRegistry {
                     Some("--dangerously-bypass-approvals-and-sandbox")
                 } else if is_gemini && !effective_args.iter().any(|a| a == "--yolo" || a == "-y") {
                     Some("--yolo")
+                } else if is_grok && !effective_args.iter().any(|a| a == "--always-approve") {
+                    Some("--always-approve")
                 } else {
                     None
                 };
@@ -461,6 +523,33 @@ impl WorkerRegistry {
                     }
                 }
             }
+            Some(ResolvedHarnessConfig::Native(config)) => {
+                if config.command.trim().is_empty() {
+                    anyhow::bail!("native harness sidecar command is required");
+                }
+                if config.session_id.trim().is_empty() {
+                    anyhow::bail!("native harness sidecar sessionId is required");
+                }
+                spec.runtime = AgentRuntime::Headless;
+                spec.session_id = Some(config.session_id);
+                if spec.cwd.is_none() {
+                    spec.cwd = config.cwd;
+                }
+                if let Some(env) = config.env {
+                    harness_env.extend(env);
+                }
+                let (program, inline_args) =
+                    parse_cli_command(&config.command).with_context(|| {
+                        format!(
+                            "invalid native harness sidecar command '{}'",
+                            config.command
+                        )
+                    })?;
+                command = Command::new(program);
+                command.args(inline_args);
+                command.args(config.args);
+                direct_native_harness_sidecar = true;
+            }
             None => match spec.runtime {
                 AgentRuntime::Pty => {
                     let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
@@ -481,6 +570,7 @@ impl WorkerRegistry {
                     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                     let is_codex = cli_lower == "codex";
                     let is_gemini = cli_lower == "gemini";
+                    let is_grok = cli_lower == "grok";
                     if let Some(model) = apply_codex_model_arg_fallback(
                         &resolved_cli,
                         &cli_lower,
@@ -514,6 +604,7 @@ impl WorkerRegistry {
                                             cwd,
                                             &self.worker_env,
                                             &effective_args,
+                                            crate::util::version::broker_version(),
                                         )
                                         .await
                                         {
@@ -559,6 +650,8 @@ impl WorkerRegistry {
                         && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
                     {
                         Some("--yolo")
+                    } else if is_grok && !effective_args.iter().any(|a| a == "--always-approve") {
+                        Some("--always-approve")
                     } else {
                         None
                     };
@@ -691,6 +784,26 @@ impl WorkerRegistry {
             }
             command.env(key, value);
         }
+        // Per-worker origin_actor: tag this agent's relaycast telemetry with the
+        // CLI it runs and the model it was spawned with
+        // (`agent-relay-cli/agent/<harness>[@<model>]`). The agent's JS SDK reads
+        // AGENT_RELAY_ORIGIN_ACTOR. Don't override an explicit value set via
+        // harness_config env.
+        if !harness_env
+            .iter()
+            .any(|(k, _)| k == "AGENT_RELAY_ORIGIN_ACTOR")
+        {
+            if let Some(harness) = spec
+                .cli
+                .as_deref()
+                .and_then(crate::telemetry::infer_harness_from_command)
+            {
+                command.env(
+                    "AGENT_RELAY_ORIGIN_ACTOR",
+                    crate::telemetry::agent_origin_actor(harness, spec.model.as_deref()),
+                );
+            }
+        }
         for (key, value) in &harness_env {
             command.env(key, value);
         }
@@ -699,7 +812,11 @@ impl WorkerRegistry {
                 command.env(key, value);
             }
         }
-        if !skip_relay_prompt && matches!(spec.runtime, AgentRuntime::Pty) {
+        if should_inject_relay_participant_env(
+            &spec.runtime,
+            direct_native_harness_sidecar,
+            skip_relay_prompt,
+        ) {
             if let Some(relay_key) = worker_relay_api_key {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }
@@ -715,6 +832,9 @@ impl WorkerRegistry {
         }
 
         let mut child = command.spawn().context("failed to spawn worker")?;
+        if direct_native_harness_sidecar {
+            initial_harness_pid = child.id();
+        }
         let stdin = child.stdin.take().context("worker missing stdin pipe")?;
         let stdout = child.stdout.take().context("worker missing stdout pipe")?;
         let stderr = child.stderr.take().context("worker missing stderr pipe")?;
@@ -826,6 +946,11 @@ impl WorkerRegistry {
     pub(crate) async fn release(&mut self, name: &str) -> Result<()> {
         tracing::info!(target = "broker::release", name = %name, "releasing worker");
         self.initial_tasks.remove(name);
+        // An explicit release is terminal even when the process already exited
+        // and disappeared from `workers`. Cancel any pending restart before
+        // looking up the handle so maintenance cannot resurrect the released
+        // name after the API has acknowledged teardown.
+        self.supervisor.unregister(name);
         let mut handle = self
             .workers
             .remove(name)
@@ -949,49 +1074,53 @@ impl WorkerRegistry {
         }
         Ok(exited)
     }
+}
 
-    pub(crate) fn routing_workers(&self) -> Vec<routing::RoutingWorker<'_>> {
-        self.workers
-            .iter()
-            .map(|(name, handle)| routing::RoutingWorker {
-                name,
-                channels: &handle.spec.channels,
-                workspace_id: handle.workspace_id.as_deref(),
-            })
-            .collect()
+fn should_inject_relay_participant_env(
+    runtime: &AgentRuntime,
+    direct_native_harness_sidecar: bool,
+    skip_relay_prompt: bool,
+) -> bool {
+    !skip_relay_prompt && (matches!(runtime, AgentRuntime::Pty) || direct_native_harness_sidecar)
+}
+
+/// Runtime metadata is deliberately carried in the harness config so the
+/// process wrapper can remain `headless` while attach clients select the
+/// native harness transport. Accept both the explicit marker and protocol field to
+/// keep the broker compatible with sidecars produced by adjacent releases.
+pub(crate) fn native_harness_metadata(spec: &AgentSpec) -> Option<(u64, Option<Value>)> {
+    let (metadata, explicit_protocol) = match spec.harness_config.as_ref()? {
+        ResolvedHarnessConfig::Native(config) => (config.metadata.as_ref(), true),
+        ResolvedHarnessConfig::Headless(config) => {
+            let protocol = config.protocol.trim().to_ascii_lowercase();
+            (
+                config.metadata.as_ref(),
+                protocol == "relay-native-harness" || protocol == "relay-native-harness-v1",
+            )
+        }
+        ResolvedHarnessConfig::Pty(_) => return None,
+    };
+    let explicit = metadata
+        .and_then(|m| m.get("runtimeKind").or_else(|| m.get("runtime_kind")))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "native");
+    if !explicit && !explicit_protocol {
+        return None;
     }
-
-    pub(crate) fn worker_names_for_channel_delivery(
-        &self,
-        channel: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_channel_delivery(&workers, channel, from, workspace_id)
-    }
-
-    pub(crate) fn worker_names_for_direct_target(
-        &self,
-        target: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
-    }
-
-    pub(crate) fn has_any_worker(&self) -> bool {
-        !self.workers.is_empty()
-    }
-
-    pub(crate) fn has_worker_by_name_ignoring_case(&self, target: &str) -> bool {
-        let trimmed = target.trim();
-        self.workers.iter().any(|(worker_name, _)| {
-            trimmed.eq_ignore_ascii_case(worker_name)
-                || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
+    let version = metadata
+        .and_then(|m| {
+            m.get("nativeHarnessProtocolVersion")
+                .or_else(|| m.get("native_harness_protocol_version"))
         })
-    }
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let capabilities = metadata
+        .and_then(|m| {
+            m.get("nativeHarnessCapabilities")
+                .or_else(|| m.get("native_harness_capabilities"))
+        })
+        .cloned();
+    Some((version, capabilities))
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
@@ -1017,6 +1146,7 @@ fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
         {
             APP_SERVER_RELEASE_GRACE
         }
+        Some(ResolvedHarnessConfig::Native(_)) => APP_SERVER_RELEASE_GRACE,
         _ => DEFAULT_RELEASE_GRACE,
     }
 }
@@ -1363,18 +1493,18 @@ async fn codex_local_fallback_model(
     }
 
     match codex_debug_models_contains_model(resolved_cli, requested_model).await {
-        Some(true) => None,
-        Some(false) | None => Some(GPT_5_5_FALLBACK),
+        Some(true) | None => None,
+        Some(false) => Some(GPT_5_5_FALLBACK),
     }
 }
 
 async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> Option<bool> {
+    // Matches the spawn+output timeout used in snippets.rs: under CI load, spawning
+    // the Codex CLI can take longer than 5s, which was previously causing a spurious
+    // fallback away from the requested model instead of a genuine "unsupported" result.
     let output = timeout(
-        Duration::from_millis(1_500),
-        Command::new(resolved_cli)
-            .arg("debug")
-            .arg("models")
-            .output(),
+        Duration::from_secs(15),
+        codex_debug_models_output(resolved_cli),
     )
     .await
     .ok()?
@@ -1385,6 +1515,43 @@ async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> O
     }
 
     codex_models_json_contains_model(&output.stdout, model)
+}
+
+/// Spawn `codex debug models`, retrying briefly on `ExecutableFileBusy`
+/// (`ETXTBSY`, "Text file busy").
+///
+/// On Linux a concurrent `fork`/`exec` in another thread can transiently hold a
+/// writable file descriptor to an executable that was just written, so `execve`
+/// of a freshly written binary can spuriously fail with `ETXTBSY`. This is a
+/// well-known race in multithreaded programs that spawn subprocesses (and shows
+/// up in this crate's parallel test suite, where each test writes and immediately
+/// execs a fake `codex` script). Retry a few times with a short backoff before
+/// giving up; all attempts stay within the caller's spawn timeout budget.
+///
+/// Matched via the portable `std::io::ErrorKind::ExecutableFileBusy` rather than
+/// a raw `libc::ETXTBSY` so the code stays correct on non-Unix targets (the
+/// broker also builds for Windows), where the errno is absent and this condition
+/// simply never fires.
+async fn codex_debug_models_output(resolved_cli: &str) -> std::io::Result<std::process::Output> {
+    const MAX_ATTEMPTS: u32 = 5;
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match Command::new(resolved_cli)
+            .arg("debug")
+            .arg("models")
+            .output()
+            .await
+        {
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt < MAX_ATTEMPTS =>
+            {
+                tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt))).await;
+            }
+            other => return other,
+        }
+    }
 }
 
 fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
@@ -1577,7 +1744,6 @@ mod tests {
     #[test]
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
-        assert!(!reg.has_any_worker());
         assert!(reg.list().is_empty());
     }
 
@@ -1585,6 +1751,64 @@ mod tests {
     fn has_worker_returns_false_for_unknown() {
         let reg = make_registry(vec![]);
         assert!(!reg.has_worker("nonexistent"));
+    }
+
+    #[test]
+    fn has_worker_in_workspace_returns_false_for_unknown() {
+        let reg = make_registry(vec![]);
+        let workspace = crate::ids::WorkspaceId::new("ws_1".to_string());
+        assert!(!reg.has_worker_in_workspace("nonexistent", &workspace));
+    }
+
+    #[tokio::test]
+    async fn release_cancels_pending_restart_for_an_already_exited_worker() {
+        let mut reg = make_registry(vec![]);
+        let name = "released-stale-worker";
+        let restart_policy = crate::supervisor::RestartPolicy {
+            cooldown_ms: 0,
+            ..crate::supervisor::RestartPolicy::default()
+        };
+        let spec = AgentSpec {
+            name: WorkerName::from(name),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: None,
+            session_id: None,
+            harness_config: None,
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: Some(restart_policy.clone()),
+        };
+        reg.supervisor.register(
+            name,
+            crate::supervisor::SupervisedAgent {
+                spec,
+                parent: None,
+                initial_task: None,
+                skip_relay_prompt: false,
+                agent_result: None,
+            },
+            restart_policy,
+        );
+        assert!(reg.supervisor.is_supervised(name));
+        assert!(matches!(
+            reg.supervisor.on_exit(name, Some(1), None),
+            Some(crate::supervisor::RestartDecision::Restart { .. })
+        ));
+        assert!(!reg.supervisor.pending_restarts().is_empty());
+
+        let error = reg
+            .release(name)
+            .await
+            .expect_err("missing process is still reported");
+        assert!(error.to_string().contains("unknown worker"));
+        assert!(!reg.supervisor.is_supervised(name));
+        assert!(reg.supervisor.pending_restarts().is_empty());
     }
 
     #[test]
@@ -1607,6 +1831,30 @@ mod tests {
         assert_eq!(reg.env_value("MISSING"), None);
     }
 
+    #[test]
+    fn relay_participant_credentials_cover_pty_and_direct_native_sidecars() {
+        assert!(should_inject_relay_participant_env(
+            &AgentRuntime::Pty,
+            false,
+            false
+        ));
+        assert!(should_inject_relay_participant_env(
+            &AgentRuntime::Headless,
+            true,
+            false
+        ));
+        assert!(!should_inject_relay_participant_env(
+            &AgentRuntime::Headless,
+            false,
+            false
+        ));
+        assert!(!should_inject_relay_participant_env(
+            &AgentRuntime::Headless,
+            true,
+            true
+        ));
+    }
+
     fn make_app_server_config() -> HeadlessHarnessConfig {
         HeadlessHarnessConfig {
             driver: HeadlessHarnessDriver::AppServer,
@@ -1627,6 +1875,36 @@ mod tests {
     fn app_server_config_validation_accepts_attached_opencode_config() {
         let config = make_app_server_config();
         validate_app_server_config(&config).expect("valid app-server config");
+    }
+
+    #[test]
+    fn native_harness_metadata_is_explicit_and_capability_accurate() {
+        let spec: AgentSpec = serde_json::from_value(json!({
+            "name": "native-worker",
+            "runtime": "headless",
+            "args": [],
+            "channels": [],
+            "harnessConfig": {
+                "runtime": "native",
+                "command": "node",
+                "args": ["/tmp/sidecar.js"],
+                "sessionId": "native-1",
+                "metadata": {
+                    "runtimeKind": "native",
+                    "nativeHarnessProtocolVersion": 1,
+                    "nativeHarnessCapabilities": {"activeInput": true, "interrupt": true}
+                }
+            }
+        }))
+        .expect("native harness agent spec");
+
+        let (version, capabilities) =
+            native_harness_metadata(&spec).expect("native harness metadata");
+        assert_eq!(version, 1);
+        assert_eq!(
+            capabilities.unwrap(),
+            json!({"activeInput": true, "interrupt": true})
+        );
     }
 
     #[test]
@@ -1705,12 +1983,6 @@ mod tests {
         };
 
         assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
-    }
-
-    #[test]
-    fn routing_workers_empty_when_no_workers() {
-        let reg = make_registry(vec![]);
-        assert!(reg.routing_workers().is_empty());
     }
 
     #[test]

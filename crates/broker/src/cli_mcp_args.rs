@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::relaycast::{
-    configure_relaycast_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
+    configure_agent_relay_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
     }
 
     // Validate all local inputs BEFORE touching the network. `--register`
-    // rotates the agent's relaycast token (POST /v1/agents/spawn), which is
+    // rotates the agent's relaycast token (POST /v1/agents), which is
     // an observable side effect on an external system — we should not mint
     // or rotate a token if the request is going to fail locally anyway
     // (e.g. malformed --existing-args JSON or an unresolvable --cwd).
@@ -102,7 +102,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         .default_workspace
         .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         &cli,
         &agent_name,
         api_key.as_deref(),
@@ -144,7 +144,7 @@ async fn register_agent_token_for_mcp_args(
         })?;
     let cli_lower = detect_cli_name_for_mcp_args(cli).to_lowercase();
     let client = RelaycastHttpClient::new(
-        base_url.clone(),
+        Some(base_url.clone()),
         api_key.clone(),
         agent_name.to_string(),
         cli_lower.clone(),
@@ -253,7 +253,7 @@ fn home_dir_from_env() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use crate::relaycast::configure_relaycast_mcp_with_token;
+    use crate::relaycast::configure_agent_relay_mcp_with_token;
     use httpmock::{Method::POST, MockServer};
     use serde_json::{json, Value};
     use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -319,7 +319,7 @@ mod tests {
             cli: cli.to_string(),
             agent_name: "test-agent".to_string(),
             api_key: Some("rk_live_test".to_string()),
-            base_url: Some("https://api.test.relaycast.dev".to_string()),
+            base_url: Some("https://relay.example.com".to_string()),
             agent_token: Some("at_live_test".to_string()),
             register: false,
             workspaces_json: Some(r#"{"workspaces":[]}"#.to_string()),
@@ -353,13 +353,13 @@ mod tests {
         let config: Value = serde_json::from_str(config_json).expect("valid mcp config json");
 
         assert!(config
-            .pointer("/mcpServers/relaycast")
+            .pointer("/mcpServers/agent-relay")
             .is_some_and(Value::is_object));
         assert!(output.side_effect_files.is_empty());
     }
 
     #[tokio::test]
-    async fn codex_output_contains_relaycast_config_args() {
+    async fn codex_output_contains_agent_relay_config_args() {
         let temp = tempdir().expect("tempdir");
         let output = compute_mcp_args_output(command("codex", temp.path()))
             .await
@@ -368,9 +368,9 @@ mod tests {
         assert!(output.args.contains(&"--config".to_string()));
         assert!(output
             .args
-            .contains(&"mcp_servers.relaycast.command=\"npx\"".to_string()));
+            .contains(&"mcp_servers.agent-relay.command=\"npx\"".to_string()));
         assert!(output.args.contains(
-            &"mcp_servers.relaycast.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string()
+            &"mcp_servers.agent-relay.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string()
         ));
         assert!(output.side_effect_files.is_empty());
     }
@@ -382,7 +382,7 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        assert_eq!(output.args, vec!["--agent", "relaycast"]);
+        assert_eq!(output.args, vec!["--agent", "agent-relay"]);
         assert_eq!(
             output.side_effect_files,
             vec![temp.path().canonicalize().unwrap().join("opencode.json")]
@@ -525,21 +525,18 @@ mod tests {
         let server = MockServer::start();
         let register_mock = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/spawn")
+                .path("/v1/agents")
                 .body_contains("\"name\":\"test-agent\"")
                 .body_contains("\"cli\":\"claude\"");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
                     "id": "agent_register_test",
+                    "workspace_id": "ws_register_test",
                     "name": "test-agent",
                     "token": "at_live_register_test_token",
-                    "cli": "claude",
-                    "task": "relay worker session for test-agent",
-                    "channel": null,
                     "status": "online",
-                    "created_at": "2026-01-01T00:00:00.000Z",
-                    "already_existed": false
+                    "created_at": "2026-01-01T00:00:00.000Z"
                 }
             }));
         });
@@ -577,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn register_does_not_hit_network_when_local_validation_fails() {
         // Locally-invalid input (malformed --existing-args JSON) must fail
-        // BEFORE the spawn endpoint is called. A POST /v1/agents/spawn
+        // BEFORE the register endpoint is called. A POST /v1/agents
         // rotates the agent's token, so firing it for a request that was
         // going to fail locally anyway is an unintended external side
         // effect.
@@ -588,19 +585,16 @@ mod tests {
 
         let server = MockServer::start();
         let spawn_mock = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/spawn");
+            when.method(POST).path("/v1/agents");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
                     "id": "agent_should_not_be_called",
+                    "workspace_id": "ws_should_not_be_called",
                     "name": "test-agent",
                     "token": "at_live_should_not_mint",
-                    "cli": "claude",
-                    "task": "relay worker session for test-agent",
-                    "channel": null,
                     "status": "online",
-                    "created_at": "2026-01-01T00:00:00.000Z",
-                    "already_existed": false
+                    "created_at": "2026-01-01T00:00:00.000Z"
                 }
             }));
         });
@@ -621,7 +615,7 @@ mod tests {
             .to_string()
             .contains("--existing-args must be a JSON array of strings"));
         // The spawn endpoint must NOT have been hit — token rotation is a
-        // real side effect on the relaycast backend.
+        // real side effect on the Relaycast backend.
         assert_eq!(spawn_mock.hits(), 0);
     }
 
@@ -646,11 +640,11 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        let expected = configure_relaycast_mcp_with_token(
+        let expected = configure_agent_relay_mcp_with_token(
             "claude",
             "test-agent",
             Some("rk_live_test"),
-            Some("https://api.test.relaycast.dev"),
+            Some("https://relay.example.com"),
             &[],
             &temp.path().canonicalize().unwrap(),
             Some("at_live_test"),
@@ -671,11 +665,11 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        let expected = configure_relaycast_mcp_with_token(
+        let expected = configure_agent_relay_mcp_with_token(
             "codex",
             "test-agent",
             Some("rk_live_test"),
-            Some("https://api.test.relaycast.dev"),
+            Some("https://relay.example.com"),
             &[],
             &temp.path().canonicalize().unwrap(),
             Some("at_live_test"),
@@ -702,7 +696,7 @@ mod tests {
         // there's no risk of state leaking even on panic.
         let _env = EnvGuard::all();
         std::env::set_var("RELAY_API_KEY", "rk_live_from_env");
-        std::env::set_var("RELAY_BASE_URL", "https://api.env.relaycast.dev");
+        std::env::set_var("RELAY_BASE_URL", "https://relay.example.com");
         std::env::set_var("RELAY_AGENT_TOKEN", "at_live_from_env");
         std::env::set_var("RELAY_WORKSPACES_JSON", r#"{"workspaces":["env-ws"]}"#);
         std::env::set_var("RELAY_DEFAULT_WORKSPACE", "env-default-workspace");
@@ -739,7 +733,7 @@ mod tests {
         // so if env fallback works the sentinel values show up in the env
         // block or the RELAY_API_KEY that claude's injection path writes.
         assert!(
-            config_json.contains("https://api.env.relaycast.dev"),
+            config_json.contains("https://relay.example.com"),
             "base url from env missing in claude config: {config_json}"
         );
         assert!(

@@ -14,6 +14,7 @@ export type AgentCli =
   | 'gemini'
   | 'aider'
   | 'goose'
+  | 'grok'
   | 'opencode'
   | 'droid'
   | 'cursor'

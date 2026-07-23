@@ -1,20 +1,20 @@
 ---
 name: choosing-swarm-patterns
-description: Use when coordinating multiple AI agents with Agent Relay's workflow engine and need to pick the right orchestration pattern - covers the 10 core patterns (fan-out, pipeline, hub-spoke, consensus, mesh, handoff, cascade, dag, debate, hierarchical) plus 14 specialized ones, with decision framework and accurate SDK/YAML examples.
+description: Use when coordinating multiple AI agents with Agent Relay's workflow engine and need to pick the right orchestration pattern - covers the 10 core patterns (fan-out, pipeline, hub-spoke, consensus, mesh, handoff, cascade, dag, debate, hierarchical) plus 14 specialized ones, with decision framework and accurate workflow/YAML examples.
 ---
 
 # Choosing Swarm Patterns
 
 ## Overview
 
-The Agent Relay SDK (`@agent-relay/sdk`) supports 24 swarm patterns via a single `swarm.pattern` field. Patterns are configured declaratively in YAML or programmatically via the `workflow()` fluent builder — there are no standalone `fanOut(...)` / `hubAndSpoke(...)` helpers. Pick the simplest pattern that solves the problem; add complexity only when the system proves it's insufficient.
+The Agent Relay workflow engine (`@relayflows/core`) supports 24 swarm patterns via a single `swarm.pattern` field. Patterns are configured declaratively in YAML or programmatically via the `workflow()` fluent builder — there are no standalone `fanOut(...)` / `hubAndSpoke(...)` helpers. Pick the simplest pattern that solves the problem; add complexity only when the system proves it's insufficient.
 
 ## Two ways to run a pattern
 
 **1. YAML (portable):**
 
 ```ts
-import { runWorkflow } from '@agent-relay/sdk/workflows';
+import { runWorkflow } from '@relayflows/core';
 
 const run = await runWorkflow('workflows/feature-dev.yaml', {
   vars: { task: 'Add OAuth login' },
@@ -24,7 +24,7 @@ const run = await runWorkflow('workflows/feature-dev.yaml', {
 **2. Fluent builder (programmatic):**
 
 ```ts
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow } from '@relayflows/core';
 
 const run = await workflow('feature-dev')
   .pattern('hub-spoke')
@@ -135,7 +135,7 @@ Keep squads small. Two or three agents per squad is usually the useful limit: im
 
 ## Pattern Details
 
-All examples below use real API shapes (`WorkflowBuilder` / YAML), verified against `packages/sdk/src/workflows/builder.ts` and `packages/sdk/src/workflows/types.ts`.
+All examples below use real API shapes (`WorkflowBuilder` / YAML), verified against `@relayflows/core`'s `builder.d.ts` and `schema.d.ts`.
 
 > **YAML fragments vs complete configs:** The per-pattern YAML snippets below are fragments that show only the pattern-relevant shape. A runnable YAML file also requires `version: "1.0"` and `name: <id>` at the top (`runner.ts:2105-2117`). See the [Complete YAML Example](#complete-yaml-example) for the full structure.
 >
@@ -199,7 +199,7 @@ await workflow('api-build')
   .run();
 ```
 
-Hub (picked via `role: lead` or first agent) stays on the channel and direct-messages interactive workers via `mcp__relaycast__message_dm_send`.
+Hub (picked via `role: lead` or first agent) stays on the channel and direct-messages interactive workers via the flat `send_dm` MCP tool, often exposed by workflow prompts as `mcp__relaycast__send_dm`.
 
 > **Don't set `interactive: false` on a hub-spoke worker** if you want it to receive coordination DMs — `resolveTopology` strips non-interactive agents from the message graph (`coordinator.ts:218-237`). Use `interactive: false` only when the worker is a one-shot subprocess whose stdout you collect via `{{steps.X.output}}` without any mid-run coordination.
 
@@ -353,28 +353,31 @@ verification:
   value: DONE # or: PLAN_COMPLETE, IMPLEMENTATION_COMPLETE, REVIEW_COMPLETE
 ```
 
-Conventional signals baked into the adapter (`relay-adapter.ts:29-36`):
+Conventional signals expected by the `@relayflows/core` runner:
 
 - `ACK: ...` — received a task
 - `DONE: ...` — task complete
 
-The runner captures PTY chunks as step output and also records channel posts + file changes as `StepCompletionEvidence`. Legacy fallback: a file at `.relay/summaries/{stepName}.md` is read if PTY output is empty (`runner.ts:6607`).
+The runner captures PTY chunks as step output and also records channel posts + file changes as `StepCompletionEvidence`. Legacy fallback: a file at `.relay/summaries/{stepName}.md` is read if PTY output is empty.
 
-## Relaycast MCP — Correct Tool Names
+## Agent Relay MCP - Correct Tool Names
 
-The skill previously referenced `mcp__relaycast__send` / `mcp__relaycast__dm` — those names are wrong. The real tools (the first three are cited in the workflow convention-injection at `relay-adapter.ts:31-35`; the rest are exposed by the live `relaycast` MCP server):
+The old category-expanded names are wrong. Current Agent Relay MCP tools are
+flat names. In a client that decorates MCP tools, the prefix comes from the
+configured server key; workflow prompts commonly show `mcp__relaycast__send_dm`,
+while an `agent-relay` server key may expose `mcp__agent_relay__send_dm`.
 
-| Purpose                  | Tool                                  | Source                |
-| ------------------------ | ------------------------------------- | --------------------- |
-| Send DM to another agent | `mcp__relaycast__message_dm_send`     | `relay-adapter.ts:31` |
-| Check inbox              | `mcp__relaycast__message_inbox_check` | `relay-adapter.ts:35` |
-| List agents              | `mcp__relaycast__agent_list`          | `relay-adapter.ts:35` |
-| Post to a channel        | `mcp__relaycast__message_post`        | relaycast MCP server  |
-| Reply in a thread        | `mcp__relaycast__message_reply`       | relaycast MCP server  |
-| Spawn sub-agent          | `mcp__relaycast__agent_add`           | relaycast MCP server  |
-| Remove sub-agent         | `mcp__relaycast__agent_remove`        | relaycast MCP server  |
+| Purpose                  | Canonical tool    | Common workflow-prefixed form     |
+| ------------------------ | ----------------- | --------------------------------- |
+| Send DM to another agent | `send_dm`         | `mcp__relaycast__send_dm`         |
+| Check inbox              | `check_inbox`     | `mcp__relaycast__check_inbox`     |
+| List agents              | `list_agents`     | `mcp__relaycast__list_agents`     |
+| Post to a channel        | `post_message`    | `mcp__relaycast__post_message`    |
+| Reply in a thread        | `reply_to_thread` | `mcp__relaycast__reply_to_thread` |
+| Spawn sub-agent          | `add_agent`       | `mcp__relaycast__add_agent`       |
+| Remove sub-agent         | `remove_agent`    | `mcp__relaycast__remove_agent`    |
 
-> `interactive: false` agents run as non-interactive subprocesses with no relay connection — they must NOT call any `mcp__relaycast__*` tool (validator warns on this at `validator.ts:138-150`, check `NONINTERACTIVE_RELAY`).
+> `interactive: false` agents run as non-interactive subprocesses with no relay connection. They must not call Relay MCP tools.
 
 ## Reflection (Trajectories)
 
@@ -411,7 +414,7 @@ For a first-class critic loop, use the `reflection` **pattern** (agents with `ro
 | Relying on `reflectOnBarriers`               | Config flag exists but runner never calls it                                  | Use `reflectOnConverge` for convergence reflection; use `reflection` pattern for critic loops |
 | `interactive: false` agent calling MCP       | Non-interactive subprocess has no relay                                       | Use `interactive: true` (default) or emit output on stdout                                    |
 | Relying on multi-level `hierarchical`        | Topology is single-level hub in current impl                                  | Use pattern for naming; model levels via `dependsOn` graph                                    |
-| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `mcp__relaycast__message_post` or `message_dm_send`                                       |
+| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `post_message` / `mcp__relaycast__post_message` or `send_dm` / `mcp__relaycast__send_dm`  |
 
 ## Resume & Re-run
 
@@ -482,21 +485,19 @@ errorHandling:
   retryDelayMs: 5000
 ```
 
-Built-in templates: `packages/sdk/src/workflows/builtin-templates/` (feature-dev, bug-fix, code-review, competitive, documentation, refactor, review-loop, security-audit).
+Built-in templates live in `@relayflows/core/dist/builtin-templates/` (feature-dev, bug-fix, code-review, competitive, documentation, refactor, review-loop, security-audit).
 
 ## Source of Truth
 
-| Claim                                                             | File                                                                         |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Pattern enum (24 patterns)                                        | `packages/sdk/src/workflows/types.ts:114-139`                                |
-| Topology resolution per pattern                                   | `packages/sdk/src/workflows/coordinator.ts:240-450`                          |
-| Interactive-only topology edges                                   | `packages/sdk/src/workflows/coordinator.ts:218-237`                          |
-| Pattern auto-selection heuristics (programmatic API only)         | `packages/sdk/src/workflows/coordinator.ts:51-165`                           |
-| `WorkflowBuilder` fluent API                                      | `packages/sdk/src/workflows/builder.ts`                                      |
-| `runWorkflow(yamlPath, options)`                                  | `packages/sdk/src/workflows/run.ts`                                          |
-| YAML validation requires `version` + `name` + `swarm.pattern`     | `packages/sdk/src/workflows/runner.ts:2105-2117`                             |
-| MCP tool names cited in convention-injection                      | `packages/sdk/src/relay-adapter.ts:29-36`                                    |
-| Completion modes (verification / evidence / owner / process-exit) | `packages/sdk/src/workflows/runner.ts:5353-5395`, `4527-4538`                |
-| Completion via PTY + summary fallback                             | `packages/sdk/src/workflows/runner.ts:6600-6615`                             |
-| Downstream skip on upstream failure (not success)                 | `packages/sdk/src/workflows/runner.ts:7057-7088`, `step-executor.ts:329-334` |
-| Trajectory reflection (only `reflectOnConverge` wired)            | `packages/sdk/src/workflows/runner.ts:2762-2779`, `trajectory.ts:173-190`    |
+| Claim                                                             | File                                                                                    |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Pattern enum (24 patterns)                                        | `@relayflows/core/dist/schema.d.ts` (`SwarmPattern`)                                    |
+| Topology resolution per pattern                                   | `@relayflows/core/dist/coordinator.js`                                                  |
+| Interactive-only topology edges                                   | `@relayflows/core/dist/coordinator.js` filters `interactive: false` agents              |
+| Pattern auto-selection heuristics                                 | `@relayflows/core/dist/coordinator.js`                                                  |
+| `WorkflowBuilder` fluent API                                      | `@relayflows/core/dist/builder.d.ts`                                                    |
+| `runWorkflow(yamlPath, options)`                                  | `@relayflows/core/dist/run.d.ts`                                                        |
+| YAML validation requires `version` + `name` + `swarm.pattern`     | `@relayflows/core/dist/runner.js`                                                       |
+| MCP tool names                                                    | `packages/cli/src/cli/agent-relay-mcp.ts`, `@relayflows/core/dist/channel-messenger.js` |
+| Completion modes (verification / evidence / owner / process-exit) | `@relayflows/core/dist/runner.js`, `@relayflows/core/dist/step-executor.js`             |
+| Trajectory reflection                                             | `@relayflows/core/dist/trajectory.js`, `@relayflows/core/dist/runner.js`                |

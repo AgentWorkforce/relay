@@ -1,0 +1,65 @@
+{
+  "id": "traj_1llfpjvd9m7k",
+  "version": 1,
+  "task": {
+    "title": "Review and fix PR 1055"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-06T13:49:15.971Z",
+  "completedAt": "2026-06-06T14:05:43.957Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-06T14:05:29.768Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4iax8jv8u74r",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-06T14:05:29.768Z",
+      "endedAt": "2026-06-06T14:05:43.957Z",
+      "events": [
+        {
+          "ts": 1780754729769,
+          "type": "decision",
+          "content": "Removed accidental binary artifact and restored emptied trajectory: Removed accidental binary artifact and restored emptied trajectory",
+          "raw": {
+            "question": "Removed accidental binary artifact and restored emptied trajectory",
+            "chosen": "Removed accidental binary artifact and restored emptied trajectory",
+            "alternatives": [],
+            "reasoning": "PR diff added rust_out and emptied an active tracked trajectory; AGENTS.md requires trajectories to remain tracked, and generated binaries do not belong in the PR."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780754730821,
+          "type": "decision",
+          "content": "Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop: Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop",
+          "raw": {
+            "question": "Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop",
+            "chosen": "Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop",
+            "alternatives": [],
+            "reasoning": "The new tests cleared the shared env var before each test but leaked it after the final test, which can affect later tests in the same process."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reviewed PR 1055, removed accidental rust_out artifact, restored emptied trajectory data, and fixed CLI env-var test cleanup. Verified harness-driver typecheck/build and focused broker CLI/auth tests.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d5f7fee457c2d7a991bdb9167ad2c896aa0987e4",
+    "endRef": "d5f7fee457c2d7a991bdb9167ad2c896aa0987e4"
+  }
+}

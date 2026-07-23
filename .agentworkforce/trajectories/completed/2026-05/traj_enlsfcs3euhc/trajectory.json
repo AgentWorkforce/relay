@@ -1,0 +1,20 @@
+{
+  "id": "traj_enlsfcs3euhc",
+  "version": 1,
+  "task": {
+    "title": "Remove API key requirement from workspace setup"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-05-28T20:20:38.978Z",
+  "completedAt": "2026-05-28T20:26:50.685Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b01ee3f89143a028f91a2c44b7b39fdc8d07ca0a",
+    "endRef": "b01ee3f89143a028f91a2c44b7b39fdc8d07ca0a"
+  }
+}

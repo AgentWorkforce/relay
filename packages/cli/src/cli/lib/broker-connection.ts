@@ -7,7 +7,7 @@
  *
  *   1. `--broker-url` / `--api-key` CLI flags
  *   2. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
- *   3. `<state-dir>/connection.json` (default `.agent-relay/connection.json`)
+ *   3. `<state-dir>/connection.json` (default `.agentworkforce/relay/connection.json`)
  */
 
 import fs from 'node:fs';
@@ -46,10 +46,10 @@ export function readConnectionFileFromDisk(stateDir: string): unknown {
   }
 }
 
-/** Default state-directory: `.agent-relay/` under the resolved project root. */
+/** Default state-directory: `.agentworkforce/relay/` under the resolved project root. */
 export function defaultStateDir(): string {
   const projectRoot = getProjectPaths().projectRoot;
-  return path.join(projectRoot, '.agent-relay');
+  return path.join(projectRoot, '.agentworkforce/relay');
 }
 
 function isStringObject(value: unknown): value is Record<string, unknown> {

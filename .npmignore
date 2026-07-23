@@ -58,7 +58,7 @@ packages/*/tests/
 .relay/
 .openskills/
 .trails/
-.agent-relay/
+.agentworkforce/relay/
 .turbo/
 .cursor/
 .mcp.json
@@ -103,7 +103,6 @@ tsconfig.tsbuildinfo
 packages/*/*.tsbuildinfo
 
 # Other dev files
-run-dashboard.js
 CLAUDE.md
 AGENTS.md
 *.tasks.md

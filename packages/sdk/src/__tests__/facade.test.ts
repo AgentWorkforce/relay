@@ -1,367 +1,255 @@
-/**
- * Facade integration tests — exercises new AgentRelay capabilities:
- * spawn with initial task, getLogs, waitForAny, broadcast, onAgentReady, exit code.
- *
- * Run:
- *   npm run build && node --test dist/__tests__/facade.test.js
- *
- * Requires:
- *   RELAY_API_KEY — Relaycast workspace key
- *   AGENT_RELAY_BIN (optional) — path to agent-relay-broker binary
- */
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { test, type TestContext } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { AgentRelay, type Agent, type Message } from '../relay.js';
+import { AgentRelay, ActionRegistry } from '../index.js';
+import type { RelayMessaging } from '../messaging/index.js';
 
-// ── helpers ─────────────────────────────────────────────────────────────────
-
-function resolveBinaryPath(): string {
-  if (process.env.AGENT_RELAY_BIN) {
-    return process.env.AGENT_RELAY_BIN;
-  }
-  return path.resolve(process.cwd(), '../../target/debug/agent-relay-broker');
+function createMessagingMock() {
+  const messages = {
+    send: vi.fn(async (input: unknown) => ({ id: 'm1', text: '', from: {}, ...((input as object) ?? {}) })),
+    direct: vi.fn(async (input: unknown) => ({ id: 'd1', text: '', from: {}, ...((input as object) ?? {}) })),
+    reply: vi.fn(async (input: unknown) => ({ id: 'r1', text: '', from: {}, ...((input as object) ?? {}) })),
+    react: vi.fn(async (messageId: string, emoji: string) => ({ emoji, count: 1, agents: [] })),
+    groupDirect: vi.fn(async (input: unknown) => ({
+      id: 'g1',
+      text: '',
+      from: {},
+      ...((input as object) ?? {}),
+    })),
+  };
+  const agents = {
+    register: vi.fn(async (input: { name: string }) => ({
+      id: `id-${input.name}`,
+      name: input.name,
+      token: `tok-${input.name}`,
+      status: 'online',
+    })),
+    me: vi.fn(async () => ({
+      id: 'id-self',
+      name: 'self',
+      type: 'agent',
+      status: 'online',
+      metadata: {},
+      channels: [],
+    })),
+  };
+  const workspace = {
+    info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
+    fleetNodes: {
+      get: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+      set: vi.fn(async (enabled: boolean) => ({ enabled, defaultEnabled: false, override: enabled })),
+      inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+    },
+  };
+  const messaging = { messages, agents, workspace, events: {} } as unknown as RelayMessaging;
+  return { messaging, messages, agents, workspace };
 }
 
-function requireRelaycast(t: TestContext): boolean {
-  if (!process.env.RELAY_API_KEY?.trim()) {
-    t.skip('RELAY_API_KEY is required');
-    return false;
-  }
-  return true;
-}
+describe('AgentRelay facade (Phase A)', () => {
+  it('workspace.register returns live agent clients', async () => {
+    const { messaging, agents } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
-function requireBinary(t: TestContext): string | null {
-  const bin = resolveBinaryPath();
-  if (!fs.existsSync(bin)) {
-    t.skip(`agent-relay-broker binary not found at ${bin}`);
-    return null;
-  }
-  return bin;
-}
+    const clients = await relay.workspace.register([{ name: 'triager' }, 'engineer']);
 
-function makeRelay(bin: string): AgentRelay {
-  return new AgentRelay({
-    binaryPath: bin,
-    requestTimeoutMs: 10_000,
-    env: process.env,
-  });
-}
-
-// ── spawn with initial task ─────────────────────────────────────────────────
-
-test('facade: spawn with initial task delivers task after worker_ready', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const suffix = Date.now().toString(36);
-  const relay = makeRelay(bin);
-  const readyNames: string[] = [];
-  relay.addListener('agentReady', (agent) => readyNames.push(agent.name));
-
-  try {
-    const agent = await relay.spawnAgent({
-      runtime: 'pty',
-      name: `Task-${suffix}`,
-      cli: 'cat',
-      channels: ['general'],
-      task: 'Hello from initial task',
-    });
-
-    // Wait a bit for worker_ready event to propagate
-    await new Promise((r) => setTimeout(r, 2_000));
-
-    assert.ok(readyNames.includes(agent.name), 'agentReady listener should fire for spawned agent');
-
-    await agent.release();
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── agentReady listener ─────────────────────────────────────────────────────
-
-test('facade: agentReady listener fires when worker becomes ready', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const suffix = Date.now().toString(36);
-  const relay = makeRelay(bin);
-
-  const readyAgents: Agent[] = [];
-  relay.addListener('agentReady', (agent) => readyAgents.push(agent));
-
-  try {
-    const agent = await relay.spawnAgent({
-      runtime: 'pty',
-      name: `Ready-${suffix}`,
-      cli: 'cat',
-      channels: ['general'],
-    });
-
-    // Give the worker time to send worker_ready
-    await new Promise((r) => setTimeout(r, 2_000));
-
-    assert.ok(
-      readyAgents.some((a) => a.name === agent.name),
-      'agentReady listener should fire with the correct agent'
-    );
-
-    await agent.release();
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── broadcast ───────────────────────────────────────────────────────────────
-
-test('facade: broadcast sends to all agents', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const suffix = Date.now().toString(36);
-  const relay = makeRelay(bin);
-  const sentMessages: Message[] = [];
-  relay.addListener('messageSent', (msg) => sentMessages.push(msg));
-
-  try {
-    const agent = await relay.spawnAgent({
-      runtime: 'pty',
-      name: `Broadcast-${suffix}`,
-      cli: 'cat',
-      channels: ['general'],
-    });
-
-    const msg = await relay.broadcast('Hello everyone!');
-    assert.equal(msg.to, '*');
-    assert.equal(msg.text, 'Hello everyone!');
-    assert.equal(msg.from, 'human:orchestrator');
-    assert.equal(sentMessages.length, 1);
-
-    // Broadcast with custom from
-    const msg2 = await relay.broadcast('Custom sender', { from: 'System' });
-    assert.equal(msg2.from, 'System');
-
-    await agent.release();
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── waitForAny ──────────────────────────────────────────────────────────────
-
-test('facade: waitForAny returns first agent to exit', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const suffix = Date.now().toString(36);
-  const relay = makeRelay(bin);
-
-  try {
-    const [a, b] = await Promise.all([
-      relay.spawnAgent({ runtime: 'pty', name: `WaitA-${suffix}`, cli: 'cat', channels: ['general'] }),
-      relay.spawnAgent({ runtime: 'pty', name: `WaitB-${suffix}`, cli: 'cat', channels: ['general'] }),
-    ]);
-
-    // Release agent A — it should be the first to exit
-    setTimeout(() => a.release(), 500);
-
-    const { agent, result } = await AgentRelay.waitForAny([a, b], 10_000);
-    assert.equal(agent.name, a.name);
-    assert.equal(result, 'released');
-
-    await b.release();
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── waitForAny with timeout ─────────────────────────────────────────────────
-
-test('facade: waitForAny respects timeout', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const suffix = Date.now().toString(36);
-  const relay = makeRelay(bin);
-
-  try {
-    const agent = await relay.spawnAgent({
-      runtime: 'pty',
-      name: `Timeout-${suffix}`,
-      cli: 'cat',
-      channels: ['general'],
-    });
-
-    const { result } = await AgentRelay.waitForAny([agent], 500);
-    assert.equal(result, 'timeout');
-
-    await agent.release();
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── exit code ───────────────────────────────────────────────────────────────
-
-test('facade: agentExited listener populates exitCode and exitSignal', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const suffix = Date.now().toString(36);
-  const relay = makeRelay(bin);
-  const exitedAgents: Agent[] = [];
-  relay.addListener('agentExited', (agent) => exitedAgents.push(agent));
-
-  try {
-    const agent = await relay.spawnAgent({
-      runtime: 'pty',
-      name: `Exit-${suffix}`,
-      cli: 'cat',
-      channels: ['general'],
-    });
-
-    await agent.release();
-    // Give time for exit event to propagate
-    await new Promise((r) => setTimeout(r, 1_000));
-
-    // The agent should have exited — check that exitCode or exitSignal is set
-    // (exact values depend on how cat is terminated)
-    const exited = exitedAgents.find((a) => a.name === agent.name);
-    if (exited) {
-      assert.ok(
-        exited.exitCode !== undefined || exited.exitSignal !== undefined,
-        'exitCode or exitSignal should be populated'
-      );
-    }
-    // It's also valid for only onAgentReleased to fire (not onAgentExited)
-    // since the broker may clean up before the process exits
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── getLogs ──────────────────────────────────────────────────────────────────
-
-test('facade: getLogs returns log content for agent', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const suffix = Date.now().toString(36);
-  const relay = makeRelay(bin);
-
-  try {
-    const agent = await relay.spawnAgent({
-      runtime: 'pty',
-      name: `Logs-${suffix}`,
-      cli: 'cat',
-      channels: ['general'],
-    });
-
-    // Give time for some output to be logged
-    await new Promise((r) => setTimeout(r, 2_000));
-
-    const logs = await relay.getLogs(agent.name);
-    // Logs may or may not be found depending on whether the worker writes to the log file
-    // The important thing is the API works without error
-    assert.equal(logs.agent, agent.name);
-    assert.equal(typeof logs.found, 'boolean');
-    assert.equal(typeof logs.content, 'string');
-
-    await agent.release();
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── listLoggedAgents ────────────────────────────────────────────────────────
-
-test('facade: listLoggedAgents returns array', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  const relay = makeRelay(bin);
-
-  try {
-    // Just verify the API works and returns an array
-    const agents = await relay.listLoggedAgents();
-    assert.ok(Array.isArray(agents));
-  } finally {
-    await relay.shutdown();
-  }
-});
-
-// ── workspaceKey / observerUrl from hello_ack ────────────────────────────────
-
-test('facade: workspaceKey is populated from broker hello_ack after startup', async (t) => {
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  // Create relay WITHOUT passing RELAY_API_KEY in env — broker creates its own
-  // workspace and returns the key via hello_ack. This tests the fix for the
-  // "dual workspace" bug where SDK and broker used different workspace keys.
-  const envWithoutKey = { ...process.env };
-  delete envWithoutKey.RELAY_API_KEY;
-
-  const relay = new AgentRelay({
-    binaryPath: bin,
-    requestTimeoutMs: 15_000,
-    env: envWithoutKey,
+    expect(agents.register).toHaveBeenCalledTimes(2);
+    expect(clients.map((c) => c.name)).toEqual(['triager', 'engineer']);
+    expect(clients.map((c) => c.id)).toEqual(['id-triager', 'id-engineer']);
+    expect(clients[0].token).toBe('tok-triager');
+    expect(typeof clients[0].status.becomes).toBe('function');
   });
 
-  try {
-    await relay.getStatus();
+  it('workspace.register returns a single client for a single agent', async () => {
+    const { messaging } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
-    // After startup, workspaceKey MUST be set from the broker's hello_ack.
-    assert.ok(
-      relay.workspaceKey,
-      'workspaceKey must be set after broker startup (read from hello_ack workspace_key field)'
-    );
-    assert.match(
-      relay.workspaceKey!,
-      /^rk_live_/,
-      'workspaceKey must be a valid workspace key (rk_live_ prefix)'
+    const alice = await relay.workspace.register({ name: 'Alice' });
+
+    expect(alice.id).toBe('id-Alice');
+    expect(alice.name).toBe('Alice');
+  });
+
+  it('workspace.reconnect resolves identity from the agent token', async () => {
+    const { messaging, agents } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const client = await relay.workspace.reconnect({ apiToken: 'tok-self' });
+
+    expect(agents.me).toHaveBeenCalledTimes(1);
+    expect(client.id).toBe('id-self');
+    expect(client.name).toBe('self');
+    expect(client.token).toBe('tok-self');
+  });
+
+  it('workspace.fleetNodes delegates fleet node config calls', async () => {
+    const { messaging, workspace } = createMessagingMock();
+    const relay = new AgentRelay({ messaging });
+
+    await expect(relay.workspace.fleetNodes.get()).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: null,
+    });
+    await expect(relay.workspace.fleetNodes.set(true)).resolves.toEqual({
+      enabled: true,
+      defaultEnabled: false,
+      override: true,
+    });
+    await expect(relay.workspace.fleetNodes.inherit()).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: null,
+    });
+
+    expect(workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
+    expect(workspace.fleetNodes.set).toHaveBeenCalledWith(true);
+    expect(workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
+  });
+
+  it('sendMessage routes #channel to messages.send and a bare name to direct', async () => {
+    const { messaging, messages } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
+
+    await sender.sendMessage({ to: '#ops', msg: 'hello channel' });
+    expect(messages.send).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'ops', text: 'hello channel' })
     );
 
-    // observerUrl must be correctly formatted.
-    assert.ok(relay.observerUrl, 'observerUrl must be defined when workspaceKey is set');
-    assert.ok(relay.observerUrl!.includes(relay.workspaceKey!), 'observerUrl must contain the workspace key');
-  } finally {
-    await relay.shutdown();
-  }
+    await sender.sendMessage({ to: 'engineer', msg: 'hello agent' });
+    expect(messages.direct).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'engineer', text: 'hello agent' })
+    );
+  });
+
+  it('sendMessage routes an array of handles to a group DM', async () => {
+    const { messaging, messages } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
+
+    await sender.sendMessage({ to: ['@alice', '@bob'], text: 'group hello' });
+    expect(messages.groupDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ participants: ['alice', 'bob'], text: 'group hello' })
+    );
+  });
+
+  it('messages.send prepends missing mention handles', async () => {
+    const { messaging, messages } = createMessagingMock();
+    const relay = new AgentRelay({ messaging });
+
+    await relay.messages.send({ to: '#ops', text: 'ship it', mentions: [{ handle: 'eng' }] });
+    expect(messages.send).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'ops', text: '@eng ship it' })
+    );
+  });
+
+  it('messages.reply accepts a thread reference and react accepts the object form', async () => {
+    const { messaging, messages } = createMessagingMock();
+    const relay = new AgentRelay({ messaging });
+
+    await relay.messages.reply({ thread: { id: 'parent-1' }, text: 'on it' });
+    expect(messages.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'parent-1', text: 'on it' })
+    );
+
+    await relay.messages.react({ message: 'm9', emoji: 'eyes' });
+    expect(messages.react).toHaveBeenCalledWith('m9', 'eyes');
+
+    await relay.messages.react('m10', 'tada');
+    expect(messages.react).toHaveBeenCalledWith('m10', 'tada');
+  });
+
+  it('registerAction enforces availableTo and adapts the handler shape', async () => {
+    const { messaging } = createMessagingMock();
+    const actions = new ActionRegistry();
+    const relay = new AgentRelay({ messaging, actions });
+    const handler = vi.fn(async () => ({ ok: true }));
+
+    relay.registerAction({
+      name: 'spawn-claude',
+      description: 'spawn',
+      availableTo: [{ name: 'planner' }],
+      handler,
+    });
+
+    const denied = await actions.invoke({
+      name: 'spawn-claude',
+      input: {},
+      caller: { name: 'intruder', type: 'agent' },
+    });
+    expect(denied.ok).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+
+    const allowed = await actions.invoke({
+      name: 'spawn-claude',
+      input: { model: 'opus' },
+      caller: { name: 'planner', type: 'agent' },
+    });
+    expect(allowed.ok).toBe(true);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: { model: 'opus' },
+        agent: expect.objectContaining({ name: 'planner' }),
+      })
+    );
+  });
 });
 
-test('facade: workspaceKey from env matches broker hello_ack when valid', async (t) => {
-  if (!requireRelaycast(t)) return;
-  const bin = requireBinary(t);
-  if (!bin) return;
-
-  // When RELAY_API_KEY is valid, the broker uses it and returns the same key
-  // in hello_ack. SDK and broker must be on the same workspace.
-  const relay = makeRelay(bin);
-
-  try {
-    await relay.getStatus();
-
-    assert.ok(relay.workspaceKey, 'workspaceKey must be set after startup');
-    // The workspace key returned by broker must match what we passed in.
-    assert.equal(
-      relay.workspaceKey,
-      process.env.RELAY_API_KEY,
-      'broker hello_ack workspace_key must match the RELAY_API_KEY we passed — ' +
-        'a mismatch means broker and SDK are on different workspaces, breaking MCP auth'
-    );
-  } finally {
-    await relay.shutdown();
+describe('workspace.register idempotency', () => {
+  function createRotatingMessagingMock() {
+    const base = createMessagingMock();
+    const registerOrRotate = vi.fn(async (input: { name: string }) => ({
+      id: `id-${input.name}`,
+      name: input.name,
+      token: `rotated-${input.name}`,
+      status: 'online',
+    }));
+    (base.messaging.agents as { registerOrRotate?: typeof registerOrRotate }).registerOrRotate =
+      registerOrRotate;
+    return { ...base, registerOrRotate };
   }
+
+  it('uses registerOrRotate by default so re-registering a name succeeds', async () => {
+    const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const first = await relay.workspace.register({ name: 'triager' });
+    const second = await relay.workspace.register({ name: 'triager' });
+
+    expect(registerOrRotate).toHaveBeenCalledTimes(2);
+    expect(agents.register).not.toHaveBeenCalled();
+    expect(first.id).toBe('id-triager');
+    expect(second.id).toBe('id-triager');
+    expect(second.token).toBe('rotated-triager');
+  });
+
+  it('register({ strict: true }) bypasses rotation and uses plain register', async () => {
+    const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    await relay.workspace.register({ name: 'triager' }, { strict: true });
+
+    expect(agents.register).toHaveBeenCalledTimes(1);
+    expect(registerOrRotate).not.toHaveBeenCalled();
+  });
+
+  it('falls back to plain register when the backend lacks registerOrRotate', async () => {
+    const { messaging, agents } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const client = await relay.workspace.register({ name: 'triager' });
+
+    expect(agents.register).toHaveBeenCalledTimes(1);
+    expect(client.token).toBe('tok-triager');
+  });
+
+  it('rejects in-batch duplicate names with a typed name_conflict error', async () => {
+    const { messaging } = createRotatingMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    await expect(relay.workspace.register(['triager', 'triager'])).rejects.toMatchObject({
+      name: 'RelayError',
+      code: 'name_conflict',
+      retryable: false,
+    });
+  });
 });

@@ -1,0 +1,70 @@
+{
+  "id": "relay-feature-guardian",
+  "intent": "relay-orchestrator",
+  "tags": ["relay", "verification", "proactive", "health"],
+  "description": "Cycles through every Relay CLI feature hourly, posting a Slack check asking the team to confirm whether the feature works as intended. Tracks progress across the full manifest and resets after a complete cycle.",
+  "cloud": true,
+  "harness": "opencode",
+  "model": "deepseek-v4-flash-free",
+  "harnessSettings": {
+    "reasoning": "low",
+    "timeoutSeconds": 300
+  },
+  "integrations": {
+    "github": {
+      "scope": {
+        "repo": "AgentWorkforce/relay"
+      },
+      "relayfileMount": {
+        "requiredReadPaths": ["/github/repos/AgentWorkforce/relay/.agentworkforce/features/**"],
+        "writeOnlyPaths": []
+      }
+    },
+    "slack": {
+      "optional": true,
+      "enabledByInput": "SLACK_CHANNEL",
+      "scope": {
+        "paths": "/slack/channels/**"
+      },
+      "relayfileMount": {
+        "requiredReadPaths": [],
+        "writeOnlyPaths": ["/slack/channels/${SLACK_CHANNEL}/**"]
+      }
+    }
+  },
+  "inputs": {
+    "SLACK_CHANNEL": {
+      "description": "Slack channel to post feature checks to (e.g. relay-health or general).",
+      "env": "SLACK_CHANNEL",
+      "default": "C0AEKNLDNKW",
+      "picker": {
+        "provider": "slack",
+        "resource": "channels"
+      }
+    },
+    "SLACK_USER_WILL": {
+      "description": "Slack user ID for Will. Used for @mentions in feature checks.",
+      "env": "SLACK_USER_WILL",
+      "optional": true,
+      "picker": {
+        "provider": "slack",
+        "resource": "users"
+      }
+    },
+    "SLACK_USER_KHALIQ": {
+      "description": "Slack user ID for Khaliq. Used for @mentions in feature checks.",
+      "env": "SLACK_USER_KHALIQ",
+      "optional": true,
+      "picker": {
+        "provider": "slack",
+        "resource": "users"
+      }
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "scopes": ["workspace"],
+    "ttlDays": 14
+  },
+  "onEvent": "./agent.ts"
+}

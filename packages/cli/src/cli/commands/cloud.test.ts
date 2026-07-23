@@ -1,4 +1,9 @@
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Command } from 'commander';
+import { create as createTar } from 'tar';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const cloudMocks = vi.hoisted(() => ({
@@ -7,39 +12,59 @@ const cloudMocks = vi.hoisted(() => ({
   listWorkflowSchedules: vi.fn(),
   getRunStatus: vi.fn(),
   syncWorkflowPatch: vi.fn(),
+  downloadCloudWorkerAssignmentStorage: vi.fn(),
+  registerCloudWorker: vi.fn(),
+  resolveCloudWorkerRecord: vi.fn(),
+  runCloudWorkerLoop: vi.fn(),
+  enrollFleetNode: vi.fn(),
+  upsertFleetNodeEnrollment: vi.fn(),
 }));
 
 vi.mock('@agent-relay/cloud', () => ({
   AUTH_FILE_PATH: '/tmp/cloud-auth.json',
-  REFRESH_WINDOW_MS: 60_000,
+  REFRESH_WINDOW_MS: 5 * 60_000,
   authorizedApiFetch: vi.fn(),
   cancelWorkflow: vi.fn(),
   clearStoredAuth: vi.fn(),
   connectProvider: vi.fn(),
   defaultApiUrl: () => 'https://cloud.test',
+  enrollFleetNode: (...args: unknown[]) => cloudMocks.enrollFleetNode(...args),
+  upsertFleetNodeEnrollment: (...args: unknown[]) => cloudMocks.upsertFleetNodeEnrollment(...args),
   ensureAuthenticated: vi.fn(),
+  ensureCloudSession: vi.fn(),
   getProviderHelpText: () =>
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
+  downloadCloudWorkerAssignmentStorage: (...args: unknown[]) =>
+    cloudMocks.downloadCloudWorkerAssignmentStorage(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
+  registerCloudWorker: (...args: unknown[]) => cloudMocks.registerCloudWorker(...args),
+  resolveCloudWorkerRecord: (...args: unknown[]) => cloudMocks.resolveCloudWorkerRecord(...args),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
+  runCloudWorkerLoop: (...args: unknown[]) => cloudMocks.runCloudWorkerLoop(...args),
   scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
+  upsertCloudWorkerRecord: vi.fn(),
+  cloudWorkerStateDir: (env?: NodeJS.ProcessEnv) =>
+    env?.AGENT_RELAY_HOME ? path.join(env.AGENT_RELAY_HOME, 'cloud-workers') : '/tmp/cloud-workers',
 }));
 
-vi.mock('@agent-relay/telemetry', () => ({
+vi.mock('../telemetry/index.js', () => ({
   track: vi.fn(),
 }));
 
+import { authorizedApiFetch, ensureCloudSession } from '@agent-relay/cloud';
+
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
+import { createDefaultAssignmentRunner } from './cloud-worker.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function createHarness() {
+function createHarness(overrides?: Partial<CloudDependencies>) {
   const exit = vi.fn((code: number) => {
     throw new Error(`exit:${code}`);
   }) as unknown as CloudDependencies['exit'];
@@ -48,6 +73,13 @@ function createHarness() {
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
+    ensureCloudSession: vi.mocked(ensureCloudSession),
+    authorizedApiFetch: vi.mocked(authorizedApiFetch),
+    enrollFleetNode: cloudMocks.enrollFleetNode as unknown as CloudDependencies['enrollFleetNode'],
+    upsertFleetNodeEnrollment:
+      cloudMocks.upsertFleetNodeEnrollment as unknown as CloudDependencies['upsertFleetNodeEnrollment'],
+    writeEnrollmentRecoveryFile: vi.fn(() => '/tmp/cloud-enrollment-recovery.json'),
+    ...overrides,
   };
 
   const program = new Command();
@@ -57,6 +89,24 @@ function createHarness() {
   return { program, deps };
 }
 
+async function createTarBuffer(entries: Record<string, string>): Promise<Buffer> {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-archive-'));
+  try {
+    const sourceDir = path.join(tmp, 'src');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    for (const [name, content] of Object.entries(entries)) {
+      const filePath = path.join(sourceDir, name);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    }
+    const archivePath = path.join(tmp, 'archive.tgz');
+    await createTar({ cwd: sourceDir, file: archivePath, gzip: true }, Object.keys(entries));
+    return fs.readFileSync(archivePath);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 describe('registerCloudCommands', () => {
   it('registers cloud subcommands on the program', () => {
     const { program } = createHarness();
@@ -64,10 +114,13 @@ describe('registerCloudCommands', () => {
 
     expect(cloud).toBeDefined();
     expect(cloud?.commands.map((command) => command.name())).toEqual([
+      'worker',
       'login',
       'logout',
+      'session',
       'whoami',
       'connect',
+      'enroll',
       'run',
       'schedule',
       'schedules',
@@ -76,6 +129,277 @@ describe('registerCloudCommands', () => {
       'sync',
       'cancel',
     ]);
+  });
+
+  it('registers cloud worker subcommands', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const worker = cloud?.commands.find((command) => command.name() === 'worker');
+
+    expect(worker).toBeDefined();
+    expect(worker?.commands.map((command) => command.name())).toEqual([
+      'register',
+      'start',
+      'status',
+      'logs',
+    ]);
+  });
+
+  it('cloud worker register stores returned credentials without printing the token', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.registerCloudWorker.mockResolvedValueOnce({
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'worker',
+      'register',
+      '--token',
+      'ocl_wrk_enr_secret',
+      '--name',
+      'demo',
+    ]);
+
+    expect(cloudMocks.registerCloudWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enrollmentToken: 'ocl_wrk_enr_secret',
+        name: 'demo',
+      })
+    );
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('Registered worker demo (wrk_1)');
+    expect(output).not.toContain('ocl_wrk_secret');
+    expect(output).not.toContain('ocl_wrk_enr_secret');
+  });
+
+  it('cloud worker start wires the stored worker into the control loop', async () => {
+    const { program } = createHarness();
+    const worker = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce(worker);
+    cloudMocks.runCloudWorkerLoop.mockResolvedValueOnce(undefined);
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'worker', 'start', '--once']);
+
+    expect(cloudMocks.runCloudWorkerLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worker,
+        once: true,
+        executeAssignment: expect.any(Function),
+      })
+    );
+  });
+
+  it('materializes Cloud assignments into relayflows args and child env without persisting secrets', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-relayflows-'));
+    const spawnCalls: Array<{
+      command: string;
+      args: string[];
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+    const spawnProcess = vi.fn(
+      (command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+        spawnCalls.push({ command, args, cwd: options.cwd, env: options.env });
+        const child = new EventEmitter() as EventEmitter & {
+          killed: boolean;
+          kill: ReturnType<typeof vi.fn>;
+        };
+        child.killed = false;
+        child.kill = vi.fn(() => {
+          child.killed = true;
+          return true;
+        });
+        queueMicrotask(() => child.emit('exit', 0, null));
+        return child;
+      }
+    ) as never;
+
+    try {
+      cloudMocks.downloadCloudWorkerAssignmentStorage.mockImplementation(
+        async (input: { objectKey: string }) => {
+          if (input.objectKey === 'code/archive.tgz') {
+            return createTarBuffer({
+              'lib/helper.txt': 'helper from main archive',
+            });
+          }
+          if (input.objectKey === 'paths/shared.tgz') {
+            return createTarBuffer({
+              'shared.txt': 'shared path archive',
+            });
+          }
+          throw new Error(`unexpected object key ${input.objectKey}`);
+        }
+      );
+
+      const worker = {
+        baseUrl: 'https://cloud.test',
+        workerId: 'wrk_1',
+        workerToken: 'ocl_wrk_secret',
+        name: 'demo',
+        heartbeatIntervalMs: 30_000,
+        registeredAt: '2026-06-13T00:00:00.000Z',
+        updatedAt: '2026-06-13T00:00:00.000Z',
+      };
+      const runner = createDefaultAssignmentRunner({
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+        env: {
+          AGENT_RELAY_HOME: tmpHome,
+          AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1',
+          BASE_ENV: 'kept',
+        },
+        spawnProcess,
+        now: () => new Date('2026-06-13T00:00:00.000Z'),
+        cwd: () => tmpHome,
+        fetchImpl: vi.fn() as never,
+        resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
+      });
+
+      await runner({
+        assignment: { runId: 'run_relayflows' } as never,
+        payload: {
+          runId: 'run_relayflows',
+          workspaceId: 'rw_1',
+          relayWorkspaceId: 'rw_relay',
+          relaycastApiKey: 'rk_live_secret',
+          relaycastBaseUrl: 'https://relaycast.test',
+          relayfileUrl: 'https://relayfile.test',
+          relayfileToken: 'relayfile_secret',
+          workflow: 'version: "1.0"\nworkflows: []\n',
+          fileType: 'yaml',
+          sourceFileType: 'yaml',
+          workflowFileName: '../workflow.yaml',
+          s3CodeKey: 'code/archive.tgz',
+          paths: [
+            {
+              name: '../shared path',
+              s3CodeKey: 'paths/shared.tgz',
+            },
+          ],
+          envSecrets: {
+            OPENAI_API_KEY: 'sk-secret',
+          },
+          resumeRunId: 'run_previous',
+          startFrom: 'repair',
+          previousRunId: 'run_cache',
+        },
+        worker,
+        signal: new AbortController().signal,
+      });
+
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worker,
+          runId: 'run_relayflows',
+          objectKey: 'code/archive.tgz',
+        })
+      );
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worker,
+          runId: 'run_relayflows',
+          objectKey: 'paths/shared.tgz',
+        })
+      );
+      expect(spawnCalls).toHaveLength(1);
+      const call = spawnCalls[0]!;
+      const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_relayflows', 'workflow.yaml');
+      expect(call.command).toBe(process.execPath);
+      expect(call.args).toEqual([
+        '/opt/relayflows/dist/cli.js',
+        'run',
+        workflowPath,
+        '--resume',
+        'run_previous',
+        '--start-from',
+        'repair',
+        '--previous-run-id',
+        'run_cache',
+      ]);
+      expect(call.cwd).toBe(path.dirname(workflowPath));
+      expect(call.env).toMatchObject({
+        BASE_ENV: 'kept',
+        OPENAI_API_KEY: 'sk-secret',
+        AGENT_RELAY_CLOUD_WORKER_RUN_ID: 'run_relayflows',
+        RELAY_WORKSPACE_ID: 'rw_relay',
+        RELAY_API_KEY: 'rk_live_secret',
+        RELAYCAST_API_KEY: 'rk_live_secret',
+        RELAYCAST_BASE_URL: 'https://relaycast.test',
+        RELAYFILE_URL: 'https://relayfile.test',
+        RELAYFILE_TOKEN: 'relayfile_secret',
+      });
+
+      const workflowFile = fs.readFileSync(workflowPath, 'utf-8');
+      expect(workflowFile).toBe('version: "1.0"\nworkflows: []\n');
+      expect(fs.readFileSync(path.join(path.dirname(workflowPath), 'lib', 'helper.txt'), 'utf-8')).toBe(
+        'helper from main archive'
+      );
+      expect(
+        fs.readFileSync(path.join(path.dirname(workflowPath), 'paths', 'shared_path', 'shared.txt'), 'utf-8')
+      ).toBe('shared path archive');
+      const persisted = fs.readFileSync(workflowPath, 'utf-8');
+      expect(persisted).not.toContain('sk-secret');
+      expect(persisted).not.toContain('relayfile_secret');
+      expect(persisted).not.toContain('rk_live_secret');
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('prints the canonical cloud session as JSON without interactive login', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({
+      auth: {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        refreshTokenExpiresAt: '2999-04-01T00:00:00.000Z',
+      },
+      client: {} as never,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'session',
+      '--json',
+      '--refresh-timeout',
+      '25',
+    ]);
+
+    expect(ensureCloudSession).toHaveBeenCalledWith({
+      apiUrl: 'https://cloud.test',
+      interactive: false,
+      refreshTimeoutMs: 25,
+    });
+    const sessionJson = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(sessionJson).toEqual({
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-token',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      refreshTokenExpiresAt: '2999-04-01T00:00:00.000Z',
+    });
+    expect(sessionJson).not.toHaveProperty('refreshToken');
   });
 
   it('connect requires a provider argument', () => {
@@ -371,5 +695,520 @@ describe('registerCloudCommands', () => {
 
     expect(deps.log).toHaveBeenCalledWith('Patches:');
     expect(deps.log).toHaveBeenCalledWith('  cloud: patch pending - run still active');
+  });
+
+  it('cloud enroll --workspace resolves a supported workspace selector before minting', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    const resolvedAuth = {
+      ...auth,
+      accessToken: 'refreshed-access-secret',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: new Response(
+          JSON.stringify({
+            workspaceId: 'rw_7ccfea89',
+            cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+            relaycastWorkspaceId: 'rw_7ccfea89',
+            relayfileWorkspaceId: 'rw_7ccfea89',
+            relayauthWorkspaceId: 'rw_7ccfea89',
+            urls: {},
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        ),
+        auth: resolvedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: new Response(
+          JSON.stringify({
+            token: 'ocl_node_enr_minted_secret',
+            enrollmentUrl: 'https://cloud.test/api/v1/fleet/register',
+            enrollCommand: 'agent-relay cloud enroll --token redacted',
+            relayWorkspaceId: 'rw_7ccfea89',
+            expiresAt: '2999-01-01T00:05:00.000Z',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        ),
+        auth: resolvedAuth,
+      });
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_relay_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'enroll',
+      '--workspace',
+      'rw_7ccfea89',
+      '--name',
+      'kjglaptop',
+      '--max-agents',
+      '4',
+    ]);
+
+    expect(ensureCloudSession).toHaveBeenCalledWith({
+      apiUrl: 'https://cloud.test',
+      interactive: false,
+    });
+    expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+      1,
+      auth,
+      '/api/v1/workspaces/rw_7ccfea89/resolve',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      resolvedAuth,
+      '/api/v1/fleet/enrollment-tokens',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          name: 'kjglaptop',
+          maxAgents: 4,
+        }),
+      },
+      { interactive: false }
+    );
+    expect(cloudMocks.enrollFleetNode).toHaveBeenCalledWith({
+      enrollmentToken: 'ocl_node_enr_minted_secret',
+      enrollmentUrl: 'https://cloud.test/api/v1/fleet/register',
+      name: 'kjglaptop',
+      maxAgents: 4,
+    });
+    const output = [
+      ...vi.mocked(deps.log).mock.calls.flat(),
+      ...vi.mocked(deps.error).mock.calls.flat(),
+    ].join('\n');
+    expect(output).not.toContain('ocl_node_enr_minted_secret');
+    expect(output).not.toContain('access-secret');
+    expect(output).not.toContain('refresh-secret');
+  });
+
+  it('cloud enroll --workspace tells logged-out users how to log in', async () => {
+    vi.mocked(ensureCloudSession).mockRejectedValueOnce(
+      Object.assign(new Error('Cloud login required'), { code: 'AUTH_BROWSER_REQUIRED' })
+    );
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith('Cloud login required. Run `agent-relay cloud login` and retry.');
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      status: 403,
+      body: { error: 'Forbidden' },
+      message: 'You do not have permission to enroll nodes in workspace rw_7ccfea89',
+    },
+    {
+      status: 404,
+      body: { error: 'Workspace not found' },
+      message: 'Workspace rw_7ccfea89 was not found',
+    },
+  ])('cloud enroll --workspace maps a $status mint response', async ({ status, body, message }) => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: new Response(JSON.stringify({ cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: new Response(JSON.stringify(body), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        }),
+        auth,
+      });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining(message));
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it('cloud enroll --workspace surfaces the Retry-After value on rate limits', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: new Response(JSON.stringify({ cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: new Response(JSON.stringify({ error: 'Rate limit exceeded' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '180' },
+        }),
+        auth,
+      });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('Retry-After: 180 seconds'));
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      status: 403,
+      body: { error: 'Forbidden: rw_7ccfea89' },
+      message: 'You do not have access to that Cloud workspace.',
+    },
+    {
+      status: 404,
+      body: { error: 'Workspace rw_7ccfea89 was not found' },
+      message:
+        'The workspace identifier was not found by Agent Relay Cloud. Use a Cloud workspace UUID or unified rw_ workspace ID.',
+    },
+  ])(
+    'cloud enroll --workspace maps a $status resolver response without minting',
+    async ({ status, body, message }) => {
+      const workspaceId = 'rw_7ccfea89';
+      const auth = {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      };
+      vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+        response: new Response(JSON.stringify(body), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        }),
+        auth,
+      });
+      const { program, deps } = createHarness();
+
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', workspaceId])
+      ).rejects.toThrow('exit:1');
+
+      expect(deps.error).toHaveBeenCalledWith(message);
+      expect(deps.error.mock.calls.flat().join('\n')).not.toContain(workspaceId);
+      expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+      expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+    }
+  );
+
+  it('cloud enroll --workspace preserves Retry-After from the resolver without minting', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: new Response(JSON.stringify({ error: 'Rate limit exceeded' }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '90' },
+      }),
+      auth,
+    });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('Retry-After: 90 seconds'));
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new Response('not-json', { status: 200, headers: { 'content-type': 'application/json' } }),
+    new Response(JSON.stringify({ workspaceId: 'rw_7ccfea89' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  ])('cloud enroll --workspace rejects an invalid resolver descriptor without minting', async (response) => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({ response, auth });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'rw_7ccfea89'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith('Cloud workspace resolver returned an invalid response.');
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it.each(['204337648549896192', 'rk_live_SECRET'])(
+    'cloud enroll --workspace rejects unsupported identifier %s without disclosing it',
+    async (workspaceId) => {
+      const { program, deps } = createHarness();
+
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', workspaceId])
+      ).rejects.toThrow('exit:1');
+
+      expect(deps.error).toHaveBeenCalledWith(
+        'Unsupported Cloud workspace identifier. Use a Cloud workspace UUID or unified rw_ workspace ID.'
+      );
+      expect(deps.error.mock.calls.flat().join('\n')).not.toContain(workspaceId);
+      expect(ensureCloudSession).not.toHaveBeenCalled();
+      expect(authorizedApiFetch).not.toHaveBeenCalled();
+      expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+    }
+  );
+
+  it('cloud enroll rejects --token and --workspace together before using either credential', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'enroll',
+        '--token',
+        'ocl_node_enr_existing',
+        '--workspace',
+        'rw_cloud_123',
+      ])
+    ).rejects.toThrow(/cannot be used with option/);
+
+    expect(ensureCloudSession).not.toHaveBeenCalled();
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it('cloud enroll requires either --token or --workspace', async () => {
+    const { program, deps } = createHarness();
+
+    await expect(program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll'])).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(
+      'Either --token or --workspace is required to enroll a fleet node.'
+    );
+    expect(ensureCloudSession).not.toHaveBeenCalled();
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it('cloud enroll persists credentials before printing success and never prints the token', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const log = vi.fn();
+    const { program } = createHarness({ log });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'enroll',
+      '--token',
+      'ocl_node_enr_x',
+      '--name',
+      'kjglaptop',
+      '--max-agents',
+      '4',
+    ]);
+
+    expect(cloudMocks.enrollFleetNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enrollmentToken: 'ocl_node_enr_x',
+        name: 'kjglaptop',
+        maxAgents: 4,
+      })
+    );
+    // Persist happens BEFORE the success output (token is one-time).
+    expect(cloudMocks.upsertFleetNodeEnrollment).toHaveBeenCalledTimes(1);
+    expect(cloudMocks.upsertFleetNodeEnrollment.mock.calls[0][0]).toMatchObject({
+      nodeToken: 'nt_secret',
+      enrolledAt: expect.any(String),
+    });
+    expect(cloudMocks.upsertFleetNodeEnrollment.mock.invocationCallOrder[0]).toBeLessThan(
+      log.mock.invocationCallOrder[0]
+    );
+
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain('Enrolled node "kjglaptop" (node_abc) in workspace rw_123');
+    expect(output).toContain("Run 'relay node up'");
+    expect(output).not.toContain('nt_secret');
+  });
+
+  it('cloud enroll writes a recovery file (never printing the token) when persistence fails', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied');
+    });
+    const writeEnrollmentRecoveryFile = vi.fn(() => '/tmp/recovery-123.json');
+    const log = vi.fn();
+    const error = vi.fn();
+    const { program } = createHarness({ log, error, writeEnrollmentRecoveryFile });
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x'])
+    ).rejects.toThrow('exit:1');
+
+    // The one-time token is burned; creds go to a 0600 recovery file and the
+    // token must NOT appear on stderr.
+    expect(writeEnrollmentRecoveryFile).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeToken: 'nt_secret' })
+    );
+    const stderr = error.mock.calls.flat().join('\n');
+    expect(stderr).toContain('persisting credentials failed');
+    expect(stderr).toContain('EACCES');
+    expect(stderr).toContain('/tmp/recovery-123.json');
+    expect(stderr).not.toContain('nt_secret');
+    expect(log.mock.calls.flat().join('\n')).not.toContain('Enrolled node');
+  });
+
+  it('cloud enroll dumps the credentials to stderr only when the recovery file also fails', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockImplementationOnce(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    const writeEnrollmentRecoveryFile = vi.fn(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    const error = vi.fn();
+    const { program } = createHarness({ error, writeEnrollmentRecoveryFile });
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x'])
+    ).rejects.toThrow('exit:1');
+
+    // Last resort: a printed token beats a lost one.
+    const stderr = error.mock.calls.flat().join('\n');
+    expect(stderr).toContain('SAVE THESE CREDENTIALS');
+    expect(stderr).toContain('nt_secret');
+  });
+
+  it('cloud enroll --json prints the record without the node token', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const log = vi.fn();
+    const { program } = createHarness({ log });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'enroll',
+      '--token',
+      'ocl_node_enr_x',
+      '--json',
+    ]);
+
+    const printed = JSON.parse(String(log.mock.calls[0][0]));
+    expect(printed).not.toHaveProperty('nodeToken');
+    expect(printed).toMatchObject({
+      nodeName: 'kjglaptop',
+      relayWorkspaceId: 'rw_123',
+      enrolledAt: expect.any(String),
+    });
+  });
+
+  it('cloud enroll surfaces enrollment errors and exits 1 without persisting', async () => {
+    cloudMocks.enrollFleetNode.mockRejectedValueOnce(new Error('Enrollment token is invalid'));
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'bad'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith('Enrollment token is invalid');
+    expect(cloudMocks.upsertFleetNodeEnrollment).not.toHaveBeenCalled();
+  });
+
+  it('cloud enroll rejects a non-positive --max-agents', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'enroll',
+        '--token',
+        'ocl_node_enr_x',
+        '--max-agents',
+        '0',
+      ])
+    ).rejects.toThrow();
+
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,69 @@
+{
+  "version": "1.0.0",
+  "id": "db6d3fd1-8267-42c3-a87e-338f5c34101b",
+  "timestamp": "2026-05-27T17:39:58.482Z",
+  "trajectory": "traj_vi1ff3d098fr",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 64,
+              "end_line": 70,
+              "revision": "e744f007ebb003780b4dba05ab323f7be82eee4b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/auth.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 27,
+              "revision": "e744f007ebb003780b4dba05ab323f7be82eee4b"
+            },
+            {
+              "start_line": 62,
+              "end_line": 68,
+              "revision": "e744f007ebb003780b4dba05ab323f7be82eee4b"
+            },
+            {
+              "start_line": 191,
+              "end_line": 247,
+              "revision": "e744f007ebb003780b4dba05ab323f7be82eee4b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/auth.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 161,
+              "end_line": 169,
+              "revision": "e744f007ebb003780b4dba05ab323f7be82eee4b"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
