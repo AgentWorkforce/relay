@@ -139,7 +139,7 @@ granted to one room member, and issued as a short-lived, revocable lease:
 
 ```bash
 # Owner: inspect capability truth, connect a provider, then grant exact paths.
-agent-relay cloud integration catalog --workspace rw_7ccfea89
+agent-relay cloud integration catalog
 agent-relay cloud integration connect linear --workspace rw_7ccfea89
 agent-relay cloud integration grant \
   --workspace rw_7ccfea89 \

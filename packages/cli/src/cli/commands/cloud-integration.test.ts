@@ -106,16 +106,7 @@ describe('registerCloudIntegrationCommands', () => {
       auth,
     });
 
-    await program.parseAsync([
-      'node',
-      'agent-relay',
-      'cloud',
-      'integration',
-      'catalog',
-      '--workspace',
-      'rw_7ccfea89',
-      '--json',
-    ]);
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'integration', 'catalog', '--json']);
 
     expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
       auth,

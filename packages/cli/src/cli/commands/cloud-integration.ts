@@ -386,7 +386,7 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
   integration
     .command('catalog')
     .description('Discover integrations and their truthful capabilities')
-    .requiredOption('--workspace <workspace>', 'Cloud UUID or unified rw_ workspace ID')
+    .option('--workspace <workspace>', 'Optional Cloud UUID or unified rw_ workspace context')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--static', 'Exclude dynamic Nango and Composio catalog entries')
     .option('--search <query>', 'Filter providers by ID or display name')
@@ -394,7 +394,7 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
     .option('--json', 'Output the integration catalog as JSON')
     .action(
       async (options: {
-        workspace: string;
+        workspace?: string;
         apiUrl?: string;
         static?: boolean;
         search?: string;
@@ -402,7 +402,7 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
         json?: boolean;
       }) => {
         await action(deps, async () => {
-          workspaceId(options.workspace);
+          if (options.workspace) workspaceId(options.workspace);
           const catalog = normalizeCatalog(
             await request(
               deps,
