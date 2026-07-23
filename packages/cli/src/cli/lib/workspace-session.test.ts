@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
 import { persistWorkspaceSession, resolveWorkspaceSessionKey } from './workspace-session.js';
 import { readProjectWorkspaceKey } from './project-workspace-key.js';
 import { readWorkspaceStore, setWorkspaceKey } from './workspace-store.js';
@@ -31,6 +32,28 @@ afterEach(() => {
 });
 
 describe('workspace session persistence', () => {
+  it('normalizes the first non-blank workspace-key environment alias', () => {
+    const env = {
+      RELAY_WORKSPACE_KEY: '   ',
+      AGENT_RELAY_WORKSPACE_KEY: ' rk_live_alias ',
+      RELAY_API_KEY: 'rk_live_legacy',
+    };
+
+    expect(promoteWorkspaceKeyEnvAlias(env)).toBe('rk_live_alias');
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
+  });
+
+  it('preserves the canonical workspace-key environment precedence', () => {
+    const env = {
+      RELAY_WORKSPACE_KEY: ' rk_live_canonical ',
+      AGENT_RELAY_WORKSPACE_KEY: 'rk_live_alias',
+      RELAY_API_KEY: 'rk_live_legacy',
+    };
+
+    expect(promoteWorkspaceKeyEnvAlias(env)).toBe('rk_live_canonical');
+    expect(env.RELAY_WORKSPACE_KEY).toBe(' rk_live_canonical ');
+  });
+
   it('pins a named workspace to the project and makes it globally active', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
@@ -66,6 +89,24 @@ describe('workspace session persistence', () => {
 
     expect(readProjectWorkspaceKey(projectDataDir)).toBe('rk_live_shared');
     expect(readWorkspaceStore(env).active).toBe('default');
+  });
+
+  it('rejects a whitespace-only workspace name before persisting the project session', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+
+    expect(() =>
+      persistWorkspaceSession({
+        workspaceKey: 'rk_live_shared',
+        name: '   ',
+        projectDataDir,
+        env,
+      })
+    ).toThrow('Workspace name is required.');
+
+    expect(readProjectWorkspaceKey(projectDataDir)).toBeUndefined();
+    expect(readWorkspaceStore(env).workspaces).toEqual({});
   });
 
   it('resumes the project workspace ahead of the machine-global active workspace', () => {

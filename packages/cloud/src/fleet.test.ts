@@ -267,6 +267,32 @@ describe('fleet node enrollment store', () => {
     expect(resolveActiveFleetNodeEnrollment({ nodeId: 'node_missing', env })).toBeUndefined();
   });
 
+  it('uses the active enrollment when every requested selector matches it', () => {
+    upsertFleetNodeEnrollment(record({ relayWorkspaceId: 'rw_1', nodeId: 'node_1' }), env);
+    upsertFleetNodeEnrollment(record({ relayWorkspaceId: 'rw_2', nodeId: 'node_2' }), env);
+
+    expect(
+      resolveActiveFleetNodeEnrollment({
+        baseUrl: 'https://relaycast.example.com',
+        env,
+      })?.nodeId
+    ).toBe('node_2');
+  });
+
+  it('does not return an active enrollment that fails the requested nodeId selector', () => {
+    upsertFleetNodeEnrollment(record({ relayWorkspaceId: 'rw_1', nodeId: 'node_target' }), env);
+    upsertFleetNodeEnrollment(record({ relayWorkspaceId: 'rw_2', nodeId: 'node_target' }), env);
+    upsertFleetNodeEnrollment(record({ relayWorkspaceId: 'rw_3', nodeId: 'node_active' }), env);
+
+    expect(() =>
+      resolveActiveFleetNodeEnrollment({
+        baseUrl: 'https://relaycast.example.com',
+        nodeId: 'node_target',
+        env,
+      })
+    ).toThrow(/Multiple fleet node enrollments/);
+  });
+
   it('returns undefined when nothing matches', () => {
     expect(resolveActiveFleetNodeEnrollment({ env })).toBeUndefined();
     upsertFleetNodeEnrollment(record(), env);

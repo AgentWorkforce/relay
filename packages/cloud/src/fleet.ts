@@ -372,7 +372,7 @@ export function resolveActiveFleetNodeEnrollment(
   if (baseUrl) {
     const activeKey = store.active[fleetNodeActiveBaseKey(baseUrl)];
     const active = activeKey ? store.nodes[activeKey] : undefined;
-    if (active) {
+    if (active && matches.includes(active)) {
       return active;
     }
   }

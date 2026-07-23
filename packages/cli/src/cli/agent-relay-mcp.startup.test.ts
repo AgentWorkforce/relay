@@ -502,6 +502,29 @@ describe('createAgentRelayMcpServer', () => {
     expect(promptResult.messages[0].content.text).not.toContain('workspace.create');
   });
 
+  it('returns a created workspace key when local session persistence fails', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.persistWorkspaceSession.mockImplementationOnce(() => {
+      throw new Error('project directory is read-only');
+    });
+
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
+    const server = mocks.serverInstances[0];
+    const result = await server.tools.get('create_workspace')?.handler({ name: 'Durable Workspace' });
+
+    expect(result.structuredContent).toEqual({
+      workspaceKey: 'rk_live_created',
+      workspaceName: 'Test Workspace',
+      warning:
+        'Workspace created, but its session could not be persisted locally: project directory is read-only. ' +
+        'Keep the returned workspace key and retry persistence before starting another session.',
+    });
+    expect(mocks.RelayCast.createWorkspace).toHaveBeenCalledTimes(1);
+
+    await server.tools.get('register_agent')?.handler({ name: 'WorkerAfterWarning' });
+    expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'rk_live_created')).toBe(true);
+  });
+
   it('registers submit_result when a spawned-agent result callback is configured', async () => {
     vi.stubEnv('AGENT_RELAY_RESULT_URL', 'http://127.0.0.1:3889/api/agent-result');
     vi.stubEnv('AGENT_RELAY_RESULT_TOKEN', 'arr_test');

@@ -23,6 +23,7 @@ import {
 } from './node-provider-child.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
+import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -1202,6 +1203,7 @@ interface PinnedProjectWorkspaceSession {
   enrolledNodeId?: string;
 }
 
+/** Read the minimal project session needed during broker startup. */
 function readPinnedProjectWorkspaceSession(
   dataDir: string,
   deps: CoreDependencies
@@ -1227,21 +1229,13 @@ function readPinnedProjectWorkspaceSession(
   }
 }
 
+/** Resume the pinned project session unless explicit credentials override it. */
 function resumePinnedProjectWorkspace(
   options: UpOptions,
   deps: CoreDependencies,
   projectDataDir: string
 ): PinnedProjectWorkspaceSession | undefined {
-  const explicitEnvWorkspaceKey = [
-    deps.env.RELAY_WORKSPACE_KEY,
-    deps.env.AGENT_RELAY_WORKSPACE_KEY,
-    deps.env.RELAY_API_KEY,
-  ]
-    .map((value) => value?.trim())
-    .find(Boolean);
-  if (explicitEnvWorkspaceKey && !deps.env.RELAY_WORKSPACE_KEY?.trim()) {
-    deps.env.RELAY_WORKSPACE_KEY = explicitEnvWorkspaceKey;
-  }
+  const explicitEnvWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.env);
   if (options.workspaceKey?.trim() || explicitEnvWorkspaceKey || deps.env.RELAY_NODE_TOKEN?.trim()) {
     return undefined;
   }

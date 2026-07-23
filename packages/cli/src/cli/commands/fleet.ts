@@ -138,6 +138,7 @@ export function registerFleetCommands(
   });
 }
 
+/** Return whether a roster entry is a live Fleet node rather than direct-history metadata. */
 function isAvailableFleetNode(node: { live?: boolean; status?: string; tags?: unknown }): boolean {
   const tags = Array.isArray(node.tags) ? node.tags : [];
   const isDirectPseudoNode = tags.includes('direct');

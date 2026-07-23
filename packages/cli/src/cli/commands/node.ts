@@ -10,6 +10,7 @@ import {
 } from './core.js';
 import { runUpCommand } from '../lib/broker-lifecycle.js';
 import { readProjectWorkspaceSession, type ProjectWorkspaceSession } from '../lib/project-workspace-key.js';
+import { promoteWorkspaceKeyEnvAlias } from '../lib/workspace-env.js';
 import { registerLocalAgentCommands } from './local-agent.js';
 import { registerLocalWorkflowCommands } from './local-workflow.js';
 
@@ -71,25 +72,22 @@ export function registerNodeCommands(
   );
 }
 
+/** Normalize workspace env aliases and report whether `node up` received an explicit workspace. */
 function prepareExplicitWorkspaceForNodeUp(
   options: UpCommandOptions,
   deps: NodeCommandDependencies
 ): boolean {
-  const env = deps.core.env;
-  const envWorkspaceKey = [env.RELAY_WORKSPACE_KEY, env.AGENT_RELAY_WORKSPACE_KEY, env.RELAY_API_KEY]
-    .map((value) => value?.trim())
-    .find(Boolean);
-  if (envWorkspaceKey && !env.RELAY_WORKSPACE_KEY?.trim()) {
-    env.RELAY_WORKSPACE_KEY = envWorkspaceKey;
-  }
-  return Boolean(options.workspaceKey?.trim() || env.RELAY_WORKSPACE_KEY?.trim());
+  const envWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.core.env);
+  return Boolean(options.workspaceKey?.trim() || envWorkspaceKey);
 }
 
+/** Apply a project-pinned workspace without changing the persisted enrolled-node association. */
 function resumeProjectWorkspace(session: ProjectWorkspaceSession, deps: NodeCommandDependencies): void {
   deps.core.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
   deps.core.env.RELAY_API_KEY = session.workspaceKey;
 }
 
+/** Apply stored enrollment credentials and return the enrolled node name, when present. */
 function applyEnrollment(
   record: NonNullable<ReturnType<typeof resolveActiveFleetNodeEnrollment>>,
   deps: NodeCommandDependencies
@@ -110,6 +108,7 @@ function applyEnrollment(
   return record.nodeName?.trim() || undefined;
 }
 
+/** Resolve the enrollment associated with a project session, avoiding ambiguous global fallback. */
 function resolveEnrollmentForProject(
   session: ProjectWorkspaceSession | undefined,
   deps: NodeCommandDependencies
@@ -131,6 +130,7 @@ function resolveEnrollmentForProject(
   });
 }
 
+/** Apply an enrollment or safely resume a project workspace when its enrollment is unavailable. */
 function applyResolvedNodeSession(
   record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined,
   projectSession: ProjectWorkspaceSession | undefined,

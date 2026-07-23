@@ -35,10 +35,14 @@ export function persistWorkspaceSession(options: PersistWorkspaceSessionOptions)
     throw new Error('Workspace key is required.');
   }
 
+  const name = options.name?.trim();
+  if (options.name !== undefined && !name) {
+    throw new Error('Workspace name is required.');
+  }
+
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
   writeProjectWorkspaceKey(projectDataDir, workspaceKey);
 
-  const name = options.name?.trim();
   if (name) {
     setWorkspaceKey(name, workspaceKey, options.env);
     switchWorkspace(name, options.env);

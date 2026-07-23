@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI and MCP workspace selection is now pinned to the current project, so later agents and processes resume one collaboration session until a new workspace is explicitly created or selected.
 - Enrolled Fleet nodes now retain their node identity when a pinned project session is restarted.
 
+### Fixed
+
+- MCP workspace creation now returns the created key with a warning when local session persistence fails, preventing retries from creating duplicate workspaces.
+- Fleet node restarts now reject stored enrollment fallbacks that do not match the project-pinned node identity.
+
 ## [11.0.2] - 2026-07-22
 
 ### Fixed

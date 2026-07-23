@@ -112,6 +112,7 @@ function resolveEnv(key: string): string | undefined {
   return value;
 }
 
+/** Return whether an environment value is an unresolved `${...}` placeholder. */
 function isUnresolvedEnvTemplate(value: string): boolean {
   return /^\$\{.+\}$/.test(value.trim());
 }
@@ -420,10 +421,19 @@ function registerAgentRelayTools(
         agentName: null,
         agents: new Map(),
       });
-      persistWorkspaceSession({ name: workspaceName, workspaceKey });
+      let persistenceWarning: string | undefined;
+      try {
+        persistWorkspaceSession({ name: workspaceName, workspaceKey });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        persistenceWarning =
+          `Workspace created, but its session could not be persisted locally: ${message}. ` +
+          'Keep the returned workspace key and retry persistence before starting another session.';
+      }
       return jsonContent({
         workspaceKey,
         workspaceName,
+        ...(persistenceWarning ? { warning: persistenceWarning } : {}),
       });
     }
   );

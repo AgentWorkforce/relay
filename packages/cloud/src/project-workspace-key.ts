@@ -127,6 +127,7 @@ export function resolveWorkspaceKeyWithSource(
   return store ? { key: store, source: 'store' } : undefined;
 }
 
+/** Resolve only the selected workspace key while preserving the shared precedence rules. */
 export function resolveWorkspaceKey(options: ResolveWorkspaceKeyOptions = {}): string | undefined {
   return resolveWorkspaceKeyWithSource(options)?.key;
 }
