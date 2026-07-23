@@ -22,6 +22,13 @@ function parseLimit(value: string): number {
   return parsed;
 }
 
+function parseMessageMode(value: string): 'wait' | 'steer' {
+  if (value === 'wait' || value === 'steer') {
+    return value;
+  }
+  throw new InvalidArgumentError('mode must be "wait" or "steer"');
+}
+
 export function registerMessageCommands(
   program: Command,
   overrides: Partial<MessageCommandDependencies> = {}
@@ -112,9 +119,17 @@ export function registerMessageCommands(
       .description('Send a direct message to an agent')
       .argument('<agent>', 'Recipient agent')
       .argument('<text>', 'Message text')
+      .option('--mode <mode>', 'Delivery mode: wait or steer', parseMessageMode)
   ).action(async (agent: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      printJson(deps, await deps.createAgentRelay(opts(o)).messages.direct({ to: agent, text }));
+      printJson(
+        deps,
+        await deps.createAgentRelay(opts(o)).messages.direct({
+          to: agent,
+          text,
+          ...(o.mode ? { mode: o.mode as 'wait' | 'steer' } : {}),
+        })
+      );
     });
   });
 

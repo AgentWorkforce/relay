@@ -47,6 +47,37 @@ agent-relay node agent release <name>
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
+## Remote fleet agents
+
+The `fleet` command group lists and controls agents across all live nodes in
+the active project workspace:
+
+```bash
+agent-relay fleet nodes
+agent-relay fleet nodes --name sf-mini --capability spawn:codex
+
+# Exact-node placement uses the same agent-scoped Fleet action as the MCP tool.
+agent-relay fleet spawn codex \
+  --name api-worker \
+  --task "Use https://agentrelay.com/skill, ACK over Relay, then wait for details." \
+  --node sf-mini
+
+# Omit --node for automatic eligible-node placement.
+agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
+
+agent-relay message dm send api-worker "Detailed task instructions"
+# Wake an idle worker immediately instead of queueing for its next tool boundary.
+agent-relay message dm send api-worker "Please check Relay now." --mode steer
+agent-relay message inbox check --limit 20
+agent-relay fleet release api-worker --reason "Work accepted"
+```
+
+Commands use the workspace session pinned to the current project. Targeted
+spawn and messaging operations also need an agent identity: pass `--token` or
+set `RELAY_AGENT_TOKEN` to the token returned by
+`agent-relay agent register <lead-name>`. Automatic placement and release need
+only the workspace key.
+
 To run as a Cloud-managed node, first redeem a one-time enrollment token, then start the node:
 
 ```bash

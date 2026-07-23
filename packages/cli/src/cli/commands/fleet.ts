@@ -1,10 +1,17 @@
-import type { Command } from 'commander';
+import { InvalidArgumentError, type Command } from 'commander';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { createWorkspaceClient, type RelayWorkspaceThinClient } from '@agent-relay/sdk';
 
 import { withDefaults, type CoreDependencies } from './core.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { redactSecrets } from '../lib/redact.js';
-import { resolveWorkspaceKeyWithSource } from '../lib/sdk-client.js';
+import {
+  resolveAgentToken,
+  resolveBaseUrl,
+  resolveWorkspaceKey,
+  resolveWorkspaceKeyWithSource,
+  type SdkClientOptions,
+} from '../lib/sdk-client.js';
 import {
   addSdkOptions,
   printJson,
@@ -18,9 +25,12 @@ const SERVE_REPLACEMENT_MESSAGE =
   "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
 
+const FLEET_CLIS = new Set(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']);
+
 export interface FleetCommandDependencies {
   core: CoreDependencies;
   sdk: SdkCommandDeps;
+  createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -33,6 +43,11 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
   return {
     core,
     sdk,
+    createFleetWorkspaceClient: (options) =>
+      createWorkspaceClient({
+        workspaceKey: resolveWorkspaceKey(options),
+        baseUrl: resolveBaseUrl(options),
+      }),
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -67,16 +82,115 @@ export function registerFleetCommands(
       .description('List fleet nodes in the workspace')
       .option('--capability <name>', 'Filter by capability name')
       .option('--name <name>', 'Filter by node name')
+      .option('--all', 'Include offline and direct history records')
   ).action(async (options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
-      warnIfInferredFromProjectBroker(options, deps.warn);
+      warnIfInferredFromProjectSession(options, deps.warn);
       const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-      printJson(deps.sdk, {
-        nodes: await relay.nodes.list({
-          capability: options.capability as string | undefined,
-          name: options.name as string | undefined,
-        }),
+      const nodes = await relay.nodes.list({
+        capability: options.capability as string | undefined,
+        name: options.name as string | undefined,
       });
+      const liveNodes = nodes.filter(isAvailableFleetNode);
+      const historyNodes = nodes.filter((node) => !isAvailableFleetNode(node));
+      const visibleNodes = options.all === true ? [...liveNodes, ...historyNodes] : liveNodes;
+      const hiddenCount = historyNodes.length;
+      if (hiddenCount > 0 && options.all !== true) {
+        deps.warn(
+          `${hiddenCount} offline or non-fleet records hidden. ` +
+            'Run `agent-relay fleet nodes --all` to include history.'
+        );
+      }
+      printJson(deps.sdk, {
+        nodes: visibleNodes,
+      });
+    });
+  });
+
+  addSdkOptions(
+    group
+      .command('spawn')
+      .description('Spawn an agent on a fleet node')
+      .argument('<cli>', 'AI CLI to launch', parseFleetCli)
+      .requiredOption('--name <name>', 'Worker agent name')
+      .requiredOption('--task <text>', 'Initial task instructions')
+      .option('--node <name>', 'Target a specific fleet node')
+      .option('--target-node <name>', 'Alias for --node')
+      .option('--channel <name>', 'Channel for the worker to join')
+      .option('--persona <persona>', 'Worker persona (automatic placement)')
+      .option('--model <model>', 'Model powering the worker')
+      .option('--session-ref <reference>', 'Session reference for a resumable targeted spawn')
+  ).action(async (cli: string, options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      warnIfInferredFromProjectSession(options, deps.warn);
+      const clientOptions = sdkOptionsFromOpts(options);
+      const name = requiredText(options.name, 'Worker name');
+      const task = requiredText(options.task, 'Task');
+      const targetNode =
+        optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
+      const channel = optionalText(options.channel, 'Channel');
+      const model = optionalText(options.model, 'Model');
+      const sessionRef = optionalText(options.sessionRef, 'Session reference');
+
+      if (targetNode) {
+        if (!resolveAgentToken(clientOptions)) {
+          throw new Error(
+            'Targeted Fleet spawn requires an agent token. Pass --token or set RELAY_AGENT_TOKEN.'
+          );
+        }
+        const relay = deps.sdk.createAgentRelay(clientOptions);
+        const invocation = await relay.messaging.placement.spawn({
+          capability: `spawn:${cli}`,
+          node: targetNode,
+          failFast: true,
+          input: {
+            name,
+            cli,
+            task,
+            ...(channel ? { channels: [channel] } : {}),
+            ...(model ? { model } : {}),
+            ...(sessionRef ? { session_ref: sessionRef } : {}),
+          },
+        });
+        printJson(deps.sdk, { invocation });
+        return;
+      }
+
+      if (sessionRef) {
+        throw new Error('--session-ref requires --node or --target-node.');
+      }
+      const persona = optionalText(options.persona, 'Persona');
+      const workspace = deps.createFleetWorkspaceClient(clientOptions);
+      const invocation = await workspace.agents.spawn({
+        name,
+        cli,
+        task,
+        ...(channel ? { channel } : {}),
+        ...(persona ? { persona } : {}),
+        ...(model ? { metadata: { model } } : {}),
+      });
+      printJson(deps.sdk, { invocation });
+    });
+  });
+
+  addSdkOptions(
+    group
+      .command('release')
+      .description('Release a spawned fleet agent')
+      .argument('<name>', 'Worker agent name')
+      .option('--reason <reason>', 'Release reason')
+      .option('--delete-agent', 'Permanently delete the agent after release')
+  ).action(async (name: string, options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      warnIfInferredFromProjectSession(options, deps.warn);
+      const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
+      const reason = optionalText(options.reason, 'Reason');
+      const released = await workspace.agents.release({
+        name: requiredText(name, 'Worker name'),
+        ...(reason ? { reason } : {}),
+        deleteAgent: options.deleteAgent === true,
+      });
+      printJson(deps.sdk, released);
     });
   });
 
@@ -128,15 +242,50 @@ export function registerFleetCommands(
   });
 }
 
+/** Return whether a roster entry can currently accept Fleet work. */
+function isAvailableFleetNode(node: {
+  live?: boolean;
+  status?: string;
+  handlersLive?: boolean;
+  tags?: unknown;
+}): boolean {
+  const tags = Array.isArray(node.tags) ? node.tags : [];
+  const isDirectPseudoNode = tags.includes('direct');
+  const isLive = node.live === undefined ? node.status === 'online' : node.live === true;
+  return isLive && node.handlersLive !== false && !isDirectPseudoNode;
+}
+
+function parseFleetCli(value: string): string {
+  const cli = value.trim().toLowerCase();
+  if (!FLEET_CLIS.has(cli)) {
+    throw new InvalidArgumentError(
+      `unsupported CLI "${value}"; expected one of: ${[...FLEET_CLIS].join(', ')}`
+    );
+  }
+  return cli;
+}
+
+function requiredText(value: unknown, label: string): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) {
+    throw new Error(`${label} is required.`);
+  }
+  return text;
+}
+
+function optionalText(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  return requiredText(value, label);
+}
+
 /**
  * Warn (on stderr, so it never pollutes the JSON on stdout) when the workspace
- * key was inferred from the local broker's project record rather than named
- * explicitly. That key is whatever `agent-relay up` last joined in this
- * directory, which can be stale — surfacing it lets the operator override with
- * `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY` if the roster looks wrong.
+ * key was inferred from the project's persisted session rather than named
+ * explicitly. Surfacing the source lets the operator override with
+ * `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY` for a one-off query.
  * Resolution errors are swallowed: the SDK call below reports the real failure.
  */
-function warnIfInferredFromProjectBroker(
+function warnIfInferredFromProjectSession(
   options: Record<string, unknown>,
   warn: (...args: unknown[]) => void
 ): void {
@@ -148,9 +297,8 @@ function warnIfInferredFromProjectBroker(
   }
   if (source === 'project') {
     warn(
-      'Note: using the workspace key `agent-relay up` recorded in this directory. ' +
-        'If the local broker has since joined a different workspace, pass --workspace-key/--wk ' +
-        'or set RELAY_WORKSPACE_KEY to override.'
+      'Note: using the workspace session pinned to this project. ' +
+        'Pass --workspace-key/--wk or set RELAY_WORKSPACE_KEY to override for this command.'
     );
   }
 }

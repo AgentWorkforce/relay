@@ -146,15 +146,147 @@ describe('fleet command support', () => {
     });
   });
 
+  it('fleet nodes hides offline and direct pseudo-nodes by default', async () => {
+    const listedNodes = [
+      {
+        name: 'sf-mini',
+        status: 'online',
+        live: true,
+        handlersLive: true,
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'legacy-live-runner',
+        status: 'online',
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'detached-runner',
+        status: 'online',
+        live: true,
+        handlersLive: false,
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'old-runner',
+        status: 'offline',
+        live: false,
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'stale-online-runner',
+        status: 'online',
+        live: false,
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'direct-123',
+        status: 'online',
+        live: true,
+        capabilities: [],
+        tags: ['implicit', 'direct'],
+      },
+    ];
+    const nodes = { list: vi.fn(async () => listedNodes) };
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', '--workspace-key', 'rk_live_test'], {
+      from: 'user',
+    });
+
+    expect(JSON.parse(logs[0]!)).toEqual({ nodes: listedNodes.slice(0, 2) });
+    expect(warnings.join('\n')).toMatch(/4 offline or non-fleet records hidden/);
+    expect(warnings.join('\n')).toMatch(/--all/);
+  });
+
+  it('fleet nodes --all includes offline and direct history records', async () => {
+    const listedNodes = [
+      { name: 'old-runner', status: 'offline', live: false, capabilities: [], tags: [] },
+      {
+        name: 'detached-runner',
+        status: 'online',
+        live: true,
+        handlersLive: false,
+        capabilities: [],
+        tags: [],
+      },
+      {
+        name: 'sf-mini',
+        status: 'online',
+        live: true,
+        handlersLive: true,
+        capabilities: [],
+        tags: [],
+      },
+      {
+        name: 'direct-123',
+        status: 'offline',
+        live: false,
+        capabilities: [],
+        tags: ['implicit', 'direct'],
+      },
+    ];
+    const nodes = { list: vi.fn(async () => listedNodes) };
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', '--workspace-key', 'rk_live_test', '--all'], {
+      from: 'user',
+    });
+
+    expect(JSON.parse(logs[0]!)).toEqual({
+      nodes: [listedNodes[2], listedNodes[0], listedNodes[1], listedNodes[3]],
+    });
+    expect(warnings).toEqual([]);
+  });
+
   it('fleet nodes warns when the workspace key is inferred from the project broker', async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-proj-'));
     const saved = {
       project: process.env.AGENT_RELAY_PROJECT,
       ws: process.env.RELAY_WORKSPACE_KEY,
+      agentWs: process.env.AGENT_RELAY_WORKSPACE_KEY,
       api: process.env.RELAY_API_KEY,
     };
     process.env.AGENT_RELAY_PROJECT = projectRoot;
     delete process.env.RELAY_WORKSPACE_KEY;
+    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
     delete process.env.RELAY_API_KEY;
     writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_project_broker');
 
@@ -182,12 +314,14 @@ describe('fleet command support', () => {
       if (saved.project === undefined) delete process.env.AGENT_RELAY_PROJECT;
       else process.env.AGENT_RELAY_PROJECT = saved.project;
       if (saved.ws !== undefined) process.env.RELAY_WORKSPACE_KEY = saved.ws;
+      if (saved.agentWs === undefined) delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      else process.env.AGENT_RELAY_WORKSPACE_KEY = saved.agentWs;
       if (saved.api !== undefined) process.env.RELAY_API_KEY = saved.api;
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
 
     // The warning is advisory only — the roster is still fetched and printed.
-    expect(warnings.join('\n')).toMatch(/recorded in this directory/);
+    expect(warnings.join('\n')).toMatch(/workspace session pinned to this project/);
     expect(nodes.list).toHaveBeenCalledTimes(1);
   });
 
@@ -198,10 +332,12 @@ describe('fleet command support', () => {
     const saved = {
       project: process.env.AGENT_RELAY_PROJECT,
       ws: process.env.RELAY_WORKSPACE_KEY,
+      agentWs: process.env.AGENT_RELAY_WORKSPACE_KEY,
       api: process.env.RELAY_API_KEY,
     };
     process.env.AGENT_RELAY_PROJECT = projectRoot;
     delete process.env.RELAY_WORKSPACE_KEY;
+    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
     delete process.env.RELAY_API_KEY;
     writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_project_broker');
 
@@ -229,12 +365,245 @@ describe('fleet command support', () => {
       if (saved.project === undefined) delete process.env.AGENT_RELAY_PROJECT;
       else process.env.AGENT_RELAY_PROJECT = saved.project;
       if (saved.ws !== undefined) process.env.RELAY_WORKSPACE_KEY = saved.ws;
+      if (saved.agentWs === undefined) delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      else process.env.AGENT_RELAY_WORKSPACE_KEY = saved.agentWs;
       if (saved.api !== undefined) process.env.RELAY_API_KEY = saved.api;
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
 
     expect(warnings).toEqual([]);
     expect(nodes.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('fleet spawn targets an exact node through the agent-scoped placement action', async () => {
+    const placement = {
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_targeted',
+        actionName: 'spawn',
+        node: { name: 'sf-mini' },
+        placement: { capability: 'spawn:codex', node: 'sf-mini', attempts: 1, queued: false },
+      })),
+    };
+    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+    const createFleetWorkspaceClient = vi.fn();
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--name',
+        'api-worker',
+        '--task',
+        'ACK and wait',
+        '--target-node',
+        'sf-mini',
+        '--channel',
+        'general',
+        '--model',
+        'gpt-5',
+        '--session-ref',
+        'session-1',
+        '--workspace-key',
+        'rk_live_test',
+        '--token',
+        'at_live_lead',
+      ],
+      { from: 'user' }
+    );
+
+    expect(createAgentRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: 'at_live_lead',
+      baseUrl: undefined,
+    });
+    expect(placement.spawn).toHaveBeenCalledWith({
+      capability: 'spawn:codex',
+      node: 'sf-mini',
+      failFast: true,
+      input: {
+        name: 'api-worker',
+        cli: 'codex',
+        task: 'ACK and wait',
+        channels: ['general'],
+        model: 'gpt-5',
+        session_ref: 'session-1',
+      },
+    });
+    expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
+    expect(JSON.parse(logs[0]!)).toMatchObject({
+      invocation: { invocationId: 'inv_targeted' },
+    });
+  });
+
+  it('fleet spawn uses workspace-scoped automatic placement when no node is named', async () => {
+    const spawn = vi.fn(async () => ({ invocation_id: 'inv_auto', status: 'accepted' }));
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { spawn } }));
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--name',
+        'api-worker',
+        '--task',
+        'Review the diff',
+        '--channel',
+        'general',
+        '--persona',
+        'Reviewer',
+        '--model',
+        'gpt-5',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(createFleetWorkspaceClient).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: undefined,
+      baseUrl: undefined,
+    });
+    expect(spawn).toHaveBeenCalledWith({
+      name: 'api-worker',
+      cli: 'codex',
+      task: 'Review the diff',
+      channel: 'general',
+      persona: 'Reviewer',
+      metadata: { model: 'gpt-5' },
+    });
+    expect(JSON.parse(logs[0]!)).toEqual({
+      invocation: { invocation_id: 'inv_auto', status: 'accepted' },
+    });
+  });
+
+  it('fleet spawn rejects targeted placement without an agent token before dispatch', async () => {
+    const previousToken = process.env.RELAY_AGENT_TOKEN;
+    delete process.env.RELAY_AGENT_TOKEN;
+    const createAgentRelay = vi.fn();
+    const createFleetWorkspaceClient = vi.fn();
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    try {
+      await expect(
+        program.parseAsync(
+          [
+            'fleet',
+            'spawn',
+            'codex',
+            '--name',
+            'api-worker',
+            '--task',
+            'ACK',
+            '--node',
+            'sf-mini',
+            '--workspace-key',
+            'rk_live_test',
+          ],
+          { from: 'user' }
+        )
+      ).rejects.toThrow('__exit__');
+    } finally {
+      if (previousToken === undefined) delete process.env.RELAY_AGENT_TOKEN;
+      else process.env.RELAY_AGENT_TOKEN = previousToken;
+    }
+
+    expect(errors.join('\n')).toMatch(/requires an agent token/);
+    expect(createAgentRelay).not.toHaveBeenCalled();
+    expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
+  });
+
+  it('fleet release delegates to the workspace lifecycle API', async () => {
+    const release = vi.fn(async () => ({
+      name: 'api-worker',
+      released: true,
+      deleted: false,
+      reason: 'Work accepted',
+    }));
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { release } }));
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      ['fleet', 'release', 'api-worker', '--reason', 'Work accepted', '--workspace-key', 'rk_live_test'],
+      { from: 'user' }
+    );
+
+    expect(release).toHaveBeenCalledWith({
+      name: 'api-worker',
+      reason: 'Work accepted',
+      deleteAgent: false,
+    });
+    expect(JSON.parse(logs[0]!)).toMatchObject({ name: 'api-worker', released: true });
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {

@@ -37,6 +37,7 @@ const enrollmentRecord = {
 function createNodeHarness(opts?: {
   env?: NodeJS.ProcessEnv;
   resolveEnrollment?: NodeCommandDependencies['resolveEnrollment'];
+  resolveProjectWorkspaceSession?: NodeCommandDependencies['resolveProjectWorkspaceSession'];
 }) {
   const env: NodeJS.ProcessEnv = opts?.env ?? {};
   const exit = vi.fn((code: number) => {
@@ -50,12 +51,29 @@ function createNodeHarness(opts?: {
   const resolveEnrollment =
     opts?.resolveEnrollment ??
     (vi.fn(() => undefined) as unknown as NodeCommandDependencies['resolveEnrollment']);
+  const resolveProjectWorkspaceSession = opts?.resolveProjectWorkspaceSession ?? vi.fn(() => undefined);
 
   const program = new Command();
   program.exitOverride();
-  registerNodeCommands(program, { core, exit, log, error, warn, resolveEnrollment });
+  registerNodeCommands(program, {
+    core,
+    exit,
+    log,
+    error,
+    warn,
+    resolveEnrollment,
+    resolveProjectWorkspaceSession,
+  });
 
-  return { program, env, log, error, exit, resolveEnrollment };
+  return {
+    program,
+    env,
+    log,
+    error,
+    exit,
+    resolveEnrollment,
+    resolveProjectWorkspaceSession,
+  };
 }
 
 beforeEach(() => {
@@ -98,6 +116,7 @@ describe('registerNodeCommands', () => {
     expect(resolveEnrollment).toHaveBeenCalledTimes(1);
     expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
     expect(env.RELAY_NODE_ID).toBe('node_abc');
+    expect(env.AGENT_RELAY_ENROLLED_NODE_ID).toBe('node_abc');
     expect(env.RELAY_BASE_URL).toBe('https://relaycast.example.com');
     expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
       expect.objectContaining({ discoverConfig: true, nodeName: 'kjglaptop' }),
@@ -170,6 +189,98 @@ describe('registerNodeCommands', () => {
     expect(resolveEnrollment).not.toHaveBeenCalled();
     expect(env.RELAY_NODE_TOKEN).toBeUndefined();
     expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through a blank primary workspace env var to an explicit alias', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const resolveProjectWorkspaceSession = vi.fn(() => ({
+      workspaceKey: 'rk_project_session',
+      enrolledNodeId: 'node_abc',
+    }));
+    const { program, env } = createNodeHarness({
+      env: {
+        RELAY_WORKSPACE_KEY: '   ',
+        AGENT_RELAY_WORKSPACE_KEY: ' rk_alias ',
+      },
+      resolveEnrollment,
+      resolveProjectWorkspaceSession,
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(resolveEnrollment).not.toHaveBeenCalled();
+    expect(resolveProjectWorkspaceSession).not.toHaveBeenCalled();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_alias');
+    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+  });
+
+  it('resumes a project-pinned workspace instead of replacing it with an enrollment', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const resolveProjectWorkspaceSession = vi.fn(() => ({
+      workspaceKey: 'rk_project_session',
+    }));
+    const { program, env } = createNodeHarness({
+      env: {},
+      resolveEnrollment,
+      resolveProjectWorkspaceSession,
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(resolveEnrollment).not.toHaveBeenCalled();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_project_session');
+    expect(env.RELAY_API_KEY).toBe('rk_project_session');
+    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an enrolled identity across a consecutive project-session restart', async () => {
+    const firstResolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const first = createNodeHarness({ env: {}, resolveEnrollment: firstResolveEnrollment });
+
+    await first.program.parseAsync(['node', 'up', '--background'], { from: 'user' });
+
+    expect(first.env).toMatchObject({
+      AGENT_RELAY_ENROLLED_NODE_ID: 'node_abc',
+      RELAY_NODE_ID: 'node_abc',
+      RELAY_NODE_TOKEN: 'nt_secret',
+    });
+
+    const restartResolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const restart = createNodeHarness({
+      env: {},
+      resolveEnrollment: restartResolveEnrollment,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_enrolled',
+        enrolledNodeId: 'node_abc',
+      })),
+    });
+
+    await restart.program.parseAsync(['node', 'up', '--background'], { from: 'user' });
+
+    expect(restartResolveEnrollment).toHaveBeenCalledWith(expect.objectContaining({ nodeId: 'node_abc' }));
+    expect(restart.env).toMatchObject({
+      AGENT_RELAY_ENROLLED_NODE_ID: 'node_abc',
+      RELAY_NODE_ID: 'node_abc',
+      RELAY_NODE_TOKEN: 'nt_secret',
+    });
+    expect(restart.env.RELAY_WORKSPACE_KEY).toBeUndefined();
+    expect(brokerMocks.runUpCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        background: true,
+        brokerName: 'kjglaptop',
+        nodeName: 'kjglaptop',
+      }),
+      expect.anything()
+    );
   });
 
   it('does not clobber an existing RELAY_NODE_TOKEN or query the store', async () => {

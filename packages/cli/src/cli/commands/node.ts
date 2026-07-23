@@ -9,6 +9,8 @@ import {
   type UpCommandOptions,
 } from './core.js';
 import { runUpCommand } from '../lib/broker-lifecycle.js';
+import { readProjectWorkspaceSession, type ProjectWorkspaceSession } from '../lib/project-workspace-key.js';
+import { promoteWorkspaceKeyEnvAlias } from '../lib/workspace-env.js';
 import { registerLocalAgentCommands } from './local-agent.js';
 import { registerLocalWorkflowCommands } from './local-workflow.js';
 
@@ -17,6 +19,7 @@ type ExitFn = (code: number) => never;
 export interface NodeCommandDependencies {
   core: CoreDependencies;
   resolveEnrollment: typeof resolveActiveFleetNodeEnrollment;
+  resolveProjectWorkspaceSession: () => ProjectWorkspaceSession | undefined;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -28,6 +31,7 @@ function withNodeDefaults(overrides: Partial<NodeCommandDependencies> = {}): Nod
   return {
     core,
     resolveEnrollment: resolveActiveFleetNodeEnrollment,
+    resolveProjectWorkspaceSession: () => readProjectWorkspaceSession(core.getProjectPaths().dataDir),
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -68,6 +72,86 @@ export function registerNodeCommands(
   );
 }
 
+/** Normalize workspace env aliases and report whether `node up` received an explicit workspace. */
+function prepareExplicitWorkspaceForNodeUp(
+  options: UpCommandOptions,
+  deps: NodeCommandDependencies
+): boolean {
+  const envWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.core.env);
+  return Boolean(options.workspaceKey?.trim() || envWorkspaceKey);
+}
+
+/** Apply a project-pinned workspace without changing the persisted enrolled-node association. */
+function resumeProjectWorkspace(session: ProjectWorkspaceSession, deps: NodeCommandDependencies): void {
+  deps.core.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
+  deps.core.env.RELAY_API_KEY = session.workspaceKey;
+}
+
+/** Apply stored enrollment credentials and return the enrolled node name, when present. */
+function applyEnrollment(
+  record: NonNullable<ReturnType<typeof resolveActiveFleetNodeEnrollment>>,
+  deps: NodeCommandDependencies
+): string | undefined {
+  const env = deps.core.env;
+  env.RELAY_NODE_TOKEN = record.nodeToken;
+  env.RELAY_NODE_ID = record.nodeId;
+  // Internal, non-secret association inherited by a detached child. The broker
+  // records it beside the project workspace so later starts can resolve the
+  // same durable enrollment instead of minting a replacement node identity.
+  env.AGENT_RELAY_ENROLLED_NODE_ID = record.nodeId;
+  if (!env.RELAY_BASE_URL) {
+    env.RELAY_BASE_URL = record.relaycastUrl;
+  }
+  deps.log(
+    `Using persisted Cloud enrollment for node "${record.nodeName}" (workspace ${record.relayWorkspaceId}).`
+  );
+  return record.nodeName?.trim() || undefined;
+}
+
+/** Resolve the enrollment associated with a project session, avoiding ambiguous global fallback. */
+function resolveEnrollmentForProject(
+  session: ProjectWorkspaceSession | undefined,
+  deps: NodeCommandDependencies
+): ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined {
+  const env = deps.core.env;
+  if (session?.enrolledNodeId) {
+    return deps.resolveEnrollment({
+      ...(env.RELAY_BASE_URL ? { baseUrl: env.RELAY_BASE_URL } : {}),
+      nodeId: session.enrolledNodeId,
+      env,
+    });
+  }
+  if (session) {
+    return undefined;
+  }
+  return deps.resolveEnrollment({
+    ...(env.RELAY_BASE_URL ? { baseUrl: env.RELAY_BASE_URL } : {}),
+    env,
+  });
+}
+
+/** Apply an enrollment or safely resume a project workspace when its enrollment is unavailable. */
+function applyResolvedNodeSession(
+  record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined,
+  projectSession: ProjectWorkspaceSession | undefined,
+  deps: NodeCommandDependencies
+): string | undefined {
+  if (record) {
+    return applyEnrollment(record, deps);
+  }
+  if (!projectSession) {
+    return undefined;
+  }
+  if (projectSession.enrolledNodeId) {
+    deps.core.env.AGENT_RELAY_ENROLLED_NODE_ID = projectSession.enrolledNodeId;
+    deps.warn(
+      `Persisted enrollment for node "${projectSession.enrolledNodeId}" was not found; resuming the pinned workspace without that node identity.`
+    );
+  }
+  resumeProjectWorkspace(projectSession, deps);
+  return undefined;
+}
+
 /**
  * `node up` with Cloud enrollment pickup: when no `RELAY_NODE_TOKEN` is set,
  * resolve a persisted enrollment and wire its credentials into the env before
@@ -79,15 +163,16 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
   // enrollment store records workspace ids, not keys, so a stored enrollment
   // cannot be matched against it — skip pickup entirely rather than risk
   // starting the broker with a token from a different workspace.
-  const explicitWorkspaceKey = Boolean(options.workspaceKey?.trim() || env.RELAY_WORKSPACE_KEY?.trim());
+  const explicitWorkspaceKey = prepareExplicitWorkspaceForNodeUp(options, deps);
   let enrolledNodeName: string | undefined;
+  if (env.RELAY_NODE_TOKEN?.trim() && env.RELAY_NODE_ID?.trim()) {
+    env.AGENT_RELAY_ENROLLED_NODE_ID ??= env.RELAY_NODE_ID.trim();
+  }
   if (!env.RELAY_NODE_TOKEN && !explicitWorkspaceKey) {
+    const projectSession = deps.resolveProjectWorkspaceSession();
     let record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined;
     try {
-      record = deps.resolveEnrollment({
-        ...(env.RELAY_BASE_URL ? { baseUrl: env.RELAY_BASE_URL } : {}),
-        env,
-      });
+      record = resolveEnrollmentForProject(projectSession, deps);
     } catch (err) {
       // A missing store resolves to undefined (fine); only an ambiguous
       // multi-match throws, which must surface as a clear CLI error.
@@ -95,20 +180,9 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
       deps.exit(1);
       return;
     }
-    if (record) {
-      env.RELAY_NODE_TOKEN = record.nodeToken;
-      env.RELAY_NODE_ID = record.nodeId;
-      if (!env.RELAY_BASE_URL) {
-        env.RELAY_BASE_URL = record.relaycastUrl;
-      }
-      // Serve under the enrolled name (mirrors the old
-      // `fleet serve --enrollment-token` behavior where --name beat the
-      // enrollment record's nodeName).
-      enrolledNodeName = record.nodeName?.trim() || undefined;
-      deps.log(
-        `Using persisted Cloud enrollment for node "${record.nodeName}" (workspace ${record.relayWorkspaceId}).`
-      );
-    }
+    // Serve under the enrolled name (mirrors the old `fleet serve
+    // --enrollment-token` behavior where --name beat the enrollment name).
+    enrolledNodeName = applyResolvedNodeSession(record, projectSession, deps);
   }
 
   const nodeName = options.brokerName ?? enrolledNodeName;

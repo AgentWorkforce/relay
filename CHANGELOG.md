@@ -10,8 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `relay node agent list --pretty` now provides a compact agent view with each agent's name, CLI/model, state, and relative last activity time.
+- `agent-relay fleet spawn|release` can create, target, and release agents across live Fleet nodes directly from the terminal.
+- `agent-relay fleet nodes --all` includes offline and direct fleet-history records when they are needed for diagnostics.
+- `agent-relay message dm send --mode steer` can wake an idle remote agent immediately from the terminal.
 
-## [Unreleased]
+### Changed
+
+- `agent-relay fleet nodes` now shows only live fleet providers by default instead of mixing unavailable nodes with direct-delivery history.
+- CLI and MCP workspace selection is now pinned to the current project, so later agents and processes resume one collaboration session until a new workspace is explicitly created or selected.
+- Enrolled Fleet nodes now retain their node identity when a pinned project session is restarted.
+
+### Fixed
+
+- MCP workspace creation and selection now preserve completed remote or in-memory changes with a warning when local persistence fails, preventing duplicate workspaces and false failed switches.
+- Workspace creation now rejects invalid names before provisioning a remote workspace.
+- Fleet node restarts now reject stored enrollment fallbacks that do not match the project-pinned node identity.
 
 ## [11.0.2] - 2026-07-22
 
