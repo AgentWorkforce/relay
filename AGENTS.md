@@ -56,6 +56,11 @@ Do not add web-only changes to the changelog. Omit unpublished or withdrawn
 versions as release headings; move their shipped user-visible changes into the
 corrected published release.
 
+Do not add `relay-feature-guardian` changes to the changelog. It is an internal
+Slack feature-check agent (`.agentworkforce/agents/relay-feature-guardian/`),
+not a user-facing Relay surface, so its fixes never belong in the release
+narrative. The release workflow also skips these commits automatically.
+
 ## .trajectories Must Be Tracked
 
 **CRITICAL: Never add `.agentworkforce/trajectories/` to `.gitignore`.**
