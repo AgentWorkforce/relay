@@ -67,15 +67,25 @@ export function registerFleetCommands(
       .description('List fleet nodes in the workspace')
       .option('--capability <name>', 'Filter by capability name')
       .option('--name <name>', 'Filter by node name')
+      .option('--all', 'Include offline and direct history records')
   ).action(async (options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
-      warnIfInferredFromProjectBroker(options, deps.warn);
+      warnIfInferredFromProjectSession(options, deps.warn);
       const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+      const nodes = await relay.nodes.list({
+        capability: options.capability as string | undefined,
+        name: options.name as string | undefined,
+      });
+      const visibleNodes = options.all === true ? nodes : nodes.filter(isAvailableFleetNode);
+      const hiddenCount = nodes.length - visibleNodes.length;
+      if (hiddenCount > 0 && options.all !== true) {
+        deps.warn(
+          `${hiddenCount} offline or non-fleet records hidden. ` +
+            'Run `agent-relay fleet nodes --all` to include history.'
+        );
+      }
       printJson(deps.sdk, {
-        nodes: await relay.nodes.list({
-          capability: options.capability as string | undefined,
-          name: options.name as string | undefined,
-        }),
+        nodes: visibleNodes,
       });
     });
   });
@@ -128,15 +138,21 @@ export function registerFleetCommands(
   });
 }
 
+function isAvailableFleetNode(node: { live?: boolean; status?: string; tags?: unknown }): boolean {
+  const tags = Array.isArray(node.tags) ? node.tags : [];
+  const isDirectPseudoNode = tags.includes('direct');
+  const isLive = node.live === undefined ? node.status === 'online' : node.live === true;
+  return isLive && !isDirectPseudoNode;
+}
+
 /**
  * Warn (on stderr, so it never pollutes the JSON on stdout) when the workspace
- * key was inferred from the local broker's project record rather than named
- * explicitly. That key is whatever `agent-relay up` last joined in this
- * directory, which can be stale — surfacing it lets the operator override with
- * `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY` if the roster looks wrong.
+ * key was inferred from the project's persisted session rather than named
+ * explicitly. Surfacing the source lets the operator override with
+ * `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY` for a one-off query.
  * Resolution errors are swallowed: the SDK call below reports the real failure.
  */
-function warnIfInferredFromProjectBroker(
+function warnIfInferredFromProjectSession(
   options: Record<string, unknown>,
   warn: (...args: unknown[]) => void
 ): void {
@@ -148,9 +164,8 @@ function warnIfInferredFromProjectBroker(
   }
   if (source === 'project') {
     warn(
-      'Note: using the workspace key `agent-relay up` recorded in this directory. ' +
-        'If the local broker has since joined a different workspace, pass --workspace-key/--wk ' +
-        'or set RELAY_WORKSPACE_KEY to override.'
+      'Note: using the workspace session pinned to this project. ' +
+        'Pass --workspace-key/--wk or set RELAY_WORKSPACE_KEY to override for this command.'
     );
   }
 }

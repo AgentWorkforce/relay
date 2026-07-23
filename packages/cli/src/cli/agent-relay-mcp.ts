@@ -32,6 +32,7 @@ import { enableInboxPiggyback } from './mcp/telemetry.js';
 import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
+import { persistWorkspaceSession, resolveWorkspaceSessionKey } from './lib/workspace-session.js';
 import type {
   AgentClientLike,
   AgentRelayMcpServerOptions,
@@ -59,12 +60,13 @@ function withExitAfterTaskInstruction(task: string): string {
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
 
 ## Getting Started
-1. If no workspace is configured, call "create_workspace"
-2. If someone shared an existing workspace key with you, call "set_workspace_key"
-3. When a workspace key is provided at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register_agent" with your agent name to join the workspace
-4. Use "list_channels" to see available channels
-5. Use "join_channel" to join channels of interest
-6. Use "check_inbox" to see unread messages and mentions
+1. The current project workspace is resumed automatically when one was selected before
+2. Call "create_workspace" only when you explicitly want to start a new workspace session
+3. If someone shared an existing workspace key with you, call "set_workspace_key"
+4. When a workspace key is available at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register_agent" with your agent name to join the workspace
+5. Use "list_channels" to see available channels
+6. Use "join_channel" to join channels of interest
+7. Use "check_inbox" to see unread messages and mentions
 
 ## Communication
 - Post messages to channels with "post_message"
@@ -105,9 +107,13 @@ type RegisterAgentWithRebindArgs = {
 
 /** Return env var value, or undefined if missing / an unresolved ${...} template. */
 function resolveEnv(key: string): string | undefined {
-  const v = process.env[key];
-  if (!v || /^\$\{.+\}$/.test(v)) return undefined;
-  return v;
+  const value = process.env[key]?.trim();
+  if (!value || isUnresolvedEnvTemplate(value)) return undefined;
+  return value;
+}
+
+function isUnresolvedEnvTemplate(value: string): boolean {
+  return /^\$\{.+\}$/.test(value.trim());
 }
 
 /**
@@ -388,7 +394,7 @@ function registerAgentRelayTools(
     'create_workspace',
     {
       title: 'Create Workspace',
-      description: 'Create a new Agent Relay workspace and store its workspace key in this MCP session.',
+      description: 'Explicitly start a new Agent Relay workspace session and persist it for this project.',
       inputSchema: {
         name: z.string().describe('Human-readable workspace name'),
       },
@@ -414,6 +420,7 @@ function registerAgentRelayTools(
         agentName: null,
         agents: new Map(),
       });
+      persistWorkspaceSession({ name: workspaceName, workspaceKey });
       return jsonContent({
         workspaceKey,
         workspaceName,
@@ -459,10 +466,11 @@ function registerAgentRelayTools(
       } else {
         setSession({ workspaceKey: key });
       }
+      persistWorkspaceSession({ workspaceKey: key });
 
       const message = switchingWorkspace
-        ? 'Workspace key set. Call "register_agent" to join this workspace.'
-        : 'Workspace key set.';
+        ? 'Workspace key set and persisted for this project. Call "register_agent" to join this workspace.'
+        : 'Workspace key set and persisted for this project.';
       return textContent(message);
     }
   );
@@ -938,7 +946,26 @@ export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOption
 }
 
 export function optionsFromEnv(): AgentRelayMcpServerOptions {
-  const workspaceKey = resolveEnv('RELAY_WORKSPACE_KEY') ?? resolveEnv('RELAY_API_KEY');
+  let workspaceKey =
+    resolveEnv('RELAY_WORKSPACE_KEY') ??
+    resolveEnv('AGENT_RELAY_WORKSPACE_KEY') ??
+    resolveEnv('RELAY_API_KEY');
+  let resumedPersistedWorkspace = false;
+  const hasUnresolvedWorkspacePlaceholder = [
+    process.env.RELAY_WORKSPACE_KEY,
+    process.env.AGENT_RELAY_WORKSPACE_KEY,
+    process.env.RELAY_API_KEY,
+  ].some((value) => value !== undefined && isUnresolvedEnvTemplate(value));
+
+  if (!workspaceKey && !hasUnresolvedWorkspacePlaceholder) {
+    try {
+      workspaceKey = resolveWorkspaceSessionKey();
+      resumedPersistedWorkspace = Boolean(workspaceKey);
+    } catch {
+      // A malformed or unreadable local store must not brick MCP startup. The
+      // session can still be selected explicitly with set_workspace_key.
+    }
+  }
   const agentName =
     resolveEnv('RELAY_AGENT_NAME') ??
     resolveEnv('RELAY_CLAW_NAME') ??
@@ -946,7 +973,11 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
   return {
     workspaceKey,
     baseUrl: resolveEnv('RELAY_BASE_URL'),
-    agentToken: resolveEnv('RELAY_AGENT_TOKEN'),
+    // An agent token has no workspace identity encoded locally. Only reuse it
+    // when the workspace was selected alongside it through the environment;
+    // a persisted project/store fallback must register into that workspace
+    // instead of silently pairing it with a possibly stale ambient token.
+    agentToken: resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN'),
     agentName,
     agentType: normalizeAgentType(resolveEnv('RELAY_AGENT_TYPE')),
     strictAgentName: envFlagEnabled(resolveEnv('RELAY_STRICT_AGENT_NAME')),

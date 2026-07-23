@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type LoadOptions = {
   connectThrows?: boolean;
   forceEntrypoint?: boolean;
+  persistedWorkspaceKey?: string;
 };
 
 type RelayBehavior = {
@@ -28,6 +29,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const telemetryTrack = vi.fn();
   const telemetryInit = vi.fn();
   const telemetryShutdown = vi.fn(async () => undefined);
+  const persistWorkspaceSession = vi.fn();
+  const resolveWorkspaceSessionKey = vi.fn(() => options.persistedWorkspaceKey);
   const relayInstances: Array<{
     config: Record<string, unknown>;
     registerOrRotate: ReturnType<typeof vi.fn>;
@@ -248,6 +251,10 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     shutdown: telemetryShutdown,
     track: telemetryTrack,
   }));
+  vi.doMock('./lib/workspace-session.js', () => ({
+    persistWorkspaceSession,
+    resolveWorkspaceSessionKey,
+  }));
 
   const mod = await import('./agent-relay-mcp.js');
   if (options.forceEntrypoint) {
@@ -263,6 +270,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       telemetryTrack,
       telemetryInit,
       telemetryShutdown,
+      persistWorkspaceSession,
+      resolveWorkspaceSessionKey,
       RelayCast,
       FakeTransport,
     },
@@ -314,6 +323,73 @@ describe('agent-relay-mcp startup helpers', () => {
       skipBootstrap: true,
     });
   });
+
+  it('resumes the persisted project workspace when no workspace env is set', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN', '');
+    vi.stubEnv('RELAY_AGENT_NAME', '');
+    vi.stubEnv('RELAY_CLAW_NAME', '');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_persisted',
+      agentName: 'orchestrator',
+    });
+    expect(mocks.resolveWorkspaceSessionKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pair a persisted workspace with an unbound ambient agent token', async () => {
+    const { mod } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_stale_workspace');
+    vi.stubEnv('RELAY_AGENT_NAME', '');
+    vi.stubEnv('RELAY_CLAW_NAME', '');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_persisted',
+      agentToken: undefined,
+      agentName: 'orchestrator',
+    });
+  });
+
+  it('keeps an agent token paired with an explicitly configured agent-relay workspace key', async () => {
+    const { mod } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_unrelated_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', 'rk_live_agent_env');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_agent_env');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_agent_env',
+      agentToken: 'at_live_agent_env',
+    });
+  });
+
+  it('trims workspace env values and falls through whitespace-only primary candidates', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_unrelated_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '   ');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', ' rk_live_agent_env ');
+    vi.stubEnv('RELAY_API_KEY', 'rk_live_legacy');
+    vi.stubEnv('RELAY_AGENT_TOKEN', ' at_live_agent_env ');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_agent_env',
+      agentToken: 'at_live_agent_env',
+    });
+    expect(mocks.resolveWorkspaceSessionKey).not.toHaveBeenCalled();
+  });
 });
 
 describe('createAgentRelayMcpServer', () => {
@@ -356,6 +432,10 @@ describe('createAgentRelayMcpServer', () => {
     expect(workspaceResult.structuredContent).toEqual({
       workspaceKey: 'rk_live_created',
       workspaceName: 'Test Workspace',
+    });
+    expect(mocks.persistWorkspaceSession).toHaveBeenCalledWith({
+      name: 'Test Workspace',
+      workspaceKey: 'rk_live_created',
     });
 
     const registerResult = await server.tools.get('register_agent')?.handler({
@@ -714,7 +794,10 @@ describe('createAgentRelayMcpServer', () => {
     const result = await setWorkspaceKeyTool?.handler({ workspace_key: 'rk_live_existing' });
 
     expect(result.structuredContent).toEqual({
-      message: 'Workspace key set.',
+      message: 'Workspace key set and persisted for this project.',
+    });
+    expect(mocks.persistWorkspaceSession).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_existing',
     });
 
     await server.tools.get('check_inbox')?.handler({});

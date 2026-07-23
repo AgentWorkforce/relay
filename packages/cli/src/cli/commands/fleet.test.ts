@@ -146,15 +146,121 @@ describe('fleet command support', () => {
     });
   });
 
+  it('fleet nodes hides offline and direct pseudo-nodes by default', async () => {
+    const listedNodes = [
+      {
+        name: 'sf-mini',
+        status: 'online',
+        live: true,
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'legacy-live-runner',
+        status: 'online',
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'old-runner',
+        status: 'offline',
+        live: false,
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'stale-online-runner',
+        status: 'online',
+        live: false,
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'direct-123',
+        status: 'online',
+        live: true,
+        capabilities: [],
+        tags: ['implicit', 'direct'],
+      },
+    ];
+    const nodes = { list: vi.fn(async () => listedNodes) };
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', '--workspace-key', 'rk_live_test'], {
+      from: 'user',
+    });
+
+    expect(JSON.parse(logs[0]!)).toEqual({ nodes: listedNodes.slice(0, 2) });
+    expect(warnings.join('\n')).toMatch(/3 offline or non-fleet records hidden/);
+    expect(warnings.join('\n')).toMatch(/--all/);
+  });
+
+  it('fleet nodes --all includes offline and direct history records', async () => {
+    const listedNodes = [
+      { name: 'sf-mini', status: 'online', live: true, capabilities: [], tags: [] },
+      { name: 'old-runner', status: 'offline', live: false, capabilities: [], tags: [] },
+      {
+        name: 'direct-123',
+        status: 'offline',
+        live: false,
+        capabilities: [],
+        tags: ['implicit', 'direct'],
+      },
+    ];
+    const nodes = { list: vi.fn(async () => listedNodes) };
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', '--workspace-key', 'rk_live_test', '--all'], {
+      from: 'user',
+    });
+
+    expect(JSON.parse(logs[0]!)).toEqual({ nodes: listedNodes });
+    expect(warnings).toEqual([]);
+  });
+
   it('fleet nodes warns when the workspace key is inferred from the project broker', async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-proj-'));
     const saved = {
       project: process.env.AGENT_RELAY_PROJECT,
       ws: process.env.RELAY_WORKSPACE_KEY,
+      agentWs: process.env.AGENT_RELAY_WORKSPACE_KEY,
       api: process.env.RELAY_API_KEY,
     };
     process.env.AGENT_RELAY_PROJECT = projectRoot;
     delete process.env.RELAY_WORKSPACE_KEY;
+    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
     delete process.env.RELAY_API_KEY;
     writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_project_broker');
 
@@ -182,12 +288,14 @@ describe('fleet command support', () => {
       if (saved.project === undefined) delete process.env.AGENT_RELAY_PROJECT;
       else process.env.AGENT_RELAY_PROJECT = saved.project;
       if (saved.ws !== undefined) process.env.RELAY_WORKSPACE_KEY = saved.ws;
+      if (saved.agentWs === undefined) delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      else process.env.AGENT_RELAY_WORKSPACE_KEY = saved.agentWs;
       if (saved.api !== undefined) process.env.RELAY_API_KEY = saved.api;
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
 
     // The warning is advisory only — the roster is still fetched and printed.
-    expect(warnings.join('\n')).toMatch(/recorded in this directory/);
+    expect(warnings.join('\n')).toMatch(/workspace session pinned to this project/);
     expect(nodes.list).toHaveBeenCalledTimes(1);
   });
 
@@ -198,10 +306,12 @@ describe('fleet command support', () => {
     const saved = {
       project: process.env.AGENT_RELAY_PROJECT,
       ws: process.env.RELAY_WORKSPACE_KEY,
+      agentWs: process.env.AGENT_RELAY_WORKSPACE_KEY,
       api: process.env.RELAY_API_KEY,
     };
     process.env.AGENT_RELAY_PROJECT = projectRoot;
     delete process.env.RELAY_WORKSPACE_KEY;
+    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
     delete process.env.RELAY_API_KEY;
     writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_project_broker');
 
@@ -229,6 +339,8 @@ describe('fleet command support', () => {
       if (saved.project === undefined) delete process.env.AGENT_RELAY_PROJECT;
       else process.env.AGENT_RELAY_PROJECT = saved.project;
       if (saved.ws !== undefined) process.env.RELAY_WORKSPACE_KEY = saved.ws;
+      if (saved.agentWs === undefined) delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      else process.env.AGENT_RELAY_WORKSPACE_KEY = saved.agentWs;
       if (saved.api !== undefined) process.env.RELAY_API_KEY = saved.api;
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

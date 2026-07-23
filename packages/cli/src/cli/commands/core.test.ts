@@ -4,7 +4,7 @@ import os from 'node:os';
 import nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
+import { readProjectWorkspaceKey, readProjectWorkspaceSession } from '../lib/project-workspace-key.js';
 
 const sdkStatusClient = {
   getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
@@ -1048,8 +1048,7 @@ describe('registerCoreCommands', () => {
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
-      | (() => Promise<void>)
-      | undefined;
+      (() => Promise<void>) | undefined;
     expect(sigintHandler).toBeDefined();
     const sigint = sigintHandler as () => Promise<void>;
 
@@ -1448,7 +1447,7 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_alias');
   });
 
-  it('up without --workspace-key does not set workspace key env vars', async () => {
+  it('up without --workspace-key or a pinned session does not set workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = {};
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env });
@@ -1458,6 +1457,111 @@ describe('registerCoreCommands', () => {
     expect(exitCode).toBeUndefined();
     expect(env.RELAY_WORKSPACE_KEY).toBeUndefined();
     expect(env.RELAY_API_KEY).toBeUndefined();
+  });
+
+  it('up resumes the workspace session pinned to the project', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const fs = createFsMock({
+      '/tmp/project/.agentworkforce/relay/workspace-key.json': JSON.stringify({
+        workspaceKey: 'rk_live_pinned',
+      }),
+    });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_pinned' });
+    const { program } = createHarness({ relay, env, fs });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_pinned');
+    expect(env.RELAY_API_KEY).toBe('rk_live_pinned');
+  });
+
+  it('up treats a non-blank workspace env alias as explicit when the primary is blank', async () => {
+    const env: NodeJS.ProcessEnv = {
+      RELAY_WORKSPACE_KEY: '   ',
+      AGENT_RELAY_WORKSPACE_KEY: ' rk_live_alias ',
+    };
+    const fs = createFsMock({
+      '/tmp/project/.agentworkforce/relay/workspace-key.json': JSON.stringify({
+        workspaceKey: 'rk_live_pinned',
+      }),
+    });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_alias' });
+    const { program } = createHarness({ relay, env, fs });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
+    expect(env.RELAY_API_KEY).toBeUndefined();
+  });
+
+  it('plain up preserves the enrolled node associated with a resumed project session', async () => {
+    const projectDataDir = '/tmp/project/.agentworkforce/relay';
+    const projectSessionPath = `${projectDataDir}/workspace-key.json`;
+    const env: NodeJS.ProcessEnv = {};
+    const fs = createFsMock({
+      [projectSessionPath]: JSON.stringify({
+        workspaceKey: 'rk_live_pinned',
+        enrolledNodeId: 'node_enrolled',
+      }),
+    });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_pinned' });
+    const { program } = createHarness({ relay, env, fs });
+
+    nodeFs.rmSync(projectSessionPath, { force: true });
+    try {
+      const exitCode = await runCommand(program, ['up']);
+
+      expect(exitCode).toBeUndefined();
+      expect(readProjectWorkspaceSession(projectDataDir)).toEqual({
+        workspaceKey: 'rk_live_pinned',
+        enrolledNodeId: 'node_enrolled',
+      });
+    } finally {
+      nodeFs.rmSync(projectSessionPath, { force: true });
+    }
+  });
+
+  it('background up forwards a resumed enrolled-node association to the detached child', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    const projectSessionPath = '/tmp/project/.agentworkforce/relay/workspace-key.json';
+    const fs = createFsMock({
+      [projectSessionPath]: JSON.stringify({
+        workspaceKey: 'rk_live_pinned',
+        enrolledNodeId: 'node_enrolled',
+      }),
+    });
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(5151));
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if ((pid === 9001 || pid === 5151) && signal === 0) return;
+      throw new Error('unexpected kill check');
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: {},
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background']);
+
+    expect(exitCode).toBe(0);
+    expect(deps.spawnProcess).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', 'up'], {
+      detached: true,
+      stdio: 'ignore',
+      env: expect.objectContaining({
+        AGENT_RELAY_ENROLLED_NODE_ID: 'node_enrolled',
+        RELAY_API_KEY: 'rk_live_pinned',
+        RELAY_WORKSPACE_KEY: 'rk_live_pinned',
+      }),
+    });
   });
 
   it('up configures a bundled Agent Relay MCP command when the wrapper script exists', async () => {

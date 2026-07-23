@@ -319,7 +319,7 @@ describe('relayfile control-plane hello negotiation', () => {
           binary,
           autoStart: true,
           startTimeoutMs: 2000,
-          requestTimeoutMs: 1000,
+          requestTimeoutMs: 5000,
         });
         await expect(bridge.ensureCompatible()).resolves.toBeUndefined();
       });

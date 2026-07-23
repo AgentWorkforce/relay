@@ -209,12 +209,14 @@ describe('optionsFromEnv', () => {
   it('ignores unresolved template environment placeholders', () => {
     const previous = {
       workspaceKey: process.env.RELAY_WORKSPACE_KEY,
+      agentRelayWorkspaceKey: process.env.AGENT_RELAY_WORKSPACE_KEY,
       apiKey: process.env.RELAY_API_KEY,
       agentName: process.env.RELAY_AGENT_NAME,
       clawName: process.env.RELAY_CLAW_NAME,
       agentToken: process.env.RELAY_AGENT_TOKEN,
     };
     process.env.RELAY_WORKSPACE_KEY = '${RELAY_WORKSPACE_KEY}';
+    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
     delete process.env.RELAY_API_KEY;
     process.env.RELAY_AGENT_NAME = '${RELAY_AGENT_NAME}';
     process.env.RELAY_CLAW_NAME = 'ClawFallback';
@@ -229,6 +231,11 @@ describe('optionsFromEnv', () => {
     } finally {
       if (previous.workspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
       else process.env.RELAY_WORKSPACE_KEY = previous.workspaceKey;
+      if (previous.agentRelayWorkspaceKey === undefined) {
+        delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      } else {
+        process.env.AGENT_RELAY_WORKSPACE_KEY = previous.agentRelayWorkspaceKey;
+      }
       if (previous.apiKey === undefined) delete process.env.RELAY_API_KEY;
       else process.env.RELAY_API_KEY = previous.apiKey;
       if (previous.agentName === undefined) delete process.env.RELAY_AGENT_NAME;

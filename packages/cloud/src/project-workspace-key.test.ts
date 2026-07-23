@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   projectWorkspaceKeyPath,
   readProjectWorkspaceKey,
+  readProjectWorkspaceSession,
   resolveWorkspaceKeyWithSource,
   writeProjectWorkspaceKey,
 } from './project-workspace-key.js';
@@ -32,6 +33,17 @@ describe('project workspace key resolution', () => {
     writeProjectWorkspaceKey(dataDir, '  rk_project  ');
     expect(readProjectWorkspaceKey(dataDir)).toBe('rk_project');
     expect(fs.statSync(projectWorkspaceKeyPath(dataDir)).mode & 0o777).toBe(0o600);
+  });
+
+  it('round-trips an enrolled Fleet identity and clears it on an explicit workspace change', () => {
+    writeProjectWorkspaceKey(dataDir, 'rk_enrolled', { enrolledNodeId: ' node_1 ' });
+    expect(readProjectWorkspaceSession(dataDir)).toEqual({
+      workspaceKey: 'rk_enrolled',
+      enrolledNodeId: 'node_1',
+    });
+
+    writeProjectWorkspaceKey(dataDir, 'rk_switched');
+    expect(readProjectWorkspaceSession(dataDir)).toEqual({ workspaceKey: 'rk_switched' });
   });
 
   it('prefers explicit and environment keys over the project broker key', () => {

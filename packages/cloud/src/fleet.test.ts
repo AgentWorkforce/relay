@@ -260,6 +260,13 @@ describe('fleet node enrollment store', () => {
     expect(resolved?.nodeId).toBe('node_b');
   });
 
+  it('resolves a project-associated enrollment by nodeId', () => {
+    upsertFleetNodeEnrollment(record({ relayWorkspaceId: 'rw_1', nodeId: 'node_1' }), env);
+    upsertFleetNodeEnrollment(record({ relayWorkspaceId: 'rw_2', nodeId: 'node_2' }), env);
+    expect(resolveActiveFleetNodeEnrollment({ nodeId: 'node_1', env })?.relayWorkspaceId).toBe('rw_1');
+    expect(resolveActiveFleetNodeEnrollment({ nodeId: 'node_missing', env })).toBeUndefined();
+  });
+
   it('returns undefined when nothing matches', () => {
     expect(resolveActiveFleetNodeEnrollment({ env })).toBeUndefined();
     upsertFleetNodeEnrollment(record(), env);

@@ -22,7 +22,7 @@ import {
   type RunningNodeProviderChild,
 } from './node-provider-child.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
-import { writeProjectWorkspaceKey } from './project-workspace-key.js';
+import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -1197,6 +1197,66 @@ function planCapacitySource(
   return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
 }
 
+interface PinnedProjectWorkspaceSession {
+  workspaceKey: string;
+  enrolledNodeId?: string;
+}
+
+function readPinnedProjectWorkspaceSession(
+  dataDir: string,
+  deps: CoreDependencies
+): PinnedProjectWorkspaceSession | undefined {
+  try {
+    const parsed = JSON.parse(deps.fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8')) as Partial<{
+      workspaceKey: string;
+      enrolledNodeId: string;
+    }>;
+    const workspaceKey =
+      typeof parsed.workspaceKey === 'string' ? parsed.workspaceKey.trim() || undefined : undefined;
+    if (!workspaceKey) {
+      return undefined;
+    }
+    const enrolledNodeId =
+      typeof parsed.enrolledNodeId === 'string' ? parsed.enrolledNodeId.trim() || undefined : undefined;
+    return {
+      workspaceKey,
+      ...(enrolledNodeId ? { enrolledNodeId } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function resumePinnedProjectWorkspace(
+  options: UpOptions,
+  deps: CoreDependencies,
+  projectDataDir: string
+): PinnedProjectWorkspaceSession | undefined {
+  const explicitEnvWorkspaceKey = [
+    deps.env.RELAY_WORKSPACE_KEY,
+    deps.env.AGENT_RELAY_WORKSPACE_KEY,
+    deps.env.RELAY_API_KEY,
+  ]
+    .map((value) => value?.trim())
+    .find(Boolean);
+  if (explicitEnvWorkspaceKey && !deps.env.RELAY_WORKSPACE_KEY?.trim()) {
+    deps.env.RELAY_WORKSPACE_KEY = explicitEnvWorkspaceKey;
+  }
+  if (options.workspaceKey?.trim() || explicitEnvWorkspaceKey || deps.env.RELAY_NODE_TOKEN?.trim()) {
+    return undefined;
+  }
+
+  const session = readPinnedProjectWorkspaceSession(projectDataDir, deps);
+  if (session) {
+    deps.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
+    deps.env.RELAY_API_KEY = session.workspaceKey;
+    if (session.enrolledNodeId) {
+      deps.env.AGENT_RELAY_ENROLLED_NODE_ID = session.enrolledNodeId;
+    }
+  }
+  return session;
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
 
@@ -1207,6 +1267,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   // --state-dir), so the key must be persisted here even when broker state is
   // redirected elsewhere.
   const projectWorkspaceKeyDataDir = paths.dataDir;
+  const resumedProjectSession = resumePinnedProjectWorkspace(options, deps, projectWorkspaceKeyDataDir);
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1434,7 +1495,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // workspace. Persistence must never abort startup, so a write failure is
     // swallowed.
     try {
-      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined);
+      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined, {
+        enrolledNodeId: deps.env.AGENT_RELAY_ENROLLED_NODE_ID ?? resumedProjectSession?.enrolledNodeId,
+      });
     } catch {
       // best-effort: a broker that came up should stay up even if the key file
       // can't be written (read-only dir, etc.).

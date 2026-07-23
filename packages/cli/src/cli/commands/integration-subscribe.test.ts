@@ -298,7 +298,9 @@ describe('integration subscribe', () => {
   it('fails loudly before provisioning when no workspace key is available', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-workspace-'));
     vi.stubEnv('AGENT_RELAY_HOME', home);
+    vi.stubEnv('AGENT_RELAY_PROJECT', path.join(home, 'project'));
     vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', '');
     vi.stubEnv('RELAY_API_KEY', '');
     const { program, relay, relayfile, error, exit } = harness({
       resolveLocalRelayOptions: async () => undefined,
