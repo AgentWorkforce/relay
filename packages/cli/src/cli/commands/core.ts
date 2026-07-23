@@ -150,6 +150,9 @@ async function createDefaultRelay(
   brokerName?: string,
   verbose = false
 ): Promise<CoreRelay> {
+  // This is the `up` command's broker factory. `up` is persistent even when
+  // port 0 delegates atomic port selection to the OS; the connection file is
+  // how later `status`, `down`, and enrolled-node recovery find that broker.
   const binaryArgs: BrokerInitArgs = {
     persist: true,
     apiPort,

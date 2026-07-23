@@ -336,10 +336,22 @@ export async function startBrokerWithPortFallback(
   if (basePort === 0) {
     vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
     const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose);
-    await candidate.getStatus();
-    if (!candidate.apiPort) {
-      await candidate.shutdown().catch(() => undefined);
-      throw new Error('Broker started without reporting its OS-assigned API port.');
+    try {
+      await candidate.getStatus();
+      if (!candidate.apiPort) {
+        throw new Error('Broker started without reporting its OS-assigned API port.');
+      }
+    } catch (startupError) {
+      try {
+        await candidate.shutdown();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [startupError, cleanupError],
+          'Broker startup validation failed and cleanup also failed.',
+          { cause: startupError }
+        );
+      }
+      throw startupError;
     }
     vlog(deps, verbose, `API port assigned: ${candidate.apiPort}`);
     return { relay: candidate, apiPort: candidate.apiPort };
@@ -357,7 +369,20 @@ export async function startBrokerWithPortFallback(
   const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
-  await candidate.getStatus();
+  try {
+    await candidate.getStatus();
+  } catch (startupError) {
+    try {
+      await candidate.shutdown();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [startupError, cleanupError],
+        'Broker startup validation failed and cleanup also failed.',
+        { cause: startupError }
+      );
+    }
+    throw startupError;
+  }
   vlog(deps, verbose, 'Broker status check passed.');
   return { relay: candidate, apiPort };
 }

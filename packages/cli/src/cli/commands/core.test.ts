@@ -425,6 +425,40 @@ describe('registerCoreCommands', () => {
     );
   });
 
+  it('up shuts down a port-zero broker when startup status validation rejects', async () => {
+    const relay = createRelayMock({
+      apiPort: 43123,
+      getStatus: vi.fn(async () => {
+        throw new Error('startup status unavailable');
+      }),
+    });
+    const { program, deps } = createHarness({
+      relay,
+      env: { AGENT_RELAY_BROKER_PORT: '0' },
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to start broker: startup status unavailable');
+  });
+
+  it('up shuts down a fixed-port broker when startup status validation rejects', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => {
+        throw new Error('startup status unavailable');
+      }),
+    });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to start broker: startup status unavailable');
+  });
+
   it('up enables the local broker API', async () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });
