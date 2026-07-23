@@ -5,6 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased - Minor]
+
+### Added
+
+- `relay node agent list --pretty` now provides a compact agent view with each agent's name, CLI/model, state, and relative last activity time.
+
 ## [Unreleased]
 
 ## [11.0.2] - 2026-07-22

@@ -1,7 +1,9 @@
 import type { Command } from 'commander';
 
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import type { ListAgent } from '@agent-relay/harness-driver';
 import type { HarnessRuntime } from '@agent-relay/harnesses';
+import { stripAnsiFast } from '@agent-relay/utils';
 
 import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 import { createBrokerClient } from '../lib/attach-broker.js';
@@ -86,6 +88,7 @@ export interface LocalAgentDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  now: () => Date;
 }
 
 function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
@@ -100,6 +103,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
+    now: () => new Date(),
     ...overrides,
   } as LocalAgentDependencies;
   deps.connectLocal ??= async (_cwd: string, options: LocalAgentMessageBrokerOptions) => {
@@ -117,6 +121,77 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     return createBrokerClient(connection, deps.fetch);
   };
   return deps;
+}
+
+const AGENT_STATE_DISPLAY: Record<
+  NonNullable<ListAgent['current_state']>,
+  { symbol: string; label: string }
+> = {
+  working: { symbol: '●', label: 'working' },
+  idle: { symbol: '○', label: 'idle' },
+  blocked_on_send: { symbol: '◐', label: 'waiting' },
+};
+
+function formatRelativeTime(value: string | undefined, now: Date): string {
+  if (!value) return 'unknown';
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return 'unknown';
+
+  const seconds = Math.max(0, Math.floor((now.getTime() - timestamp) / 1_000));
+  if (seconds < 5) return 'now';
+  if (seconds < 60) return `${seconds} seconds ago`;
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+/** Keep broker-provided text from escaping its table cell or controlling the terminal. */
+function sanitizeTerminalCell(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return stripAnsiFast(value).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '�');
+}
+
+/** Render a compact terminal view while retaining JSON as the script-friendly default. */
+export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
+  if (agents.length === 0) return 'No agents running.';
+
+  const rows = agents.map((agent) => {
+    const state = agent.current_state ? AGENT_STATE_DISPLAY[agent.current_state] : undefined;
+    return {
+      name: sanitizeTerminalCell(agent.name),
+      cliModel: sanitizeTerminalCell(
+        [agent.cli ?? agent.provider ?? agent.runtime, agent.model].filter(Boolean).join(' / ')
+      ),
+      state: sanitizeTerminalCell(state ? `${state.symbol} ${state.label}` : '· unknown'),
+      lastActive: sanitizeTerminalCell(formatRelativeTime(agent.last_activity_at, now)),
+    };
+  });
+  const columns = [
+    { header: 'NAME', values: rows.map((row) => row.name) },
+    { header: 'CLI / MODEL', values: rows.map((row) => row.cliModel) },
+    { header: 'STATE', values: rows.map((row) => row.state) },
+    { header: 'LAST ACTIVE', values: rows.map((row) => row.lastActive) },
+  ];
+  const widths = columns.map((column) =>
+    Math.max(column.header.length, ...column.values.map((value) => value.length))
+  );
+  const formatRow = (values: string[]) =>
+    values
+      .map((value, index) => value.padEnd(widths[index]!))
+      .join('  ')
+      .trimEnd();
+
+  return [
+    formatRow(columns.map((column) => column.header)),
+    formatRow(columns.map((_, index) => '-'.repeat(widths[index]!))),
+    ...rows.map((row) => formatRow([row.name, row.cliModel, row.state, row.lastActive])),
+  ].join('\n');
 }
 
 async function run(
@@ -241,9 +316,11 @@ export function registerLocalAgentCommands(
   agent
     .command('list')
     .description('List agents running on the local broker')
-    .action(async () => {
+    .option('--pretty', 'Show a compact human-readable list')
+    .action(async (opts: { pretty?: boolean }) => {
       await run(deps, async (client) => {
-        deps.log(JSON.stringify(await client.listAgents(), null, 2));
+        const agents = await client.listAgents();
+        deps.log(opts.pretty ? formatPrettyAgentList(agents, deps.now()) : JSON.stringify(agents, null, 2));
       });
     });
 
