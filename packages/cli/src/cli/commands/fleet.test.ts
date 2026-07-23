@@ -213,8 +213,8 @@ describe('fleet command support', () => {
 
   it('fleet nodes --all includes offline and direct history records', async () => {
     const listedNodes = [
-      { name: 'sf-mini', status: 'online', live: true, capabilities: [], tags: [] },
       { name: 'old-runner', status: 'offline', live: false, capabilities: [], tags: [] },
+      { name: 'sf-mini', status: 'online', live: true, capabilities: [], tags: [] },
       {
         name: 'direct-123',
         status: 'offline',
@@ -246,7 +246,9 @@ describe('fleet command support', () => {
       from: 'user',
     });
 
-    expect(JSON.parse(logs[0]!)).toEqual({ nodes: listedNodes });
+    expect(JSON.parse(logs[0]!)).toEqual({
+      nodes: [listedNodes[1], listedNodes[0], listedNodes[2]],
+    });
     expect(warnings).toEqual([]);
   });
 

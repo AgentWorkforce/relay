@@ -91,8 +91,10 @@ export function registerFleetCommands(
         capability: options.capability as string | undefined,
         name: options.name as string | undefined,
       });
-      const visibleNodes = options.all === true ? nodes : nodes.filter(isAvailableFleetNode);
-      const hiddenCount = nodes.length - visibleNodes.length;
+      const liveNodes = nodes.filter(isAvailableFleetNode);
+      const historyNodes = nodes.filter((node) => !isAvailableFleetNode(node));
+      const visibleNodes = options.all === true ? [...liveNodes, ...historyNodes] : liveNodes;
+      const hiddenCount = historyNodes.length;
       if (hiddenCount > 0 && options.all !== true) {
         deps.warn(
           `${hiddenCount} offline or non-fleet records hidden. ` +
