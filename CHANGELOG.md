@@ -5,7 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay cloud room` can invite workspace-scoped participants through explicit secret sinks, manage members, and establish per-device multiplayer sessions without sharing a Relay workspace key.
+- `agent-relay agent me|presence` use scoped agent credentials for room-safe identity and presence checks.
 
 ## [11.1.1] - 2026-07-23
 

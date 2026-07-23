@@ -53,6 +53,24 @@ export function registerAgentCommands(
     });
   });
 
+  addSdkOptions(group.command('me').description('Show the current agent identity')).action(
+    async (opts: Record<string, unknown>) => {
+      await runSdk(deps, async () => {
+        const relay = deps.createAgentRelay(sdkOptionsFromOpts(opts));
+        printJson(deps, await relay.agents.me());
+      });
+    }
+  );
+
+  addSdkOptions(group.command('presence').description('List visible agent presence')).action(
+    async (opts: Record<string, unknown>) => {
+      await runSdk(deps, async () => {
+        const relay = deps.createAgentRelay(sdkOptionsFromOpts(opts));
+        printJson(deps, await relay.agents.presence());
+      });
+    }
+  );
+
   addSdkOptions(
     group
       .command('add')

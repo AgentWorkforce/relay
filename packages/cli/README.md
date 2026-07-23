@@ -85,6 +85,51 @@ agent-relay cloud enroll --token ocl_node_enr_...
 agent-relay node up
 ```
 
+## Cloud multiplayer rooms
+
+Cloud room membership is scoped to one Relay workspace. It does not expose the
+workspace key, grant Fleet control, or grant integration write access.
+
+```bash
+# Owner: invite and manage people in this workspace.
+agent-relay cloud room invite \
+  --workspace rw_7ccfea89 \
+  --email teammate@example.com \
+  --role participant \
+  --token-file ./teammate.room-invite
+agent-relay cloud room invites --workspace rw_7ccfea89
+agent-relay cloud room members --workspace rw_7ccfea89
+
+# Share the owner-only token file over a secure channel. The invitee keeps the
+# single-use token out of shell history and process arguments.
+read -rs ROOM_INVITATION_TOKEN
+printf '%s' "$ROOM_INVITATION_TOKEN" |
+  agent-relay cloud room accept --token-stdin
+unset ROOM_INVITATION_TOKEN
+
+# Trusted clients such as Herdr establish one stable session per device.
+# --json intentionally includes the scoped participant or observer credential;
+# capture it in memory and do not log or persist it.
+agent-relay cloud room session \
+  --workspace rw_7ccfea89 \
+  --device-id herdr-macbook \
+  --json
+
+# Explicitly ending or replacing the device session revokes the old scoped token.
+agent-relay cloud room revoke-session \
+  --workspace rw_7ccfea89 \
+  --device-id herdr-macbook
+
+# Participants use their scoped token for presence and chat; an ambient owner
+# workspace key is never consulted when --token is present.
+agent-relay agent presence \
+  --token at_live_... \
+  --base-url https://cast.agentrelay.com
+
+# Owner: revoke access and active room sessions.
+agent-relay cloud room remove-member <membership-id> --workspace rw_7ccfea89
+```
+
 `local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).
 
 Node workflow runs use Relayflows for YAML, TypeScript, and Python workflow files.
