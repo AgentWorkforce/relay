@@ -31,6 +31,11 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const telemetryShutdown = vi.fn(async () => undefined);
   const persistWorkspaceSession = vi.fn();
   const resolveWorkspaceSessionKey = vi.fn(() => options.persistedWorkspaceKey);
+  const validateWorkspaceSessionName = vi.fn((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Workspace name is required.');
+    return trimmed;
+  });
   const relayInstances: Array<{
     config: Record<string, unknown>;
     registerOrRotate: ReturnType<typeof vi.fn>;
@@ -254,6 +259,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   vi.doMock('./lib/workspace-session.js', () => ({
     persistWorkspaceSession,
     resolveWorkspaceSessionKey,
+    validateWorkspaceSessionName,
   }));
 
   const mod = await import('./agent-relay-mcp.js');
@@ -272,6 +278,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       telemetryShutdown,
       persistWorkspaceSession,
       resolveWorkspaceSessionKey,
+      validateWorkspaceSessionName,
       RelayCast,
       FakeTransport,
     },
@@ -523,6 +530,41 @@ describe('createAgentRelayMcpServer', () => {
 
     await server.tools.get('register_agent')?.handler({ name: 'WorkerAfterWarning' });
     expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'rk_live_created')).toBe(true);
+  });
+
+  it('rejects a blank workspace name before provisioning a remote workspace', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
+    const server = mocks.serverInstances[0];
+
+    await expect(server.tools.get('create_workspace')?.handler({ name: '   ' })).rejects.toThrow(
+      'Workspace name is required.'
+    );
+    expect(mocks.RelayCast.createWorkspace).not.toHaveBeenCalled();
+    expect(mocks.persistWorkspaceSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps a selected workspace usable when local session persistence fails', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.persistWorkspaceSession.mockImplementationOnce(() => {
+      throw new Error('project directory is read-only');
+    });
+
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
+    const server = mocks.serverInstances[0];
+    const result = await server.tools
+      .get('set_workspace_key')
+      ?.handler({ workspace_key: 'rk_live_selected' });
+
+    expect(result.structuredContent).toEqual({
+      message:
+        'Workspace key set. Call "register_agent" to join this workspace. ' +
+        'The workspace is active for this process, but its session could not be persisted locally: ' +
+        'project directory is read-only. Retry persistence before restarting this MCP server.',
+    });
+
+    await server.tools.get('register_agent')?.handler({ name: 'WorkerAfterSetWarning' });
+    expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'rk_live_selected')).toBe(true);
   });
 
   it('registers submit_result when a spawned-agent result callback is configured', async () => {

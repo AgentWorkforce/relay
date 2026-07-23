@@ -2,7 +2,7 @@ import { getProjectPaths } from '@agent-relay/config';
 import { resolveWorkspaceKeyWithSource } from '@agent-relay/cloud/workspace-key';
 
 import { writeProjectWorkspaceKey } from './project-workspace-key.js';
-import { setWorkspaceKey, switchWorkspace } from './workspace-store.js';
+import { setWorkspaceKey, switchWorkspace, validateWorkspaceName } from './workspace-store.js';
 
 export interface WorkspaceSessionOptions {
   env?: NodeJS.ProcessEnv;
@@ -14,6 +14,11 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
   workspaceKey: string;
   /** Named sessions are also stored and selected in the machine-global workspace store. */
   name?: string;
+}
+
+/** Validate and normalize a workspace session name before local or remote writes. */
+export function validateWorkspaceSessionName(name: string): string {
+  return validateWorkspaceName(name);
 }
 
 /**
@@ -35,10 +40,7 @@ export function persistWorkspaceSession(options: PersistWorkspaceSessionOptions)
     throw new Error('Workspace key is required.');
   }
 
-  const name = options.name?.trim();
-  if (options.name !== undefined && !name) {
-    throw new Error('Workspace name is required.');
-  }
+  const name = options.name === undefined ? undefined : validateWorkspaceSessionName(options.name);
 
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
   writeProjectWorkspaceKey(projectDataDir, workspaceKey);

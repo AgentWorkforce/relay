@@ -32,7 +32,11 @@ import { enableInboxPiggyback } from './mcp/telemetry.js';
 import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
-import { persistWorkspaceSession, resolveWorkspaceSessionKey } from './lib/workspace-session.js';
+import {
+  persistWorkspaceSession,
+  resolveWorkspaceSessionKey,
+  validateWorkspaceSessionName,
+} from './lib/workspace-session.js';
 import type {
   AgentClientLike,
   AgentRelayMcpServerOptions,
@@ -408,12 +412,13 @@ function registerAgentRelayTools(
       },
     },
     async ({ name }: any) => {
-      const workspace = await createWorkspace(name, baseUrl);
+      const requestedName = validateWorkspaceSessionName(name);
+      const workspace = await createWorkspace(requestedName, baseUrl);
       const workspaceKey = extractWorkspaceKey(workspace);
       if (!workspaceKey || typeof workspaceKey !== 'string') {
         throw new Error('Workspace created, but the response did not include a workspace key.');
       }
-      const workspaceName = extractWorkspaceName(workspace, name);
+      const workspaceName = extractWorkspaceName(workspace, requestedName);
 
       setSession({
         workspaceKey,
@@ -476,11 +481,23 @@ function registerAgentRelayTools(
       } else {
         setSession({ workspaceKey: key });
       }
-      persistWorkspaceSession({ workspaceKey: key });
+      let persistenceWarning: string | undefined;
+      try {
+        persistWorkspaceSession({ workspaceKey: key });
+      } catch (error) {
+        const persistenceError = error instanceof Error ? error.message : String(error);
+        persistenceWarning =
+          `The workspace is active for this process, but its session could not be persisted locally: ` +
+          `${persistenceError}. Retry persistence before restarting this MCP server.`;
+      }
 
-      const message = switchingWorkspace
+      const persistedMessage = switchingWorkspace
         ? 'Workspace key set and persisted for this project. Call "register_agent" to join this workspace.'
         : 'Workspace key set and persisted for this project.';
+      const activeMessage = switchingWorkspace
+        ? 'Workspace key set. Call "register_agent" to join this workspace.'
+        : 'Workspace key set.';
+      const message = persistenceWarning ? `${activeMessage} ${persistenceWarning}` : persistedMessage;
       return textContent(message);
     }
   );

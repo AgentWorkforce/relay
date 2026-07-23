@@ -10,6 +10,11 @@ vi.mock('@agent-relay/cloud', () => ({
 
 vi.mock('../lib/workspace-session.js', () => ({
   persistWorkspaceSession: vi.fn(),
+  validateWorkspaceSessionName: vi.fn((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Workspace name is required.');
+    return trimmed;
+  }),
 }));
 
 import {
@@ -20,7 +25,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { registerWorkspaceCommands, type WorkspaceCommandDependencies } from './workspace.js';
-import { persistWorkspaceSession } from '../lib/workspace-session.js';
+import { persistWorkspaceSession, validateWorkspaceSessionName } from '../lib/workspace-session.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -106,6 +111,19 @@ describe('registerWorkspaceCommands', () => {
       name: 'session-two',
       workspaceKey: 'rk_live_session_two',
     });
+  });
+
+  it('workspace create rejects a blank name before provisioning a remote workspace', async () => {
+    const { program, deps } = createHarness();
+
+    await expect(program.parseAsync(['node', 'agent-relay', 'workspace', 'create', '   '])).rejects.toThrow(
+      'exit:1'
+    );
+
+    expect(validateWorkspaceSessionName).toHaveBeenCalledWith('   ');
+    expect(deps.error).toHaveBeenCalledWith('Workspace name is required.');
+    expect(deps.createWorkspace).not.toHaveBeenCalled();
+    expect(persistWorkspaceSession).not.toHaveBeenCalled();
   });
 
   it('workspace join persists the joined workspace as the current session', async () => {

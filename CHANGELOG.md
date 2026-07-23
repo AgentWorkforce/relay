@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- MCP workspace creation now returns the created key with a warning when local session persistence fails, preventing retries from creating duplicate workspaces.
+- MCP workspace creation and selection now preserve completed remote or in-memory changes with a warning when local persistence fails, preventing duplicate workspaces and false failed switches.
+- Workspace creation now rejects invalid names before provisioning a remote workspace.
 - Fleet node restarts now reject stored enrollment fallbacks that do not match the project-pinned node identity.
 
 ## [11.0.2] - 2026-07-22

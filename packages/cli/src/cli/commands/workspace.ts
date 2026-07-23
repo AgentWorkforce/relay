@@ -4,7 +4,7 @@ import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
-import { persistWorkspaceSession } from '../lib/workspace-session.js';
+import { persistWorkspaceSession, validateWorkspaceSessionName } from '../lib/workspace-session.js';
 
 export type WorkspaceCommandDependencies = SdkCommandDeps;
 
@@ -60,11 +60,12 @@ export function registerWorkspaceCommands(
     .option('--base-url <url>', 'Override the API base URL')
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
-        const relay = await deps.createWorkspace(name, o.baseUrl as string | undefined);
+        const workspaceName = validateWorkspaceSessionName(name);
+        const relay = await deps.createWorkspace(workspaceName, o.baseUrl as string | undefined);
         if (relay.workspaceKey) {
-          persistWorkspaceSession({ name, workspaceKey: relay.workspaceKey });
+          persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey });
         }
-        printJson(deps, { name, workspaceKey: relay.workspaceKey });
+        printJson(deps, { name: workspaceName, workspaceKey: relay.workspaceKey });
       });
     });
 
