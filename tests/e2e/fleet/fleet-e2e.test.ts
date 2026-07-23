@@ -8,7 +8,6 @@ import {
   delay,
   enrollNode,
   FleetNode,
-  getFreeBrokerBasePort,
   getFreePort,
   getInvocation,
   getNodes,
@@ -80,7 +79,7 @@ describe.skipIf(!pre.ok)('Cloud-enrolled node startup', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreeBrokerBasePort(),
+      brokerPort: 0,
       capacityHarnesses: 'claude',
       usePersistedEnrollment: true,
     });
@@ -177,7 +176,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreeBrokerBasePort(),
+      brokerPort: 0,
       // Pin capacity so the node advertises a distinct harness (`claude`) plus the
       // shared `pool`. A `spawn:<harness>` shadow delegates to the broker's native
       // capacity for that harness, so every shadow the node defines (spawn:claude,
@@ -194,7 +193,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreeBrokerBasePort(),
+      brokerPort: 0,
       // Distinct `codex` plus the shared `pool` (see node-a's note).
       capacityHarnesses: 'codex,pool',
     });
@@ -270,7 +269,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreeBrokerBasePort(),
+      brokerPort: 0,
     });
     badNode.start();
     try {

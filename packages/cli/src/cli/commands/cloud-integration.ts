@@ -694,11 +694,13 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
                 options.apiUrl,
                 minted.auth
               );
-            } catch {
-              throw new Error(
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [writeError, cleanupError],
                 `Could not write the delegated credential. Revocation could not be confirmed; revoke lease ${terminal(
                   credential.leaseId
-                )} before retrying.`
+                )} before retrying.`,
+                { cause: writeError }
               );
             }
             throw writeError;

@@ -73,10 +73,14 @@ export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgen
   // the caller to exactly one workspace. Prefer the scoped token itself over
   // every ambient workspace-key source so invited humans cannot accidentally
   // inherit the local owner's rk_live credential from this project or machine.
-  const transportCredential = token ?? resolveWorkspaceKey(options);
+  if (token) {
+    return new AgentRelay({
+      agentToken: token,
+      baseUrl: resolveBaseUrl(options),
+    });
+  }
   return new AgentRelay({
-    workspaceKey: transportCredential,
+    workspaceKey: resolveWorkspaceKey(options),
     baseUrl: resolveBaseUrl(options),
-    ...(token ? { agentToken: token } : {}),
   });
 }

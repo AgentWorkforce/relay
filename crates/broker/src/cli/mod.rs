@@ -243,7 +243,7 @@ pub(crate) struct InitCommand {
     #[arg(long, default_value = "general")]
     pub(crate) channels: String,
 
-    /// Optional HTTP API port for dashboard proxy (0 = disabled)
+    /// Optional HTTP API port for dashboard proxy (0 = atomically OS-assigned).
     #[arg(long, default_value = "0")]
     pub(crate) api_port: u16,
 

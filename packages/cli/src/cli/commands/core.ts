@@ -61,6 +61,8 @@ export interface CoreRelay {
   workspaceKey?: string;
   /** PID of the underlying broker process, when available. */
   brokerPid?: number;
+  /** Actual HTTP API port bound by the broker, including OS-assigned ports. */
+  apiPort?: number;
 }
 
 export interface CoreFileSystem {
@@ -148,11 +150,10 @@ async function createDefaultRelay(
   brokerName?: string,
   verbose = false
 ): Promise<CoreRelay> {
-  const binaryArgs: BrokerInitArgs = {};
-  if (apiPort > 0) {
-    binaryArgs.persist = true;
-    binaryArgs.apiPort = apiPort;
-  }
+  const binaryArgs: BrokerInitArgs = {
+    persist: true,
+    apiPort,
+  };
   const stateDir = process.env.AGENT_RELAY_STATE_DIR;
   if (stateDir) {
     binaryArgs.stateDir = stateDir;
@@ -185,6 +186,10 @@ async function createDefaultRelay(
     },
     get brokerPid() {
       return client.brokerPid;
+    },
+    get apiPort() {
+      const port = Number.parseInt(new URL(client.baseUrl).port, 10);
+      return Number.isInteger(port) && port > 0 ? port : undefined;
     },
   };
   return relay;

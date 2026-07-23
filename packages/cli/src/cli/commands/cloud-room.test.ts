@@ -324,6 +324,53 @@ describe('registerCloudRoomCommands', () => {
     ).not.toContain('herdr_inv_lost_secret');
   });
 
+  it('reports invite write and rollback failure without printing either error detail', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-room-token-'));
+    const tokenFile = path.join(directory, 'existing');
+    fs.writeFileSync(tokenFile, 'do-not-overwrite', { mode: 0o600 });
+    const { program, deps } = createHarness();
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          invite: {
+            id: 'invite_1',
+            email: 'person@example.com',
+            role: 'viewer',
+            token: 'herdr_inv_lost_secret',
+            expiresAt: '2026-07-30T00:00:00.000Z',
+            createdAt: '2026-07-23T00:00:00.000Z',
+          },
+        }),
+        auth: refreshedAuth,
+      })
+      .mockRejectedValueOnce(new Error('cleanup-secret-marker'));
+    try {
+      await expect(
+        program.parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'room',
+          'invite',
+          '--workspace',
+          'rw_7ccfea89',
+          '--email',
+          'person@example.com',
+          '--token-file',
+          tokenFile,
+        ])
+      ).rejects.toThrow('exit:1');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+
+    const output = vi.mocked(deps.error).mock.calls.flat().join('\n');
+    expect(output).toContain('Revocation could not be confirmed; revoke invitation invite_1');
+    expect(output).not.toContain('cleanup-secret-marker');
+    expect(output).not.toContain('EEXIST');
+    expect(output).not.toContain('herdr_inv_lost_secret');
+  });
+
   it.each([
     {
       args: ['invites', '--workspace', 'rw_7ccfea89', '--json'],

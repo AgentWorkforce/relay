@@ -630,11 +630,13 @@ export function registerCloudRoomCommands(
                 options.apiUrl,
                 created.auth
               );
-            } catch {
-              throw new Error(
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [writeError, cleanupError],
                 `Could not write the invitation token. Revocation could not be confirmed; revoke invitation ${sanitizeTerminalCell(
                   payload.invite.id
-                )} before retrying.`
+                )} before retrying.`,
+                { cause: writeError }
               );
             }
             throw writeError;

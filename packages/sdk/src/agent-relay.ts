@@ -190,6 +190,26 @@ export class AgentRelay implements AgentRelayAgent {
     if (onError) {
       this.errorHooks.add(onError);
     }
+    // Credentials can live in several implementation objects (the workspace
+    // key, observer token, messaging options, and agent-client map). Keep every
+    // own field non-enumerable so object spread and generic serializers cannot
+    // accidentally copy those values into logs.
+    for (const property of Object.keys(this)) {
+      Object.defineProperty(this, property, { enumerable: false });
+    }
+  }
+
+  /** Safe JSON/log representation. Deliberately excludes URLs and credentials. */
+  toJSON(): { type: 'AgentRelay'; authenticated: boolean } {
+    return {
+      type: 'AgentRelay',
+      authenticated: Boolean(this.workspaceKey || this.observerToken || this.messagingOptions.agentToken),
+    };
+  }
+
+  /** Node's util.inspect hook follows the same credential-free contract. */
+  [Symbol.for('nodejs.util.inspect.custom')](): ReturnType<AgentRelay['toJSON']> {
+    return this.toJSON();
   }
 
   static async createWorkspace(input: string | AgentRelayCreateWorkspaceInput): Promise<AgentRelay> {

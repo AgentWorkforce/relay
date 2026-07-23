@@ -317,6 +317,41 @@ describe('registerCloudIntegrationCommands', () => {
     expect(deps.ensureCloudSession).toHaveBeenCalledTimes(1);
   });
 
+  it('reports write and rollback failure without printing either error detail', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-integration-credential-'));
+    const target = path.join(directory, 'existing');
+    fs.writeFileSync(target, 'preserve', { mode: 0o600 });
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({ response: response(credential()), auth: refreshedAuth })
+      .mockRejectedValueOnce(new Error('cleanup-secret-marker'));
+    try {
+      await expect(
+        program.parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'integration',
+          'credential',
+          '--workspace',
+          'rw_7ccfea89',
+          '--device-id',
+          'herdr-room-device',
+          '--access',
+          'write',
+          '--output-file',
+          target,
+        ])
+      ).rejects.toThrow('exit:1');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+    const output = vi.mocked(deps.error).mock.calls.flat().join('\n');
+    expect(output).toContain('Revocation could not be confirmed; revoke lease lease_1');
+    expect(output).not.toContain('cleanup-secret-marker');
+    expect(output).not.toContain('EEXIST');
+  });
+
   it('revokes a device-scoped credential lease without putting secrets in argv', async () => {
     const { program, deps } = harness();
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({

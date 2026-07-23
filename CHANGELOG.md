@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud integration` can discover truthful provider capabilities, connect providers, manage room-member path grants, and mint or revoke device-scoped Relayfile credential leases.
 - `agent-relay agent me|presence` use scoped agent credentials for room-safe identity and presence checks.
 
+### Fixed
+
+- `AGENT_RELAY_BROKER_PORT=0` now lets `agent-relay node up` bind an OS-assigned API port atomically, preventing concurrent Fleet nodes from racing over a probed port.
+
 ## [11.1.1] - 2026-07-23
 
 ### Added

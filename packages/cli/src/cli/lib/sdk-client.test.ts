@@ -116,8 +116,11 @@ describe('sdk client option resolution', () => {
         AGENT_RELAY_HOME: dir,
         RELAY_AGENT_TOKEN: 'at_live_participant_scoped',
       },
-    }) as { workspaceKey?: string };
+    }) as { workspaceKey?: string; toJSON(): unknown };
 
-    expect(relay.workspaceKey).toBe('at_live_participant_scoped');
+    expect(relay.workspaceKey).toBeUndefined();
+    expect(JSON.stringify(relay)).not.toContain('rk_live_owner_secret');
+    expect(JSON.stringify(relay)).not.toContain('rk_live_project_owner_secret');
+    expect(JSON.stringify(relay)).not.toContain('at_live_participant_scoped');
   });
 });
