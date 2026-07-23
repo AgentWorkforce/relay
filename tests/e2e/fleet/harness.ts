@@ -117,6 +117,19 @@ export function getFreePort(): Promise<number> {
   });
 }
 
+/**
+ * `AGENT_RELAY_BROKER_PORT` is a base port; the broker HTTP API starts probing
+ * at base + 1. Reserve that actual candidate in the harness instead of proving
+ * only that the unused base itself is free.
+ */
+export async function getFreeBrokerBasePort(): Promise<number> {
+  let apiPort = await getFreePort();
+  while (apiPort <= 1) {
+    apiPort = await getFreePort();
+  }
+  return apiPort - 1;
+}
+
 export async function waitFor<T>(
   fn: () => Promise<T | null | undefined | false>,
   opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}
