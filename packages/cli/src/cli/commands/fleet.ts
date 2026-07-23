@@ -242,12 +242,17 @@ export function registerFleetCommands(
   });
 }
 
-/** Return whether a roster entry is a live Fleet node rather than direct-history metadata. */
-function isAvailableFleetNode(node: { live?: boolean; status?: string; tags?: unknown }): boolean {
+/** Return whether a roster entry can currently accept Fleet work. */
+function isAvailableFleetNode(node: {
+  live?: boolean;
+  status?: string;
+  handlersLive?: boolean;
+  tags?: unknown;
+}): boolean {
   const tags = Array.isArray(node.tags) ? node.tags : [];
   const isDirectPseudoNode = tags.includes('direct');
   const isLive = node.live === undefined ? node.status === 'online' : node.live === true;
-  return isLive && !isDirectPseudoNode;
+  return isLive && node.handlersLive !== false && !isDirectPseudoNode;
 }
 
 function parseFleetCli(value: string): string {

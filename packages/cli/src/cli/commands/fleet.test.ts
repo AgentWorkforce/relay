@@ -152,12 +152,21 @@ describe('fleet command support', () => {
         name: 'sf-mini',
         status: 'online',
         live: true,
+        handlersLive: true,
         capabilities: [{ name: 'spawn:codex' }],
         tags: [],
       },
       {
         name: 'legacy-live-runner',
         status: 'online',
+        capabilities: [{ name: 'spawn:codex' }],
+        tags: [],
+      },
+      {
+        name: 'detached-runner',
+        status: 'online',
+        live: true,
+        handlersLive: false,
         capabilities: [{ name: 'spawn:codex' }],
         tags: [],
       },
@@ -207,14 +216,29 @@ describe('fleet command support', () => {
     });
 
     expect(JSON.parse(logs[0]!)).toEqual({ nodes: listedNodes.slice(0, 2) });
-    expect(warnings.join('\n')).toMatch(/3 offline or non-fleet records hidden/);
+    expect(warnings.join('\n')).toMatch(/4 offline or non-fleet records hidden/);
     expect(warnings.join('\n')).toMatch(/--all/);
   });
 
   it('fleet nodes --all includes offline and direct history records', async () => {
     const listedNodes = [
       { name: 'old-runner', status: 'offline', live: false, capabilities: [], tags: [] },
-      { name: 'sf-mini', status: 'online', live: true, capabilities: [], tags: [] },
+      {
+        name: 'detached-runner',
+        status: 'online',
+        live: true,
+        handlersLive: false,
+        capabilities: [],
+        tags: [],
+      },
+      {
+        name: 'sf-mini',
+        status: 'online',
+        live: true,
+        handlersLive: true,
+        capabilities: [],
+        tags: [],
+      },
       {
         name: 'direct-123',
         status: 'offline',
@@ -247,7 +271,7 @@ describe('fleet command support', () => {
     });
 
     expect(JSON.parse(logs[0]!)).toEqual({
-      nodes: [listedNodes[1], listedNodes[0], listedNodes[2]],
+      nodes: [listedNodes[2], listedNodes[0], listedNodes[1], listedNodes[3]],
     });
     expect(warnings).toEqual([]);
   });
