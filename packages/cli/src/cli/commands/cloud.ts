@@ -571,7 +571,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
 
         const payload = (await response.json().catch(() => null)) as
-          (WhoAmIResponse & { error?: string }) | null;
+          | (WhoAmIResponse & { error?: string })
+          | null;
 
         if (!response.ok || !payload?.authenticated) {
           throw new Error(payload?.error || 'Failed to resolve auth status');

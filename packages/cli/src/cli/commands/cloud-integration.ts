@@ -659,9 +659,7 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
                 body: JSON.stringify({
                   deviceId: options.deviceId,
                   scopes: options.access === 'write' ? ['fs:read', 'fs:write'] : ['fs:read'],
-                  ...(options.path.length > 0
-                    ? { relayfileMountPaths: options.path }
-                    : {}),
+                  ...(options.path.length > 0 ? { relayfileMountPaths: options.path } : {}),
                   ttlSeconds: options.ttl,
                   delegationTtlSeconds: options.delegationTtl,
                 }),
