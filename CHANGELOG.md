@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay agent attach --mode drive|passthrough` now takes raw input before replaying terminal state and preserves inherited raw mode on detach, preventing mouse-report escape characters and parent-TUI input regressions.
-- `relay-feature-guardian` now treats an admitted Slack write without a provider receipt as a retry-pending warning, retaining its checkpoint and idempotency key instead of failing the guardian run.
 
 ## [11.0.1] - 2026-07-22
 
@@ -66,7 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay cloud enroll --workspace` now validates and resolves Cloud UUIDs and unified `rw_` IDs before minting, and reports unresolvable identifiers instead of mislabeling them as permission failures.
-- `relay-feature-guardian` now picker-gates its Slack mirror to the configured output channel, moves checks off the fleet's shared Claude subscription, and surfaces failed posts as failed runs instead of silently reporting success.
 
 ## [10.6.5] - 2026-07-19
 
@@ -85,7 +83,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
 - `AgentRelaySDK` now maps Relaycast lifecycle states onto its existing Swift presence states, so root-package consumers compile with Relaycast 6.1 and later while package-local builds remain compatible with 6.0.5.
-- `relay-feature-guardian` now limits read mirrors to the feature manifest and workspace memory while keeping Slack write-only to its configured output channel, and advances its exact, revision-safe cycle checkpoint only after a bounded wait returns a real Slack receipt while safely reconciling retired manifest features.
 - `agent-relay-broker` and `@agent-relay/utils` now preserve mise/asdf/rtx-style CLI shims when spawning provider workers, so Codex, Claude, Gemini, and other agent CLIs installed via a version manager receive their own permission flags (e.g. `--dangerously-bypass-approvals-and-sandbox`) instead of the manager binary rejecting them.
 
 ## [10.6.3] - 2026-07-17

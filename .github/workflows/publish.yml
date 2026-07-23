@@ -1830,6 +1830,16 @@ jobs:
             const text = title.toLowerCase();
             if (type === 'chore' && (scope === 'release' || scope === 'prerelease')) return true;
             if (scope === 'trajectories' || scope === 'comments') return true;
+            // relay-feature-guardian is an internal Slack feature-check agent, not a
+            // user-facing Relay surface — keep its changes out of the release changelog.
+            if (scope === 'feature-guardian' || scope === 'relay-feature-guardian') return true;
+            if (text.includes('relay-feature-guardian')) return true;
+            if (
+              files.length > 0 &&
+              files.every(file => file.startsWith('.agentworkforce/agents/relay-feature-guardian/'))
+            ) {
+              return true;
+            }
             if (text.includes('compact trajectories')) return true;
             if (text.includes('record ') && text.includes('trajectory')) return true;
             if (text.includes('address pr review')) return true;
