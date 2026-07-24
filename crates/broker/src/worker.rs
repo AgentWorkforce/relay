@@ -365,8 +365,10 @@ impl WorkerRegistry {
                             CodexSessionReference::Resume(thread_id) => {
                                 spec.session_id = Some(thread_id);
                             }
-                            CodexSessionReference::Fork(_) | CodexSessionReference::Unknown => {}
-                            CodexSessionReference::None => {
+                            CodexSessionReference::Fork(_)
+                            | CodexSessionReference::AmbiguousVariadicImage
+                            | CodexSessionReference::Unknown => {}
+                            CodexSessionReference::None | CodexSessionReference::VariadicImage => {
                                 if codex_has_positional_arg(&effective_args) {
                                     tracing::debug!(
                                         worker = %spec.name,
@@ -593,9 +595,11 @@ impl WorkerRegistry {
                                 CodexSessionReference::Resume(thread_id) => {
                                     spec.session_id = Some(thread_id);
                                 }
-                                CodexSessionReference::Fork(_) | CodexSessionReference::Unknown => {
-                                }
-                                CodexSessionReference::None => {
+                                CodexSessionReference::Fork(_)
+                                | CodexSessionReference::AmbiguousVariadicImage
+                                | CodexSessionReference::Unknown => {}
+                                CodexSessionReference::None
+                                | CodexSessionReference::VariadicImage => {
                                     if codex_has_positional_arg(&effective_args) {
                                         tracing::debug!(
                                             worker = %spec.name,
@@ -1237,6 +1241,8 @@ fn is_loopback_endpoint_host(endpoint: &reqwest::Url) -> bool {
 enum CodexSessionReference {
     Resume(String),
     Fork(String),
+    VariadicImage,
+    AmbiguousVariadicImage,
     Unknown,
     None,
 }
@@ -1321,16 +1327,6 @@ fn apply_requested_session_reference(
     }
 
     if cli_lower == "codex" {
-        if codex_has_variadic_image_arg(args) {
-            if args.iter().any(|arg| arg == "resume" || arg == "fork") {
-                anyhow::bail!(
-                    "session_ref cannot safely disambiguate Codex resume/fork values after --image"
-                );
-            }
-            harness_session_args.push("resume".to_string());
-            harness_session_args.push(session_id.to_string());
-            return Ok(());
-        }
         match codex_session_reference(args) {
             CodexSessionReference::Resume(existing) if existing == session_id => return Ok(()),
             CodexSessionReference::Resume(_) => {
@@ -1341,10 +1337,15 @@ fn apply_requested_session_reference(
             CodexSessionReference::Fork(_) => {
                 anyhow::bail!("session_ref cannot be combined with a Codex fork");
             }
+            CodexSessionReference::AmbiguousVariadicImage => {
+                anyhow::bail!(
+                    "session_ref cannot safely disambiguate Codex resume/fork values after --image"
+                );
+            }
             CodexSessionReference::Unknown => {
                 anyhow::bail!("session_ref requires an explicit Codex session id");
             }
-            CodexSessionReference::None => {
+            CodexSessionReference::None | CodexSessionReference::VariadicImage => {
                 harness_session_args.push("resume".to_string());
                 harness_session_args.push(session_id.to_string());
                 return Ok(());
@@ -1369,7 +1370,14 @@ fn codex_session_reference(args: &[String]) -> CodexSessionReference {
             return CodexSessionReference::None;
         }
         if codex_is_variadic_image_arg(arg) {
-            return CodexSessionReference::Unknown;
+            return if args[index + 1..]
+                .iter()
+                .any(|value| value == "resume" || value == "fork")
+            {
+                CodexSessionReference::AmbiguousVariadicImage
+            } else {
+                CodexSessionReference::VariadicImage
+            };
         }
         if codex_flag_consumes_next_arg(arg) {
             if args.get(index + 1).is_none() {
@@ -1416,6 +1424,12 @@ fn codex_has_positional_arg(args: &[String]) -> bool {
         if arg == "--" {
             return true;
         }
+        if codex_is_variadic_image_arg(arg) {
+            // At the root command, --image consumes subsequent positional
+            // values. With a broker-owned resume prefix those same options are
+            // safely interpreted by the resume subcommand.
+            return false;
+        }
         if codex_flag_consumes_next_arg(arg) {
             skip_next = true;
             continue;
@@ -1455,11 +1469,6 @@ fn codex_flag_consumes_next_arg(arg: &str) -> bool {
             | "--cwd"
             | "--add-dir"
     )
-}
-
-fn codex_has_variadic_image_arg(args: &[String]) -> bool {
-    args.iter()
-        .any(|arg| codex_is_variadic_image_arg(arg.as_str()))
 }
 
 fn codex_is_variadic_image_arg(arg: &str) -> bool {
@@ -2265,6 +2274,27 @@ mod tests {
     }
 
     #[test]
+    fn requested_session_reference_accepts_matching_resume_before_codex_images() {
+        let mut args = vec![
+            "resume".to_string(),
+            "thread-codex-1".to_string(),
+            "--image".to_string(),
+            "/tmp/review.png".to_string(),
+        ];
+        let mut harness_session_args = Vec::new();
+
+        apply_requested_session_reference(
+            "codex",
+            "thread-codex-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect("matching explicit Codex resume");
+
+        assert!(harness_session_args.is_empty());
+    }
+
+    #[test]
     fn requested_session_reference_rejects_ambiguous_variadic_codex_image_values() {
         let mut args = vec![
             "--image".to_string(),
@@ -2380,7 +2410,20 @@ mod tests {
                 "resume".into(),
                 "thread-3".into(),
             ]),
-            CodexSessionReference::Unknown
+            CodexSessionReference::AmbiguousVariadicImage
+        );
+        assert_eq!(
+            codex_session_reference(&["--image".into(), "/tmp/review.png".into()]),
+            CodexSessionReference::VariadicImage
+        );
+        assert_eq!(
+            codex_session_reference(&[
+                "resume".into(),
+                "thread-4".into(),
+                "--image".into(),
+                "/tmp/review.png".into(),
+            ]),
+            CodexSessionReference::Resume("thread-4".to_string())
         );
     }
 
@@ -2398,6 +2441,10 @@ mod tests {
             "Fix the bug".into(),
         ]));
         assert!(codex_has_positional_arg(&["exec".into()]));
+        assert!(!codex_has_positional_arg(&[
+            "--image".into(),
+            "/tmp/review.png".into(),
+        ]));
     }
 
     #[test]
