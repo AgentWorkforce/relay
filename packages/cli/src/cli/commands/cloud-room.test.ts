@@ -263,14 +263,7 @@ describe('registerCloudRoomCommands', () => {
       });
 
       await expect(
-        program.parseAsync([
-          'node',
-          'agent-relay',
-          'cloud',
-          'room',
-          'accept',
-          '--token-stdin',
-        ])
+        program.parseAsync(['node', 'agent-relay', 'cloud', 'room', 'accept', '--token-stdin'])
       ).rejects.toThrow('exit:1');
       expect(deps.error).toHaveBeenCalledWith('Invalid room invitation token.');
       expect(deps.ensureCloudSession).not.toHaveBeenCalled();
