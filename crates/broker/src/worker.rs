@@ -1364,6 +1364,15 @@ fn codex_session_reference(args: &[String]) -> CodexSessionReference {
             index += 1;
             continue;
         }
+        if arg.starts_with('-') {
+            if arg.contains('=') || codex_flag_without_value(arg) {
+                index += 1;
+                continue;
+            }
+            // An unknown option may consume the following token. Fail closed
+            // instead of mistaking that value for a resume/fork subcommand.
+            return CodexSessionReference::Unknown;
+        }
         if arg == "resume" || arg == "fork" {
             let Some(next) = args.get(index + 1).map(String::as_str) else {
                 return CodexSessionReference::Unknown;
@@ -1413,14 +1422,42 @@ fn codex_flag_consumes_next_arg(arg: &str) -> bool {
         "--model"
             | "-m"
             | "--profile"
+            | "-p"
             | "--config"
             | "-c"
+            | "--enable"
+            | "--disable"
+            | "--remote"
+            | "--remote-auth-token-env"
+            | "--image"
+            | "-i"
             | "--sandbox"
             | "-s"
+            | "--local-provider"
             | "--ask-for-approval"
+            | "-a"
             | "--approval-policy"
             | "--cd"
+            | "-C"
             | "--cwd"
+            | "--add-dir"
+    )
+}
+
+fn codex_flag_without_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--strict-config"
+            | "--oss"
+            | "--dangerously-bypass-approvals-and-sandbox"
+            | "--dangerously-bypass-hook-trust"
+            | "--full-auto"
+            | "--search"
+            | "--no-alt-screen"
+            | "--help"
+            | "-h"
+            | "--version"
+            | "-V"
     )
 }
 
@@ -2144,6 +2181,45 @@ mod tests {
             harness_session_args,
             vec!["resume".to_string(), "thread-codex-1".to_string()]
         );
+    }
+
+    #[test]
+    fn requested_session_reference_does_not_treat_flag_value_as_codex_resume() {
+        let mut args = vec!["--enable".to_string(), "resume".to_string()];
+        let mut harness_session_args = Vec::new();
+
+        apply_requested_session_reference(
+            "codex",
+            "thread-codex-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect("Codex session resume");
+
+        assert_eq!(args, vec!["--enable".to_string(), "resume".to_string()]);
+        assert_eq!(
+            harness_session_args,
+            vec!["resume".to_string(), "thread-codex-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn requested_session_reference_rejects_ambiguous_codex_option() {
+        let mut args = vec!["--future-option".to_string(), "resume".to_string()];
+        let mut harness_session_args = Vec::new();
+
+        let error = apply_requested_session_reference(
+            "codex",
+            "thread-codex-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect_err("unknown Codex option arity must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("requires an explicit Codex session id"));
+        assert!(harness_session_args.is_empty());
     }
 
     #[test]
