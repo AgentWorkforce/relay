@@ -116,6 +116,8 @@ agent-relay cloud room members --workspace rw_7ccfea89
 
 # Share the owner-only token file over a secure channel. The invitee keeps the
 # token out of shell history and process arguments.
+# Tokens use the consumer-neutral relay_room_inv_ prefix followed by exactly
+# 43 URL-safe characters.
 read -rs ROOM_INVITATION_TOKEN
 printf '%s' "$ROOM_INVITATION_TOKEN" |
   agent-relay cloud room accept --token-stdin
