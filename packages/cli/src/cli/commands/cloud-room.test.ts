@@ -30,7 +30,11 @@ function jsonResponse(body: unknown, status = 200, headers?: HeadersInit): Respo
   });
 }
 
-function invite(token = 'herdr_inv_single_use_secret') {
+function roomInvitationToken(character = 'A') {
+  return `relay_room_inv_${character.repeat(43)}`;
+}
+
+function invite(token = roomInvitationToken()) {
   return {
     invite: {
       id: 'invite_1',
@@ -118,7 +122,7 @@ describe('registerCloudRoomCommands', () => {
       },
       { interactive: false }
     );
-    expect(deps.log).toHaveBeenCalledWith('herdr_inv_single_use_secret');
+    expect(deps.log).toHaveBeenCalledWith(roomInvitationToken());
   });
 
   it('does not expose viewer or email-delivery invite options', () => {
@@ -156,7 +160,7 @@ describe('registerCloudRoomCommands', () => {
     const tokenFile = path.join(directory, 'token');
     const { program, deps } = createHarness();
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: jsonResponse(invite('herdr_inv_file_secret')),
+      response: jsonResponse(invite(roomInvitationToken('B'))),
       auth,
     });
 
@@ -174,7 +178,7 @@ describe('registerCloudRoomCommands', () => {
         '--token-file',
         tokenFile,
       ]);
-      expect(fs.readFileSync(tokenFile, 'utf8')).toBe('herdr_inv_file_secret\n');
+      expect(fs.readFileSync(tokenFile, 'utf8')).toBe(`${roomInvitationToken('B')}\n`);
       if (process.platform !== 'win32') {
         expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o600);
       }
@@ -219,8 +223,9 @@ describe('registerCloudRoomCommands', () => {
   });
 
   it('accepts an invitation only from an explicit secret source', async () => {
+    const token = roomInvitationToken('C');
     const { program, deps } = createHarness({
-      readStdin: vi.fn(async () => 'herdr_inv_accept_secret\n'),
+      readStdin: vi.fn(async () => `${token}\n`),
     });
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
       response: jsonResponse({
@@ -240,10 +245,37 @@ describe('registerCloudRoomCommands', () => {
       '/api/v1/room/invites/accept',
       {
         method: 'POST',
-        body: JSON.stringify({ token: 'herdr_inv_accept_secret' }),
+        body: JSON.stringify({ token }),
       },
       { interactive: false }
     );
+  });
+
+  it('rejects invitation tokens outside the Relay Room wire contract', async () => {
+    for (const token of [
+      `product_inv_${'A'.repeat(43)}`,
+      `relay_room_inv_${'A'.repeat(42)}`,
+      `relay_room_inv_${'A'.repeat(44)}`,
+      `relay_room_inv_${'A'.repeat(42)}!`,
+    ]) {
+      const { program, deps } = createHarness({
+        readStdin: vi.fn(async () => `${token}\n`),
+      });
+
+      await expect(
+        program.parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'room',
+          'accept',
+          '--token-stdin',
+        ])
+      ).rejects.toThrow('exit:1');
+      expect(deps.error).toHaveBeenCalledWith('Invalid room invitation token.');
+      expect(deps.ensureCloudSession).not.toHaveBeenCalled();
+      expect(deps.authorizedApiFetch).not.toHaveBeenCalled();
+    }
   });
 
   it('rejects non-participant member responses', async () => {

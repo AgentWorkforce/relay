@@ -23,6 +23,7 @@ const DEFAULT_INVITATION_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
 const MIN_INVITATION_LIFETIME_SECONDS = 60;
 const MAX_INVITATION_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 const MAX_ROOM_SECRET_LENGTH = 2_048;
+const ROOM_INVITATION_TOKEN_PATTERN = /^relay_room_inv_[A-Za-z0-9_-]{43}$/;
 
 interface CloudRoomIo {
   readStdin: () => Promise<string>;
@@ -318,12 +319,7 @@ async function defaultWriteSecretFile(filePath: string, value: string): Promise<
 
 function requireInvitationToken(value: string): string {
   const token = value.trim();
-  if (
-    !token.startsWith('herdr_inv_') ||
-    token.length > MAX_ROOM_SECRET_LENGTH ||
-    // eslint-disable-next-line no-control-regex
-    /[\u0000-\u001f\u007f-\u009f]/.test(token)
-  ) {
+  if (!ROOM_INVITATION_TOKEN_PATTERN.test(token)) {
     throw new Error('Invalid room invitation token.');
   }
   return token;

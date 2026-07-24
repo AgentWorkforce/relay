@@ -121,18 +121,18 @@ printf '%s' "$ROOM_INVITATION_TOKEN" |
   agent-relay cloud room accept --token-stdin
 unset ROOM_INVITATION_TOKEN
 
-# Trusted clients such as Herdr establish one stable session per device.
+# Trusted clients establish one stable session per device.
 # --json intentionally includes the participant credential; capture it in
 # memory and do not log or persist it.
 agent-relay cloud room session \
   --workspace rw_7ccfea89 \
-  --device-id herdr-macbook \
+  --device-id client-macbook \
   --json
 
 # Explicitly ending or replacing the device session revokes the old scoped token.
 agent-relay cloud room revoke-session \
   --workspace rw_7ccfea89 \
-  --device-id herdr-macbook
+  --device-id client-macbook
 
 # Participants use their scoped token for agent-level Relaycast operations; an
 # ambient owner workspace key is never consulted when --token is present.
@@ -154,7 +154,7 @@ agent-relay cloud integration catalog
 agent-relay cloud integration connect linear --workspace rw_7ccfea89
 agent-relay cloud integration connections --workspace rw_7ccfea89
 
-# Member or Herdr: use Relayfile directly, including its OAuth/backend selection
+# Member clients use Relayfile directly, including its OAuth/backend selection
 # and durable writeback queue.
 relayfile integration available
 relayfile integration connect linear
