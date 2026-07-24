@@ -1216,6 +1216,12 @@ fn handle_disconnected_command(
             resume_cursor,
         }) => {
             load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+            // This control client is the broker provider, which owns the
+            // node's spawn/release capacity as soon as its socket connects.
+            // A fresh node has no workers yet, so no load transition would
+            // otherwise publish the first `handlers_live=true` snapshot and
+            // the engine would queue the very first spawn indefinitely.
+            load.handlers_live = true;
             *registration = Some(build_node_register(
                 &manifest,
                 &config.node_id,
@@ -1543,6 +1549,7 @@ async fn run_connected_once(
                 match command {
                     Some(FleetControlCommand::RegisterNode { manifest, resume_cursor }) => {
                         load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+                        load.handlers_live = true;
                         let mut next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
                         next.provider = Some(provider.clone());
                         node_register = next.clone();
@@ -2830,7 +2837,15 @@ mod tests {
             let register = next_node_to_server(&mut ws).await;
             assert!(matches!(register, BrokerToRelaycast::NodeRegister(_)));
             let heartbeat = next_node_to_server(&mut ws).await;
-            assert!(matches!(heartbeat, BrokerToRelaycast::NodeHeartbeat(_)));
+            match heartbeat {
+                BrokerToRelaycast::NodeHeartbeat(heartbeat) => {
+                    assert!(
+                        heartbeat.handlers_live,
+                        "the broker provider must advertise capacity before the first spawn"
+                    );
+                }
+                other => panic!("expected initial node heartbeat, got {other:?}"),
+            }
 
             ws.send(Message::Text(
                 serde_json::to_string(&RelaycastToBroker::Deliver(Deliver {

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay node up` now binds an OS-assigned API port atomically by default, preventing concurrent Fleet nodes from racing over a probed port; `AGENT_RELAY_BROKER_PORT` remains an explicit stable-port override.
+- Newly connected Fleet brokers now advertise their spawn/release handlers immediately, so the first remote spawn is dispatched instead of remaining queued until load changes.
 - `agent-relay fleet spawn --session-ref` now passes the requested session to Claude and Codex as a real resume operation instead of recording resume metadata while launching a fresh CLI session.
 
 ## [11.1.1] - 2026-07-23
