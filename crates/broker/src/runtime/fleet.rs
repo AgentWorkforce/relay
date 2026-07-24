@@ -415,6 +415,13 @@ impl BrokerRuntime {
         // not correlated to the agent and a resumable `spawn:<harness>` (when
         // `harnessConfig.session_id` is set) silently becomes a fresh spawn.
         let session_ref = super::relaycast_events::relaycast_spawn_session_ref(&ws_value);
+        // `action.invoke` is the authoritative control request, not a
+        // workspace-firehose echo of a local spawn. Mark it with the same
+        // control key the echo guard derives so a later release + respawn of
+        // the same agent name is not suppressed by the five-minute
+        // name-scoped echo cache.
+        let action_control_dedup_key =
+            relaycast_spawn_control_dedup_key(workspace_id.as_str(), name.as_str());
 
         super::relaycast_events::spawn_worker_from_request(
             name.clone(),
@@ -425,7 +432,7 @@ impl BrokerRuntime {
             exit_after_task,
             &ws_value,
             &workspace_id,
-            None,
+            Some(&action_control_dedup_key),
             &workspace_state,
             &mut self.workers,
             &mut self.state,
@@ -1406,6 +1413,21 @@ mod tests {
             action_invoke_bool(&explicit, &["exit_after_task", "exitAfterTask"]),
         )
         .expect("valid explicit flag"));
+    }
+
+    #[test]
+    fn action_invoke_spawn_control_key_allows_immediate_name_reuse() {
+        let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
+
+        // Each node action is already correlated by its invocation id. Passing
+        // the matching control key tells the legacy firehose echo guard not to
+        // consume or reject the reusable worker name.
+        for _ in 0..2 {
+            assert!(!relaycast_ws_should_apply_local_spawn_echo_dedup(
+                Some(local_key.as_str()),
+                &local_key,
+            ));
+        }
     }
 
     #[test]
