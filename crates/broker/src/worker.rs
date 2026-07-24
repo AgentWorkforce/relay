@@ -350,15 +350,22 @@ impl WorkerRegistry {
                     spec.model = Some(model);
                 }
                 let mut harness_session_args = Vec::new();
-                if spec.session_id.is_none() {
+                if let Some(session_id) = spec.session_id.as_deref() {
+                    apply_requested_session_reference(
+                        &cli_lower,
+                        session_id,
+                        &mut effective_args,
+                        &mut harness_session_args,
+                    )?;
+                } else {
                     if is_claude {
                         spec.session_id = prepare_claude_session_args(&mut effective_args);
                     } else if is_codex {
                         match codex_session_reference(&effective_args) {
-                            CodexSessionReference::Known(thread_id) => {
+                            CodexSessionReference::Resume(thread_id) => {
                                 spec.session_id = Some(thread_id);
                             }
-                            CodexSessionReference::Unknown => {}
+                            CodexSessionReference::Fork(_) | CodexSessionReference::Unknown => {}
                             CodexSessionReference::None => {
                                 if codex_has_positional_arg(&effective_args) {
                                     tracing::debug!(
@@ -582,15 +589,23 @@ impl WorkerRegistry {
                         spec.model = Some(model);
                     }
                     let mut harness_session_args = Vec::new();
-                    if spec.session_id.is_none() {
+                    if let Some(session_id) = spec.session_id.as_deref() {
+                        apply_requested_session_reference(
+                            &cli_lower,
+                            session_id,
+                            &mut effective_args,
+                            &mut harness_session_args,
+                        )?;
+                    } else {
                         if is_claude {
                             spec.session_id = prepare_claude_session_args(&mut effective_args);
                         } else if is_codex {
                             match codex_session_reference(&effective_args) {
-                                CodexSessionReference::Known(thread_id) => {
+                                CodexSessionReference::Resume(thread_id) => {
                                     spec.session_id = Some(thread_id);
                                 }
-                                CodexSessionReference::Unknown => {}
+                                CodexSessionReference::Fork(_) | CodexSessionReference::Unknown => {
+                                }
                                 CodexSessionReference::None => {
                                     if codex_has_positional_arg(&effective_args) {
                                         tracing::debug!(
@@ -1242,7 +1257,8 @@ fn is_loopback_endpoint_host(endpoint: &reqwest::Url) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CodexSessionReference {
-    Known(String),
+    Resume(String),
+    Fork(String),
     Unknown,
     None,
 }
@@ -1267,6 +1283,64 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
     args.push("--session-id".to_string());
     args.push(session_id.clone());
     Some(session_id)
+}
+
+fn apply_requested_session_reference(
+    cli_lower: &str,
+    session_id: &str,
+    args: &mut Vec<String>,
+    harness_session_args: &mut Vec<String>,
+) -> Result<()> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        anyhow::bail!("session_ref must not be empty");
+    }
+
+    if cli_lower == "claude" || cli_lower.starts_with("claude:") {
+        if let Some(existing) =
+            cli_flag_value(args, "--resume").or_else(|| cli_flag_value(args, "-r"))
+        {
+            if existing != session_id {
+                anyhow::bail!(
+                    "session_ref conflicts with the Claude session argument already configured"
+                );
+            }
+            return Ok(());
+        }
+        if cli_flag_present(
+            args,
+            &["--session-id", "--resume", "-r", "--continue", "-c"],
+        ) {
+            anyhow::bail!("session_ref requires an explicit Claude session id");
+        }
+        args.push("--resume".to_string());
+        args.push(session_id.to_string());
+        return Ok(());
+    }
+
+    if cli_lower == "codex" {
+        match codex_session_reference(args) {
+            CodexSessionReference::Resume(existing) if existing == session_id => return Ok(()),
+            CodexSessionReference::Resume(_) => {
+                anyhow::bail!(
+                    "session_ref conflicts with the Codex session argument already configured"
+                );
+            }
+            CodexSessionReference::Fork(_) => {
+                anyhow::bail!("session_ref cannot be combined with a Codex fork");
+            }
+            CodexSessionReference::Unknown => {
+                anyhow::bail!("session_ref requires an explicit Codex session id");
+            }
+            CodexSessionReference::None => {
+                harness_session_args.push("resume".to_string());
+                harness_session_args.push(session_id.to_string());
+                return Ok(());
+            }
+        }
+    }
+
+    anyhow::bail!("session_ref resume is supported only for Claude and Codex PTY harnesses");
 }
 
 fn codex_session_reference(args: &[String]) -> CodexSessionReference {
@@ -1297,7 +1371,11 @@ fn codex_session_reference(args: &[String]) -> CodexSessionReference {
             if next == "--last" || next.starts_with('-') {
                 return CodexSessionReference::Unknown;
             }
-            return CodexSessionReference::Known(next.to_string());
+            return if arg == "resume" {
+                CodexSessionReference::Resume(next.to_string())
+            } else {
+                CodexSessionReference::Fork(next.to_string())
+            };
         }
         index += 1;
     }
@@ -2024,6 +2102,95 @@ mod tests {
     }
 
     #[test]
+    fn requested_session_reference_adds_claude_resume_args() {
+        let mut args = vec!["--model".to_string(), "claude-opus-4-1".to_string()];
+        let mut harness_session_args = Vec::new();
+
+        apply_requested_session_reference(
+            "claude",
+            "session-claude-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect("Claude session resume");
+
+        assert_eq!(
+            args,
+            vec![
+                "--model".to_string(),
+                "claude-opus-4-1".to_string(),
+                "--resume".to_string(),
+                "session-claude-1".to_string(),
+            ]
+        );
+        assert!(harness_session_args.is_empty());
+    }
+
+    #[test]
+    fn requested_session_reference_adds_codex_resume_args() {
+        let mut args = vec!["--profile".to_string(), "work".to_string()];
+        let mut harness_session_args = Vec::new();
+
+        apply_requested_session_reference(
+            "codex",
+            "thread-codex-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect("Codex session resume");
+
+        assert_eq!(args, vec!["--profile".to_string(), "work".to_string()]);
+        assert_eq!(
+            harness_session_args,
+            vec!["resume".to_string(), "thread-codex-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn requested_session_reference_rejects_conflicting_cli_session() {
+        let mut args = vec!["resume".to_string(), "thread-other".to_string()];
+        let mut harness_session_args = Vec::new();
+
+        let error = apply_requested_session_reference(
+            "codex",
+            "thread-requested",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect_err("conflicting resume must fail closed");
+
+        assert!(error.to_string().contains("conflicts"));
+        assert!(harness_session_args.is_empty());
+    }
+
+    #[test]
+    fn requested_session_reference_rejects_new_or_forked_sessions() {
+        let mut claude_args = vec!["--session-id".to_string(), "session-requested".to_string()];
+        let mut claude_harness_args = Vec::new();
+        let claude_error = apply_requested_session_reference(
+            "claude",
+            "session-requested",
+            &mut claude_args,
+            &mut claude_harness_args,
+        )
+        .expect_err("a requested session must resume instead of starting");
+        assert!(claude_error
+            .to_string()
+            .contains("explicit Claude session id"));
+
+        let mut codex_args = vec!["fork".to_string(), "thread-requested".to_string()];
+        let mut codex_harness_args = Vec::new();
+        let codex_error = apply_requested_session_reference(
+            "codex",
+            "thread-requested",
+            &mut codex_args,
+            &mut codex_harness_args,
+        )
+        .expect_err("a requested session must resume instead of forking");
+        assert!(codex_error.to_string().contains("Codex fork"));
+    }
+
+    #[test]
     fn codex_session_reference_detects_resume_and_fork_ids() {
         assert_eq!(
             codex_session_reference(&[
@@ -2032,11 +2199,11 @@ mod tests {
                 "resume".into(),
                 "thread-1".into()
             ]),
-            CodexSessionReference::Known("thread-1".to_string())
+            CodexSessionReference::Resume("thread-1".to_string())
         );
         assert_eq!(
             codex_session_reference(&["fork".into(), "thread-2".into()]),
-            CodexSessionReference::Known("thread-2".to_string())
+            CodexSessionReference::Fork("thread-2".to_string())
         );
         assert_eq!(
             codex_session_reference(&["resume".into(), "--last".into()]),

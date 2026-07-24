@@ -62,6 +62,13 @@ agent-relay fleet spawn codex \
   --task "Use https://agentrelay.com/skill, ACK over Relay, then wait for details." \
   --node sf-mini
 
+# Resume a known Claude/Codex CLI session on its origin node.
+agent-relay fleet spawn codex \
+  --name api-worker \
+  --task "Resume over Relay and continue the prior task." \
+  --node sf-mini \
+  --session-ref <actual-codex-thread-id>
+
 # Omit --node for automatic eligible-node placement.
 agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
 
@@ -78,6 +85,11 @@ set `RELAY_AGENT_TOKEN` to the token returned by
 `agent-relay agent register <lead-name>`. Automatic placement and release need
 only the workspace key.
 
+`--session-ref` is a real CLI resume, not a logical collaboration label. Pass
+the actual Claude session ID or Codex thread ID and target its origin node.
+Omit it to start a new CLI session. The project’s Agent Relay workspace remains
+pinned independently until you explicitly create or select another workspace.
+
 To run as a Cloud-managed node, first redeem a one-time enrollment token, then start the node:
 
 ```bash
@@ -88,10 +100,10 @@ agent-relay node up
 ## Cloud multiplayer rooms
 
 Cloud room membership is scoped to one Relay workspace. Every v1 invite creates
-a trusted full workspace participant: they receive their own revocable Relaycast
-human credential and may use all workspace actions. The workspace key itself is
-never shared, and membership does not grant Agent Relay Cloud organization
-administration.
+a trusted full room participant: they receive their own revocable Relaycast
+human credential and may use all ordinary agent-level collaboration actions.
+The workspace key itself is never shared, so owner-key administration and Agent
+Relay Cloud organization administration remain owner-only.
 
 ```bash
 # Owner: invite and manage people in this workspace.
@@ -122,7 +134,7 @@ agent-relay cloud room revoke-session \
   --workspace rw_7ccfea89 \
   --device-id herdr-macbook
 
-# Participants use their scoped token for all Relaycast workspace operations; an
+# Participants use their scoped token for agent-level Relaycast operations; an
 # ambient owner workspace key is never consulted when --token is present.
 agent-relay agent presence \
   --token at_live_... \

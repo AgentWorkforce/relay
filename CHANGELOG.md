@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay cloud room` can invite trusted full workspace participants through explicit secret sinks, manage members, and establish revocable per-device Relaycast sessions without sharing the workspace key.
+- `agent-relay cloud room` can invite trusted full room participants through explicit secret sinks, manage members, and establish revocable per-device Relaycast sessions without sharing the workspace key.
 - `agent-relay cloud integration` exposes the existing Cloud integration catalog, connection, and disconnection lifecycle from the CLI; connected providers remain available through Relayfile's normal setup, mount, and writeback flow.
 - `agent-relay agent me|presence` use scoped agent credentials for room-safe identity and presence checks.
 
 ### Fixed
 
 - `agent-relay node up` now binds an OS-assigned API port atomically by default, preventing concurrent Fleet nodes from racing over a probed port; `AGENT_RELAY_BROKER_PORT` remains an explicit stable-port override.
+- `agent-relay fleet spawn --session-ref` now passes the requested session to Claude and Codex as a real resume operation instead of recording resume metadata while launching a fresh CLI session.
 
 ## [11.1.1] - 2026-07-23
 

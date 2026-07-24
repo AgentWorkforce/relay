@@ -589,7 +589,7 @@ export function registerCloudRoomCommands(
             }
             throw writeError;
           }
-          deps.log(`Created full-participant room invitation for ${email}.`);
+          deps.log(`Created full room-participant invitation for ${email}.`);
           deps.log(
             `Wrote the one-time invitation token to ${sanitizeTerminalCell(options.tokenFile ?? '')}.`
           );
@@ -767,7 +767,7 @@ export function registerCloudRoomCommands(
 
   room
     .command('session')
-    .description('Create or resume this device’s full-participant room session')
+    .description('Create or resume this device’s full room-participant session')
     .requiredOption('--workspace <workspace>', 'Cloud UUID or unified rw_ workspace ID')
     .requiredOption('--device-id <device-id>', 'Stable non-secret identifier for this client')
     .option('--api-url <url>', 'Cloud API base URL')
