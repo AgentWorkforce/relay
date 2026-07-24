@@ -1425,17 +1425,16 @@ mod tests {
 
     #[tokio::test]
     async fn action_invoke_spawn_seeds_authoritative_cursor_before_resumed_delivery() {
-        // An `action.invoke` spawn carrying `harnessConfig.session_id` must
-        // forward a non-None session_ref (and the invocation id) into the node
-        // `agent.register` it emits, so the spawn resumes the session and the
-        // invocation is correlated to the agent (Bug 2). Previously both were
-        // hardcoded to None on this path.
+        // The Fleet CLI sends `session_ref` at the top level. It must be
+        // forwarded with the invocation id into the node `agent.register`, so
+        // the spawn resumes the session and the invocation is correlated to
+        // the agent.
         let ws_value = json!({
+            "session_ref": "sess-resume-7",
             "agent": {
                 "harnessConfig": {
                     "runtime": "pty",
                     "command": "codex",
-                    "sessionId": "sess-resume-7",
                 }
             }
         });
@@ -1443,7 +1442,7 @@ mod tests {
         assert_eq!(
             session_ref.as_deref(),
             Some("sess-resume-7"),
-            "session ref must be derived from harnessConfig.session_id"
+            "session ref must be derived from the action input"
         );
 
         // Drive the exact registration step the spawn path uses and capture the
@@ -1657,6 +1656,84 @@ mod tests {
         assert_eq!(
             super::super::relaycast_events::relaycast_spawn_session_ref(&json!({})),
             None
+        );
+    }
+
+    #[test]
+    fn relaycast_spawn_session_ref_supports_action_and_harness_shapes() {
+        let explicit = json!({
+            "session_ref": " session-explicit ",
+            "agent": {
+                "harnessConfig": {
+                    "runtime": "pty",
+                    "command": "codex",
+                    "sessionId": "session-harness",
+                }
+            }
+        });
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&explicit).as_deref(),
+            Some("session-explicit"),
+            "the Fleet action field must take precedence over its compatibility fallback"
+        );
+
+        let nested_camel = json!({"agent": {"sessionRef": "session-nested"}});
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&nested_camel).as_deref(),
+            Some("session-nested")
+        );
+
+        let harness_only = json!({
+            "agent": {
+                "harnessConfig": {
+                    "runtime": "pty",
+                    "command": "codex",
+                    "sessionId": "session-harness",
+                }
+            }
+        });
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&harness_only).as_deref(),
+            Some("session-harness")
+        );
+    }
+
+    #[test]
+    fn relaycast_spawn_spec_session_id_prefers_requested_resume() {
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "codex",
+                Some(" requested-session "),
+                Some("harness-session"),
+            )
+            .as_deref(),
+            Some("requested-session")
+        );
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "claude",
+                None,
+                Some(" harness-session "),
+            )
+            .as_deref(),
+            Some("harness-session")
+        );
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "codex",
+                Some("  "),
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "pool",
+                Some("metadata-only-session"),
+                None,
+            ),
+            None,
+            "custom capacity harnesses retain session_ref metadata without receiving Codex/Claude argv"
         );
     }
     #[tokio::test]
