@@ -461,27 +461,16 @@ impl WorkerRegistry {
                     spec.model = Some(model.clone());
                 }
 
-                let has_extra = bypass_flag.is_some()
-                    || model_flag.is_some()
-                    || !effective_args.is_empty()
-                    || !mcp_args.is_empty()
-                    || !harness_session_args.is_empty();
-                if has_extra {
+                let pty_cli_args = ordered_pty_cli_args(
+                    bypass_flag,
+                    model_flag.as_deref(),
+                    &mcp_args,
+                    &effective_args,
+                    &harness_session_args,
+                );
+                if !pty_cli_args.is_empty() {
                     command.arg("--");
-                    if let Some(flag) = bypass_flag {
-                        command.arg(flag);
-                    }
-                    if let Some(ref model) = model_flag {
-                        command.arg("--model");
-                        command.arg(model);
-                    }
-                    for arg in &mcp_args {
-                        command.arg(arg);
-                    }
-                    for arg in &effective_args {
-                        command.arg(arg);
-                    }
-                    for arg in &harness_session_args {
+                    for arg in &pty_cli_args {
                         command.arg(arg);
                     }
                 }
@@ -703,27 +692,16 @@ impl WorkerRegistry {
                         spec.model = Some(model.clone());
                     }
 
-                    let has_extra = bypass_flag.is_some()
-                        || model_flag.is_some()
-                        || !effective_args.is_empty()
-                        || !mcp_args.is_empty()
-                        || !harness_session_args.is_empty();
-                    if has_extra {
+                    let pty_cli_args = ordered_pty_cli_args(
+                        bypass_flag,
+                        model_flag.as_deref(),
+                        &mcp_args,
+                        &effective_args,
+                        &harness_session_args,
+                    );
+                    if !pty_cli_args.is_empty() {
                         command.arg("--");
-                        if let Some(flag) = bypass_flag {
-                            command.arg(flag);
-                        }
-                        if let Some(ref model) = model_flag {
-                            command.arg("--model");
-                            command.arg(model);
-                        }
-                        for arg in &mcp_args {
-                            command.arg(arg);
-                        }
-                        for arg in &effective_args {
-                            command.arg(arg);
-                        }
-                        for arg in &harness_session_args {
+                        for arg in &pty_cli_args {
                             command.arg(arg);
                         }
                     }
@@ -1285,6 +1263,30 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
     Some(session_id)
 }
 
+fn ordered_pty_cli_args(
+    bypass_flag: Option<&str>,
+    model: Option<&str>,
+    mcp_args: &[String],
+    effective_args: &[String],
+    harness_session_args: &[String],
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(flag) = bypass_flag {
+        args.push(flag.to_string());
+    }
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args.extend_from_slice(mcp_args);
+    // Codex options such as --image are variadic and can consume an appended
+    // `resume <thread>`. Put the broker-owned subcommand before user options;
+    // Codex accepts its resume options after the session positional.
+    args.extend_from_slice(harness_session_args);
+    args.extend_from_slice(effective_args);
+    args
+}
+
 fn apply_requested_session_reference(
     cli_lower: &str,
     session_id: &str,
@@ -1319,6 +1321,16 @@ fn apply_requested_session_reference(
     }
 
     if cli_lower == "codex" {
+        if codex_has_variadic_image_arg(args) {
+            if args.iter().any(|arg| arg == "resume" || arg == "fork") {
+                anyhow::bail!(
+                    "session_ref cannot safely disambiguate Codex resume/fork values after --image"
+                );
+            }
+            harness_session_args.push("resume".to_string());
+            harness_session_args.push(session_id.to_string());
+            return Ok(());
+        }
         match codex_session_reference(args) {
             CodexSessionReference::Resume(existing) if existing == session_id => return Ok(()),
             CodexSessionReference::Resume(_) => {
@@ -1355,6 +1367,9 @@ fn codex_session_reference(args: &[String]) -> CodexSessionReference {
         }
         if arg == "--" {
             return CodexSessionReference::None;
+        }
+        if codex_is_variadic_image_arg(arg) {
+            return CodexSessionReference::Unknown;
         }
         if codex_flag_consumes_next_arg(arg) {
             if args.get(index + 1).is_none() {
@@ -1429,8 +1444,6 @@ fn codex_flag_consumes_next_arg(arg: &str) -> bool {
             | "--disable"
             | "--remote"
             | "--remote-auth-token-env"
-            | "--image"
-            | "-i"
             | "--sandbox"
             | "-s"
             | "--local-provider"
@@ -1442,6 +1455,15 @@ fn codex_flag_consumes_next_arg(arg: &str) -> bool {
             | "--cwd"
             | "--add-dir"
     )
+}
+
+fn codex_has_variadic_image_arg(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| codex_is_variadic_image_arg(arg.as_str()))
+}
+
+fn codex_is_variadic_image_arg(arg: &str) -> bool {
+    arg == "--image" || arg == "-i" || arg.starts_with("--image=") || arg.starts_with("-i=")
 }
 
 fn codex_flag_without_value(arg: &str) -> bool {
@@ -2204,6 +2226,66 @@ mod tests {
     }
 
     #[test]
+    fn requested_session_reference_precedes_variadic_codex_image_args() {
+        let mut args = vec!["--image".to_string(), "/tmp/review.png".to_string()];
+        let mut harness_session_args = Vec::new();
+
+        apply_requested_session_reference(
+            "codex",
+            "thread-codex-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect("Codex session resume");
+
+        let ordered = ordered_pty_cli_args(
+            Some("--dangerously-bypass-approvals-and-sandbox"),
+            Some("gpt-5.4"),
+            &[
+                "-c".to_string(),
+                "mcp_servers.agent-relay.enabled=true".to_string(),
+            ],
+            &args,
+            &harness_session_args,
+        );
+        assert_eq!(
+            ordered,
+            vec![
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--model",
+                "gpt-5.4",
+                "-c",
+                "mcp_servers.agent-relay.enabled=true",
+                "resume",
+                "thread-codex-1",
+                "--image",
+                "/tmp/review.png",
+            ]
+        );
+    }
+
+    #[test]
+    fn requested_session_reference_rejects_ambiguous_variadic_codex_image_values() {
+        let mut args = vec![
+            "--image".to_string(),
+            "/tmp/review.png".to_string(),
+            "resume".to_string(),
+        ];
+        let mut harness_session_args = Vec::new();
+
+        let error = apply_requested_session_reference(
+            "codex",
+            "thread-codex-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect_err("ambiguous variadic values must fail closed");
+
+        assert!(error.to_string().contains("after --image"));
+        assert!(harness_session_args.is_empty());
+    }
+
+    #[test]
     fn requested_session_reference_rejects_ambiguous_codex_option() {
         let mut args = vec!["--future-option".to_string(), "resume".to_string()];
         let mut harness_session_args = Vec::new();
@@ -2289,6 +2371,15 @@ mod tests {
         // pre-create a Codex session for malformed CLI input).
         assert_eq!(
             codex_session_reference(&["--profile".into()]),
+            CodexSessionReference::Unknown
+        );
+        assert_eq!(
+            codex_session_reference(&[
+                "--image".into(),
+                "/tmp/review.png".into(),
+                "resume".into(),
+                "thread-3".into(),
+            ]),
             CodexSessionReference::Unknown
         );
     }
