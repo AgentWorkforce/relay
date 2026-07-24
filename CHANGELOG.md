@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `AGENT_RELAY_BROKER_PORT=0` now lets `agent-relay node up` bind an OS-assigned API port atomically, preventing concurrent Fleet nodes from racing over a probed port.
+- `agent-relay node up` now binds an OS-assigned API port atomically by default, preventing concurrent Fleet nodes from racing over a probed port; `AGENT_RELAY_BROKER_PORT` remains an explicit stable-port override.
 
 ## [11.1.1] - 2026-07-23
 
