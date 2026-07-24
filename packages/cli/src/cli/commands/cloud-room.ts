@@ -14,7 +14,7 @@ type CloudRoomDependencies = Pick<
 >;
 type CloudAuth = Awaited<ReturnType<CloudDependencies['ensureCloudSession']>>['auth'];
 
-type RoomRole = 'viewer' | 'participant';
+type RoomRole = 'participant';
 
 const CLOUD_WORKSPACE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UNIFIED_WORKSPACE_ID_PATTERN = /^rw_[a-z0-9]{8}$/;
@@ -72,7 +72,7 @@ function requireIsoDateField(record: Record<string, unknown>, key: string, label
 
 function requireResponseRole(record: Record<string, unknown>, label: string): RoomRole {
   const role = record.role;
-  if (role !== 'viewer' && role !== 'participant') {
+  if (role !== 'participant') {
     throw new Error(`Cloud room returned an invalid ${label} response.`);
   }
   return role;
@@ -118,22 +118,6 @@ function normalizeInviteCreate(payload: unknown): { invite: RoomInvite & { token
   return {
     invite: normalizeInvite(response.invite, true) as RoomInvite & { token: string },
   };
-}
-
-function normalizeEmailInviteCreate(payload: unknown): {
-  invite: RoomInvite;
-  delivery: { mode: 'email'; status: 'sent' };
-} {
-  const response = requireObject(payload, 'email invitation');
-  const delivery = requireObject(response.delivery, 'email invitation delivery');
-  if (delivery.mode !== 'email' || delivery.status !== 'sent') {
-    throw new Error('Cloud room returned an invalid email invitation response.');
-  }
-  const invite = normalizeInvite(response.invite, false);
-  if (containsForbiddenCredentialField(response) || 'token' in requireObject(response.invite, 'invitation')) {
-    throw new Error('Cloud room returned a forbidden invitation credential.');
-  }
-  return { invite, delivery: { mode: 'email', status: 'sent' } };
 }
 
 function normalizeInviteList(payload: unknown): { invites: RoomInvite[] } {
@@ -193,14 +177,12 @@ function normalizeMembership(payload: unknown): {
   };
 }
 
-type RoomSession =
-  | { role: 'viewer'; relaycastBaseUrl: string; observerToken: string }
-  | {
-      role: 'participant';
-      relaycastBaseUrl: string;
-      agentName: string;
-      agentToken: string;
-    };
+type RoomSession = {
+  role: 'participant';
+  relaycastBaseUrl: string;
+  agentName: string;
+  agentToken: string;
+};
 
 function normalizeRoomSession(payload: unknown): RoomSession {
   const response = requireObject(payload, 'session');
@@ -208,16 +190,6 @@ function normalizeRoomSession(payload: unknown): RoomSession {
   const relaycastBaseUrl = requireRelaycastBaseUrl(
     requireStringField(response, 'relaycastBaseUrl', 'session')
   );
-  if (role === 'viewer') {
-    if (
-      typeof response.observerToken !== 'string' ||
-      !response.observerToken.trim().startsWith('ot_live_') ||
-      response.agentToken !== undefined
-    ) {
-      throw new Error('Cloud room returned an invalid viewer session response.');
-    }
-    return { role, relaycastBaseUrl, observerToken: response.observerToken.trim() };
-  }
   if (
     typeof response.agentToken !== 'string' ||
     !response.agentToken.trim().startsWith('at_live_') ||
@@ -248,13 +220,6 @@ function parsePositiveInteger(value: string): number {
     );
   }
   return parsed;
-}
-
-function parseRoomRole(value: string): RoomRole {
-  if (value === 'viewer' || value === 'participant') {
-    return value;
-  }
-  throw new InvalidArgumentError('Expected role to be one of: viewer, participant');
 }
 
 function requireWorkspaceId(value: string): string {
@@ -544,29 +509,25 @@ export function registerCloudRoomCommands(
 
   room
     .command('invite')
-    .description('Invite an email address to a workspace room')
+    .description('Invite a full participant to a workspace room')
     .requiredOption('--workspace <workspace>', 'Cloud UUID or unified rw_ workspace ID')
     .requiredOption('--email <email>', 'Email address bound to the invitation')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--role <role>', 'Room role: viewer or participant', parseRoomRole, 'participant')
     .option(
       '--expires-in <seconds>',
       'Invitation lifetime in seconds',
       parsePositiveInteger,
       DEFAULT_INVITATION_LIFETIME_SECONDS
     )
-    .option('--email-delivery', 'Send the invitation through Agent Relay Cloud email')
     .option('--token-stdout', 'Print only the one-time invitation token')
     .option('--token-file <path>', 'Write the token to a new owner-only 0600 file')
-    .option('--json', 'Output the invitation as JSON; manual delivery includes its one-time token')
+    .option('--json', 'Output the invitation and its one-time token as JSON')
     .action(
       async (options: {
         workspace: string;
         email: string;
-        role: RoomRole;
         expiresIn: number;
         apiUrl?: string;
-        emailDelivery?: boolean;
         tokenStdout?: boolean;
         tokenFile?: string;
         json?: boolean;
@@ -575,12 +536,9 @@ export function registerCloudRoomCommands(
           const manualSinkCount = [options.tokenStdout, Boolean(options.tokenFile), options.json].filter(
             Boolean
           ).length;
-          if (
-            (options.emailDelivery && (options.tokenStdout || options.tokenFile)) ||
-            (!options.emailDelivery && manualSinkCount !== 1)
-          ) {
+          if (manualSinkCount !== 1) {
             throw new Error(
-              'Use --email-delivery (optionally with --json), or exactly one manual token sink: --token-stdout, --token-file, or --json.'
+              'Use exactly one invitation token sink: --token-stdout, --token-file, or --json.'
             );
           }
           const workspaceId = requireWorkspaceId(options.workspace);
@@ -592,22 +550,12 @@ export function registerCloudRoomCommands(
               method: 'POST',
               body: JSON.stringify({
                 email,
-                role: options.role,
+                role: 'participant',
                 expiresInSeconds: options.expiresIn,
-                ...(options.emailDelivery ? { delivery: 'email' } : {}),
               }),
             },
             options.apiUrl
           );
-          if (options.emailDelivery) {
-            const payload = normalizeEmailInviteCreate(created.payload);
-            if (options.json) {
-              logJson(deps, payload);
-              return;
-            }
-            deps.log(`Sent ${options.role} room invitation to ${email}.`);
-            return;
-          }
           const payload = normalizeInviteCreate(created.payload);
           if (options.json) {
             logJson(deps, payload);
@@ -641,7 +589,7 @@ export function registerCloudRoomCommands(
             }
             throw writeError;
           }
-          deps.log(`Created ${options.role} room invitation for ${email}.`);
+          deps.log(`Created full-participant room invitation for ${email}.`);
           deps.log(
             `Wrote the one-time invitation token to ${sanitizeTerminalCell(options.tokenFile ?? '')}.`
           );
@@ -819,11 +767,11 @@ export function registerCloudRoomCommands(
 
   room
     .command('session')
-    .description('Create or resume this device’s scoped room session')
+    .description('Create or resume this device’s full-participant room session')
     .requiredOption('--workspace <workspace>', 'Cloud UUID or unified rw_ workspace ID')
     .requiredOption('--device-id <device-id>', 'Stable non-secret identifier for this client')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--json', 'Output the session, including its scoped participant or observer credential')
+    .option('--json', 'Output the session, including its participant credential')
     .action(async (options: { workspace: string; deviceId: string; apiUrl?: string; json?: boolean }) => {
       await runRoomAction(deps, async () => {
         const workspaceId = requireWorkspaceId(options.workspace);
@@ -843,7 +791,7 @@ export function registerCloudRoomCommands(
           logJson(deps, payload);
           return;
         }
-        deps.log(`Room session ready with role ${payload.role}.`);
+        deps.log('Full-participant room session ready.');
         deps.log('Scoped credentials are hidden. Trusted clients may request them explicitly with --json.');
       });
     });

@@ -74,11 +74,6 @@ const expectedLeafCommands = [
   'cloud integration connections',
   'cloud integration connect',
   'cloud integration disconnect',
-  'cloud integration grants',
-  'cloud integration grant',
-  'cloud integration revoke-grant',
-  'cloud integration credential',
-  'cloud integration revoke-credential',
   // workspace
   'workspace create',
   'workspace active',

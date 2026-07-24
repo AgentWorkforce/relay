@@ -87,33 +87,31 @@ agent-relay node up
 
 ## Cloud multiplayer rooms
 
-Cloud room membership is scoped to one Relay workspace. It does not expose the
-workspace key, grant Fleet control, or grant integration write access.
+Cloud room membership is scoped to one Relay workspace. Every v1 invite creates
+a trusted full workspace participant: they receive their own revocable Relaycast
+human credential and may use all workspace actions. The workspace key itself is
+never shared, and membership does not grant Agent Relay Cloud organization
+administration.
 
 ```bash
 # Owner: invite and manage people in this workspace.
 agent-relay cloud room invite \
   --workspace rw_7ccfea89 \
   --email teammate@example.com \
-  --role participant \
-  --email-delivery
+  --token-file ./teammate.room-invite
 agent-relay cloud room invites --workspace rw_7ccfea89
 agent-relay cloud room members --workspace rw_7ccfea89
 
-# Manual fallback: create an owner-only token file and share it over a secure
-# channel. The invitee keeps the token out of shell history and process arguments.
-agent-relay cloud room invite \
-  --workspace rw_7ccfea89 \
-  --email teammate@example.com \
-  --token-file ./teammate.room-invite
+# Share the owner-only token file over a secure channel. The invitee keeps the
+# token out of shell history and process arguments.
 read -rs ROOM_INVITATION_TOKEN
 printf '%s' "$ROOM_INVITATION_TOKEN" |
   agent-relay cloud room accept --token-stdin
 unset ROOM_INVITATION_TOKEN
 
 # Trusted clients such as Herdr establish one stable session per device.
-# --json intentionally includes the scoped participant or observer credential;
-# capture it in memory and do not log or persist it.
+# --json intentionally includes the participant credential; capture it in
+# memory and do not log or persist it.
 agent-relay cloud room session \
   --workspace rw_7ccfea89 \
   --device-id herdr-macbook \
@@ -124,8 +122,8 @@ agent-relay cloud room revoke-session \
   --workspace rw_7ccfea89 \
   --device-id herdr-macbook
 
-# Participants use their scoped token for presence and chat; an ambient owner
-# workspace key is never consulted when --token is present.
+# Participants use their scoped token for all Relaycast workspace operations; an
+# ambient owner workspace key is never consulted when --token is present.
 agent-relay agent presence \
   --token at_live_... \
   --base-url https://cast.agentrelay.com
@@ -134,32 +132,23 @@ agent-relay agent presence \
 agent-relay cloud room remove-member <membership-id> --workspace rw_7ccfea89
 ```
 
-Room membership grants chat only. Integration access is separately connected,
-granted to one room member, and issued as a short-lived, revocable lease:
+There is no room-specific integration grant or credential service. Connect the
+workspace provider through the existing Cloud integration API, then use the
+normal Relayfile workflow for setup, mounts, reads, and writebacks:
 
 ```bash
-# Owner: inspect capability truth, connect a provider, then grant exact paths.
+# Owner: discover or connect a provider through Cloud.
 agent-relay cloud integration catalog
 agent-relay cloud integration connect linear --workspace rw_7ccfea89
-agent-relay cloud integration grant \
-  --workspace rw_7ccfea89 \
-  --member <membership-id> \
-  --provider linear \
-  --path '/linear/issues/**' \
-  --access write
+agent-relay cloud integration connections --workspace rw_7ccfea89
 
-# Member or Herdr: capture the delegated bundle explicitly. Caller identity is
-# derived from Cloud auth; it is never accepted from command flags.
-agent-relay cloud integration credential \
-  --workspace rw_7ccfea89 \
-  --device-id herdr-room-device \
-  --access write \
-  --output-file ./relayfile-credential.json
-
-# Herdr uses the JSON form only for in-process capture, keeps the lease ID (not
-# its token) as durable cleanup state, and revokes it on close or session reset.
-agent-relay cloud integration revoke-credential <lease-id> \
-  --workspace rw_7ccfea89
+# Member or Herdr: use Relayfile directly, including its OAuth/backend selection
+# and durable writeback queue.
+relayfile integration available
+relayfile integration connect linear
+RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile setup
+RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile status
+RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile writeback status
 ```
 
 `local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).

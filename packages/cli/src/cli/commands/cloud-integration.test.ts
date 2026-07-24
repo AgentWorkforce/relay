@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,11 +15,6 @@ const auth = {
   accessToken: 'access-secret',
   refreshToken: 'refresh-secret',
   accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
-};
-const refreshedAuth = {
-  ...auth,
-  accessToken: 'refreshed-access-secret',
-  refreshToken: 'rotated-refresh-secret',
 };
 
 function response(value: unknown, status = 200): Response {
@@ -53,52 +45,31 @@ function harness() {
   return { program, deps, integration: cloud.commands[0] };
 }
 
-function credential() {
-  return {
-    leaseId: 'lease_1',
-    relayfileUrl: 'https://relayfile.test',
-    relayauthUrl: 'https://relayauth.test',
-    refreshUrl: 'https://relayauth.test/v1/tokens/refresh',
-    relayfileWorkspaceId: 'rw_7ccfea89',
-    relayfileToken: 'relay_pa_private',
-    relayfileTokenExpiresAt: '2026-07-23T22:00:00.000Z',
-    relayfileRefreshToken: 'relay_pr_private',
-    relayfileRefreshTokenExpiresAt: '2026-07-24T21:00:00.000Z',
-    relayfileScopes: ['relayfile:fs:read:*', 'relayfile:fs:write:*'],
-    delegationNotAfter: '2026-07-24T21:00:00.000Z',
-    relayfileMountPaths: ['/linear/**'],
-  };
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
 describe('registerCloudIntegrationCommands', () => {
-  it('registers the complete Cloud integration lifecycle', () => {
+  it('exposes only the existing Cloud connection lifecycle', () => {
     const { integration } = harness();
     expect(integration.commands.map((command) => command.name())).toEqual([
       'catalog',
       'connections',
       'connect',
       'disconnect',
-      'grants',
-      'grant',
-      'revoke-grant',
-      'credential',
-      'revoke-credential',
     ]);
   });
 
-  it('discovers dynamic providers with truthful capabilities', async () => {
+  it('lists dynamic providers without requiring room-specific capabilities', async () => {
     const { program, deps } = harness();
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
       response: response({
         providers: [
           {
-            id: 'dropbox',
-            vfsRoot: '/dropbox',
-            capabilities: { connect: true, read: true, writeback: false },
+            id: 'linear',
+            displayName: 'Linear',
+            backends: ['nango'],
+            apiKey: 'must-not-print',
           },
         ],
         version: 'abcdef123456',
@@ -114,288 +85,99 @@ describe('registerCloudIntegrationCommands', () => {
       { method: 'GET' },
       { interactive: false }
     );
-    expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).toContain('"writeback": false');
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('"id": "linear"');
+    expect(output).not.toContain('must-not-print');
   });
 
-  it('creates a bounded write grant for a room member', async () => {
-    const { program, deps } = harness();
-    const grant = {
-      id: 'grant_1',
-      workspaceId: '00000000-0000-4000-8000-000000000020',
-      memberId: 'member_1',
-      userId: '00000000-0000-4000-8000-000000000001',
-      provider: 'linear',
-      allowedPaths: ['/linear/issues/**'],
-      canRead: true,
-      canWrite: true,
-      createdAt: '2026-07-23T21:00:00.000Z',
-      updatedAt: '2026-07-23T21:00:00.000Z',
-    };
-    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: response({ grant }, 201),
-      auth,
-    });
-
-    await program.parseAsync([
-      'node',
-      'agent-relay',
-      'cloud',
-      'integration',
-      'grant',
-      '--workspace',
-      'rw_7ccfea89',
-      '--member',
-      'member_1',
-      '--provider',
-      'linear',
-      '--path',
-      '/linear/issues/**',
-      '--access',
-      'write',
-      '--json',
-    ]);
-
-    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
-      auth,
-      '/api/v1/workspaces/rw_7ccfea89/room/integration-grants',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          memberId: 'member_1',
-          provider: 'linear',
-          allowedPaths: ['/linear/issues/**'],
-          canRead: true,
-          canWrite: true,
-        }),
-      },
-      { interactive: false }
-    );
-  });
-
-  it('requires an explicit delegated-credential sink before authentication', async () => {
-    const { program, deps } = harness();
-
-    await expect(
-      program.parseAsync([
-        'node',
-        'agent-relay',
-        'cloud',
-        'integration',
-        'credential',
-        '--workspace',
-        'rw_7ccfea89',
-        '--device-id',
-        'herdr-room-device',
-        '--access',
-        'write',
-      ])
-    ).rejects.toThrow('exit:1');
-
-    expect(deps.ensureCloudSession).not.toHaveBeenCalled();
-    expect(deps.error).toHaveBeenCalledWith('Use exactly one credential sink: --output-file or --json.');
-  });
-
-  it('mints a grant-intersected write credential without caller identity fields', async () => {
-    const { program, deps } = harness();
-    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: response(credential()),
-      auth,
-    });
-
-    await program.parseAsync([
-      'node',
-      'agent-relay',
-      'cloud',
-      'integration',
-      'credential',
-      '--workspace',
-      'rw_7ccfea89',
-      '--device-id',
-      'herdr-room-device',
-      '--access',
-      'write',
-      '--path',
-      '/linear/**',
-      '--json',
-    ]);
-
-    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
-      auth,
-      '/api/v1/workspaces/rw_7ccfea89/relayfile/delegated-token',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          deviceId: 'herdr-room-device',
-          scopes: ['fs:read', 'fs:write'],
-          relayfileMountPaths: ['/linear/**'],
-          ttlSeconds: 3600,
-          delegationTtlSeconds: 86400,
-        }),
-      },
-      { interactive: false }
-    );
-    expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).toContain('relay_pa_private');
-  });
-
-  it('writes a delegated credential only to a new owner-only file', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-integration-credential-'));
-    const target = path.join(directory, 'credential.json');
-    const { program, deps } = harness();
-    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: response(credential()),
-      auth,
-    });
-    try {
-      await program.parseAsync([
-        'node',
-        'agent-relay',
-        'cloud',
-        'integration',
-        'credential',
-        '--workspace',
-        'rw_7ccfea89',
-        '--device-id',
-        'herdr-room-device',
-        '--access',
-        'read',
-        '--output-file',
-        target,
-      ]);
-      expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toMatchObject({
-        leaseId: 'lease_1',
-        relayfileToken: 'relay_pa_private',
-      });
-      if (process.platform !== 'win32') {
-        expect(fs.statSync(target).mode & 0o077).toBe(0);
-      }
-      const requestBody = JSON.parse(
-        String(vi.mocked(deps.authorizedApiFetch).mock.calls[0]?.[2]?.body)
-      ) as Record<string, unknown>;
-      expect(requestBody).not.toHaveProperty('relayfileMountPaths');
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it('revokes a newly minted lease when the output file cannot be created', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-integration-credential-'));
-    const target = path.join(directory, 'existing');
-    fs.writeFileSync(target, 'preserve', { mode: 0o600 });
-    const { program, deps } = harness();
-    vi.mocked(deps.authorizedApiFetch)
-      .mockResolvedValueOnce({ response: response(credential()), auth: refreshedAuth })
-      .mockResolvedValueOnce({ response: new Response(null, { status: 204 }), auth: refreshedAuth });
-    try {
-      await expect(
-        program.parseAsync([
-          'node',
-          'agent-relay',
-          'cloud',
-          'integration',
-          'credential',
-          '--workspace',
-          'rw_7ccfea89',
-          '--device-id',
-          'herdr-room-device',
-          '--access',
-          'write',
-          '--output-file',
-          target,
-        ])
-      ).rejects.toThrow('exit:1');
-      expect(fs.readFileSync(target, 'utf8')).toBe('preserve');
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
-      2,
-      refreshedAuth,
-      '/api/v1/workspaces/rw_7ccfea89/relayfile/delegated-token/lease_1',
-      { method: 'DELETE' },
-      { interactive: false }
-    );
-    expect(deps.ensureCloudSession).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports write and rollback failure without printing either error detail', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-integration-credential-'));
-    const target = path.join(directory, 'existing');
-    fs.writeFileSync(target, 'preserve', { mode: 0o600 });
-    const { program, deps } = harness();
-    vi.mocked(deps.authorizedApiFetch)
-      .mockResolvedValueOnce({ response: response(credential()), auth: refreshedAuth })
-      .mockRejectedValueOnce(new Error('cleanup-secret-marker'));
-    try {
-      await expect(
-        program.parseAsync([
-          'node',
-          'agent-relay',
-          'cloud',
-          'integration',
-          'credential',
-          '--workspace',
-          'rw_7ccfea89',
-          '--device-id',
-          'herdr-room-device',
-          '--access',
-          'write',
-          '--output-file',
-          target,
-        ])
-      ).rejects.toThrow('exit:1');
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-    const output = vi.mocked(deps.error).mock.calls.flat().join('\n');
-    expect(output).toContain('Revocation could not be confirmed; revoke lease lease_1');
-    expect(output).not.toContain('cleanup-secret-marker');
-    expect(output).not.toContain('EEXIST');
-  });
-
-  it('revokes a device-scoped credential lease without putting secrets in argv', async () => {
-    const { program, deps } = harness();
-    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: new Response(null, { status: 204 }),
-      auth,
-    });
-
-    await program.parseAsync([
-      'node',
-      'agent-relay',
-      'cloud',
-      'integration',
-      'revoke-credential',
-      'lease_1',
-      '--workspace',
-      'rw_7ccfea89',
-      '--json',
-    ]);
-
-    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
-      auth,
-      '/api/v1/workspaces/rw_7ccfea89/relayfile/delegated-token/lease_1',
-      { method: 'DELETE' },
-      { interactive: false }
-    );
-  });
-
-  it('strips server credential fields from a connection session response', async () => {
+  it('filters the catalog locally by backend and search text', async () => {
     const { program, deps } = harness();
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
       response: response({
-        connectLink: 'https://connect.test/session',
-        workspaceId: 'app_workspace',
+        providers: [
+          { id: 'linear', displayName: 'Linear', backends: ['nango'] },
+          { id: 'github', displayName: 'GitHub', backends: ['composio'] },
+        ],
+        version: '1',
+      }),
+      auth,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'catalog',
+      '--search',
+      'git',
+      '--backend',
+      'composio',
+      '--json',
+    ]);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('"id": "github"');
+    expect(output).not.toContain('"id": "linear"');
+  });
+
+  it('lists workspace connections using the existing endpoint', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response([{ id: 'linear', status: 'connected', token: 'hidden' }]),
+      auth,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'connections',
+      '--workspace',
+      'rw_7ccfea89',
+      '--json',
+    ]);
+
+    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
+      auth,
+      '/api/v1/workspaces/rw_7ccfea89/integrations',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).not.toContain('hidden');
+  });
+
+  it('renders connected providers for humans by default', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response([{ provider: 'linear', status: 'connected' }]),
+      auth,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'connections',
+      '--workspace',
+      'rw_7ccfea89',
+    ]);
+
+    expect(deps.log).toHaveBeenCalledWith('linear  connected');
+  });
+
+  it('creates a provider connection session', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({
+        connectLink: 'https://cloud.test/connect/opaque',
+        workspaceId: '00000000-0000-4000-8000-000000000020',
         relayWorkspaceId: 'rw_7ccfea89',
         backend: 'nango',
-        providers: [
-          {
-            id: 'linear',
-            displayName: 'Linear',
-            backendMetadata: { sessionToken: 'nested-must-not-print' },
-          },
-        ],
-        token: 'must-not-print',
-        sessionToken: 'must-not-print',
+        providers: [{ id: 'linear' }],
+        expiresAt: '2026-07-30T00:00:00.000Z',
       }),
       auth,
     });
@@ -409,16 +191,68 @@ describe('registerCloudIntegrationCommands', () => {
       'linear',
       '--workspace',
       'rw_7ccfea89',
-      '--json',
+      '--backend',
+      'nango',
     ]);
 
-    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
-    expect(output).toContain('https://connect.test/session');
-    expect(output).toContain('"linear"');
-    expect(output).not.toContain('must-not-print');
+    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
+      auth,
+      '/api/v1/workspaces/rw_7ccfea89/integrations/connect-session',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          allowedIntegrations: ['linear'],
+          requestedBackend: 'nango',
+        }),
+      },
+      { interactive: false }
+    );
+    expect(deps.log).toHaveBeenCalledWith('https://cloud.test/connect/opaque');
   });
 
-  it('fails closed before forwarding Cloud auth to a mismatched API host', async () => {
+  it('disconnects a provider through the existing status endpoint', async () => {
+    const { program, deps } = harness();
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'disconnect',
+      'linear',
+      '--workspace',
+      'rw_7ccfea89',
+    ]);
+
+    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
+      auth,
+      '/api/v1/workspaces/rw_7ccfea89/integrations/linear/status',
+      { method: 'DELETE' },
+      { interactive: false }
+    );
+    expect(deps.log).toHaveBeenCalledWith('Disconnected linear.');
+  });
+
+  it('rejects invalid workspace and provider IDs before authenticating', async () => {
+    const { program, deps } = harness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'integration',
+        'connect',
+        '../linear',
+        '--workspace',
+        'not-a-workspace',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse a login bound to a different explicit API host', async () => {
     const { program, deps } = harness();
 
     await expect(
@@ -428,13 +262,29 @@ describe('registerCloudIntegrationCommands', () => {
         'cloud',
         'integration',
         'catalog',
-        '--workspace',
-        'rw_7ccfea89',
         '--api-url',
-        'http://127.0.0.1:4310',
+        'https://other.test',
       ])
     ).rejects.toThrow('exit:1');
 
     expect(deps.authorizedApiFetch).not.toHaveBeenCalled();
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('Cloud login is bound to'));
+  });
+
+  it('maps authorization failures to a stable error without reflecting response bodies', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({ error: 'private server detail' }, 403),
+      auth,
+    });
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'integration', 'catalog'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(
+      'You do not have permission to perform that integration operation.'
+    );
+    expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).not.toContain('private server detail');
   });
 });
