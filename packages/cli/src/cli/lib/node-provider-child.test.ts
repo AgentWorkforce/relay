@@ -372,7 +372,10 @@ describe('startNodeJsNodeProvider', () => {
             FIXTURE_READY_FILE: readyFile,
             RELAY_WORKSPACE_KEY: '',
           },
-          sleep: (ms) => delay(Math.min(ms, 50)),
+          // Shorten only the graceful-shutdown budget. The post-SIGKILL wait
+          // must remain long enough for the operating system to reap the real
+          // child process before this integration test checks its PID.
+          sleep: (ms) => delay(ms === 5_000 ? 50 : ms),
         })
       );
       expect(child).toBeDefined();

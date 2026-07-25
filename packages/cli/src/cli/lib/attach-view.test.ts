@@ -23,6 +23,7 @@ class FakeWebSocket implements ViewWebSocket {
   readonly headers: Record<string, string>;
   readonly listeners = new Map<string, WsListener[]>();
   closed = false;
+  terminated = false;
   closeCode?: number;
   closeReason?: string;
 
@@ -48,6 +49,10 @@ class FakeWebSocket implements ViewWebSocket {
     this.closed = true;
     this.closeCode = code;
     this.closeReason = reason;
+  }
+
+  terminate(): void {
+    this.terminated = true;
   }
 }
 
@@ -528,6 +533,7 @@ describe('runViewSession', () => {
 
     stdin.emitData(Buffer.from([0x03]));
     await expect(sessionPromise).resolves.toBe(0);
+    expect(sockets[0].terminated).toBe(true);
     expect(stdin.setRawMode).toHaveBeenLastCalledWith(false);
     expect(stdin.pause).toHaveBeenCalledOnce();
   });
@@ -549,6 +555,7 @@ describe('runViewSession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
     expect(socket.closed).toBe(true);
+    expect(socket.terminated).toBe(true);
   });
 
   it('emits a terminal reset on detach when stdout is a TTY', async () => {
