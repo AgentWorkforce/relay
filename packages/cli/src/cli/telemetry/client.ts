@@ -8,8 +8,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  cloudIdentityFingerprint,
+  resolveCloudIdentity,
+  type CloudIdentity,
+} from '@agent-relay/cloud/identity';
+import {
   isTelemetryEnabled,
   getDistinctId,
+  getIdentifiedFingerprint,
+  markIdentified,
   wasNotified,
   markNotified,
   isDisabledByEnv,
@@ -19,9 +26,13 @@ import type { CommonProperties, TelemetryEventName, TelemetryEventMap } from './
 import { getPostHogConfig } from './posthog-config.js';
 import { detectOrchestratorHarness, UNKNOWN_ORCHESTRATOR_HARNESS } from './orchestrator-harness.js';
 
+/** PostHog group type for cloud organizations. Keep in sync with the gateway. */
+export const ORGANIZATION_GROUP_TYPE = 'organization';
+
 let client: PostHog | null = null;
 let commonProps: CommonProperties | null = null;
 let distinctId: string | null = null;
+let groups: Record<string, string> | null = null;
 let initialized = false;
 let firstRunDetected = false;
 
@@ -58,14 +69,17 @@ function getFallbackVersion(): string {
   return 'unknown';
 }
 
-function buildCommonProperties(versions: {
-  cliVersion?: string;
-  sdkVersion?: string;
-  brokerVersion?: string;
-  app?: string;
-  surface?: string;
-  orchestratorHarness?: string;
-}): CommonProperties {
+function buildCommonProperties(
+  versions: {
+    cliVersion?: string;
+    sdkVersion?: string;
+    brokerVersion?: string;
+    app?: string;
+    surface?: string;
+    orchestratorHarness?: string;
+  },
+  identity: CloudIdentity | null
+): CommonProperties {
   // The primary version depends on who's emitting: prefer CLI > broker > SDK
   // > fallback. This keeps `agent_relay_version` meaningful for existing
   // dashboards while the typed `cli_version`/`sdk_version`/`broker_version`
@@ -102,7 +116,89 @@ function buildCommonProperties(versions: {
     os_version: os.release(),
     node_version: process.version.slice(1),
     arch: process.arch,
+    ...identityProperties(identity),
   };
+}
+
+/**
+ * Identity dimensions attached to every event. The email is deliberately absent
+ * — it belongs on the PostHog *person*, set once by {@link announceIdentity}.
+ */
+function identityProperties(identity: CloudIdentity | null): Partial<CommonProperties> {
+  if (!identity) return { is_authenticated: false };
+
+  return {
+    is_authenticated: true,
+    user_id: identity.userId,
+    ...(identity.organizationId ? { organization_id: identity.organizationId } : {}),
+    ...(identity.organizationSlug ? { organization_slug: identity.organizationSlug } : {}),
+  };
+}
+
+/**
+ * Announce the signed-in user (and their org) to PostHog.
+ *
+ * Two things happen the first time we see a given identity, and only then:
+ *
+ *  - `alias` folds the machine's anonymous distinct id into the user id, so the
+ *    events emitted before login aren't stranded on a separate person. Without
+ *    it, "how many users tried the CLI then signed up" is unanswerable.
+ *  - `identify` / `groupIdentify` set person and group properties. Email lives
+ *    here — as a person property — not on individual events.
+ *
+ * Repeated on org switch or email change (the fingerprint covers both), skipped
+ * otherwise so we don't emit two extra events on every CLI invocation.
+ */
+function announceIdentity(
+  posthog: PostHog,
+  identity: CloudIdentity,
+  machineDistinctId: string
+): void {
+  const fingerprint = cloudIdentityFingerprint(identity);
+  if (!fingerprint || fingerprint === getIdentifiedFingerprint()) return;
+
+  try {
+    if (machineDistinctId && machineDistinctId !== identity.userId) {
+      posthog.alias({ distinctId: identity.userId, alias: machineDistinctId });
+    }
+
+    posthog.identify({
+      distinctId: identity.userId,
+      properties: {
+        ...(identity.email ? { email: identity.email } : {}),
+        ...(identity.name ? { name: identity.name } : {}),
+        ...(identity.organizationId ? { organization_id: identity.organizationId } : {}),
+        ...(identity.organizationSlug ? { organization_slug: identity.organizationSlug } : {}),
+        ...(identity.organizationName ? { organization_name: identity.organizationName } : {}),
+        ...(identity.organizationRole ? { organization_role: identity.organizationRole } : {}),
+        cloud_api_url: identity.apiUrl,
+      },
+    });
+
+    if (identity.organizationId) {
+      posthog.groupIdentify({
+        groupType: ORGANIZATION_GROUP_TYPE,
+        groupKey: identity.organizationId,
+        properties: {
+          ...(identity.organizationName ? { name: identity.organizationName } : {}),
+          ...(identity.organizationSlug ? { slug: identity.organizationSlug } : {}),
+        },
+      });
+    }
+
+    markIdentified(fingerprint);
+  } catch {
+    // Telemetry must never break the CLI.
+  }
+}
+
+/** Identity resolution touches the filesystem — never let it break telemetry. */
+function safeResolveCloudIdentity(): CloudIdentity | null {
+  try {
+    return resolveCloudIdentity();
+  } catch {
+    return null;
+  }
 }
 
 function showFirstRunNotice(): void {
@@ -143,6 +239,13 @@ export interface InitTelemetryOptions {
   surface?: string;
   /** Parent harness driving Agent Relay, if already detected by the caller. */
   orchestratorHarness?: string;
+  /**
+   * Signed-in cloud identity. Defaults to `resolveCloudIdentity()`, which reads
+   * the identity env vars a parent process published, then falls back to the
+   * on-disk identity written at `agent-relay cloud login`. Pass `null` to force
+   * anonymous attribution.
+   */
+  identity?: CloudIdentity | null;
 }
 
 export function initTelemetry(options: InitTelemetryOptions = {}): void {
@@ -167,15 +270,31 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     disableGeoip: false, // CLI runs on user's machine, so IP is correct for geo
   });
 
-  commonProps = buildCommonProperties({
-    cliVersion: options.cliVersion,
-    sdkVersion: options.sdkVersion,
-    brokerVersion: options.brokerVersion,
-    app: options.app,
-    surface: options.surface,
-    orchestratorHarness: options.orchestratorHarness,
-  });
-  distinctId = getDistinctId();
+  const identity =
+    options.identity === undefined ? safeResolveCloudIdentity() : options.identity;
+
+  commonProps = buildCommonProperties(
+    {
+      cliVersion: options.cliVersion,
+      sdkVersion: options.sdkVersion,
+      brokerVersion: options.brokerVersion,
+      app: options.app,
+      surface: options.surface,
+      orchestratorHarness: options.orchestratorHarness,
+    },
+    identity
+  );
+
+  const machineDistinctId = getDistinctId();
+  // A signed-in user is the person; the machine hash is only a fallback.
+  distinctId = identity?.userId ?? machineDistinctId;
+  groups = identity?.organizationId
+    ? { [ORGANIZATION_GROUP_TYPE]: identity.organizationId }
+    : null;
+
+  if (identity) {
+    announceIdentity(client, identity, machineDistinctId);
+  }
 
   if (firstRunDetected) {
     track('cli_install', {
@@ -199,6 +318,7 @@ export function track<E extends TelemetryEventName>(
       ...commonProps,
       ...properties,
     },
+    ...(groups ? { groups } : {}),
   });
 }
 
@@ -213,6 +333,7 @@ export async function shutdown(): Promise<void> {
     client = null;
     commonProps = null;
     distinctId = null;
+    groups = null;
     initialized = false;
   }
 }
@@ -228,12 +349,22 @@ export function getStatus(): {
   disabledByEnv: boolean;
   distinctId: string;
   notifiedAt: string | undefined;
+  userId?: string;
+  email?: string;
+  organizationId?: string;
+  organizationSlug?: string;
 } {
   const prefs = loadPrefs();
+  const identity = safeResolveCloudIdentity();
   return {
     enabled: isTelemetryEnabled(),
     disabledByEnv: isDisabledByEnv(),
-    distinctId: prefs.distinctId,
+    // Report the id events will actually carry, not just the machine hash.
+    distinctId: identity?.userId ?? prefs.distinctId,
     notifiedAt: prefs.notifiedAt,
+    ...(identity ? { userId: identity.userId } : {}),
+    ...(identity?.email ? { email: identity.email } : {}),
+    ...(identity?.organizationId ? { organizationId: identity.organizationId } : {}),
+    ...(identity?.organizationSlug ? { organizationSlug: identity.organizationSlug } : {}),
   };
 }

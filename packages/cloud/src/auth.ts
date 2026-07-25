@@ -10,6 +10,12 @@ import { buildApiUrl } from './api-client.js';
 import { CloudApiClient, type CloudApiClientOptions, type CloudApiClientSnapshot } from './api-client.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 import {
+  clearStoredIdentity,
+  readStoredIdentity,
+  writeStoredIdentity,
+  type CloudIdentity,
+} from './identity.js';
+import {
   AUTH_FILE_PATH,
   DEFAULT_REFRESH_TIMEOUT_MS,
   REFRESH_TOKEN_WINDOW_MS,
@@ -19,6 +25,7 @@ import {
   type CloudSession,
   type CloudSessionOptions,
   type StoredAuth,
+  type WhoAmIResponse,
 } from './types.js';
 
 const AUTH_DIR_PATH = path.dirname(AUTH_FILE_PATH);
@@ -154,6 +161,83 @@ export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
 
 export async function clearStoredAuth(): Promise<void> {
   await fs.rm(AUTH_FILE_PATH, { force: true });
+  await clearStoredIdentity();
+}
+
+// ── Identity ────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve who the stored credentials belong to and persist it alongside them.
+ *
+ * Called on login and by `agent-relay cloud whoami`; also called lazily by
+ * {@link ensureCloudSession} when no identity has been recorded yet for the
+ * session's host. Best-effort by construction — a failure here leaves telemetry
+ * anonymous but must never break the command that triggered it.
+ */
+export async function refreshStoredCloudIdentity(
+  auth: StoredAuth,
+  options: { env?: NodeJS.ProcessEnv } = {}
+): Promise<CloudIdentity | null> {
+  const env = options.env ?? process.env;
+
+  try {
+    const { response } = await authorizedApiFetch(
+      auth,
+      '/api/v1/auth/whoami',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    if (!response.ok) return null;
+
+    const payload = (await response.json().catch(() => null)) as WhoAmIResponse | null;
+    if (!payload?.authenticated || !payload.user?.id) return null;
+
+    const identity = toCloudIdentity(payload, auth.apiUrl);
+    if (!identity) return null;
+
+    await writeStoredIdentity(identity, env);
+    return identity;
+  } catch {
+    return null;
+  }
+}
+
+export function toCloudIdentity(payload: WhoAmIResponse, apiUrl: string): CloudIdentity | null {
+  if (!payload.user?.id) return null;
+
+  return {
+    userId: payload.user.id,
+    ...(payload.user.email ? { email: payload.user.email } : {}),
+    ...(payload.user.name ? { name: payload.user.name } : {}),
+    ...(payload.currentOrganization
+      ? {
+          organizationId: payload.currentOrganization.id,
+          organizationSlug: payload.currentOrganization.slug,
+          organizationName: payload.currentOrganization.name,
+          organizationRole: payload.currentOrganization.role,
+        }
+      : {}),
+    ...(payload.currentWorkspace ? { workspaceId: payload.currentWorkspace.id } : {}),
+    apiUrl,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Whether the cached identity still matches the credentials in play.
+ *
+ * Deliberately *not* used to trigger a lazy whoami inside
+ * {@link ensureCloudSession}: identity is analytics, and analytics must not add
+ * an HTTP round trip to the auth path every command runs. Identity is captured
+ * at login and refreshed by `agent-relay cloud whoami`; callers who want it
+ * fresh call {@link refreshStoredCloudIdentity} explicitly.
+ */
+export async function hasCurrentStoredCloudIdentity(
+  auth: StoredAuth,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<boolean> {
+  const existing = await readStoredIdentity(env);
+  return Boolean(existing && existing.apiUrl === auth.apiUrl);
 }
 
 async function removeStaleStoredAuthLock(): Promise<boolean> {
@@ -545,7 +629,14 @@ async function requestStoredAuthRefresh(
 async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
   const auth = await beginBrowserLogin(apiUrl);
   await writeStoredAuth(auth);
+  // Record who just logged in so subsequent CLI/broker runs can attribute
+  // telemetry to this user and org. Never blocks the login from succeeding.
+  const identity = await refreshStoredCloudIdentity(auth);
   console.log(`Logged in to ${auth.apiUrl}`);
+  if (identity?.email) {
+    const org = identity.organizationName ?? identity.organizationSlug;
+    console.log(`Signed in as ${identity.email}${org ? ` (${org})` : ''}`);
+  }
   return auth;
 }
 

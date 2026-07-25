@@ -18,7 +18,30 @@ Telemetry allows us to better identify bugs and gain visibility on usage pattern
 - **Version information**: The version of Agent Relay being used
 - **System information**: Operating system and CPU architecture
 
-Agent Relay uses an anonymous, hashed machine ID to correlate events. No personally identifiable information is collected.
+### Account identity (only when you are signed in to Agent Relay Cloud)
+
+If you have run `agent-relay cloud login`, telemetry is attributed to your cloud
+account instead of an anonymous machine:
+
+- **Your cloud user ID and organization ID/slug** are attached to events, so we
+  can tell how many distinct people and companies use Agent Relay — a hashed
+  machine ID cannot distinguish one person on three laptops from three people.
+- **Your email and name** are recorded once as account attributes (not on every
+  event) so support conversations can be matched to real usage.
+
+This identity is resolved from Agent Relay Cloud at login and stored locally at
+`~/.agentworkforce/relay/cloud-identity.json`. It is also forwarded to the
+hosted Relaycast gateway (as `X-Agent-Relay-User-Id` / `X-Agent-Relay-Org-Id` /
+`X-Agent-Relay-Org-Slug`) so server-side usage is attributed to the same account.
+These values are used for analytics only and never affect what you can access.
+
+If you have **not** signed in, none of this is collected and Agent Relay uses
+only an anonymous, hashed machine ID to correlate events. Opting out of telemetry
+(below) stops identity collection along with everything else, and
+`agent-relay cloud logout` deletes the local identity file.
+
+Run `agent-relay telemetry status` to see exactly which account — or none — your
+usage is attributed to.
 
 When Agent Relay talks to Relaycast Cloud, it sends that same anonymous ID with its requests (the `X-Agent-Relay-Distinct-Id` header) so server-side usage can be attributed to an install rather than to a workspace alone. It is not sent when telemetry is disabled by any of the methods below.
 
@@ -36,6 +59,9 @@ Agent Relay takes your privacy seriously and does **not** collect:
 - API keys or authentication tokens
 - IP addresses (beyond what is inherent in network requests)
 - Source code or project information
+
+Your email address is never attached to individual telemetry events — only to
+your account record, and only when you are signed in (see above).
 
 Data is never shared with third parties.
 
@@ -95,7 +121,8 @@ agent-relay telemetry enable
 
 ### Check telemetry status
 
-To check if telemetry is currently enabled:
+To check whether telemetry is enabled, and which account (if any) your usage is
+attributed to:
 
 ```sh
 agent-relay telemetry status

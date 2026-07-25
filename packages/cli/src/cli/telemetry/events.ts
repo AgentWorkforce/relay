@@ -85,6 +85,22 @@ export interface CommonProperties {
   node_version?: string;
   /** CPU architecture (e.g., arm64, x64) */
   arch: string;
+  /**
+   * Cloud user id of the signed-in operator, when `agent-relay cloud login` has
+   * run on this machine. Absent for anonymous (not-logged-in) usage, where the
+   * hashed machine id remains the only identity.
+   *
+   * Never put the user's email in event properties — it is set once as a PostHog
+   * *person* property by `$identify` (see `client.ts`), which is where PII
+   * belongs and where PostHog surfaces it in the UI.
+   */
+  user_id?: string;
+  /** Cloud organization id of the signed-in operator, when known. */
+  organization_id?: string;
+  /** Human-readable org slug, for breakdowns that shouldn't show opaque ids. */
+  organization_slug?: string;
+  /** Whether this event came from a signed-in cloud user. */
+  is_authenticated?: boolean;
 }
 
 // =============================================================================

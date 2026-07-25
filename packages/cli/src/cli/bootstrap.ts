@@ -10,6 +10,12 @@ import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
 import {
+  cloudIdentityEnv,
+  readStoredIdentitySync,
+  IDENTITY_ENV_KEYS,
+  type CloudIdentity,
+} from '@agent-relay/cloud/identity';
+import {
   ORCHESTRATOR_HARNESS_ENV,
   detectOrchestratorHarness,
   getDistinctId,
@@ -121,8 +127,40 @@ function resolveProgramName(argv: string[] = process.argv): string {
  * We only set these if they're not already present — so a parent caller that
  * has set its own values (e.g. in tests or in nested CLI invocations) wins.
  */
+/**
+ * Read the identity recorded at `agent-relay cloud login` and publish it on
+ * `process.env` so the broker, spawned agents, and the relaycast SDK all
+ * attribute their telemetry to the same user and org — without any of them
+ * needing to know where the identity file lives or how to call cloud.
+ *
+ * Env wins over the file (a parent process may already have published a
+ * different identity), and a missing identity is the normal not-logged-in case.
+ */
+function propagateCloudIdentityToChildren(): void {
+  // Inherited from a parent process: leave it exactly as-is.
+  if (process.env[IDENTITY_ENV_KEYS.userId]) return;
+
+  let identity: CloudIdentity | null = null;
+  try {
+    identity = readStoredIdentitySync();
+  } catch {
+    return;
+  }
+  if (!identity) return;
+
+  for (const [key, value] of Object.entries(cloudIdentityEnv(identity))) {
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
+
 function propagateTelemetryContextToChildren(): string {
   const orchestratorHarness = detectOrchestratorHarness();
+
+  // Must run before the distinct-id fallback below: a signed-in user id is a
+  // better person key than the machine hash, and children should inherit it.
+  propagateCloudIdentityToChildren();
 
   if (!process.env.AGENT_RELAY_CLI_VERSION) {
     process.env.AGENT_RELAY_CLI_VERSION = VERSION;
@@ -137,7 +175,10 @@ function propagateTelemetryContextToChildren(): string {
     process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
   }
   if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
-    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getDistinctId();
+    // Signed-in runs are keyed by the cloud user id so CLI, broker, and
+    // relaycast-server events all land on one PostHog person.
+    process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
+      process.env[IDENTITY_ENV_KEYS.userId] || getDistinctId();
   }
 
   return orchestratorHarness;

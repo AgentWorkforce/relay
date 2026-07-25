@@ -501,6 +501,104 @@ pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
     (harness != UNKNOWN_ORCHESTRATOR_HARNESS).then_some(harness)
 }
 
+// ---------------------------------------------------------------------------
+// Cloud identity
+// ---------------------------------------------------------------------------
+
+/// HTTP headers carrying the signed-in operator's identity to relaycast.
+pub(crate) const AGENT_RELAY_DISTINCT_ID_HEADER: &str = "X-Agent-Relay-Distinct-Id";
+pub(crate) const AGENT_RELAY_USER_ID_HEADER: &str = "X-Agent-Relay-User-Id";
+pub(crate) const AGENT_RELAY_ORG_ID_HEADER: &str = "X-Agent-Relay-Org-Id";
+pub(crate) const AGENT_RELAY_ORG_SLUG_HEADER: &str = "X-Agent-Relay-Org-Slug";
+
+/// Who is behind this broker process, as published by the Agent Relay CLI after
+/// `agent-relay cloud login` (see `@agent-relay/cloud/identity`).
+///
+/// The broker never resolves identity itself — it only forwards what its parent
+/// published. Every field is optional: an anonymous (not-logged-in) run has none
+/// of them, and the hashed machine id remains the only telemetry identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CloudIdentity {
+    pub distinct_id: Option<String>,
+    pub user_id: Option<String>,
+    pub org_id: Option<String>,
+    pub org_slug: Option<String>,
+}
+
+/// Same charset the relaycast wire contract accepts for a distinct id. Values
+/// that don't match are dropped rather than truncated — a malformed id would be
+/// rejected server-side anyway, and dropping it keeps a header-injection attempt
+/// from ever reaching the WAF.
+fn sanitize_identity_value(raw: &str, max_length: usize) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+    {
+        return None;
+    }
+    Some(trimmed.chars().take(max_length).collect())
+}
+
+fn identity_env(key: &str, max_length: usize) -> Option<String> {
+    env_nonempty(key).and_then(|value| sanitize_identity_value(&value, max_length))
+}
+
+fn detect_cloud_identity() -> CloudIdentity {
+    // Opting out of telemetry must suppress the user/org dimensions too, not
+    // just the distinct id — otherwise an opted-out broker still tells the
+    // gateway who is running it.
+    if !TelemetryClient::check_enabled() {
+        return CloudIdentity::default();
+    }
+
+    let user_id = identity_env("AGENT_RELAY_USER_ID", 128);
+    CloudIdentity {
+        // Reuse the shared resolver so the CLI, the broker's own PostHog
+        // events, and relaycast all report one person key. It already applies
+        // the env → machine-id fallback and the opt-out.
+        distinct_id: agent_relay_distinct_id()
+            .map(str::to_string)
+            .or_else(|| user_id.clone()),
+        user_id,
+        org_id: identity_env("AGENT_RELAY_ORG_ID", 128),
+        org_slug: identity_env("AGENT_RELAY_ORG_SLUG", 120),
+    }
+}
+
+/// Process-wide cached cloud identity. Env vars don't change mid-process, and
+/// this is read on every outbound relaycast request.
+pub(crate) fn cloud_identity() -> &'static CloudIdentity {
+    static CACHE: std::sync::OnceLock<CloudIdentity> = std::sync::OnceLock::new();
+    CACHE.get_or_init(detect_cloud_identity)
+}
+
+/// Identity headers for an outbound relaycast request, as `(name, value)` pairs.
+/// Empty when the operator isn't signed in.
+pub(crate) fn cloud_identity_headers() -> Vec<(&'static str, String)> {
+    identity_headers(cloud_identity())
+}
+
+fn identity_headers(identity: &CloudIdentity) -> Vec<(&'static str, String)> {
+    let mut headers = Vec::with_capacity(4);
+    if let Some(ref value) = identity.distinct_id {
+        headers.push((AGENT_RELAY_DISTINCT_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.user_id {
+        headers.push((AGENT_RELAY_USER_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.org_id {
+        headers.push((AGENT_RELAY_ORG_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.org_slug {
+        headers.push((AGENT_RELAY_ORG_SLUG_HEADER, value.clone()));
+    }
+    headers
+}
+
 /// `origin_actor` path for the broker's own relaycast traffic (the workspace
 /// stream + agent registration the broker performs on behalf of the CLI). The
 /// agent-relay CLI is the actor; spawned agents are attributed separately as
@@ -672,8 +770,13 @@ impl TelemetryClient {
             return Self::disabled();
         }
 
-        let distinct_id = load_or_create_machine_id()
-            .map(|id| anonymous_id(&id))
+        // A signed-in cloud user is the person; the hashed machine id is the
+        // anonymous fallback. Using the user id here is what keeps broker events
+        // on the same PostHog person as the CLI's and relaycast's.
+        let distinct_id = cloud_identity()
+            .distinct_id
+            .clone()
+            .or_else(|| load_or_create_machine_id().map(|id| anonymous_id(&id)))
             .unwrap_or_else(|| "unknown".to_string());
 
         // First-run notice.
@@ -762,6 +865,25 @@ impl TelemetryClient {
             obj.insert("os_version".to_string(), json!(v));
         }
         obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+
+        // Cloud identity. `$groups` is PostHog's group-analytics dimension, so
+        // org-level rollups work without a separate `$groupidentify` from here —
+        // the CLI owns the group's properties.
+        let identity = cloud_identity();
+        obj.insert(
+            "is_authenticated".to_string(),
+            json!(identity.user_id.is_some()),
+        );
+        if let Some(ref user_id) = identity.user_id {
+            obj.insert("user_id".to_string(), json!(user_id));
+        }
+        if let Some(ref org_id) = identity.org_id {
+            obj.insert("organization_id".to_string(), json!(org_id));
+            obj.insert("$groups".to_string(), json!({ "organization": org_id }));
+        }
+        if let Some(ref org_slug) = identity.org_slug {
+            obj.insert("organization_slug".to_string(), json!(org_slug));
+        }
         obj
     }
 
@@ -977,6 +1099,63 @@ async fn sender_loop(mut rx: mpsc::UnboundedReceiver<PostHogCapture>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitizes_identity_values_to_the_wire_contract() {
+        assert_eq!(
+            sanitize_identity_value("  usr_abc123  ", 128),
+            Some("usr_abc123".to_string())
+        );
+        assert_eq!(sanitize_identity_value("", 128), None);
+        assert_eq!(sanitize_identity_value("   ", 128), None);
+        // Rejected rather than truncated: a malformed id must never reach the wire.
+        assert_eq!(sanitize_identity_value("usr\r\nX-Inject: bad", 128), None);
+        assert_eq!(sanitize_identity_value("org/slash", 128), None);
+        assert_eq!(
+            sanitize_identity_value(&"u".repeat(200), 128),
+            Some("u".repeat(128))
+        );
+    }
+
+    #[test]
+    fn identity_headers_carry_every_set_field() {
+        let headers = identity_headers(&CloudIdentity {
+            distinct_id: Some("usr_abc123".to_string()),
+            user_id: Some("usr_abc123".to_string()),
+            org_id: Some("org_xyz789".to_string()),
+            org_slug: Some("agentworkforce".to_string()),
+        });
+
+        assert_eq!(
+            headers,
+            vec![
+                ("X-Agent-Relay-Distinct-Id", "usr_abc123".to_string()),
+                ("X-Agent-Relay-User-Id", "usr_abc123".to_string()),
+                ("X-Agent-Relay-Org-Id", "org_xyz789".to_string()),
+                ("X-Agent-Relay-Org-Slug", "agentworkforce".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn identity_headers_omit_unset_fields() {
+        let headers = identity_headers(&CloudIdentity {
+            distinct_id: Some("abc123def4567890".to_string()),
+            user_id: None,
+            org_id: None,
+            org_slug: None,
+        });
+
+        assert_eq!(
+            headers,
+            vec![("X-Agent-Relay-Distinct-Id", "abc123def4567890".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_anonymous_identity_contributes_no_headers() {
+        assert!(identity_headers(&CloudIdentity::default()).is_empty());
+    }
 
     #[test]
     fn anonymous_id_is_deterministic_and_16_chars() {
