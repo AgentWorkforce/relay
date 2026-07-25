@@ -333,34 +333,69 @@ export async function renderScreen(
   return out;
 }
 
+/** One relay message the broker actually delivered. */
+export interface RelayMessage {
+  from: string;
+  target: string;
+  body: string;
+}
+
+export interface EventRecorder {
+  /** Every delivered chat message, in arrival order. */
+  messages(): RelayMessage[];
+  /** Frame counts by `kind` — `worker_stream` here is live PTY output. */
+  kinds(): Record<string, number>;
+  stop(): void;
+}
+
 /**
- * Replay a capture and return everything the pane ever showed — scrollback
- * included — as one string.
+ * Record the broker's event stream for the life of a scenario.
  *
- * Content assertions must run on this, never on the raw capture. A TUI paints
- * with absolute cursor addressing, so a phrase the human plainly reads
- * ("Relay message from PlayerA") is generally *not* a contiguous byte run in
- * the stream: it arrives interleaved with positioning and colour sequences.
- * Only after an emulator lays it back out on a grid does it become searchable
- * text.
+ * Assertions about *protocol* traffic belong here, not on a rendered pane. Two
+ * reasons a terminal replay cannot answer "did this message ever arrive?":
+ * a TUI paints with absolute cursor addressing, so a phrase the human plainly
+ * reads is not a contiguous byte run in the stream; and a full-screen harness
+ * lives in the alternate screen buffer, which keeps no scrollback — once it
+ * repaints, the earlier message is genuinely gone from the grid.
+ *
+ * The panes are still the right place to assert how things *look*; this is the
+ * right place to assert what was *delivered*.
  */
-export async function renderTranscript(
-  capture: Buffer,
-  cols: number,
-  rows: number,
-  scrollback = 20_000
-): Promise<string> {
-  const { Terminal } = await import('@xterm/headless');
-  const term = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
-  await new Promise<void>((resolve) => term.write(new Uint8Array(capture), resolve));
-  const lines: string[] = [];
-  // Both buffers matter: a full-screen TUI lives in the alternate buffer while
-  // the pre-alt-screen output (and anything printed after it exits) is in the
-  // normal one.
-  for (const buf of [term.buffer.normal, term.buffer.active]) {
-    for (let y = 0; y < buf.length; y += 1) {
-      lines.push(buf.getLine(y)?.translateToString(true).trimEnd() ?? '');
+export async function recordEvents(brokerUrl: string, apiKey: string): Promise<EventRecorder> {
+  const { default: WebSocket } = await import('ws');
+  const wsUrl = `${brokerUrl.replace(/^http/, 'ws')}/ws`;
+  const socket = new WebSocket(wsUrl, { headers: { 'X-API-Key': apiKey } });
+
+  const messages: RelayMessage[] = [];
+  const kinds: Record<string, number> = {};
+
+  socket.on('message', (data: Buffer) => {
+    let frame: Record<string, unknown>;
+    try {
+      frame = JSON.parse(data.toString('utf-8')) as Record<string, unknown>;
+    } catch {
+      return;
     }
-  }
-  return lines.join('\n');
+    const kind = typeof frame.kind === 'string' ? frame.kind : '(unknown)';
+    kinds[kind] = (kinds[kind] ?? 0) + 1;
+    if (kind === 'relay_inbound') {
+      messages.push({
+        from: String(frame.from ?? ''),
+        target: String(frame.target ?? ''),
+        body: String(frame.body ?? ''),
+      });
+    }
+  });
+  socket.on('error', () => {});
+
+  await new Promise<void>((resolve, reject) => {
+    socket.once('open', () => resolve());
+    socket.once('error', reject);
+  });
+
+  return {
+    messages: () => [...messages],
+    kinds: () => ({ ...kinds }),
+    stop: () => socket.close(),
+  };
 }

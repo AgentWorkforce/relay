@@ -36,12 +36,26 @@ reply `MOVE <n>`. A `view` client watches each agent through its own PTY.
 
 Asserts:
 
-| Assertion              | Guards                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| view streams grow      | a `view` pane frozen on its attach snapshot (live `worker_stream` never lands) |
-| relay traffic both ways | agents actually using the relay protocol rather than talking to themselves   |
-| `GAME OVER` reaches both players | the round trip completes, not just the first hop                    |
-| every pane renders coherently, no row wider than the pane | wrap/scroll corruption in the live stream |
+| Assertion                                                 | Guards                                                                         |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| view streams grow                                          | a `view` pane frozen on its attach snapshot (live `worker_stream` never lands)  |
+| `relay_inbound` in both directions, for both players       | agents actually using the relay protocol rather than talking to themselves      |
+| ≥3 delivered replies matching `MOVE <n>`                   | a game that "ended" without anyone actually playing                            |
+| the end-of-game token is delivered to both players         | the round trip completes, not just the first hop                               |
+| every pane renders coherently, no row wider than the pane  | wrap/scroll corruption in the live stream                                      |
+
+**Where each assertion runs matters.** Protocol claims read the broker's
+`relay_inbound` event stream; visual claims replay the PTY capture through an
+emulator. Neither substitutes for the other:
+
+- A rendered pane cannot prove a message arrived. A TUI paints with absolute
+  cursor addressing, so a phrase the human plainly reads is not a contiguous
+  byte run in the capture — and a full-screen harness lives in the alternate
+  screen buffer, which keeps **no scrollback**, so once it repaints the earlier
+  message is gone from the grid entirely.
+- The event stream cannot prove anything rendered correctly. The status-line
+  bug emitted perfectly well-formed frames; only the emulator sees that they
+  landed on top of each other.
 
 ### Running it
 
@@ -58,7 +72,7 @@ Without `RELAY_TTT_LIVE=1` the live half skips; when the engine or broker
 binary is missing it skips too (never fails), same convention as the fleet E2E.
 
 The game is three LLM agents taking turns over the network — budget ~3-5
-minutes of wall clock for it to reach `GAME OVER`.
+minutes of wall clock for it to finish (a passing run took 211s).
 
 ## Gotchas this suite encodes
 
@@ -91,3 +105,9 @@ next person doesn't rediscover them.
 - **PTYs come from `pty-run.py`.** `stdout.isTTY` gates the status line, the
   terminal reset on detach, and the input-report filter; driving the clients
   through a pipe exercises a different path than the one a human sees.
+
+- **Don't wait on a natural phrase.** The task prompt is injected into the
+  agent's PTY, so waiting for "GAME OVER" to appear matches the prompt itself
+  and fires instantly. The suite waits on `DONE_TOKEN`, which only the
+  Gamemaster's prompt names — seeing it *delivered to a player* is proof the
+  game really ended.

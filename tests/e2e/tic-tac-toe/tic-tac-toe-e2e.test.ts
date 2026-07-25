@@ -32,13 +32,14 @@ import {
   attachInPty,
   cleanEnv,
   preflight,
+  recordEvents,
   renderScreen,
-  renderTranscript,
   startBroker,
   startEngine,
   waitFor,
   type BrokerHandle,
   type EngineHandle,
+  type EventRecorder,
   type PtyClient,
 } from './harness.js';
 
@@ -130,6 +131,7 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
   let tmpRoot: string;
   let engine: EngineHandle;
   let broker: BrokerHandle;
+  let events: EventRecorder;
   const clients = new Map<string, PtyClient>();
 
   beforeAll(async () => {
@@ -142,6 +144,7 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
 
     engine = await startEngine(check.engineServe!, tmpRoot);
     broker = await startBroker(projectDir, engine.baseUrl, home);
+    events = await recordEvents(broker.url, broker.apiKey);
 
     for (const [name, task] of Object.entries(TASKS)) {
       await broker.spawnAgent(name, task);
@@ -165,26 +168,23 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
 
     // The game is three LLM agents taking turns over the network; give it room.
     //
-    // Wait on DONE_TOKEN reaching a PLAYER. The token appears only in the
-    // Gamemaster's prompt, so seeing it in a player's pane proves a real
-    // end-of-game message was delivered. Waiting on a phrase like 'GAME OVER'
-    // instead matches the injected task prompt itself and fires immediately.
+    // Wait for DONE_TOKEN to be DELIVERED to a player. The token is named only
+    // in the Gamemaster's prompt, so a delivery carrying it is proof the game
+    // really ended rather than the prompt echoing. (Waiting on a natural
+    // phrase like 'GAME OVER' matches the injected prompt itself and fires
+    // instantly; waiting on a rendered pane misses it once the alt-screen TUI
+    // repaints, since the alternate buffer keeps no scrollback.)
     await waitFor(
-      async () => {
-        for (const player of ['PlayerA', 'PlayerB'] as const) {
-          if ((await transcript(player)).includes(DONE_TOKEN)) return true;
-        }
-        return false;
-      },
+      () =>
+        events
+          .messages()
+          .some((m) => m.body.includes(DONE_TOKEN) && m.target !== 'Gamemaster'),
       { timeoutMs: 8 * 60_000, label: 'the game to finish', intervalMs: 5_000 }
     );
   }, 10 * 60_000);
 
-  /** What the pane has shown so far, scrollback included. */
-  const transcript = (name: string): Promise<string> =>
-    renderTranscript(clients.get(name)!.read(), COLS, ROWS);
-
   afterAll(() => {
+    events?.stop();
     for (const client of clients.values()) client.stop();
     broker?.stop();
     engine?.stop();
@@ -201,24 +201,32 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
     }
   });
 
-  it('carries moves between agents over the relay protocol', async () => {
-    const gm = await transcript('Gamemaster');
-    // Both players' moves reached the Gamemaster as relay messages, and the
-    // Gamemaster saw them as relay traffic (not as its own typing).
-    expect(gm).toContain('Relay message from PlayerA');
-    expect(gm).toContain('Relay message from PlayerB');
-    expect(gm).toMatch(/MOVE\s*\d/);
+  it('carries moves between agents over the relay protocol', () => {
+    const delivered = events.messages();
+    const between = (from: string, target: string) =>
+      delivered.filter((m) => m.from === from && m.target === target);
 
+    // Both directions, both players — a game where only the Gamemaster ever
+    // spoke would still reach a "result", so assert the replies too.
     for (const player of ['PlayerA', 'PlayerB'] as const) {
-      expect(await transcript(player), `${player} never received a relay message`).toContain(
-        'Relay message from Gamemaster'
-      );
+      expect(between('Gamemaster', player).length, `Gamemaster never messaged ${player}`).toBeGreaterThan(0);
+      expect(between(player, 'Gamemaster').length, `${player} never replied`).toBeGreaterThan(0);
     }
+
+    // The replies are moves, not chatter.
+    const moves = delivered.filter((m) => m.target === 'Gamemaster' && /MOVE\s*\d/i.test(m.body));
+    expect(moves.length, `no MOVE replies in ${JSON.stringify(delivered)}`).toBeGreaterThanOrEqual(3);
+
+    // And the panes carried live PTY output while it happened.
+    expect(events.kinds().worker_stream ?? 0).toBeGreaterThan(0);
   });
 
-  it('reaches a terminal result and tells both players', async () => {
+  it('reaches a terminal result and tells both players', () => {
     for (const player of ['PlayerA', 'PlayerB'] as const) {
-      expect(await transcript(player), `${player} was never told the game ended`).toContain(DONE_TOKEN);
+      const finals = events
+        .messages()
+        .filter((m) => m.target === player && m.body.includes(DONE_TOKEN));
+      expect(finals.length, `${player} was never told the game ended`).toBeGreaterThan(0);
     }
   });
 
