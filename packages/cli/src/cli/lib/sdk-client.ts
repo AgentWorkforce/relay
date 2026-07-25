@@ -69,9 +69,18 @@ export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay
  */
 export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgent {
   const token = resolveAgentToken(options);
+  // Agent tokens are valid Relaycast transport credentials and already bind
+  // the caller to exactly one workspace. Prefer the scoped token itself over
+  // every ambient workspace-key source so invited humans cannot accidentally
+  // inherit the local owner's rk_live credential from this project or machine.
+  if (token) {
+    return new AgentRelay({
+      agentToken: token,
+      baseUrl: resolveBaseUrl(options),
+    });
+  }
   return new AgentRelay({
     workspaceKey: resolveWorkspaceKey(options),
     baseUrl: resolveBaseUrl(options),
-    ...(token ? { agentToken: token } : {}),
   });
 }

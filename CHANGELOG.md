@@ -5,11 +5,20 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay cloud room` can invite trusted full room participants through explicit secret sinks, manage members, and establish revocable per-device Relaycast sessions without sharing the workspace key.
+- `agent-relay cloud integration` exposes the existing Cloud integration catalog, connection, and disconnection lifecycle from the CLI; connected providers remain available through Relayfile's normal setup, mount, and writeback flow.
+- `agent-relay agent me|presence` use scoped agent credentials for room-safe identity and presence checks.
 
 ### Fixed
 
 - Codex PTY workers now receive initial Relay tasks in one bulk write, preventing full-screen input redraws from delaying task submission for minutes.
+- `agent-relay node up` now binds an OS-assigned API port atomically by default, preventing concurrent Fleet nodes from racing over a probed port; `AGENT_RELAY_BROKER_PORT` remains an explicit stable-port override.
+- Newly connected Fleet brokers now advertise their spawn/release handlers immediately, so the first remote spawn is dispatched instead of remaining queued until load changes.
+- `agent-relay fleet spawn --session-ref` now passes the requested session to Claude and Codex as a real resume operation, and a released agent name can be reused immediately instead of being suppressed as a duplicate spawn.
 
 ## [11.1.1] - 2026-07-23
 
