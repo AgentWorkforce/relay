@@ -67,8 +67,7 @@ export function relaycastTelemetryOptions(
 ): RelaycastTelemetryOptions {
   const originActor = nonEmpty(explicit.originActor) ?? resolveOriginActor(env);
   const agentRelayUserId = nonEmpty(explicit.agentRelayUserId) ?? nonEmpty(env[USER_ID_ENV]);
-  const agentRelayMachineId =
-    nonEmpty(explicit.agentRelayMachineId) ?? nonEmpty(env[MACHINE_ID_ENV]);
+  const agentRelayMachineId = nonEmpty(explicit.agentRelayMachineId) ?? nonEmpty(env[MACHINE_ID_ENV]);
   // A signed-in user id is the better person key; the machine hash is fallback.
   const agentRelayDistinctId =
     nonEmpty(explicit.agentRelayDistinctId) ??

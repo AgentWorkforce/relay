@@ -36,12 +36,7 @@ import {
   toCloudIdentity,
   writeStoredAuth,
 } from './auth.js';
-import {
-  AUTH_FILE_PATH,
-  CloudAuthError,
-  type StoredAuth,
-  type WhoAmIResponse,
-} from './types.js';
+import { AUTH_FILE_PATH, CloudAuthError, type StoredAuth, type WhoAmIResponse } from './types.js';
 
 const AUTH_LOCK_PATH = `${AUTH_FILE_PATH}.lock`;
 
@@ -812,17 +807,12 @@ describe('cloud identity capture', () => {
 
   it('returns null when the payload carries no user id', () => {
     expect(
-      toCloudIdentity(
-        { ...WHOAMI_PAYLOAD, user: { ...WHOAMI_PAYLOAD.user, id: '' } },
-        AUTH.apiUrl
-      )
+      toCloudIdentity({ ...WHOAMI_PAYLOAD, user: { ...WHOAMI_PAYLOAD.user, id: '' } }, AUTH.apiUrl)
     ).toBeNull();
   });
 
   it('resolves and persists identity from whoami', async () => {
-    const fetchSpy = vi.fn(
-      async () => new Response(JSON.stringify(WHOAMI_PAYLOAD), { status: 200 })
-    );
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(WHOAMI_PAYLOAD), { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);
 
     const identity = await refreshStoredCloudIdentity(AUTH);
@@ -837,7 +827,10 @@ describe('cloud identity capture', () => {
   });
 
   it('returns null and persists nothing when whoami fails', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('nope', { status: 500 }))
+    );
 
     expect(await refreshStoredCloudIdentity(AUTH)).toBeNull();
     expect(fsMocks.writeFile).not.toHaveBeenCalledWith(
@@ -862,9 +855,6 @@ describe('cloud identity capture', () => {
     await clearStoredAuth();
 
     expect(fsMocks.rm).toHaveBeenCalledWith(AUTH_FILE_PATH, { force: true });
-    expect(fsMocks.rm).toHaveBeenCalledWith(
-      expect.stringContaining('cloud-identity.json'),
-      { force: true }
-    );
+    expect(fsMocks.rm).toHaveBeenCalledWith(expect.stringContaining('cloud-identity.json'), { force: true });
   });
 });

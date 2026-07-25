@@ -198,16 +198,12 @@ function pickTelemetryOverrides(options: RelaycastTelemetryOptions): RelaycastTe
     ...(options.agentRelayDistinctId === undefined
       ? {}
       : { agentRelayDistinctId: options.agentRelayDistinctId }),
-    ...(options.agentRelayUserId === undefined
-      ? {}
-      : { agentRelayUserId: options.agentRelayUserId }),
+    ...(options.agentRelayUserId === undefined ? {} : { agentRelayUserId: options.agentRelayUserId }),
     ...(options.agentRelayMachineId === undefined
       ? {}
       : { agentRelayMachineId: options.agentRelayMachineId }),
     ...(options.agentRelayOrgId === undefined ? {} : { agentRelayOrgId: options.agentRelayOrgId }),
-    ...(options.agentRelayOrgSlug === undefined
-      ? {}
-      : { agentRelayOrgSlug: options.agentRelayOrgSlug }),
+    ...(options.agentRelayOrgSlug === undefined ? {} : { agentRelayOrgSlug: options.agentRelayOrgSlug }),
   };
 }
 

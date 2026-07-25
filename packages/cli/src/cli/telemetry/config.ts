@@ -45,9 +45,7 @@ export function loadPrefs(): TelemetryPrefs {
         enabled: prefs.enabled ?? true,
         notifiedAt: prefs.notifiedAt,
         distinctId,
-        ...(prefs.identifiedFingerprint
-          ? { identifiedFingerprint: prefs.identifiedFingerprint }
-          : {}),
+        ...(prefs.identifiedFingerprint ? { identifiedFingerprint: prefs.identifiedFingerprint } : {}),
       };
 
       if (prefs.distinctId !== distinctId || prefs.anonymousId !== undefined) {

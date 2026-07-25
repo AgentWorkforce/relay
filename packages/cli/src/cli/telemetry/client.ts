@@ -175,11 +175,7 @@ function safeMachineId(): string | undefined {
  * Repeated on org switch or email change (the fingerprint covers both), skipped
  * otherwise so we don't emit two extra events on every CLI invocation.
  */
-function announceIdentity(
-  posthog: PostHog,
-  identity: CloudIdentity,
-  machineDistinctId: string
-): void {
+function announceIdentity(posthog: PostHog, identity: CloudIdentity, machineDistinctId: string): void {
   const fingerprint = cloudIdentityFingerprint(identity);
   if (!fingerprint || fingerprint === getIdentifiedFingerprint()) return;
 
@@ -296,8 +292,7 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     disableGeoip: false, // CLI runs on user's machine, so IP is correct for geo
   });
 
-  const identity =
-    options.identity === undefined ? safeResolveCloudIdentity() : options.identity;
+  const identity = options.identity === undefined ? safeResolveCloudIdentity() : options.identity;
 
   commonProps = buildCommonProperties(
     {
@@ -314,9 +309,7 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
   const machineDistinctId = getDistinctId();
   // A signed-in user is the person; the machine hash is only a fallback.
   distinctId = identity?.userId ?? machineDistinctId;
-  groups = identity?.organizationId
-    ? { [ORGANIZATION_GROUP_TYPE]: identity.organizationId }
-    : null;
+  groups = identity?.organizationId ? { [ORGANIZATION_GROUP_TYPE]: identity.organizationId } : null;
 
   if (identity) {
     announceIdentity(client, identity, machineDistinctId);

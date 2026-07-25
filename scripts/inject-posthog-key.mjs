@@ -25,10 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const TARGET = path.join(
-  REPO_ROOT,
-  'packages/cli/dist/cli/telemetry/posthog-key.js'
-);
+const TARGET = path.join(REPO_ROOT, 'packages/cli/dist/cli/telemetry/posthog-key.js');
 
 const EXPORT_PATTERN = /export const BUILD_TIME_POSTHOG_KEY = (['"])(.*?)\1;/;
 
@@ -70,9 +67,7 @@ async function main() {
 
   const key = process.env.AGENT_RELAY_POSTHOG_KEY?.trim();
   if (!key) {
-    console.log(
-      '[inject-posthog-key] AGENT_RELAY_POSTHOG_KEY not set — leaving telemetry disabled.'
-    );
+    console.log('[inject-posthog-key] AGENT_RELAY_POSTHOG_KEY not set — leaving telemetry disabled.');
     return;
   }
 

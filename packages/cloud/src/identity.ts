@@ -92,18 +92,14 @@ export function normalizeCloudIdentity(value: unknown): CloudIdentity | null {
     userId,
     ...(sanitize(raw.email, 320) ? { email: sanitize(raw.email, 320)! } : {}),
     ...(sanitize(raw.name, 120) ? { name: sanitize(raw.name, 120)! } : {}),
-    ...(sanitize(raw.organizationId, 128)
-      ? { organizationId: sanitize(raw.organizationId, 128)! }
-      : {}),
+    ...(sanitize(raw.organizationId, 128) ? { organizationId: sanitize(raw.organizationId, 128)! } : {}),
     ...(sanitize(raw.organizationSlug, 120)
       ? { organizationSlug: sanitize(raw.organizationSlug, 120)! }
       : {}),
     ...(sanitize(raw.organizationName, 200)
       ? { organizationName: sanitize(raw.organizationName, 200)! }
       : {}),
-    ...(sanitize(raw.organizationRole, 60)
-      ? { organizationRole: sanitize(raw.organizationRole, 60)! }
-      : {}),
+    ...(sanitize(raw.organizationRole, 60) ? { organizationRole: sanitize(raw.organizationRole, 60)! } : {}),
     ...(sanitize(raw.workspaceId, 128) ? { workspaceId: sanitize(raw.workspaceId, 128)! } : {}),
     apiUrl: apiUrl ?? '',
     updatedAt: updatedAt ?? new Date(0).toISOString(),
@@ -126,9 +122,7 @@ export async function readStoredIdentity(
  * Sync read, for the CLI bootstrap path. Bootstrap has to publish identity into
  * `process.env` before it spawns anything, and it is synchronous.
  */
-export function readStoredIdentitySync(
-  env: NodeJS.ProcessEnv = process.env
-): CloudIdentity | null {
+export function readStoredIdentitySync(env: NodeJS.ProcessEnv = process.env): CloudIdentity | null {
   try {
     const file = fs.readFileSync(identityFilePath(env), 'utf8');
     return normalizeCloudIdentity(JSON.parse(file) as unknown);
@@ -170,9 +164,7 @@ export async function clearStoredIdentity(env: NodeJS.ProcessEnv = process.env):
  * a child process inherits whatever its parent published, and so CI can inject
  * identity without a login.
  */
-export function resolveCloudIdentity(
-  env: NodeJS.ProcessEnv = process.env
-): CloudIdentity | null {
+export function resolveCloudIdentity(env: NodeJS.ProcessEnv = process.env): CloudIdentity | null {
   const fromEnv = normalizeCloudIdentity({
     userId: env[IDENTITY_ENV_KEYS.userId],
     email: env[IDENTITY_ENV_KEYS.email],
@@ -193,12 +185,8 @@ export function cloudIdentityEnv(identity: CloudIdentity | null): Record<string,
   return {
     [IDENTITY_ENV_KEYS.userId]: identity.userId,
     ...(identity.email ? { [IDENTITY_ENV_KEYS.email]: identity.email } : {}),
-    ...(identity.organizationId
-      ? { [IDENTITY_ENV_KEYS.organizationId]: identity.organizationId }
-      : {}),
-    ...(identity.organizationSlug
-      ? { [IDENTITY_ENV_KEYS.organizationSlug]: identity.organizationSlug }
-      : {}),
+    ...(identity.organizationId ? { [IDENTITY_ENV_KEYS.organizationId]: identity.organizationId } : {}),
+    ...(identity.organizationSlug ? { [IDENTITY_ENV_KEYS.organizationSlug]: identity.organizationSlug } : {}),
     ...(identity.workspaceId ? { [IDENTITY_ENV_KEYS.workspaceId]: identity.workspaceId } : {}),
   };
 }

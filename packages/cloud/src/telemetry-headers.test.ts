@@ -34,9 +34,9 @@ describe('buildAgentRelayTelemetryHeaders', () => {
   });
 
   it('still works for anonymous machines with only a distinct id', () => {
-    expect(buildAgentRelayTelemetryHeaders({ AGENT_RELAY_DISTINCT_ID: 'abc123def4567890' })).toEqual(
-      { [AGENT_RELAY_DISTINCT_ID_HEADER]: 'abc123def4567890' }
-    );
+    expect(buildAgentRelayTelemetryHeaders({ AGENT_RELAY_DISTINCT_ID: 'abc123def4567890' })).toEqual({
+      [AGENT_RELAY_DISTINCT_ID_HEADER]: 'abc123def4567890',
+    });
   });
 
   it('sends nothing without any identity', () => {
@@ -71,19 +71,14 @@ describe('buildAgentRelayTelemetryHeaders', () => {
   });
 
   it('forwards the machine id for an anonymous caller', () => {
-    expect(
-      buildAgentRelayTelemetryHeaders({ AGENT_RELAY_MACHINE_ID: 'abc123def4567890' })
-    ).toEqual({
+    expect(buildAgentRelayTelemetryHeaders({ AGENT_RELAY_MACHINE_ID: 'abc123def4567890' })).toEqual({
       [AGENT_RELAY_DISTINCT_ID_HEADER]: 'abc123def4567890',
       [AGENT_RELAY_MACHINE_ID_HEADER]: 'abc123def4567890',
     });
   });
 
   it('honors the telemetry opt-out for identity too', () => {
-    for (const env of [
-      { AGENT_RELAY_TELEMETRY_DISABLED: '1' },
-      { DO_NOT_TRACK: 'true' },
-    ]) {
+    for (const env of [{ AGENT_RELAY_TELEMETRY_DISABLED: '1' }, { DO_NOT_TRACK: 'true' }]) {
       expect(
         buildAgentRelayTelemetryHeaders({
           ...env,
