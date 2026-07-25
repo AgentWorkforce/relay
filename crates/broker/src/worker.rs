@@ -42,6 +42,82 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
 const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 
+/// How long a worker may go without reporting `worker_ready` before the broker
+/// treats its harness as failed-to-start.
+///
+/// The worker process emits `worker_ready` itself — the PTY runtime even has a
+/// 25s fallback that fires when readiness detection times out
+/// (`pty_worker::STARTUP_READY_TIMEOUT`). So silence past this deadline does not
+/// mean "slow": it means the worker died, or wedged, before it could report.
+/// The margin over that 25s fallback is deliberately generous — reaping a
+/// healthy-but-slow agent is far worse than listing a dead one a little longer.
+const WORKER_READY_DEADLINE: Duration = Duration::from_secs(90);
+
+/// Why a worker was reaped despite its wrapper process still being alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrphanedWorker {
+    /// The harness pid the worker reported is gone.
+    HarnessExited,
+    /// `worker_ready` never arrived within {@link WORKER_READY_DEADLINE}.
+    NeverReady,
+}
+
+impl OrphanedWorker {
+    fn reason(self) -> &'static str {
+        match self {
+            OrphanedWorker::HarnessExited => "harness_exited",
+            OrphanedWorker::NeverReady => "harness_never_ready",
+        }
+    }
+}
+
+/// True when `pid` no longer names a live process.
+///
+/// Safety: `kill(pid, 0)` is a POSIX-safe probe — it performs the permission
+/// and existence checks without delivering a signal. `ESRCH` means the process
+/// is gone; every other error (notably `EPERM`) means it exists.
+#[cfg(unix)]
+fn pid_is_gone(pid: u32) -> bool {
+    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    ret == -1
+        && std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(0)
+            == libc::ESRCH
+}
+
+#[cfg(not(unix))]
+fn pid_is_gone(_pid: u32) -> bool {
+    false
+}
+
+/// Decide whether a worker is dead even though its wrapper process is alive.
+///
+/// The wrapper (`agent-relay-broker pty …`) can outlive the harness it hosts:
+/// its stdin reader blocks on a pipe the broker never closes, so a wrapper whose
+/// harness exited at startup can sit in `futex_do_wait` indefinitely. Reaping on
+/// the wrapper alone therefore leaves the agent listed as `working` forever, with
+/// `last_activity` frozen at the moment it died. Judge liveness by the harness.
+pub(crate) fn orphaned_worker(
+    harness_pid: Option<u32>,
+    ready_at: Option<Instant>,
+    spawned_at: Instant,
+    now: Instant,
+) -> Option<OrphanedWorker> {
+    if let Some(pid) = harness_pid {
+        if pid_is_gone(pid) {
+            return Some(OrphanedWorker::HarnessExited);
+        }
+        // A live harness pid is proof of life; never apply the readiness
+        // deadline to one that is plainly running.
+        return None;
+    }
+    if ready_at.is_none() && now.saturating_duration_since(spawned_at) > WORKER_READY_DEADLINE {
+        return Some(OrphanedWorker::NeverReady);
+    }
+    None
+}
+
 // Working/idle activity inference from PTY output comes from the
 // harness-agnostic `relay-pty` crate.
 pub(crate) use relay_pty::detection;
@@ -55,6 +131,9 @@ pub(crate) struct WorkerHandle {
     pub(crate) stdin: ChildStdin,
     pub(crate) harness_pid: Option<u32>,
     pub(crate) spawned_at: Instant,
+    /// When the worker reported `worker_ready`. `None` means the harness has
+    /// never come up — see `WORKER_READY_DEADLINE` in `reap_exited`.
+    pub(crate) ready_at: Option<Instant>,
     pub(crate) last_activity_at: Instant,
     pub(crate) context_budget_pct: Option<u8>,
     pub(crate) state: AgentWorkState,
@@ -867,6 +946,7 @@ impl WorkerRegistry {
             stdin,
             harness_pid: initial_harness_pid,
             spawned_at: Instant::now(),
+            ready_at: None,
             last_activity_at: Instant::now(),
             context_budget_pct: None,
             state: AgentWorkState::Working,
@@ -1048,6 +1128,43 @@ impl WorkerRegistry {
             } else {
                 (None, false)
             };
+            // The wrapper can outlive its harness. When it does, judge the agent
+            // by the harness and tear the orphaned wrapper down — otherwise the
+            // agent is listed as `working` forever.
+            let orphaned = if status.is_none() && !gone_via_kill0 {
+                self.workers.get(&name).and_then(|handle| {
+                    orphaned_worker(
+                        handle.harness_pid,
+                        handle.ready_at,
+                        handle.spawned_at,
+                        Instant::now(),
+                    )
+                })
+            } else {
+                None
+            };
+            if let Some(orphan) = orphaned {
+                let reason = self
+                    .workers
+                    .get(&name)
+                    .and_then(|handle| handle.exit_reason.clone())
+                    .or_else(|| Some(orphan.reason().to_string()));
+                if let Some(handle) = self.workers.get_mut(&name) {
+                    tracing::warn!(
+                        worker = %name,
+                        wrapper_pid = ?handle.child.id(),
+                        harness_pid = ?handle.harness_pid,
+                        reason = orphan.reason(),
+                        "reap_exited: harness gone but wrapper alive — killing orphaned wrapper"
+                    );
+                    // Best effort: the wrapper is unreachable by definition here.
+                    let _ = handle.child.start_kill();
+                }
+                self.workers.remove(&name);
+                self.initial_tasks.remove(&name);
+                exited.push((name, None, None, reason));
+                continue;
+            }
             if let Some(status) = status {
                 let code = status.code();
                 #[cfg(unix)]
@@ -1896,6 +2013,86 @@ mod tests {
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
         assert!(reg.list(&HashMap::new()).is_empty());
+    }
+
+    // The wrapper process can outlive the harness it hosts, so reaping on the
+    // wrapper alone leaves a dead agent listed as `working` forever.
+    mod orphaned_worker {
+        use super::*;
+
+        /// A pid that cannot be live. `kill(0)` on pid 0 addresses the caller's
+        /// own process group, so use an unassigned high pid instead.
+        fn dead_pid() -> u32 {
+            // Above the default pid_max; never allocated.
+            0x7FFF_FFFF
+        }
+
+        fn live_pid() -> u32 {
+            std::process::id()
+        }
+
+        #[test]
+        fn reports_harness_exited_when_the_reported_pid_is_gone() {
+            let now = Instant::now();
+            assert_eq!(
+                orphaned_worker(Some(dead_pid()), Some(now), now, now),
+                Some(OrphanedWorker::HarnessExited)
+            );
+        }
+
+        #[test]
+        fn leaves_a_worker_with_a_live_harness_alone() {
+            let now = Instant::now();
+            assert_eq!(orphaned_worker(Some(live_pid()), Some(now), now, now), None);
+        }
+
+        // A live harness pid is proof of life even if `worker_ready` was missed,
+        // so the readiness deadline must not apply to it.
+        #[test]
+        fn a_live_harness_is_never_reaped_for_missing_readiness() {
+            let spawned = Instant::now();
+            let now = spawned + WORKER_READY_DEADLINE + Duration::from_secs(60);
+            assert_eq!(orphaned_worker(Some(live_pid()), None, spawned, now), None);
+        }
+
+        #[test]
+        fn reports_never_ready_only_after_the_deadline() {
+            let spawned = Instant::now();
+            // Still inside the window — a slow harness must be left to boot.
+            assert_eq!(
+                orphaned_worker(None, None, spawned, spawned + Duration::from_secs(30)),
+                None
+            );
+            assert_eq!(
+                orphaned_worker(None, None, spawned, spawned + WORKER_READY_DEADLINE),
+                None
+            );
+            assert_eq!(
+                orphaned_worker(
+                    None,
+                    None,
+                    spawned,
+                    spawned + WORKER_READY_DEADLINE + Duration::from_secs(1)
+                ),
+                Some(OrphanedWorker::NeverReady)
+            );
+        }
+
+        // A worker that reported ready and has no pid to probe (non-PTY
+        // runtimes) must never be reaped by the deadline.
+        #[test]
+        fn a_ready_worker_without_a_pid_is_never_reaped() {
+            let spawned = Instant::now();
+            let now = spawned + WORKER_READY_DEADLINE * 10;
+            assert_eq!(orphaned_worker(None, Some(spawned), spawned, now), None);
+        }
+
+        #[test]
+        fn the_deadline_clears_the_pty_runtime_startup_fallback() {
+            // `pty_worker::STARTUP_READY_TIMEOUT` is 25s; the broker must wait
+            // comfortably longer than the worker's own fallback.
+            assert!(WORKER_READY_DEADLINE > Duration::from_secs(25) * 3);
+        }
     }
 
     #[test]
