@@ -566,9 +566,15 @@ describe('KeybindParser', () => {
   });
 });
 
+/** Strip the save/position/clear/reverse-video wrapper down to the visible label. */
+function stripStatusLineAnsi(rendered: string): string {
+  // eslint-disable-next-line no-control-regex -- matching the raw ESC bytes this module emits
+  return rendered.replace(/\x1b(?:[78]|\[[0-9;]*[A-Za-z])/g, '');
+}
+
 describe('renderStatusLine', () => {
   it('includes agent name, mode, pending count, and detach hint', () => {
-    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 3 });
+    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 3, cols: 120 });
     expect(out).toContain('drive Alice');
     expect(out).toContain('delivery=manual_flush');
     expect(out).toContain('pending=3');
@@ -599,6 +605,50 @@ describe('renderStatusLine', () => {
       rows: 50,
     });
     expect(out).toContain('\x1b[50;1H');
+  });
+
+  // A status line wider than the pane wraps past the bottom row, which scrolls
+  // the screen; because the line is painted ON the bottom row, every repaint
+  // then scrolls again, stacking old status lines into the scrollback and
+  // eating the agent's output one row at a time.
+  it('truncates the label to the terminal width so it can never wrap', () => {
+    const cols = 66;
+    const out = renderStatusLine({
+      name: 'Gamemaster',
+      mode: 'manual_flush',
+      pending: 0,
+      rows: 24,
+      cols,
+    });
+    const text = stripStatusLineAnsi(out);
+    expect(text.length).toBeLessThanOrEqual(cols);
+    // Middle-truncated: the verb + agent name and the key hints both survive.
+    expect(text).toContain('[drive Gamemaster');
+    expect(text).toContain('Ctrl+C detach]');
+    expect(text).toContain('…');
+  });
+
+  it('leaves a label that already fits untouched', () => {
+    const out = renderStatusLine({
+      name: 'Gamemaster',
+      mode: 'manual_flush',
+      pending: 0,
+      rows: 24,
+      cols: 120,
+    });
+    const text = stripStatusLineAnsi(out);
+    expect(text).toBe('[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]');
+    expect(text).not.toContain('…');
+  });
+
+  // `drive` only paints when the local size is known, so this is the
+  // degenerate path — but assuming a terminal *wider* than 80 would
+  // reintroduce the wrap on the most common default width.
+  it('assumes 80 columns when the width is unknown', () => {
+    const text = stripStatusLineAnsi(
+      renderStatusLine({ name: 'Gamemaster', mode: 'manual_flush', pending: 0, rows: 24 })
+    );
+    expect(text.length).toBeLessThanOrEqual(80);
   });
 });
 

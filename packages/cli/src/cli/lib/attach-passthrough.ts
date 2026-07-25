@@ -31,8 +31,10 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  clampStatusLineText,
   createBackpressureAwareWriter,
   DETACH_CLEANUP_DEADLINE_MS,
+  pickInitialTerminalCols,
   pickInitialTerminalRows,
   prepareAttachTarget,
   resetLocalTerminalOnDetach,
@@ -266,9 +268,18 @@ export class PassthroughKeybindParser {
  * save/restore-cursor trick as `drive`, no pending counter (there
  * isn't one in passthrough session).
  */
-export function renderStatusLine(opts: { name: string; mode: InboundDeliveryMode; rows?: number }): string {
+export function renderStatusLine(opts: {
+  name: string;
+  mode: InboundDeliveryMode;
+  rows?: number;
+  /** Terminal columns — the label is truncated to fit. Defaults to 80. */
+  cols?: number;
+}): string {
   const row = Math.max(opts.rows ?? 24, 1);
-  const text = `[passthrough ${opts.name} | delivery=${opts.mode} | Ctrl+C detach]`;
+  const text = clampStatusLineText(
+    `[passthrough ${opts.name} | delivery=${opts.mode} | Ctrl+C detach]`,
+    opts.cols
+  );
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
 }
 
@@ -380,6 +391,7 @@ export async function runPassthroughSession(
     // output around attach time). See StreamSyncBuffer.
     const sync = new StreamSyncBuffer();
     let terminalRows = pickInitialTerminalRows(initialLocalSize, undefined);
+    let terminalCols = pickInitialTerminalCols(initialLocalSize, undefined);
 
     // Adaptive predictive echo masks round-trip latency on remote brokers.
     // Seeded with the snapshot (after it is painted) so its confirmed model
@@ -407,7 +419,8 @@ export async function runPassthroughSession(
 
     // Boundary-held + coalesced status painter (skips non-TTY stdout).
     const statusController = new StatusLineController({
-      render: () => renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }),
+      render: () =>
+        renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows, cols: terminalCols }),
       write: deps.writeChunk,
       enabled: statusLineEnabled,
       coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
@@ -432,6 +445,7 @@ export async function runPassthroughSession(
       const size = deps.terminal.getSize();
       if (!size) return;
       terminalRows = size.rows;
+      terminalCols = size.cols;
       predictiveEcho?.onResize(size.cols, size.rows);
       trackResize(
         resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
@@ -724,6 +738,7 @@ export async function runPassthroughSession(
         if (settled) return;
       }
       terminalRows = pickInitialTerminalRows(initialLocalSize, snapshot.rows);
+      terminalCols = pickInitialTerminalCols(initialLocalSize, snapshot.cols);
       // Track the snapshot bytes for boundary state before the first repaint.
       statusController.observeOutput(snapshotBytes);
       paintStatus();

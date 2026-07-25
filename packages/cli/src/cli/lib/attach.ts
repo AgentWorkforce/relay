@@ -360,6 +360,55 @@ export function pickInitialTerminalRows(
 }
 
 /**
+ * Pick the status-line width. Same precedence as
+ * {@link pickInitialTerminalRows} — the LOCAL terminal wins, because the
+ * status line has to fit the pane the human is looking at, not the agent's
+ * PTY.
+ */
+export function pickInitialTerminalCols(
+  localSize: { rows: number; cols: number } | null,
+  snapshotCols: number | undefined
+): number | undefined {
+  if (localSize) return localSize.cols;
+  if (typeof snapshotCols === 'number' && snapshotCols > 0) return snapshotCols;
+  return undefined;
+}
+
+/** Width assumed when the local terminal never reported one. */
+export const DEFAULT_STATUS_LINE_COLS = 80;
+
+/**
+ * Clamp a status-line label to the terminal width.
+ *
+ * The interactive verbs paint their status line at the bottom row inside an
+ * `ESC 7` / `ESC 8` (DECSC/DECRC) pair. That is only safe while the text
+ * *fits*: a label wider than the pane wraps past the last row, which scrolls
+ * the screen. Because the label is painted on the bottom row, every repaint
+ * then scrolls again — promoting the previous status line into the scrollback
+ * as content and eating one row of the agent's output each time. A narrow
+ * pane therefore turns a single status line into a growing stack of them with
+ * the agent's TUI shredded behind it (#1360 follow-up; reproduced at 66
+ * columns, where an 87-column `drive` label cost six rows of agent output).
+ *
+ * Truncation keeps the paint inside one row, so the wrap — and the scroll
+ * cascade it triggers — can never happen. The tail is the part that carries
+ * the key hints, so an over-long label is trimmed from the *middle*: the verb
+ * and agent name stay readable and the `Ctrl+…` hints survive.
+ */
+export function clampStatusLineText(text: string, cols: number | undefined): string {
+  const width = typeof cols === 'number' && cols > 0 ? Math.floor(cols) : DEFAULT_STATUS_LINE_COLS;
+  if (text.length <= width) return text;
+  // Too narrow to say anything useful — a bare head is still better than a
+  // wrap, and `…` alone would be meaningless.
+  if (width <= 1) return text.slice(0, Math.max(width, 0));
+  const ellipsis = '…';
+  const keep = width - ellipsis.length;
+  const tail = Math.floor(keep / 2);
+  const head = keep - tail;
+  return `${text.slice(0, head)}${ellipsis}${tail > 0 ? text.slice(text.length - tail) : ''}`;
+}
+
+/**
  * Sync the agent's PTY to the driver's local terminal size. tmux /
  * screen / ssh all do this — without it a TUI in the agent renders into
  * the size the PTY was spawned with, ignoring the human's viewport.

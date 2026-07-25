@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AnsiBoundaryScanner,
   captureAndRenderSnapshot,
+  clampStatusLineText,
   createBackpressureAwareWriter,
+  DEFAULT_STATUS_LINE_COLS,
+  pickInitialTerminalCols,
   LOCAL_TERMINAL_RESET_SEQUENCE,
   resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
@@ -785,5 +788,49 @@ describe('createBackpressureAwareWriter', () => {
     drain?.();
     w.write('c');
     expect(written).toEqual(['a']);
+  });
+});
+
+describe('pickInitialTerminalCols', () => {
+  it('prefers the local terminal width over the agent PTY width', () => {
+    expect(pickInitialTerminalCols({ rows: 24, cols: 66 }, 200)).toBe(66);
+  });
+
+  it('falls back to the snapshot width, then to undefined', () => {
+    expect(pickInitialTerminalCols(null, 200)).toBe(200);
+    expect(pickInitialTerminalCols(null, 0)).toBeUndefined();
+    expect(pickInitialTerminalCols(null, undefined)).toBeUndefined();
+  });
+});
+
+describe('clampStatusLineText', () => {
+  const label = '[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]';
+
+  it('passes a label that already fits through untouched', () => {
+    expect(clampStatusLineText(label, 120)).toBe(label);
+    expect(clampStatusLineText(label, label.length)).toBe(label);
+  });
+
+  it('never returns more characters than the terminal is wide', () => {
+    for (const cols of [2, 10, 40, 66, 80, 86]) {
+      expect(clampStatusLineText(label, cols).length).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('keeps the head and the tail so the verb and the key hints both survive', () => {
+    const out = clampStatusLineText(label, 66);
+    expect(out.startsWith('[drive Gamemaster')).toBe(true);
+    expect(out.endsWith('Ctrl+C detach]')).toBe(true);
+    expect(out).toContain('\u2026');
+  });
+
+  it('assumes 80 columns when the width is unknown', () => {
+    expect(clampStatusLineText(label, undefined).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
+    expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
+  });
+
+  it('degrades to a bare head rather than wrapping on a pathological width', () => {
+    expect(clampStatusLineText(label, 1)).toBe('[');
+    expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
   });
 });
