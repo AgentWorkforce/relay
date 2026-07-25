@@ -298,10 +298,9 @@ describe('relay-feature-guardian runtime paths', () => {
       await guardian.handler(ctx, { type: 'cron.tick' } as never);
 
       expect(transport.attempts).toHaveLength(0);
-      expect(ctx.llm.complete).toHaveBeenCalledWith(
-        expect.stringContaining('CLI command: relay node up'),
-        { maxTokens: 300 }
-      );
+      expect(ctx.llm.complete).toHaveBeenCalledWith(expect.stringContaining('CLI command: relay node up'), {
+        maxTokens: 300,
+      });
       expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toMatchObject({
         version: 4,
         checkedIds: ['broker-up'],
