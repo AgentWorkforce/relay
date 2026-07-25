@@ -33,6 +33,24 @@ def set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def reap(pid: int) -> "tuple[int, int]":
+    """Wait for `pid` and translate its status to a shell-style exit code.
+
+    Returns `(exit_code, remaining_pid)`; `remaining_pid` is 0 once reaped, so
+    the caller's cleanup knows not to signal it again.
+    """
+    try:
+        waited, status = os.waitpid(pid, 0)
+    except ChildProcessError:
+        return 0, 0
+    if waited != pid:
+        return 0, pid
+    code = (
+        os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+    )
+    return code, 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
@@ -84,6 +102,11 @@ def main() -> int:
                         raise
                     data = b""
                 if not data:
+                    # EOF/EIO means the child closed the slave side. Reap it
+                    # here so its status is not lost — otherwise a crashed
+                    # attach client reports a clean exit and `finally` SIGTERMs
+                    # an already-dead pid.
+                    exit_code, pid = reap(pid)
                     break
                 out.write(data)
 
@@ -117,6 +140,7 @@ def main() -> int:
                 )
                 pid = 0
                 break
+
     finally:
         out.close()
         if pid:

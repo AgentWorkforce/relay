@@ -63,8 +63,9 @@ emulator. Neither substitutes for the other:
 npm run build:core                                    # relay CLI + packages
 cargo build --release --bin agent-relay-broker        # broker
 
+# RELAYCAST_ENGINE_DIR must point at a *built* relaycast checkout.
 RELAY_TTT_LIVE=1 \
-RELAYCAST_ENGINE_DIR=/path/to/relaycast \             # a built relaycast checkout
+RELAYCAST_ENGINE_DIR=/path/to/relaycast \
   npm run test:e2e -- tests/e2e/tic-tac-toe
 ```
 

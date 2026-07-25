@@ -9,7 +9,7 @@
  * agent's output) is invisible through a pipe.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,8 +77,6 @@ function hasPython3(): boolean {
 }
 
 function spawnSyncQuiet(cmd: string, args: string[]): number {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires -- sync probe only
-  const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
   const res = spawnSync(cmd, args, { stdio: 'ignore' });
   return res.status ?? 1;
 }
@@ -159,6 +157,35 @@ export async function startEngine(serveBin: string, tmpRoot: string): Promise<En
   };
 }
 
+/**
+ * Parse a broker URL and rebuild it from its validated parts, rejecting
+ * anything that is not plain HTTP to loopback.
+ *
+ * The harness only ever talks to a broker it just started on this machine, so
+ * a non-loopback origin means the state on disk is stale or wrong — failing
+ * loudly beats silently firing test traffic (with an API key attached) at
+ * whatever host the file happens to name.
+ */
+export function requireLoopbackUrl(raw: unknown, source: string): string {
+  let url: URL;
+  try {
+    url = new URL(String(raw));
+  } catch {
+    return fail(`not a URL: ${JSON.stringify(raw)}`);
+  }
+  if (url.protocol !== 'http:') return fail(`expected http:, got ${url.protocol}`);
+  if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname)) {
+    return fail(`expected a loopback host, got ${url.hostname}`);
+  }
+  if (!url.port) return fail('expected an explicit port');
+  // Rebuilt from validated parts — no path, query, or credentials survive.
+  return `http://${url.hostname}:${url.port}`;
+
+  function fail(why: string): never {
+    throw new Error(`${source}: refusing to use broker url — ${why}`);
+  }
+}
+
 export interface BrokerHandle {
   url: string;
   apiKey: string;
@@ -167,7 +194,8 @@ export interface BrokerHandle {
   /** GET the agent's rendered screen. */
   snapshot(name: string): Promise<{ screen?: string; rows?: number; cols?: number }>;
   spawnAgent(name: string, task: string): Promise<void>;
-  stop(): void;
+  /** Await this before deleting the project dir — see the implementation. */
+  stop(): Promise<void>;
 }
 
 /**
@@ -200,40 +228,46 @@ export async function startBroker(
     timeoutMs: 30_000,
     label: 'broker connection.json',
   });
-  const connection = JSON.parse(readFileSync(connectionPath, 'utf-8')) as {
+  const parsed = JSON.parse(readFileSync(connectionPath, 'utf-8')) as {
     url: string;
     api_key: string;
   };
+  // Normalize before anything is fetched. `connection.json` is on-disk state,
+  // so its `url` is untrusted input to every request below; pinning it to a
+  // loopback origin means a stale or tampered file can only ever point the
+  // harness at a local broker, never at an arbitrary host.
+  const brokerUrl = requireLoopbackUrl(parsed.url, connectionPath);
+  const apiKey = String(parsed.api_key ?? '');
 
-  const headers = { 'X-API-Key': connection.api_key, 'Content-Type': 'application/json' };
+  const headers = { 'X-API-Key': apiKey, 'Content-Type': 'application/json' };
 
   return {
-    url: connection.url,
-    apiKey: connection.api_key,
+    url: brokerUrl,
+    apiKey,
     send: (to, from, text) =>
-      fetch(`${connection.url}/api/send`, {
+      fetch(`${brokerUrl}/api/send`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ to, from, text }),
       }),
     async snapshot(name) {
-      const res = await fetch(`${connection.url}/api/spawned/${encodeURIComponent(name)}/snapshot`, {
-        headers: { 'X-API-Key': connection.api_key },
+      const res = await fetch(`${brokerUrl}/api/spawned/${encodeURIComponent(name)}/snapshot`, {
+        headers: { 'X-API-Key': apiKey },
       });
       return (await res.json()) as { screen?: string; rows?: number; cols?: number };
     },
     async spawnAgent(name, task) {
       await runCli(['node', 'agent', 'spawn', 'claude', `--name=${name}`, '--task', task], projectDir, env);
     },
-    stop() {
+    // Must be awaited before the caller deletes `projectDir`: `node down`
+    // identifies the daemon from `.agentworkforce/relay/connection.json`, so a
+    // teardown that removes the tree first leaves the broker — and every Claude
+    // worker under it — running past the end of the suite.
+    async stop() {
       try {
-        spawn(process.execPath, [RELAY_CLI, 'node', 'down', '--force'], {
-          cwd: projectDir,
-          env,
-          stdio: 'ignore',
-        }).unref();
+        await runCli(['node', 'down', '--force'], projectDir, env);
       } catch {
-        // best effort
+        // Best effort: a broker that already died fails this, which is fine.
       }
     },
   };
@@ -325,6 +359,21 @@ export async function renderScreen(capture: Buffer, cols: number, rows: number):
   const { Terminal } = await import('@xterm/headless');
   const term = new Terminal({ cols, rows, allowProposedApi: true });
   await new Promise<void>((resolve) => term.write(new Uint8Array(capture), resolve));
+  return readScreen(term, rows);
+}
+
+/** The slice of `@xterm/headless`'s Terminal that {@link readScreen} needs. */
+interface ReadableTerminal {
+  buffer: { active: { getLine(y: number): { translateToString(trim: boolean): string } | undefined } };
+}
+
+/**
+ * Read a headless terminal's visible grid as one trimmed string per row.
+ *
+ * Shared so the capture-replay path and the synthetic status-line path cannot
+ * drift in how they read a screen.
+ */
+export function readScreen(term: ReadableTerminal, rows: number): string[] {
   const buf = term.buffer.active;
   const out: string[] = [];
   for (let y = 0; y < rows; y += 1) {
@@ -363,11 +412,18 @@ export interface EventRecorder {
  */
 export async function recordEvents(brokerUrl: string, apiKey: string): Promise<EventRecorder> {
   const { default: WebSocket } = await import('ws');
-  const wsUrl = `${brokerUrl.replace(/^http/, 'ws')}/ws`;
-  const socket = new WebSocket(wsUrl, { headers: { 'X-API-Key': apiKey } });
+  // Re-validate: `recordEvents` is exported, so it must not assume its caller
+  // already pinned the origin to loopback.
+  const origin = new URL(requireLoopbackUrl(brokerUrl, 'recordEvents'));
+  const socket = new WebSocket(`ws://${origin.hostname}:${origin.port}/ws`, {
+    headers: { 'X-API-Key': apiKey },
+  });
 
   const messages: RelayMessage[] = [];
-  const kinds: Record<string, number> = {};
+  // A Map, not an object: `kind` is an arbitrary string off the wire, and
+  // `kinds[kind] = …` on a plain object lets a frame with `"kind":"__proto__"`
+  // reach `Object.prototype`.
+  const kinds = new Map<string, number>();
 
   socket.on('message', (data: Buffer) => {
     let frame: Record<string, unknown>;
@@ -377,7 +433,7 @@ export async function recordEvents(brokerUrl: string, apiKey: string): Promise<E
       return;
     }
     const kind = typeof frame.kind === 'string' ? frame.kind : '(unknown)';
-    kinds[kind] = (kinds[kind] ?? 0) + 1;
+    kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
     if (kind === 'relay_inbound') {
       messages.push({
         from: String(frame.from ?? ''),
@@ -389,13 +445,23 @@ export async function recordEvents(brokerUrl: string, apiKey: string): Promise<E
   socket.on('error', () => {});
 
   await new Promise<void>((resolve, reject) => {
-    socket.once('open', () => resolve());
+    // A broker that accepts the TCP connection and then closes (an auth
+    // rejection arrives that way) would otherwise never settle this promise,
+    // hanging `beforeAll` until the hook timeout with no useful diagnostic.
+    const onClose = (code: number) =>
+      reject(new Error(`broker closed the event socket before it opened (code ${code})`));
+    socket.once('close', onClose);
     socket.once('error', reject);
+    socket.once('open', () => {
+      socket.off('close', onClose);
+      resolve();
+    });
   });
 
   return {
     messages: () => [...messages],
-    kinds: () => ({ ...kinds }),
+    // `fromEntries` defines own properties, so a `__proto__` kind stays inert.
+    kinds: () => Object.fromEntries(kinds),
     stop: () => socket.close(),
   };
 }

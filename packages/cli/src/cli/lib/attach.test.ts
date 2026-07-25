@@ -803,6 +803,41 @@ describe('pickInitialTerminalCols', () => {
   });
 });
 
+/**
+ * Mirror of the renderer's column accounting, for assertions only.
+ *
+ * Deliberately a separate implementation rather than importing the production
+ * one — a width assertion that reuses the code under test proves nothing.
+ */
+const ZERO_WIDTH: ReadonlyArray<readonly [number, number]> = [
+  [0x0300, 0x036f],
+  [0x200d, 0x200d],
+  [0xfe00, 0xfe0f],
+];
+const DOUBLE_WIDTH: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+function columnsOf(text: string): number {
+  const hit = (code: number, ranges: ReadonlyArray<readonly [number, number]>) =>
+    ranges.some(([lo, hi]) => code >= lo && code <= hi);
+  let total = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (hit(code, ZERO_WIDTH)) continue;
+    total += hit(code, DOUBLE_WIDTH) ? 2 : 1;
+  }
+  return total;
+}
+
 describe('clampStatusLineText', () => {
   const label = '[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]';
 
@@ -827,6 +862,26 @@ describe('clampStatusLineText', () => {
   it('assumes 80 columns when the width is unknown', () => {
     expect(clampStatusLineText(label, undefined).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
     expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
+  });
+
+  // A code-unit count would pass these while the row still overflows, which
+  // re-arms the wrap/scroll cascade the clamp exists to prevent.
+  it('measures wide glyphs as two columns', () => {
+    const wide = '[drive 名前ですよろしく | delivery=manual_flush | Ctrl+C detach]';
+    for (const cols of [20, 40, 66]) {
+      const out = clampStatusLineText(wide, cols);
+      expect(columnsOf(out), `overflowed at ${cols}: ${JSON.stringify(out)}`).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('never splits a surrogate pair', () => {
+    const emoji = `[drive ${'\u{1F680}'.repeat(20)} | Ctrl+C detach]`;
+    for (const cols of [10, 25, 50]) {
+      const out = clampStatusLineText(emoji, cols);
+      expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+      expect(out).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+      expect(columnsOf(out)).toBeLessThanOrEqual(cols);
+    }
   });
 
   it('degrades to a bare head rather than wrapping on a pathological width', () => {

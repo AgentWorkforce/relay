@@ -53,12 +53,17 @@ const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 /// healthy-but-slow agent is far worse than listing a dead one a little longer.
 const WORKER_READY_DEADLINE: Duration = Duration::from_secs(90);
 
+/// How long to wait for a SIGKILLed orphan wrapper to be reaped before giving
+/// up. Bounded so a wrapper stuck in uninterruptible sleep cannot stall the
+/// maintenance tick, which also drives delivery retries.
+const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Why a worker was reaped despite its wrapper process still being alive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrphanedWorker {
     /// The harness pid the worker reported is gone.
     HarnessExited,
-    /// `worker_ready` never arrived within {@link WORKER_READY_DEADLINE}.
+    /// `worker_ready` never arrived within [`WORKER_READY_DEADLINE`].
     NeverReady,
 }
 
@@ -307,16 +312,7 @@ impl WorkerRegistry {
         #[cfg(unix)]
         {
             match handle.child.id() {
-                // Safety: kill(pid, 0) is a POSIX-safe probe that checks process
-                // existence without sending a signal. ESRCH => the process is gone.
-                Some(pid) => {
-                    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
-                    if ret == -1 {
-                        std::io::Error::last_os_error().raw_os_error().unwrap_or(0) != libc::ESRCH
-                    } else {
-                        true
-                    }
-                }
+                Some(pid) => !pid_is_gone(pid),
                 // `id()` returns None once the child has been waited/reaped.
                 None => false,
             }
@@ -1079,24 +1075,13 @@ impl WorkerRegistry {
                             #[cfg(unix)]
                             {
                                 if let Some(pid) = handle.child.id() {
-                                    // Safety: kill(pid, 0) is a POSIX-safe probe that checks
-                                    // process existence without sending a signal. ESRCH means
-                                    // the process no longer exists.
-                                    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
-                                    if ret == -1 {
-                                        let errno = std::io::Error::last_os_error()
-                                            .raw_os_error()
-                                            .unwrap_or(0);
-                                        if errno == libc::ESRCH {
-                                            tracing::info!(
-                                                worker = %name,
-                                                pid = pid,
-                                                "reap_exited: kill(0) says ESRCH — process gone"
-                                            );
-                                            (None, true)
-                                        } else {
-                                            (None, false)
-                                        }
+                                    if pid_is_gone(pid) {
+                                        tracing::info!(
+                                            worker = %name,
+                                            pid = pid,
+                                            "reap_exited: kill(0) says ESRCH — process gone"
+                                        );
+                                        (None, true)
                                     } else {
                                         (None, false)
                                     }
@@ -1153,8 +1138,27 @@ impl WorkerRegistry {
                         reason = orphan.reason(),
                         "reap_exited: harness gone but wrapper alive — killing orphaned wrapper"
                     );
-                    // Best effort: the wrapper is unreachable by definition here.
-                    let _ = handle.child.start_kill();
+                    // SIGKILL *and* reap. Dropping the `Child` without waiting
+                    // leaves the wrapper to tokio's best-effort background
+                    // reaper, so a run of failed agent starts accumulates
+                    // zombies. SIGKILL cannot be caught, so this returns
+                    // promptly — but the deadline keeps a wrapper wedged in
+                    // uninterruptible sleep from stalling the maintenance tick,
+                    // which also drives delivery retries.
+                    if let Err(error) = handle.child.start_kill() {
+                        tracing::warn!(worker = %name, %error, "failed to signal orphaned wrapper");
+                    }
+                    match timeout(ORPHAN_REAP_TIMEOUT, handle.child.wait()).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            tracing::warn!(worker = %name, %error, "orphaned wrapper wait failed")
+                        }
+                        Err(_) => tracing::warn!(
+                            worker = %name,
+                            timeout_ms = ORPHAN_REAP_TIMEOUT.as_millis(),
+                            "orphaned wrapper did not exit before the reap deadline"
+                        ),
+                    }
                 }
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);

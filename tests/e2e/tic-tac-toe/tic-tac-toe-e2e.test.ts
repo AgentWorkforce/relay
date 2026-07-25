@@ -32,6 +32,7 @@ import {
   attachInPty,
   cleanEnv,
   preflight,
+  readScreen,
   recordEvents,
   renderScreen,
   startBroker,
@@ -60,12 +61,7 @@ async function screenAfterStatusPaints(opts: {
   await write(`\x1b[${opts.rows - 4};1H`);
   for (let n = 0; n < opts.repaints; n += 1) await write(opts.render(n));
 
-  const buf = term.buffer.active;
-  const screen: string[] = [];
-  for (let y = 0; y < opts.rows; y += 1) {
-    screen.push((buf.getLine(y)?.translateToString(true) ?? '').trimEnd());
-  }
-  return screen;
+  return readScreen(term, opts.rows);
 }
 
 describe('attach status line survives a narrow pane', () => {
@@ -140,6 +136,13 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
   let broker: BrokerHandle;
   let events: EventRecorder;
   const clients = new Map<string, PtyClient>();
+  /**
+   * Each pane's capture size once its attach snapshot had landed but before
+   * the game got going — the baseline the live-stream assertion grows from.
+   * A fixed byte floor would be a guess about snapshot size, which varies with
+   * pane geometry and harness banner.
+   */
+  const afterSnapshot = new Map<string, number>();
 
   beforeAll(async () => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'relay-ttt-'));
@@ -173,6 +176,16 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
       );
     }
 
+    // Let every pane paint its attach snapshot, then record that as the
+    // baseline. `view` writes the snapshot in one shot on connect, so a pane
+    // that never grows past this is the frozen-stream failure being guarded.
+    await waitFor(() => AGENTS.every((n) => clients.get(n)!.size() > 0), {
+      timeoutMs: 60_000,
+      label: 'every view client to paint its snapshot',
+      intervalMs: 500,
+    });
+    for (const name of AGENTS) afterSnapshot.set(name, clients.get(name)!.size());
+
     // The game is three LLM agents taking turns over the network; give it room.
     //
     // Wait for DONE_TOKEN to be DELIVERED to a player. The token is named only
@@ -187,10 +200,13 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
     );
   }, 10 * 60_000);
 
-  afterAll(() => {
+  afterAll(async () => {
     events?.stop();
     for (const client of clients.values()) client.stop();
-    broker?.stop();
+    // Await the shutdown before removing the tree: `node down` reads the
+    // broker's connection file out of it, so deleting first would strand the
+    // broker and its Claude workers.
+    await broker?.stop();
     engine?.stop();
     if (tmpRoot && existsSync(tmpRoot)) rmSync(tmpRoot, { recursive: true, force: true });
   });
@@ -198,10 +214,12 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
   it('streams live PTY output to every view client', () => {
     for (const name of AGENTS) {
       // A frozen `view` pane — the original report — shows up here as a
-      // capture no bigger than the one-shot attach snapshot.
-      expect(clients.get(name)!.size(), `${name} view stream never grew past its snapshot`).toBeGreaterThan(
-        20_000
-      );
+      // capture still the size of its one-shot attach snapshot.
+      const baseline = afterSnapshot.get(name)!;
+      expect(
+        clients.get(name)!.size(),
+        `${name} view stream never grew past its ${baseline}-byte snapshot`
+      ).toBeGreaterThan(baseline);
     }
   });
 
