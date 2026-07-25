@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Codex PTY workers now receive initial Relay tasks in one bulk write, preventing full-screen input redraws from delaying task submission for minutes.
 - `agent-relay node up` now binds an OS-assigned API port atomically by default, preventing concurrent Fleet nodes from racing over a probed port; `AGENT_RELAY_BROKER_PORT` remains an explicit stable-port override.
 - Newly connected Fleet brokers now advertise their spawn/release handlers immediately, so the first remote spawn is dispatched instead of remaining queued until load changes.
 - `agent-relay fleet spawn --session-ref` now passes the requested session to Claude and Codex as a real resume operation, and a released agent name can be reused immediately instead of being suppressed as a duplicate spawn.
