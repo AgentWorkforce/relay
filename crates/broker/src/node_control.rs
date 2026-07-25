@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
+use relaycast::{AGENT_RELAY_DISTINCT_ID_HEADER, ORIGIN_ACTOR_HEADER};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
@@ -254,7 +255,7 @@ pub(crate) async fn mint_node_token(
     // final iteration returns the last error instead of sleeping again.
     #[allow(clippy::needless_range_loop)]
     for attempt in 0..=CREATE_NODE_RETRY_BACKOFFS_MS.len() {
-        let response = match client
+        let mut builder = client
             .post(&url)
             .bearer_auth(workspace_key)
             .header("X-SDK-Version", crate::util::version::broker_version())
@@ -266,11 +267,11 @@ pub(crate) async fn mint_node_token(
             .header(
                 "X-Relaycast-Origin-Actor",
                 crate::telemetry::BROKER_ORIGIN_ACTOR,
-            )
-            .json(&request)
-            .send()
-            .await
-        {
+            );
+        if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
+            builder = builder.header(AGENT_RELAY_DISTINCT_ID_HEADER, distinct_id);
+        }
+        let response = match builder.json(&request).send().await {
             Ok(response) => response,
             Err(error) => {
                 let mint_error = CreateNodeMintError::Http(error);
@@ -1490,6 +1491,20 @@ async fn run_connected_once(
         Err(error) => {
             tracing::warn!(target = "relay_broker::fleet", error = %error, "invalid fleet node token header");
             return ControlRunResult::Disconnected;
+        }
+    }
+
+    // Telemetry attribution for the node session the gateway opens off this
+    // handshake. Both are best-effort: a header that won't parse is skipped, it
+    // never fails the connection.
+    if let Ok(value) = crate::telemetry::BROKER_ORIGIN_ACTOR.parse() {
+        request.headers_mut().insert(ORIGIN_ACTOR_HEADER, value);
+    }
+    if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
+        if let Ok(value) = distinct_id.parse() {
+            request
+                .headers_mut()
+                .insert(AGENT_RELAY_DISTINCT_ID_HEADER, value);
         }
     }
 
