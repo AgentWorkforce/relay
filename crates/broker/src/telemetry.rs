@@ -474,6 +474,51 @@ pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
 /// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
 pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
 
+/// Env var carrying the anonymous distinct id, exported by the agent-relay CLI
+/// so the broker and every spawned agent report as the same machine.
+const AGENT_RELAY_DISTINCT_ID_ENV: &str = "AGENT_RELAY_DISTINCT_ID";
+
+/// Anonymous machine id forwarded to relaycast as `X-Agent-Relay-Distinct-Id`,
+/// or `None` when the user has opted out of telemetry.
+///
+/// Relaycast's server-side product events key on this when present (see the
+/// engine's `emitServerEvent`), which is what lets a workspace-create or an
+/// agent-registration be attributed back to an install. Without it every
+/// broker-driven server event is keyed by workspace id alone, so "how many
+/// distinct installs are using this" is unanswerable.
+///
+/// Prefer the CLI-exported env var so the CLI, the broker, and the agents it
+/// spawns all report one id; fall back to the same hashed machine id the
+/// telemetry client uses, for a broker started outside the CLI. This is the
+/// same anonymous value already sent with the broker's own PostHog events —
+/// never a hostname, account, or path. Resolved once per process.
+pub(crate) fn agent_relay_distinct_id() -> Option<&'static str> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            resolve_distinct_id(
+                TelemetryClient::check_enabled(),
+                env_nonempty(AGENT_RELAY_DISTINCT_ID_ENV),
+                || load_or_create_machine_id().map(|id| anonymous_id(&id)),
+            )
+        })
+        .as_deref()
+}
+
+/// Policy half of [`agent_relay_distinct_id`], split out so the opt-out
+/// behaviour is testable without touching process-wide env or the cache.
+/// `machine_id` is lazy: an opted-out broker must not even derive one.
+fn resolve_distinct_id(
+    enabled: bool,
+    env_value: Option<String>,
+    machine_id: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    env_value.or_else(machine_id)
+}
+
 /// Build the `origin_actor` path for a spawned agent:
 /// `agent-relay-cli/agent/<harness>[@<model>]`. The model (when the broker knows
 /// it from the spawn request) is appended so server telemetry can segment by
@@ -1136,6 +1181,33 @@ mod tests {
         );
         assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
         assert_eq!(sanitize_orchestrator_harness(""), None);
+    }
+
+    #[test]
+    fn resolve_distinct_id_is_none_when_telemetry_is_disabled() {
+        // Opted out: neither the exported id nor a derived machine id may leak.
+        let mut derived = false;
+        let resolved = resolve_distinct_id(false, Some("abc123".to_string()), || {
+            derived = true;
+            Some("machine".to_string())
+        });
+        assert_eq!(resolved, None);
+        assert!(!derived, "machine id must not be derived when opted out");
+    }
+
+    #[test]
+    fn resolve_distinct_id_prefers_the_exported_env_value() {
+        let resolved = resolve_distinct_id(true, Some("abc123".to_string()), || {
+            Some("machine".to_string())
+        });
+        assert_eq!(resolved, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn resolve_distinct_id_falls_back_to_the_machine_id() {
+        let resolved = resolve_distinct_id(true, None, || Some("machine".to_string()));
+        assert_eq!(resolved, Some("machine".to_string()));
+        assert_eq!(resolve_distinct_id(true, None, || None), None);
     }
 
     #[test]

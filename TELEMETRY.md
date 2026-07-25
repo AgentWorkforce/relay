@@ -20,6 +20,8 @@ Telemetry allows us to better identify bugs and gain visibility on usage pattern
 
 Agent Relay uses an anonymous, hashed machine ID to correlate events. No personally identifiable information is collected.
 
+When Agent Relay talks to Relaycast Cloud, it sends that same anonymous ID with its requests (the `X-Agent-Relay-Distinct-Id` header) so server-side usage can be attributed to an install rather than to a workspace alone. It is not sent when telemetry is disabled by any of the methods below.
+
 **Note**: This list is regularly audited to ensure its accuracy.
 
 ## What is NOT collected?
