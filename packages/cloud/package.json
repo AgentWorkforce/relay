@@ -46,8 +46,8 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --root ../.. packages/cloud/",
+    "test:watch": "vitest --root ../.. packages/cloud/"
   },
   "dependencies": {
     "@agent-relay/config": "11.2.0",
