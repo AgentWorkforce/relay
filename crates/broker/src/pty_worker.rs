@@ -56,15 +56,32 @@ struct PendingWorkerInjection {
 /// the gap multiplies across every one.
 const DEFAULT_INJECT_RATE_MS: u64 = 5;
 
-/// Resolve the injection pacing gap from `RELAY_INJECT_RATE_MS`, falling back to
-/// [`DEFAULT_INJECT_RATE_MS`]. A value of `0` disables pacing so the body is
-/// written in one shot, exactly as it was before paced injection landed.
-fn inject_rate_from_env() -> Duration {
-    let ms = std::env::var("RELAY_INJECT_RATE_MS")
-        .ok()
+/// Codex redraws its full-screen input UI for each received character. Paced
+/// writes therefore amplify into minutes-long initial task delivery, while its
+/// bulk-input path accepts the same reminder and task immediately.
+fn default_inject_rate_ms(cli: &str) -> u64 {
+    let cli = cli_basename(cli);
+    if cli.eq_ignore_ascii_case("codex") || cli.eq_ignore_ascii_case("codex.exe") {
+        0
+    } else {
+        DEFAULT_INJECT_RATE_MS
+    }
+}
+
+/// Resolve the injection pacing gap from an optional override. Keeping this
+/// pure avoids process-environment races in tests.
+fn resolve_inject_rate(cli: &str, override_value: Option<&str>) -> Duration {
+    let ms = override_value
         .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_INJECT_RATE_MS);
+        .unwrap_or_else(|| default_inject_rate_ms(cli));
     Duration::from_millis(ms)
+}
+
+/// Resolve the injection pacing gap from `RELAY_INJECT_RATE_MS`, falling back
+/// to the CLI-specific default. Explicit values still override every CLI.
+fn inject_rate_from_env(cli: &str) -> Duration {
+    let override_value = std::env::var("RELAY_INJECT_RATE_MS").ok();
+    resolve_inject_rate(cli, override_value.as_deref())
 }
 
 /// Stage of an in-flight injection's paced write sequence. Each stage is
@@ -448,7 +465,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Per-atom gap for escape-aware paced injection writes, resolved once at
     // worker start. `Duration::ZERO` (via `RELAY_INJECT_RATE_MS=0`) restores
     // the historical single bulk write.
-    let inject_rate = inject_rate_from_env();
+    let inject_rate = inject_rate_from_env(&resolved_cli);
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
@@ -1817,6 +1834,44 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_defaults_to_bulk_injection() {
+        assert_eq!(resolve_inject_rate("codex", None), Duration::ZERO);
+        assert_eq!(
+            resolve_inject_rate("/usr/local/bin/codex", None),
+            Duration::ZERO
+        );
+        assert_eq!(
+            resolve_inject_rate(r"C:\tools\codex.exe", None),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn non_codex_clis_keep_paced_injection_default() {
+        assert_eq!(
+            resolve_inject_rate("claude", None),
+            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+        );
+        assert_eq!(
+            resolve_inject_rate("gemini", Some("invalid")),
+            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+        );
+        assert_eq!(
+            resolve_inject_rate("opencode", Some("  ")),
+            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+        );
+    }
+
+    #[test]
+    fn explicit_inject_rate_overrides_cli_default() {
+        assert_eq!(
+            resolve_inject_rate("codex", Some("7")),
+            Duration::from_millis(7)
+        );
+        assert_eq!(resolve_inject_rate("claude", Some("0")), Duration::ZERO);
+    }
 
     #[test]
     fn codex_agent_relay_boot_expected_when_configured() {

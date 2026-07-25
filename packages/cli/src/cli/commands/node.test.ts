@@ -105,6 +105,26 @@ describe('registerNodeCommands', () => {
     expect(up.options.map((option) => option.long)).toContain('--config');
   });
 
+  it('defaults node startup to an atomically OS-assigned broker API port', async () => {
+    const { program, env } = createNodeHarness();
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(env.AGENT_RELAY_BROKER_PORT).toBe('0');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an explicit broker base port for node startup', async () => {
+    const { program, env } = createNodeHarness({
+      env: { AGENT_RELAY_BROKER_PORT: '4100' },
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(env.AGENT_RELAY_BROKER_PORT).toBe('4100');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('picks up a persisted enrollment and wires its creds into the env', async () => {
     const resolveEnrollment = vi.fn(
       () => enrollmentRecord

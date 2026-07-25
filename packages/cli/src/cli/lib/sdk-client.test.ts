@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  createAgentRelay,
   resolveAgentToken,
   resolveBaseUrl,
   resolveWorkspaceKey,
@@ -104,5 +105,22 @@ describe('sdk client option resolution', () => {
     expect(resolveBaseUrl({ baseUrl: '  https://relay.example  ' })).toBe('https://relay.example');
     expect(resolveAgentToken({ token: '  at_123  ' })).toBe('at_123');
     expect(resolveAgentToken({ token: '   ', env: { RELAY_AGENT_TOKEN: '  at_env  ' } })).toBe('at_env');
+  });
+
+  it('uses an agent token as the transport credential instead of an ambient owner workspace key', () => {
+    setWorkspaceKey('ops', 'rk_live_owner_secret');
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_project_owner_secret');
+
+    const relay = createAgentRelay({
+      env: {
+        AGENT_RELAY_HOME: dir,
+        RELAY_AGENT_TOKEN: 'at_live_participant_scoped',
+      },
+    }) as { workspaceKey?: string; toJSON(): unknown };
+
+    expect(relay.workspaceKey).toBeUndefined();
+    expect(JSON.stringify(relay)).not.toContain('rk_live_owner_secret');
+    expect(JSON.stringify(relay)).not.toContain('rk_live_project_owner_secret');
+    expect(JSON.stringify(relay)).not.toContain('at_live_participant_scoped');
   });
 });

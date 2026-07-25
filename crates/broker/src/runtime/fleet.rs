@@ -415,6 +415,13 @@ impl BrokerRuntime {
         // not correlated to the agent and a resumable `spawn:<harness>` (when
         // `harnessConfig.session_id` is set) silently becomes a fresh spawn.
         let session_ref = super::relaycast_events::relaycast_spawn_session_ref(&ws_value);
+        // `action.invoke` is the authoritative control request, not a
+        // workspace-firehose echo of a local spawn. Mark it with the same
+        // control key the echo guard derives so a later release + respawn of
+        // the same agent name is not suppressed by the five-minute
+        // name-scoped echo cache.
+        let action_control_dedup_key =
+            relaycast_spawn_control_dedup_key(workspace_id.as_str(), name.as_str());
 
         super::relaycast_events::spawn_worker_from_request(
             name.clone(),
@@ -425,7 +432,7 @@ impl BrokerRuntime {
             exit_after_task,
             &ws_value,
             &workspace_id,
-            None,
+            Some(&action_control_dedup_key),
             &workspace_state,
             &mut self.workers,
             &mut self.state,
@@ -1409,6 +1416,21 @@ mod tests {
     }
 
     #[test]
+    fn action_invoke_spawn_control_key_allows_immediate_name_reuse() {
+        let local_key = relaycast_spawn_control_dedup_key("ws_1", "worker-a");
+
+        // Each node action is already correlated by its invocation id. Passing
+        // the matching control key tells the legacy firehose echo guard not to
+        // consume or reject the reusable worker name.
+        for _ in 0..2 {
+            assert!(!relaycast_ws_should_apply_local_spawn_echo_dedup(
+                Some(local_key.as_str()),
+                &local_key,
+            ));
+        }
+    }
+
+    #[test]
     fn fleet_initial_session_ref_prefers_explicit_spec_session() {
         let spec = test_agent_spec(Some("session-spec"), Some("session-harness"));
         assert_eq!(
@@ -1425,17 +1447,16 @@ mod tests {
 
     #[tokio::test]
     async fn action_invoke_spawn_seeds_authoritative_cursor_before_resumed_delivery() {
-        // An `action.invoke` spawn carrying `harnessConfig.session_id` must
-        // forward a non-None session_ref (and the invocation id) into the node
-        // `agent.register` it emits, so the spawn resumes the session and the
-        // invocation is correlated to the agent (Bug 2). Previously both were
-        // hardcoded to None on this path.
+        // The Fleet CLI sends `session_ref` at the top level. It must be
+        // forwarded with the invocation id into the node `agent.register`, so
+        // the spawn resumes the session and the invocation is correlated to
+        // the agent.
         let ws_value = json!({
+            "session_ref": "sess-resume-7",
             "agent": {
                 "harnessConfig": {
                     "runtime": "pty",
                     "command": "codex",
-                    "sessionId": "sess-resume-7",
                 }
             }
         });
@@ -1443,7 +1464,7 @@ mod tests {
         assert_eq!(
             session_ref.as_deref(),
             Some("sess-resume-7"),
-            "session ref must be derived from harnessConfig.session_id"
+            "session ref must be derived from the action input"
         );
 
         // Drive the exact registration step the spawn path uses and capture the
@@ -1657,6 +1678,84 @@ mod tests {
         assert_eq!(
             super::super::relaycast_events::relaycast_spawn_session_ref(&json!({})),
             None
+        );
+    }
+
+    #[test]
+    fn relaycast_spawn_session_ref_supports_action_and_harness_shapes() {
+        let explicit = json!({
+            "session_ref": " session-explicit ",
+            "agent": {
+                "harnessConfig": {
+                    "runtime": "pty",
+                    "command": "codex",
+                    "sessionId": "session-harness",
+                }
+            }
+        });
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&explicit).as_deref(),
+            Some("session-explicit"),
+            "the Fleet action field must take precedence over its compatibility fallback"
+        );
+
+        let nested_camel = json!({"agent": {"sessionRef": "session-nested"}});
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&nested_camel).as_deref(),
+            Some("session-nested")
+        );
+
+        let harness_only = json!({
+            "agent": {
+                "harnessConfig": {
+                    "runtime": "pty",
+                    "command": "codex",
+                    "sessionId": "session-harness",
+                }
+            }
+        });
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_session_ref(&harness_only).as_deref(),
+            Some("session-harness")
+        );
+    }
+
+    #[test]
+    fn relaycast_spawn_spec_session_id_prefers_requested_resume() {
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "codex",
+                Some(" requested-session "),
+                Some("harness-session"),
+            )
+            .as_deref(),
+            Some("requested-session")
+        );
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "claude",
+                None,
+                Some(" harness-session "),
+            )
+            .as_deref(),
+            Some("harness-session")
+        );
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "codex",
+                Some("  "),
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            super::super::relaycast_events::relaycast_spawn_spec_session_id(
+                "pool",
+                Some("metadata-only-session"),
+                None,
+            ),
+            None,
+            "custom capacity harnesses retain session_ref metadata without receiving Codex/Claude argv"
         );
     }
     #[tokio::test]

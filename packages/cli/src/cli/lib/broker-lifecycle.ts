@@ -317,12 +317,13 @@ async function resolveApiPortWithFallback(
 
 /**
  * The broker base port. `AGENT_RELAY_BROKER_PORT` overrides the default so
- * multiple brokers can run side by side (e.g. in tests); the broker HTTP API
- * binds near `basePort + 1` with fallback scanning.
+ * multiple brokers can run side by side. A value of `0` asks the OS to assign
+ * the API port atomically during broker bind, which avoids probe-then-bind
+ * races in concurrent test stacks.
  */
 export function resolveBrokerBasePort(deps: Pick<CoreDependencies, 'env'>): number {
   const raw = Number.parseInt(deps.env.AGENT_RELAY_BROKER_PORT ?? '', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BROKER_BASE_PORT;
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_BROKER_BASE_PORT;
 }
 
 export async function startBrokerWithPortFallback(
@@ -332,6 +333,30 @@ export async function startBrokerWithPortFallback(
   brokerName?: string,
   verbose?: boolean
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
+  if (basePort === 0) {
+    vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
+    const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose);
+    try {
+      await candidate.getStatus();
+      if (!candidate.apiPort) {
+        throw new Error('Broker started without reporting its OS-assigned API port.');
+      }
+    } catch (startupError) {
+      try {
+        await candidate.shutdown();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [startupError, cleanupError],
+          'Broker startup validation failed and cleanup also failed.',
+          { cause: startupError }
+        );
+      }
+      throw startupError;
+    }
+    vlog(deps, verbose, `API port assigned: ${candidate.apiPort}`);
+    return { relay: candidate, apiPort: candidate.apiPort };
+  }
+
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
@@ -344,7 +369,20 @@ export async function startBrokerWithPortFallback(
   const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
-  await candidate.getStatus();
+  try {
+    await candidate.getStatus();
+  } catch (startupError) {
+    try {
+      await candidate.shutdown();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [startupError, cleanupError],
+        'Broker startup validation failed and cleanup also failed.',
+        { cause: startupError }
+      );
+    }
+    throw startupError;
+  }
   vlog(deps, verbose, 'Broker status check passed.');
   return { relay: candidate, apiPort };
 }

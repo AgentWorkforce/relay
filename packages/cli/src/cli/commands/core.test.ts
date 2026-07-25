@@ -394,6 +394,71 @@ describe('registerCoreCommands', () => {
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
+  it('up lets the broker atomically bind an OS-assigned API port when configured with port zero', async () => {
+    const relay = createRelayMock({ apiPort: 43123 });
+    const { program, deps } = createHarness({
+      relay,
+      env: { AGENT_RELAY_BROKER_PORT: '0' },
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.isPortInUse).not.toHaveBeenCalled();
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 0, undefined, undefined);
+    expect(deps.log).toHaveBeenCalledWith('Relay API: http://localhost:43123');
+  });
+
+  it('up shuts down a port-zero broker that does not report its assigned API port', async () => {
+    const relay = createRelayMock({ apiPort: undefined });
+    const { program, deps } = createHarness({
+      relay,
+      env: { AGENT_RELAY_BROKER_PORT: '0' },
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Failed to start broker: Broker started without reporting its OS-assigned API port.'
+    );
+  });
+
+  it('up shuts down a port-zero broker when startup status validation rejects', async () => {
+    const relay = createRelayMock({
+      apiPort: 43123,
+      getStatus: vi.fn(async () => {
+        throw new Error('startup status unavailable');
+      }),
+    });
+    const { program, deps } = createHarness({
+      relay,
+      env: { AGENT_RELAY_BROKER_PORT: '0' },
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to start broker: startup status unavailable');
+  });
+
+  it('up shuts down a fixed-port broker when startup status validation rejects', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => {
+        throw new Error('startup status unavailable');
+      }),
+    });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBe(1);
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to start broker: startup status unavailable');
+  });
+
   it('up enables the local broker API', async () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });

@@ -159,6 +159,10 @@ function applyResolvedNodeSession(
  */
 async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencies): Promise<void> {
   const env = deps.core.env;
+  // Fleet nodes may be started concurrently on one machine. Let the broker
+  // bind an ephemeral API port atomically unless the operator explicitly
+  // selected a stable broker base port.
+  env.AGENT_RELAY_BROKER_PORT ??= '0';
   // An explicit workspace key (flag or env) is a direct workspace choice; the
   // enrollment store records workspace ids, not keys, so a stored enrollment
   // cannot be matched against it — skip pickup entirely rather than risk

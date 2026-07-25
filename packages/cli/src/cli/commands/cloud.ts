@@ -32,6 +32,8 @@ import {
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
+import { registerCloudRoomCommands } from './cloud-room.js';
+import { registerCloudIntegrationCommands } from './cloud-integration.js';
 import { registerCloudWorkerCommands } from './cloud-worker.js';
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
@@ -416,6 +418,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Cloud account, provider auth, and workflow commands');
 
   registerCloudWorkerCommands(cloudCommand, deps);
+  registerCloudRoomCommands(cloudCommand, deps);
+  registerCloudIntegrationCommands(cloudCommand, deps);
 
   // ── login ──────────────────────────────────────────────────────────────────
 
