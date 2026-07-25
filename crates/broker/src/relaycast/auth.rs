@@ -858,6 +858,9 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
 fn build_relay_client(api_key: &str, base_url: Option<&str>) -> Result<RelayCast> {
     let mut opts =
         RelayCastOptions::new(api_key).with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+    if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
+        opts = opts.with_agent_relay_distinct_id(distinct_id);
+    }
     if let Some(base_url) = base_url {
         opts = opts.with_base_url(base_url);
     }

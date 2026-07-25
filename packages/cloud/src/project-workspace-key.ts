@@ -8,8 +8,10 @@ import { resolveActiveWorkspaceKey } from './workspace-store.js';
 
 const PROJECT_WORKSPACE_KEY_FILENAME = 'workspace-key.json';
 
-interface ProjectWorkspaceKeyFile {
+export interface ProjectWorkspaceSession {
   workspaceKey: string;
+  /** Enrolled Fleet node associated with this project session, when one started the broker. */
+  enrolledNodeId?: string;
 }
 
 export type WorkspaceKeySource = 'flag' | 'env' | 'project' | 'store';
@@ -30,10 +32,21 @@ export function projectWorkspaceKeyPath(dataDir: string): string {
 
 /** Read a project broker's workspace key, falling through on absent or malformed state. */
 export function readProjectWorkspaceKey(dataDir: string): string | undefined {
+  return readProjectWorkspaceSession(dataDir)?.workspaceKey;
+}
+
+/** Read the project workspace and its optional enrolled Fleet identity. */
+export function readProjectWorkspaceSession(dataDir: string): ProjectWorkspaceSession | undefined {
   try {
     const raw = fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<ProjectWorkspaceKeyFile>;
-    return trimOrUndefined(parsed.workspaceKey);
+    const parsed = JSON.parse(raw) as Partial<ProjectWorkspaceSession>;
+    const workspaceKey = trimOrUndefined(parsed.workspaceKey);
+    if (!workspaceKey) return undefined;
+    const enrolledNodeId = trimOrUndefined(parsed.enrolledNodeId);
+    return {
+      workspaceKey,
+      ...(enrolledNodeId ? { enrolledNodeId } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -43,14 +56,26 @@ export function readProjectWorkspaceKey(dataDir: string): string | undefined {
  * Persist the project broker's workspace key atomically with owner-only permissions.
  * A blank key never clobbers a previously recorded workspace.
  */
-export function writeProjectWorkspaceKey(dataDir: string, workspaceKey: string | undefined): void {
+export function writeProjectWorkspaceKey(
+  dataDir: string,
+  workspaceKey: string | undefined,
+  options: { enrolledNodeId?: string } = {}
+): void {
   const key = trimOrUndefined(workspaceKey);
   if (!key) return;
+  const enrolledNodeId = trimOrUndefined(options.enrolledNodeId);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = projectWorkspaceKeyPath(dataDir);
   // Worker threads share a PID, so include a per-write nonce as well as the PID.
   let tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
-  const data = `${JSON.stringify({ workspaceKey: key } satisfies ProjectWorkspaceKeyFile, null, 2)}\n`;
+  const data = `${JSON.stringify(
+    {
+      workspaceKey: key,
+      ...(enrolledNodeId ? { enrolledNodeId } : {}),
+    } satisfies ProjectWorkspaceSession,
+    null,
+    2
+  )}\n`;
 
   let fd: number;
   try {
@@ -102,6 +127,7 @@ export function resolveWorkspaceKeyWithSource(
   return store ? { key: store, source: 'store' } : undefined;
 }
 
+/** Resolve only the selected workspace key while preserving the shared precedence rules. */
 export function resolveWorkspaceKey(options: ResolveWorkspaceKeyOptions = {}): string | undefined {
   return resolveWorkspaceKeyWithSource(options)?.key;
 }

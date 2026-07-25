@@ -218,14 +218,16 @@ export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
 
 export function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWorkspaceLike {
   if (options.relaycast) return options.relaycast;
-  const workspaceKey = options.workspaceKey ?? options.apiKey;
-  if (!workspaceKey) {
-    throw new Error('RelaycastMessagingClient requires workspaceKey when relaycast is not provided.');
+  const credential = options.workspaceKey ?? options.apiKey ?? options.agentToken;
+  if (!credential) {
+    throw new Error(
+      'RelaycastMessagingClient requires workspaceKey or agentToken when relaycast is not provided.'
+    );
   }
 
   return new RelayCast(
     definedOptions({
-      apiKey: workspaceKey,
+      apiKey: credential,
       baseUrl: options.baseUrl,
       retryPolicy: options.retryPolicy,
       ...relaycastTelemetryOptions({

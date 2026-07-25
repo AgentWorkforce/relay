@@ -25,19 +25,67 @@ impl BrokerRuntime {
     }
 }
 
-/// Derive the initial session ref for a spawn request from its `ws_value`,
-/// mirroring `spawn_worker_from_request`'s own `session_id` derivation (the
-/// harness config's `session_id`). Returns `None` when the harness config is
-/// absent or invalid, or carries no session id. Used by the node `action.invoke`
-/// spawn path to forward a resumable session ref into `agent.register`, matching
-/// the sidecar's `fleet_initial_session_ref(&spec)`.
+/// Derive the initial session ref for a spawn request from its `ws_value`.
+///
+/// Fleet CLI/API callers send `session_ref` as a top-level action input, while
+/// older firehose-style payloads may carry it under `agent` or in
+/// `harnessConfig.session_id`. Prefer the explicit action field and retain the
+/// harness fallback so both shapes resume the worker and register the same
+/// session with the node control plane.
 pub(super) fn relaycast_spawn_session_ref(ws_value: &Value) -> Option<String> {
+    let explicit = ["session_ref", "sessionRef"]
+        .iter()
+        .find_map(|key| {
+            ws_value
+                .get(*key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            let agent = ws_value.get("agent")?;
+            ["session_ref", "sessionRef"].iter().find_map(|key| {
+                agent
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
+        });
+    if let Some(session_ref) = explicit {
+        return Some(session_ref.to_string());
+    }
+
     relaycast_harness_config(ws_value)
         .ok()
         .flatten()
         .as_ref()
         .and_then(ResolvedHarnessConfig::session_id)
         .map(ToOwned::to_owned)
+}
+
+pub(super) fn relaycast_spawn_spec_session_id(
+    cli: &str,
+    session_ref: Option<&str>,
+    harness_session_id: Option<&str>,
+) -> Option<String> {
+    let normalized_cli = crate::cli::command_parse::normalize_cli_name(cli);
+    let supports_resume = normalized_cli == "codex"
+        || normalized_cli == "claude"
+        || normalized_cli.starts_with("claude:");
+    supports_resume
+        .then_some(session_ref)
+        .flatten()
+        .and_then(|value| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
+        .or_else(|| {
+            harness_session_id.and_then(|value| {
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.to_string())
+            })
+        })
 }
 
 fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
@@ -355,10 +403,15 @@ pub(super) async fn spawn_worker_from_request(
         .as_ref()
         .map(ResolvedHarnessConfig::runtime)
         .unwrap_or(AgentRuntime::Pty);
-    let session_id = harness_config
+    let harness_session_id = harness_config
         .as_ref()
         .and_then(ResolvedHarnessConfig::session_id)
         .map(ToOwned::to_owned);
+    let session_id = relaycast_spawn_spec_session_id(
+        &cli,
+        session_ref.as_deref(),
+        harness_session_id.as_deref(),
+    );
 
     tracing::info!(name = %name, cli = %cli, task = ?task, channel = ?channel, "handling spawn request from relaycast WS");
     let channels = channel

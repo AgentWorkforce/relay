@@ -79,7 +79,6 @@ describe.skipIf(!pre.ok)('Cloud-enrolled node startup', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
       capacityHarnesses: 'claude',
       usePersistedEnrollment: true,
     });
@@ -102,9 +101,17 @@ describe.skipIf(!pre.ok)('Cloud-enrolled node startup', () => {
       async () => {
         const nodes = await getNodes(engine, workspaceKey, { name: 'cloud-enrolled' });
         const match = nodes.find((node) => node.id === 'node_cloud_enrolled');
-        return match?.live && match.handlers_live ? match : null;
+        // The broker provider is independently ready for spawn/release before
+        // the config-backed action provider finishes registering.
+        return match?.live &&
+          match.handlers_live &&
+          match.capabilities.some((capability) => capability.name === 'cloud:ping') &&
+          match.tags?.includes('cloud-enrolled') &&
+          match.tags.includes('e2e')
+          ? match
+          : null;
       },
-      { timeoutMs: 30_000, label: 'Cloud-enrolled node online with live handlers' }
+      { timeoutMs: 30_000, label: 'Cloud-enrolled node online with broker and action handlers' }
     );
 
     expect(enrolled.name).toBe('cloud-enrolled');
@@ -176,7 +183,6 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
       // Pin capacity so the node advertises a distinct harness (`claude`) plus the
       // shared `pool`. A `spawn:<harness>` shadow delegates to the broker's native
       // capacity for that harness, so every shadow the node defines (spawn:claude,
@@ -193,7 +199,6 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
       // Distinct `codex` plus the shared `pool` (see node-a's note).
       capacityHarnesses: 'codex,pool',
     });
@@ -207,9 +212,22 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
         const nodes = await getNodes(engine, workspaceKey);
         const a = node(nodes, 'node-a');
         const b = node(nodes, 'node-b');
-        return a?.live && a.handlers_live && b?.live && b.handlers_live ? nodes : null;
+        const aCapabilities = new Set(a?.capabilities.map((capability) => capability.name));
+        const bCapabilities = new Set(b?.capabilities.map((capability) => capability.name));
+        // handlers_live covers the broker provider too, so wait for the
+        // separately connected action providers before asserting their union.
+        return a?.live &&
+          a.handlers_live &&
+          aCapabilities.has('echo') &&
+          aCapabilities.has('work') &&
+          b?.live &&
+          b.handlers_live &&
+          bCapabilities.has('ping') &&
+          bCapabilities.has('work')
+          ? nodes
+          : null;
       },
-      { timeoutMs: 45_000, label: 'both nodes online+handlers_live' }
+      { timeoutMs: 45_000, label: 'both nodes online with broker and action handlers' }
     );
   }, 60_000);
 
@@ -269,7 +287,6 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      brokerPort: await getFreePort(),
     });
     badNode.start();
     try {

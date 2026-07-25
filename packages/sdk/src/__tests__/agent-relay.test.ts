@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const relaycastMocks = vi.hoisted(() => {
@@ -95,6 +96,44 @@ describe('AgentRelay workspace setup', () => {
     expect(relaycastMocks.relayCast).toHaveBeenCalledWith({
       apiKey: 'rk_live_existing',
       baseUrl: 'https://api.example.test',
+    });
+  });
+
+  it('uses an agent token as the only Relaycast transport credential', () => {
+    const relay = new AgentRelay({
+      agentToken: 'at_live_participant_scoped',
+      baseUrl: 'https://api.example.test',
+    });
+
+    expect(relay.workspaceKey).toBeUndefined();
+    expect(relaycastMocks.relayCast).toHaveBeenCalledWith({
+      apiKey: 'at_live_participant_scoped',
+      baseUrl: 'https://api.example.test',
+    });
+  });
+
+  it('redacts credentials from JSON, object spread, and Node inspection', () => {
+    const relay = new AgentRelay({
+      workspaceKey: 'rk_live_owner_marker',
+      agentToken: 'at_live_agent_marker',
+      observerToken: 'ot_live_observer_marker',
+      baseUrl: 'https://user:password@example.test',
+    });
+
+    const rendered = [
+      JSON.stringify(relay),
+      JSON.stringify({ ...relay }),
+      inspect(relay),
+      inspect({ ...relay }),
+    ].join('\n');
+
+    expect(rendered).not.toContain('rk_live_owner_marker');
+    expect(rendered).not.toContain('at_live_agent_marker');
+    expect(rendered).not.toContain('ot_live_observer_marker');
+    expect(rendered).not.toContain('password');
+    expect(JSON.parse(JSON.stringify(relay))).toEqual({
+      type: 'AgentRelay',
+      authenticated: true,
     });
   });
 

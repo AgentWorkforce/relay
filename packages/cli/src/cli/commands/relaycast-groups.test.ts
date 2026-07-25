@@ -150,6 +150,18 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
   });
 
+  it('message dm send exposes immediate Relay delivery', async () => {
+    const { program, relay } = harness(registerMessageCommands);
+    await program.parseAsync(['message', 'dm', 'send', 'lead', 'wake up', '--mode', 'steer'], {
+      from: 'user',
+    });
+    expect(relay.messages.direct).toHaveBeenCalledWith({
+      to: 'lead',
+      text: 'wake up',
+      mode: 'steer',
+    });
+  });
+
   it('integration webhook create routes to integrations.webhooks.create', async () => {
     const { program, relay } = harness(registerIntegrationCommands);
     await program.parseAsync(

@@ -22,7 +22,8 @@ import {
   type RunningNodeProviderChild,
 } from './node-provider-child.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
-import { writeProjectWorkspaceKey } from './project-workspace-key.js';
+import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
+import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
 
 type UpOptions = {
   spawn?: boolean;
@@ -316,12 +317,13 @@ async function resolveApiPortWithFallback(
 
 /**
  * The broker base port. `AGENT_RELAY_BROKER_PORT` overrides the default so
- * multiple brokers can run side by side (e.g. in tests); the broker HTTP API
- * binds near `basePort + 1` with fallback scanning.
+ * multiple brokers can run side by side. A value of `0` asks the OS to assign
+ * the API port atomically during broker bind, which avoids probe-then-bind
+ * races in concurrent test stacks.
  */
 export function resolveBrokerBasePort(deps: Pick<CoreDependencies, 'env'>): number {
   const raw = Number.parseInt(deps.env.AGENT_RELAY_BROKER_PORT ?? '', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BROKER_BASE_PORT;
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_BROKER_BASE_PORT;
 }
 
 export async function startBrokerWithPortFallback(
@@ -331,6 +333,30 @@ export async function startBrokerWithPortFallback(
   brokerName?: string,
   verbose?: boolean
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
+  if (basePort === 0) {
+    vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
+    const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose);
+    try {
+      await candidate.getStatus();
+      if (!candidate.apiPort) {
+        throw new Error('Broker started without reporting its OS-assigned API port.');
+      }
+    } catch (startupError) {
+      try {
+        await candidate.shutdown();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [startupError, cleanupError],
+          'Broker startup validation failed and cleanup also failed.',
+          { cause: startupError }
+        );
+      }
+      throw startupError;
+    }
+    vlog(deps, verbose, `API port assigned: ${candidate.apiPort}`);
+    return { relay: candidate, apiPort: candidate.apiPort };
+  }
+
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
   // which caused stale-flock "already running" errors.
@@ -343,7 +369,20 @@ export async function startBrokerWithPortFallback(
   const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
-  await candidate.getStatus();
+  try {
+    await candidate.getStatus();
+  } catch (startupError) {
+    try {
+      await candidate.shutdown();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [startupError, cleanupError],
+        'Broker startup validation failed and cleanup also failed.',
+        { cause: startupError }
+      );
+    }
+    throw startupError;
+  }
   vlog(deps, verbose, 'Broker status check passed.');
   return { relay: candidate, apiPort };
 }
@@ -1197,6 +1236,59 @@ function planCapacitySource(
   return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
 }
 
+interface PinnedProjectWorkspaceSession {
+  workspaceKey: string;
+  enrolledNodeId?: string;
+}
+
+/** Read the minimal project session needed during broker startup. */
+function readPinnedProjectWorkspaceSession(
+  dataDir: string,
+  deps: CoreDependencies
+): PinnedProjectWorkspaceSession | undefined {
+  try {
+    const parsed = JSON.parse(deps.fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8')) as Partial<{
+      workspaceKey: string;
+      enrolledNodeId: string;
+    }>;
+    const workspaceKey =
+      typeof parsed.workspaceKey === 'string' ? parsed.workspaceKey.trim() || undefined : undefined;
+    if (!workspaceKey) {
+      return undefined;
+    }
+    const enrolledNodeId =
+      typeof parsed.enrolledNodeId === 'string' ? parsed.enrolledNodeId.trim() || undefined : undefined;
+    return {
+      workspaceKey,
+      ...(enrolledNodeId ? { enrolledNodeId } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resume the pinned project session unless explicit credentials override it. */
+function resumePinnedProjectWorkspace(
+  options: UpOptions,
+  deps: CoreDependencies,
+  projectDataDir: string
+): PinnedProjectWorkspaceSession | undefined {
+  const explicitEnvWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.env);
+  if (options.workspaceKey?.trim() || explicitEnvWorkspaceKey || deps.env.RELAY_NODE_TOKEN?.trim()) {
+    return undefined;
+  }
+
+  const session = readPinnedProjectWorkspaceSession(projectDataDir, deps);
+  if (session) {
+    deps.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
+    deps.env.RELAY_API_KEY = session.workspaceKey;
+    if (session.enrolledNodeId) {
+      deps.env.AGENT_RELAY_ENROLLED_NODE_ID = session.enrolledNodeId;
+    }
+  }
+  return session;
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
 
@@ -1207,6 +1299,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   // --state-dir), so the key must be persisted here even when broker state is
   // redirected elsewhere.
   const projectWorkspaceKeyDataDir = paths.dataDir;
+  const resumedProjectSession = resumePinnedProjectWorkspace(options, deps, projectWorkspaceKeyDataDir);
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1434,7 +1527,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // workspace. Persistence must never abort startup, so a write failure is
     // swallowed.
     try {
-      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined);
+      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined, {
+        enrolledNodeId: deps.env.AGENT_RELAY_ENROLLED_NODE_ID ?? resumedProjectSession?.enrolledNodeId,
+      });
     } catch {
       // best-effort: a broker that came up should stay up even if the key file
       // can't be written (read-only dir, etc.).

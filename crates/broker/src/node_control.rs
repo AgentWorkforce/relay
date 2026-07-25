@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
+use relaycast::{AGENT_RELAY_DISTINCT_ID_HEADER, ORIGIN_ACTOR_HEADER};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
@@ -254,7 +255,7 @@ pub(crate) async fn mint_node_token(
     // final iteration returns the last error instead of sleeping again.
     #[allow(clippy::needless_range_loop)]
     for attempt in 0..=CREATE_NODE_RETRY_BACKOFFS_MS.len() {
-        let response = match client
+        let mut builder = client
             .post(&url)
             .bearer_auth(workspace_key)
             .header("X-SDK-Version", crate::util::version::broker_version())
@@ -266,11 +267,11 @@ pub(crate) async fn mint_node_token(
             .header(
                 "X-Relaycast-Origin-Actor",
                 crate::telemetry::BROKER_ORIGIN_ACTOR,
-            )
-            .json(&request)
-            .send()
-            .await
-        {
+            );
+        if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
+            builder = builder.header(AGENT_RELAY_DISTINCT_ID_HEADER, distinct_id);
+        }
+        let response = match builder.json(&request).send().await {
             Ok(response) => response,
             Err(error) => {
                 let mint_error = CreateNodeMintError::Http(error);
@@ -1216,6 +1217,12 @@ fn handle_disconnected_command(
             resume_cursor,
         }) => {
             load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+            // This control client is the broker provider, which owns the
+            // node's spawn/release capacity as soon as its socket connects.
+            // A fresh node has no workers yet, so no load transition would
+            // otherwise publish the first `handlers_live=true` snapshot and
+            // the engine would queue the very first spawn indefinitely.
+            load.handlers_live = true;
             *registration = Some(build_node_register(
                 &manifest,
                 &config.node_id,
@@ -1487,6 +1494,20 @@ async fn run_connected_once(
         }
     }
 
+    // Telemetry attribution for the node session the gateway opens off this
+    // handshake. Both are best-effort: a header that won't parse is skipped, it
+    // never fails the connection.
+    if let Ok(value) = crate::telemetry::BROKER_ORIGIN_ACTOR.parse() {
+        request.headers_mut().insert(ORIGIN_ACTOR_HEADER, value);
+    }
+    if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
+        if let Ok(value) = distinct_id.parse() {
+            request
+                .headers_mut()
+                .insert(AGENT_RELAY_DISTINCT_ID_HEADER, value);
+        }
+    }
+
     let (ws, _) = match tokio_tungstenite::connect_async(request).await {
         Ok(connected) => connected,
         Err(error) => {
@@ -1543,6 +1564,7 @@ async fn run_connected_once(
                 match command {
                     Some(FleetControlCommand::RegisterNode { manifest, resume_cursor }) => {
                         load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+                        load.handlers_live = true;
                         let mut next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
                         next.provider = Some(provider.clone());
                         node_register = next.clone();
@@ -2830,7 +2852,15 @@ mod tests {
             let register = next_node_to_server(&mut ws).await;
             assert!(matches!(register, BrokerToRelaycast::NodeRegister(_)));
             let heartbeat = next_node_to_server(&mut ws).await;
-            assert!(matches!(heartbeat, BrokerToRelaycast::NodeHeartbeat(_)));
+            match heartbeat {
+                BrokerToRelaycast::NodeHeartbeat(heartbeat) => {
+                    assert!(
+                        heartbeat.handlers_live,
+                        "the broker provider must advertise capacity before the first spawn"
+                    );
+                }
+                other => panic!("expected initial node heartbeat, got {other:?}"),
+            }
 
             ws.send(Message::Text(
                 serde_json::to_string(&RelaycastToBroker::Deliver(Deliver {

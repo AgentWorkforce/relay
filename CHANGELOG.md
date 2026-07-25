@@ -10,13 +10,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
+- The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
+- The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
+
+## [11.2.0] - 2026-07-25
+
+### Added
+
+- `agent-relay cloud room` can invite trusted full room participants through explicit secret sinks, manage members, and establish revocable per-device Relaycast sessions without sharing the workspace key.
+- `agent-relay cloud integration` exposes the existing Cloud integration catalog, connection, and disconnection lifecycle from the CLI; connected providers remain available through Relayfile's normal setup, mount, and writeback flow.
+- `agent-relay agent me|presence` use scoped agent credentials for room-safe identity and presence checks.
+
+### Fixed
+
+- Codex PTY workers now receive initial Relay tasks in one bulk write, preventing full-screen input redraws from delaying task submission for minutes.
+- `agent-relay node up` now binds an OS-assigned API port atomically by default, preventing concurrent Fleet nodes from racing over a probed port; `AGENT_RELAY_BROKER_PORT` remains an explicit stable-port override.
+- Newly connected Fleet brokers now advertise their spawn/release handlers immediately, so the first remote spawn is dispatched instead of remaining queued until load changes.
+- `agent-relay fleet spawn --session-ref` now passes the requested session to Claude and Codex as a real resume operation, and a released agent name can be reused immediately instead of being suppressed as a duplicate spawn.
+
+## [11.1.1] - 2026-07-23
+
+### Added
+
+- `relay node agent list --pretty` now provides a compact agent view with each agent's name, CLI/model, state, and relative last activity time.
+- `agent-relay fleet spawn|release` can create, target, and release agents across live Fleet nodes directly from the terminal.
+- `agent-relay fleet nodes --all` includes offline and direct fleet-history records when they are needed for diagnostics.
+- `agent-relay message dm send --mode steer` can wake an idle remote agent immediately from the terminal.
+
+### Changed
+
+- `agent-relay fleet nodes` now shows only live fleet providers by default instead of mixing unavailable nodes with direct-delivery history.
+- CLI and MCP workspace selection is now pinned to the current project, so later agents and processes resume one collaboration session until a new workspace is explicitly created or selected.
+- Enrolled Fleet nodes now retain their node identity when a pinned project session is restarted.
+
+### Fixed
+
+- MCP workspace creation and selection now preserve completed remote or in-memory changes with a warning when local persistence fails, preventing duplicate workspaces and false failed switches.
+- Workspace creation now rejects invalid names before provisioning a remote workspace.
+- Fleet node restarts now reject stored enrollment fallbacks that do not match the project-pinned node identity.
 
 ## [11.0.2] - 2026-07-22
 
 ### Fixed
 
 - `agent-relay agent attach --mode drive|passthrough` now takes raw input before replaying terminal state and preserves inherited raw mode on detach, preventing mouse-report escape characters and parent-TUI input regressions.
-- `relay-feature-guardian` now treats an admitted Slack write without a provider receipt as a retry-pending warning, retaining its checkpoint and idempotency key instead of failing the guardian run.
 
 ## [11.0.1] - 2026-07-22
 
@@ -64,7 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay cloud enroll --workspace` now validates and resolves Cloud UUIDs and unified `rw_` IDs before minting, and reports unresolvable identifiers instead of mislabeling them as permission failures.
-- `relay-feature-guardian` now picker-gates its Slack mirror to the configured output channel, moves checks off the fleet's shared Claude subscription, and surfaces failed posts as failed runs instead of silently reporting success.
 
 ## [10.6.5] - 2026-07-19
 
@@ -83,7 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
 - `AgentRelaySDK` now maps Relaycast lifecycle states onto its existing Swift presence states, so root-package consumers compile with Relaycast 6.1 and later while package-local builds remain compatible with 6.0.5.
-- `relay-feature-guardian` now limits read mirrors to the feature manifest and workspace memory while keeping Slack write-only to its configured output channel, and advances its exact, revision-safe cycle checkpoint only after a bounded wait returns a real Slack receipt while safely reconciling retired manifest features.
 - `agent-relay-broker` and `@agent-relay/utils` now preserve mise/asdf/rtx-style CLI shims when spawning provider workers, so Codex, Claude, Gemini, and other agent CLIs installed via a version manager receive their own permission flags (e.g. `--dangerously-bypass-approvals-and-sandbox`) instead of the manager binary rejecting them.
 
 ## [10.6.3] - 2026-07-17

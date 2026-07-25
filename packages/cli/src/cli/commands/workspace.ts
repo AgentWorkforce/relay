@@ -3,7 +3,8 @@ import { InvalidArgumentError } from 'commander';
 import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
-import { readWorkspaceStore, setWorkspaceKey, switchWorkspace } from '../lib/workspace-store.js';
+import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
+import { persistWorkspaceSession, validateWorkspaceSessionName } from '../lib/workspace-session.js';
 
 export type WorkspaceCommandDependencies = SdkCommandDeps;
 
@@ -59,11 +60,12 @@ export function registerWorkspaceCommands(
     .option('--base-url <url>', 'Override the API base URL')
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
-        const relay = await deps.createWorkspace(name, o.baseUrl as string | undefined);
+        const workspaceName = validateWorkspaceSessionName(name);
+        const relay = await deps.createWorkspace(workspaceName, o.baseUrl as string | undefined);
         if (relay.workspaceKey) {
-          setWorkspaceKey(name, relay.workspaceKey);
+          persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey });
         }
-        printJson(deps, { name, workspaceKey: relay.workspaceKey });
+        printJson(deps, { name: workspaceName, workspaceKey: relay.workspaceKey });
       });
     });
 
@@ -99,8 +101,7 @@ export function registerWorkspaceCommands(
     .argument('<key>', 'Workspace key')
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
-        setWorkspaceKey(name, key);
-        switchWorkspace(name);
+        persistWorkspaceSession({ name, workspaceKey: key });
         deps.log(`Joined and switched to workspace "${name}".`);
       });
     });
@@ -111,7 +112,14 @@ export function registerWorkspaceCommands(
     .argument('<name>', 'Workspace name')
     .action(async (name: string) => {
       await runSdk(deps, async () => {
-        switchWorkspace(name);
+        const store = readWorkspaceStore();
+        const workspace = store.workspaces[name];
+        if (!workspace) {
+          throw new Error(
+            `Unknown workspace "${name}". Add it with \`relay workspace set_key ${name} <key>\`.`
+          );
+        }
+        persistWorkspaceSession({ name, workspaceKey: workspace.key });
         deps.log(`Switched to workspace "${name}".`);
       });
     });

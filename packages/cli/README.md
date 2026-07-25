@@ -47,11 +47,122 @@ agent-relay node agent release <name>
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
+## Remote fleet agents
+
+The `fleet` command group lists and controls agents across all live nodes in
+the active project workspace:
+
+```bash
+agent-relay fleet nodes
+agent-relay fleet nodes --name sf-mini --capability spawn:codex
+
+# Exact-node placement uses the same agent-scoped Fleet action as the MCP tool.
+agent-relay fleet spawn codex \
+  --name api-worker \
+  --task "Use https://agentrelay.com/skill, ACK over Relay, then wait for details." \
+  --node sf-mini
+
+# Resume a known Claude/Codex CLI session on its origin node.
+agent-relay fleet spawn codex \
+  --name api-worker \
+  --task "Resume over Relay and continue the prior task." \
+  --node sf-mini \
+  --session-ref <actual-codex-thread-id>
+
+# Omit --node for automatic eligible-node placement.
+agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
+
+agent-relay message dm send api-worker "Detailed task instructions"
+# Wake an idle worker immediately instead of queueing for its next tool boundary.
+agent-relay message dm send api-worker "Please check Relay now." --mode steer
+agent-relay message inbox check --limit 20
+agent-relay fleet release api-worker --reason "Work accepted"
+```
+
+Commands use the workspace session pinned to the current project. Targeted
+spawn and messaging operations also need an agent identity: pass `--token` or
+set `RELAY_AGENT_TOKEN` to the token returned by
+`agent-relay agent register <lead-name>`. Automatic placement and release need
+only the workspace key.
+
+`--session-ref` is a real CLI resume, not a logical collaboration label. Pass
+the actual Claude session ID or Codex thread ID and target its origin node.
+Omit it to start a new CLI session. The project’s Agent Relay workspace remains
+pinned independently until you explicitly create or select another workspace.
+
 To run as a Cloud-managed node, first redeem a one-time enrollment token, then start the node:
 
 ```bash
 agent-relay cloud enroll --token ocl_node_enr_...
 agent-relay node up
+```
+
+## Cloud multiplayer rooms
+
+Cloud room membership is scoped to one Relay workspace. Every v1 invite creates
+a trusted full room participant: they receive their own revocable Relaycast
+human credential and may use all ordinary agent-level collaboration actions.
+The workspace key itself is never shared, so owner-key administration and Agent
+Relay Cloud organization administration remain owner-only.
+
+```bash
+# Owner: invite and manage people in this workspace.
+agent-relay cloud room invite \
+  --workspace rw_7ccfea89 \
+  --email teammate@example.com \
+  --token-file ./teammate.room-invite
+agent-relay cloud room invites --workspace rw_7ccfea89
+agent-relay cloud room members --workspace rw_7ccfea89
+
+# Share the owner-only token file over a secure channel. The invitee keeps the
+# token out of shell history and process arguments.
+# Tokens use the consumer-neutral relay_room_inv_ prefix followed by exactly
+# 43 URL-safe characters.
+read -rs ROOM_INVITATION_TOKEN
+printf '%s' "$ROOM_INVITATION_TOKEN" |
+  agent-relay cloud room accept --token-stdin
+unset ROOM_INVITATION_TOKEN
+
+# Trusted clients establish one stable session per device.
+# --json intentionally includes the participant credential; capture it in
+# memory and do not log or persist it.
+agent-relay cloud room session \
+  --workspace rw_7ccfea89 \
+  --device-id client-macbook \
+  --json
+
+# Explicitly ending or replacing the device session revokes the old scoped token.
+agent-relay cloud room revoke-session \
+  --workspace rw_7ccfea89 \
+  --device-id client-macbook
+
+# Participants use their scoped token for agent-level Relaycast operations; an
+# ambient owner workspace key is never consulted when --token is present.
+agent-relay agent presence \
+  --token at_live_... \
+  --base-url https://cast.agentrelay.com
+
+# Owner: revoke access and active room sessions.
+agent-relay cloud room remove-member <membership-id> --workspace rw_7ccfea89
+```
+
+There is no room-specific integration grant or credential service. Connect the
+workspace provider through the existing Cloud integration API, then use the
+normal Relayfile workflow for setup, mounts, reads, and writebacks:
+
+```bash
+# Owner: discover or connect a provider through Cloud.
+agent-relay cloud integration catalog
+agent-relay cloud integration connect linear --workspace rw_7ccfea89
+agent-relay cloud integration connections --workspace rw_7ccfea89
+
+# Member clients use Relayfile directly, including its OAuth/backend selection
+# and durable writeback queue.
+relayfile integration available
+relayfile integration connect linear
+RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile setup
+RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile status
+RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile writeback status
 ```
 
 `local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type LoadOptions = {
   connectThrows?: boolean;
   forceEntrypoint?: boolean;
+  persistedWorkspaceKey?: string;
 };
 
 type RelayBehavior = {
@@ -28,6 +29,13 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const telemetryTrack = vi.fn();
   const telemetryInit = vi.fn();
   const telemetryShutdown = vi.fn(async () => undefined);
+  const persistWorkspaceSession = vi.fn();
+  const resolveWorkspaceSessionKey = vi.fn(() => options.persistedWorkspaceKey);
+  const validateWorkspaceSessionName = vi.fn((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Workspace name is required.');
+    return trimmed;
+  });
   const relayInstances: Array<{
     config: Record<string, unknown>;
     registerOrRotate: ReturnType<typeof vi.fn>;
@@ -248,6 +256,11 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     shutdown: telemetryShutdown,
     track: telemetryTrack,
   }));
+  vi.doMock('./lib/workspace-session.js', () => ({
+    persistWorkspaceSession,
+    resolveWorkspaceSessionKey,
+    validateWorkspaceSessionName,
+  }));
 
   const mod = await import('./agent-relay-mcp.js');
   if (options.forceEntrypoint) {
@@ -263,6 +276,9 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       telemetryTrack,
       telemetryInit,
       telemetryShutdown,
+      persistWorkspaceSession,
+      resolveWorkspaceSessionKey,
+      validateWorkspaceSessionName,
       RelayCast,
       FakeTransport,
     },
@@ -314,6 +330,73 @@ describe('agent-relay-mcp startup helpers', () => {
       skipBootstrap: true,
     });
   });
+
+  it('resumes the persisted project workspace when no workspace env is set', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN', '');
+    vi.stubEnv('RELAY_AGENT_NAME', '');
+    vi.stubEnv('RELAY_CLAW_NAME', '');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_persisted',
+      agentName: 'orchestrator',
+    });
+    expect(mocks.resolveWorkspaceSessionKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pair a persisted workspace with an unbound ambient agent token', async () => {
+    const { mod } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_stale_workspace');
+    vi.stubEnv('RELAY_AGENT_NAME', '');
+    vi.stubEnv('RELAY_CLAW_NAME', '');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_persisted',
+      agentToken: undefined,
+      agentName: 'orchestrator',
+    });
+  });
+
+  it('keeps an agent token paired with an explicitly configured agent-relay workspace key', async () => {
+    const { mod } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_unrelated_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', 'rk_live_agent_env');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_agent_env');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_agent_env',
+      agentToken: 'at_live_agent_env',
+    });
+  });
+
+  it('trims workspace env values and falls through whitespace-only primary candidates', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_unrelated_persisted',
+    });
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '   ');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', ' rk_live_agent_env ');
+    vi.stubEnv('RELAY_API_KEY', 'rk_live_legacy');
+    vi.stubEnv('RELAY_AGENT_TOKEN', ' at_live_agent_env ');
+
+    expect(mod.optionsFromEnv()).toMatchObject({
+      workspaceKey: 'rk_live_agent_env',
+      agentToken: 'at_live_agent_env',
+    });
+    expect(mocks.resolveWorkspaceSessionKey).not.toHaveBeenCalled();
+  });
 });
 
 describe('createAgentRelayMcpServer', () => {
@@ -356,6 +439,10 @@ describe('createAgentRelayMcpServer', () => {
     expect(workspaceResult.structuredContent).toEqual({
       workspaceKey: 'rk_live_created',
       workspaceName: 'Test Workspace',
+    });
+    expect(mocks.persistWorkspaceSession).toHaveBeenCalledWith({
+      name: 'Test Workspace',
+      workspaceKey: 'rk_live_created',
     });
 
     const registerResult = await server.tools.get('register_agent')?.handler({
@@ -420,6 +507,64 @@ describe('createAgentRelayMcpServer', () => {
     expect(promptResult.messages[0].content.text).toContain('query_nodes');
     expect(promptResult.messages[0].content.text).toContain('spawn');
     expect(promptResult.messages[0].content.text).not.toContain('workspace.create');
+  });
+
+  it('returns a created workspace key when local session persistence fails', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.persistWorkspaceSession.mockImplementationOnce(() => {
+      throw new Error('project directory is read-only');
+    });
+
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
+    const server = mocks.serverInstances[0];
+    const result = await server.tools.get('create_workspace')?.handler({ name: 'Durable Workspace' });
+
+    expect(result.structuredContent).toEqual({
+      workspaceKey: 'rk_live_created',
+      workspaceName: 'Test Workspace',
+      warning:
+        'Workspace created, but its session could not be persisted locally: project directory is read-only. ' +
+        'Keep the returned workspace key and retry persistence before starting another session.',
+    });
+    expect(mocks.RelayCast.createWorkspace).toHaveBeenCalledTimes(1);
+
+    await server.tools.get('register_agent')?.handler({ name: 'WorkerAfterWarning' });
+    expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'rk_live_created')).toBe(true);
+  });
+
+  it('rejects a blank workspace name before provisioning a remote workspace', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
+    const server = mocks.serverInstances[0];
+
+    await expect(server.tools.get('create_workspace')?.handler({ name: '   ' })).rejects.toThrow(
+      'Workspace name is required.'
+    );
+    expect(mocks.RelayCast.createWorkspace).not.toHaveBeenCalled();
+    expect(mocks.persistWorkspaceSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps a selected workspace usable when local session persistence fails', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.persistWorkspaceSession.mockImplementationOnce(() => {
+      throw new Error('project directory is read-only');
+    });
+
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
+    const server = mocks.serverInstances[0];
+    const result = await server.tools
+      .get('set_workspace_key')
+      ?.handler({ workspace_key: 'rk_live_selected' });
+
+    expect(result.structuredContent).toEqual({
+      message:
+        'Workspace key set. Call "register_agent" to join this workspace. ' +
+        'The workspace is active for this process, but its session could not be persisted locally: ' +
+        'project directory is read-only. Retry persistence before restarting this MCP server.',
+    });
+
+    await server.tools.get('register_agent')?.handler({ name: 'WorkerAfterSetWarning' });
+    expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'rk_live_selected')).toBe(true);
   });
 
   it('registers submit_result when a spawned-agent result callback is configured', async () => {
@@ -714,7 +859,10 @@ describe('createAgentRelayMcpServer', () => {
     const result = await setWorkspaceKeyTool?.handler({ workspace_key: 'rk_live_existing' });
 
     expect(result.structuredContent).toEqual({
-      message: 'Workspace key set.',
+      message: 'Workspace key set and persisted for this project.',
+    });
+    expect(mocks.persistWorkspaceSession).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_existing',
     });
 
     await server.tools.get('check_inbox')?.handler({});

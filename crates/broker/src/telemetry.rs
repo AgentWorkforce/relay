@@ -7,9 +7,12 @@
 //!   - Set `AGENT_RELAY_TELEMETRY_DISABLED=1` (or `true`)
 //!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
 //!   - Or write `{"enabled": false}` to `~/.agentworkforce/relay/telemetry.json`
+//!     (or `$AGENT_RELAY_DATA_DIR/telemetry.json` when that is set — the same
+//!     file `agent-relay telemetry disable` writes)
 
 use std::path::PathBuf;
 
+use relaycast::sanitize_agent_relay_distinct_id;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -207,8 +210,33 @@ struct TelemetryPrefs {
     notified_at: Option<String>,
 }
 
+/// Override for both the preference file and the machine-id file, matching the
+/// TypeScript CLI (`telemetry/config.ts`, `telemetry/machine-id.ts`). When set,
+/// `agent-relay telemetry disable` writes the opt-out there — so the broker has
+/// to read it from the same place or it would ignore an explicit opt-out.
+const DATA_DIR_ENV: &str = "AGENT_RELAY_DATA_DIR";
+
+fn data_dir_override() -> Option<PathBuf> {
+    env_nonempty(DATA_DIR_ENV).map(PathBuf::from)
+}
+
+/// Resolve a telemetry data file: the `AGENT_RELAY_DATA_DIR` override wins,
+/// otherwise the platform default. Pure, so the precedence is testable without
+/// mutating process-wide env from a parallel test.
+fn data_file_path(
+    override_dir: Option<PathBuf>,
+    default_dir: Option<PathBuf>,
+    file_name: &str,
+) -> Option<PathBuf> {
+    override_dir.or(default_dir).map(|dir| dir.join(file_name))
+}
+
 fn prefs_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agentworkforce/relay").join("telemetry.json"))
+    data_file_path(
+        data_dir_override(),
+        dirs::home_dir().map(|h| h.join(".agentworkforce/relay")),
+        "telemetry.json",
+    )
 }
 
 fn load_prefs() -> TelemetryPrefs {
@@ -238,15 +266,20 @@ fn save_prefs(prefs: &TelemetryPrefs) {
 // ---------------------------------------------------------------------------
 
 fn machine_id_path() -> Option<PathBuf> {
-    // Use ~/.local/share regardless of platform (matches the spec and
-    // the Node.js SDK convention).
-    dirs::home_dir().map(|h| {
-        h.join(".local")
-            .join("share")
-            .join("agentworkforce")
-            .join("relay")
-            .join("machine-id")
-    })
+    // `AGENT_RELAY_DATA_DIR` wins, then ~/.local/share regardless of platform
+    // (matches the spec and the Node.js SDK convention). Both halves mirror the
+    // CLI's `getMachineIdPath()`, so the CLI and the broker derive the same id
+    // from the same file instead of minting two ids for one machine.
+    data_file_path(
+        data_dir_override(),
+        dirs::home_dir().map(|h| {
+            h.join(".local")
+                .join("share")
+                .join("agentworkforce")
+                .join("relay")
+        }),
+        "machine-id",
+    )
 }
 
 fn load_or_create_machine_id() -> Option<String> {
@@ -473,6 +506,57 @@ pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
 /// agent-relay CLI is the actor; spawned agents are attributed separately as
 /// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
 pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
+
+/// Env var carrying the anonymous distinct id, exported by the agent-relay CLI
+/// so the broker and every spawned agent report as the same machine.
+const AGENT_RELAY_DISTINCT_ID_ENV: &str = "AGENT_RELAY_DISTINCT_ID";
+
+/// Anonymous machine id forwarded to relaycast as `X-Agent-Relay-Distinct-Id`,
+/// or `None` when the user has opted out of telemetry.
+///
+/// Relaycast's server-side product events key on this when present (see the
+/// engine's `emitServerEvent`), which is what lets a workspace-create or an
+/// agent-registration be attributed back to an install. Without it every
+/// broker-driven server event is keyed by workspace id alone, so "how many
+/// distinct installs are using this" is unanswerable.
+///
+/// Prefer the CLI-exported env var so the CLI, the broker, and the agents it
+/// spawns all report one id; fall back to the same hashed machine id the
+/// telemetry client uses, for a broker started outside the CLI. This is the
+/// same anonymous value already sent with the broker's own PostHog events —
+/// never a hostname, account, or path. Resolved once per process.
+pub(crate) fn agent_relay_distinct_id() -> Option<&'static str> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            resolve_distinct_id(
+                TelemetryClient::check_enabled(),
+                env_nonempty(AGENT_RELAY_DISTINCT_ID_ENV),
+                || load_or_create_machine_id().map(|id| anonymous_id(&id)),
+            )
+        })
+        .as_deref()
+}
+
+/// Policy half of [`agent_relay_distinct_id`], split out so the opt-out
+/// behaviour is testable without touching process-wide env or the cache.
+/// `machine_id` is lazy: an opted-out broker must not even derive one.
+///
+/// The resolved value is sanitized against the SDK's wire contract before any
+/// caller builds a header from it. The env var is caller-supplied, and an
+/// invalid one (a newline, a non-ASCII character) would otherwise be handed to
+/// `RequestBuilder::header`, which stores the conversion error and fails the
+/// request on every retry — optional telemetry must never break connectivity.
+fn resolve_distinct_id(
+    enabled: bool,
+    env_value: Option<String>,
+    machine_id: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    sanitize_agent_relay_distinct_id(env_value.or_else(machine_id))
+}
 
 /// Build the `origin_actor` path for a spawned agent:
 /// `agent-relay-cli/agent/<harness>[@<model>]`. The model (when the broker knows
@@ -1136,6 +1220,77 @@ mod tests {
         );
         assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
         assert_eq!(sanitize_orchestrator_harness(""), None);
+    }
+
+    #[test]
+    fn resolve_distinct_id_is_none_when_telemetry_is_disabled() {
+        // Opted out: neither the exported id nor a derived machine id may leak.
+        let mut derived = false;
+        let resolved = resolve_distinct_id(false, Some("abc123".to_string()), || {
+            derived = true;
+            Some("machine".to_string())
+        });
+        assert_eq!(resolved, None);
+        assert!(!derived, "machine id must not be derived when opted out");
+    }
+
+    #[test]
+    fn resolve_distinct_id_prefers_the_exported_env_value() {
+        let resolved = resolve_distinct_id(true, Some("abc123".to_string()), || {
+            Some("machine".to_string())
+        });
+        assert_eq!(resolved, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn resolve_distinct_id_falls_back_to_the_machine_id() {
+        let resolved = resolve_distinct_id(true, None, || Some("machine".to_string()));
+        assert_eq!(resolved, Some("machine".to_string()));
+        assert_eq!(resolve_distinct_id(true, None, || None), None);
+    }
+
+    #[test]
+    fn resolve_distinct_id_drops_a_header_invalid_env_value() {
+        // A caller-supplied value that can't be a header value must be dropped,
+        // not forwarded — reqwest would store the conversion error and fail the
+        // request on every retry. Matches the TS contract, which sends no header
+        // at all rather than falling back when the env value is malformed.
+        for bad in ["abc\ndef", "naïve", "has space"] {
+            assert_eq!(
+                resolve_distinct_id(true, Some(bad.to_string()), || Some("machine".to_string())),
+                None,
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn data_file_path_prefers_the_configured_data_dir() {
+        // `agent-relay telemetry disable` writes the opt-out to
+        // AGENT_RELAY_DATA_DIR when set, so the broker must read it from there.
+        assert_eq!(
+            data_file_path(
+                Some(PathBuf::from("/custom/dir")),
+                Some(PathBuf::from("/home/u/.agentworkforce/relay")),
+                "telemetry.json",
+            ),
+            Some(PathBuf::from("/custom/dir/telemetry.json"))
+        );
+    }
+
+    #[test]
+    fn data_file_path_falls_back_to_the_platform_default() {
+        assert_eq!(
+            data_file_path(
+                None,
+                Some(PathBuf::from("/home/u/.agentworkforce/relay")),
+                "telemetry.json"
+            ),
+            Some(PathBuf::from(
+                "/home/u/.agentworkforce/relay/telemetry.json"
+            ))
+        );
+        assert_eq!(data_file_path(None, None, "telemetry.json"), None);
     }
 
     #[test]
