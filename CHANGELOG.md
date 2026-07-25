@@ -16,10 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The published CLI now actually reports telemetry. The npm package is plain `tsc` output with no key injection step, and the bun standalone's `--define` targeted a literal `process.env.AGENT_RELAY_POSTHOG_KEY` that the code never read (it used a computed `process.env[name]` lookup), so **both** installable artifacts shipped with telemetry silently disabled — every `cli_command_run`, `workflow_run`, `cloud_auth`, `agent_relay_tool_call`, `setup_init`, `swarm_run`, and `bridge_spawn` event was dropped. Only the Rust broker was reporting.
+- Identity forwarding to the Relaycast gateway is no longer gated on the local process carrying a PostHog key. An npm-installed CLI bakes no key, so it previously forwarded no identity at all and every hosted event fell back to being keyed on the workspace. Forwarding now follows the telemetry preference alone.
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
 - The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
-- Identity forwarding to the Relaycast gateway is no longer gated on the local process carrying a PostHog key. An npm-installed CLI bakes no key, so it previously forwarded no identity at all and every hosted event fell back to being keyed on the workspace. Forwarding now follows the telemetry preference alone.
 - `WhoAmIResponse.currentOrganization` and `currentWorkspace` are typed as nullable, matching what Cloud returns for a user with no active workspace; `agent-relay cloud whoami` no longer crashes for those users.
 
 ## [11.2.0] - 2026-07-25

@@ -243,6 +243,14 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      # Belt-and-braces with the `--define` below: the define only substitutes a
+      # literal `process.env.AGENT_RELAY_POSTHOG_KEY`, so this also bakes the key
+      # into the compiled posthog-key module the CLI falls back to.
+      - name: Bake PostHog key into built CLI
+        env:
+          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
+        run: node scripts/inject-posthog-key.mjs
+
       - name: Build standalone binary
         # `AGENT_RELAY_POSTHOG_KEY` (the code-side name read by
         # packages/cli/src/cli/telemetry/posthog-config.ts via process.env) is
@@ -442,6 +450,24 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      # MUST come after `npm test` — its `pretest` hook reruns `npm run build`,
+      # which would overwrite the injected module. And it must come before the
+      # artifact upload, because that dist is what the publish matrix ships.
+      #
+      # The npm tarball is plain tsc output and publish runs with
+      # --ignore-scripts, so this is the only chance to embed the key. Without
+      # it the published CLI resolves no key and drops every event it emits.
+      # POSTHOG_PROJECT_KEY is a repository *variable* (not a secret) — a
+      # PostHog ingest key is public by design, same as a Sentry DSN.
+      - name: Bake PostHog key into built CLI
+        env:
+          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
+        run: node scripts/inject-posthog-key.mjs
+
+      - name: Verify PostHog key was baked in
+        if: vars.POSTHOG_PROJECT_KEY != ''
+        run: node scripts/inject-posthog-key.mjs --check
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
