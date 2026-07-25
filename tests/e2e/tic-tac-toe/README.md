@@ -14,7 +14,7 @@ emulator (`@xterm/headless`) and asserts the agent's screen survives.
 This is the regression guard for the bug that made a `drive` pane unreadable:
 
 > The status line is painted on the bottom row inside an `ESC 7` / `ESC 8`
-> (DECSC/DECRC) pair. That is only safe while the label *fits*. A label wider
+> (DECSC/DECRC) pair. That is only safe while the label _fits_. A label wider
 > than the pane wraps past the last row, which scrolls the screen — and because
 > the label sits ON the bottom row, the next repaint scrolls again. Old status
 > lines get promoted into the scrollback as content and the agent's TUI loses a
@@ -38,11 +38,11 @@ Asserts:
 
 | Assertion                                                 | Guards                                                                         |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| view streams grow                                          | a `view` pane frozen on its attach snapshot (live `worker_stream` never lands)  |
-| `relay_inbound` in both directions, for both players       | agents actually using the relay protocol rather than talking to themselves      |
-| ≥3 delivered replies matching `MOVE <n>`                   | a game that "ended" without anyone actually playing                            |
-| the end-of-game token is delivered to both players         | the round trip completes, not just the first hop                               |
-| every pane renders coherently, no row wider than the pane  | wrap/scroll corruption in the live stream                                      |
+| view streams grow                                         | a `view` pane frozen on its attach snapshot (live `worker_stream` never lands) |
+| `relay_inbound` in both directions, for both players      | agents actually using the relay protocol rather than talking to themselves     |
+| ≥3 delivered replies matching `MOVE <n>`                  | a game that "ended" without anyone actually playing                            |
+| the end-of-game token is delivered to both players        | the round trip completes, not just the first hop                               |
+| every pane renders coherently, no row wider than the pane | wrap/scroll corruption in the live stream                                      |
 
 **Where each assertion runs matters.** Protocol claims read the broker's
 `relay_inbound` event stream; visual claims replay the PTY capture through an
@@ -82,7 +82,7 @@ next person doesn't rediscover them.
 - **A fresh engine DB per run is mandatory.** The broker enrolls its node under
   the project directory name. Re-enrolling an already-known name fails
   `node_name_conflict`, after which the engine has no delivery-ready provider
-  for that node and defers *every* message
+  for that node and defers _every_ message
   (`[delivery.route] provider not delivery-ready`). Relay messaging then looks
   silently broken — agents stay "working" in `agent list` and never receive a
   thing.
@@ -109,5 +109,5 @@ next person doesn't rediscover them.
 - **Don't wait on a natural phrase.** The task prompt is injected into the
   agent's PTY, so waiting for "GAME OVER" to appear matches the prompt itself
   and fires instantly. The suite waits on `DONE_TOKEN`, which only the
-  Gamemaster's prompt names — seeing it *delivered to a player* is proof the
+  Gamemaster's prompt names — seeing it _delivered to a player_ is proof the
   game really ended.

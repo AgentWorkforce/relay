@@ -241,7 +241,11 @@ export async function startBroker(
 
 function runCli(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [RELAY_CLI, ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [RELAY_CLI, ...args], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let out = '';
     child.stdout?.on('data', (d) => (out += String(d)));
     child.stderr?.on('data', (d) => (out += String(d)));
@@ -317,11 +321,7 @@ export function attachInPty(opts: {
  * "it was painted six times and scrolled the agent's output away" — both are
  * the same bytes on the wire. Only an emulator sees what the human sees.
  */
-export async function renderScreen(
-  capture: Buffer,
-  cols: number,
-  rows: number
-): Promise<string[]> {
+export async function renderScreen(capture: Buffer, cols: number, rows: number): Promise<string[]> {
   const { Terminal } = await import('@xterm/headless');
   const term = new Terminal({ cols, rows, allowProposedApi: true });
   await new Promise<void>((resolve) => term.write(new Uint8Array(capture), resolve));

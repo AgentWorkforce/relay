@@ -637,7 +637,9 @@ describe('renderStatusLine', () => {
       cols: 120,
     });
     const text = stripStatusLineAnsi(out);
-    expect(text).toBe('[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]');
+    expect(text).toBe(
+      '[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]'
+    );
     expect(text).not.toContain('…');
   });
 

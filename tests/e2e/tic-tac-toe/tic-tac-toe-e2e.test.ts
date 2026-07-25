@@ -103,7 +103,8 @@ describe('attach status line survives a narrow pane', () => {
       cols,
       rows: ROWS,
       repaints: 6,
-      render: () => renderPassthroughStatusLine({ name: 'Gamemaster', mode: 'auto_inject', rows: ROWS, cols }),
+      render: () =>
+        renderPassthroughStatusLine({ name: 'Gamemaster', mode: 'auto_inject', rows: ROWS, cols }),
     });
 
     expect(screen.filter((l) => l.includes('[passthrough')).length).toBe(1);
@@ -112,7 +113,13 @@ describe('attach status line survives a narrow pane', () => {
   });
 
   it('keeps the agent name and the detach hint readable even when truncated', () => {
-    const line = renderStatusLine({ name: 'Gamemaster', mode: 'manual_flush', pending: 2, rows: 24, cols: 66 });
+    const line = renderStatusLine({
+      name: 'Gamemaster',
+      mode: 'manual_flush',
+      pending: 2,
+      rows: 24,
+      cols: 66,
+    });
     expect(line).toContain('[drive Gamemaster');
     expect(line).toContain('Ctrl+C detach]');
   });
@@ -175,10 +182,7 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
     // instantly; waiting on a rendered pane misses it once the alt-screen TUI
     // repaints, since the alternate buffer keeps no scrollback.)
     await waitFor(
-      () =>
-        events
-          .messages()
-          .some((m) => m.body.includes(DONE_TOKEN) && m.target !== 'Gamemaster'),
+      () => events.messages().some((m) => m.body.includes(DONE_TOKEN) && m.target !== 'Gamemaster'),
       { timeoutMs: 8 * 60_000, label: 'the game to finish', intervalMs: 5_000 }
     );
   }, 10 * 60_000);
@@ -223,9 +227,7 @@ describe.skipIf(!liveEnabled)('three PTY agents play tic-tac-toe over the relay 
 
   it('reaches a terminal result and tells both players', () => {
     for (const player of ['PlayerA', 'PlayerB'] as const) {
-      const finals = events
-        .messages()
-        .filter((m) => m.target === player && m.body.includes(DONE_TOKEN));
+      const finals = events.messages().filter((m) => m.target === player && m.body.includes(DONE_TOKEN));
       expect(finals.length, `${player} was never told the game ended`).toBeGreaterThan(0);
     }
   });

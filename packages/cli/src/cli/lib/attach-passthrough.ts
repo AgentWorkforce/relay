@@ -419,8 +419,7 @@ export async function runPassthroughSession(
 
     // Boundary-held + coalesced status painter (skips non-TTY stdout).
     const statusController = new StatusLineController({
-      render: () =>
-        renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows, cols: terminalCols }),
+      render: () => renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows, cols: terminalCols }),
       write: deps.writeChunk,
       enabled: statusLineEnabled,
       coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
