@@ -786,6 +786,15 @@ describe('relay-feature-guardian exact HTTP state', () => {
         lastCheck: { featureId: 'broker-up', checkedAt: 'not-a-time', evidence: 'log-only' },
       },
     ],
+    [
+      'out-of-range legacy Slack timestamp',
+      {
+        ...progressState(1),
+        version: 3,
+        lastCheck: undefined,
+        lastPost: { featureId: 'broker-up', ts: '9007199254740991.0' },
+      },
+    ],
     ['invalid cycle time', { ...progressState(1), cycleStartedAt: 'yesterday' }],
   ])('rejects bounded state with %s', async (_label, invalid) => {
     const server = new RelayfileStateServer(null);

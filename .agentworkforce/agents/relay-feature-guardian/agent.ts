@@ -158,7 +158,9 @@ function isSlackTs(value: unknown): value is string {
 function slackTsToIso(value: string): string {
   const seconds = Number(value.trim().split('.')[0]);
   if (!Number.isSafeInteger(seconds)) throw new Error('cycle state lastPost is invalid');
-  return new Date(seconds * 1_000).toISOString();
+  const timestamp = new Date(seconds * 1_000);
+  if (!Number.isFinite(timestamp.valueOf())) throw new Error('cycle state lastPost is invalid');
+  return timestamp.toISOString();
 }
 
 function assertStateSize(content: string): void {
