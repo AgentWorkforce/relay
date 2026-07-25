@@ -1,4 +1,5 @@
 export const AGENT_RELAY_DISTINCT_ID_HEADER = 'X-Agent-Relay-Distinct-Id';
+export const AGENT_RELAY_MACHINE_ID_HEADER = 'X-Agent-Relay-Machine-Id';
 export const AGENT_RELAY_USER_ID_HEADER = 'X-Agent-Relay-User-Id';
 export const AGENT_RELAY_ORG_ID_HEADER = 'X-Agent-Relay-Org-Id';
 export const AGENT_RELAY_ORG_SLUG_HEADER = 'X-Agent-Relay-Org-Slug';
@@ -7,6 +8,7 @@ export const RELAYCAST_ORIGIN_CLIENT_HEADER = 'X-Relaycast-Origin-Client';
 export const RELAYCAST_ORIGIN_VERSION_HEADER = 'X-Relaycast-Origin-Version';
 
 const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
+const AGENT_RELAY_MACHINE_ID_ENV = 'AGENT_RELAY_MACHINE_ID';
 const AGENT_RELAY_USER_ID_ENV = 'AGENT_RELAY_USER_ID';
 const AGENT_RELAY_ORG_ID_ENV = 'AGENT_RELAY_ORG_ID';
 const AGENT_RELAY_ORG_SLUG_ENV = 'AGENT_RELAY_ORG_SLUG';
@@ -42,6 +44,11 @@ export function buildAgentRelayTelemetryHeaders(
     pattern: DISTINCT_ID_ALLOWED,
   });
 
+  const machineId = sanitizeHeaderValue(env[AGENT_RELAY_MACHINE_ID_ENV], {
+    maxLength: 128,
+    pattern: DISTINCT_ID_ALLOWED,
+  });
+
   // When the caller is a signed-in cloud user, the user id IS the person key —
   // it keeps CLI-side and relaycast-side events on one PostHog person. The
   // machine hash remains the fallback for anonymous (not-logged-in) runs.
@@ -49,13 +56,19 @@ export function buildAgentRelayTelemetryHeaders(
     sanitizeHeaderValue(env[AGENT_RELAY_DISTINCT_ID_ENV], {
       maxLength: 128,
       pattern: DISTINCT_ID_ALLOWED,
-    }) ?? userId;
+    }) ??
+    userId ??
+    machineId;
   if (!distinctId) return {};
 
   const headers: Record<string, string> = {
     [AGENT_RELAY_DISTINCT_ID_HEADER]: distinctId,
   };
 
+  // Sent alongside the distinct id, never instead of it: once a user signs in
+  // the distinct id is their user id, so this is the only thing that keeps
+  // "how many machines share this workspace/account" answerable.
+  if (machineId) headers[AGENT_RELAY_MACHINE_ID_HEADER] = machineId;
   if (userId) headers[AGENT_RELAY_USER_ID_HEADER] = userId;
 
   const orgId = sanitizeHeaderValue(env[AGENT_RELAY_ORG_ID_ENV], {

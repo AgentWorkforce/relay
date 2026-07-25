@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay cloud login` now records your user, email, and organization to `~/.agentworkforce/relay/cloud-identity.json`, and the CLI, broker, and Relaycast traffic all report usage under that user and org instead of an anonymous machine id. `agent-relay cloud whoami` refreshes the record; `agent-relay cloud logout` clears it.
 - `agent-relay telemetry status` reports which user and organization usage is attributed to, or says so explicitly when it is anonymous.
+- Every event now carries a `machine_id` alongside the person key, signed in or not, so machine-level questions survive login: how many machines an account runs on, how many accounts share a machine, and (via Relaycast's `actor_machine_id`) how many machines share a workspace.
 - `@agent-relay/cloud/identity` exposes the identity store (`readStoredIdentity`, `resolveCloudIdentity`, `cloudIdentityEnv`), and child processes inherit identity via `AGENT_RELAY_USER_ID` / `AGENT_RELAY_ORG_ID` / `AGENT_RELAY_ORG_SLUG` / `AGENT_RELAY_USER_EMAIL`.
 
 ### Fixed
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
 - The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
+- Identity forwarding to the Relaycast gateway is no longer gated on the local process carrying a PostHog key. An npm-installed CLI bakes no key, so it previously forwarded no identity at all and every hosted event fell back to being keyed on the workspace. Forwarding now follows the telemetry preference alone.
 - `WhoAmIResponse.currentOrganization` and `currentWorkspace` are typed as nullable, matching what Cloud returns for a user with no active workspace; `agent-relay cloud whoami` no longer crashes for those users.
 
 ## [11.2.0] - 2026-07-25

@@ -16,6 +16,7 @@ import {
   type CloudIdentity,
 } from '@agent-relay/cloud/identity';
 import {
+  MACHINE_ID_ENV,
   ORCHESTRATOR_HARNESS_ENV,
   detectOrchestratorHarness,
   getDistinctId,
@@ -104,10 +105,6 @@ export const SDK_VERSION = resolveSdkVersion();
 const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
 const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
 
-function hasConfiguredTelemetryKey(): boolean {
-  return Boolean(process.env.POSTHOG_API_KEY?.trim() || process.env.AGENT_RELAY_POSTHOG_KEY?.trim());
-}
-
 function resolveProgramName(argv: string[] = process.argv): string {
   const invocationPath = String(argv[1] ?? '').trim();
   if (!invocationPath) {
@@ -174,11 +171,25 @@ function propagateTelemetryContextToChildren(): string {
   if (!process.env[TELEMETRY_CLIENT_ENV]) {
     process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
   }
-  if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
-    // Signed-in runs are keyed by the cloud user id so CLI, broker, and
-    // relaycast-server events all land on one PostHog person.
-    process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
-      process.env[IDENTITY_ENV_KEYS.userId] || getDistinctId();
+  // Identity forwarding is gated on the telemetry *preference* only — not on
+  // whether this process happens to carry a PostHog key. The relaycast gateway
+  // captures with its own key, so gating on ours meant an npm-installed CLI
+  // (which bakes no key) forwarded nothing and every hosted event fell back to
+  // being keyed on the workspace.
+  if (isTelemetryEnabled()) {
+    if (!process.env[MACHINE_ID_ENV]) {
+      // Always published, signed in or not: the distinct id below becomes the
+      // user id after login, so this is the only thing that keeps the machine
+      // dimension (machines per account, accounts per machine, machines per
+      // workspace) answerable.
+      process.env[MACHINE_ID_ENV] = getDistinctId();
+    }
+    if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV]) {
+      // Signed-in runs are keyed by the cloud user id so CLI, broker, and
+      // relaycast-server events all land on one PostHog person.
+      process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
+        process.env[IDENTITY_ENV_KEYS.userId] || process.env[MACHINE_ID_ENV];
+    }
   }
 
   return orchestratorHarness;

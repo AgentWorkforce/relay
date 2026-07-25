@@ -507,6 +507,7 @@ pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
 
 /// HTTP headers carrying the signed-in operator's identity to relaycast.
 pub(crate) const AGENT_RELAY_DISTINCT_ID_HEADER: &str = "X-Agent-Relay-Distinct-Id";
+pub(crate) const AGENT_RELAY_MACHINE_ID_HEADER: &str = "X-Agent-Relay-Machine-Id";
 pub(crate) const AGENT_RELAY_USER_ID_HEADER: &str = "X-Agent-Relay-User-Id";
 pub(crate) const AGENT_RELAY_ORG_ID_HEADER: &str = "X-Agent-Relay-Org-Id";
 pub(crate) const AGENT_RELAY_ORG_SLUG_HEADER: &str = "X-Agent-Relay-Org-Slug";
@@ -520,6 +521,10 @@ pub(crate) const AGENT_RELAY_ORG_SLUG_HEADER: &str = "X-Agent-Relay-Org-Slug";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CloudIdentity {
     pub distinct_id: Option<String>,
+    /// Hashed machine id. Reported alongside — never instead of — the distinct
+    /// id, because after login the distinct id is the user id and the machine
+    /// dimension would otherwise disappear.
+    pub machine_id: Option<String>,
     pub user_id: Option<String>,
     pub org_id: Option<String>,
     pub org_slug: Option<String>,
@@ -556,13 +561,22 @@ fn detect_cloud_identity() -> CloudIdentity {
     }
 
     let user_id = identity_env("AGENT_RELAY_USER_ID", 128);
+    // Prefer the value the CLI published so every process in one invocation
+    // reports the same machine; fall back to computing it from the shared
+    // machine-id file for a standalone broker.
+    let machine_id = identity_env("AGENT_RELAY_MACHINE_ID", 128)
+        .or_else(|| load_or_create_machine_id().map(|id| anonymous_id(&id)));
+
     CloudIdentity {
         // Reuse the shared resolver so the CLI, the broker's own PostHog
         // events, and relaycast all report one person key. It already applies
-        // the env → machine-id fallback and the opt-out.
+        // the env → machine-id fallback, sanitization, and the opt-out. A
+        // signed-in user id is the better key when the CLI published one.
         distinct_id: agent_relay_distinct_id()
             .map(str::to_string)
-            .or_else(|| user_id.clone()),
+            .or_else(|| user_id.clone())
+            .or_else(|| machine_id.clone()),
+        machine_id,
         user_id,
         org_id: identity_env("AGENT_RELAY_ORG_ID", 128),
         org_slug: identity_env("AGENT_RELAY_ORG_SLUG", 120),
@@ -586,6 +600,9 @@ fn identity_headers(identity: &CloudIdentity) -> Vec<(&'static str, String)> {
     let mut headers = Vec::with_capacity(4);
     if let Some(ref value) = identity.distinct_id {
         headers.push((AGENT_RELAY_DISTINCT_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.machine_id {
+        headers.push((AGENT_RELAY_MACHINE_ID_HEADER, value.clone()));
     }
     if let Some(ref value) = identity.user_id {
         headers.push((AGENT_RELAY_USER_ID_HEADER, value.clone()));
@@ -771,12 +788,12 @@ impl TelemetryClient {
         }
 
         // A signed-in cloud user is the person; the hashed machine id is the
-        // anonymous fallback. Using the user id here is what keeps broker events
-        // on the same PostHog person as the CLI's and relaycast's.
+        // anonymous fallback (already applied in `detect_cloud_identity`). Using
+        // the user id here is what keeps broker events on the same PostHog person
+        // as the CLI's and relaycast's.
         let distinct_id = cloud_identity()
             .distinct_id
             .clone()
-            .or_else(|| load_or_create_machine_id().map(|id| anonymous_id(&id)))
             .unwrap_or_else(|| "unknown".to_string());
 
         // First-run notice.
@@ -874,6 +891,9 @@ impl TelemetryClient {
             "is_authenticated".to_string(),
             json!(identity.user_id.is_some()),
         );
+        if let Some(ref machine_id) = identity.machine_id {
+            obj.insert("machine_id".to_string(), json!(machine_id));
+        }
         if let Some(ref user_id) = identity.user_id {
             obj.insert("user_id".to_string(), json!(user_id));
         }
@@ -1121,6 +1141,7 @@ mod tests {
     fn identity_headers_carry_every_set_field() {
         let headers = identity_headers(&CloudIdentity {
             distinct_id: Some("usr_abc123".to_string()),
+            machine_id: Some("abc123def4567890".to_string()),
             user_id: Some("usr_abc123".to_string()),
             org_id: Some("org_xyz789".to_string()),
             org_slug: Some("agentworkforce".to_string()),
@@ -1130,6 +1151,7 @@ mod tests {
             headers,
             vec![
                 ("X-Agent-Relay-Distinct-Id", "usr_abc123".to_string()),
+                ("X-Agent-Relay-Machine-Id", "abc123def4567890".to_string()),
                 ("X-Agent-Relay-User-Id", "usr_abc123".to_string()),
                 ("X-Agent-Relay-Org-Id", "org_xyz789".to_string()),
                 ("X-Agent-Relay-Org-Slug", "agentworkforce".to_string()),
@@ -1137,10 +1159,31 @@ mod tests {
         );
     }
 
+    /// The machine id must ride alongside the user id, never be replaced by it:
+    /// after login the distinct id IS the user id, so this header is the only
+    /// thing that keeps machines-per-workspace answerable.
+    #[test]
+    fn identity_headers_keep_machine_and_user_separate() {
+        let headers = identity_headers(&CloudIdentity {
+            distinct_id: Some("usr_abc123".to_string()),
+            machine_id: Some("abc123def4567890".to_string()),
+            user_id: Some("usr_abc123".to_string()),
+            org_id: None,
+            org_slug: None,
+        });
+
+        let machine = headers
+            .iter()
+            .find(|(name, _)| *name == "X-Agent-Relay-Machine-Id");
+        assert_eq!(machine.map(|(_, v)| v.as_str()), Some("abc123def4567890"));
+        assert_ne!(machine.map(|(_, v)| v.as_str()), Some("usr_abc123"));
+    }
+
     #[test]
     fn identity_headers_omit_unset_fields() {
         let headers = identity_headers(&CloudIdentity {
             distinct_id: Some("abc123def4567890".to_string()),
+            machine_id: None,
             user_id: None,
             org_id: None,
             org_slug: None,

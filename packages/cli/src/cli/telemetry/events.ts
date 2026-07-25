@@ -86,6 +86,23 @@ export interface CommonProperties {
   /** CPU architecture (e.g., arm64, x64) */
   arch: string;
   /**
+   * Hashed machine identifier, on **every** event regardless of whether anyone
+   * is signed in.
+   *
+   * This is deliberately separate from the PostHog distinct id. Once a user logs
+   * in, the distinct id becomes their cloud user id — so without a standalone
+   * property the machine dimension would vanish exactly when it gets
+   * interesting. Keeping both lets us ask:
+   *   - how many machines does one account run on (`machine_id` per `user_id`)
+   *   - how many accounts share one machine (`user_id` per `machine_id`)
+   *   - how many machines share one workspace (see relaycast's
+   *     `actor_machine_id` alongside `workspace_id`)
+   *
+   * Derived as a SHA-256 prefix of the local machine id, so it carries no
+   * hostname and is stable across the CLI, broker, and MCP processes.
+   */
+  machine_id?: string;
+  /**
    * Cloud user id of the signed-in operator, when `agent-relay cloud login` has
    * run on this machine. Absent for anonymous (not-logged-in) usage, where the
    * hashed machine id remains the only identity.
@@ -95,6 +112,8 @@ export interface CommonProperties {
    * belongs and where PostHog surfaces it in the UI.
    */
   user_id?: string;
+  /** Agent Relay Cloud workspace id the operator is currently active in. */
+  cloud_workspace_id?: string;
   /** Cloud organization id of the signed-in operator, when known. */
   organization_id?: string;
   /** Human-readable org slug, for breakdowns that shouldn't show opaque ids. */

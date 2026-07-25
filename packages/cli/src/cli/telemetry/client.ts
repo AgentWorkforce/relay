@@ -23,11 +23,15 @@ import {
   loadPrefs,
 } from './config.js';
 import type { CommonProperties, TelemetryEventName, TelemetryEventMap } from './events.js';
+import { createDistinctId } from './machine-id.js';
 import { getPostHogConfig } from './posthog-config.js';
 import { detectOrchestratorHarness, UNKNOWN_ORCHESTRATOR_HARNESS } from './orchestrator-harness.js';
 
 /** PostHog group type for cloud organizations. Keep in sync with the gateway. */
 export const ORGANIZATION_GROUP_TYPE = 'organization';
+
+/** Env var carrying the hashed machine id to child processes. */
+export const MACHINE_ID_ENV = 'AGENT_RELAY_MACHINE_ID';
 
 let client: PostHog | null = null;
 let commonProps: CommonProperties | null = null;
@@ -123,16 +127,38 @@ function buildCommonProperties(
 /**
  * Identity dimensions attached to every event. The email is deliberately absent
  * — it belongs on the PostHog *person*, set once by {@link announceIdentity}.
+ *
+ * `machine_id` is emitted whether or not anyone is signed in: the distinct id
+ * becomes the user id after login, so the machine dimension only survives as its
+ * own property. That is what makes machines-per-account and accounts-per-machine
+ * answerable.
  */
 function identityProperties(identity: CloudIdentity | null): Partial<CommonProperties> {
-  if (!identity) return { is_authenticated: false };
+  const machineId = safeMachineId();
+  const base = machineId ? { machine_id: machineId } : {};
+
+  if (!identity) return { ...base, is_authenticated: false };
 
   return {
+    ...base,
     is_authenticated: true,
     user_id: identity.userId,
     ...(identity.organizationId ? { organization_id: identity.organizationId } : {}),
     ...(identity.organizationSlug ? { organization_slug: identity.organizationSlug } : {}),
+    ...(identity.workspaceId ? { cloud_workspace_id: identity.workspaceId } : {}),
   };
+}
+
+/**
+ * The hashed machine id, preferring a value a parent process already published
+ * so every process in one CLI invocation reports the same machine.
+ */
+function safeMachineId(): string | undefined {
+  try {
+    return process.env[MACHINE_ID_ENV]?.trim() || createDistinctId();
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -36,6 +36,7 @@ const IDENTITY: CloudIdentity = {
   organizationSlug: 'agentworkforce',
   organizationName: 'Agent Workforce',
   organizationRole: 'owner',
+  workspaceId: 'ws_123',
   apiUrl: 'https://api.agentrelay.com',
   updatedAt: '2026-07-25T00:00:00.000Z',
 };
@@ -117,6 +118,18 @@ describe('telemetry client events', () => {
       const [call] = posthogMocks.capture.mock.calls.at(-1)!;
       expect(call.properties.user_id).toBeUndefined();
       expect(call.groups).toBeUndefined();
+    });
+
+    it('still reports the machine id', () => {
+      const machineDistinctId = getDistinctId();
+      initTelemetry({ cliVersion: '1.2.3' });
+      posthogMocks.capture.mockClear();
+
+      track('cli_command_run', { command_name: 'up', flags: [] });
+
+      const [call] = posthogMocks.capture.mock.calls.at(-1)!;
+      expect(call.properties.machine_id).toBe(machineDistinctId);
+      expect(call.distinctId).toBe(machineDistinctId);
     });
 
     it('does not identify or create groups', () => {
@@ -228,6 +241,22 @@ describe('telemetry client events', () => {
       track('cli_command_run', { command_name: 'up', flags: [] });
       const [call] = posthogMocks.capture.mock.calls.at(-1)!;
       expect(call.properties.is_authenticated).toBe(false);
+    });
+
+    it('keeps the machine id as its own property so machine cross-tabs survive', async () => {
+      const machineDistinctId = getDistinctId();
+      await writeStoredIdentity(IDENTITY, process.env);
+      initTelemetry({ cliVersion: '1.2.3' });
+      posthogMocks.capture.mockClear();
+
+      track('cli_command_run', { command_name: 'up', flags: [] });
+
+      const [call] = posthogMocks.capture.mock.calls.at(-1)!;
+      // distinct_id is the person; machine_id is a separate dimension. Without
+      // both, "how many machines is this account on" is unanswerable.
+      expect(call.distinctId).toBe('usr_abc123');
+      expect(call.properties.machine_id).toBe(machineDistinctId);
+      expect(call.properties.cloud_workspace_id).toBe('ws_123');
     });
 
     it('reports the identity in telemetry status', async () => {
