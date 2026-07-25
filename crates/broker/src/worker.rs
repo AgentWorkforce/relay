@@ -79,11 +79,7 @@ impl OrphanedWorker {
 #[cfg(unix)]
 fn pid_is_gone(pid: u32) -> bool {
     let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    ret == -1
-        && std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or(0)
-            == libc::ESRCH
+    ret == -1 && std::io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::ESRCH
 }
 
 #[cfg(not(unix))]
