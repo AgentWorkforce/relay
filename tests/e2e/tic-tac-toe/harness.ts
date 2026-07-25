@@ -157,16 +157,28 @@ export async function startEngine(serveBin: string, tmpRoot: string): Promise<En
   };
 }
 
+/** The only origins a locally-started broker can legitimately be reached on. */
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]'] as const;
+
 /**
- * Parse a broker URL and rebuild it from its validated parts, rejecting
- * anything that is not plain HTTP to loopback.
+ * Parse a broker URL and rebuild it from a fixed host literal and an integer
+ * port, rejecting anything that is not plain HTTP to loopback.
  *
  * The harness only ever talks to a broker it just started on this machine, so
  * a non-loopback origin means the state on disk is stale or wrong — failing
  * loudly beats silently firing test traffic (with an API key attached) at
  * whatever host the file happens to name.
+ *
+ * The returned string is assembled from a literal drawn from
+ * {@link LOOPBACK_HOSTS} and a range-checked integer, never from the file's own
+ * characters. That is what makes the result genuinely untainted rather than
+ * merely inspected.
  */
 export function requireLoopbackUrl(raw: unknown, source: string): string {
+  const fail = (why: string): never => {
+    throw new Error(`${source}: refusing to use broker url — ${why}`);
+  };
+
   let url: URL;
   try {
     url = new URL(String(raw));
@@ -174,16 +186,15 @@ export function requireLoopbackUrl(raw: unknown, source: string): string {
     return fail(`not a URL: ${JSON.stringify(raw)}`);
   }
   if (url.protocol !== 'http:') return fail(`expected http:, got ${url.protocol}`);
-  if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname)) {
-    return fail(`expected a loopback host, got ${url.hostname}`);
-  }
-  if (!url.port) return fail('expected an explicit port');
-  // Rebuilt from validated parts — no path, query, or credentials survive.
-  return `http://${url.hostname}:${url.port}`;
 
-  function fail(why: string): never {
-    throw new Error(`${source}: refusing to use broker url — ${why}`);
+  const host = LOOPBACK_HOSTS.find((candidate) => candidate === url.hostname);
+  if (!host) return fail(`expected a loopback host, got ${url.hostname}`);
+
+  const port = Number.parseInt(url.port, 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return fail(`expected a port in 1-65535, got ${JSON.stringify(url.port)}`);
   }
+  return `http://${host}:${port}`;
 }
 
 export interface BrokerHandle {
@@ -413,11 +424,10 @@ export interface EventRecorder {
 export async function recordEvents(brokerUrl: string, apiKey: string): Promise<EventRecorder> {
   const { default: WebSocket } = await import('ws');
   // Re-validate: `recordEvents` is exported, so it must not assume its caller
-  // already pinned the origin to loopback.
-  const origin = new URL(requireLoopbackUrl(brokerUrl, 'recordEvents'));
-  const socket = new WebSocket(`ws://${origin.hostname}:${origin.port}/ws`, {
-    headers: { 'X-API-Key': apiKey },
-  });
+  // already pinned the origin to loopback. The result is rebuilt from a host
+  // literal and an integer port, so swapping the scheme keeps it untainted.
+  const origin = requireLoopbackUrl(brokerUrl, 'recordEvents').replace('http://', 'ws://');
+  const socket = new WebSocket(`${origin}/ws`, { headers: { 'X-API-Key': apiKey } });
 
   const messages: RelayMessage[] = [];
   // A Map, not an object: `kind` is an arbitrary string off the wire, and

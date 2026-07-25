@@ -33,6 +33,7 @@ import {
   cleanEnv,
   preflight,
   readScreen,
+  requireLoopbackUrl,
   recordEvents,
   renderScreen,
   startBroker,
@@ -118,6 +119,27 @@ describe('attach status line survives a narrow pane', () => {
     });
     expect(line).toContain('[drive Gamemaster');
     expect(line).toContain('Ctrl+C detach]');
+  });
+});
+
+describe('requireLoopbackUrl', () => {
+  it('normalizes a valid loopback broker url', () => {
+    expect(requireLoopbackUrl('http://127.0.0.1:43719', 'test')).toBe('http://127.0.0.1:43719');
+    // Path, query, and credentials are dropped by the rebuild.
+    expect(requireLoopbackUrl('http://localhost:8080/api?x=1', 'test')).toBe('http://localhost:8080');
+  });
+
+  // A stale or tampered `connection.json` must not be able to point the
+  // harness — which attaches an API key to every request — at another host.
+  it.each([
+    ['https://127.0.0.1:443', 'non-http scheme'],
+    ['http://evil.example.com:80', 'remote host'],
+    ['http://127.0.0.1', 'no port'],
+    ['http://127.0.0.1:0', 'port out of range'],
+    ['http://127.0.0.1:99999', 'port out of range'],
+    ['not a url', 'unparseable'],
+  ])('rejects %s (%s)', (raw) => {
+    expect(() => requireLoopbackUrl(raw, 'test')).toThrow(/refusing to use broker url/);
   });
 });
 
