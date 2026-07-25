@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
-use relaycast::AGENT_RELAY_DISTINCT_ID_HEADER;
+use relaycast::{AGENT_RELAY_DISTINCT_ID_HEADER, ORIGIN_ACTOR_HEADER};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
@@ -1492,15 +1492,13 @@ async fn run_connected_once(
     // handshake. Both are best-effort: a header that won't parse is skipped, it
     // never fails the connection.
     if let Ok(value) = crate::telemetry::BROKER_ORIGIN_ACTOR.parse() {
-        request
-            .headers_mut()
-            .insert("x-relaycast-origin-actor", value);
+        request.headers_mut().insert(ORIGIN_ACTOR_HEADER, value);
     }
     if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
         if let Ok(value) = distinct_id.parse() {
             request
                 .headers_mut()
-                .insert("x-agent-relay-distinct-id", value);
+                .insert(AGENT_RELAY_DISTINCT_ID_HEADER, value);
         }
     }
 
