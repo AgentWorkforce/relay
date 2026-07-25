@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --root ../.. packages/harnesses/"
   },
   "dependencies": {
     "@agent-relay/harness-driver": "11.1.1",
