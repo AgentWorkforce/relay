@@ -1,7 +1,9 @@
 import { Buffer } from 'node:buffer';
 
+import { Terminal } from '@xterm/headless';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { LOCAL_TERMINAL_RESET_SEQUENCE } from './attach.js';
 import {
   KeybindParser,
   classifyWsEvent,
@@ -1091,17 +1093,29 @@ describe('runDriveSession', () => {
     await sessionPromise;
   });
 
-  it('writes worker_stream chunks to stdout and repaints the status line', async () => {
+  it('writes worker_stream chunks and safely restores the reserved status row', async () => {
     const { deps, sockets, writes, stdin } = createHarness();
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'live output' }));
     expect(writes.includes('live output')).toBe(true);
-    // Some paint should follow the worker chunk.
-    const liveIdx = writes.indexOf('live output');
-    const repaintAfter = writes.slice(liveIdx + 1).some((w) => w.includes('drive Alice'));
-    expect(repaintAfter).toBe(true);
+    const paintsAfter = writes.filter((w) => w.includes('drive Alice')).length;
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'more output' }));
+    expect(writes.filter((w) => w.includes('drive Alice')).length).toBeGreaterThan(paintsAfter);
 
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('repaints after worker output erases the full display', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    const paintsBefore = writes.filter((w) => w.includes('drive Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '\x1b[2J' }));
+
+    expect(writes.filter((w) => w.includes('drive Alice')).length).toBeGreaterThan(paintsBefore);
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
@@ -1260,7 +1274,7 @@ describe('runDriveSession', () => {
 
   // ---- resize forwarding (table-stakes for a take-over UX) ----
 
-  it('forwards the local terminal size to the broker on attach', async () => {
+  it('reserves the final local row when sizing the agent PTY on attach', async () => {
     const { deps, sockets, signals, fetchLog } = createHarness({
       terminalSize: { rows: 60, cols: 200 },
     });
@@ -1270,7 +1284,7 @@ describe('runDriveSession', () => {
     const resizeCalls = fetchLog.filter((call) => call.method === 'POST' && call.url.includes('/resize/'));
     expect(resizeCalls).toHaveLength(1);
     const body = resizeCalls[0].body as { rows: number; cols: number; session_id?: string };
-    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 60, cols: 200 });
+    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 59, cols: 199 });
     // The on-attach sync carries a session id for the single-resizer policy.
     expect(body.session_id).toEqual(expect.any(String));
 
@@ -1297,9 +1311,9 @@ describe('runDriveSession', () => {
     // First the on-attach sync, then each user-driven resize. Every resize
     // carries the same per-attach session id (single-resizer policy, #1247).
     expect(resizeBodies.map(({ rows, cols }) => ({ rows, cols }))).toEqual([
-      { rows: 30, cols: 100 },
-      { rows: 50, cols: 150 },
-      { rows: 24, cols: 80 },
+      { rows: 29, cols: 99 },
+      { rows: 49, cols: 149 },
+      { rows: 23, cols: 79 },
     ]);
     const sessionIds = new Set(resizeBodies.map((b) => b.session_id));
     expect(sessionIds.size).toBe(1);
@@ -1376,9 +1390,82 @@ describe('runDriveSession', () => {
     expect(sessionIds.size).toBe(1);
     // Re-asserts re-send the unchanged current size.
     for (const call of activeResizes) {
-      expect(call.body as { rows: number; cols: number }).toMatchObject({ rows: 30, cols: 100 });
+      expect(call.body as { rows: number; cols: number }).toMatchObject({ rows: 29, cols: 99 });
     }
 
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('refreshes terminal size when it changes before the event socket opens', async () => {
+    const { deps, sockets, terminal, signals, fetchLog, writes } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    terminal.setSize({ rows: 42, cols: 120 });
+    await openSocket(sockets);
+
+    const firstResize = fetchLog.find((call) => call.url.includes('/api/resize/'));
+    expect(firstResize?.body).toMatchObject({ rows: 41, cols: 119 });
+    expect([...writes].reverse().find((write) => write.includes('[drive Alice'))).toContain('\x1b[42;1H');
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('forwards a local resize that occurs while the initial resize is still pending', async () => {
+    let resolveInitialResize: ((response: Response) => void) | undefined;
+    let resizeCalls = 0;
+    const { deps, sockets, terminal, signals, fetchLog, writes } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      routes: {
+        'POST /resize': async () => {
+          resizeCalls += 1;
+          if (resizeCalls === 1) {
+            return new Promise<Response>((resolve) => {
+              resolveInitialResize = resolve;
+            });
+          }
+          return new Response(JSON.stringify({ applied: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    sockets[0]?.emit('open');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    terminal.setSize({ rows: 42, cols: 120 });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(
+      fetchLog.some(
+        (call) =>
+          call.url.includes('/api/resize/') &&
+          (call.body as { rows?: number; cols?: number }).rows === 41 &&
+          (call.body as { rows?: number; cols?: number }).cols === 119
+      )
+    ).toBe(true);
+
+    resolveInitialResize?.(
+      new Response(JSON.stringify({ applied: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    const activeResizes = fetchLog.filter(
+      (call) => call.url.includes('/api/resize/') && !(call.body as { release?: boolean }).release
+    );
+    expect(activeResizes.at(-1)?.body).toMatchObject({ rows: 41, cols: 119 });
+    expect([...writes].reverse().find((write) => write.includes('[drive Alice'))).toContain('\x1b[42;1H');
     await signals.get('SIGINT')?.();
     await sessionPromise;
   });
@@ -1441,6 +1528,28 @@ describe('runDriveSession', () => {
     expect(socket).toBeDefined();
 
     await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('falls back to repainting after ordinary output when PTY row reservation is rejected', async () => {
+    const { deps, sockets, writes, stdin } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      routes: {
+        'POST /resize': async () =>
+          new Response(JSON.stringify({ applied: false }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    const paintsBefore = writes.filter((write) => write.includes('[drive Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'ordinary' }));
+
+    expect(writes.filter((write) => write.includes('[drive Alice')).length).toBeGreaterThan(paintsBefore);
+    stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
 
@@ -1548,14 +1657,229 @@ describe('runDriveSession', () => {
     const socket = await openSocket(sockets);
 
     const paintsBefore = writes.filter((w) => w.includes('drive Alice')).length;
-    // Chunk ends mid-CSI (ESC [) — repainting the status here would splice
-    // reverse-video controls into the agent's half-sent sequence.
+    // Chunk ends mid-CSI (ESC [), then a pending-count change requests a
+    // repaint. Painting now would splice reverse-video controls into the
+    // agent's half-sent sequence.
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }));
     expect(writes.filter((w) => w.includes('drive Alice')).length).toBe(paintsBefore);
     // Completing the CSI lands at a boundary → the deferred repaint fires.
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
     expect(writes.filter((w) => w.includes('drive Alice')).length).toBeGreaterThan(paintsBefore);
 
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('tracks the bytes predictive echo actually writes before releasing a held repaint', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    let predictiveWrite: ((chunk: string) => void) | undefined;
+    const pendingOutputs: Array<() => void> = [];
+    deps.createPredictiveEcho = vi.fn((opts) => {
+      predictiveWrite = opts.write;
+      return {
+        seed: async () => undefined,
+        onUserInput: () => undefined,
+        onServerOutput: (chunk: string) =>
+          new Promise<void>((resolve) => {
+            opts.write(chunk);
+            pendingOutputs.push(resolve);
+          }),
+        rollback: () => undefined,
+        onResize: () => undefined,
+        reset: () => undefined,
+      };
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    const paintsBefore = writes.filter((write) => write.includes('[drive Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
+    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }));
+    expect(writes.filter((write) => write.includes('[drive Alice'))).toHaveLength(paintsBefore);
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
+    const completionIndex = writes.lastIndexOf('2J');
+    const repaintIndex = writes.findIndex(
+      (write, index) => index > completionIndex && write.includes('[drive Alice')
+    );
+    expect(predictiveWrite).toBeTypeOf('function');
+    expect(completionIndex).toBeGreaterThanOrEqual(0);
+    expect(repaintIndex).toBeGreaterThan(completionIndex);
+
+    for (const resolve of pendingOutputs) resolve();
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('repaints the clipped reserved status row after worker stream chunks', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    const paintsBefore = writes.filter((w) => w.includes('drive Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'frame one' }));
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'frame two' }));
+
+    expect(writes.filter((w) => w.includes('drive Alice')).length).toBeGreaterThan(paintsBefore);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it.each([80, 66, 40])(
+    'keeps a full-screen TUI and the Relay status bar on separate rows at %i columns',
+    async (cols) => {
+      const terminal = new Terminal({ cols, rows: 10, allowProposedApi: true });
+      const { deps, sockets, stdin, writes } = createHarness({
+        terminalSize: { rows: 10, cols },
+      });
+      const writeTerminal = (chunk: string): void => {
+        writes.push(chunk);
+        terminal.write(chunk);
+      };
+      deps.writeChunk = writeTerminal;
+      deps.captureAndRenderSnapshot = vi.fn(async (_connection, _name, snapshotDeps) => {
+        snapshotDeps.writeChunk('\x1b[2J\x1b[HAgent frame\x1b[9;1HAgent bottom');
+        return { status: 'ok', rows: 9, cols, offset: 32 };
+      });
+
+      const flushTerminal = () =>
+        new Promise<void>((resolve) => {
+          terminal.write('', resolve);
+        });
+      const line = (row: number) =>
+        terminal.buffer.active.getLine(terminal.buffer.active.viewportY + row - 1)?.translateToString(true) ??
+        '';
+
+      try {
+        const sessionPromise = runDriveSession('Alice', {}, deps);
+        const socket = await openSocket(sockets);
+        await flushTerminal();
+
+        expect(line(9)).toContain('Agent bottom');
+        expect(line(10)).toContain('[drive Alice');
+
+        socket.emit(
+          'message',
+          jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '\x1b[3;8r\x1b[?6h' })
+        );
+        const marginAwareStatus = [...writes].reverse().find((write) => write.includes('[drive Alice'));
+        expect(marginAwareStatus).toContain('\x1b[3;8r');
+        expect(marginAwareStatus).toContain('\x1b[?6h');
+        socket.emit(
+          'message',
+          jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '\x1b[?6l\x1b[r' })
+        );
+
+        // Plain newlines and autowrap scroll only the child's DECSTBM region;
+        // neither is cursor-addressed, so this catches the physical-row leak
+        // that a PTY resize alone cannot prevent.
+        socket.emit(
+          'message',
+          jsonMessage({
+            kind: 'worker_stream',
+            name: 'Alice',
+            chunk: `\x1b[9;1H${'wrapped '.repeat(20)}\r\nline two\r\nline three`,
+          })
+        );
+        await flushTerminal();
+        expect(line(10)).toContain('[drive Alice');
+
+        // A normal cursor-addressed update stays inside the 9-row child grid and
+        // does not duplicate or displace Relay's reserved row.
+        socket.emit(
+          'message',
+          jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '\x1b[5;1HTurn update' })
+        );
+        await flushTerminal();
+        expect(Array.from({ length: 10 }, (_, index) => line(index + 1)).join('\n')).toContain('Turn update');
+        expect(line(10)).toContain('[drive Alice');
+
+        // A full-screen erase clears the local buffer too; the invalidation
+        // scanner restores exactly one status bar after the new frame lands.
+        socket.emit(
+          'message',
+          jsonMessage({
+            kind: 'worker_stream',
+            name: 'Alice',
+            chunk: '\x1b[2J\x1b[HNext frame\x1b[9;1HNext bottom',
+          })
+        );
+        await flushTerminal();
+        const finalScreen = Array.from({ length: 10 }, (_, index) => line(index + 1));
+        expect(finalScreen.join('\n')).toContain('Next frame');
+        expect(line(9)).toContain('Next bottom');
+        expect(line(10)).toContain('[drive Alice');
+        const statusRows = finalScreen.filter((value) => value.includes('[drive Alice'));
+        expect(statusRows).toHaveLength(1);
+
+        stdin.type(Buffer.from([0x03]));
+        await sessionPromise;
+      } finally {
+        terminal.dispose();
+      }
+    }
+  );
+
+  it.each([1, 2])('does not reserve or paint status in a %i-row terminal', async (rows) => {
+    const { deps, sockets, writes, stdin, fetchLog } = createHarness({
+      terminalSize: { rows, cols: 80 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    expect(writes.some((write) => write.includes('[drive Alice'))).toBe(false);
+    const resize = fetchLog.find((call) => call.method === 'POST' && call.url.includes('/api/resize/'));
+    expect(resize?.body).toMatchObject({ rows, cols: 80 });
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('disables status painting when a large terminal shrinks to one row', async () => {
+    const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
+      terminalSize: { rows: 10, cols: 80 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    terminal.setSize({ rows: 1, cols: 80 });
+    const paintsAfterShrink = writes.filter((write) => write.includes('[drive Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'only row' }));
+
+    expect(writes.filter((write) => write.includes('[drive Alice'))).toHaveLength(paintsAfterShrink);
+    expect(
+      fetchLog.some(
+        (call) =>
+          call.url.includes('/api/resize/') &&
+          (call.body as { rows?: number; cols?: number }).rows === 1 &&
+          (call.body as { rows?: number; cols?: number }).cols === 80
+      )
+    ).toBe(true);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(writes).toContain(LOCAL_TERMINAL_RESET_SEQUENCE);
+  });
+
+  it('activates row reservation when a one-row terminal grows', async () => {
+    const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
+      terminalSize: { rows: 1, cols: 80 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(writes.some((write) => write.includes('[drive Alice'))).toBe(false);
+
+    terminal.setSize({ rows: 10, cols: 80 });
+
+    expect(writes.some((write) => write.includes('[drive Alice'))).toBe(true);
+    expect(
+      fetchLog.some(
+        (call) =>
+          call.url.includes('/api/resize/') &&
+          (call.body as { rows?: number; cols?: number }).rows === 9 &&
+          (call.body as { rows?: number; cols?: number }).cols === 79
+      )
+    ).toBe(true);
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });

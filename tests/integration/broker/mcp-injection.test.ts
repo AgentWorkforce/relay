@@ -254,6 +254,58 @@ test(
   }
 );
 
+test(
+  'mcp-injection: codex — named Relay participants are not replaced by built-in subagents',
+  { timeout: 120_000 },
+  async (t) => {
+    if (skipIfMissing(t)) return;
+    if (skipIfNotRealCli(t)) return;
+    if (skipIfCliMissing(t, 'codex')) return;
+
+    const harness = new BrokerHarness();
+    await harness.start();
+    const suffix = uniqueSuffix();
+    const playerName = `PlayerA-${suffix}`;
+    const gameMasterName = `Gamemaster-${suffix}`;
+
+    try {
+      // A lightweight, already-running Relay participant. The assertion is on
+      // the Gamemaster's outbound Relay message, so PlayerA need not answer.
+      await harness.spawnAgent(playerName, 'cat', ['general']);
+      await harness.spawnAgent(gameMasterName, 'codex', ['general'], {
+        task:
+          `Work with the existing participant ${playerName} to choose a tic-tac-toe move. ` +
+          `Ask ${playerName} which move they choose, then wait for their response. ` +
+          `Do not choose or play the move on their behalf.`,
+      });
+
+      await sleep(45_000);
+
+      const events = harness.getEvents();
+      const agentMessages = getRelayInboundFromAgent(events, gameMasterName);
+      const messagesToPlayer = agentMessages.filter((event) => {
+        const message = event as Extract<BrokerEvent, { kind: 'relay_inbound' }>;
+        return message.target === playerName && /move|choose|tic-tac-toe/i.test(message.body);
+      });
+      assert.ok(
+        messagesToPlayer.length >= 1,
+        `Codex Gamemaster should contact the existing Relay participant instead of starting ` +
+          `a built-in subagent; got ${messagesToPlayer.length} relevant messages to ${playerName}.`
+      );
+      const output = collectStreamOutput(events, gameMasterName);
+      assert.doesNotMatch(
+        output,
+        /No agents completed yet|Finished waiting|Waiting for agents/i,
+        'Codex Gamemaster should not enter its provider-native subagent wait flow'
+      );
+    } finally {
+      await harness.releaseAgent(gameMasterName).catch(() => undefined);
+      await harness.releaseAgent(playerName).catch(() => undefined);
+      await harness.stop();
+    }
+  }
+);
+
 // ══════════════════════════════════════════════════════════════════════════════
 // OPENCODE MCP INJECTION
 // Verifies opencode.json is written and --agent agent-relay flag is passed.

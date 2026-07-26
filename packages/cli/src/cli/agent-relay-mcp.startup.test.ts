@@ -62,6 +62,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   class FakeTransport {}
 
   class FakeMcpServer {
+    readonly options: unknown;
     readonly tools = new Map<string, { config: unknown; handler: (input: any) => Promise<any> }>();
     readonly prompts = new Map<string, { config: unknown; handler: () => Promise<any> }>();
     readonly resources = new Map<
@@ -80,7 +81,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     };
     listToolsHandler?: (req: unknown, extra: unknown) => Promise<{ tools?: Array<Record<string, unknown>> }>;
 
-    constructor(_info: unknown, _capabilities: unknown) {
+    constructor(_info: unknown, capabilities: unknown) {
+      this.options = capabilities;
       this.server = {
         _requestHandlers: new Map([
           [
@@ -425,6 +427,11 @@ describe('createAgentRelayMcpServer', () => {
     expect(server.server._requestHandlers.has('resources/subscribe')).toBe(true);
     expect(server.server._requestHandlers.has('resources/unsubscribe')).toBe(true);
     expect(server.prompts.get('system')).toBeDefined();
+    expect(server.options).toMatchObject({
+      instructions: expect.stringContaining(
+        'Existing Relay participants are not local or built-in subagents'
+      ),
+    });
 
     await expect(server.tools.get('register_agent')?.handler({ name: 'WorkerA' })).rejects.toThrow(
       'Workspace key not configured. Call "create_workspace" first, or "set_workspace_key" if someone shared a workspace key.'

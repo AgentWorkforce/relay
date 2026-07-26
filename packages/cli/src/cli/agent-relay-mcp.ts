@@ -61,7 +61,12 @@ function withExitAfterTaskInstruction(task: string): string {
   return `${task}\n\n${EXIT_AFTER_TASK_INSTRUCTION}`;
 }
 
-const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
+export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
+
+## Coordination rule
+- When the user asks you to work with, contact, coordinate with, or wait for named participants that already exist in this Agent Relay workspace, use Agent Relay tools such as "list_agents", "send_dm", "post_message", and "check_inbox".
+- Existing Relay participants are not local or built-in subagents. Do not replace them with your CLI's native subagent, team, task, or collaboration feature.
+- Do not claim to have contacted or waited for a Relay participant unless the corresponding Relay tool call succeeded.
 
 ## Getting Started
 1. The current project workspace is resumed automatically when one was selected before
@@ -88,6 +93,8 @@ const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace 
 - Use threads for detailed discussions to keep channels organized
 - React with emoji to acknowledge messages
 - Keep messages concise and actionable`;
+
+const DEFAULT_SYSTEM_PROMPT = AGENT_RELAY_MCP_INSTRUCTIONS;
 
 type AgentResultCallbackConfig = {
   url: string;
@@ -738,6 +745,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
         tools: {},
         prompts: {},
       },
+      instructions: AGENT_RELAY_MCP_INSTRUCTIONS,
     }
   );
 

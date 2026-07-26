@@ -7,11 +7,15 @@ import {
   createBackpressureAwareWriter,
   DEFAULT_STATUS_LINE_COLS,
   pickInitialTerminalCols,
+  fitStatusLineText,
   LOCAL_TERMINAL_RESET_SEQUENCE,
+  reserveStatusLineRow,
   resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
   StatusLineController,
+  StatusLineInvalidationScanner,
   StreamSyncBuffer,
+  TerminalScrollRegionTracker,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
   type BackpressureWritable,
@@ -21,6 +25,46 @@ import type { BrokerConnection } from './broker-connection.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('reserveStatusLineRow', () => {
+  it('gives a TUI one fewer row while preserving its width', () => {
+    expect(reserveStatusLineRow({ rows: 40, cols: 120 })).toEqual({ rows: 39, cols: 119 });
+  });
+
+  it('keeps degenerate terminals usable and leaves non-TTY output alone', () => {
+    expect(reserveStatusLineRow({ rows: 1, cols: 80 })).toEqual({ rows: 1, cols: 80 });
+    expect(reserveStatusLineRow({ rows: 2, cols: 80 })).toEqual({ rows: 2, cols: 80 });
+    expect(reserveStatusLineRow(null)).toBeNull();
+  });
+});
+
+describe('fitStatusLineText', () => {
+  it('leaves the autowrap column unused and marks truncation', () => {
+    expect(fitStatusLineText('1234567890', 8)).toBe('123456~');
+  });
+
+  it('conservatively accounts for non-ASCII names', () => {
+    expect(fitStatusLineText('A🤖BC', 5)).toBe('A🤖~');
+    expect(fitStatusLineText('short', undefined)).toBe('short');
+  });
+});
+
+describe('StatusLineInvalidationScanner', () => {
+  it('ignores ordinary cursor-addressed TUI output', () => {
+    const scanner = new StatusLineInvalidationScanner();
+    expect(scanner.push('\x1b[4;10Hhello\x1b[32mworld')).toBe(false);
+  });
+
+  it('detects display erases, resets, and alternate-screen switches across chunks', () => {
+    const scanner = new StatusLineInvalidationScanner();
+    expect(scanner.push('\x1b[')).toBe(false);
+    expect(scanner.push('2J')).toBe(true);
+    expect(scanner.push('ordinary follow-up')).toBe(false);
+    expect(scanner.push('\x1b[?25;10')).toBe(false);
+    expect(scanner.push('49h')).toBe(true);
+    expect(scanner.push('\x1bc')).toBe(true);
+  });
 });
 
 function makeDeps(overrides: Partial<AttachSnapshotDeps> = {}): {
@@ -303,6 +347,71 @@ describe('StreamSyncBuffer', () => {
   });
 });
 
+describe('TerminalScrollRegionTracker', () => {
+  it('tracks narrow DECSTBM margins split across chunks and resets them', () => {
+    const tracker = new TerminalScrollRegionTracker(9);
+    tracker.push('frame\x1b[3;');
+    expect(tracker.region).toEqual({ top: 1, bottom: 9 });
+    tracker.setRows(12);
+    tracker.push('8r');
+    expect(tracker.region).toEqual({ top: 3, bottom: 8 });
+    tracker.push('\x1b[r');
+    expect(tracker.region).toEqual({ top: 1, bottom: 12 });
+  });
+
+  it('resets margins for a resized child and alternate-screen switch', () => {
+    const tracker = new TerminalScrollRegionTracker(9);
+    tracker.push('\x1b[2;7r');
+    tracker.setRows(14);
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+    tracker.push('\x1b[2;8r\x1b[?25;10');
+    tracker.push('49h');
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+    tracker.push('\x1b[3;7r\x1b[?1049l');
+    expect(tracker.region).toEqual({ top: 2, bottom: 8 });
+    tracker.push('\x1b[?1049h');
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+    tracker.push('\x1b[?6h');
+    expect(tracker.isOriginMode).toBe(true);
+    tracker.push('\x1bc');
+    expect(tracker.isOriginMode).toBe(false);
+    tracker.push('\x1b[2;8r\x1b[?1049h');
+    expect(tracker.region).toEqual({ top: 1, bottom: 14 });
+  });
+
+  it('ignores CSI-looking bytes inside DCS payloads', () => {
+    const tracker = new TerminalScrollRegionTracker(12);
+    tracker.push('\x1bPtmux;\x1b[3;8r');
+    tracker.push('\x1b\\');
+    expect(tracker.region).toEqual({ top: 1, bottom: 12 });
+    tracker.push('\x1b[4;9r');
+    expect(tracker.region).toEqual({ top: 4, bottom: 9 });
+    tracker.setRows(9);
+    tracker.push('\x1b[10;20r');
+    expect(tracker.region).toEqual({ top: 1, bottom: 9 });
+    tracker.push('\x1b[3;7r\x1b[0;0r');
+    expect(tracker.region).toEqual({ top: 1, bottom: 9 });
+    tracker.push('\x1bPpayload\x9c\x1b[3;8r');
+    expect(tracker.region).toEqual({ top: 3, bottom: 8 });
+    tracker.push('\x1b[4;\x18' + '9r');
+    expect(tracker.region).toEqual({ top: 3, bottom: 8 });
+  });
+
+  it('resets alternate margins on every supported alternate-screen re-entry', () => {
+    for (const mode of ['47', '1047', '1049']) {
+      const tracker = new TerminalScrollRegionTracker(10);
+      tracker.push(`\x1b[?${mode}h\x1b[3;7r\x1b[?${mode}l\x1b[?${mode}h`);
+      expect(tracker.region).toEqual({ top: 1, bottom: 10 });
+    }
+  });
+
+  it('preserves margins for redundant alternate-screen set commands', () => {
+    const tracker = new TerminalScrollRegionTracker(10);
+    tracker.push('\x1b[?1049h\x1b[4;7r\x1b[?1049h');
+    expect(tracker.region).toEqual({ top: 4, bottom: 7 });
+  });
+});
+
 describe('AnsiBoundaryScanner', () => {
   it('reports a boundary for plain text', () => {
     const s = new AnsiBoundaryScanner();
@@ -341,6 +450,18 @@ describe('AnsiBoundaryScanner', () => {
     s.push('\x1bP1;2body');
     expect(s.atBoundary).toBe(false);
     s.push('\x1b\\');
+    expect(s.atBoundary).toBe(true);
+  });
+
+  it('handles split C1 CSI and C1 string controls', () => {
+    const s = new AnsiBoundaryScanner();
+    s.push('\x9b3;');
+    expect(s.atBoundary).toBe(false);
+    s.push('8r');
+    expect(s.atBoundary).toBe(true);
+    s.push('\x90payload');
+    expect(s.atBoundary).toBe(false);
+    s.push('\x9c');
     expect(s.atBoundary).toBe(true);
   });
 
@@ -429,24 +550,33 @@ describe('StatusLineController', () => {
     expect(writes).toEqual(['S']);
   });
 
-  it('force-paints after boundaryHoldMs if output stays mid-sequence', () => {
-    const writes: string[] = [];
+  it.each([
+    ['CSI', '\x1b[', '2J'],
+    ['OSC', '\x1b]0;title', '\x07'],
+    ['DCS', '\x1bP$qm', '\x1b\\'],
+  ])('never splices a status repaint into a delayed split %s sequence', (_name, start, end) => {
+    const output: string[] = [];
     const t = fakeTimers();
     const c = new StatusLineController({
-      render: () => 'S',
-      write: (s) => writes.push(s),
+      render: () => 'STATUS',
+      write: (s) => output.push(s),
       enabled: true,
       coalesceMs: 0,
-      boundaryHoldMs: 100,
       now: t.now,
       setTimer: t.setTimer,
       clearTimer: t.clearTimer,
     });
-    c.observeOutput('\x1b[');
+    output.push(start);
+    c.observeOutput(start);
     c.request();
-    expect(writes).toEqual([]);
-    t.advance(100);
-    expect(writes).toEqual(['S']); // bounded fallback
+    t.advance(10_000);
+    expect(output).toEqual([start]);
+    expect(t.pending()).toBe(0);
+
+    output.push(end);
+    c.observeOutput(end);
+    expect(output).toEqual([start, end, 'STATUS']);
+    expect(output.slice(0, 2).join('')).toBe(start + end);
   });
 
   it('coalesces rapid repaints into one per window (latest state wins)', () => {
@@ -474,7 +604,7 @@ describe('StatusLineController', () => {
     expect(writes).toEqual(['S1', 'S3']);
   });
 
-  it('re-arms a plain coalescing timer when a boundary-hold timer is pending and output returns to a boundary', () => {
+  it('starts the remaining coalescing delay only after output returns to a boundary', () => {
     const writes: string[] = [];
     const t = fakeTimers();
     const c = new StatusLineController({
@@ -482,7 +612,6 @@ describe('StatusLineController', () => {
       write: (s) => writes.push(s),
       enabled: true,
       coalesceMs: 50,
-      boundaryHoldMs: 100,
       now: t.now,
       setTimer: t.setTimer,
       clearTimer: t.clearTimer,
@@ -491,22 +620,40 @@ describe('StatusLineController', () => {
     // inside the coalescing window.
     c.request();
     expect(writes).toEqual(['S']);
-    // Output ends mid-CSI, then a repaint is requested → a force (boundary-hold)
-    // timer is armed for boundaryHoldMs (deadline now+100).
+    // Output ends mid-CSI, then a repaint is requested. No timer may force a
+    // write into the incomplete sequence.
     c.observeOutput('\x1b[');
     c.request();
-    expect(t.pending()).toBe(1);
-    // A little later, output returns to a boundary. The stale force timer must
-    // be cleared and a plain coalescing timer armed for the *remainder* of the
-    // 50ms window (≈40ms from here), not left to fire at the 100ms deadline.
+    expect(t.pending()).toBe(0);
+    // A little later, output returns to a boundary. A coalescing timer is
+    // armed for the remainder of the 50ms window (≈40ms from here).
     t.advance(10);
     c.observeOutput('0m'); // completes the CSI → boundary
     expect(writes).toEqual(['S']); // still deferred within the coalescing window
-    // The coalescing remainder elapses at +40ms; a boundary-hold timer would
-    // not have fired until +90ms, so this paint proves the re-arm.
+    expect(t.pending()).toBe(1);
     t.advance(40);
     expect(writes).toEqual(['S', 'S']);
     expect(t.pending()).toBe(0);
+  });
+
+  it('does not let a held repaint fire after dynamic status disablement', () => {
+    const writes: string[] = [];
+    const t = fakeTimers();
+    let enabled = true;
+    const c = new StatusLineController({
+      render: () => 'S',
+      write: (s) => writes.push(s),
+      enabled: () => enabled,
+      coalesceMs: 0,
+      now: t.now,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    c.observeOutput('\x1b[');
+    c.request();
+    enabled = false;
+    c.observeOutput('0m');
+    expect(writes).toEqual([]);
   });
 
   it('stops painting after dispose', () => {

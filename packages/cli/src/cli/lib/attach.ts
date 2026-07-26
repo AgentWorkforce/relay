@@ -476,6 +476,86 @@ function takeColumns(text: string, budget: number, from: 'start' | 'end' = 'star
 }
 
 /**
+ * Reserve the local terminal's final row for an attach status line.
+ *
+ * Full-screen CLIs treat every PTY row as application-owned. If the remote PTY
+ * is resized to the local terminal's full height and Relay then paints a status
+ * line over its final row, both renderers continually overwrite each other.
+ * The result is the duplicated status text and torn TUI frames seen in drive
+ * and passthrough sessions. Give the child one fewer row and column: the row
+ * prevents cursor-addressed overlap, while the spare column prevents terminal
+ * autowrap from stepping past the child scroll margin into Relay's row.
+ */
+export function reserveStatusLineRow(
+  localSize: { rows: number; cols: number } | null
+): { rows: number; cols: number } | null {
+  if (!localSize) return null;
+  if (localSize.rows < 3 || localSize.cols < 2) return localSize;
+  return {
+    rows: localSize.rows - 1,
+    cols: localSize.cols - 1,
+  };
+}
+
+/** Whether a terminal is large enough to dedicate a non-wrapping status row. */
+export function canReserveStatusLine(
+  localSize: { rows: number; cols: number } | null
+): localSize is { rows: number; cols: number } {
+  return localSize !== null && localSize.rows >= 3 && localSize.cols >= 2;
+}
+
+/**
+ * Constrain local scrolling to the child PTY's rows while preserving the
+ * current cursor. DECSTBM otherwise defaults to the physical terminal height,
+ * which includes Relay's status row.
+ */
+export function renderChildScrollRegion(rows: number): string {
+  // CSI s/u save only the cursor. DEC ESC 7/8 also preserve terminal state in
+  // common emulators and would therefore undo the newly installed margins.
+  return `\x1b[s\x1b[1;${Math.max(1, Math.floor(rows))}r\x1b[u`;
+}
+
+/**
+ * Keep a status label strictly inside one terminal row.
+ *
+ * Writing the final column with autowrap enabled advances to the next row and,
+ * on the terminal's bottom row, scrolls the entire TUI. Leave one cell unused
+ * and conservatively count non-ASCII code points as two cells so even unusual
+ * agent names cannot trigger a wrap.
+ */
+function conservativeTerminalCellWidth(character: string): number {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return codePoint >= 0x20 && codePoint <= 0x7e ? 1 : 2;
+}
+
+export function fitStatusLineText(text: string, columns: number | undefined): string {
+  if (columns === undefined || !Number.isFinite(columns)) return text;
+  const available = Math.max(0, Math.floor(columns) - 1);
+  if (available === 0) return '';
+
+  let width = 0;
+  let result = '';
+  let truncated = false;
+  for (const character of text) {
+    const characterWidth = conservativeTerminalCellWidth(character);
+    if (width + characterWidth > available) {
+      truncated = true;
+      break;
+    }
+    result += character;
+    width += characterWidth;
+  }
+  if (!truncated) return result;
+  while (width + 1 > available && result.length > 0) {
+    const characters = Array.from(result);
+    const removed = characters.pop() ?? '';
+    width -= conservativeTerminalCellWidth(removed);
+    result = characters.join('');
+  }
+  return `${result}~`;
+}
+
+/**
  * Sync the agent's PTY to the driver's local terminal size. tmux /
  * screen / ssh all do this — without it a TUI in the agent renders into
  * the size the PTY was spawned with, ignoring the human's viewport.
@@ -489,15 +569,26 @@ export async function syncInitialPtySize(
   verb: string,
   deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void },
   options?: { sessionId?: string }
-): Promise<void> {
-  if (!localSize) return;
+): Promise<boolean> {
+  if (!localSize) return false;
   try {
-    await createBrokerClient(connection, deps.fetch).resizePty(name, localSize.rows, localSize.cols, options);
+    const result = await createBrokerClient(connection, deps.fetch).resizePty(
+      name,
+      localSize.rows,
+      localSize.cols,
+      options
+    );
+    if (result.applied === false) {
+      deps.log(`[${verb}] broker did not apply the reserved PTY size; using status repaint fallback`);
+      return false;
+    }
+    return true;
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     deps.log(
       `[${verb}] could not sync agent PTY size to local terminal (${failure.message ?? 'unknown'}); continuing`
     );
+    return false;
   }
 }
 
@@ -652,6 +743,9 @@ export class AnsiBoundaryScanner {
     switch (this.state) {
       case 'ground':
         if (c === 0x1b) this.state = 'esc';
+        else if (c === 0x9b) this.state = 'csi';
+        else if (c === 0x9d) this.state = 'osc';
+        else if (c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f) this.state = 'str';
         return;
       case 'esc':
         if (c === 0x5b)
@@ -663,25 +757,279 @@ export class AnsiBoundaryScanner {
         else this.state = 'ground'; // 2-byte escape (ESC 7, ESC 8, ESC c, …)
         return;
       case 'csi':
-        if (c === 0x1b)
+        if (c === 0x18 || c === 0x1a)
+          this.state = 'ground'; // CAN / SUB cancel the sequence
+        else if (c === 0x1b)
           this.state = 'esc'; // stray ESC restarts
         else if (c >= 0x40 && c <= 0x7e) this.state = 'ground'; // final byte ends the CSI
         return;
       case 'osc':
-        if (c === 0x07)
+        if (c === 0x07 || c === 0x9c || c === 0x18 || c === 0x1a)
           this.state = 'ground'; // BEL terminator
         else if (c === 0x1b) this.state = 'osc_esc'; // possible ST (ESC \)
         return;
       case 'osc_esc':
-        this.state = c === 0x5c ? 'ground' : 'osc';
+        this.state =
+          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a
+            ? 'ground'
+            : c === 0x1b
+              ? 'osc_esc'
+              : 'osc';
         return;
       case 'str':
-        if (c === 0x1b) this.state = 'str_esc';
+        if (c === 0x9c || c === 0x18 || c === 0x1a) this.state = 'ground';
+        else if (c === 0x1b) this.state = 'str_esc';
         return;
       case 'str_esc':
-        this.state = c === 0x5c ? 'ground' : 'str';
+        this.state =
+          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a
+            ? 'ground'
+            : c === 0x1b
+              ? 'str_esc'
+              : 'str';
         return;
     }
+  }
+}
+
+/**
+ * Detect terminal controls that can erase or replace Relay's reserved status
+ * row even though the child PTY itself is one row shorter.
+ *
+ * Cursor-addressed TUI drawing stays inside the child grid, but erase-display,
+ * terminal reset, and alternate-screen switches act on the local terminal as a
+ * whole. Attach clients reinstall their child scroll region after those
+ * operations; the status controller separately repaints at a safe ANSI
+ * boundary. A short carry handles controls split across WS frames.
+ */
+export class StatusLineInvalidationScanner {
+  private carry = '';
+
+  push(chunk: string): boolean {
+    const input = this.carry + chunk;
+    const esc = String.fromCharCode(0x1b);
+    const privateModes = new RegExp(`${esc}\\[\\?([0-9;]+)[hl]`, 'g');
+    let invalidatesDisplay = false;
+    let privateMatch: RegExpExecArray | null;
+    while ((privateMatch = privateModes.exec(input)) !== null) {
+      if (
+        privateMatch[1]
+          .split(';')
+          .some((mode) => ['47', '1047', '1049'].includes(mode))
+      ) {
+        invalidatesDisplay = true;
+      }
+    }
+    // Retain only an incomplete candidate control. Keeping arbitrary completed
+    // output would rediscover the same erase on later chunks and recreate the
+    // repaint storm this scanner exists to prevent.
+    const lastEscape = input.lastIndexOf(esc);
+    const suffix = lastEscape >= 0 ? input.slice(lastEscape) : '';
+    const incompleteCsi =
+      suffix.startsWith(`${esc}[`) && /^[?0-9;]*$/.test(suffix.slice(2));
+    this.carry = suffix === esc || incompleteCsi ? suffix : '';
+
+    return (
+      // ED 0/default clears from the cursor through the reserved final row;
+      // ED 2 clears the full display.
+      input.includes(`${esc}[J`) ||
+      input.includes(`${esc}[0J`) ||
+      input.includes(`${esc}[2J`) ||
+      // Alternate-screen changes replace the entire visible buffer.
+      invalidatesDisplay ||
+      // RIS resets the terminal and clears the active display.
+      input.includes(`${esc}c`)
+    );
+  }
+}
+
+/** Track the child application's active DECSTBM margins across streamed ANSI. */
+export class TerminalScrollRegionTracker {
+  private parserState: 'ground' | 'escape' | 'csi' | 'string' | 'string_escape' = 'ground';
+  private csiParams = '';
+  private csiSupported = true;
+  private stringAllowsBel = false;
+  private rows: number;
+  private top = 1;
+  private bottom: number;
+  private originMode = false;
+  private alternateActive = false;
+  private primaryRegion: { top: number; bottom: number };
+  private alternateRegion: { top: number; bottom: number };
+
+  constructor(rows: number) {
+    this.rows = Math.max(1, Math.floor(rows));
+    this.bottom = this.rows;
+    this.primaryRegion = { top: 1, bottom: this.rows };
+    this.alternateRegion = { top: 1, bottom: this.rows };
+  }
+
+  setRows(rows: number): void {
+    this.rows = Math.max(1, Math.floor(rows));
+    this.top = 1;
+    this.bottom = this.rows;
+    this.primaryRegion = { top: 1, bottom: this.rows };
+    this.alternateRegion = { top: 1, bottom: this.rows };
+  }
+
+  push(chunk: string): void {
+    for (const character of chunk) this.consumeCharacter(character);
+  }
+
+  get region(): { top: number; bottom: number } {
+    return { top: this.top, bottom: this.bottom };
+  }
+
+  get isOriginMode(): boolean {
+    return this.originMode;
+  }
+
+  private consumeCharacter(character: string): void {
+    switch (this.parserState) {
+      case 'ground':
+        this.consumeGround(character);
+        break;
+      case 'escape':
+        this.consumeEscape(character);
+        break;
+      case 'csi':
+        this.consumeCsi(character);
+        break;
+      case 'string':
+        this.consumeString(character);
+        break;
+      case 'string_escape':
+        this.consumeStringEscape(character);
+        break;
+    }
+  }
+
+  private consumeString(character: string): void {
+    if (character === '\x1b') {
+      this.parserState = 'string_escape';
+      return;
+    }
+    if (
+      character === '\x9c' ||
+      character === '\x18' ||
+      character === '\x1a' ||
+      (this.stringAllowsBel && character === '\x07')
+    ) {
+      this.parserState = 'ground';
+    }
+  }
+
+  private consumeStringEscape(character: string): void {
+    if (character === '\\' || character === '\x9c' || character === '\x18' || character === '\x1a') {
+      this.parserState = 'ground';
+    } else {
+      this.parserState = character === '\x1b' ? 'string_escape' : 'string';
+    }
+  }
+
+  private consumeGround(character: string): void {
+    if (character === '\x1b') this.parserState = 'escape';
+    else if (character === '\x9b') this.beginCsi();
+    else if (['\x90', '\x98', '\x9d', '\x9e', '\x9f'].includes(character)) {
+      this.beginString(character === '\x9d');
+    }
+  }
+
+  private consumeEscape(character: string): void {
+    if (character === '[') this.beginCsi();
+    else if (['P', 'X', ']', '^', '_'].includes(character)) this.beginString(character === ']');
+    else {
+      if (character === 'c') this.resetTrackedState();
+      this.parserState = character === '\x1b' ? 'escape' : 'ground';
+    }
+  }
+
+  private beginCsi(): void {
+    this.parserState = 'csi';
+    this.csiParams = '';
+    this.csiSupported = true;
+  }
+
+  private beginString(allowsBel: boolean): void {
+    this.parserState = 'string';
+    this.stringAllowsBel = allowsBel;
+  }
+
+  private consumeCsi(character: string): void {
+    if (character === '\x18' || character === '\x1a') {
+      this.parserState = 'ground';
+      return;
+    }
+    if (character === '\x1b') {
+      this.parserState = 'escape';
+      return;
+    }
+    const code = character.codePointAt(0) ?? 0;
+    if (code >= 0x30 && code <= 0x3f) {
+      this.csiParams += character;
+      return;
+    }
+    if (code >= 0x20 && code <= 0x2f) {
+      this.csiSupported = false;
+      return;
+    }
+    if (code >= 0x40 && code <= 0x7e) {
+      if (this.csiSupported) this.applyCsi(this.csiParams, character);
+      this.parserState = 'ground';
+    }
+  }
+
+  private applyCsi(params: string, final: string): void {
+    if ((final === 'h' || final === 'l') && params.startsWith('?')) {
+      this.applyPrivateModes(params.slice(1).split(';'), final === 'h');
+      return;
+    }
+    if (final !== 'r' || params.startsWith('?')) return;
+    const [topRaw = '', bottomRaw = ''] = params.split(';');
+    const parsedTop = topRaw === '' ? 0 : Number.parseInt(topRaw, 10);
+    const parsedBottom = bottomRaw === '' ? 0 : Number.parseInt(bottomRaw, 10);
+    const top = parsedTop === 0 ? 1 : parsedTop;
+    const bottom = parsedBottom === 0 ? this.rows : parsedBottom;
+    if (Number.isFinite(top) && Number.isFinite(bottom) && top >= 1 && bottom > top) {
+      const clampedTop = Math.min(top, this.rows);
+      const clampedBottom = Math.min(bottom, this.rows);
+      if (clampedBottom > clampedTop) {
+        this.top = clampedTop;
+        this.bottom = clampedBottom;
+      }
+    }
+  }
+
+  private applyPrivateModes(modes: string[], enabled: boolean): void {
+    if (modes.includes('6')) this.originMode = enabled;
+    if (modes.some((mode) => ['47', '1047', '1049'].includes(mode))) {
+      this.switchScreenBuffer(enabled, enabled);
+    }
+  }
+
+  private resetTrackedState(): void {
+    this.top = 1;
+    this.bottom = this.rows;
+    this.originMode = false;
+    this.alternateActive = false;
+    this.primaryRegion = { top: 1, bottom: this.rows };
+    this.alternateRegion = { top: 1, bottom: this.rows };
+  }
+
+  private switchScreenBuffer(enterAlternate: boolean, resetAlternate: boolean): void {
+    if (enterAlternate === this.alternateActive) return;
+    if (resetAlternate) {
+      this.alternateRegion = { top: 1, bottom: this.rows };
+    }
+    if (this.alternateActive) {
+      this.alternateRegion = { top: this.top, bottom: this.bottom };
+    } else {
+      this.primaryRegion = { top: this.top, bottom: this.bottom };
+    }
+    this.alternateActive = enterAlternate;
+    const region = enterAlternate ? this.alternateRegion : this.primaryRegion;
+    this.top = region.top;
+    this.bottom = region.bottom;
   }
 }
 
@@ -692,18 +1040,13 @@ export interface StatusLineControllerOptions {
   /** Write to stdout. */
   write: (chunk: string) => void;
   /** When false (stdout is not a TTY) the status line is never painted. */
-  enabled: boolean;
+  enabled: boolean | (() => boolean);
   /**
    * Minimum ms between repaints. `0` paints on every request (no coalescing);
    * a positive value coalesces bursts of per-chunk repaints into at most one
    * paint per window, shrinking the splice/DECSC-clobber window.
    */
   coalesceMs: number;
-  /**
-   * Max ms to hold a repaint while output keeps ending mid escape-sequence
-   * before painting anyway (bounded residual splice risk). Default 100.
-   */
-  boundaryHoldMs?: number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
   now?: () => number;
@@ -716,8 +1059,8 @@ export interface StatusLineControllerOptions {
  *  - **Non-TTY skip** — when `enabled` is false, nothing is ever written.
  *  - **Boundary-hold** — a repaint is deferred while the observed output ends
  *    mid ANSI escape sequence, so the status line never splices into a
- *    half-transmitted CSI. It paints as soon as the next chunk lands at a
- *    boundary (or after `boundaryHoldMs` as a bounded fallback).
+ *    half-transmitted CSI. It paints only after a later chunk returns the
+ *    stream to a real boundary.
  *  - **Coalescing** — repaints are rate-limited to at most one per
  *    `coalesceMs`, shrinking the window in which our save/restore-cursor wrap
  *    can clobber the agent's own pending DECSC.
@@ -731,24 +1074,32 @@ export interface StatusLineControllerOptions {
 export class StatusLineController {
   private readonly scanner = new AnsiBoundaryScanner();
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private timerForce = false;
   private wantPaint = false;
   private lastPaintAt = Number.NEGATIVE_INFINITY;
   private disposed = false;
 
   constructor(private readonly opts: StatusLineControllerOptions) {}
 
+  private isEnabled(): boolean {
+    return typeof this.opts.enabled === 'function' ? this.opts.enabled() : this.opts.enabled;
+  }
+
   /** Record server output for boundary tracking; flush a held repaint if the
    *  stream is now back at a sequence boundary. */
   observeOutput(chunk: string): void {
     if (this.disposed) return;
     this.scanner.push(chunk);
+    if (!this.isEnabled()) {
+      this.wantPaint = false;
+      this.clearTimer();
+      return;
+    }
     if (this.wantPaint) this.flush();
   }
 
   /** Request a repaint (coalesced + boundary-held). */
   request(): void {
-    if (this.disposed || !this.opts.enabled) return;
+    if (this.disposed || !this.isEnabled()) return;
     this.wantPaint = true;
     this.flush();
   }
@@ -765,37 +1116,31 @@ export class StatusLineController {
   }
 
   private flush(): void {
-    if (this.disposed || !this.wantPaint) return;
+    if (this.disposed || !this.wantPaint || !this.isEnabled()) return;
     if (!this.scanner.atBoundary) {
-      this.arm(this.opts.boundaryHoldMs ?? 100, true);
       return;
     }
-    // Back at a boundary: any pending *force* (boundary-hold) timer carries the
-    // wrong deadline now — it was armed to paint mid-sequence after
-    // `boundaryHoldMs`, which would either paint later than the coalescing
-    // window needs or bypass the window entirely. Clear it so the normal
-    // coalescing logic below re-arms a plain timer for the correct remainder.
-    // A non-force (coalescing) timer already has the right deadline, so leave
-    // it in place.
-    if (this.timer && this.timerForce) this.clearTimer();
     const elapsed = this.now() - this.lastPaintAt;
     if (elapsed >= this.opts.coalesceMs) {
       this.paintNow();
     } else {
-      this.arm(this.opts.coalesceMs - elapsed, false);
+      this.arm(this.opts.coalesceMs - elapsed);
     }
   }
 
   private paintNow(): void {
     this.clearTimer();
+    if (!this.isEnabled()) {
+      this.wantPaint = false;
+      return;
+    }
     this.wantPaint = false;
     this.lastPaintAt = this.now();
     this.opts.write(this.opts.render());
   }
 
-  private arm(ms: number, force: boolean): void {
+  private arm(ms: number): void {
     if (this.timer) return;
-    this.timerForce = force;
     const set =
       this.opts.setTimer ??
       ((fn, delay) => {
@@ -805,9 +1150,11 @@ export class StatusLineController {
       });
     this.timer = set(() => {
       this.timer = null;
-      if (this.disposed || !this.wantPaint) return;
-      if (this.timerForce) this.paintNow();
-      else this.flush();
+      if (this.disposed || !this.wantPaint || !this.isEnabled()) {
+        this.wantPaint = false;
+        return;
+      }
+      this.flush();
     }, ms);
   }
 
