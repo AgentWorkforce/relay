@@ -1185,7 +1185,8 @@ impl BrokerRuntime {
                 );
             }
             ListenApiRequest::List { reply } => {
-                let counts = super::delivery::pending_message_counts(delivery_states, pending_deliveries);
+                let counts =
+                    super::delivery::pending_message_counts(delivery_states, pending_deliveries);
                 let _ = reply.send(Ok(json!({ "agents": workers.list(&counts) })));
             }
             ListenApiRequest::Threads { reply } => {
