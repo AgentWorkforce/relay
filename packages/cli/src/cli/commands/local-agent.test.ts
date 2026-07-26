@@ -98,6 +98,7 @@ describe('local agent subtree', () => {
                 model: 'gpt-5.4',
                 channels: [],
                 current_state: 'working' as const,
+                pending_messages: 3,
                 last_activity_at: '2026-07-22T16:59:57.000Z',
               },
             ]),
@@ -108,7 +109,9 @@ describe('local agent subtree', () => {
 
     await program.parseAsync(['local', 'agent', 'list', '--pretty'], { from: 'user' });
 
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('Lead  codex / gpt-5.4  ● working  now'));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('Lead  codex / gpt-5.4  ● working  3        now')
+    );
   });
 
   it('formats agent state and activity time for the pretty list', () => {
@@ -121,14 +124,35 @@ describe('local agent subtree', () => {
             cli: 'claude',
             channels: [],
             current_state: 'blocked_on_send',
+            pending_messages: 2,
             last_activity_at: '2026-07-22T16:58:00.000Z',
           },
           { name: 'Worker', runtime: 'headless', channels: [], current_state: 'idle' },
         ],
         new Date('2026-07-22T17:00:00.000Z')
       )
-    ).toMatch(/Review\s+claude\s+◐ waiting\s+2 minutes ago/);
+    ).toMatch(/Review\s+claude\s+◐ waiting\s+2\s+2 minutes ago/);
     expect(formatPrettyAgentList([], new Date())).toBe('No agents running.');
+  });
+
+  it('shows the pending queue depth, and "-" when the broker omits it', () => {
+    const [header, , withCount, withoutCount] = formatPrettyAgentList(
+      [
+        {
+          name: 'Review',
+          runtime: 'pty',
+          channels: [],
+          current_state: 'blocked_on_send',
+          pending_messages: 4,
+        },
+        { name: 'Worker', runtime: 'headless', channels: [], current_state: 'idle' },
+      ],
+      new Date('2026-07-22T17:00:00.000Z')
+    ).split('\n');
+
+    expect(header).toMatch(/STATE\s+PENDING\s+LAST ACTIVE/);
+    expect(withCount).toMatch(/◐ waiting\s+4\s+unknown/);
+    expect(withoutCount).toMatch(/○ idle\s+-\s+unknown/);
   });
 
   it('removes terminal control sequences from broker-provided cells', () => {

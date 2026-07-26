@@ -1185,7 +1185,8 @@ impl BrokerRuntime {
                 );
             }
             ListenApiRequest::List { reply } => {
-                let _ = reply.send(Ok(json!({ "agents": workers.list() })));
+                let counts = super::delivery::pending_message_counts(delivery_states, pending_deliveries);
+                let _ = reply.send(Ok(json!({ "agents": workers.list(&counts) })));
             }
             ListenApiRequest::Threads { reply } => {
                 let mut messages: Vec<Value> = recent_thread_messages.iter().cloned().collect();
@@ -1648,7 +1649,10 @@ impl BrokerRuntime {
                     .collect();
                 let _ = reply.send(Ok(json!({
                     "agent_count": workers.workers.len(),
-                    "agents": workers.list(),
+                    "agents": workers.list(&super::delivery::pending_message_counts(
+                        delivery_states,
+                        pending_deliveries,
+                    )),
                     "pending_delivery_count": pending.len(),
                     "pending_deliveries": pending,
                     "node_connected": node_delivery_connected,
