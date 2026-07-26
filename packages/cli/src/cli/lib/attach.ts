@@ -770,11 +770,7 @@ export class AnsiBoundaryScanner {
         return;
       case 'osc_esc':
         this.state =
-          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a
-            ? 'ground'
-            : c === 0x1b
-              ? 'osc_esc'
-              : 'osc';
+          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a ? 'ground' : c === 0x1b ? 'osc_esc' : 'osc';
         return;
       case 'str':
         if (c === 0x9c || c === 0x18 || c === 0x1a) this.state = 'ground';
@@ -782,11 +778,7 @@ export class AnsiBoundaryScanner {
         return;
       case 'str_esc':
         this.state =
-          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a
-            ? 'ground'
-            : c === 0x1b
-              ? 'str_esc'
-              : 'str';
+          c === 0x5c || c === 0x9c || c === 0x18 || c === 0x1a ? 'ground' : c === 0x1b ? 'str_esc' : 'str';
         return;
     }
   }
@@ -812,11 +804,7 @@ export class StatusLineInvalidationScanner {
     let invalidatesDisplay = false;
     let privateMatch: RegExpExecArray | null;
     while ((privateMatch = privateModes.exec(input)) !== null) {
-      if (
-        privateMatch[1]
-          .split(';')
-          .some((mode) => ['47', '1047', '1049'].includes(mode))
-      ) {
+      if (privateMatch[1].split(';').some((mode) => ['47', '1047', '1049'].includes(mode))) {
         invalidatesDisplay = true;
       }
     }
@@ -825,8 +813,7 @@ export class StatusLineInvalidationScanner {
     // repaint storm this scanner exists to prevent.
     const lastEscape = input.lastIndexOf(esc);
     const suffix = lastEscape >= 0 ? input.slice(lastEscape) : '';
-    const incompleteCsi =
-      suffix.startsWith(`${esc}[`) && /^[?0-9;]*$/.test(suffix.slice(2));
+    const incompleteCsi = suffix.startsWith(`${esc}[`) && /^[?0-9;]*$/.test(suffix.slice(2));
     this.carry = suffix === esc || incompleteCsi ? suffix : '';
 
     return (

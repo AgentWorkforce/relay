@@ -901,9 +901,7 @@ describe('runPassthroughSession', () => {
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
 
     const activeResizes = fetchLog.filter(
-      (call) =>
-        call.url.includes('/api/resize/') &&
-        !(call.body as { release?: boolean }).release
+      (call) => call.url.includes('/api/resize/') && !(call.body as { release?: boolean }).release
     );
     expect(activeResizes.at(-1)?.body).toMatchObject({ rows: 41, cols: 119 });
     expect([...writes].reverse().find((write) => write.includes('[passthrough Alice'))).toContain(
@@ -1058,24 +1056,18 @@ describe('runPassthroughSession', () => {
     await sessionPromise;
   });
 
-  it.each([1, 2])(
-    'disables status painting when a large terminal shrinks to %i rows',
-    async (rows) => {
+  it.each([1, 2])('disables status painting when a large terminal shrinks to %i rows', async (rows) => {
     const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
       terminalSize: { rows: 10, cols: 80 },
     });
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     terminal.setSize({ rows, cols: 80 });
-    const paintsAfterShrink = writes.filter((write) =>
-      write.includes('[passthrough Alice')
-    ).length;
+    const paintsAfterShrink = writes.filter((write) => write.includes('[passthrough Alice')).length;
 
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'only row' }));
 
-    expect(writes.filter((write) => write.includes('[passthrough Alice'))).toHaveLength(
-      paintsAfterShrink
-    );
+    expect(writes.filter((write) => write.includes('[passthrough Alice'))).toHaveLength(paintsAfterShrink);
     expect(
       fetchLog.some(
         (call) =>
@@ -1087,8 +1079,7 @@ describe('runPassthroughSession', () => {
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
     expect(writes).toContain(LOCAL_TERMINAL_RESET_SEQUENCE);
-    }
-  );
+  });
 
   it.each([1, 2])('activates row reservation when a %i-row terminal grows', async (rows) => {
     const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
