@@ -387,9 +387,10 @@ export const DEFAULT_STATUS_LINE_COLS = 80;
  * then scrolls again — promoting the previous status line into the scrollback
  * as content and eating one row of the agent's output each time. A narrow
  * pane therefore turns a single status line into a growing stack of them with
- * the agent's TUI shredded behind it. The `drive` label is 87 columns, so this
- * fired on a standard 80-column terminal too; at 66 columns six repaints cost
- * six rows of agent output.
+ * the agent's TUI shredded behind it. At 66 columns six repaints cost six rows
+ * of agent output. The `drive` label fits a standard 80-column pane for a
+ * typical agent name, so this is the guard-rail for narrow panes and long
+ * names — not something the common case leans on.
  *
  * Truncation keeps the paint inside one row, so the wrap — and the scroll
  * cascade it triggers — can never happen. The tail is the part that carries

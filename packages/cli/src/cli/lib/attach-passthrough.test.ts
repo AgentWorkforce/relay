@@ -6,7 +6,6 @@ import type { CliPtyInputStream } from './attach-drive.js';
 import {
   PassthroughKeybindParser,
   classifyWsEvent,
-  renderStatusLine,
   runPassthroughSession,
   type PassthroughDependencies,
   type PassthroughStdin,
@@ -374,8 +373,6 @@ function createHarness(opts: FetchScript = {}): {
       return stream;
     }),
     createPredictiveEcho: opts.predictiveEcho ? () => opts.predictiveEcho ?? null : undefined,
-    // Immediate, deterministic status repaints in tests (no coalescing timer).
-    statusRepaintCoalesceMs: 0,
   };
 
   return {
@@ -476,36 +473,6 @@ describe('PassthroughKeybindParser', () => {
     // Ctrl+G is forwarded verbatim instead of being intercepted as flush.
     expect(Array.from(out.forward)).toEqual([0x07]);
     expect(out.actions).toEqual([]);
-  });
-});
-
-describe('renderStatusLine', () => {
-  it('shows [passthrough name | delivery=auto_inject] without a pending counter', () => {
-    const out = renderStatusLine({ name: 'Alice', mode: 'auto_inject' });
-    expect(out).toContain('passthrough Alice');
-    expect(out).toContain('delivery=auto_inject');
-    expect(out).toContain('Ctrl+C detach');
-    expect(out).not.toContain('pending=');
-  });
-
-  it('uses save/restore cursor + reverse video', () => {
-    const out = renderStatusLine({ name: 'A', mode: 'auto_inject' });
-    expect(out.startsWith('\x1b7')).toBe(true);
-    expect(out.endsWith('\x1b8')).toBe(true);
-    expect(out).toContain('\x1b[7m');
-    expect(out).toContain('\x1b[0m');
-  });
-
-  // Same wrap-then-scroll cascade `drive` hits: a label wider than the pane
-  // scrolls the screen on every repaint and shreds the agent's TUI behind it.
-  it('truncates the label to the terminal width so it can never wrap', () => {
-    const cols = 40;
-    // eslint-disable-next-line no-control-regex -- matching the raw ESC bytes this module emits
-    const strip = (s: string) => s.replace(/\x1b(?:[78]|\[[0-9;]*[A-Za-z])/g, '');
-    const text = strip(renderStatusLine({ name: 'Gamemaster', mode: 'auto_inject', rows: 24, cols }));
-    expect(text.length).toBeLessThanOrEqual(cols);
-    expect(text).toContain('[passthrough');
-    expect(text).toContain('detach]');
   });
 });
 
@@ -675,15 +642,18 @@ describe('runPassthroughSession', () => {
     await sessionPromise;
   });
 
-  it('writes worker_stream chunks to stdout and repaints the status line', async () => {
+  // `passthrough` has no status line. Its label was a constant for the whole
+  // session (the verb, the agent name, and a hard-coded `delivery=auto_inject`),
+  // so repainting it after every chunk only cost the agent its bottom row.
+  it('writes worker_stream chunks to stdout and paints no status line after them', async () => {
     const { deps, sockets, writes, stdin } = createHarness();
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'live output' }));
     expect(writes.includes('live output')).toBe(true);
-    const liveIdx = writes.indexOf('live output');
-    const repaintAfter = writes.slice(liveIdx + 1).some((w) => w.includes('passthrough Alice'));
-    expect(repaintAfter).toBe(true);
+    expect(writes.some((w) => w.includes('passthrough Alice'))).toBe(false);
+    // The bottom-row paint sequence itself: clear-line + reverse-video.
+    expect(writes.some((w) => w.includes('\x1b[2K\x1b[7m'))).toBe(false);
 
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
@@ -951,26 +921,12 @@ describe('runPassthroughSession', () => {
     expect(writes.length).toBe(before);
   });
 
-  // ---- status line boundary-hold (item 4) ----
+  // ---- non-TTY stdout stays clean (item 5) ----
 
-  it('holds the status repaint while a worker chunk ends mid escape sequence', async () => {
-    const { deps, sockets, writes, stdin } = createHarness();
-    const sessionPromise = runPassthroughSession('Alice', {}, deps);
-    const socket = await openSocket(sockets);
-
-    const paintsBefore = writes.filter((w) => w.includes('passthrough Alice')).length;
-    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
-    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBe(paintsBefore);
-    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
-    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsBefore);
-
-    stdin.type(Buffer.from([0x03]));
-    await sessionPromise;
-  });
-
-  // ---- non-TTY skips the status line (item 5) ----
-
-  it('skips status-line painting when stdout is not a TTY', async () => {
+  // With no status line there is nothing to gate on TTY-ness for output, but a
+  // piped session must still forward chunks verbatim — no fabricated cursor
+  // moves or resets spliced in, which would corrupt a captured log.
+  it('forwards chunks verbatim when stdout is not a TTY', async () => {
     const { deps, sockets, writes, signals } = createHarness({ terminalSize: null });
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);

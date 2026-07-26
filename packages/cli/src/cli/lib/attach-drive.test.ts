@@ -576,16 +576,19 @@ describe('renderStatusLine', () => {
   it('includes agent name, mode, pending count, and detach hint', () => {
     const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 3, cols: 120 });
     expect(out).toContain('drive Alice');
-    expect(out).toContain('delivery=manual_flush');
+    expect(out).toContain('manual_flush');
     expect(out).toContain('pending=3');
     expect(out).toContain('Ctrl+C detach');
+    // The `delivery=` prefix was dropped — 9 columns that said nothing the mode
+    // name doesn't, and they pushed the label past a standard 80-column pane.
+    expect(out).not.toContain('delivery=');
   });
 
   it('hints Ctrl+] deliver while holding and Ctrl+] hold while live', () => {
     const held = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 1 });
     expect(held).toContain('Ctrl+] deliver');
     const live = renderStatusLine({ name: 'Alice', mode: 'auto_inject', pending: 0 });
-    expect(live).toContain('delivery=auto_inject');
+    expect(live).toContain('auto_inject');
     expect(live).toContain('Ctrl+] hold');
   });
 
@@ -637,10 +640,20 @@ describe('renderStatusLine', () => {
       cols: 120,
     });
     const text = stripStatusLineAnsi(out);
-    expect(text).toBe(
-      '[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]'
+    expect(text).toBe('[drive Gamemaster | manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]');
+    expect(text).not.toContain('…');
+  });
+
+  // The point of shortening the label: the widest form (manual_flush, whose
+  // toggle hint is the longer of the two) has to survive a standard 80-column
+  // pane untruncated for a typical agent name. The old 87-column label was
+  // middle-truncated on every such terminal.
+  it('fits an 80-column pane untruncated for a typical agent name', () => {
+    const text = stripStatusLineAnsi(
+      renderStatusLine({ name: 'Gamemaster', mode: 'manual_flush', pending: 0, rows: 24, cols: 80 })
     );
     expect(text).not.toContain('…');
+    expect(text.length).toBeLessThanOrEqual(80);
   });
 
   // `drive` only paints when the local size is known, so this is the
@@ -881,7 +894,7 @@ describe('runDriveSession', () => {
       expected_mode: 'manual_flush',
       expected_revision: '1',
     });
-    expect(writes.some((w) => w.includes('delivery=auto_inject') && w.includes('Ctrl+] hold'))).toBe(true);
+    expect(writes.some((w) => w.includes('auto_inject') && w.includes('Ctrl+] hold'))).toBe(true);
 
     // Second Ctrl+] — back to hold: CAS from the toggled state (rev 2).
     stdin.type(Buffer.from([0x1d]));
@@ -937,7 +950,7 @@ describe('runDriveSession', () => {
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
     expect(logs.some((args) => String(args[0]).includes('changed by another session'))).toBe(true);
     // Still holding — and the next toggle CASes from the adopted revision.
-    expect(writes.some((w) => w.includes('delivery=manual_flush'))).toBe(true);
+    expect(writes.some((w) => w.includes('manual_flush'))).toBe(true);
     stdin.type(Buffer.from([0x1d]));
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));

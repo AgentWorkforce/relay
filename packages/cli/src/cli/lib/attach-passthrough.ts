@@ -15,8 +15,11 @@
  *
  * The session loop (snapshot-on-attach, raw stdin, resize forwarding,
  * Ctrl+C detach) mirrors the shape of
- * `drive.ts` minus the pending-queue UI and manual delivery controls
- * (there's no queue in passthrough session). `drive.ts` is the more
+ * `drive.ts` minus the pending-queue UI, the manual delivery controls
+ * (there's no queue in passthrough session), and the status line — with
+ * no pending counter and no delivery mode to toggle, the label would be
+ * a constant string repainted after every output chunk, so passthrough
+ * leaves the agent's bottom row alone. `drive.ts` is the more
  * heavily-commented version of the shared shape; this module
  * duplicates rather than abstracts because the trimmed surface is
  * small enough that an extra layer of indirection would cost more
@@ -31,15 +34,11 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
-  clampStatusLineText,
   createBackpressureAwareWriter,
   DETACH_CLEANUP_DEADLINE_MS,
-  pickInitialTerminalCols,
-  pickInitialTerminalRows,
   prepareAttachTarget,
   resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
-  StatusLineController,
   StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
@@ -58,7 +57,6 @@ import {
   openPtyInputStream,
   releaseResizeOwnership,
   resizeWorker,
-  type InboundDeliveryMode,
 } from './attach-drive.js';
 import { createPredictiveEcho, type CreatePredictiveEchoOptions } from './predictive-echo-screen.js';
 import type { PredictiveEcho } from '@agent-relay/harness-driver';
@@ -132,12 +130,6 @@ export interface PassthroughDependencies {
    */
   createPredictiveEcho?: (opts: CreatePredictiveEchoOptions) => PredictiveEcho | null;
   /**
-   * Minimum ms between status-line repaints (coalescing window). Defaults to a
-   * small positive value in production to shrink the per-chunk splice window;
-   * tests set `0` for immediate, deterministic paints.
-   */
-  statusRepaintCoalesceMs?: number;
-  /**
    * Interval (ms) at which the session re-asserts PTY resize ownership by
    * re-sending its current size (single-resizer policy, #1247). Keeps an
    * idle-but-live session from being superseded after the broker's
@@ -157,7 +149,6 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as PassthroughWebSocket,
     writeChunk: writer.write,
     disposeWriter: writer.dispose,
-    statusRepaintCoalesceMs: 40,
     onSignal: (signal, handler) => {
       const listener = () => runSignalHandler(handler);
       process.on(signal, listener);
@@ -261,28 +252,6 @@ export class PassthroughKeybindParser {
   reset(): void {}
 }
 
-/** ----- Status line rendering ----- */
-
-/**
- * Render the bottom-of-terminal status line for `passthrough`. Same
- * save/restore-cursor trick as `drive`, no pending counter (there
- * isn't one in passthrough session).
- */
-export function renderStatusLine(opts: {
-  name: string;
-  mode: InboundDeliveryMode;
-  rows?: number;
-  /** Terminal columns — the label is truncated to fit. Defaults to 80. */
-  cols?: number;
-}): string {
-  const row = Math.max(opts.rows ?? 24, 1);
-  const text = clampStatusLineText(
-    `[passthrough ${opts.name} | delivery=${opts.mode} | Ctrl+C detach]`,
-    opts.cols
-  );
-  return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
-}
-
 /** ----- Main session runner ----- */
 
 /**
@@ -384,14 +353,14 @@ export async function runPassthroughSession(
     const inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
-    // Skip the status line entirely when stdout is not a TTY (piped output).
-    const statusLineEnabled = initialLocalSize !== null;
+    // Whether stdout is a real TTY (piped output has no local size). `drive`
+    // uses this to gate its status line; `passthrough` has none, but the
+    // detach-time terminal reset is gated on the same signal.
+    const localStdoutIsTty = initialLocalSize !== null;
     // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
     // is painted and reconciled against its per-worker offset (no lost/dup
     // output around attach time). See StreamSyncBuffer.
     const sync = new StreamSyncBuffer();
-    let terminalRows = pickInitialTerminalRows(initialLocalSize, undefined);
-    let terminalCols = pickInitialTerminalCols(initialLocalSize, undefined);
 
     // Adaptive predictive echo masks round-trip latency on remote brokers.
     // Seeded with the snapshot (after it is painted) so its confirmed model
@@ -417,34 +386,22 @@ export async function runPassthroughSession(
       snapshotBytes += chunk;
     };
 
-    // Boundary-held + coalesced status painter (skips non-TTY stdout).
-    const statusController = new StatusLineController({
-      render: () => renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows, cols: terminalCols }),
-      write: deps.writeChunk,
-      enabled: statusLineEnabled,
-      coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
-    });
-    const paintStatus = (): void => {
-      statusController.request();
-    };
-
     // Route server output through the predictive-echo engine (which owns
-    // cursor save/restore) or straight to stdout, then repaint the status.
+    // cursor save/restore) or straight to stdout. Unlike `drive`, there is no
+    // status line to repaint afterwards: passthrough's label was a constant
+    // string for the whole session, so painting it on every chunk bought
+    // nothing and cost the agent its bottom row.
     const applyServerOutput = (chunk: string): void => {
-      statusController.observeOutput(chunk);
       if (predictiveEcho) {
-        void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
+        void predictiveEcho.onServerOutput(chunk);
       } else {
         deps.writeChunk(chunk);
-        paintStatus();
       }
     };
 
     const resizeHandler = (): void => {
       const size = deps.terminal.getSize();
       if (!size) return;
-      terminalRows = size.rows;
-      terminalCols = size.cols;
       predictiveEcho?.onResize(size.cols, size.rows);
       trackResize(
         resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
@@ -455,7 +412,6 @@ export async function runPassthroughSession(
           }
         })
       );
-      paintStatus();
     };
 
     let stdinReady = false;
@@ -519,8 +475,8 @@ export async function runPassthroughSession(
       try {
         // Heal the local terminal on detach: the snapshot + live stream may
         // have left it in app-cursor / mouse / bracketed-paste / alt-screen
-        // mode. Gate on TTY stdout (same signal as the status line).
-        resetLocalTerminalOnDetach(deps.writeChunk, statusLineEnabled);
+        // mode. Only meaningful on a real TTY.
+        resetLocalTerminalOnDetach(deps.writeChunk, localStdoutIsTty);
       } catch {
         // best effort
       }
@@ -562,9 +518,6 @@ export async function runPassthroughSession(
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      // Stop the status painter before restoring cooked mode so no queued
-      // repaint sprays output past detach.
-      statusController.dispose();
       for (const cleanup of cleanupSignals.splice(0)) {
         try {
           cleanup();
@@ -736,11 +689,6 @@ export async function runPassthroughSession(
         }
         if (settled) return;
       }
-      terminalRows = pickInitialTerminalRows(initialLocalSize, snapshot.rows);
-      terminalCols = pickInitialTerminalCols(initialLocalSize, snapshot.cols);
-      // Track the snapshot bytes for boundary state before the first repaint.
-      statusController.observeOutput(snapshotBytes);
-      paintStatus();
       // Reconcile buffered chunks. On `ok`, drop what the snapshot already
       // reflects (by offset); with no offset this drops the pre-snapshot
       // buffer (snapshot-authoritative, matching the legacy behaviour). On a

@@ -554,8 +554,13 @@ export function renderStatusLine(opts: {
   // re-holds. Without the hint, a parked message is invisible beyond the
   // pending counter and a driven agent looks like it never receives replies.
   const toggleHint = opts.mode === 'manual_flush' ? 'Ctrl+] deliver' : 'Ctrl+] hold';
+  // The mode is printed bare rather than as `delivery=<mode>`: the prefix cost 9
+  // columns and said nothing the mode name doesn't. At 87 columns the old label
+  // was clamped on every standard 80-column terminal, so the middle-truncation
+  // in `clampStatusLineText` was load-bearing for the common case instead of
+  // being the guard-rail for narrow panes it is meant to be.
   const text = clampStatusLineText(
-    `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`,
+    `[drive ${opts.name} | ${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`,
     opts.cols
   );
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;

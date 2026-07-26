@@ -839,7 +839,7 @@ function columnsOf(text: string): number {
 }
 
 describe('clampStatusLineText', () => {
-  const label = '[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]';
+  const label = '[drive Gamemaster | manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]';
 
   it('passes a label that already fits through untouched', () => {
     expect(clampStatusLineText(label, 120)).toBe(label);
@@ -867,7 +867,7 @@ describe('clampStatusLineText', () => {
   // A code-unit count would pass these while the row still overflows, which
   // re-arms the wrap/scroll cascade the clamp exists to prevent.
   it('measures wide glyphs as two columns', () => {
-    const wide = '[drive 名前ですよろしく | delivery=manual_flush | Ctrl+C detach]';
+    const wide = '[drive 名前ですよろしく | manual_flush | Ctrl+C detach]';
     for (const cols of [20, 40, 66]) {
       const out = clampStatusLineText(wide, cols);
       expect(columnsOf(out), `overflowed at ${cols}: ${JSON.stringify(out)}`).toBeLessThanOrEqual(cols);
