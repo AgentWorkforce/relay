@@ -202,9 +202,7 @@ export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
   return [
     formatRow(columns.map((column) => column.header)),
     formatRow(columns.map((_, index) => '-'.repeat(widths[index]!))),
-    ...rows.map((row) =>
-      formatRow([row.name, row.cliModel, row.state, row.pending, row.lastActive])
-    ),
+    ...rows.map((row) => formatRow([row.name, row.cliModel, row.state, row.pending, row.lastActive])),
   ].join('\n');
 }
 
