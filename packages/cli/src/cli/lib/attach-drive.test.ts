@@ -484,17 +484,41 @@ describe('classifyWsEvent', () => {
     ).toEqual({ kind: 'other' });
   });
 
-  it('classifies delivery_queued for the targeted agent, carrying its event id', () => {
+  it('classifies a held delivery_queued for the targeted agent, carrying its event id', () => {
     expect(
-      classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }), 'Alice')
+      classifyWsEvent(
+        JSON.stringify({
+          kind: 'delivery_queued',
+          name: 'Alice',
+          event_id: 'e1',
+          reason: 'inbound_delivery_manual_flush',
+        }),
+        'Alice'
+      )
     ).toEqual({ kind: 'delivery_queued', eventId: 'e1' });
   });
 
-  it('classifies delivery_queued without an event id (legacy frame)', () => {
-    expect(classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice' }), 'Alice')).toEqual({
-      kind: 'delivery_queued',
-      eventId: undefined,
-    });
+  it('classifies a held delivery_queued without an event id (legacy frame)', () => {
+    expect(
+      classifyWsEvent(
+        JSON.stringify({
+          kind: 'delivery_queued',
+          name: 'Alice',
+          reason: 'inbound_delivery_manual_flush',
+        }),
+        'Alice'
+      )
+    ).toEqual({ kind: 'delivery_queued', eventId: undefined });
+  });
+
+  it('ignores a delivery_queued the harness emitted for its own injection queue', () => {
+    // The PTY/headless runtimes emit this kind for every delivery they enqueue
+    // for injection — ordinary traffic reaching the agent, not a parked
+    // message. Counting it would make `pending` climb on every message and
+    // never come back down.
+    expect(
+      classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }), 'Alice')
+    ).toEqual({ kind: 'other' });
   });
 
   it('classifies agent_pending_drained with optional count', () => {
@@ -657,17 +681,19 @@ describe('renderStatusLine', () => {
 });
 
 describe('runDriveSession', () => {
-  it('flips to manual_flush delivery mode, renders snapshot, opens WS, then restores prior mode on detach', async () => {
-    const { deps, sockets, fetchLog, stdin, logs } = createHarness({ initialMode: 'auto_inject' });
+  it('asserts auto_inject delivery mode, renders snapshot, opens WS, then restores prior mode on detach', async () => {
+    // Pre-attach hold, so the detach restore has something to put back.
+    // Attaching still goes live: watching an agent never pauses its intake.
+    const { deps, sockets, fetchLog, stdin, logs } = createHarness({ initialMode: 'manual_flush' });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     expect(socket.url).toBe('ws://localhost:3889/ws');
     expect(socket.headers['X-API-Key']).toBe('k');
     expect(logs.some((args) => String(args[0]).includes('driving Alice via'))).toBe(false);
 
-    // PUT /delivery-mode body should be { mode: 'manual_flush' }.
+    // PUT /delivery-mode body should be { mode: 'auto_inject' }.
     const flipCall = fetchLog.find((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
-    expect(flipCall?.body).toEqual({ mode: 'manual_flush' });
+    expect(flipCall?.body).toEqual({ mode: 'auto_inject' });
 
     // Raw mode should be on after open.
     expect(stdin.rawModeCalls.includes(true)).toBe(true);
@@ -680,13 +706,13 @@ describe('runDriveSession', () => {
     // Raw mode restored.
     expect(stdin.rawModeCalls).toEqual([true, false]);
 
-    // Last PUT /delivery-mode call should restore to 'auto_inject' (the prior
-    // mode) via a compare-and-set guarded by `expected_mode: manual_flush`.
+    // Last PUT /delivery-mode call should restore to 'manual_flush' (the prior
+    // mode) via a compare-and-set guarded by `expected_mode: auto_inject`.
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls).toHaveLength(2);
     expect(modeCalls[1].body).toEqual({
-      mode: 'auto_inject',
-      expected_mode: 'manual_flush',
+      mode: 'manual_flush',
+      expected_mode: 'auto_inject',
       expected_revision: '1',
     });
   });
@@ -793,8 +819,8 @@ describe('runDriveSession', () => {
     // Best-effort restore PUT should still have fired.
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
-      { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+      { mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 
@@ -834,8 +860,24 @@ describe('runDriveSession', () => {
     const initialPaints = writes.filter((w) => w.includes('drive Alice')).length;
     expect(initialPaints).toBeGreaterThan(0);
 
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }));
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e2' }));
+    socket.emit(
+      'message',
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: 'e1',
+        reason: 'inbound_delivery_manual_flush',
+      })
+    );
+    socket.emit(
+      'message',
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: 'e2',
+        reason: 'inbound_delivery_manual_flush',
+      })
+    );
     expect(writes.some((w) => w.includes('pending=1'))).toBe(true);
     expect(writes.some((w) => w.includes('pending=2'))).toBe(true);
 
@@ -852,9 +894,33 @@ describe('runDriveSession', () => {
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
 
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }));
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e2' }));
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e3' }));
+    socket.emit(
+      'message',
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: 'e1',
+        reason: 'inbound_delivery_manual_flush',
+      })
+    );
+    socket.emit(
+      'message',
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: 'e2',
+        reason: 'inbound_delivery_manual_flush',
+      })
+    );
+    socket.emit(
+      'message',
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: 'e3',
+        reason: 'inbound_delivery_manual_flush',
+      })
+    );
     expect(writes.some((w) => w.includes('pending=3'))).toBe(true);
 
     // A failed injection stops a flush mid-queue: only 2 of 3 drained.
@@ -866,33 +932,36 @@ describe('runDriveSession', () => {
     await sessionPromise;
   });
 
-  it('toggles delivery to auto_inject on Ctrl+], re-holds on a second press, and restores from the latest revision on detach', async () => {
+  it('holds delivery on Ctrl+], goes live again on a second press, and restores from the latest revision on detach', async () => {
     const { deps, sockets, writes, stdin, fetchLog, inputStreams } = createHarness({
       initialMode: 'auto_inject',
     });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     await openSocket(sockets);
 
-    // First Ctrl+] — go live: CAS from this session's attach flip (rev 1).
+    // First Ctrl+] — hold so the screen stays still while typing: CAS from
+    // this session's attach assertion (rev 1).
     stdin.type(Buffer.from([0x1d]));
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
     let modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls).toHaveLength(2);
     expect(modeCalls[1].body).toEqual({
-      mode: 'auto_inject',
-      expected_mode: 'manual_flush',
+      mode: 'manual_flush',
+      expected_mode: 'auto_inject',
       expected_revision: '1',
     });
-    expect(writes.some((w) => w.includes('delivery=auto_inject') && w.includes('Ctrl+] hold'))).toBe(true);
+    expect(writes.some((w) => w.includes('delivery=manual_flush') && w.includes('Ctrl+] deliver'))).toBe(
+      true
+    );
 
-    // Second Ctrl+] — back to hold: CAS from the toggled state (rev 2).
+    // Second Ctrl+] — drain and go live again: CAS from the toggled state (rev 2).
     stdin.type(Buffer.from([0x1d]));
     for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
     modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls).toHaveLength(3);
     expect(modeCalls[2].body).toEqual({
-      mode: 'manual_flush',
-      expected_mode: 'auto_inject',
+      mode: 'auto_inject',
+      expected_mode: 'manual_flush',
       expected_revision: '2',
     });
 
@@ -908,7 +977,7 @@ describe('runDriveSession', () => {
     expect(modeCalls).toHaveLength(4);
     expect(modeCalls[3].body).toEqual({
       mode: 'auto_inject',
-      expected_mode: 'manual_flush',
+      expected_mode: 'auto_inject',
       expected_revision: '3',
     });
   });
@@ -969,15 +1038,15 @@ describe('runDriveSession', () => {
     expect(modeCalls).toHaveLength(3);
     // The toggle landed (rev 1 → 2)…
     expect(modeCalls[1].body).toEqual({
-      mode: 'auto_inject',
-      expected_mode: 'manual_flush',
+      mode: 'manual_flush',
+      expected_mode: 'auto_inject',
       expected_revision: '1',
     });
     // …and the restore CASed against the POST-toggle state, not the stale
     // attach-time revision.
     expect(modeCalls[2].body).toEqual({
       mode: 'auto_inject',
-      expected_mode: 'auto_inject',
+      expected_mode: 'manual_flush',
       expected_revision: '2',
     });
   });
@@ -1003,8 +1072,8 @@ describe('runDriveSession', () => {
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     // The toggle is still mode-guarded — never an unconditional write.
     expect(modeCalls[1]?.body).toEqual({
-      mode: 'auto_inject',
-      expected_mode: 'manual_flush',
+      mode: 'manual_flush',
+      expected_mode: 'auto_inject',
     });
 
     stdin.type(Buffer.from([0x03]));
@@ -1044,17 +1113,25 @@ describe('runDriveSession', () => {
     const socket = await openSocket(sockets);
     expect(writes.some((w) => w.includes('pending=2'))).toBe(true);
 
+    const held = (eventId: string) =>
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: eventId,
+        reason: 'inbound_delivery_manual_flush',
+      });
+
     // Replayed frame for a seeded delivery — deduped, stays at 2.
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e0' }));
+    socket.emit('message', held('e0'));
     expect(writes.some((w) => w.includes('pending=3'))).toBe(false);
 
     // A genuinely new delivery — counted, goes to 3.
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'brand-new' }));
+    socket.emit('message', held('brand-new'));
     expect(writes.some((w) => w.includes('pending=3'))).toBe(true);
 
     // The same seeded id re-queued *later* (after being consumed once from the
     // seed) counts normally — the id was forgotten after its first dedupe.
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e0' }));
+    socket.emit('message', held('e0'));
     expect(writes.some((w) => w.includes('pending=4'))).toBe(true);
 
     stdin.type(Buffer.from([0x03]));
@@ -1178,8 +1255,8 @@ describe('runDriveSession', () => {
 
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
-      { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+      { mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 
@@ -1195,8 +1272,8 @@ describe('runDriveSession', () => {
 
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
-      { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+      { mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 
@@ -1212,8 +1289,8 @@ describe('runDriveSession', () => {
     // Restore to 'manual_flush' since that was the prior mode, via a
     // compare-and-set guarded by `expected_mode: manual_flush`.
     expect(modeCalls.map((c) => c.body)).toEqual([
-      { mode: 'manual_flush' },
-      { mode: 'manual_flush', expected_mode: 'manual_flush', expected_revision: '1' },
+      { mode: 'auto_inject' },
+      { mode: 'manual_flush', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 
@@ -1612,8 +1689,8 @@ describe('runDriveSession', () => {
 
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls.map((c) => c.body)).toEqual([
-      { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+      { mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 
@@ -1978,8 +2055,8 @@ describe('runDriveSession', () => {
     // Attach flip (unconditional), then a compare-and-set restore guarded by
     // `expected_mode`. The restore no-ops broker-side rather than clobbering.
     expect(putCalls.map((c) => c.body)).toEqual([
-      { mode: 'manual_flush' },
-      { mode: 'auto_inject', expected_mode: 'manual_flush', expected_revision: '1' },
+      { mode: 'auto_inject' },
+      { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
   });
 });

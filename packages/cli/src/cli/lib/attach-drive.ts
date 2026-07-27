@@ -1,29 +1,31 @@
 /**
  * `agent-relay drive <name>` — interactive read-write take-over client.
  *
- * Attaches to a running agent, flips it into `manual_flush` inbound delivery mode so the
- * broker parks new relay messages in a per-worker queue, and forwards your
- * keystrokes to the worker's PTY. Parked messages are surfaced in the status
- * line (`pending=N`) and released in-band with `Ctrl+]`, which toggles the
- * worker between `manual_flush` (hold) and `auto_inject` (deliver): flipping to
- * `auto_inject` drains the queue into the PTY and lets later messages inject
- * live while you watch — without it, a driven agent can never receive relay
- * messages (the reply to anything you ask it to send sits parked until detach).
- * The out-of-band commands `local agent message flush`, `local agent message
- * hold`, and `local agent message auto` still work from another terminal: a
- * bare `flush` during a drive session injects the queued backlog immediately
- * (the broker follows the handoff with a one-shot `flush_injections` frame
- * that exempts it from the interactive hold) while leaving the mode — and the
- * parking of later messages — unchanged. `Ctrl+C` detaches, restores the
- * worker's previous inbound delivery mode, and leaves the agent running under
- * the broker — `drive` never kills the worker.
+ * Attaches to a running agent, puts it in `auto_inject` inbound delivery mode so
+ * relay messages keep reaching it live, and forwards your keystrokes to the
+ * worker's PTY. Watching an agent never pauses it: a driven agent goes on
+ * receiving its peers' messages exactly as it would unattended, which is what
+ * makes it possible to observe a team coordinating instead of freezing it by
+ * looking at it.
+ *
+ * `Ctrl+]` toggles the worker into `manual_flush` when you want the screen to
+ * hold still while you type — messages park in a per-worker queue, the status
+ * line counts them (`pending=N`), and the next press drains the queue and
+ * returns to live delivery. The out-of-band commands `local agent message
+ * flush`, `local agent message hold`, and `local agent message auto` still work
+ * from another terminal: a bare `flush` during a drive session injects the
+ * queued backlog immediately (the broker follows the handoff with a one-shot
+ * `flush_injections` frame that exempts it from the interactive hold) while
+ * leaving the mode — and the parking of later messages — unchanged. `Ctrl+C`
+ * detaches, restores the worker's previous inbound delivery mode, and leaves
+ * the agent running under the broker — `drive` never kills the worker.
  *
  * Sequence of operations on attach (subscribe-first, so no output around
  * attach time is lost and none is double-painted):
  *
  *   1. Discover broker connection (CLI flag → env → connection.json).
  *   2. `GET  /api/spawned/{name}/delivery-mode`  → remember the previous mode.
- *   3. `PUT  /api/spawned/{name}/delivery-mode`  → switch to `manual_flush`.
+ *   3. `PUT  /api/spawned/{name}/delivery-mode`  → assert `auto_inject`.
  *   4. `GET /api/events/replay` → capture the durable-event `sinceSeq` cutoff,
  *      then `GET /api/spawned/{name}/pending` → seed the status-line counter
  *      and the set of already-queued `event_id`s. Cutoff-first + id-dedupe
@@ -476,6 +478,14 @@ export function classifyWsEvent(rawMessage: string, name: string): DriveWsEvent 
     return { kind: 'worker_stream', chunk, offset };
   }
   if (parsed.kind === 'delivery_queued') {
+    // Two different layers emit `delivery_queued`. Only the inbound hold means
+    // "parked in the per-worker pending queue" — the count this status line
+    // shows and the one `/api/spawned/{name}/pending` seeds. The harness
+    // runtimes emit the same kind for every delivery they enqueue for
+    // injection, which is ordinary traffic on its way to the agent; counting
+    // those would make `pending` climb on every message the agent receives and
+    // never come back down (nothing drains a queue the message was never in).
+    if (parsed.reason !== 'inbound_delivery_manual_flush') return { kind: 'other' };
     // `event_id` correlates a replayed frame with the pending seed so the
     // counter isn't double-incremented for a delivery already reflected in
     // the seed (see the seed-dedup note in `runDriveSession`). Absent on
@@ -567,10 +577,11 @@ export function renderStatusLine(opts: {
   const row = Math.max(opts.rows ?? 24, 1);
   const scrollTop = Math.max(1, opts.scrollTop ?? 1);
   const scrollBottom = Math.max(scrollTop + 1, opts.scrollBottom ?? row - 1);
-  // The Ctrl+] hint names the action the NEXT press performs: in manual_flush
-  // it delivers (drains the parked queue and goes live); in auto_inject it
-  // re-holds. Without the hint, a parked message is invisible beyond the
-  // pending counter and a driven agent looks like it never receives replies.
+  // The Ctrl+] hint names the action the NEXT press performs: in auto_inject
+  // (the session default) it holds; in manual_flush it delivers, draining the
+  // parked queue and going live again. Without the hint, a parked message is
+  // invisible beyond the pending counter and a held agent looks like it never
+  // receives replies.
   const toggleHint = opts.mode === 'manual_flush' ? 'Ctrl+] deliver' : 'Ctrl+] hold';
   const text = clampStatusLineText(
     `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`,
@@ -661,10 +672,10 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let reassertTimer: ReturnType<typeof setInterval> | null = null;
     let pending = state.initialPending;
     // This session's last-known inbound delivery mode and its broker revision.
-    // The attach flip set `manual_flush`; `Ctrl+]` toggles it mid-session, and
+    // The attach asserted `auto_inject`; `Ctrl+]` toggles it mid-session, and
     // the detach restore compare-and-sets against whatever this session last
     // wrote so an out-of-band change is never clobbered.
-    let currentMode: InboundDeliveryMode = 'manual_flush';
+    let currentMode: InboundDeliveryMode = 'auto_inject';
     let currentRevision = state.sessionRevision;
     let terminalRows = pickInitialTerminalRows(state.initialLocalSize, undefined);
     let terminalCols = pickInitialTerminalCols(state.initialLocalSize, undefined);
@@ -832,11 +843,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     };
 
     // In-band delivery toggle (`Ctrl+]`). Flips the worker between
-    // `manual_flush` (messages park so nothing splices into the human's
-    // typing) and `auto_inject` (the parked queue drains into the PTY and
-    // later messages inject live). Without this, an agent being driven can
-    // never receive a relay message — the reply to anything the human asks it
-    // to send just sits in the queue until detach.
+    // `auto_inject` (the session default — messages inject live while you
+    // watch) and `manual_flush` (messages park so nothing splices into what
+    // you are typing); flipping back drains the parked queue into the PTY.
     //
     // Guarded compare-and-set against this session's last-known revision: if
     // another session or CLI changed the mode out-of-band, the broker no-ops
@@ -1047,8 +1056,8 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // buffered chunk flushes to stdout after detach.
       deps.disposeWriter?.();
       // Best-effort restore: re-read the mode and only revert if it's still
-      // what this session set, so we don't leave the worker stuck in
-      // manual_flush and don't clobber a change another session made.
+      // what this session set, so an explicit pre-attach `hold` is put back and
+      // a change another session made is never clobbered.
       //
       // Await the release alongside the restore before resolving: `resolve`
       // typically ends the process, which aborts any still-pending fetch. The
@@ -1314,20 +1323,21 @@ export async function runDriveSession(
   const flipResult = await switchInboundDeliveryModeOrAbort(
     connection,
     name,
-    'manual_flush',
-    `switch '${name}' to manual_flush mode`,
+    'auto_inject',
+    `switch '${name}' to auto_inject mode`,
     deps
   );
   if (!flipResult) return 1;
   const { previousMode, sessionRevision } = flipResult;
 
-  // The mode is now flipped to `manual_flush`, but the terminal is still cooked
+  // The mode is now asserted to `auto_inject`, but the terminal is still cooked
   // and we have several awaited HTTP round-trips (pending, cutoff, snapshot,
   // input stream) before the session loop installs its signal handlers. Ctrl+C
   // in that window would otherwise kill the process with the worker stranded in
-  // `manual_flush`, silently queueing every later relay message. Register early
-  // restore-and-exit handlers immediately; the loop disposes them once its own
-  // handlers are ready (no double restore — see `disposeEarlySignals`).
+  // this session's mode, silently discarding an explicit `hold` the operator had
+  // set before attaching. Register early restore-and-exit handlers immediately;
+  // the loop disposes them once its own handlers are ready (no double restore —
+  // see `disposeEarlySignals`).
   let earlyHandled = false;
   const earlyCleanups: Array<() => void> = [];
   const earlyRestore = async (): Promise<void> => {
@@ -1344,7 +1354,7 @@ export async function runDriveSession(
       connection,
       name,
       previousMode,
-      'manual_flush',
+      'auto_inject',
       sessionRevision,
       'drive',
       deps
