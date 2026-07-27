@@ -117,6 +117,7 @@
     "@agent-assistant/telemetry": "^0.4.35",
     "@agentworkforce/delivery": "^4.1.23",
     "@agentworkforce/runtime": "^4.1.23",
+    "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^6.0.0",
     "@relayfile/relay-helpers": "^0.4.6",
     "@testing-library/jest-dom": "^6.9.1",
@@ -124,11 +125,12 @@
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",
     "@types/ws": "^8.18.1",
-    "@typescript-eslint/eslint-plugin": "^8.18.2",
-    "@typescript-eslint/parser": "^8.18.2",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
     "@vitest/coverage-v8": "^4.1.0",
-    "concurrently": "^9.2.1",
-    "eslint": "^8.57.1",
+    "concurrently": "^9.2.4",
+    "eslint": "^10.8.0",
+    "globals": "^17.8.0",
     "jsdom": "^25.0.1",
     "knip": "^5.84.1",
     "prettier": "^3.6.2",
@@ -144,6 +146,14 @@
   },
   "packageManager": "npm@10.5.1",
   "overrides": {
-    "flatted": "^3.4.2"
+    "flatted": "^3.4.2",
+    "axios": "^1.18.1",
+    "fast-uri": "^3.1.4",
+    "form-data": "^4.0.6",
+    "hono": "^4.12.32",
+    "js-yaml": "^4.3.0",
+    "postcss": "^8.5.23",
+    "shell-quote": "^1.10.0",
+    "tar": "^7.5.22"
   }
 }

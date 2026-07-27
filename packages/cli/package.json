@@ -38,7 +38,7 @@
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build:cli; else echo 'node_modules not found, skipping prepack build'; fi",
     "start": "node dist/cli/index.js",
-    "lint": "eslint src --ext .ts",
+    "lint": "eslint src",
     "audit:deps": "echo 'No bundled dependency audit is required for the simplified CLI package.'",
     "pack:validate": "npm pack --dry-run"
   },

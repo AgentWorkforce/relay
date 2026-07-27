@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
 - The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
 
+### Security
+
+- Resolved every fixable high and critical advisory in the dependency tree — `axios`, `concurrently`, `fast-uri`, `form-data`, `hono`, `js-yaml`, `postcss`, `shell-quote`, and `tar` — taking the audit from 7 high / 3 critical to 1 high / 0 critical. The remaining advisory is `brace-expansion` inside `@earendil-works/pi-coding-agent`, pinned by that package's own shipped shrinkwrap and only fixable upstream.
+
 ## [11.2.0] - 2026-07-25
 
 ### Added
