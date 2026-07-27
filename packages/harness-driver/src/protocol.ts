@@ -219,23 +219,38 @@ export interface PendingDeliveryInfo {
   last_error?: string;
 }
 
+/**
+ * One spawned agent as the broker reports it. `GET /api/spawned` returns these
+ * directly and `GET /api/status` embeds the same array, so both surfaces are
+ * declared once here — they are serialized from a single `WorkerRegistry::list`
+ * call in the broker.
+ */
+export interface ListAgent {
+  name: string;
+  runtime: AgentRuntime;
+  provider?: HeadlessProvider;
+  cli?: string;
+  model?: string;
+  sessionId?: string;
+  team?: string;
+  channels: string[];
+  parent?: string;
+  pid?: number;
+  last_activity_at?: string;
+  last_activity_ms?: number;
+  context_budget_pct?: number | null;
+  current_state?: AgentCurrentState;
+  /** Messages not yet delivered to the agent: queued inbound plus in-flight retries. */
+  pending_messages?: number;
+  /** Attach/runtime discriminator independent from the process wrapper. */
+  runtime_kind?: 'pty' | 'headless' | 'native';
+  native_harness_protocol_version?: number;
+  native_harness_capabilities?: Record<string, unknown>;
+}
+
 export interface BrokerStatus {
   agent_count: number;
-  agents: Array<{
-    name: string;
-    runtime: AgentRuntime;
-    provider?: HeadlessProvider;
-    cli?: string;
-    model?: string;
-    team?: string;
-    channels: string[];
-    parent?: string;
-    pid?: number;
-    last_activity_at?: string;
-    last_activity_ms?: number;
-    context_budget_pct?: number | null;
-    current_state?: AgentCurrentState;
-  }>;
+  agents: ListAgent[];
   pending_delivery_count: number;
   pending_deliveries: PendingDeliveryInfo[];
   node_connected?: boolean;

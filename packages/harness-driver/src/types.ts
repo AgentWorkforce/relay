@@ -4,9 +4,7 @@
 
 import type { SafeParseSchema, ZodLikeSchema } from '@agent-relay/sdk/actions';
 import type {
-  AgentCurrentState,
   AgentRuntime,
-  HeadlessProvider,
   MessageInjectionMode,
   RestartPolicy,
   SpawnMode,
@@ -132,25 +130,9 @@ export interface SendMessageInput {
   mode?: MessageInjectionMode;
 }
 
-export interface ListAgent {
-  name: string;
-  runtime: AgentRuntime;
-  provider?: HeadlessProvider;
-  cli?: string;
-  model?: string;
-  sessionId?: string;
-  team?: string;
-  channels: string[];
-  parent?: string;
-  pid?: number;
-  last_activity_at?: string;
-  last_activity_ms?: number;
-  context_budget_pct?: number | null;
-  current_state?: AgentCurrentState;
-  /** Messages not yet delivered to the agent: queued inbound plus in-flight retries. */
-  pending_messages?: number;
-  /** Attach/runtime discriminator independent from the process wrapper. */
-  runtime_kind?: 'pty' | 'headless' | 'native';
-  native_harness_protocol_version?: number;
-  native_harness_capabilities?: Record<string, unknown>;
-}
+/**
+ * Re-exported from the wire contract: `GET /api/spawned` and the `agents`
+ * array of `GET /api/status` are the same broker payload, so they share one
+ * declaration.
+ */
+export type { ListAgent } from './protocol.js';
