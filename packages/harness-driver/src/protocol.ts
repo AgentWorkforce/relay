@@ -240,7 +240,10 @@ export interface ListAgent {
   last_activity_ms?: number;
   context_budget_pct?: number | null;
   current_state?: AgentCurrentState;
-  /** Messages not yet delivered to the agent: queued inbound plus in-flight retries. */
+  /**
+   * Messages that have not reached the agent yet: queued inbound messages plus
+   * in-flight deliveries still awaiting worker confirmation.
+   */
   pending_messages?: number;
   /** Attach/runtime discriminator independent from the process wrapper. */
   runtime_kind?: 'pty' | 'headless' | 'native';

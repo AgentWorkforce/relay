@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `relay node agent list --pretty` shows a `PENDING` column with the messages still waiting to reach each agent (queued inbound plus in-flight retries); the broker reports it as `pending_messages` on `GET /api/spawned` and `GET /api/status`.
+- `relay node agent list --pretty` shows a `PENDING` column with the messages still waiting to reach each agent (queued inbound plus in-flight deliveries awaiting confirmation); the broker reports it as `pending_messages` on `GET /api/spawned` and `GET /api/status`.
 
 ### Fixed
 

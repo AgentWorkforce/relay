@@ -3,12 +3,7 @@
  */
 
 import type { SafeParseSchema, ZodLikeSchema } from '@agent-relay/sdk/actions';
-import type {
-  AgentRuntime,
-  MessageInjectionMode,
-  RestartPolicy,
-  SpawnMode,
-} from './protocol.js';
+import type { AgentRuntime, MessageInjectionMode, RestartPolicy, SpawnMode } from './protocol.js';
 import type { ResolvedHarnessConfig } from './harness.js';
 
 export type JsonSchema = Record<string, unknown> | boolean;
