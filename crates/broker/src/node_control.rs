@@ -780,8 +780,27 @@ impl FleetDeliveryBook {
             return DeliveryDecision::Deliver { up_to_seq: 0 };
         }
         let Some(cursor) = cursor else {
-            return if deliver.seq == 1 {
-                DeliveryDecision::Deliver { up_to_seq: 1 }
+            // No cursor for this identity yet. For an identity `agent.register`
+            // confirmed, that is the absence of a position rather than evidence
+            // of a gap: a release drops the cursor, and a respawn rebinds the
+            // same agent record, whose engine-side sequence keeps counting from
+            // where it left off (the engine reuses agent ids, and only seeds a
+            // cursor when it negotiates `relay:delivery-cursor-v1`). Treating
+            // that as a gap acks the message without surfacing it — see
+            // `plan_fleet_delivery` — which destroys it and stops the engine
+            // retrying, leaving the agent permanently deaf. Adopt this delivery
+            // as the starting position; `commit_received` seeds the cursor to
+            // match. A provisional binding gets no such benefit of the doubt:
+            // a second, unconfirmed identity claiming a live name must not be
+            // able to jump in mid-sequence.
+            let authoritative = self
+                .active_agent_bindings_by_name
+                .get(&deliver.agent)
+                .is_some_and(|binding| binding.authoritative);
+            return if deliver.seq == 1 || authoritative {
+                DeliveryDecision::Deliver {
+                    up_to_seq: deliver.seq,
+                }
             } else {
                 DeliveryDecision::Gap { up_to_seq: 0 }
             };
@@ -818,6 +837,14 @@ impl FleetDeliveryBook {
             .entry(deliver.agent_id.clone())
             .or_insert_with(|| AgentDeliveryCursor {
                 agent_name: deliver.agent.clone(),
+                // First delivery seen for this identity: adopt the engine's
+                // position by starting one below it, so the advance below
+                // accepts this frame and every later one stays contiguous.
+                // Starting at zero instead would leave a respawned agent — whose
+                // engine sequence resumes mid-stream — permanently one short of
+                // its own cursor, and every message would read as a gap.
+                acked_up_to_seq: deliver.seq.saturating_sub(1),
+                received_up_to_seq: deliver.seq.saturating_sub(1),
                 ..AgentDeliveryCursor::default()
             });
         cursor.agent_name.clone_from(&deliver.agent);
@@ -2381,6 +2408,43 @@ mod tests {
         assert_eq!(
             book.observe(&test_delivery("agent-a", "agent-a-id", 1)),
             DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+    }
+
+    #[test]
+    fn delivery_book_respawn_keeps_delivering_when_the_engine_seq_continues() {
+        // Release drops the cursor; a respawn under the same name rebinds the
+        // same agent record, and `agent.register` does not always report a
+        // cumulative position, so no cursor is re-seeded. The engine's
+        // per-agent sequence keeps counting across the respawn, so the next
+        // live message arrives well past seq 1 — the agent must still get it.
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 42);
+        book.remove_agent("agent-a");
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+
+        let resumed = test_delivery("agent-a", "agent-a-id", 43);
+        assert_eq!(
+            book.observe(&resumed),
+            DeliveryDecision::Deliver { up_to_seq: 43 }
+        );
+
+        // Adopting the position must also advance the cursor, or the next
+        // message reads as a gap and the agent goes deaf one frame later.
+        assert_eq!(book.commit_delivered(&resumed), 43);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 44)),
+            DeliveryDecision::Deliver { up_to_seq: 44 }
+        );
+        // A redelivery of an adopted frame is still recognized, and a real hole
+        // in the sequence is still reported as a gap.
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 43)),
+            DeliveryDecision::Duplicate { up_to_seq: 43 }
+        );
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 99)),
+            DeliveryDecision::Gap { up_to_seq: 43 }
         );
     }
 

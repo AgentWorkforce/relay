@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent released and respawned under the same name receives relay messages again. Release drops the agent's delivery cursor and the engine reuses the agent record, so every message after the respawn arrived past the start of the sequence, was classified as a gap, and was acknowledged without being delivered — discarding it and stopping the engine from retrying.
+- A PTY agent whose inbound delivery is held when it becomes ready now runs the initial task from its spawn, instead of leaving it parked in the worker's injection queue until the hold lifts.
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
 - The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.

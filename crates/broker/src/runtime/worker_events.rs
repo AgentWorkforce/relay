@@ -743,12 +743,12 @@ impl BrokerRuntime {
                             .get(&name)
                             .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
                             .unwrap_or(false);
-                        if is_pty_worker
+                        let interactive_hold_replayed = is_pty_worker
                             && delivery_states
                                 .get(&name)
                                 .map(|s| s.mode == InboundDeliveryMode::ManualFlush)
-                                .unwrap_or(false)
-                        {
+                                .unwrap_or(false);
+                        if interactive_hold_replayed {
                             if let Err(err) = workers
                                 .send_to_worker(
                                     &name,
@@ -785,6 +785,26 @@ impl BrokerRuntime {
                             .await
                             {
                                 tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
+                            }
+                            // The initial task bypasses the delivery-mode queue, but the
+                            // hold replayed above freezes injection pops inside the PTY
+                            // worker — so without this frame the task the spawn was asked
+                            // to run sits invisibly in the worker's queue until the hold
+                            // lifts. A worker that restarts while explicitly held reaches
+                            // `worker_ready` in exactly that state. The spawn asked for
+                            // this task, so a one-shot exemption releases it; later relay
+                            // messages keep parking under the hold as usual.
+                            if interactive_hold_replayed {
+                                if let Err(err) = workers
+                                    .send_to_worker(&name, "flush_injections", None, json!({}))
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        worker = %name,
+                                        error = %err,
+                                        "failed to release initial task through interactive hold"
+                                    );
+                                }
                             }
                         }
                         let runtime = value
