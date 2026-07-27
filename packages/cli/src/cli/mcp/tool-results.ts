@@ -2,7 +2,7 @@ import { INVALID_AGENT_TOKEN_CODE, agentTokenRecoveryMessage } from '@agent-rela
 import { z } from 'zod';
 
 /** Permissive output schema for tools that return arbitrary JSON objects. */
-export const jsonResult = z.object({}).passthrough();
+export const jsonResult = z.looseObject({});
 
 export type JsonToolResult = {
   content: Array<{ type: 'text'; text: string }>;

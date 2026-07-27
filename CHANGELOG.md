@@ -5,7 +5,20 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Major]
+
+### Changed
+
+- `@agent-relay/config`, `@agent-relay/cli`, `@agent-relay/fleet`, and `@agent-relay/harness-driver` now build on Zod 4, matching `@agent-relay/sdk`; Relay no longer ships a split Zod 3/Zod 4 install.
+- `@agent-relay/config` builds `jsonSchemas` with Zod's built-in `z.toJSONSchema` and drops the `zod-to-json-schema` dependency. Output stays draft-7 and still describes config files as authored, but some keywords differ (records gain `propertyNames`, integers gain explicit bounds, and `RegExp` fields render as unconstrained).
+
+### Breaking Changes
+
+- Schemas exported by Relay packages — `@agent-relay/config` `*Schema` and `jsonSchemas`, `@agent-relay/harness-driver` `SpawnAgentResultSchema`, and the schemas accepted by `@agent-relay/fleet` `action()` — are now Zod 4. Zod 3 and Zod 4 instances do not interoperate, so consumers must upgrade to `zod@^4`.
+
+### Migration Guidance
+
+- Upgrade to `zod@^4`, then replace `.passthrough()` with `z.looseObject()`, single-argument `z.record(value)` with `z.record(z.string(), value)`, and the `z.ZodTypeAny` type with `z.ZodType`.
 
 ### Fixed
 

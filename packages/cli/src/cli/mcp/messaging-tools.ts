@@ -61,7 +61,7 @@ export function registerMessagingTools(
         ...identityOverrideInputShape,
       },
       outputSchema: {
-        channels: z.array(z.object({}).passthrough()).describe('Channels'),
+        channels: z.array(z.looseObject({})).describe('Channels'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -199,7 +199,7 @@ export function registerMessagingTools(
         ...identityOverrideInputShape,
       },
       outputSchema: {
-        messages: z.array(z.object({}).passthrough()).describe('Messages'),
+        messages: z.array(z.looseObject({})).describe('Messages'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -280,7 +280,7 @@ export function registerMessagingTools(
         ...identityOverrideInputShape,
       },
       outputSchema: {
-        conversations: z.array(z.object({}).passthrough()).describe('DM conversations'),
+        conversations: z.array(z.looseObject({})).describe('DM conversations'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -367,7 +367,7 @@ export function registerMessagingTools(
         ...identityOverrideInputShape,
       },
       outputSchema: {
-        results: z.array(z.object({}).passthrough()).describe('Search results'),
+        results: z.array(z.looseObject({})).describe('Search results'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -419,7 +419,7 @@ export function registerMessagingTools(
         ...identityOverrideInputShape,
       },
       outputSchema: {
-        readers: z.array(z.object({}).passthrough()).describe('Readers'),
+        readers: z.array(z.looseObject({})).describe('Readers'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },

@@ -58,7 +58,7 @@
   "dependencies": {
     "@agent-relay/sdk": "11.2.0",
     "ws": "^8.18.3",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "optionalDependencies": {
     "@agent-relay/broker-darwin-arm64": "11.2.0",
