@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Resolved every fixable high and critical advisory in the dependency tree — `axios`, `concurrently`, `fast-uri`, `form-data`, `hono`, `js-yaml`, `postcss`, `shell-quote`, and `tar` — taking the audit from 7 high / 3 critical to 1 high / 0 critical. The remaining advisory is `brace-expansion` inside `@earendil-works/pi-coding-agent`, pinned by that package's own shipped shrinkwrap and only fixable upstream.
+- Upgraded `axios`, `concurrently`, `fast-uri`, `form-data`, `hono`, `js-yaml`, `postcss`, `shell-quote`, and `tar` past their high- and critical-severity advisories.
 
 ## [11.2.0] - 2026-07-25
 
