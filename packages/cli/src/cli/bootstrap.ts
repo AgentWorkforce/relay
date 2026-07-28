@@ -144,6 +144,24 @@ function propagateCloudIdentityToChildren(): void {
 }
 
 /**
+ * Strip any identity an ancestor process (or the user's shell) already exported.
+ *
+ * Not publishing is not enough on its own: these vars are inherited, so values
+ * set upstream would still reach every child we spawn. `resolveCloudIdentity`
+ * explicitly supports env-injected identity, so an inherited value is a real
+ * case rather than a hypothetical one.
+ *
+ * Deleting also makes `process.env` agree with what every consumer already
+ * believes when telemetry is off — the broker, the header builder, and
+ * `initTelemetry` all treat opted-out as "no identity".
+ */
+function clearInheritedIdentity(): void {
+  for (const key of [...Object.values(IDENTITY_ENV_KEYS), AGENT_RELAY_DISTINCT_ID_ENV, MACHINE_ID_ENV]) {
+    delete process.env[key];
+  }
+}
+
+/**
  * Export the resolved CLI + SDK versions on the current process env so that
  * any child process we spawn (the Rust broker, etc.)
  * inherits them and can attach them as common telemetry properties without
@@ -200,6 +218,8 @@ export function propagateTelemetryContextToChildren(): string {
       process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
         process.env[IDENTITY_ENV_KEYS.userId] || process.env[MACHINE_ID_ENV];
     }
+  } else {
+    clearInheritedIdentity();
   }
 
   return orchestratorHarness;

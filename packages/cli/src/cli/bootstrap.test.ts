@@ -353,6 +353,50 @@ describe('telemetry context propagation', () => {
     }
   );
 
+  it.each(['AGENT_RELAY_TELEMETRY_DISABLED', 'DO_NOT_TRACK'])(
+    'removes identity inherited from an ancestor when opted out via %s',
+    (optOut) => {
+      const dataDir = setup();
+      // An ancestor process, a wrapper CLI, or the user's shell exported these.
+      // Declining to publish is not enough — they are inherited, so without an
+      // explicit delete they still reach every child we spawn.
+      vi.stubEnv('AGENT_RELAY_USER_ID', 'usr_inherited');
+      vi.stubEnv('AGENT_RELAY_USER_EMAIL', 'will@agentrelay.com');
+      vi.stubEnv('AGENT_RELAY_ORG_ID', 'org_inherited');
+      vi.stubEnv('AGENT_RELAY_ORG_SLUG', 'inherited-org');
+      vi.stubEnv('AGENT_RELAY_CLOUD_WORKSPACE_ID', 'ws_inherited');
+      vi.stubEnv('AGENT_RELAY_DISTINCT_ID', 'usr_inherited');
+      vi.stubEnv('AGENT_RELAY_MACHINE_ID', 'abc123def4567890');
+      vi.stubEnv(optOut, '1');
+
+      try {
+        propagateTelemetryContextToChildren();
+
+        for (const key of IDENTITY_KEYS) {
+          expect(process.env[key], `${key} survived while opted out`).toBeUndefined();
+        }
+      } finally {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('keeps identity inherited from an ancestor when telemetry is enabled', () => {
+    const dataDir = setup();
+    vi.stubEnv('AGENT_RELAY_USER_ID', 'usr_inherited');
+    vi.stubEnv('AGENT_RELAY_ORG_ID', 'org_inherited');
+
+    try {
+      propagateTelemetryContextToChildren();
+
+      // An ancestor's identity still wins over the local identity file.
+      expect(process.env.AGENT_RELAY_USER_ID).toBe('usr_inherited');
+      expect(process.env.AGENT_RELAY_ORG_ID).toBe('org_inherited');
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('still propagates non-identity context when opted out', () => {
     const dataDir = setup();
     vi.stubEnv('DO_NOT_TRACK', '1');
