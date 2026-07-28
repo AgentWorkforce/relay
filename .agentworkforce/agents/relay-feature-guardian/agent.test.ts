@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import type { WorkforceCtx } from '@agentworkforce/runtime';
 import {
   bindPreviewTransport,
-  slackClient,
   type RelayTransport,
   type RelayTransportRequest,
   type RelayTransportWriteRequest,
@@ -12,13 +11,8 @@ import { describe, expect, it, vi } from 'vitest';
 import guardian, {
   CYCLE_STATE_PATH,
   ProgressStateConflictError,
-  SLACK_WRITEBACK_POLL_MS,
-  SLACK_WRITEBACK_TIMEOUT_MS,
   createHttpProgressStore,
-  deliveredSlackTs,
-  featurePostIdempotencyKey,
   resolveManifestPath,
-  runGuardian,
   type ProgressState,
 } from './agent.ts';
 
@@ -34,7 +28,7 @@ const persona = JSON.parse(readFileSync(new URL('./persona.json', import.meta.ur
       relayfileMount?: { requiredReadPaths?: unknown; writeOnlyPaths?: unknown };
     }
   >;
-  inputs: { SLACK_CHANNEL: { default: string } };
+  inputs: Record<string, unknown>;
   memory: { enabled: boolean; scopes: string[]; ttlDays: number };
 };
 
@@ -103,16 +97,17 @@ function progressState(checkedCount: number, generation = 1): ProgressState {
   const checkedIds = orderedManifestFeatures.slice(0, checkedCount).map((feature) => feature.id);
   return {
     kind: 'relay-feature-guardian:progress',
-    version: 3,
+    version: 4,
     generation,
     checkedIds,
     cycleStartedAt: generation === 1 ? '2026-07-18T10:26:47.981Z' : '2026-07-18T11:26:47.981Z',
     totalFeatures: 122,
     ...(checkedCount > 0
       ? {
-          lastPost: {
+          lastCheck: {
             featureId: checkedIds.at(-1) as string,
-            ts: `1784370${checkedCount}.029509`,
+            checkedAt: '2026-07-18T10:27:47.981Z',
+            evidence: 'log-only',
           },
         }
       : {}),
@@ -127,7 +122,7 @@ class RelayfileStateServer {
   corruptReadBack = false;
   readonly requests: Array<{ method: string; ifMatch: string | null }> = [];
 
-  constructor(seed: ProgressState | null) {
+  constructor(seed: object | null) {
     this.content = seed ? `${JSON.stringify(seed)}\n` : null;
   }
 
@@ -202,34 +197,6 @@ class IdempotentSlackTransport implements RelayTransport {
     };
     this.results.set(key, result);
     return result;
-  }
-}
-
-class DelayedSlackTransport extends IdempotentSlackTransport {
-  constructor(private readonly delayMs: number) {
-    super();
-  }
-
-  override async write(request: RelayTransportWriteRequest): Promise<WritebackResult> {
-    await new Promise((resolve) => setTimeout(resolve, this.delayMs));
-    const result = await super.write(request);
-    return {
-      ...result,
-      receipt: { externalId: '   ', ts: ` ${deliveredSlackTs(result)} ` },
-    };
-  }
-}
-
-class LateReceiptReplaySlackTransport extends IdempotentSlackTransport {
-  private readonly receiptlessKeys = new Set<string>();
-
-  override async write(request: RelayTransportWriteRequest): Promise<WritebackResult> {
-    const result = await super.write(request);
-    const body = request.body as { idempotencyKey?: string };
-    const key = body.idempotencyKey ?? `unkeyed:${this.attempts.length}`;
-    if (this.receiptlessKeys.has(key)) return result;
-    this.receiptlessKeys.add(key);
-    return { ...result, receipt: { id: 'mountcmd-without-provider-ts' } };
   }
 }
 
@@ -322,118 +289,85 @@ function exactStateContext(
 }
 
 describe('relay-feature-guardian runtime paths', () => {
-  it('reads the manifest from the cloned relay repository', () => {
-    expect(resolveManifestPath('/home/daytona/workspace')).toBe(
-      '/home/daytona/workspace/github/repos/AgentWorkforce/relay/.agentworkforce/features/manifest.yaml'
-    );
-  });
-
-  it('defaults delivery to the relay feature-check channel', () => {
-    expect(persona.inputs.SLACK_CHANNEL.default).toBe('C0AEKNLDNKW');
-  });
-
-  it('falls back with every declared MCP surface when quiz generation fails', async () => {
+  it('records a healthy hourly check without writing a human Slack message', async () => {
     const transport = new IdempotentSlackTransport();
     const restore = bindPreviewTransport(transport);
-    const mcpOnlyManifest = manifest.replace('        cli: relay node up', '        mcp: create_workspace');
-    const { ctx } = exactStateContext(JSON.stringify(progressState(0)), mcpOnlyManifest);
-    ctx.llm.complete = vi.fn(async () => {
-      throw new Error('simulated quiz model failure');
-    });
+    const { ctx, files } = exactStateContext(JSON.stringify(progressState(0)));
+    (ctx.persona as { inputs: Record<string, unknown> }).inputs = {};
 
     try {
       await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      const text = (transport.attempts[0]?.body as { text: string }).text;
-      expect(text).toContain('MCP tool: create_workspace');
-      expect(text).not.toContain('CLI command:');
+
+      expect(transport.attempts).toHaveLength(0);
+      expect(ctx.llm.complete).toHaveBeenCalledWith(expect.stringContaining('CLI command: relay node up'), {
+        maxTokens: 300,
+      });
+      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toMatchObject({
+        version: 4,
+        checkedIds: ['broker-up'],
+        lastCheck: {
+          featureId: 'broker-up',
+          evidence: 'log-only',
+        },
+      });
+      expect(ctx.log).toHaveBeenCalledWith(
+        'info',
+        'relay-feature-guardian.catalog-traversal-passed',
+        expect.objectContaining({
+          feature: 'broker-up',
+          evidence: 'Is this feature working as expected?',
+        })
+      );
     } finally {
       restore();
     }
   });
 
-  it('uses a dedicated low-reasoning model path instead of shared subscription quota', () => {
-    expect(persona).toMatchObject({
-      harness: 'opencode',
-      model: 'deepseek-v4-flash-free',
+  it('uses deterministic log evidence when the optional model path fails', async () => {
+    const transport = new IdempotentSlackTransport();
+    const restore = bindPreviewTransport(transport);
+    const seed = JSON.stringify(progressState(0));
+    const { ctx, files } = exactStateContext(seed);
+    ctx.llm.complete = vi.fn(async () => {
+      throw new Error('simulated evidence failure');
     });
-    expect(persona).not.toHaveProperty('useSubscription');
+
+    try {
+      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).resolves.toBeUndefined();
+      expect(transport.attempts).toHaveLength(0);
+      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toMatchObject({
+        checkedIds: ['broker-up'],
+        lastCheck: { featureId: 'broker-up', evidence: 'log-only' },
+      });
+      expect(ctx.log).toHaveBeenCalledWith(
+        'warn',
+        'relay-feature-guardian.evidence-fallback',
+        expect.objectContaining({ feature: 'broker-up', reason: 'Error: simulated evidence failure' })
+      );
+      expect(ctx.log).toHaveBeenCalledWith(
+        'info',
+        'relay-feature-guardian.catalog-traversal-passed',
+        expect.objectContaining({ evidence: expect.stringContaining('Catalog feature: Start Broker') })
+      );
+    } finally {
+      restore();
+    }
   });
 
-  it('declares bounded manifest and memory reads plus configured Slack output', () => {
-    expect(persona.integrations.github?.relayfileMount).toEqual({
-      requiredReadPaths: ['/github/repos/AgentWorkforce/relay/.agentworkforce/features/**'],
-      writeOnlyPaths: [],
-    });
-    expect(persona.memory).toEqual({
-      enabled: true,
-      scopes: ['workspace'],
-      ttlDays: 14,
-    });
-    expect(persona.integrations.slack).toMatchObject({
-      optional: true,
-      enabledByInput: 'SLACK_CHANNEL',
-      relayfileMount: {
-        requiredReadPaths: [],
-        writeOnlyPaths: ['/slack/channels/${SLACK_CHANNEL}/**'],
-      },
-    });
-  });
-
-  it('deduplicates an ambiguous post retry and advances after a saved receipt', async () => {
+  it('fails the run when the progress checkpoint fails and never posts success', async () => {
     const transport = new IdempotentSlackTransport();
     const restore = bindPreviewTransport(transport);
     const { ctx, files } = guardianContext(2);
 
     try {
-      // Run 1: the provider delivers Start Broker, then the exact progress
-      // checkpoint fails. Only the pre-post empty cycle remains.
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.providerCreates).toBe(1);
-      expect(JSON.parse(files.get(cycleStatePath) ?? '{}').checkedIds).toEqual([]);
-
-      // Run 2: the same feature uses the same deterministic key, so the
-      // provider receipt is replayed rather than creating a duplicate post.
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.providerCreates).toBe(1);
-      expect(transport.attempts).toHaveLength(2);
-      const firstBody = transport.attempts[0].body as { idempotencyKey: string };
-      const retryBody = transport.attempts[1].body as { idempotencyKey: string };
-      expect(retryBody.idempotencyKey).toBe(firstBody.idempotencyKey);
-
-      const completed = JSON.parse(files.get(cycleStatePath) ?? '{}') as {
-        checkedIds: string[];
-        lastPost?: { featureId: string; ts: string };
-      };
-      expect(completed.checkedIds).toEqual(['broker-up']);
-      expect(completed.lastPost).toEqual({
-        featureId: 'broker-up',
-        ts: '1710000001.000100',
-      });
-
-      // Run 3: persisted progress selects the next feature in the cycle.
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.providerCreates).toBe(2);
-      const advanced = JSON.parse(files.get(cycleStatePath) ?? '{}') as {
-        checkedIds: string[];
-      };
-      expect(advanced.checkedIds).toEqual(['broker-up', 'broker-status']);
-    } finally {
-      restore();
-    }
-  });
-
-  it('does not post when the initial cycle checkpoint has no receipt', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
-    const { ctx, files } = guardianContext(1);
-
-    try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.providerCreates).toBe(0);
-      expect(files.size).toBe(0);
+      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+        'simulated exact-state write failure'
+      );
+      expect(transport.attempts).toHaveLength(0);
+      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual([]);
       expect(ctx.log).toHaveBeenCalledWith(
         'error',
-        'relay-feature-guardian.cycle-checkpoint-failed',
+        'relay-feature-guardian.progress-checkpoint-failed',
         expect.objectContaining({ err: expect.stringContaining('simulated exact-state write failure') })
       );
     } finally {
@@ -441,7 +375,21 @@ describe('relay-feature-guardian runtime paths', () => {
     }
   });
 
-  it('loads exact cycle state and advances 2/122 then 3/122 across fresh runs', async () => {
+  it('fails the run when the initial cycle checkpoint fails', async () => {
+    const { ctx, files } = guardianContext(1);
+
+    await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+      'simulated exact-state write failure'
+    );
+    expect(files.size).toBe(0);
+    expect(ctx.log).toHaveBeenCalledWith(
+      'error',
+      'relay-feature-guardian.cycle-checkpoint-failed',
+      expect.objectContaining({ err: expect.stringContaining('simulated exact-state write failure') })
+    );
+  });
+
+  it('migrates legacy Slack receipt state and advances silently across fresh runs', async () => {
     const transport = new IdempotentSlackTransport();
     const restore = bindPreviewTransport(transport);
     const { ctx, files } = exactStateContext(
@@ -458,25 +406,17 @@ describe('relay-feature-guardian runtime paths', () => {
 
     try {
       await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.attempts).toHaveLength(1);
-      expect((transport.attempts[0].body as { text: string }).text).toContain(
-        'relay feature check · 2/122 · 120 remaining in cycle'
-      );
-      expect(JSON.parse(files.get(cycleStatePath) ?? '{}').checkedIds).toEqual([
-        'broker-up',
-        'broker-status',
-      ]);
-
       await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.attempts).toHaveLength(2);
-      expect((transport.attempts[1].body as { text: string }).text).toContain(
-        'relay feature check · 3/122 · 119 remaining in cycle'
-      );
-      expect(JSON.parse(files.get(cycleStatePath) ?? '{}').checkedIds).toEqual([
-        'broker-up',
-        'broker-status',
-        'broker-down',
-      ]);
+
+      expect(transport.attempts).toHaveLength(0);
+      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toMatchObject({
+        version: 4,
+        checkedIds: ['broker-up', 'broker-status', 'broker-down'],
+        lastCheck: {
+          featureId: 'broker-down',
+          evidence: 'log-only',
+        },
+      });
       expect(ctx.memory.recall).not.toHaveBeenCalled();
       expect(ctx.memory.save).not.toHaveBeenCalled();
     } finally {
@@ -485,50 +425,38 @@ describe('relay-feature-guardian runtime paths', () => {
   });
 
   it('preserves progress when the manifest adds features', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
     const staleTotal = { ...progressState(1), totalFeatures: 121 };
     const { ctx, files } = exactStateContext(JSON.stringify(staleTotal));
-    try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
-      expect(state.totalFeatures).toBe(122);
-      expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
-      expect(state.lastPost?.featureId).toBe('broker-status');
-    } finally {
-      restore();
-    }
+
+    await guardian.handler(ctx, { type: 'cron.tick' } as never);
+
+    const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
+    expect(state.totalFeatures).toBe(122);
+    expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
+    expect(state.lastCheck).toMatchObject({
+      featureId: 'broker-status',
+      evidence: 'log-only',
+    });
   });
 
   it('reconciles one unchecked feature retirement without resetting the generation', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
     const staleTotal = { ...progressState(1), totalFeatures: 123 };
     const { ctx, files } = exactStateContext(JSON.stringify(staleTotal));
 
-    try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.attempts).toHaveLength(1);
-      expect((transport.attempts[0].body as { text: string }).text).toContain(
-        'relay feature check · 2/122 · 120 remaining in cycle'
-      );
-      const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
-      expect(state.generation).toBe(1);
-      expect(state.totalFeatures).toBe(122);
-      expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
-      expect(state.lastPost).toEqual({
-        featureId: 'broker-status',
-        ts: '1710000001.000100',
-      });
-      expect(ctx.files.write).toHaveBeenCalledTimes(2);
-    } finally {
-      restore();
-    }
+    await guardian.handler(ctx, { type: 'cron.tick' } as never);
+
+    const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
+    expect(state.generation).toBe(1);
+    expect(state.totalFeatures).toBe(122);
+    expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
+    expect(state.lastCheck).toMatchObject({
+      featureId: 'broker-status',
+      evidence: 'log-only',
+    });
+    expect(ctx.files.write).toHaveBeenCalledTimes(2);
   });
 
   it('resets a generation under CAS when the manifest retires a checked feature', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
     const { ctx, files } = exactStateContext(
       JSON.stringify({
         kind: 'relay-feature-guardian:progress',
@@ -541,26 +469,19 @@ describe('relay-feature-guardian runtime paths', () => {
       })
     );
 
-    try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.attempts).toHaveLength(1);
-      expect((transport.attempts[0].body as { text: string }).text).toContain(
-        'relay feature check · 1/122 · 121 remaining in cycle'
-      );
-      const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
-      expect(state.generation).toBe(8);
-      expect(state.totalFeatures).toBe(122);
-      expect(state.checkedIds).toEqual(['broker-up']);
-      expect(state.lastPost).toEqual({
-        featureId: 'broker-up',
-        ts: '1710000001.000100',
-      });
-    } finally {
-      restore();
-    }
+    await guardian.handler(ctx, { type: 'cron.tick' } as never);
+
+    const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
+    expect(state.generation).toBe(8);
+    expect(state.totalFeatures).toBe(122);
+    expect(state.checkedIds).toEqual(['broker-up']);
+    expect(state.lastCheck).toMatchObject({
+      featureId: 'broker-up',
+      evidence: 'log-only',
+    });
   });
 
-  it('preserves exact progress when a suspiciously partial manifest omits checked features', async () => {
+  it('fails closed and preserves exact progress for a suspicious partial manifest', async () => {
     const transport = new IdempotentSlackTransport();
     const restore = bindPreviewTransport(transport);
     const seed = JSON.stringify({
@@ -575,137 +496,91 @@ describe('relay-feature-guardian runtime paths', () => {
     const { ctx, files } = exactStateContext(seed, renderManifest(manifestFeatures.slice(0, 2)));
 
     try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
+      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+        'refusing a partial-manifest reset'
+      );
       expect(transport.attempts).toHaveLength(0);
       expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toEqual(JSON.parse(seed));
       expect(ctx.log).toHaveBeenCalledWith(
         'error',
         'relay-feature-guardian.progress-reconcile-failed',
-        expect.objectContaining({
-          err: expect.stringContaining('refusing a partial-manifest reset'),
-          previousTotal: 123,
-          currentTotal: 2,
-        })
+        expect.objectContaining({ previousTotal: 123, currentTotal: 2 })
       );
     } finally {
       restore();
     }
   });
 
-  it('preserves exact progress when multiple checked feature IDs disappear at the same total', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
-    const seed = JSON.stringify({
-      kind: 'relay-feature-guardian:progress',
-      version: 3,
-      generation: 7,
-      checkedIds: ['broker-up', 'retired-feature-a', 'retired-feature-b'],
-      cycleStartedAt: '2026-07-18T10:26:47.981Z',
-      totalFeatures: 122,
-      lastPost: { featureId: 'retired-feature-b', ts: '1784370419.029509' },
-    });
-    const { ctx, files } = exactStateContext(seed);
-
-    try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.attempts).toHaveLength(0);
-      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toEqual(JSON.parse(seed));
-      expect(ctx.log).toHaveBeenCalledWith(
-        'error',
-        'relay-feature-guardian.progress-reconcile-failed',
-        expect.objectContaining({
-          err: expect.stringContaining('multiple checked feature ids disappeared'),
-          previousTotal: 122,
-          currentTotal: 122,
-          retiredIds: ['retired-feature-a', 'retired-feature-b'],
-        })
-      );
-    } finally {
-      restore();
-    }
-  });
-
-  it('preserves exact progress when the manifest read fails', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
+  it('fails closed and preserves progress when the manifest read fails', async () => {
     const seed = JSON.stringify(progressState(2));
     const { ctx, files } = exactStateContext(seed);
     ctx.sandbox.readFile = vi.fn(async () => {
       throw new Error('simulated manifest read failure');
     });
 
-    try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toEqual(JSON.parse(seed));
-      expect(ctx.log).toHaveBeenCalledWith(
-        'error',
-        'relay-feature-guardian.manifest-load-failed',
-        expect.objectContaining({ err: expect.stringContaining('simulated manifest read failure') })
-      );
-    } finally {
-      restore();
-    }
+    await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+      'simulated manifest read failure'
+    );
+    expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}')).toEqual(JSON.parse(seed));
+    expect(ctx.log).toHaveBeenCalledWith(
+      'error',
+      'relay-feature-guardian.manifest-load-failed',
+      expect.objectContaining({ err: expect.stringContaining('simulated manifest read failure') })
+    );
+  });
+
+  it('fails the run when the parsed feature catalog is empty', async () => {
+    const { ctx, files } = exactStateContext(JSON.stringify(progressState(0)), renderManifest([]));
+
+    await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+      'empty feature manifest'
+    );
+    expect(files.get(CYCLE_STATE_PATH)).toBe(JSON.stringify(progressState(0)));
+    expect(ctx.log).toHaveBeenCalledWith(
+      'error',
+      'relay-feature-guardian.no-features',
+      expect.objectContaining({ reason: 'manifest parsed but empty' })
+    );
   });
 
   it('fails closed outside invoke simulation when Relayfile credentials are absent', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
     const { ctx } = exactStateContext(JSON.stringify(progressState(1)));
     (ctx.agent as { id: string }).id = 'deployed-agent';
     (ctx.deployment as { id: string }).id = 'deployed-run';
-    try {
-      await guardian.handler(ctx, { type: 'cron.tick' } as never);
-      expect(transport.attempts).toHaveLength(0);
-      expect(ctx.log).toHaveBeenCalledWith(
-        'error',
-        'relay-feature-guardian.progress-load-failed',
-        expect.objectContaining({ err: expect.stringContaining('exact Relayfile credentials') })
-      );
-    } finally {
-      restore();
-    }
-  });
 
-  it('scopes provider idempotency to a feature within one cycle', () => {
-    expect(featurePostIdempotencyKey('cycle-a', 'start-broker')).toBe(
-      featurePostIdempotencyKey('cycle-a', 'start-broker')
+    await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).rejects.toThrow(
+      'exact Relayfile credentials'
     );
-    expect(featurePostIdempotencyKey('cycle-a', 'start-broker')).not.toBe(
-      featurePostIdempotencyKey('cycle-b', 'start-broker')
+    expect(ctx.log).toHaveBeenCalledWith(
+      'error',
+      'relay-feature-guardian.progress-load-failed',
+      expect.objectContaining({ err: expect.stringContaining('exact Relayfile credentials') })
     );
   });
 
-  it('requires a delivered Slack ts instead of a draft receipt id', () => {
-    expect(deliveredSlackTs(undefined)).toBe('');
-    expect(deliveredSlackTs(null)).toBe('');
-    expect(
-      deliveredSlackTs({
-        path: '/draft.json',
-        absolutePath: '/draft.json',
-        receipt: { id: 'mountcmd-draft', created: 'mountcmd-draft' },
-      })
-    ).toBe('');
-    expect(
-      deliveredSlackTs({
-        path: '/delivered.json',
-        absolutePath: '/delivered.json',
-        receipt: { externalId: '1710000001.000100' },
-      })
-    ).toBe('1710000001.000100');
-    expect(
-      deliveredSlackTs({
-        path: '/delivered-via-ts.json',
-        absolutePath: '/delivered-via-ts.json',
-        receipt: { externalId: '   ', ts: '1710000002.000200' },
-      })
-    ).toBe('1710000002.000200');
-    expect(
-      deliveredSlackTs({
-        path: '/invalid-external-id.json',
-        absolutePath: '/invalid-external-id.json',
-        receipt: { externalId: 'mountcmd-not-a-ts', ts: '1710000003.000300' },
-      })
-    ).toBe('1710000003.000300');
+  it('reads the manifest from the cloned relay repository', () => {
+    expect(resolveManifestPath('/home/daytona/workspace')).toBe(
+      '/home/daytona/workspace/github/repos/AgentWorkforce/relay/.agentworkforce/features/manifest.yaml'
+    );
+  });
+
+  it('uses a dedicated low-reasoning model path without a human output surface', () => {
+    expect(persona).toMatchObject({
+      harness: 'opencode',
+      model: 'deepseek-v4-flash-free',
+      inputs: {},
+    });
+    expect(persona).not.toHaveProperty('useSubscription');
+    expect(persona.integrations).not.toHaveProperty('slack');
+    expect(persona.integrations.github?.relayfileMount).toEqual({
+      requiredReadPaths: ['/github/repos/AgentWorkforce/relay/.agentworkforce/features/**'],
+      writeOnlyPaths: [],
+    });
+    expect(persona.memory).toEqual({
+      enabled: true,
+      scopes: ['workspace'],
+      ttlDays: 14,
+    });
   });
 });
 
@@ -746,13 +621,13 @@ describe('relay-feature-guardian exact HTTP state', () => {
       ProgressStateConflictError
     );
 
-    expect(position2.state.lastPost?.featureId).toBe('broker-status');
-    expect(position3.state.lastPost?.featureId).toBe('broker-down');
+    expect(position2.state.lastCheck?.featureId).toBe('broker-status');
+    expect(position3.state.lastCheck?.featureId).toBe('broker-down');
     expect(server.state()).toEqual(progressState(3));
   });
 
   it('uses the loaded revision when resetting a genuinely retired feature', async () => {
-    const retiredState: ProgressState = {
+    const retiredState = {
       kind: 'relay-feature-guardian:progress',
       version: 3,
       generation: 7,
@@ -768,7 +643,7 @@ describe('relay-feature-guardian exact HTTP state', () => {
 
     const reset: ProgressState = {
       kind: 'relay-feature-guardian:progress',
-      version: 3,
+      version: 4,
       generation: 8,
       checkedIds: [],
       cycleStartedAt: '2026-07-18T11:26:47.981Z',
@@ -874,16 +749,17 @@ describe('relay-feature-guardian exact HTTP state', () => {
     }));
     const state = (checkedIds: string[]): ProgressState => ({
       kind: 'relay-feature-guardian:progress',
-      version: 3,
+      version: 4,
       generation: 1,
       checkedIds,
       cycleStartedAt: '2026-07-18T10:26:47.981Z',
       totalFeatures: features.length,
       ...(checkedIds.length > 0
         ? {
-            lastPost: {
+            lastCheck: {
               featureId: checkedIds.at(-1) as string,
-              ts: '1784370419.029509',
+              checkedAt: '2026-07-18T10:27:47.981Z',
+              evidence: 'log-only' as const,
             },
           }
         : {}),
@@ -903,130 +779,27 @@ describe('relay-feature-guardian exact HTTP state', () => {
   it.each([
     ['duplicate ids', { ...progressState(2), checkedIds: ['broker-up', 'broker-up'] }],
     ['malformed historical id', { ...progressState(1), checkedIds: [''] }],
-    ['invalid ts', { ...progressState(1), lastPost: { featureId: 'broker-up', ts: 'not-a-slack-ts' } }],
+    [
+      'invalid check time',
+      {
+        ...progressState(1),
+        lastCheck: { featureId: 'broker-up', checkedAt: 'not-a-time', evidence: 'log-only' },
+      },
+    ],
+    [
+      'out-of-range legacy Slack timestamp',
+      {
+        ...progressState(1),
+        version: 3,
+        lastCheck: undefined,
+        lastPost: { featureId: 'broker-up', ts: '9007199254740991.0' },
+      },
+    ],
     ['invalid cycle time', { ...progressState(1), cycleStartedAt: 'yesterday' }],
-  ])('rejects bounded v3 state with %s', async (_label, invalid) => {
+  ])('rejects bounded state with %s', async (_label, invalid) => {
     const server = new RelayfileStateServer(null);
     server.content = `${JSON.stringify(invalid)}\n`;
     const store = createHttpProgressStore(credentials, { fetchImpl: server.fetch });
     await expect(store.load(storeFeatures)).rejects.toThrow(/cycle state/);
-  });
-});
-
-describe('relay-feature-guardian delayed Slack receipts', () => {
-  it('rejects the run when the Slack post fails so the runner records handler.error', async () => {
-    const failure = new Error('simulated Slack writeback failure');
-    const { ctx, files } = exactStateContext(JSON.stringify(progressState(1)));
-    const createSlackClient = (() => ({
-      messages: {
-        write: vi.fn(async () => {
-          throw failure;
-        }),
-      },
-    })) as unknown as typeof slackClient;
-
-    await expect(runGuardian(ctx, { type: 'cron.tick' } as never, { createSlackClient })).rejects.toBe(
-      failure
-    );
-
-    expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
-    expect(ctx.log).toHaveBeenCalledWith('error', 'relay-feature-guardian.post-failed', {
-      channel: 'C0AEKNLDNKW',
-      feature: 'broker-status',
-      err: String(failure),
-    });
-  });
-
-  it('passes the production receipt deadline and poll interval to the Slack helper', async () => {
-    const transport = new IdempotentSlackTransport();
-    const restore = bindPreviewTransport(transport);
-    const { ctx } = exactStateContext(JSON.stringify(progressState(1)));
-    const observedOptions: unknown[] = [];
-    const createSlackClient = ((options?: Parameters<typeof slackClient>[0]) => {
-      observedOptions.push(options);
-      return slackClient(options);
-    }) as typeof slackClient;
-
-    try {
-      await runGuardian(ctx, { type: 'cron.tick' } as never, { createSlackClient });
-      expect(observedOptions).toContainEqual({
-        writebackTimeoutMs: 15_000,
-        writebackPollMs: 250,
-      });
-    } finally {
-      restore();
-    }
-  });
-
-  it('waits beyond the old 3s window and checkpoints only a real trimmed ts', async () => {
-    expect(SLACK_WRITEBACK_TIMEOUT_MS).toBe(15_000);
-    expect(SLACK_WRITEBACK_POLL_MS).toBe(250);
-    vi.useFakeTimers();
-    const transport = new DelayedSlackTransport(3_500);
-    const restore = bindPreviewTransport(transport);
-    const { ctx, files } = exactStateContext(JSON.stringify(progressState(1)));
-    try {
-      const run = guardian.handler(ctx, { type: 'cron.tick' } as never);
-      await vi.advanceTimersByTimeAsync(3_001);
-      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
-      await vi.advanceTimersByTimeAsync(500);
-      await run;
-
-      const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
-      expect(state.checkedIds).toEqual(['broker-up', 'broker-status']);
-      expect(state.lastPost?.ts).toBe('1710000001.000100');
-    } finally {
-      restore();
-      vi.useRealTimers();
-    }
-  });
-
-  it('keeps a delayed receipt retryable and replays the stable key without a second Slack post', async () => {
-    const capabilityFeatures = [
-      manifestFeatures[0]!,
-      {
-        id: 'capabilities-register',
-        name: 'Register Capabilities',
-        cli: 'relay capabilities register',
-        description: 'Registers broker capabilities.',
-        tier: 1,
-      },
-    ];
-    const capabilityState: ProgressState = {
-      kind: 'relay-feature-guardian:progress',
-      version: 3,
-      generation: 1,
-      checkedIds: ['broker-up'],
-      cycleStartedAt: '2026-07-18T10:26:47.981Z',
-      totalFeatures: capabilityFeatures.length,
-      lastPost: { featureId: 'broker-up', ts: '17843701.029509' },
-    };
-    const formerFatalError = 'Slack post failed: no timestamp returned for feature capabilities-register';
-    const transport = new LateReceiptReplaySlackTransport();
-    const restore = bindPreviewTransport(transport);
-    const { ctx, files } = exactStateContext(
-      JSON.stringify(capabilityState),
-      renderManifest(capabilityFeatures)
-    );
-    try {
-      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).resolves.toBeUndefined();
-      expect(JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}').checkedIds).toEqual(['broker-up']);
-      expect(ctx.log).toHaveBeenCalledWith('warn', 'relay-feature-guardian.post-receipt-pending', {
-        channel: 'C0AEKNLDNKW',
-        feature: 'capabilities-register',
-        path: expect.any(String),
-      });
-      expect(JSON.stringify(vi.mocked(ctx.log).mock.calls)).not.toContain(formerFatalError);
-
-      await expect(guardian.handler(ctx, { type: 'cron.tick' } as never)).resolves.toBeUndefined();
-      const state = JSON.parse(files.get(CYCLE_STATE_PATH) ?? '{}') as ProgressState;
-      expect(state.checkedIds).toEqual(['broker-up', 'capabilities-register']);
-      expect(state.lastPost?.ts).toBe('1710000001.000100');
-      expect(transport.providerCreates).toBe(1);
-      expect(transport.attempts).toHaveLength(2);
-      expect(transport.attempts[0]?.body).toMatchObject(transport.attempts[1]?.body as object);
-    } finally {
-      restore();
-    }
   });
 });
