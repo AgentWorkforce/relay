@@ -116,15 +116,6 @@ function resolveProgramName(argv: string[] = process.argv): string {
 }
 
 /**
- * Export the resolved CLI + SDK versions on the current process env so that
- * any child process we spawn (the Rust broker, etc.)
- * inherits them and can attach them as common telemetry properties without
- * having to re-resolve `package.json`s on its own.
- *
- * We only set these if they're not already present — so a parent caller that
- * has set its own values (e.g. in tests or in nested CLI invocations) wins.
- */
-/**
  * Read the identity recorded at `agent-relay cloud login` and publish it on
  * `process.env` so the broker, spawned agents, and the relaycast SDK all
  * attribute their telemetry to the same user and org — without any of them
@@ -152,12 +143,21 @@ function propagateCloudIdentityToChildren(): void {
   }
 }
 
-function propagateTelemetryContextToChildren(): string {
+/**
+ * Export the resolved CLI + SDK versions on the current process env so that
+ * any child process we spawn (the Rust broker, etc.)
+ * inherits them and can attach them as common telemetry properties without
+ * having to re-resolve `package.json`s on its own.
+ *
+ * We only set these if they're not already present — so a parent caller that
+ * has set its own values (e.g. in tests or in nested CLI invocations) wins.
+ *
+ * Exported for tests: the telemetry opt-out must keep identity out of child
+ * environments, which is only observable through this function's `process.env`
+ * side effects.
+ */
+export function propagateTelemetryContextToChildren(): string {
   const orchestratorHarness = detectOrchestratorHarness();
-
-  // Must run before the distinct-id fallback below: a signed-in user id is a
-  // better person key than the machine hash, and children should inherit it.
-  propagateCloudIdentityToChildren();
 
   if (!process.env.AGENT_RELAY_CLI_VERSION) {
     process.env.AGENT_RELAY_CLI_VERSION = VERSION;
@@ -177,6 +177,16 @@ function propagateTelemetryContextToChildren(): string {
   // (which bakes no key) forwarded nothing and every hosted event fell back to
   // being keyed on the workspace.
   if (isTelemetryEnabled()) {
+    // Must run before the distinct-id fallback below: a signed-in user id is a
+    // better person key than the machine hash, and children should inherit it.
+    //
+    // Gated with the rest of identity because these vars are inherited by every
+    // child we spawn, including third-party harness CLIs we don't control, and
+    // one of them carries the operator's email. An opted-out user expects their
+    // identity not to be published into those environments at all — not merely
+    // to go unsent.
+    propagateCloudIdentityToChildren();
+
     if (!process.env[MACHINE_ID_ENV]) {
       // Always published, signed in or not: the distinct id below becomes the
       // user id after login, so this is the only thing that keeps the machine
