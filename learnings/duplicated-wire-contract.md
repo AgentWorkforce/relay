@@ -7,7 +7,7 @@ Adding a field updates one copy. Nothing breaks. The other copy is now a lie.**
 
 A producer emits a payload from a single place — one function, one serializer,
 one query. Consumers in another language (or another module) hand-write a type,
-schema, or struct to describe it. Then a *second* consumer surface needs the
+schema, or struct to describe it. Then a _second_ consumer surface needs the
 same payload, and someone hand-writes a second description instead of pointing
 at the first.
 
@@ -22,7 +22,7 @@ Nothing fails. That is the whole problem.
 - **The compiler is satisfied.** Both declarations are internally valid. A type
   that omits a field the JSON actually carries is not an error — it is just a
   narrower view.
-- **The tests pass.** The runtime data is correct. Only the *description* of it
+- **The tests pass.** The runtime data is correct. Only the _description_ of it
   is wrong, and descriptions are not exercised at runtime.
 - **The failure is asymmetric.** Consumers coming through the updated door see
   the field and are happy. Only consumers coming through the stale door hit the
@@ -86,7 +86,7 @@ described that payload twice:
 
 Adding `pending_messages` to `ListAgent` left `getStatus()` consumers unable to
 reach a field the broker was demonstrably sending. Investigating showed the copy
-had *already* drifted by four fields — `sessionId`, `runtime_kind`,
+had _already_ drifted by four fields — `sessionId`, `runtime_kind`,
 `native_harness_protocol_version`, `native_harness_capabilities` — none of which
 anyone had noticed.
 
