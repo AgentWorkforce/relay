@@ -55,11 +55,7 @@
           "type": "reflection",
           "content": "Parallel audits reconciled the manifest with Commander registrations, MCP tools, SDKs, harnesses, and plugins. The catalog now uses explicit category-to-procedure mappings with contract tests so CLI and MCP drift fails locally before review.",
           "raw": {
-            "focalPoints": [
-              "surface-accuracy",
-              "e2e-verification",
-              "drift-prevention"
-            ],
+            "focalPoints": ["surface-accuracy", "e2e-verification", "drift-prevention"],
             "adjustments": "Added executable procedures and a manifest contract test; retained explicit external/interactive limits rather than claiming unsupported automation.",
             "confidence": 0.9
           },
