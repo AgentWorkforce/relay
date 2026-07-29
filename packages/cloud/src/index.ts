@@ -65,6 +65,7 @@ export {
 } from './connect.js';
 
 export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
+export { redactCredentialValues } from './redact.js';
 
 export {
   acknowledgeCloudWorkerAssignment,

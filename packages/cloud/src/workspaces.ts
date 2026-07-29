@@ -1,4 +1,5 @@
 import { authorizedApiFetch, ensureAuthenticated } from './auth.js';
+import { redactCredentialValues } from './redact.js';
 import {
   type ActiveWorkspaceDescriptor,
   type ActiveWorkspaceUrls,
@@ -65,7 +66,9 @@ function buildEndpointError(action: string, endpoint: string, response: Response
       response.statusText)
     : response.statusText;
 
-  return new Error(`${action} failed at ${endpoint}: ${response.status} ${detail}`.trim());
+  return new Error(
+    redactCredentialValues(`${action} failed at ${endpoint}: ${response.status} ${detail}`.trim())
+  );
 }
 
 function normalizeWorkspaceCreateResponse(payload: unknown): WorkspaceCreateResponse {
@@ -376,5 +379,9 @@ export async function resolveActiveWorkspace(
     return normalizeActiveWorkspaceDescriptor(payload, key, apiUrl);
   }
 
-  throw lastUnsupported ?? new Error('Workspace resolution is not supported by the configured cloud API.');
+  throw lastUnsupported
+    ? new Error(
+        `${lastUnsupported.message} — the active workspace has no record on the cloud API; a messaging-only workspace (minted by \`node up\` without cloud provisioning) resolves only through Relaycast.`
+      )
+    : new Error('Workspace resolution is not supported by the configured cloud API.');
 }
