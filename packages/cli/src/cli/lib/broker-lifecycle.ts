@@ -200,10 +200,13 @@ function createReflexDiagnosticLog(options: UpOptions, deps: CoreDependencies): 
     }
     if (!logger) return;
 
+    // The logger already scopes lines with [reflex]; drop the message's own
+    // prefix so the file does not read "[reflex] [reflex] ...".
+    const unscoped = message.startsWith('[reflex] ') ? message.slice('[reflex] '.length) : message;
     if (message.startsWith('[reflex] cloud sync failed:')) {
-      logger.warn(message);
+      logger.warn(unscoped);
     } else {
-      logger.info(message);
+      logger.info(unscoped);
     }
   };
 }

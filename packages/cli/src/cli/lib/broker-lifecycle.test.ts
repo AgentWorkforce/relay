@@ -344,7 +344,7 @@ describe('runUpCommand node-config gating', () => {
       reflexOptions?.log?.('[reflex] cloud sync failed: database is locked');
 
       expect(fsReal.readFileSync(logFile, 'utf-8')).toContain(
-        '[WARN] [reflex] [reflex] cloud sync failed: database is locked'
+        '[WARN] [reflex] cloud sync failed: database is locked'
       );
       expect(log).not.toHaveBeenCalledWith(expect.stringContaining('[reflex]'));
     } finally {
