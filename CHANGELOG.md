@@ -5,15 +5,37 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Changed
+
+- `@agent-relay/config`, `@agent-relay/cli`, `@agent-relay/fleet`, and `@agent-relay/harness-driver` now build on Zod 4, matching `@agent-relay/sdk`; Relay no longer ships a split Zod 3/Zod 4 install.
+- `@agent-relay/config` builds `jsonSchemas` with Zod's built-in `z.toJSONSchema` and drops the `zod-to-json-schema` dependency. Output stays draft-7 and still describes config files as authored, but some keywords differ (records gain `propertyNames`, integers gain explicit bounds, and `RegExp` fields render as unconstrained).
+- `@agent-relay/harness-driver` now exports `SpawnAgentResultSchema` as a Zod 4 schema, and `@agent-relay/fleet` `action()` validates its `input` with Zod 4. Code that pairs either with its own Zod 3 instance — `z.infer`, `.extend()` — needs `zod@^4`.
+
+### Added
+
+- `relay node agent list --pretty` shows a `PENDING` column with the messages still waiting to reach each agent (queued inbound plus in-flight deliveries awaiting confirmation); the broker reports it as `pending_messages` on `GET /api/spawned` and `GET /api/status`.
+- `agent-relay cloud login` now records your user, email, and organization to `~/.agentworkforce/relay/cloud-identity.json`, and the CLI, broker, and Relaycast traffic all report usage under that user and org instead of an anonymous machine id. `agent-relay cloud whoami` refreshes the record; `agent-relay cloud logout` clears it.
+- `agent-relay telemetry status` reports which user and organization usage is attributed to, or says so explicitly when it is anonymous.
+- Every event now carries a `machine_id` alongside the person key, signed in or not, so machine-level questions survive login: how many machines an account runs on, how many accounts share a machine, and (via Relaycast's `actor_machine_id`) how many machines share a workspace.
+- `@agent-relay/cloud/identity` exposes the identity store (`readStoredIdentity`, `resolveCloudIdentity`, `cloudIdentityEnv`), and child processes inherit identity via `AGENT_RELAY_USER_ID` / `AGENT_RELAY_ORG_ID` / `AGENT_RELAY_ORG_SLUG` / `AGENT_RELAY_USER_EMAIL`.
 
 ### Fixed
 
 - An agent released and respawned under the same name receives relay messages again. Release drops the agent's delivery cursor and the engine reuses the agent record, so every message after the respawn arrived past the start of the sequence, was classified as a gap, and was acknowledged without being delivered — discarding it and stopping the engine from retrying.
 - A PTY agent whose inbound delivery is held when it becomes ready now runs the initial task from its spawn, instead of leaving it parked in the worker's injection queue until the hold lifts.
+- The published CLI now actually reports telemetry. The npm package is plain `tsc` output with no key injection step, and the bun standalone's `--define` targeted a literal `process.env.AGENT_RELAY_POSTHOG_KEY` that the code never read (it used a computed `process.env[name]` lookup), so **both** installable artifacts shipped with telemetry silently disabled — every `cli_command_run`, `workflow_run`, `cloud_auth`, `agent_relay_tool_call`, `setup_init`, `swarm_run`, and `bridge_spawn` event was dropped. Only the Rust broker was reporting.
+- Opting out of telemetry (`AGENT_RELAY_TELEMETRY_DISABLED` or `DO_NOT_TRACK`) now keeps your cloud identity out of child process environments, including identity an ancestor process or your shell had already exported. The identity env vars — one of which carries your email — previously reached every spawned process, including third-party harness CLIs, even when opted out.
+- Identity forwarding to the Relaycast gateway is no longer gated on the local process carrying a PostHog key. An npm-installed CLI bakes no key, so it previously forwarded no identity at all and every hosted event fell back to being keyed on the workspace. Forwarding now follows the telemetry preference alone.
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
 - The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
+- `WhoAmIResponse.currentOrganization` and `currentWorkspace` are typed as nullable, matching what Cloud returns for a user with no active workspace; `agent-relay cloud whoami` no longer crashes for those users.
+
+### Security
+
+- Upgraded `axios`, `concurrently`, `fast-uri`, `form-data`, `hono`, `js-yaml`, `postcss`, `shell-quote`, and `tar` past their high- and critical-severity advisories.
 
 ## [11.2.0] - 2026-07-25
 

@@ -13,6 +13,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./identity": {
+      "types": "./dist/identity.d.ts",
+      "import": "./dist/identity.js"
+    },
+    "./telemetry-headers": {
+      "types": "./dist/telemetry-headers.d.ts",
+      "import": "./dist/telemetry-headers.js"
+    },
     "./permissions": {
       "types": "./dist/permissions.d.ts",
       "import": "./dist/permissions.js"
@@ -53,7 +61,7 @@
     "@agent-relay/config": "11.2.0",
     "@aws-sdk/client-s3": "3.1020.0",
     "ignore": "^7.0.5",
-    "tar": "^7.5.10"
+    "tar": "^7.5.21"
   },
   "optionalDependencies": {
     "ssh2": "^1.17.0"

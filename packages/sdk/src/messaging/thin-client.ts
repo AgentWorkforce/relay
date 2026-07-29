@@ -183,8 +183,28 @@ export interface RelayRealtimeClientOptions extends RelaycastTelemetryOptions {
   baseUrl?: string;
 }
 
-export interface RelayCreateWorkspaceOptions extends Pick<RelaycastTelemetryOptions, 'agentRelayDistinctId'> {
+export interface RelayCreateWorkspaceOptions extends Omit<RelaycastTelemetryOptions, 'originActor'> {
   baseUrl?: string;
+}
+
+/**
+ * Forward only the telemetry-override keys to `relaycastTelemetryOptions`, so
+ * unset ones fall through to env resolution instead of being pinned to
+ * `undefined` by an object spread.
+ */
+function pickTelemetryOverrides(options: RelaycastTelemetryOptions): RelaycastTelemetryOptions {
+  return {
+    ...(options.originActor === undefined ? {} : { originActor: options.originActor }),
+    ...(options.agentRelayDistinctId === undefined
+      ? {}
+      : { agentRelayDistinctId: options.agentRelayDistinctId }),
+    ...(options.agentRelayUserId === undefined ? {} : { agentRelayUserId: options.agentRelayUserId }),
+    ...(options.agentRelayMachineId === undefined
+      ? {}
+      : { agentRelayMachineId: options.agentRelayMachineId }),
+    ...(options.agentRelayOrgId === undefined ? {} : { agentRelayOrgId: options.agentRelayOrgId }),
+    ...(options.agentRelayOrgSlug === undefined ? {} : { agentRelayOrgSlug: options.agentRelayOrgSlug }),
+  };
 }
 
 function clientConfig(
@@ -194,10 +214,7 @@ function clientConfig(
   return {
     apiKey,
     ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-    ...relaycastTelemetryOptions({
-      originActor: options.originActor,
-      agentRelayDistinctId: options.agentRelayDistinctId,
-    }),
+    ...relaycastTelemetryOptions(pickTelemetryOverrides(options)),
   };
 }
 
@@ -233,10 +250,7 @@ export function createRealtimeClient(options: RelayRealtimeClientOptions): Relay
   return new WsClient({
     token: options.agentToken,
     ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-    ...relaycastTelemetryOptions({
-      originActor: options.originActor,
-      agentRelayDistinctId: options.agentRelayDistinctId,
-    }),
+    ...relaycastTelemetryOptions(pickTelemetryOverrides(options)),
   }) as unknown as RelayRealtimeThinClient;
 }
 
@@ -252,6 +266,6 @@ export async function createWorkspace(
 ): Promise<Record<string, unknown>> {
   return (await RelayCast.createWorkspace(name, {
     ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-    ...relaycastWorkspaceTelemetryOptions({ agentRelayDistinctId: options.agentRelayDistinctId }),
+    ...relaycastWorkspaceTelemetryOptions(pickTelemetryOverrides(options)),
   })) as Record<string, unknown>;
 }

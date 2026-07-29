@@ -102,18 +102,16 @@ export interface HarnessDriverClientOptions {
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
 const optionalNumber = z.preprocess((value) => (value === null ? undefined : value), z.number().optional());
 
-export const SpawnAgentResultSchema = z
-  .object({
-    success: z.boolean().optional(),
-    name: z.string(),
-    runtime: z.enum(['pty', 'headless']),
-    model: z.string().nullable().optional(),
-    pid: optionalNumber,
-    pre_registered: z.boolean().optional(),
-    warning: z.string().nullable().optional(),
-    sessionId: optionalString,
-  })
-  .passthrough();
+export const SpawnAgentResultSchema = z.looseObject({
+  success: z.boolean().optional(),
+  name: z.string(),
+  runtime: z.enum(['pty', 'headless']),
+  model: z.string().nullable().optional(),
+  pid: optionalNumber,
+  pre_registered: z.boolean().optional(),
+  warning: z.string().nullable().optional(),
+  sessionId: optionalString,
+});
 
 export interface SessionInfo {
   broker_version: string;

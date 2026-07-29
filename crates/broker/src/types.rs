@@ -336,6 +336,11 @@ impl InboundDeliveryState {
     pub fn pending_snapshot(&self) -> Vec<PendingRelayMessage> {
         self.pending.iter().cloned().collect()
     }
+
+    /// Number of queued inbound messages waiting to reach the worker.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 #[cfg(test)]

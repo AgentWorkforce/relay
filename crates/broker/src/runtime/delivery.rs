@@ -421,6 +421,26 @@ pub(crate) struct InboundQueueResult {
     pub(crate) evicted_from: Option<String>,
 }
 
+/// Per-worker count of messages that have not reached the agent yet: the
+/// un-injected inbound queue (`manual_flush` backlog) plus the in-flight
+/// deliveries still awaiting worker confirmation. Feeds `pending_messages` on
+/// `GET /api/spawned` and `GET /api/status`; workers with nothing waiting are
+/// left out of the map.
+pub(crate) fn pending_message_counts(
+    delivery_states: &HashMap<WorkerName, InboundDeliveryState>,
+    pending_deliveries: &HashMap<DeliveryId, PendingDelivery>,
+) -> HashMap<WorkerName, usize> {
+    let mut counts: HashMap<WorkerName, usize> = delivery_states
+        .iter()
+        .filter(|(_, state)| state.pending_len() > 0)
+        .map(|(name, state)| (name.clone(), state.pending_len()))
+        .collect();
+    for delivery in pending_deliveries.values() {
+        *counts.entry(delivery.worker_name.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
 /// Build the `delivery_dropped` broker event for a queue-cap eviction.
 pub(crate) fn delivery_dropped_event_for_eviction(
     worker_name: &str,

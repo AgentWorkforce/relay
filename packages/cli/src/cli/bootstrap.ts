@@ -10,6 +10,13 @@ import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
 import {
+  cloudIdentityEnv,
+  readStoredIdentitySync,
+  IDENTITY_ENV_KEYS,
+  type CloudIdentity,
+} from '@agent-relay/cloud/identity';
+import {
+  MACHINE_ID_ENV,
   ORCHESTRATOR_HARNESS_ENV,
   detectOrchestratorHarness,
   getDistinctId,
@@ -98,10 +105,6 @@ export const SDK_VERSION = resolveSdkVersion();
 const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
 const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
 
-function hasConfiguredTelemetryKey(): boolean {
-  return Boolean(process.env.POSTHOG_API_KEY?.trim() || process.env.AGENT_RELAY_POSTHOG_KEY?.trim());
-}
-
 function resolveProgramName(argv: string[] = process.argv): string {
   const invocationPath = String(argv[1] ?? '').trim();
   if (!invocationPath) {
@@ -113,6 +116,52 @@ function resolveProgramName(argv: string[] = process.argv): string {
 }
 
 /**
+ * Read the identity recorded at `agent-relay cloud login` and publish it on
+ * `process.env` so the broker, spawned agents, and the relaycast SDK all
+ * attribute their telemetry to the same user and org — without any of them
+ * needing to know where the identity file lives or how to call cloud.
+ *
+ * Env wins over the file (a parent process may already have published a
+ * different identity), and a missing identity is the normal not-logged-in case.
+ */
+function propagateCloudIdentityToChildren(): void {
+  // Inherited from a parent process: leave it exactly as-is.
+  if (process.env[IDENTITY_ENV_KEYS.userId]) return;
+
+  let identity: CloudIdentity | null = null;
+  try {
+    identity = readStoredIdentitySync();
+  } catch {
+    return;
+  }
+  if (!identity) return;
+
+  for (const [key, value] of Object.entries(cloudIdentityEnv(identity))) {
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
+
+/**
+ * Strip any identity an ancestor process (or the user's shell) already exported.
+ *
+ * Not publishing is not enough on its own: these vars are inherited, so values
+ * set upstream would still reach every child we spawn. `resolveCloudIdentity`
+ * explicitly supports env-injected identity, so an inherited value is a real
+ * case rather than a hypothetical one.
+ *
+ * Deleting also makes `process.env` agree with what every consumer already
+ * believes when telemetry is off — the broker, the header builder, and
+ * `initTelemetry` all treat opted-out as "no identity".
+ */
+function clearInheritedIdentity(): void {
+  for (const key of [...Object.values(IDENTITY_ENV_KEYS), AGENT_RELAY_DISTINCT_ID_ENV, MACHINE_ID_ENV]) {
+    delete process.env[key];
+  }
+}
+
+/**
  * Export the resolved CLI + SDK versions on the current process env so that
  * any child process we spawn (the Rust broker, etc.)
  * inherits them and can attach them as common telemetry properties without
@@ -120,8 +169,12 @@ function resolveProgramName(argv: string[] = process.argv): string {
  *
  * We only set these if they're not already present — so a parent caller that
  * has set its own values (e.g. in tests or in nested CLI invocations) wins.
+ *
+ * Exported for tests: the telemetry opt-out must keep identity out of child
+ * environments, which is only observable through this function's `process.env`
+ * side effects.
  */
-function propagateTelemetryContextToChildren(): string {
+export function propagateTelemetryContextToChildren(): string {
   const orchestratorHarness = detectOrchestratorHarness();
 
   if (!process.env.AGENT_RELAY_CLI_VERSION) {
@@ -136,8 +189,37 @@ function propagateTelemetryContextToChildren(): string {
   if (!process.env[TELEMETRY_CLIENT_ENV]) {
     process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
   }
-  if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
-    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getDistinctId();
+  // Identity forwarding is gated on the telemetry *preference* only — not on
+  // whether this process happens to carry a PostHog key. The relaycast gateway
+  // captures with its own key, so gating on ours meant an npm-installed CLI
+  // (which bakes no key) forwarded nothing and every hosted event fell back to
+  // being keyed on the workspace.
+  if (isTelemetryEnabled()) {
+    // Must run before the distinct-id fallback below: a signed-in user id is a
+    // better person key than the machine hash, and children should inherit it.
+    //
+    // Gated with the rest of identity because these vars are inherited by every
+    // child we spawn, including third-party harness CLIs we don't control, and
+    // one of them carries the operator's email. An opted-out user expects their
+    // identity not to be published into those environments at all — not merely
+    // to go unsent.
+    propagateCloudIdentityToChildren();
+
+    if (!process.env[MACHINE_ID_ENV]) {
+      // Always published, signed in or not: the distinct id below becomes the
+      // user id after login, so this is the only thing that keeps the machine
+      // dimension (machines per account, accounts per machine, machines per
+      // workspace) answerable.
+      process.env[MACHINE_ID_ENV] = getDistinctId();
+    }
+    if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV]) {
+      // Signed-in runs are keyed by the cloud user id so CLI, broker, and
+      // relaycast-server events all land on one PostHog person.
+      process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
+        process.env[IDENTITY_ENV_KEYS.userId] || process.env[MACHINE_ID_ENV];
+    }
+  } else {
+    clearInheritedIdentity();
   }
 
   return orchestratorHarness;

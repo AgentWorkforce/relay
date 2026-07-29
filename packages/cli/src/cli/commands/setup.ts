@@ -57,6 +57,14 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
     io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK environment variable)');
   }
   io.log(`Distinct ID: ${status.distinctId}`);
+  if (status.userId) {
+    io.log(`Identified as: ${status.email ?? status.userId}`);
+    if (status.organizationSlug || status.organizationId) {
+      io.log(`Organization: ${status.organizationSlug ?? status.organizationId}`);
+    }
+  } else {
+    io.log('Identified as: (anonymous — run `agent-relay cloud login` to attribute usage)');
+  }
   if (status.notifiedAt) {
     io.log(`First run notice shown: ${new Date(status.notifiedAt).toLocaleString()}`);
   }

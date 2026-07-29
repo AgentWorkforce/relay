@@ -15,12 +15,10 @@ export default defineNode({
   capabilities: {
     'hello-prod': action(
       {
-        input: z
-          .object({
-            echo: z.unknown().optional(),
-            notify: z.object({ channel: z.string(), from: z.string() }).optional(),
-          })
-          .passthrough(),
+        input: z.looseObject({
+          echo: z.unknown().optional(),
+          notify: z.object({ channel: z.string(), from: z.string() }).optional(),
+        }),
       },
       async (input, ctx) => {
         if (input.notify) {

@@ -17,8 +17,39 @@ Telemetry allows us to better identify bugs and gain visibility on usage pattern
 - **CLI command usage**: Which commands are being run (e.g., `init`, `spawn`, `run`)
 - **Version information**: The version of Agent Relay being used
 - **System information**: Operating system and CPU architecture
+- **Machine identifier**: An anonymous, hashed machine ID (`machine_id`) on every
+  event, so all processes from one installation (CLI, broker, MCP server,
+  spawned agents) correlate to the same machine. It is derived by hashing a
+  locally generated id, so it contains no hostname. This is sent whether or not
+  you are signed in — it is what lets us tell "one machine used ten times" apart
+  from "ten machines used once."
 
-Agent Relay uses an anonymous, hashed machine ID to correlate events. No personally identifiable information is collected.
+### Account identity (only when you are signed in to Agent Relay Cloud)
+
+If you have run `agent-relay cloud login`, telemetry is additionally attributed to
+your cloud account (the machine ID above is still sent, so we can see how many
+machines an account uses):
+
+- **Your cloud user ID and organization ID/slug** are attached to events, so we
+  can tell how many distinct people and companies use Agent Relay — a hashed
+  machine ID cannot distinguish one person on three laptops from three people.
+- **Your email and name** are recorded once as account attributes (not on every
+  event) so support conversations can be matched to real usage.
+
+This identity is resolved from Agent Relay Cloud at login and stored locally at
+`~/.agentworkforce/relay/cloud-identity.json`. It is also forwarded to the
+hosted Relaycast gateway (as `X-Agent-Relay-User-Id` / `X-Agent-Relay-Org-Id` /
+`X-Agent-Relay-Org-Slug`, plus `X-Agent-Relay-Machine-Id`) so server-side usage is
+attributed to the same account and machine.
+These values are used for analytics only and never affect what you can access.
+
+If you have **not** signed in, none of the account fields are collected and the
+anonymous machine ID is the only identity. Opting out of telemetry
+(below) stops identity collection along with everything else, and
+`agent-relay cloud logout` deletes the local identity file.
+
+Run `agent-relay telemetry status` to see exactly which account — or none — your
+usage is attributed to.
 
 When Agent Relay talks to Relaycast Cloud, it sends that same anonymous ID with its requests (the `X-Agent-Relay-Distinct-Id` header) so server-side usage can be attributed to an install rather than to a workspace alone. It is not sent when telemetry is disabled by any of the methods below.
 
@@ -36,6 +67,9 @@ Agent Relay takes your privacy seriously and does **not** collect:
 - API keys or authentication tokens
 - IP addresses (beyond what is inherent in network requests)
 - Source code or project information
+
+Your email address is never attached to individual telemetry events — only to
+your account record, and only when you are signed in (see above).
 
 Data is never shared with third parties.
 
@@ -95,7 +129,8 @@ agent-relay telemetry enable
 
 ### Check telemetry status
 
-To check if telemetry is currently enabled:
+To check whether telemetry is enabled, and which account (if any) your usage is
+attributed to:
 
 ```sh
 agent-relay telemetry status

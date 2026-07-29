@@ -25,12 +25,10 @@ export default defineNode({
     'spawn:pool': spawn(stub),
     echo: action(
       {
-        input: z
-          .object({
-            text: z.string().optional(),
-            message: z.object({ text: z.string() }).passthrough().optional(),
-          })
-          .passthrough(),
+        input: z.looseObject({
+          text: z.string().optional(),
+          message: z.looseObject({ text: z.string() }).optional(),
+        }),
       },
       async (input, ctx) => {
         const text = (input.text ?? input.message?.text ?? '') as string;

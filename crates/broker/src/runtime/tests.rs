@@ -42,15 +42,16 @@ use super::{
     is_unknown_worker_error_message, load_dead_letters, load_pending_deliveries,
     mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, mint_or_recover_observer_token,
     normalize_channel, normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
-    persist_dead_letters_on_shutdown, persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
-    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
-    relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
-    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
-    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
-    synthetic_delivery_read_ack_reason, AgentRuntime, DeadLetterEntry, DeadLetterStore,
-    DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome, ObserverTokenMintError,
-    ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
-    RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
+    pending_message_counts, persist_dead_letters_on_shutdown, persist_pending_on_shutdown,
+    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
+    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
+    requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retry_pending_delivery,
+    save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
+    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason, AgentRuntime,
+    DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
+    ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
+    ProtocolHeadlessProvider, RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS,
+    MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -262,6 +263,48 @@ async fn inbound_queue_manual_flush_holds_until_explicit_drain() {
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot[0].event_id.as_deref(), Some("evt_manual"));
     assert_eq!(snapshot[0].target, "#general");
+
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn worker_list_reports_pending_queue_depth() {
+    let worker_name = "worker-a";
+    let workers = make_worker_registry_with_worker(worker_name).await;
+    let mut delivery_states = HashMap::from([(
+        WorkerName::from(worker_name),
+        InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
+    )]);
+
+    let mut pending_deliveries = HashMap::new();
+
+    let counts = pending_message_counts(&delivery_states, &pending_deliveries);
+    assert_eq!(workers.list(&counts)[0]["pending_messages"], 0);
+
+    for event_id in ["evt_1", "evt_2"] {
+        queue_inbound_for_delivery_mode(
+            &mut delivery_states,
+            &workers,
+            worker_name,
+            inbound_ctx(event_id),
+        );
+    }
+    pending_deliveries.insert(
+        DeliveryId::new("del_in_flight"),
+        pending_delivery(worker_name, "del_in_flight", "evt_3"),
+    );
+
+    let counts = pending_message_counts(&delivery_states, &pending_deliveries);
+    assert_eq!(
+        workers.list(&counts)[0]["pending_messages"],
+        3,
+        "queued inbound messages plus in-flight deliveries are both still pending"
+    );
+    assert_eq!(
+        workers.list(&HashMap::new())[0]["pending_messages"],
+        0,
+        "a worker with neither queue populated has nothing pending"
+    );
 
     cleanup_worker_registry(workers).await;
 }

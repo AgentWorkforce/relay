@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::{Sink, SinkExt, StreamExt};
-use relaycast::{AGENT_RELAY_DISTINCT_ID_HEADER, ORIGIN_ACTOR_HEADER};
+use relaycast::ORIGIN_ACTOR_HEADER;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
@@ -268,9 +268,12 @@ pub(crate) async fn mint_node_token(
                 "X-Relaycast-Origin-Actor",
                 crate::telemetry::BROKER_ORIGIN_ACTOR,
             );
-        if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
-            builder = builder.header(AGENT_RELAY_DISTINCT_ID_HEADER, distinct_id);
+        // Attribute node creation to the signed-in cloud user/org, so relaycast
+        // server telemetry can report real users rather than only workspaces.
+        for (name, value) in crate::telemetry::cloud_identity_headers() {
+            builder = builder.header(name, value);
         }
+
         let response = match builder.json(&request).send().await {
             Ok(response) => response,
             Err(error) => {
@@ -1527,11 +1530,12 @@ async fn run_connected_once(
     if let Ok(value) = crate::telemetry::BROKER_ORIGIN_ACTOR.parse() {
         request.headers_mut().insert(ORIGIN_ACTOR_HEADER, value);
     }
-    if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
-        if let Ok(value) = distinct_id.parse() {
-            request
-                .headers_mut()
-                .insert(AGENT_RELAY_DISTINCT_ID_HEADER, value);
+    for (name, value) in crate::telemetry::cloud_identity_headers() {
+        let Ok(header_name) = name.parse::<reqwest::header::HeaderName>() else {
+            continue;
+        };
+        if let Ok(header_value) = value.parse() {
+            request.headers_mut().insert(header_name, header_value);
         }
     }
 

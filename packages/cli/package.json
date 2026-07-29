@@ -38,7 +38,7 @@
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build:cli; else echo 'node_modules not found, skipping prepack build'; fi",
     "start": "node dist/cli/index.js",
-    "lint": "eslint src --ext .ts",
+    "lint": "eslint src",
     "audit:deps": "echo 'No bundled dependency audit is required for the simplified CLI package.'",
     "pack:validate": "npm pack --dry-run"
   },
@@ -50,7 +50,7 @@
     "@agent-relay/harnesses": "11.2.0",
     "@agent-relay/sdk": "11.2.0",
     "@agent-relay/utils": "11.2.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.23.0",
     "@relayfile/client": "^0.10.27",
     "@relayflows/cli": "^1.0.1",
     "@xterm/headless": "^6.0.0",
@@ -59,7 +59,7 @@
     "jiti": "^2.6.1",
     "posthog-node": "^5.29.2",
     "ws": "^8.18.3",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "optionalDependencies": {
     "ai-hist-native": "^0.4.1"

@@ -559,7 +559,7 @@ function registerAgentRelayTools(
         status: z.enum(['online', 'offline']).optional().describe('Optional status filter'),
       },
       outputSchema: {
-        agents: z.array(z.object({}).passthrough()).describe('Registered agents'),
+        agents: z.array(z.looseObject({})).describe('Registered agents'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -580,7 +580,7 @@ function registerAgentRelayTools(
         name: z.string().optional().describe('Optional node name filter'),
       },
       outputSchema: {
-        nodes: z.array(z.object({}).passthrough()).describe('Fleet nodes'),
+        nodes: z.array(z.looseObject({})).describe('Fleet nodes'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
