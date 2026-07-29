@@ -27,6 +27,7 @@ import signal
 import struct
 import sys
 import termios
+import time
 
 
 def set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -124,8 +125,14 @@ def main() -> int:
             # buffered output does not strand the loop.
             waited, status = os.waitpid(pid, os.WNOHANG)
             if waited == pid:
-                # Drain whatever is still sitting in the pty buffer.
+                # Drain whatever is still sitting in the pty buffer. `os.read`
+                # on the master only reports EOF once every slave fd is closed
+                # — a grandchild that inherited the slave keeps it open, so an
+                # unguarded read would park here instead of finishing the run.
+                # Poll with a short timeout and stop as soon as it goes quiet.
                 while True:
+                    if not select.select([master], [], [], 0.1)[0]:
+                        break
                     try:
                         rest = os.read(master, 65536)
                     except OSError:
@@ -144,9 +151,18 @@ def main() -> int:
     finally:
         out.close()
         if pid:
+            # SIGTERM then a bounded wait: a child that ignores the signal must
+            # not hang the E2E run, so escalate to SIGKILL after ~2s. Only the
+            # post-SIGKILL reap is allowed to block — nothing survives that.
             try:
                 os.kill(pid, signal.SIGTERM)
-                os.waitpid(pid, 0)
+                for _ in range(20):
+                    if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                        break
+                    time.sleep(0.1)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
             except OSError:
                 pass
         try:

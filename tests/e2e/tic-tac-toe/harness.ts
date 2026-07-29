@@ -458,10 +458,17 @@ export async function recordEvents(brokerUrl: string, apiKey: string): Promise<E
     // A broker that accepts the TCP connection and then closes (an auth
     // rejection arrives that way) would otherwise never settle this promise,
     // hanging `beforeAll` until the hook timeout with no useful diagnostic.
+    // Tear the socket down before rejecting: an un-closed handle keeps the
+    // Vitest worker alive past a failed `beforeAll`, turning a clear setup
+    // error into a "process did not exit" tail.
+    const bail = (err: Error): void => {
+      socket.terminate();
+      reject(err);
+    };
     const onClose = (code: number) =>
-      reject(new Error(`broker closed the event socket before it opened (code ${code})`));
+      bail(new Error(`broker closed the event socket before it opened (code ${code})`));
     socket.once('close', onClose);
-    socket.once('error', reject);
+    socket.once('error', bail);
     socket.once('open', () => {
       socket.off('close', onClose);
       resolve();
