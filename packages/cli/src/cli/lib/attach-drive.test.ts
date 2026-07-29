@@ -571,7 +571,7 @@ describe('KeybindParser', () => {
 /** Strip the save/position/clear/reverse-video wrapper down to the visible label. */
 function stripStatusLineAnsi(rendered: string): string {
   // eslint-disable-next-line no-control-regex -- matching the raw ESC bytes this module emits
-  return rendered.replace(/\x1b(?:[78]|\[[0-9;]*[A-Za-z])/g, '');
+  return rendered.replace(/\x1b(?:[78]|\[[?0-9;]*[A-Za-z])/g, '');
 }
 
 describe('renderStatusLine', () => {
@@ -623,7 +623,7 @@ describe('renderStatusLine', () => {
       cols,
     });
     const text = stripStatusLineAnsi(out);
-    expect(text.length).toBeLessThanOrEqual(cols);
+    expect(text.length).toBeLessThan(cols);
     // Middle-truncated: the verb + agent name and the key hints both survive.
     expect(text).toContain('[drive Gamemaster');
     expect(text).toContain('Ctrl+C detach]');
@@ -1358,7 +1358,37 @@ describe('runDriveSession', () => {
     );
     expect(releaseCall).toBeDefined();
     expect((releaseCall?.body as { session_id?: string }).session_id).toBe(sessionId);
-    // A pure release carries no placeholder dimensions (#1247).
+    // The release also gives back the row and column reserved for the status
+    // line, so the worker isn't left at 29x99 for the next `view` session.
+    // Carrying it on the release keeps the restore atomic with dropping
+    // ownership — a separate resize could land after it and re-claim (#1247).
+    const releaseBody = releaseCall?.body as { rows?: number; cols?: number };
+    expect(releaseBody.rows).toBe(30);
+    expect(releaseBody.cols).toBe(100);
+    // And it is the only release: the restore did not add a second round-trip.
+    const releaseCalls = fetchLog.filter(
+      (call) => call.url.includes('/resize/') && (call.body as { release?: boolean }).release === true
+    );
+    expect(releaseCalls).toHaveLength(1);
+  });
+
+  it('releases without dimensions when there is no local TTY to restore', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({ terminalSize: null });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    const releaseCall = fetchLog.find(
+      (call) =>
+        call.method === 'POST' &&
+        call.url.includes('/resize/') &&
+        (call.body as { release?: boolean }).release === true
+    );
+    expect(releaseCall).toBeDefined();
+    // Nothing was reserved, so there is no size to restore and no placeholder
+    // dimensions to invent (#1247).
     const releaseBody = releaseCall?.body as { rows?: number; cols?: number };
     expect(releaseBody.rows).toBeUndefined();
     expect(releaseBody.cols).toBeUndefined();
@@ -1454,6 +1484,10 @@ describe('runDriveSession', () => {
       )
     ).toBe(true);
 
+    // Without this the test can pass on the SIGWINCH resize alone: if setup
+    // never reached the first `POST /resize`, the optional resolve below is a
+    // no-op and the stale path is never exercised (silent false green).
+    expect(resolveInitialResize).toBeTypeOf('function');
     resolveInitialResize?.(
       new Response(JSON.stringify({ applied: true }), {
         status: 200,

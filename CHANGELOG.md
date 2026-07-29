@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `node agent list` no longer reports an exited agent as `working` indefinitely; the broker now reaps a worker whose harness has gone away or never started.
 - `node agent attach --mode drive|passthrough` truncates its status line to the terminal width, so a narrow pane no longer stacks status lines over the agent's output.
 - PTY `node agent attach --mode drive|passthrough` sessions now reserve and safely clip their status row, preventing full-screen agent CLIs from tearing, scrolling, or duplicating Relay's controls.
+- Detaching from `node agent attach --mode drive|passthrough` restores the row and column the status line reserved, so a later `--mode view` session no longer inherits a PTY one row and column short. `POST /api/resize/{name}` applies dimensions sent alongside `release: true`.
 - Agent Relay MCP instructions now route work with existing named participants through Relay instead of provider-native subagents.
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.

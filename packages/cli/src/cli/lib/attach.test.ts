@@ -1031,6 +1031,10 @@ describe('clampStatusLineText', () => {
     }
   });
 
+  it('can reserve the final terminal column to avoid wrap-pending state', () => {
+    expect(clampStatusLineText('1234567890', 10, true)).toBe('1234…7890');
+  });
+
   it('degrades to a bare head rather than wrapping on a pathological width', () => {
     expect(clampStatusLineText(label, 1)).toBe('[');
     expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);

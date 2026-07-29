@@ -502,9 +502,9 @@ describe('renderStatusLine', () => {
   it('truncates the label to the terminal width so it can never wrap', () => {
     const cols = 40;
     // eslint-disable-next-line no-control-regex -- matching the raw ESC bytes this module emits
-    const strip = (s: string) => s.replace(/\x1b(?:[78]|\[[0-9;]*[A-Za-z])/g, '');
+    const strip = (s: string) => s.replace(/\x1b(?:[78]|\[[?0-9;]*[A-Za-z])/g, '');
     const text = strip(renderStatusLine({ name: 'Gamemaster', mode: 'auto_inject', rows: 24, cols }));
-    expect(text.length).toBeLessThanOrEqual(cols);
+    expect(text.length).toBeLessThan(cols);
     expect(text).toContain('[passthrough');
     expect(text).toContain('detach]');
   });
@@ -892,6 +892,10 @@ describe('runPassthroughSession', () => {
     await new Promise((resolve) => setImmediate(resolve));
     terminal.setSize({ rows: 42, cols: 120 });
     await new Promise((resolve) => setImmediate(resolve));
+    // Without this the test can pass on the SIGWINCH resize alone: if setup
+    // never reached the first `POST /resize`, the optional resolve below is a
+    // no-op and the stale path is never exercised (silent false green).
+    expect(resolveInitialResize).toBeTypeOf('function');
     resolveInitialResize?.(
       new Response(JSON.stringify({ applied: true }), {
         status: 200,
@@ -956,6 +960,32 @@ describe('runPassthroughSession', () => {
       .filter((call) => call.url.includes('/resize/'))
       .map((call) => call.body as { release?: boolean });
     expect(resizeBodies.map((body) => body.release === true)).toEqual([false, true]);
+  });
+
+  it('restores the reserved row and column on the release itself', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // The attach sizes the worker one row and column short to reserve the
+    // status line.
+    const attachResize = fetchLog.find((call) => call.method === 'POST' && call.url.includes('/resize/'));
+    expect(attachResize?.body).toMatchObject({ rows: 29, cols: 99 });
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Detach hands the reserved row and column back on the release request, so
+    // a later read-only `view` session doesn't inherit a short PTY. Doing it on
+    // the release keeps it atomic: a separate resize could land afterwards and
+    // re-claim ownership (#1247).
+    const releaseCalls = fetchLog.filter(
+      (call) => call.url.includes('/resize/') && (call.body as { release?: boolean }).release === true
+    );
+    expect(releaseCalls).toHaveLength(1);
+    expect(releaseCalls[0]?.body).toMatchObject({ rows: 30, cols: 100 });
   });
 
   // ---- predictive-echo wiring ----

@@ -392,17 +392,24 @@ export const DEFAULT_STATUS_LINE_COLS = 80;
  * six rows of agent output.
  *
  * Truncation keeps the paint inside one row, so the wrap — and the scroll
- * cascade it triggers — can never happen. The tail is the part that carries
- * the key hints, so an over-long label is trimmed from the *middle*: the verb
- * and agent name stay readable and the `Ctrl+…` hints survive.
+ * cascade it triggers — can never happen. Callers painting a terminal row can
+ * reserve the final column as well, avoiding the emulator's wrap-pending state.
+ * The tail is the part that carries the key hints, so an over-long label is
+ * trimmed from the *middle*: the verb and agent name stay readable and the
+ * `Ctrl+…` hints survive.
  *
  * Measured in display columns, not UTF-16 code units: an agent name carrying
  * CJK or emoji is double-width, so a code-unit count would pass a label that
  * still wraps — re-arming the exact cascade this prevents. Slicing is done on
  * whole code points so a surrogate pair is never split in half.
  */
-export function clampStatusLineText(text: string, cols: number | undefined): string {
-  const width = typeof cols === 'number' && cols > 0 ? Math.floor(cols) : DEFAULT_STATUS_LINE_COLS;
+export function clampStatusLineText(
+  text: string,
+  cols: number | undefined,
+  reserveFinalColumn = false
+): string {
+  const terminalWidth = typeof cols === 'number' && cols > 0 ? Math.floor(cols) : DEFAULT_STATUS_LINE_COLS;
+  const width = reserveFinalColumn ? Math.max(terminalWidth - 1, 0) : terminalWidth;
   if (displayWidth(text) <= width) return text;
   // Too narrow to say anything useful — a bare head is still better than a
   // wrap, and `…` alone would be meaningless.

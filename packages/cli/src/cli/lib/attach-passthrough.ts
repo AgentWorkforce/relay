@@ -287,7 +287,8 @@ export function renderStatusLine(opts: {
   const scrollBottom = Math.max(scrollTop + 1, opts.scrollBottom ?? row - 1);
   const text = clampStatusLineText(
     `[passthrough ${opts.name} | delivery=${opts.mode} | Ctrl+C detach]`,
-    opts.cols
+    opts.cols,
+    true
   );
   const restoreOrigin = opts.originMode ? '\x1b[?6h' : '';
   return `\x1b7\x1b[?6l\x1b[r\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b[${scrollTop};${scrollBottom}r${restoreOrigin}\x1b8`;
@@ -663,7 +664,15 @@ export async function runPassthroughSession(
           if (outstandingResizes.size > 0) {
             await Promise.allSettled([...outstandingResizes]);
           }
-          await releaseResizeOwnership(connection, name, resizeSessionId, deps.fetch);
+          // Hand the reserved status row/column back in the same request, so
+          // the agent's TUI is not left one row and column short.
+          await releaseResizeOwnership(
+            connection,
+            name,
+            resizeSessionId,
+            deps.fetch,
+            deps.terminal.getSize()
+          );
         } catch {
           // Best-effort — the broker's idle-takeover net still frees ownership.
         }

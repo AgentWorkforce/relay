@@ -410,17 +410,26 @@ export async function resizeWorker(
  * Release this session's PTY resize ownership on detach (single-resizer
  * policy, #1247), so the next client that attaches can resize the shared PTY.
  * Best-effort: the broker also supersedes a crashed owner after an idle window.
+ *
+ * `restoreSize` gives back the row and column a writable attach reserved for
+ * Relay's status line (see `reserveStatusLineRow`). Without it the worker stays
+ * at `rows - 1`/`cols - 1` after the status line disappears, and since a
+ * read-only `view` session never resizes the PTY, the agent's TUI would remain
+ * one row and column short until the next writable attach. The broker applies
+ * the size before dropping ownership, so this stays one round-trip and cannot
+ * lose the ordering race a separate resize call would introduce.
  */
 export async function releaseResizeOwnership(
   connection: BrokerConnection,
   name: string,
   sessionId: string,
-  fetchFn: typeof globalThis.fetch
+  fetchFn: typeof globalThis.fetch,
+  restoreSize?: { rows: number; cols: number } | null
 ): Promise<void> {
   try {
-    // A pure release carries no dimensions — the broker skips the resize and
-    // only drops ownership, so there are no placeholder sizes to invent.
-    await createBrokerClient(connection, fetchFn).resizePty(name, undefined, undefined, {
+    // Omitting the dimensions is a pure release — the broker skips the resize,
+    // so a session with no local TTY invents no placeholder size.
+    await createBrokerClient(connection, fetchFn).resizePty(name, restoreSize?.rows, restoreSize?.cols, {
       sessionId,
       release: true,
     });
@@ -565,7 +574,8 @@ export function renderStatusLine(opts: {
   const toggleHint = opts.mode === 'manual_flush' ? 'Ctrl+] deliver' : 'Ctrl+] hold';
   const text = clampStatusLineText(
     `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`,
-    opts.cols
+    opts.cols,
+    true
   );
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
@@ -1015,7 +1025,15 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           if (outstandingResizes.size > 0) {
             await Promise.allSettled([...outstandingResizes]);
           }
-          await releaseResizeOwnership(connection, name, resizeSessionId, deps.fetch);
+          // Hand the reserved status row/column back in the same request, so
+          // the agent's TUI is not left one row and column short.
+          await releaseResizeOwnership(
+            connection,
+            name,
+            resizeSessionId,
+            deps.fetch,
+            deps.terminal.getSize()
+          );
         } catch {
           // Best-effort — the broker's idle-takeover net still frees ownership.
         }

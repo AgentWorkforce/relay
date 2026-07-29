@@ -712,13 +712,26 @@ export class HarnessDriverClient {
    * `rows`/`cols` are optional so a pure ownership release (`release: true`)
    * can omit them entirely rather than sending placeholder dimensions — the
    * broker defaults them and skips the resize on a release.
+   *
+   * A release MAY still carry dimensions, in which case the broker applies
+   * them and *then* drops ownership. Attach clients that reserved a status row
+   * use this to hand the row back atomically: a separate resize would need to
+   * land strictly before the release or it re-claims the lease (#1247).
+   * `resized` reports whether that restore reached the worker.
    */
   async resizePty(
     name: string,
     rows?: number,
     cols?: number,
     options?: { sessionId?: string; release?: boolean }
-  ): Promise<{ name: string; rows?: number; cols?: number; applied?: boolean; released?: boolean }> {
+  ): Promise<{
+    name: string;
+    rows?: number;
+    cols?: number;
+    applied?: boolean;
+    released?: boolean;
+    resized?: boolean;
+  }> {
     return this.transport.request(`/api/resize/${encodeURIComponent(name)}`, {
       method: 'POST',
       body: JSON.stringify({

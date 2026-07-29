@@ -256,19 +256,21 @@ test(
 
 test(
   'mcp-injection: codex — named Relay participants are not replaced by built-in subagents',
-  { timeout: 120_000 },
+  { timeout: 180_000 },
   async (t) => {
     if (skipIfMissing(t)) return;
     if (skipIfNotRealCli(t)) return;
     if (skipIfCliMissing(t, 'codex')) return;
 
     const harness = new BrokerHarness();
-    await harness.start();
     const suffix = uniqueSuffix();
     const playerName = `PlayerA-${suffix}`;
     const gameMasterName = `Gamemaster-${suffix}`;
 
+    // Startup is inside the try so a failing `start()` still runs the cleanup
+    // below — a partially-created broker must not survive the test.
     try {
+      await harness.start();
       // A lightweight, already-running Relay participant. The assertion is on
       // the Gamemaster's outbound Relay message, so PlayerA need not answer.
       await harness.spawnAgent(playerName, 'cat', ['general']);
@@ -279,7 +281,20 @@ test(
           `Do not choose or play the move on their behalf.`,
       });
 
-      await sleep(45_000);
+      // Wait for the routing evidence itself rather than a fixed delay: a slow
+      // Codex run used to fail before its message arrived, and a fast one still
+      // paid the full sleep. A timeout here is not the assertion — fall through
+      // so the descriptive checks below report what actually happened.
+      const isMessageToPlayer = (event: BrokerEvent): boolean => {
+        if (event.kind !== 'relay_inbound') return false;
+        const message = event as Extract<BrokerEvent, { kind: 'relay_inbound' }>;
+        return (
+          message.from === gameMasterName &&
+          message.target === playerName &&
+          /move|choose|tic-tac-toe/i.test(message.body)
+        );
+      };
+      await harness.waitForEvent('relay_inbound', 90_000, isMessageToPlayer).promise.catch(() => undefined);
 
       const events = harness.getEvents();
       const agentMessages = getRelayInboundFromAgent(events, gameMasterName);

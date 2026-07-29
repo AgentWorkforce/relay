@@ -4803,6 +4803,54 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn resize_pty_route_release_forwards_restore_dimensions() {
+        // An attach that reserved a status row hands it back on the release
+        // itself, so the route must forward rows/cols alongside `release: true`
+        // rather than dropping them as it would for a pure release.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::ResizePty {
+                    rows,
+                    cols,
+                    session_id,
+                    release,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(rows, 30);
+                    assert_eq!(cols, 100);
+                    assert_eq!(session_id.as_deref(), Some("sess-1"));
+                    assert!(release);
+                    let _ = reply.send(Ok(json!({ "released": true, "resized": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/resize/worker-a")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "rows": 30, "cols": 100, "session_id": "sess-1", "release": true })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["resized"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
     async fn resize_pty_route_normalises_blank_session_id() {
         // A whitespace-only session id must arrive as `None`, never as a shared
         // empty owner key.
