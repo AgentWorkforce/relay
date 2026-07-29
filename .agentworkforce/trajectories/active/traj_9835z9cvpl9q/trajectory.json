@@ -35,6 +35,54 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1784738577913,
+          "type": "decision",
+          "content": "Diagnosed view detach behavior: Diagnosed view detach behavior",
+          "raw": {
+            "question": "Diagnosed view detach behavior",
+            "chosen": "Diagnosed view detach behavior",
+            "alternatives": [],
+            "reasoning": "PTY-backed view consumes Ctrl-C as raw stdin and resolves its session, but closes the WebSocket gracefully; if that close handshake leaves a live handle, the process stays alive until a second Ctrl-C is handled by Node's default signal behavior."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784739241579,
+          "type": "decision",
+          "content": "Use forced WebSocket teardown for local view detach: Use forced WebSocket teardown for local view detach",
+          "raw": {
+            "question": "Use forced WebSocket teardown for local view detach",
+            "chosen": "Use forced WebSocket teardown for local view detach",
+            "alternatives": [],
+            "reasoning": "A view session has no outbound state to preserve. Calling ws.terminate after requesting a normal close releases the live socket handle immediately, ensuring the first Ctrl-C exits the viewer without terminating the agent."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784746167470,
+          "type": "decision",
+          "content": "Preserve the post-SIGKILL reaping wait in the node provider integration test: Preserve the post-SIGKILL reaping wait in the node provider integration test",
+          "raw": {
+            "question": "Preserve the post-SIGKILL reaping wait in the node provider integration test",
+            "chosen": "Preserve the post-SIGKILL reaping wait in the node provider integration test",
+            "alternatives": [],
+            "reasoning": "The test's 50ms sleep shim shortened both the graceful shutdown timeout and the post-kill wait. Restricting it to the 5s graceful timeout prevents stop() from resolving before the OS reaps the real child."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784749065795,
+          "type": "decision",
+          "content": "Replace fixed standalone smoke delay with bounded readiness polling: Replace fixed standalone smoke delay with bounded readiness polling",
+          "raw": {
+            "question": "Replace fixed standalone smoke delay with bounded readiness polling",
+            "chosen": "Replace fixed standalone smoke delay with bounded readiness polling",
+            "alternatives": [],
+            "reasoning": "The test was tearing down  after eight seconds even when a retried Relaycast handshake was still in progress. Polling for  up to thirty seconds prevents the cleanup from creating a false startup failure while retaining deterministic timeout diagnostics."
+          },
+          "significance": "high"
         }
       ]
     }

@@ -185,6 +185,29 @@ function applyNodeLogEnv(options: UpOptions, deps: CoreDependencies): void {
   }
 }
 
+/**
+ * Keep background Reflex maintenance out of the broker's normal startup
+ * output.  When a node log file is configured, preserve those diagnostics in
+ * the same structured log stream as the other long-running node work; when
+ * `--verbose` is requested, surface them to the interactive terminal too.
+ */
+function createReflexDiagnosticLog(options: UpOptions, deps: CoreDependencies): (message: string) => void {
+  const logger = options.logFile ? createLogger('reflex') : undefined;
+
+  return (message) => {
+    if (options.verbose) {
+      vlog(deps, true, message);
+    }
+    if (!logger) return;
+
+    if (message.startsWith('[reflex] cloud sync failed:')) {
+      logger.warn(message);
+    } else {
+      logger.info(message);
+    }
+  };
+}
+
 type ErrorWithCode = { code?: unknown };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1540,7 +1563,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // When Reflex is enabled, periodically sync + push local session history to
     // relayhistory-cloud in-process via the ai-hist-native addon (no subprocess).
     // No-op when disabled or the addon isn't available.
-    reflexCapture = startReflexCapture({ log: (message) => deps.log(message) });
+    reflexCapture = startReflexCapture({ log: createReflexDiagnosticLog(options, deps) });
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 

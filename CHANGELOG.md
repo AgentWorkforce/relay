@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent Relay MCP instructions now route work with existing named participants through Relay instead of provider-native subagents.
 - The `drive` status line counts only messages actually parked by the inbound hold. It previously also counted every delivery a harness queued for injection, so `pending` climbed on ordinary traffic and never came back down.
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
+- `agent-relay up` keeps Reflex history-sync diagnostics out of normal startup output, writes them to `--log-file` when configured, and shows them with `--verbose`.
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
 - The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
 - `WhoAmIResponse.currentOrganization` and `currentWorkspace` are typed as nullable, matching what Cloud returns for a user with no active workspace; `agent-relay cloud whoami` no longer crashes for those users.
