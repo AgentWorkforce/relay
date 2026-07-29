@@ -970,8 +970,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         hold_exempt_injections =
                                             hold_exempt_injections.max(backlog);
                                         if let Some(inj) = active_injection.as_mut() {
+                                            // Leave an existing targeted exemption
+                                            // targeted. Downgrading it would send a
+                                            // later requeue of *this* delivery back
+                                            // to the shared counter instead of to
+                                            // its own event id, so the credit could
+                                            // be spent on whatever else is queued.
                                             inj.hold_exempt = true;
-                                            inj.targeted_hold_exemption = false;
                                         }
                                         tracing::info!(
                                             target: "agent_relay::worker::pty",
@@ -2258,6 +2263,33 @@ mod tests {
         restore_hold_exemption(&unexempt, &mut count, &mut event_ids);
         assert_eq!(count, 1);
         assert!(event_ids.is_empty());
+    }
+
+    #[test]
+    fn blanket_flush_does_not_downgrade_an_in_flight_targeted_exemption() {
+        // A blanket `flush_injections` landing while the targeted initial task is
+        // in flight must not turn its exemption into a shared allowance: a later
+        // requeue would then hand the credit to whatever else is queued instead
+        // of back to this delivery.
+        let mut injection = ActiveInjection {
+            pending: test_pending_injection("init_task"),
+            stage: InjectionStage::Escape,
+            next_at: tokio::time::Instant::now(),
+            injection_text: None,
+            hold_exempt: true,
+            targeted_hold_exemption: true,
+        };
+        // What the blanket branch does to an already-exempt in-flight injection.
+        injection.hold_exempt = true;
+
+        let mut count = 0usize;
+        let mut event_ids = HashSet::new();
+        restore_hold_exemption(&injection, &mut count, &mut event_ids);
+        assert_eq!(
+            count, 0,
+            "targeted exemption must not become blanket credit"
+        );
+        assert!(event_ids.contains("init_task"));
     }
 
     #[test]
