@@ -21,6 +21,7 @@ import {
   type NodeDefinitionDescriptor,
   type RunningNodeProviderChild,
 } from './node-provider-child.js';
+import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
 import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
@@ -1518,7 +1519,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log(`Relay API: http://localhost:${started.apiPort}`);
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
-    deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
+    deps.log(`Workspace Key: ${relay.workspaceKey ? maskSecret(relay.workspaceKey) : 'unknown'}`);
     deps.log('Broker started.');
 
     // Record the workspace this broker joined (explicitly passed or auto-minted)
@@ -1792,8 +1793,8 @@ export async function runStatusCommand(
       deps.log(`Node: ${session.node_name?.trim() || session.node_id} (${session.node_id})`);
     }
     if (session?.workspace_key) {
-      deps.log(`Workspace Key: ${session.workspace_key}`);
-      deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
+      deps.log(`Workspace Key: ${maskSecret(session.workspace_key)}`);
+      deps.log(`Observer: https://agentrelay.com/observer?key=${maskSecret(session.workspace_key)}`);
     }
   }
 }

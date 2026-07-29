@@ -118,15 +118,11 @@ export function buildBrokerSpawnConfig(
     AGENT_RELAY_BROKER_NAME: brokerName,
   };
 
-  const args = [
-    'init',
-    '--instance-name',
-    brokerName,
-    ...(workspaceKey ? ['--workspace-key', workspaceKey] : []),
-    '--channels',
-    channels.join(','),
-    ...userArgs,
-  ];
+  // The workspace key travels only in the env block above — the broker's
+  // `resolved_workspace_key()` falls back to AGENT_RELAY_WORKSPACE_KEY — so it
+  // never appears on the child argv (visible in `ps`) or in startup error
+  // strings that embed the spawn command line.
+  const args = ['init', '--instance-name', brokerName, '--channels', channels.join(','), ...userArgs];
 
   return { cwd, brokerName, workspaceKey, channels, timeoutMs, args, env };
 }

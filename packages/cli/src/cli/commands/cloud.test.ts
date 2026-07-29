@@ -397,10 +397,30 @@ describe('registerCloudCommands', () => {
     const sessionJson = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
     expect(sessionJson).toEqual({
       apiUrl: 'https://cloud.test',
-      accessToken: 'access-token',
+      accessToken: '…oken',
       accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
       refreshTokenExpiresAt: '2999-04-01T00:00:00.000Z',
     });
+    expect(sessionJson).not.toHaveProperty('refreshToken');
+  });
+
+  it('includes the raw access token in JSON output only with --reveal-token', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({
+      auth: {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        refreshTokenExpiresAt: '2999-04-01T00:00:00.000Z',
+      },
+      client: {} as never,
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'session', '--json', '--reveal-token']);
+
+    const sessionJson = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(sessionJson.accessToken).toBe('access-token');
     expect(sessionJson).not.toHaveProperty('refreshToken');
   });
 

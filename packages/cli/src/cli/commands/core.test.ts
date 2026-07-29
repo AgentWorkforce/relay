@@ -100,7 +100,7 @@ function createRelayMock(overrides: Partial<CoreRelay> = {}): CoreRelay {
     spawn: vi.fn(async () => undefined),
     getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
     shutdown: vi.fn(async () => undefined),
-    workspaceKey: 'rk_live_default',
+    workspaceKey: 'rk_live_defaultkey01',
     ...overrides,
   };
 }
@@ -536,7 +536,7 @@ describe('registerCoreCommands', () => {
       '--state-dir',
       stateDir,
       '--workspace-key',
-      'rk_live_custom',
+      'rk_live_customflag77',
       '--broker-name',
       'relayfile-dev',
     ];
@@ -547,7 +547,7 @@ describe('registerCoreCommands', () => {
       '--state-dir',
       stateDir,
       '--workspace-key',
-      'rk_live_custom',
+      'rk_live_customflag77',
       '--broker-name',
       'relayfile-dev',
     ]);
@@ -561,7 +561,7 @@ describe('registerCoreCommands', () => {
         '--state-dir',
         stateDir,
         '--workspace-key',
-        'rk_live_custom',
+        'rk_live_customflag77',
         '--broker-name',
         'relayfile-dev',
       ],
@@ -1181,7 +1181,7 @@ describe('registerCoreCommands', () => {
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 4, pending_delivery_count: 2 });
     sdkStatusClient.getSession.mockResolvedValueOnce({
-      workspace_key: 'rk_live_test123',
+      workspace_key: 'rk_live_teststatus123',
       node_id: 'node_enrolled',
       node_name: 'sf-mini',
     });
@@ -1195,8 +1195,8 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Agents: 4');
     expect(deps.log).toHaveBeenCalledWith('Pending deliveries: 2');
     expect(deps.log).toHaveBeenCalledWith('Node: sf-mini (node_enrolled)');
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_test123');
-    expect(deps.log).toHaveBeenCalledWith('Observer: https://agentrelay.com/observer?key=rk_live_test123');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…s123');
+    expect(deps.log).toHaveBeenCalledWith('Observer: https://agentrelay.com/observer?key=rk_live_…s123');
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
   });
 
@@ -1275,7 +1275,7 @@ describe('registerCoreCommands', () => {
     sdkStatusClient.getStatus
       .mockRejectedValueOnce(new Error('503 Service Unavailable'))
       .mockResolvedValueOnce({ agent_count: 1, pending_delivery_count: 0 });
-    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_ready' });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_readywait9' });
 
     const { program, deps } = createHarness({
       fs,
@@ -1292,7 +1292,7 @@ describe('registerCoreCommands', () => {
     expect(fs.unlinkSync).not.toHaveBeenCalledWith(connectionPath);
     expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
     expect(deps.log).toHaveBeenCalledWith('Agents: 1');
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_ready');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…ait9');
   });
 
   it('status --wait-for treats getStatus success as ready even when session lookup fails', async () => {
@@ -1471,46 +1471,46 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_default');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…ey01');
   });
 
   it('up logs the auto-created workspace key', async () => {
-    const relay = createRelayMock({ workspaceKey: 'rk_live_auto456' });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_autominted456' });
     const { program, deps } = createHarness({ relay });
 
     const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_auto456');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…d456');
   });
 
   it('up --workspace-key sets RELAY_WORKSPACE_KEY in env before broker starts', async () => {
     const env: NodeJS.ProcessEnv = {};
-    const relay = createRelayMock({ workspaceKey: 'rk_live_custom' });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_customflag77' });
     const { program, deps } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, ['up', '--workspace-key', 'rk_live_custom']);
+    const exitCode = await runCommand(program, ['up', '--workspace-key', 'rk_live_customflag77']);
 
     expect(exitCode).toBeUndefined();
-    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_custom');
-    expect(env.RELAY_API_KEY).toBe('rk_live_custom');
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_customflag77');
+    expect(env.RELAY_API_KEY).toBe('rk_live_customflag77');
     expect(deps.createRelay).toHaveBeenCalled();
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_custom');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…ag77');
   });
 
   it('up --wk is an alias for --workspace-key', async () => {
     const env: NodeJS.ProcessEnv = {};
-    const relay = createRelayMock({ workspaceKey: 'rk_live_alias' });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_aliasflag88' });
     const { program, deps } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, ['up', '--wk', 'rk_live_alias']);
+    const exitCode = await runCommand(program, ['up', '--wk', 'rk_live_aliasflag88']);
 
     expect(exitCode).toBeUndefined();
     // The alias is folded into workspaceKey, so the broker sees the same env the
     // explicit flag would have set.
-    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
-    expect(env.RELAY_API_KEY).toBe('rk_live_alias');
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_alias');
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_aliasflag88');
+    expect(env.RELAY_API_KEY).toBe('rk_live_aliasflag88');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…ag88');
   });
 
   it('up without --workspace-key or a pinned session does not set workspace key env vars', async () => {
@@ -1545,20 +1545,20 @@ describe('registerCoreCommands', () => {
   it('up treats a non-blank workspace env alias as explicit when the primary is blank', async () => {
     const env: NodeJS.ProcessEnv = {
       RELAY_WORKSPACE_KEY: '   ',
-      AGENT_RELAY_WORKSPACE_KEY: ' rk_live_alias ',
+      AGENT_RELAY_WORKSPACE_KEY: ' rk_live_aliasflag88 ',
     };
     const fs = createFsMock({
       '/tmp/project/.agentworkforce/relay/workspace-key.json': JSON.stringify({
         workspaceKey: 'rk_live_pinned',
       }),
     });
-    const relay = createRelayMock({ workspaceKey: 'rk_live_alias' });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_aliasflag88' });
     const { program } = createHarness({ relay, env, fs });
 
     const exitCode = await runCommand(program, ['up']);
 
     expect(exitCode).toBeUndefined();
-    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_alias');
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_aliasflag88');
     expect(env.RELAY_API_KEY).toBeUndefined();
   });
 
@@ -1666,15 +1666,15 @@ describe('registerCoreCommands', () => {
 
   it('up --workspace-key overrides existing workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = { RELAY_API_KEY: 'rk_live_old' };
-    const relay = createRelayMock({ workspaceKey: 'rk_live_new' });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_newmint99' });
     const { program, deps } = createHarness({ relay, env });
 
-    const exitCode = await runCommand(program, ['up', '--workspace-key', 'rk_live_new']);
+    const exitCode = await runCommand(program, ['up', '--workspace-key', 'rk_live_newmint99']);
 
     expect(exitCode).toBeUndefined();
-    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_new');
-    expect(env.RELAY_API_KEY).toBe('rk_live_new');
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_newmint99');
+    expect(env.RELAY_API_KEY).toBe('rk_live_newmint99');
+    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…nt99');
   });
 });
 

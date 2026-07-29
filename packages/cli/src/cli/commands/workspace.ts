@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
 import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
+import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import { persistWorkspaceSession, validateWorkspaceSessionName } from '../lib/workspace-session.js';
@@ -27,37 +28,57 @@ export function registerWorkspaceCommands(
     .command('active')
     .description('Show the active canonical cloud workspace')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--json', 'Output the active workspace as JSON')
+    .option('--json', 'Output the active workspace as JSON (keys masked unless --reveal-secrets)')
+    .option('--reveal-secrets', 'Include raw workspace keys in --json output')
     .option(
       '--refresh-timeout <milliseconds>',
       'Timeout for refreshing the cloud session',
       parsePositiveInteger
     )
-    .action(async (options: { apiUrl?: string; json?: boolean; refreshTimeout?: number }) => {
-      await runSdk(deps, async () => {
-        const workspace = await resolveActiveWorkspace({
-          apiUrl: options.apiUrl,
-          interactive: false,
-          refreshTimeoutMs: options.refreshTimeout,
+    .action(
+      async (options: {
+        apiUrl?: string;
+        json?: boolean;
+        revealSecrets?: boolean;
+        refreshTimeout?: number;
+      }) => {
+        await runSdk(deps, async () => {
+          const workspace = await resolveActiveWorkspace({
+            apiUrl: options.apiUrl,
+            interactive: false,
+            refreshTimeoutMs: options.refreshTimeout,
+          });
+
+          if (options.json) {
+            printJson(
+              deps,
+              options.revealSecrets
+                ? workspace
+                : {
+                    ...workspace,
+                    key: maskSecret(workspace.key),
+                    ...(workspace.relaycastApiKey
+                      ? { relaycastApiKey: maskSecret(workspace.relaycastApiKey) }
+                      : {}),
+                  }
+            );
+            return;
+          }
+
+          deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
+          deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
+          deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
+          deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
         });
-
-        if (options.json) {
-          printJson(deps, workspace);
-          return;
-        }
-
-        deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
-        deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
-        deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
-        deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
-      });
-    });
+      }
+    );
 
   group
     .command('create')
     .description('Create a new workspace and store its key')
     .argument('<name>', 'Workspace name')
     .option('--base-url <url>', 'Override the API base URL')
+    .option('--reveal-secrets', 'Include the raw workspace key in the output')
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
@@ -65,7 +86,13 @@ export function registerWorkspaceCommands(
         if (relay.workspaceKey) {
           persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey });
         }
-        printJson(deps, { name: workspaceName, workspaceKey: relay.workspaceKey });
+        // The key is persisted to the workspace store either way; the output
+        // masks it unless the caller explicitly asks for the raw value.
+        printJson(deps, {
+          name: workspaceName,
+          workspaceKey:
+            relay.workspaceKey && !o.revealSecrets ? maskSecret(relay.workspaceKey) : relay.workspaceKey,
+        });
       });
     });
 

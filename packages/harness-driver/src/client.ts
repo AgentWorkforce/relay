@@ -196,6 +196,20 @@ function normalizeMaxQueueSize(value: number | undefined): number {
   return Number.isFinite(value) && value >= 1 ? Math.floor(value) : DEFAULT_WORKER_STREAM_MAX_QUEUE_SIZE;
 }
 
+/**
+ * Mask a workspace key for progress output: known prefix and last four
+ * characters stay visible, the rest collapses to `…`. Startup steps are
+ * surfaced verbatim by CLI `--verbose`, so they must never carry a usable key.
+ */
+function maskWorkspaceKey(key: string | null | undefined): string {
+  if (!key) {
+    return 'unknown';
+  }
+  const prefix = key.match(/^(rk_live_|at_live_|nt_live_|ot_live_|br_)/)?.[1] ?? '';
+  const body = key.slice(prefix.length);
+  return body.length <= 8 ? `${prefix}…` : `${prefix}…${body.slice(-4)}`;
+}
+
 type BrokerExitListener = (info: BrokerExitInfo) => void;
 
 // ── Client ─────────────────────────────────────────────────────────────
@@ -463,7 +477,7 @@ export class HarnessDriverClient {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
-    onStep?.(`Broker handshake complete (workspace: ${session?.workspace_key ?? 'unknown'})`);
+    onStep?.(`Broker handshake complete (workspace: ${maskWorkspaceKey(session?.workspace_key)})`);
 
     if (!client.brokerExitInfo) {
       client.connectEvents();

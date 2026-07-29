@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { redactSecrets } from './redact.js';
+import { maskSecret, redactSecrets } from './redact.js';
 
 describe('redactSecrets', () => {
   it('redacts credential-named fields and preserves the rest', () => {
@@ -66,5 +66,22 @@ describe('redactSecrets', () => {
     // Redaction is a deep copy: the caller's original object is untouched.
     expect(creds.apiKey).toBe('rk_live_shared');
     expect(input.a).toBe(creds);
+  });
+});
+
+describe('maskSecret', () => {
+  it('keeps a known prefix and the last four characters', () => {
+    expect(maskSecret('rk_live_0123456789abcdef')).toBe('rk_live_…cdef');
+    expect(maskSecret('at_live_0123456789abcdef')).toBe('at_live_…cdef');
+    expect(maskSecret('nt_live_0123456789abcdef')).toBe('nt_live_…cdef');
+  });
+
+  it('masks the entire body when it is too short to show a suffix', () => {
+    expect(maskSecret('rk_live_short')).toBe('rk_live_…');
+    expect(maskSecret('tiny')).toBe('…');
+  });
+
+  it('masks unknown-shaped tokens to an ellipsis and the last four characters', () => {
+    expect(maskSecret('some-opaque-access-token')).toBe('…oken');
   });
 });
