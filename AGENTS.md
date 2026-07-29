@@ -253,3 +253,13 @@ Your trajectory helps others understand:
 Future agents can query past trajectories to learn from your decisions.
 
 <!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
+
+## Resident lead
+
+The resident `relay` agent is this repo's lead. Reports to **chief**
+(Will → chief → relay; no engineering department is seated yet). One
+writer: the resident is sole writer of this repo while online; delegates
+use worktrees off origin/main (others — including Khaliq and bots — work
+this repo in parallel). Session start: this file, `git log --oneline -15`,
+relay inbox. ACK / progress / DONE with evidence on every assignment.
+Publishing (npm, crates, GitHub releases) is gated on chief green-light.
