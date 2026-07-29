@@ -119,6 +119,12 @@ struct ActiveInjection {
     /// injection even while the interactive hold is active. A human asked
     /// for the backlog explicitly, so writing it is not a splice.
     hold_exempt: bool,
+    /// The exemption above came from an `event_id`-scoped flush rather than a
+    /// blanket one, so requeueing must return it to the event-id set instead of
+    /// the backlog counter — a targeted exemption stays bound to its one
+    /// delivery and must never turn into an allowance the next queued relay
+    /// message can spend.
+    targeted_hold_exemption: bool,
 }
 
 /// Result of an in-flight `write_pty` awaiting the PTY drainer: the request id
@@ -295,6 +301,56 @@ fn injection_pop_allowed(
     hold_exempt_remaining: usize,
 ) -> bool {
     !active_injection_present && (!interactive_hold || hold_exempt_remaining > 0)
+}
+
+/// Index of the pending injection the loop may start this tick, if any.
+///
+/// Normally that is just the front of the queue. Under an interactive hold with
+/// no blanket allowance, only a delivery carrying a *targeted* exemption may go
+/// — the broker released that one `event_id` explicitly (a (re)spawn's initial
+/// task through a replayed hold) — so the queue is scanned for the first such
+/// entry and everything ahead of it stays parked. Popping it out of order is
+/// the point: a relay message retried into a restarted worker must not splice
+/// into the human's session just because it happens to sit in front.
+fn next_injection_index(
+    pending: &VecDeque<PendingWorkerInjection>,
+    active_injection_present: bool,
+    interactive_hold: bool,
+    hold_exempt_remaining: usize,
+    hold_exempt_event_ids: &HashSet<String>,
+) -> Option<usize> {
+    if active_injection_present {
+        return None;
+    }
+    if injection_pop_allowed(
+        active_injection_present,
+        interactive_hold,
+        hold_exempt_remaining,
+    ) {
+        return (!pending.is_empty()).then_some(0);
+    }
+    pending
+        .iter()
+        .position(|entry| hold_exempt_event_ids.contains(entry.delivery.event_id.as_str()))
+}
+
+/// Return an interrupted injection's hold exemption so a requeued frame is
+/// retried through the hold instead of freezing behind it. A targeted exemption
+/// goes back to the event-id set — it must stay bound to that one delivery —
+/// while a blanket `flush_injections` allowance goes back to the counter.
+fn restore_hold_exemption(
+    injection: &ActiveInjection,
+    hold_exempt_injections: &mut usize,
+    hold_exempt_event_ids: &mut HashSet<String>,
+) {
+    if !injection.hold_exempt {
+        return;
+    }
+    if injection.targeted_hold_exemption {
+        hold_exempt_event_ids.insert(injection.pending.delivery.event_id.to_string());
+    } else {
+        *hold_exempt_injections += 1;
+    }
 }
 
 /// Relay command detection must stay disabled for the entire injection lifecycle.
@@ -481,6 +537,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // write so an explicit flush is never silently swallowed by a transient
     // error. Deliveries arriving after the flush get no exemption.
     let mut hold_exempt_injections: usize = 0;
+    // Event ids released through the hold individually by an `event_id`-scoped
+    // `flush_injections`. Unlike the counter above this grants nothing to the
+    // rest of the backlog: only the named delivery is popped (out of order if
+    // needed) and everything else stays parked. The broker uses it to start a
+    // (re)spawn's initial task under a replayed hold. An id is recorded even
+    // when the delivery has not been queued yet, so a retry that lands after
+    // the flush is still released; a hold boundary clears the set.
+    let mut hold_exempt_event_ids: HashSet<String> = HashSet::new();
     // Ack receiver for the in-flight injection's most recent Body/Enter write.
     // `submit_write` only enqueues to the bounded drainer queue; the oneshot
     // resolves once the drainer has actually written and flushed those bytes to
@@ -856,8 +920,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // before a drive attach could keep injecting
                                 // into the human's session.
                                 hold_exempt_injections = 0;
+                                hold_exempt_event_ids.clear();
                                 if let Some(inj) = active_injection.as_mut() {
                                     inj.hold_exempt = false;
+                                    inj.targeted_hold_exemption = false;
                                 }
                             }
                             "flush_injections" => {
@@ -871,18 +937,54 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // injections pop normally and an exemption
                                 // recorded now could pierce a hold that starts
                                 // before a slow backlog finishes draining.
+                                //
+                                // An `event_id` in the payload narrows the flush
+                                // to that one delivery instead: the broker uses
+                                // it to start a (re)spawn's initial task under a
+                                // replayed hold, and a relay message retried into
+                                // the restarted worker must keep parking rather
+                                // than riding along on the same exemption.
+                                let targeted_event_id = frame
+                                    .payload
+                                    .get("event_id")
+                                    .and_then(Value::as_str)
+                                    .filter(|event_id| !event_id.is_empty())
+                                    .map(str::to_string);
                                 if pty_auto.interactive_hold {
-                                    let backlog = pending_worker_injections.len();
-                                    hold_exempt_injections = hold_exempt_injections.max(backlog);
-                                    if let Some(inj) = active_injection.as_mut() {
-                                        inj.hold_exempt = true;
+                                    if let Some(event_id) = targeted_event_id {
+                                        if let Some(inj) = active_injection.as_mut() {
+                                            if inj.pending.delivery.event_id == event_id {
+                                                inj.hold_exempt = true;
+                                                inj.targeted_hold_exemption = true;
+                                            }
+                                        }
+                                        tracing::info!(
+                                            target: "agent_relay::worker::pty",
+                                            worker = %worker_name,
+                                            event_id = %event_id,
+                                            "releasing one delivery through interactive hold"
+                                        );
+                                        hold_exempt_event_ids.insert(event_id);
+                                    } else {
+                                        let backlog = pending_worker_injections.len();
+                                        hold_exempt_injections =
+                                            hold_exempt_injections.max(backlog);
+                                        if let Some(inj) = active_injection.as_mut() {
+                                            // Leave an existing targeted exemption
+                                            // targeted. Downgrading it would send a
+                                            // later requeue of *this* delivery back
+                                            // to the shared counter instead of to
+                                            // its own event id, so the credit could
+                                            // be spent on whatever else is queued.
+                                            inj.hold_exempt = true;
+                                        }
+                                        tracing::info!(
+                                            target: "agent_relay::worker::pty",
+                                            worker = %worker_name,
+                                            backlog,
+                                            "flushing queued injections through interactive hold"
+                                        );
                                     }
-                                    tracing::info!(
-                                        target: "agent_relay::worker::pty",
-                                        worker = %worker_name,
-                                        backlog,
-                                        "flushing queued injections through interactive hold"
-                                    );
                                 }
                             }
                             "ping" => {
@@ -1352,14 +1454,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // Gated off while an interactive hold is active so queued deliveries
             // stay parked (not dropped) until the human releases the drive.
             _ = pending_injection_interval.tick() => {
-                if injection_pop_allowed(active_injection.is_some(), pty_auto.interactive_hold, hold_exempt_injections) {
+                if let Some(index) = next_injection_index(
+                    &pending_worker_injections,
+                    active_injection.is_some(),
+                    pty_auto.interactive_hold,
+                    hold_exempt_injections,
+                    &hold_exempt_event_ids,
+                ) {
                     let should_block = pending_worker_injections
-                        .front()
+                        .get(index)
                         .map(|pending| should_block_pending_injection(pty_auto.auto_suggestion_visible, pending))
                         .unwrap_or(false);
                     if !should_block {
-                        if let Some(pending) = pending_worker_injections.pop_front() {
-                            let hold_exempt = hold_exempt_injections > 0;
+                        if let Some(pending) = pending_worker_injections.remove(index) {
+                            let targeted_hold_exemption =
+                                hold_exempt_event_ids.remove(pending.delivery.event_id.as_str());
+                            let hold_exempt = targeted_hold_exemption || hold_exempt_injections > 0;
                             hold_exempt_injections = hold_exempt_injections.saturating_sub(1);
                             active_injection = Some(ActiveInjection {
                                 pending,
@@ -1367,6 +1477,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 next_at: tokio::time::Instant::now() + throttle.delay(),
                                 injection_text: None,
                                 hold_exempt,
+                                targeted_hold_exemption,
                             });
                         }
                     }
@@ -1398,9 +1509,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     error = %error,
                                     "steer mode ESC ESC write failed, re-queuing delivery"
                                 );
-                                if inj.hold_exempt {
-                                    hold_exempt_injections += 1;
-                                }
+                                restore_hold_exemption(
+                                    &inj,
+                                    &mut hold_exempt_injections,
+                                    &mut hold_exempt_event_ids,
+                                );
                                 pending_worker_injections.push_front(inj.pending);
                             } else {
                                 inj.stage = InjectionStage::Body;
@@ -1474,9 +1587,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     error = %e,
                                     "PTY injection write failed, re-queuing delivery"
                                 );
-                                if inj.hold_exempt {
-                                    hold_exempt_injections += 1;
-                                }
+                                restore_hold_exemption(
+                                    &inj,
+                                    &mut hold_exempt_injections,
+                                    &mut hold_exempt_event_ids,
+                                );
                                 pending_worker_injections.push_front(inj.pending);
                             }
                         }
@@ -1490,9 +1605,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             delivery_id = %inj.pending.delivery.delivery_id,
                             "injection reached Finalize in deadline arm without pending ack; re-queuing delivery"
                         );
-                        if inj.hold_exempt {
-                            hold_exempt_injections += 1;
-                        }
+                        restore_hold_exemption(
+                            &inj,
+                            &mut hold_exempt_injections,
+                            &mut hold_exempt_event_ids,
+                        );
                         pending_worker_injections.push_front(inj.pending);
                     }
                 }
@@ -1569,9 +1686,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             // the next pop retries the same delivery. A hold-exempt
                             // injection keeps its exemption so an explicit flush is
                             // retried rather than freezing under the hold.
-                            if inj.hold_exempt {
-                                hold_exempt_injections += 1;
-                            }
+                            restore_hold_exemption(
+                                &inj,
+                                &mut hold_exempt_injections,
+                                &mut hold_exempt_event_ids,
+                            );
                             pending_worker_injections.push_front(inj.pending);
                         }
                     }
@@ -2043,6 +2162,134 @@ mod tests {
         assert!(!injection_pop_allowed(true, true, 1));
         // Exemption is irrelevant when no hold is active.
         assert!(injection_pop_allowed(false, false, 1));
+    }
+
+    fn test_pending_injection(event_id: &str) -> PendingWorkerInjection {
+        PendingWorkerInjection {
+            delivery: RelayDelivery {
+                delivery_id: format!("del_{event_id}").into(),
+                event_id: event_id.into(),
+                workspace_id: None,
+                workspace_alias: None,
+                from: "Lead".into(),
+                target: "Worker".into(),
+                body: "hello".into(),
+                thread_id: None,
+                priority: None,
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            request_id: None,
+            queued_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn targeted_flush_releases_only_its_own_delivery_through_the_hold() {
+        // A supervised restart keeps unacknowledged deliveries, so a retried
+        // relay message can be queued ahead of the (re)spawn's initial task.
+        // The targeted flush must reach past it — and leave it parked.
+        let pending: VecDeque<PendingWorkerInjection> = [
+            test_pending_injection("evt_relay"),
+            test_pending_injection("init_task"),
+        ]
+        .into();
+        let targeted = HashSet::from(["init_task".to_string()]);
+
+        assert_eq!(
+            next_injection_index(&pending, false, true, 0, &targeted),
+            Some(1)
+        );
+        // Nothing targeted: the whole queue stays parked under the hold.
+        assert_eq!(
+            next_injection_index(&pending, false, true, 0, &HashSet::new()),
+            None
+        );
+        // A blanket flush still drains from the front, in order.
+        assert_eq!(
+            next_injection_index(&pending, false, true, 2, &HashSet::new()),
+            Some(0)
+        );
+        // Unheld, the target is irrelevant — normal FIFO order applies.
+        assert_eq!(
+            next_injection_index(&pending, false, false, 0, &targeted),
+            Some(0)
+        );
+        // An injection already in flight is never preempted, targeted or not.
+        assert_eq!(
+            next_injection_index(&pending, true, true, 0, &targeted),
+            None
+        );
+        // An empty queue has nothing to start.
+        assert_eq!(
+            next_injection_index(&VecDeque::new(), false, false, 0, &targeted),
+            None
+        );
+    }
+
+    #[test]
+    fn requeued_targeted_exemption_returns_to_its_event_id() {
+        // A failed write requeues the injection. A targeted exemption must go
+        // back to the event-id set — turning it into a blanket allowance would
+        // let the next queued relay message spend it and splice into the hold.
+        let mut count = 0usize;
+        let mut event_ids = HashSet::new();
+        let targeted = ActiveInjection {
+            pending: test_pending_injection("init_task"),
+            stage: InjectionStage::Escape,
+            next_at: tokio::time::Instant::now(),
+            injection_text: None,
+            hold_exempt: true,
+            targeted_hold_exemption: true,
+        };
+        restore_hold_exemption(&targeted, &mut count, &mut event_ids);
+        assert_eq!(count, 0);
+        assert!(event_ids.contains("init_task"));
+
+        // A blanket exemption still goes back to the counter.
+        let blanket = ActiveInjection {
+            targeted_hold_exemption: false,
+            ..targeted
+        };
+        let mut event_ids = HashSet::new();
+        restore_hold_exemption(&blanket, &mut count, &mut event_ids);
+        assert_eq!(count, 1);
+        assert!(event_ids.is_empty());
+
+        // An injection popped without any exemption restores nothing.
+        let unexempt = ActiveInjection {
+            hold_exempt: false,
+            ..blanket
+        };
+        restore_hold_exemption(&unexempt, &mut count, &mut event_ids);
+        assert_eq!(count, 1);
+        assert!(event_ids.is_empty());
+    }
+
+    #[test]
+    fn blanket_flush_does_not_downgrade_an_in_flight_targeted_exemption() {
+        // A blanket `flush_injections` landing while the targeted initial task is
+        // in flight must not turn its exemption into a shared allowance: a later
+        // requeue would then hand the credit to whatever else is queued instead
+        // of back to this delivery.
+        let mut injection = ActiveInjection {
+            pending: test_pending_injection("init_task"),
+            stage: InjectionStage::Escape,
+            next_at: tokio::time::Instant::now(),
+            injection_text: None,
+            hold_exempt: true,
+            targeted_hold_exemption: true,
+        };
+        // What the blanket branch does to an already-exempt in-flight injection.
+        injection.hold_exempt = true;
+
+        let mut count = 0usize;
+        let mut event_ids = HashSet::new();
+        restore_hold_exemption(&injection, &mut count, &mut event_ids);
+        assert_eq!(
+            count, 0,
+            "targeted exemption must not become blanket credit"
+        );
+        assert!(event_ids.contains("init_task"));
     }
 
     #[test]

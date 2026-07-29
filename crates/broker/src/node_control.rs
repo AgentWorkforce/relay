@@ -571,6 +571,14 @@ struct AgentDeliveryCursor {
     acked_up_to_seq: u64,
     received_up_to_seq: u64,
     seen_msg_ids: SeenMsgIds,
+    /// Whether a sequenced (`seq >= 1`) position has been established for this
+    /// identity, either by a resume handshake seeding the cursor or by adopting
+    /// the first sequenced delivery. Tracked separately from the cursor's
+    /// existence because `seq:0` fan-out (reactions, receipts, action results)
+    /// creates a cursor at zero without establishing any position — without
+    /// this flag a single seq-0 frame would make the following resumed frame
+    /// look like a gap and leave a respawned agent deaf.
+    has_sequenced_position: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -721,6 +729,7 @@ impl FleetDeliveryBook {
                 acked_up_to_seq: up_to_seq,
                 received_up_to_seq: up_to_seq,
                 seen_msg_ids: SeenMsgIds::default(),
+                has_sequenced_position: true,
             },
         );
     }
@@ -782,12 +791,43 @@ impl FleetDeliveryBook {
             }
             return DeliveryDecision::Deliver { up_to_seq: 0 };
         }
-        let Some(cursor) = cursor else {
-            return if deliver.seq == 1 {
-                DeliveryDecision::Deliver { up_to_seq: 1 }
-            } else {
-                DeliveryDecision::Gap { up_to_seq: 0 }
-            };
+        // No sequenced position for this identity yet — either no cursor at all,
+        // or one created by `seq:0` fan-out, which never establishes a position.
+        // For an identity `agent.register` confirmed, that is the absence of a
+        // position rather than evidence of a gap: a release drops the cursor,
+        // and a respawn rebinds the same agent record, whose engine-side
+        // sequence keeps counting from where it left off (the engine reuses
+        // agent ids, and only seeds a cursor when it negotiates
+        // `relay:delivery-cursor-v1`). Treating that as a gap acks the message
+        // without surfacing it — see `plan_fleet_delivery` — which destroys it
+        // and stops the engine retrying, leaving the agent permanently deaf.
+        // Adopt this delivery as the starting position; `commit_received` seeds
+        // the cursor to match. A provisional binding gets no such benefit of the
+        // doubt: a second, unconfirmed identity claiming a live name must not be
+        // able to jump in mid-sequence.
+        let cursor = match cursor {
+            Some(cursor) if cursor.has_sequenced_position => cursor,
+            awaiting => {
+                let acked_up_to_seq = awaiting.map_or(0, |cursor| cursor.acked_up_to_seq);
+                if awaiting.is_some_and(|cursor| cursor.seen_msg_ids.contains(&deliver.msg_id)) {
+                    return DeliveryDecision::Duplicate {
+                        up_to_seq: acked_up_to_seq,
+                    };
+                }
+                let authoritative = self
+                    .active_agent_bindings_by_name
+                    .get(&deliver.agent)
+                    .is_some_and(|binding| binding.authoritative);
+                return if deliver.seq == 1 || authoritative {
+                    DeliveryDecision::Deliver {
+                        up_to_seq: deliver.seq,
+                    }
+                } else {
+                    DeliveryDecision::Gap {
+                        up_to_seq: acked_up_to_seq,
+                    }
+                };
+            }
         };
         if cursor.seen_msg_ids.contains(&deliver.msg_id) {
             return DeliveryDecision::Duplicate {
@@ -825,10 +865,22 @@ impl FleetDeliveryBook {
             });
         cursor.agent_name.clone_from(&deliver.agent);
         // seq:0 fan-out frames never advance either sequence cursor; they are
-        // deduped purely by msg_id.
+        // deduped purely by msg_id. They also leave the identity without a
+        // sequenced position, so the next sequenced frame is still adopted.
         if deliver.seq == 0 {
             cursor.seen_msg_ids.insert(&deliver.msg_id);
             return cursor.received_up_to_seq;
+        }
+        if !cursor.has_sequenced_position {
+            // First sequenced delivery for this identity (`observe` adopted it):
+            // take the engine's position by starting one below it, so the
+            // advance below accepts this frame and every later one stays
+            // contiguous. Staying at zero instead would leave a respawned agent
+            // — whose engine sequence resumes mid-stream — permanently short of
+            // its own cursor, and every message would read as a gap.
+            cursor.acked_up_to_seq = deliver.seq.saturating_sub(1);
+            cursor.received_up_to_seq = deliver.seq.saturating_sub(1);
+            cursor.has_sequenced_position = true;
         }
         if deliver.seq == cursor.received_up_to_seq.saturating_add(1) {
             cursor.seen_msg_ids.insert(&deliver.msg_id);
@@ -2382,6 +2434,104 @@ mod tests {
         book.bind_authoritative_identity("agent-a", "agent-a-id");
         assert!(!book.retired_agent_names_by_id.contains_key("agent-a-id"));
         assert!(book.active_agent_bindings_by_name["agent-a"].authoritative);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 1)),
+            DeliveryDecision::Deliver { up_to_seq: 1 }
+        );
+    }
+
+    #[test]
+    fn delivery_book_respawn_keeps_delivering_when_the_engine_seq_continues() {
+        // Release drops the cursor; a respawn under the same name rebinds the
+        // same agent record, and `agent.register` does not always report a
+        // cumulative position, so no cursor is re-seeded. The engine's
+        // per-agent sequence keeps counting across the respawn, so the next
+        // live message arrives well past seq 1 — the agent must still get it.
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 42);
+        book.remove_agent("agent-a");
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+
+        let resumed = test_delivery("agent-a", "agent-a-id", 43);
+        assert_eq!(
+            book.observe(&resumed),
+            DeliveryDecision::Deliver { up_to_seq: 43 }
+        );
+
+        // Adopting the position must also advance the cursor, or the next
+        // message reads as a gap and the agent goes deaf one frame later.
+        assert_eq!(book.commit_delivered(&resumed), 43);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 44)),
+            DeliveryDecision::Deliver { up_to_seq: 44 }
+        );
+        // A redelivery of an adopted frame is still recognized, and a real hole
+        // in the sequence is still reported as a gap.
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 43)),
+            DeliveryDecision::Duplicate { up_to_seq: 43 }
+        );
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 99)),
+            DeliveryDecision::Gap { up_to_seq: 43 }
+        );
+    }
+
+    #[test]
+    fn delivery_book_respawn_adoption_survives_seq_zero_fan_out() {
+        // seq:0 fan-out (a reaction, a read receipt, an action result) creates
+        // a cursor without establishing any sequenced position. If the cursor's
+        // mere existence counted as a position, a single seq-0 frame landing
+        // before the respawned agent's next real message would put the cursor
+        // at zero, and the resumed frame would read as a gap — acked, never
+        // surfaced, and the agent deaf again for the rest of its life.
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 42);
+        book.remove_agent("agent-a");
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+
+        let fan_out = test_delivery("agent-a", "agent-a-id", 0);
+        assert_eq!(
+            book.observe(&fan_out),
+            DeliveryDecision::Deliver { up_to_seq: 0 }
+        );
+        assert_eq!(book.commit_delivered(&fan_out), 0);
+        // The fan-out frame is still deduped by msg_id while the identity waits
+        // for its first sequenced delivery.
+        assert_eq!(
+            book.observe(&fan_out),
+            DeliveryDecision::Duplicate { up_to_seq: 0 }
+        );
+
+        let resumed = test_delivery("agent-a", "agent-a-id", 43);
+        assert_eq!(
+            book.observe(&resumed),
+            DeliveryDecision::Deliver { up_to_seq: 43 }
+        );
+        assert_eq!(book.commit_delivered(&resumed), 43);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 44)),
+            DeliveryDecision::Deliver { up_to_seq: 44 }
+        );
+    }
+
+    #[test]
+    fn delivery_book_provisional_binding_still_gaps_after_seq_zero_fan_out() {
+        // The seq-0 relaxation must not become a back door for an unconfirmed
+        // identity: a provisional binding that has only seen fan-out still
+        // cannot claim a live name mid-sequence.
+        let mut book = FleetDeliveryBook::default();
+        let fan_out = test_delivery("agent-a", "agent-a-id", 0);
+        assert_eq!(
+            book.observe(&fan_out),
+            DeliveryDecision::Deliver { up_to_seq: 0 }
+        );
+        assert_eq!(book.commit_delivered(&fan_out), 0);
+        assert_eq!(
+            book.observe(&test_delivery("agent-a", "agent-a-id", 43)),
+            DeliveryDecision::Gap { up_to_seq: 0 }
+        );
+        // seq 1 is still the ordinary cold start and is delivered.
         assert_eq!(
             book.observe(&test_delivery("agent-a", "agent-a-id", 1)),
             DeliveryDecision::Deliver { up_to_seq: 1 }

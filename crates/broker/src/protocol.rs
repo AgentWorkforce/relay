@@ -582,7 +582,17 @@ pub enum BrokerToWorker {
     /// asked for the backlog gets it injected immediately instead of it
     /// sitting frozen until the drive session detaches. Deliveries that
     /// arrive after the flush stay parked under the hold as usual.
-    FlushInjections {},
+    ///
+    /// With `event_id` set the flush is narrowed to that single delivery
+    /// instead of the whole backlog: it is popped through the hold even if
+    /// other injections sit in front of it, and they stay parked. The broker
+    /// sends it that way to start a (re)spawn's initial task under a hold
+    /// replayed onto a restarted worker, where relay messages retried into the
+    /// same queue must not ride along.
+    FlushInjections {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_id: Option<EventId>,
+    },
     /// Versioned control sent to a native harness sidecar. The
     /// envelope request id correlates the sidecar's command response.
     NativeHarnessCommand {
@@ -1159,12 +1169,28 @@ mod tests {
 
     #[test]
     fn broker_to_worker_flush_injections_round_trip() {
-        let msg = BrokerToWorker::FlushInjections {};
+        let msg = BrokerToWorker::FlushInjections { event_id: None };
         let encoded = serde_json::to_string(&msg).unwrap();
         let raw: Value = serde_json::from_str(&encoded).unwrap();
         // Wire tag must be snake_case and match the worker-side string match arm
         // in `pty_worker.rs` and `packages/harness-driver/src/protocol.ts`.
         assert_eq!(raw["type"], "flush_injections");
+        // A blanket flush carries no `event_id`, so older workers keep seeing
+        // the exact payload they always did.
+        assert!(raw["payload"].get("event_id").is_none());
+        let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn broker_to_worker_targeted_flush_injections_round_trip() {
+        let msg = BrokerToWorker::FlushInjections {
+            event_id: Some("init_abc123".into()),
+        };
+        let encoded = serde_json::to_string(&msg).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw["type"], "flush_injections");
+        assert_eq!(raw["payload"]["event_id"], "init_abc123");
         let decoded: BrokerToWorker = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, msg);
     }
