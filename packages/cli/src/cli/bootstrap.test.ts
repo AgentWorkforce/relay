@@ -311,6 +311,12 @@ describe('telemetry context propagation', () => {
     vi.stubEnv('AGENT_RELAY_DATA_DIR', dataDir);
     // Short-circuit the process-tree walk; irrelevant here and slow.
     vi.stubEnv('AGENT_RELAY_ORCHESTRATOR_HARNESS', 'codex');
+    // Establish the telemetry-enabled premise rather than inheriting it. CI
+    // sets AGENT_RELAY_TELEMETRY_DISABLED=1 workflow-wide, which silently
+    // flipped these cases onto the opted-out path. Opt-out cases re-stub these
+    // after calling setup().
+    vi.stubEnv('AGENT_RELAY_TELEMETRY_DISABLED', '');
+    vi.stubEnv('DO_NOT_TRACK', '');
     for (const key of IDENTITY_KEYS) vi.stubEnv(key, '');
     return dataDir;
   }
