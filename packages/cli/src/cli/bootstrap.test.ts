@@ -84,6 +84,7 @@ const expectedLeafCommands = [
   'workspace list',
   'workspace set_key',
   'workspace join',
+  'workspace key',
   'workspace switch',
   // workspace agents
   'agent register',
@@ -163,6 +164,28 @@ function collectLeafCommandPaths(program: Command): string[] {
   visit(program, []);
   return paths;
 }
+
+describe('createProgram output redaction', () => {
+  it('masks a credential echoed by an unknown-option parse error', async () => {
+    const program = createProgram();
+    program.exitOverride();
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    }) as never);
+    try {
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'node', 'up', '--workspce-key=rk_live_0123456789abcdef'])
+      ).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    const stderr = writes.join('');
+    expect(stderr).toContain('rk_live_…cdef');
+    expect(stderr).not.toContain('rk_live_0123456789abcdef');
+  });
+});
 
 describe('bootstrap CLI', () => {
   it('uses the expected program name', () => {

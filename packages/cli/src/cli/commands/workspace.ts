@@ -110,6 +110,26 @@ export function registerWorkspaceCommands(
     });
 
   group
+    .command('key')
+    .description('Print a stored workspace key from the local store (masked unless --reveal-secrets)')
+    .argument('[name]', 'Workspace name (defaults to the active workspace)')
+    .option('--reveal-secrets', 'Print the raw key')
+    .action(async (name: string | undefined, o: Record<string, unknown>) => {
+      await runSdk(deps, async () => {
+        const store = readWorkspaceStore();
+        const target = name?.trim() || store.active;
+        if (!target) {
+          throw new Error('No workspace named and no active workspace set.');
+        }
+        const record = Object.hasOwn(store.workspaces, target) ? store.workspaces[target] : undefined;
+        if (!record?.key) {
+          throw new Error(`No stored key for workspace "${target}".`);
+        }
+        deps.log(o.revealSecrets ? record.key : maskSecret(record.key));
+      });
+    });
+
+  group
     .command('set_key')
     .description('Store a workspace key under a name')
     .argument('<name>', 'Workspace name')

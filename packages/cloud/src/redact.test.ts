@@ -25,6 +25,21 @@ describe('redactCredentialValues', () => {
     ).toBe('denied for at_live_…cdef with session cld_at_…cdef');
   });
 
+  it('masks a short-bodied credential entirely instead of leaking most of it', () => {
+    expect(redactCredentialValues('bad key rk_live_abcd rejected')).toBe('bad key rk_live_… rejected');
+    expect(redactCredentialValues('bad key rk_live_abcde rejected')).toBe('bad key rk_live_… rejected');
+  });
+
+  it('masks a dot-chained (JWT-shaped) token through its final segment', () => {
+    expect(
+      redactCredentialValues('denied for cld_at_eyJhbGciOi.eyJzdWIiOiJ1c2VyIn0.SflKxwRJSMeKKF2QT4')
+    ).toBe('denied for cld_at_…2QT4');
+  });
+
+  it('does not swallow a sentence period after a token', () => {
+    expect(redactCredentialValues('rotate rk_live_0123456789abcdef.')).toBe('rotate rk_live_…cdef.');
+  });
+
   it('leaves credential-free text untouched', () => {
     expect(redactCredentialValues('Workspace create failed at /api/v1/workspaces: 500 oops')).toBe(
       'Workspace create failed at /api/v1/workspaces: 500 oops'

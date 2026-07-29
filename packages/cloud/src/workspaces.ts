@@ -359,6 +359,7 @@ export async function resolveActiveWorkspace(
     `/api/v1/workspaces/active?key=${encodedKey}`,
   ];
   let lastUnsupported: Error | null = null;
+  let sawMethodNotAllowed = false;
 
   for (const endpoint of endpoints) {
     const { response, payload, apiUrl } = await tryGetJson(endpoint, {
@@ -368,6 +369,7 @@ export async function resolveActiveWorkspace(
     });
 
     if (response.status === 404 || response.status === 405) {
+      sawMethodNotAllowed ||= response.status === 405;
       lastUnsupported = buildEndpointError('Workspace resolve', endpoint, response, payload);
       continue;
     }
@@ -379,9 +381,15 @@ export async function resolveActiveWorkspace(
     return normalizeActiveWorkspaceDescriptor(payload, key, apiUrl);
   }
 
-  throw lastUnsupported
-    ? new Error(
-        `${lastUnsupported.message} — the active workspace has no record on the cloud API; a messaging-only workspace (minted by \`node up\` without cloud provisioning) resolves only through Relaycast.`
-      )
-    : new Error('Workspace resolution is not supported by the configured cloud API.');
+  if (!lastUnsupported) {
+    throw new Error('Workspace resolution is not supported by the configured cloud API.');
+  }
+  if (sawMethodNotAllowed) {
+    // A 405 is an API-shape signal, not evidence about the workspace — don't
+    // steer the user toward a provisioning diagnosis that may be wrong.
+    throw lastUnsupported;
+  }
+  throw new Error(
+    `${lastUnsupported.message} — the active workspace has no record on the cloud API; a messaging-only workspace (minted by \`node up\` without cloud provisioning) resolves only through Relaycast.`
+  );
 }

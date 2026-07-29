@@ -955,12 +955,15 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies): string[] {
-  const args = cliUserArgs(deps).filter((arg) => !matchesCliOption(arg, '--background'));
+  // The workspace key travels to the detached child via env only (set on
+  // deps.env before the spawn): strip every argv spelling so the daemon's
+  // command line never carries it into `ps` output.
+  const args = stripCliOptionsWithValue(
+    cliUserArgs(deps).filter((arg) => !matchesCliOption(arg, '--background')),
+    ['--workspace-key', '--wk']
+  );
   if (options.stateDir && !hasCliOption(args, '--state-dir')) {
     args.push('--state-dir', path.resolve(options.stateDir));
-  }
-  if (options.workspaceKey && !hasCliOption(args, '--workspace-key')) {
-    args.push('--workspace-key', options.workspaceKey);
   }
   if (options.brokerName && !hasCliOption(args, '--broker-name')) {
     args.push('--broker-name', options.brokerName);
@@ -969,6 +972,23 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
     args.push('--verbose');
   }
   return args;
+}
+
+/** Drop each named option and, for the space-separated form, its value token. */
+function stripCliOptionsWithValue(args: string[], names: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (names.includes(arg)) {
+      i++;
+      continue;
+    }
+    if (names.some((name) => arg.startsWith(`${name}=`))) {
+      continue;
+    }
+    result.push(arg);
+  }
+  return result;
 }
 
 function cliUserArgs(deps: CoreDependencies): string[] {
@@ -1308,6 +1328,16 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.env.AGENT_RELAY_STATE_DIR = resolved;
   }
 
+  // If a workspace key was explicitly provided, inject it into the environment
+  // for both current tools and older compatibility paths. This must happen
+  // before the --background spawn: the detached child inherits deps.env, and
+  // env is the key's only channel — it never rides on argv, where `ps` would
+  // expose it for the daemon's whole lifetime.
+  if (options.workspaceKey) {
+    deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
+    deps.env.RELAY_API_KEY = options.workspaceKey;
+  }
+
   if (options.background) {
     const preflight = await recoverHalfStartedBroker(paths, deps);
     if (preflight === 'running') {
@@ -1473,13 +1503,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         return;
       }
       safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
-    }
-
-    // If a workspace key was explicitly provided, inject it into the environment
-    // for both current tools and older compatibility paths.
-    if (options.workspaceKey) {
-      deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
-      deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 
     // Point the shared logger at a file / level / format before the fleet

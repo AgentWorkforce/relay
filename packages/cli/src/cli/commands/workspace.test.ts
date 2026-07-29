@@ -186,6 +186,30 @@ describe('registerWorkspaceCommands', () => {
     expect(switchWorkspace).not.toHaveBeenCalled();
   });
 
+  it('workspace key prints the stored key masked by default and raw with --reveal-secrets', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValue({
+      active: 'default',
+      workspaces: {
+        default: { key: 'rk_live_defaultkey01' },
+        shared: { key: 'rk_live_sharedkey02' },
+      },
+    });
+    const first = createHarness();
+    await first.program.parseAsync(['node', 'agent-relay', 'workspace', 'key']);
+    expect(first.deps.log).toHaveBeenCalledWith('rk_live_…ey01');
+
+    const second = createHarness();
+    await second.program.parseAsync([
+      'node',
+      'agent-relay',
+      'workspace',
+      'key',
+      'shared',
+      '--reveal-secrets',
+    ]);
+    expect(second.deps.log).toHaveBeenCalledWith('rk_live_sharedkey02');
+  });
+
   it('workspace switch pins the selected workspace to the current project', async () => {
     vi.mocked(readWorkspaceStore).mockReturnValueOnce({
       active: 'default',

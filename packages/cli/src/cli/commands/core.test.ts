@@ -553,24 +553,19 @@ describe('registerCoreCommands', () => {
     ]);
 
     expect(exitCode).toBe(0);
+    // The key reaches the detached child via env only — its argv (visible in
+    // `ps` for the daemon's whole lifetime) must never carry it.
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/bin/node',
-      [
-        '/tmp/agent-relay.js',
-        'up',
-        '--state-dir',
-        stateDir,
-        '--workspace-key',
-        'rk_live_customflag77',
-        '--broker-name',
-        'relayfile-dev',
-      ],
+      ['/tmp/agent-relay.js', 'up', '--state-dir', stateDir, '--broker-name', 'relayfile-dev'],
       {
         detached: true,
         stdio: 'ignore',
         env: deps.env,
       }
     );
+    expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_live_customflag77');
+    expect(deps.env.RELAY_API_KEY).toBe('rk_live_customflag77');
     expect(deps.env.AGENT_RELAY_STATE_DIR).toBe(stateDir);
     expect(deps.log).toHaveBeenCalledWith('Broker started.');
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
