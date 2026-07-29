@@ -1,4 +1,4 @@
-# Trajectory: Implement broker_panic telemetry hook (issue #881)
+# Trajectory: Combined session: broker_panic telemetry hook (#881), feature manifest audit, cloud worker teardown, Reflex diagnostics quieting
 
 > **Status:** ✅ Completed
 > **Task:** 881
@@ -10,7 +10,7 @@
 
 ## Summary
 
-Made Relay Reflex diagnostics quiet by default, verbose on demand, and structured-log-file aware; opened relayhistory issue #41 for native importer quiet control.
+Combined session spanning four workstreams: broker_panic telemetry hook sending synchronously from a dedicated OS thread (#881); feature manifest audit reconciling the catalog with Commander/MCP/SDK surfaces plus contract tests; cloud worker teardown PID verification; and Reflex diagnostics made quiet by default, verbose on demand, and structured-log-file aware (relayhistory issue #41 opened for native importer quiet control).
 
 **Approach:** Standard approach
 
