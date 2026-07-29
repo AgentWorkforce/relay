@@ -50,19 +50,25 @@ export type WhoAmIResponse = {
     name: string | null;
     avatarUrl: string | null;
   };
+  /**
+   * Null when the user has no active workspace — cloud's `/auth/whoami` returns
+   * `currentOrganization: null, currentWorkspace: null, workspaceRequired: true`
+   * in that case.
+   */
   currentOrganization: {
     id: string;
     slug: string;
     name: string;
     role: string;
     status: string;
-  };
+  } | null;
   currentWorkspace: {
     id: string;
     organization_id: string;
     slug: string;
     name: string;
-  };
+  } | null;
+  workspaceRequired?: boolean;
 };
 
 export type AuthSessionResponse = {

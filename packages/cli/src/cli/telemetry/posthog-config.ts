@@ -1,28 +1,35 @@
 /**
  * PostHog configuration.
  *
- * Environment variables (read at runtime):
- *   AGENT_RELAY_POSTHOG_KEY - PostHog write key. Set by published-artifact
- *                              builds via GitHub Actions secret. When unset,
- *                              telemetry runs as a no-op so forks, local dev,
- *                              and CI test runs don't pollute the production
- *                              project.
- *   POSTHOG_API_KEY         - Per-process override (mainly for local
- *                              debugging or staging). Wins over
- *                              `AGENT_RELAY_POSTHOG_KEY` when set.
- *   POSTHOG_HOST            - Override host URL. Defaults to the hosted
- *                              Agent Relay ingestion proxy.
- *
  * Key selection order:
- *   1. POSTHOG_API_KEY (process override, any environment)
- *   2. AGENT_RELAY_POSTHOG_KEY (release-time injection)
- *   3. None → returns `null` and `initTelemetry()` becomes a no-op.
+ *   1. `POSTHOG_API_KEY`         — per-process override (local debugging,
+ *                                  staging swaps). Wins everywhere.
+ *   2. `AGENT_RELAY_POSTHOG_KEY` — runtime env, and the name the bun standalone
+ *                                  build substitutes via `--define`.
+ *   3. `BUILD_TIME_POSTHOG_KEY`  — baked into the published npm tarball by
+ *                                  `scripts/inject-posthog-key.mjs`.
+ *   4. None → returns `null` and `initTelemetry()` becomes a no-op, which is
+ *      what forks, local dev, and CI runs get.
+ *
+ * `POSTHOG_HOST` overrides the ingestion host; it defaults to the hosted Agent
+ * Relay proxy.
+ *
+ * ## The env reads must stay literal
+ *
+ * These MUST remain static `process.env.NAME` member expressions. The bun
+ * `--define` used for the standalone binary performs a *syntactic* substitution
+ * of exactly `process.env.AGENT_RELAY_POSTHOG_KEY`; a computed lookup such as
+ * `process.env[name]` is a different expression and is silently left alone. An
+ * earlier `readKey(name: string)` helper did exactly that, so every standalone
+ * binary shipped with telemetry permanently disabled even though the define was
+ * present in the release workflow. Do not refactor these back behind a variable.
  */
+
+import { BUILD_TIME_POSTHOG_KEY } from './posthog-key.js';
 
 const HOST = 'https://i.agentrelay.com';
 
-function readKey(name: string): string | null {
-  const raw = process.env[name];
+function nonEmpty(raw: string | undefined): string | null {
   if (!raw) return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -32,14 +39,20 @@ export function getPostHogConfig(): { apiKey: string; host: string } | null {
   const host = process.env.POSTHOG_HOST || HOST;
 
   // Process-level override wins for local debugging / staging swaps.
-  const override = readKey('POSTHOG_API_KEY');
+  const override = nonEmpty(process.env.POSTHOG_API_KEY);
   if (override) {
     return { apiKey: override, host };
   }
 
-  // Release-time injection. CI for forks / dev / tests leaves this unset,
-  // which intentionally turns telemetry into a no-op.
-  const baked = readKey('AGENT_RELAY_POSTHOG_KEY');
+  // Runtime env, and the bun standalone's `--define` target. Literal access —
+  // see the module comment.
+  const injected = nonEmpty(process.env.AGENT_RELAY_POSTHOG_KEY);
+  if (injected) {
+    return { apiKey: injected, host };
+  }
+
+  // Baked into the published npm artifact at release time.
+  const baked = nonEmpty(BUILD_TIME_POSTHOG_KEY);
   if (baked) {
     return { apiKey: baked, host };
   }
