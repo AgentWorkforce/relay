@@ -794,9 +794,20 @@ impl BrokerRuntime {
                             // `worker_ready` in exactly that state. The spawn asked for
                             // this task, so a one-shot exemption releases it; later relay
                             // messages keep parking under the hold as usual.
+                            //
+                            // The flush is scoped to this task's own `event_id`. A blanket
+                            // flush would exempt the worker's whole queue, and a restart
+                            // keeps unacknowledged deliveries (see `maintenance.rs`), so a
+                            // relay message retried into the new worker before
+                            // `worker_ready` would splice into the human's session too.
                             if interactive_hold_replayed {
                                 if let Err(err) = workers
-                                    .send_to_worker(&name, "flush_injections", None, json!({}))
+                                    .send_to_worker(
+                                        &name,
+                                        "flush_injections",
+                                        None,
+                                        json!({ "event_id": event_id }),
+                                    )
                                     .await
                                 {
                                     tracing::warn!(

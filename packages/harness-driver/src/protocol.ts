@@ -646,9 +646,15 @@ export type BrokerToWorker =
        * asked for the backlog gets it injected immediately instead of it
        * sitting frozen until the drive session detaches. Deliveries that
        * arrive after the flush stay parked under the hold as usual.
+       *
+       * With `event_id` set the flush is narrowed to that single delivery
+       * instead of the whole backlog: it is popped through the hold even if
+       * other injections sit in front of it, and they stay parked. The broker
+       * sends it that way to start a (re)spawn's initial task under a hold
+       * replayed onto a restarted worker.
        */
       type: 'flush_injections';
-      payload: Record<string, never>;
+      payload: { event_id?: string };
     }
   | {
       type: 'native_harness_command';
