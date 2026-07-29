@@ -24,6 +24,9 @@ import {
   normalizeProvider,
   enrollFleetNode,
   upsertFleetNodeEnrollment,
+  toCloudIdentity,
+  writeStoredIdentity,
+  IDENTITY_FILE_PATH,
   type WhoAmIResponse,
   type WorkflowFileType,
   type WorkflowSchedule,
@@ -584,10 +587,18 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         deps.log(
           `User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`
         );
-        deps.log(`Organization: ${payload.currentOrganization.name}`);
-        deps.log(`Workspace: ${payload.currentWorkspace.name}`);
+        deps.log(`Organization: ${payload.currentOrganization?.name ?? '(none)'}`);
+        deps.log(`Workspace: ${payload.currentWorkspace?.name ?? '(none)'}`);
         deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
         deps.log(`Token file: ${AUTH_FILE_PATH}`);
+
+        // whoami is the canonical "who am I" call, so make it the refresh point
+        // for the locally cached identity that tags telemetry.
+        const identity = toCloudIdentity(payload, auth.apiUrl);
+        if (identity) {
+          await writeStoredIdentity(identity);
+          deps.log(`Identity file: ${IDENTITY_FILE_PATH}`);
+        }
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);

@@ -119,7 +119,7 @@ export type ZodLikeSchema<T = unknown> = Pick<z.ZodType<T>, 'safeParse'> & {
 };
 
 const spawnInputSchema = z
-  .object({
+  .looseObject({
     name: z.string().min(1).optional(),
     agent: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
@@ -131,7 +131,6 @@ const spawnInputSchema = z
     team: z.string().min(1).optional(),
     skip_relay_prompt: z.boolean().optional(),
   })
-  .passthrough()
   .refine((input) => Boolean(input.name ?? input.agent), {
     message: 'spawn input requires name or agent',
     path: ['name'],

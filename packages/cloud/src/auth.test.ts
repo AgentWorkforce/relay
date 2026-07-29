@@ -27,13 +27,16 @@ vi.mock('node:child_process', () => ({
 
 import {
   authorizedApiFetch,
+  clearStoredAuth,
   ensureAuthenticated,
   ensureCloudSession,
   readStoredAuth,
   refreshStoredAuth,
+  refreshStoredCloudIdentity,
+  toCloudIdentity,
   writeStoredAuth,
 } from './auth.js';
-import { AUTH_FILE_PATH, CloudAuthError, type StoredAuth } from './types.js';
+import { AUTH_FILE_PATH, CloudAuthError, type StoredAuth, type WhoAmIResponse } from './types.js';
 
 const AUTH_LOCK_PATH = `${AUTH_FILE_PATH}.lock`;
 
@@ -661,6 +664,9 @@ describe('refreshStoredAuth', () => {
 describe('authorizedApiFetch telemetry headers', () => {
   const telemetryEnvKeys = [
     'AGENT_RELAY_DISTINCT_ID',
+    'AGENT_RELAY_USER_ID',
+    'AGENT_RELAY_ORG_ID',
+    'AGENT_RELAY_ORG_SLUG',
     'AGENT_RELAY_ORCHESTRATOR_HARNESS',
     'AGENT_RELAY_TELEMETRY_CLIENT',
     'AGENT_RELAY_CLI_VERSION',
@@ -740,5 +746,115 @@ describe('authorizedApiFetch telemetry headers', () => {
     const headers = new Headers(init.headers);
     expect(headers.get('x-agent-relay-distinct-id')).toBeNull();
     expect(headers.get('x-relaycast-harness')).toBeNull();
+  });
+});
+
+describe('cloud identity capture', () => {
+  const WHOAMI_URL = 'https://api.example.test/api/v1/auth/whoami';
+
+  const AUTH: StoredAuth = {
+    apiUrl: 'https://api.example.test',
+    accessToken: 'access-token',
+    refreshToken: 'refresh-token',
+    accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+  };
+
+  const WHOAMI_PAYLOAD = {
+    authenticated: true,
+    source: 'token',
+    subjectType: 'user',
+    scopes: [],
+    user: { id: 'usr_abc123', email: 'will@agentrelay.com', name: 'Will', avatarUrl: null },
+    currentOrganization: {
+      id: 'org_xyz789',
+      slug: 'agentworkforce',
+      name: 'Agent Workforce',
+      role: 'owner',
+      status: 'active',
+    },
+    currentWorkspace: {
+      id: 'ws_123',
+      organization_id: 'org_xyz789',
+      slug: 'default',
+      name: 'Default',
+    },
+  } satisfies WhoAmIResponse;
+
+  it('maps a whoami payload onto the identity contract', () => {
+    expect(toCloudIdentity(WHOAMI_PAYLOAD, AUTH.apiUrl)).toMatchObject({
+      userId: 'usr_abc123',
+      email: 'will@agentrelay.com',
+      name: 'Will',
+      organizationId: 'org_xyz789',
+      organizationSlug: 'agentworkforce',
+      organizationName: 'Agent Workforce',
+      organizationRole: 'owner',
+      workspaceId: 'ws_123',
+      apiUrl: AUTH.apiUrl,
+    });
+  });
+
+  it('tolerates a user with no active workspace or organization', () => {
+    const identity = toCloudIdentity(
+      { ...WHOAMI_PAYLOAD, currentOrganization: null, currentWorkspace: null },
+      AUTH.apiUrl
+    );
+
+    expect(identity).toMatchObject({ userId: 'usr_abc123' });
+    expect(identity?.organizationId).toBeUndefined();
+    expect(identity?.workspaceId).toBeUndefined();
+  });
+
+  it('returns null when the payload carries no user id', () => {
+    expect(
+      toCloudIdentity({ ...WHOAMI_PAYLOAD, user: { ...WHOAMI_PAYLOAD.user, id: '' } }, AUTH.apiUrl)
+    ).toBeNull();
+  });
+
+  it('resolves and persists identity from whoami', async () => {
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(WHOAMI_PAYLOAD), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const identity = await refreshStoredCloudIdentity(AUTH);
+
+    expect(String(fetchSpy.mock.calls[0][0])).toBe(WHOAMI_URL);
+    expect(identity?.userId).toBe('usr_abc123');
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      expect.stringContaining('cloud-identity.json'),
+      expect.stringContaining('usr_abc123'),
+      { mode: 0o600 }
+    );
+  });
+
+  it('returns null and persists nothing when whoami fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('nope', { status: 500 }))
+    );
+
+    expect(await refreshStoredCloudIdentity(AUTH)).toBeNull();
+    expect(fsMocks.writeFile).not.toHaveBeenCalledWith(
+      expect.stringContaining('cloud-identity.json'),
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it('never throws when the network is unavailable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      })
+    );
+
+    await expect(refreshStoredCloudIdentity(AUTH)).resolves.toBeNull();
+  });
+
+  it('clearing auth also clears the cached identity', async () => {
+    await clearStoredAuth();
+
+    expect(fsMocks.rm).toHaveBeenCalledWith(AUTH_FILE_PATH, { force: true });
+    expect(fsMocks.rm).toHaveBeenCalledWith(expect.stringContaining('cloud-identity.json'), { force: true });
   });
 });
