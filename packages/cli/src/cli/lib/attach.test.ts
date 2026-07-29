@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AnsiBoundaryScanner,
   captureAndRenderSnapshot,
+  clampStatusLineText,
   createBackpressureAwareWriter,
+  DEFAULT_STATUS_LINE_COLS,
+  pickInitialTerminalCols,
   LOCAL_TERMINAL_RESET_SEQUENCE,
   resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
@@ -785,5 +788,104 @@ describe('createBackpressureAwareWriter', () => {
     drain?.();
     w.write('c');
     expect(written).toEqual(['a']);
+  });
+});
+
+describe('pickInitialTerminalCols', () => {
+  it('prefers the local terminal width over the agent PTY width', () => {
+    expect(pickInitialTerminalCols({ rows: 24, cols: 66 }, 200)).toBe(66);
+  });
+
+  it('falls back to the snapshot width, then to undefined', () => {
+    expect(pickInitialTerminalCols(null, 200)).toBe(200);
+    expect(pickInitialTerminalCols(null, 0)).toBeUndefined();
+    expect(pickInitialTerminalCols(null, undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * Mirror of the renderer's column accounting, for assertions only.
+ *
+ * Deliberately a separate implementation rather than importing the production
+ * one — a width assertion that reuses the code under test proves nothing.
+ */
+const ZERO_WIDTH: ReadonlyArray<readonly [number, number]> = [
+  [0x0300, 0x036f],
+  [0x200d, 0x200d],
+  [0xfe00, 0xfe0f],
+];
+const DOUBLE_WIDTH: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+function columnsOf(text: string): number {
+  const hit = (code: number, ranges: ReadonlyArray<readonly [number, number]>) =>
+    ranges.some(([lo, hi]) => code >= lo && code <= hi);
+  let total = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (hit(code, ZERO_WIDTH)) continue;
+    total += hit(code, DOUBLE_WIDTH) ? 2 : 1;
+  }
+  return total;
+}
+
+describe('clampStatusLineText', () => {
+  const label = '[drive Gamemaster | delivery=manual_flush | pending=0 | Ctrl+] deliver | Ctrl+C detach]';
+
+  it('passes a label that already fits through untouched', () => {
+    expect(clampStatusLineText(label, 120)).toBe(label);
+    expect(clampStatusLineText(label, label.length)).toBe(label);
+  });
+
+  it('never returns more characters than the terminal is wide', () => {
+    for (const cols of [2, 10, 40, 66, 80, 86]) {
+      expect(clampStatusLineText(label, cols).length).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('keeps the head and the tail so the verb and the key hints both survive', () => {
+    const out = clampStatusLineText(label, 66);
+    expect(out.startsWith('[drive Gamemaster')).toBe(true);
+    expect(out.endsWith('Ctrl+C detach]')).toBe(true);
+    expect(out).toContain('\u2026');
+  });
+
+  it('assumes 80 columns when the width is unknown', () => {
+    expect(clampStatusLineText(label, undefined).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
+    expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
+  });
+
+  // A code-unit count would pass these while the row still overflows, which
+  // re-arms the wrap/scroll cascade the clamp exists to prevent.
+  it('measures wide glyphs as two columns', () => {
+    const wide = '[drive 名前ですよろしく | delivery=manual_flush | Ctrl+C detach]';
+    for (const cols of [20, 40, 66]) {
+      const out = clampStatusLineText(wide, cols);
+      expect(columnsOf(out), `overflowed at ${cols}: ${JSON.stringify(out)}`).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('never splits a surrogate pair', () => {
+    const emoji = `[drive ${'\u{1F680}'.repeat(20)} | Ctrl+C detach]`;
+    for (const cols of [10, 25, 50]) {
+      const out = clampStatusLineText(emoji, cols);
+      expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+      expect(out).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+      expect(columnsOf(out)).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it('degrades to a bare head rather than wrapping on a pathological width', () => {
+    expect(clampStatusLineText(label, 1)).toBe('[');
+    expect(clampStatusLineText(label, 0).length).toBeLessThanOrEqual(DEFAULT_STATUS_LINE_COLS);
   });
 });

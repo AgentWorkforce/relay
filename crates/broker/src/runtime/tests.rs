@@ -107,6 +107,9 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             stdin,
             harness_pid: None,
             spawned_at: Instant::now(),
+            // Ready, so the orphan sweep's readiness deadline never applies to
+            // these fixtures.
+            ready_at: Some(Instant::now()),
             last_activity_at: Instant::now(),
             context_budget_pct: None,
             state: AgentWorkState::Working,

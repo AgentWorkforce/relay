@@ -495,6 +495,18 @@ describe('renderStatusLine', () => {
     expect(out).toContain('\x1b[7m');
     expect(out).toContain('\x1b[0m');
   });
+
+  // Same wrap-then-scroll cascade `drive` hits: a label wider than the pane
+  // scrolls the screen on every repaint and shreds the agent's TUI behind it.
+  it('truncates the label to the terminal width so it can never wrap', () => {
+    const cols = 40;
+    // eslint-disable-next-line no-control-regex -- matching the raw ESC bytes this module emits
+    const strip = (s: string) => s.replace(/\x1b(?:[78]|\[[0-9;]*[A-Za-z])/g, '');
+    const text = strip(renderStatusLine({ name: 'Gamemaster', mode: 'auto_inject', rows: 24, cols }));
+    expect(text.length).toBeLessThanOrEqual(cols);
+    expect(text).toContain('[passthrough');
+    expect(text).toContain('detach]');
+  });
 });
 
 describe('runPassthroughSession', () => {

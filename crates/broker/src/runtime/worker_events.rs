@@ -848,6 +848,10 @@ impl BrokerRuntime {
                                 if let Some(pid) = payload_pid {
                                     h.harness_pid = Some(pid);
                                 }
+                                // Records that the harness actually came up, so
+                                // `reap_exited` can tell a slow start from one that
+                                // never happened.
+                                h.ready_at.get_or_insert_with(Instant::now);
                                 (
                                     h.spec.provider.clone(),
                                     h.spec.cli.clone(),

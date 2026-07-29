@@ -52,8 +52,10 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  clampStatusLineText,
   createBackpressureAwareWriter,
   DETACH_CLEANUP_DEADLINE_MS,
+  pickInitialTerminalCols,
   pickInitialTerminalRows,
   prepareAttachTarget,
   resetLocalTerminalOnDetach,
@@ -543,6 +545,8 @@ export function renderStatusLine(opts: {
   pending: number;
   /** Terminal rows — defaults to 24 if unknown. The status line lands on row N. */
   rows?: number;
+  /** Terminal columns — the label is truncated to fit. Defaults to 80. */
+  cols?: number;
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
   // The Ctrl+] hint names the action the NEXT press performs: in manual_flush
@@ -550,7 +554,10 @@ export function renderStatusLine(opts: {
   // re-holds. Without the hint, a parked message is invisible beyond the
   // pending counter and a driven agent looks like it never receives replies.
   const toggleHint = opts.mode === 'manual_flush' ? 'Ctrl+] deliver' : 'Ctrl+] hold';
-  const text = `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`;
+  const text = clampStatusLineText(
+    `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`,
+    opts.cols
+  );
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
@@ -637,6 +644,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let currentMode: InboundDeliveryMode = 'manual_flush';
     let currentRevision = state.sessionRevision;
     let terminalRows = pickInitialTerminalRows(state.initialLocalSize, undefined);
+    let terminalCols = pickInitialTerminalCols(state.initialLocalSize, undefined);
     const parser = new KeybindParser();
     // Stateful UTF-8 decoder for forwarded stdin. Decoding each raw stdin chunk
     // independently would turn a multi-byte character split across `data`
@@ -682,7 +690,8 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     // is mid escape-sequence (no splicing into a half-sent CSI), rate-limits
     // per-chunk repaints, and skips painting entirely on a non-TTY stdout.
     const statusController = new StatusLineController({
-      render: () => renderStatusLine({ name, mode: currentMode, pending, rows: terminalRows }),
+      render: () =>
+        renderStatusLine({ name, mode: currentMode, pending, rows: terminalRows, cols: terminalCols }),
       write: deps.writeChunk,
       enabled: statusLineEnabled,
       coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
@@ -714,6 +723,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       const size = deps.terminal.getSize();
       if (!size) return;
       terminalRows = size.rows;
+      terminalCols = size.cols;
       predictiveEcho?.onResize(size.cols, size.rows);
       trackResize(
         resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
@@ -1094,6 +1104,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         if (settled) return;
       }
       terminalRows = pickInitialTerminalRows(state.initialLocalSize, snapshot.rows);
+      terminalCols = pickInitialTerminalCols(state.initialLocalSize, snapshot.cols);
       // Track the snapshot bytes for boundary state before the first repaint.
       statusController.observeOutput(snapshotBytes);
       paintStatus();

@@ -360,6 +360,122 @@ export function pickInitialTerminalRows(
 }
 
 /**
+ * Pick the status-line width. Same precedence as
+ * {@link pickInitialTerminalRows} — the LOCAL terminal wins, because the
+ * status line has to fit the pane the human is looking at, not the agent's
+ * PTY.
+ */
+export function pickInitialTerminalCols(
+  localSize: { rows: number; cols: number } | null,
+  snapshotCols: number | undefined
+): number | undefined {
+  if (localSize) return localSize.cols;
+  if (typeof snapshotCols === 'number' && snapshotCols > 0) return snapshotCols;
+  return undefined;
+}
+
+/** Width assumed when the local terminal never reported one. */
+export const DEFAULT_STATUS_LINE_COLS = 80;
+
+/**
+ * Clamp a status-line label to the terminal width.
+ *
+ * The interactive verbs paint their status line at the bottom row inside an
+ * `ESC 7` / `ESC 8` (DECSC/DECRC) pair. That is only safe while the text
+ * *fits*: a label wider than the pane wraps past the last row, which scrolls
+ * the screen. Because the label is painted on the bottom row, every repaint
+ * then scrolls again — promoting the previous status line into the scrollback
+ * as content and eating one row of the agent's output each time. A narrow
+ * pane therefore turns a single status line into a growing stack of them with
+ * the agent's TUI shredded behind it. The `drive` label is 87 columns, so this
+ * fired on a standard 80-column terminal too; at 66 columns six repaints cost
+ * six rows of agent output.
+ *
+ * Truncation keeps the paint inside one row, so the wrap — and the scroll
+ * cascade it triggers — can never happen. The tail is the part that carries
+ * the key hints, so an over-long label is trimmed from the *middle*: the verb
+ * and agent name stay readable and the `Ctrl+…` hints survive.
+ *
+ * Measured in display columns, not UTF-16 code units: an agent name carrying
+ * CJK or emoji is double-width, so a code-unit count would pass a label that
+ * still wraps — re-arming the exact cascade this prevents. Slicing is done on
+ * whole code points so a surrogate pair is never split in half.
+ */
+export function clampStatusLineText(text: string, cols: number | undefined): string {
+  const width = typeof cols === 'number' && cols > 0 ? Math.floor(cols) : DEFAULT_STATUS_LINE_COLS;
+  if (displayWidth(text) <= width) return text;
+  // Too narrow to say anything useful — a bare head is still better than a
+  // wrap, and `…` alone would be meaningless.
+  if (width <= 1) return width === 1 ? takeColumns(text, 1).text : '';
+  const keep = width - 1; // the ellipsis occupies one column
+  const tailBudget = Math.floor(keep / 2);
+  const headBudget = keep - tailBudget;
+  const head = takeColumns(text, headBudget);
+  const tail = tailBudget > 0 ? takeColumns(text, tailBudget, 'end') : { text: '' };
+  return `${head.text}…${tail.text}`;
+}
+
+/**
+ * Column width of a string, counting East Asian Wide/Fullwidth characters and
+ * emoji as two columns and zero-width joiners/combining marks as none. This is
+ * the pragmatic subset a status line needs — it is not a full `wcwidth`.
+ */
+function displayWidth(text: string): number {
+  let total = 0;
+  for (const char of text) total += charWidth(char);
+  return total;
+}
+
+/** Codepoints that occupy no column: combining marks, ZWJ, variation selectors. */
+const ZERO_WIDTH_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x0300, 0x036f],
+  [0x200d, 0x200d],
+  [0xfe00, 0xfe0f],
+];
+
+/** East Asian Wide / Fullwidth blocks, plus the emoji planes. */
+const DOUBLE_WIDTH_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+function inRanges(code: number, ranges: ReadonlyArray<readonly [number, number]>): boolean {
+  return ranges.some(([lo, hi]) => code >= lo && code <= hi);
+}
+
+function charWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0;
+  if (inRanges(code, ZERO_WIDTH_RANGES)) return 0;
+  return inRanges(code, DOUBLE_WIDTH_RANGES) ? 2 : 1;
+}
+
+/**
+ * Take whole code points from `text` until `budget` columns are used, from the
+ * start or the `end`. Never splits a surrogate pair, and never overshoots the
+ * budget — a double-width character that would exceed it is dropped.
+ */
+function takeColumns(text: string, budget: number, from: 'start' | 'end' = 'start'): { text: string } {
+  const chars = Array.from(text);
+  const ordered = from === 'end' ? chars.slice().reverse() : chars;
+  const taken: string[] = [];
+  let used = 0;
+  for (const char of ordered) {
+    const w = charWidth(char);
+    if (used + w > budget) break;
+    used += w;
+    taken.push(char);
+  }
+  return { text: (from === 'end' ? taken.reverse() : taken).join('') };
+}
+
+/**
  * Sync the agent's PTY to the driver's local terminal size. tmux /
  * screen / ssh all do this — without it a TUI in the agent renders into
  * the size the PTY was spawned with, ignoring the human's viewport.
