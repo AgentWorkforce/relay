@@ -19,18 +19,22 @@ Made Relay Reflex diagnostics quiet by default, verbose on demand, and structure
 ## Key Decisions
 
 ### broker_panic sends synchronously via a fresh OS-thread current-thread runtime
+
 - **Chose:** broker_panic sends synchronously via a fresh OS-thread current-thread runtime
 - **Reasoning:** Panic may occur on a tokio worker thread and the process may abort before the async sender loop drains; a dedicated std::thread with its own runtime avoids nested-runtime panic, and the reqwest timeout bounds process teardown
 
 ### Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose
+
 - **Chose:** Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose
 - **Reasoning:** The manifest already contains stale aliases and incomplete argument syntax, so repository source is the authoritative contract.
 
 ### Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child
+
 - **Chose:** Cloud worker teardown verifies the stored PID still belongs to the worker's foreground child
 - **Reasoning:** The daemon is detached and persisted locally; checking worker ID plus --foreground-child before TERM/KILL prevents a stale or reused PID from targeting an unrelated process.
 
 ### Keep Reflex diagnostics quiet by default; route Relay-originated events to the shared file logger and reveal them on --verbose
+
 - **Chose:** Keep Reflex diagnostics quiet by default; route Relay-originated events to the shared file logger and reveal them on --verbose
 - **Reasoning:** The broker console is user-facing startup output, while Reflex is background maintenance. Native importer output needs an upstream quiet control because it bypasses Relay's logger.
 
@@ -39,7 +43,8 @@ Made Relay Reflex diagnostics quiet by default, verbose on demand, and structure
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - broker_panic sends synchronously via a fresh OS-thread current-thread runtime: broker_panic sends synchronously via a fresh OS-thread current-thread runtime
 - Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose: Audit exact Commander registrations and SDK/MCP exports rather than relying on existing manifest prose
