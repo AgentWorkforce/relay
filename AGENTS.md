@@ -263,3 +263,22 @@ use worktrees off origin/main (others — including Khaliq and bots — work
 this repo in parallel). Session start: this file, `git log --oneline -15`,
 relay inbox. ACK / progress / DONE with evidence on every assignment.
 Publishing (npm, crates, GitHub releases) is gated on chief green-light.
+
+### Standing board (2026-07-29 — delete entries as they close)
+
+- Telemetry identity-leak cluster: merged as PR #1363; CLI stayed 11.2.0
+  (no release cut yet — release-train needs chief green-light).
+- Secrets fix train (issue #1379): PR A = #1380 (CLI output/error masking,
+  key off argv) + required companion relayfile#380 which must merge and
+  release FIRST (relayfile scrapes raw secrets from CLI output and error
+  text). PR B (Rust file modes) and PR C (--mcp-config argv→file; must
+  also update .claude/rules/mcp-injection.md) are unstarted — full spec
+  in #1379. #1380 unblocks the fleet-wide credential rotation.
+- Open issue batch: #1378 (fresh `node up` silently mints a workspace),
+  #1381 (teams.json per-agent model pinning gap; `claude:opus` doc syntax
+  is dead), #1382 (attach pairs broker URL/key from different sources;
+  delete chief's orgchart env-unset workaround when fixed), #1383
+  (non-Error rejections render as `[object Object]`).
+- Also pending: 64 dependabot alerts on main (1 critical); skills repo
+  relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
+  raw observer URLs — unsatisfiable once #1380 lands.
