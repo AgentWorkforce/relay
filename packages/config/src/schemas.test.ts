@@ -5,6 +5,8 @@ import {
   CloudConfigSchema,
   BridgeConfigSchema,
   RelayRuntimeConfigSchema,
+  ShadowConfigSchema,
+  jsonSchemas,
 } from './schemas.js';
 import { DEFAULT_CONNECTION_CONFIG, DEFAULT_TMUX_WRAPPER_CONFIG } from './relay-config.js';
 
@@ -103,5 +105,60 @@ describe('config schemas', () => {
     expect(RelayRuntimeConfigSchema.parse({ trajectories: { storeInRepo: true } })).toEqual({
       trajectories: { storeInRepo: true },
     });
+  });
+
+  it('validates shadow config with keyed pair and role records', () => {
+    const cfg = {
+      shadows: {
+        pairs: { Builder: { shadow: 'Reviewer', speakOn: ['commit'] } },
+        roles: { Reviewer: { prompt: 'review carefully', speakOn: [] } },
+      },
+    };
+    expect(ShadowConfigSchema.parse(cfg)).toEqual(cfg);
+  });
+});
+
+describe('jsonSchemas', () => {
+  const entries = Object.entries(jsonSchemas) as Array<[string, Record<string, unknown>]>;
+
+  it('exposes one schema per config surface', () => {
+    expect(entries.map(([name]) => name)).toEqual([
+      'connection',
+      'tmuxWrapper',
+      'relayRuntime',
+      'bridge',
+      'teams',
+      'shadow',
+      'agentFrontmatter',
+      'cliAuth',
+      'cloud',
+    ]);
+  });
+
+  it.each(entries)('renders %s as an identified draft-7 object schema', (_name, schema) => {
+    expect(schema.$schema).toBe('http://json-schema.org/draft-07/schema#');
+    expect(typeof schema.$id).toBe('string');
+    expect(schema.type).toBe('object');
+    expect(schema.properties).toBeTypeOf('object');
+  });
+
+  it('describes config files as written, leaving defaulted fields optional', () => {
+    // `agents` has `.default([])`, so a hand-written teams config may omit it.
+    const teams = jsonSchemas.teams as {
+      required: string[];
+      properties: { agents: { default: unknown } };
+    };
+    expect(teams.required).toEqual(['team']);
+    expect(teams.properties.agents.default).toEqual([]);
+  });
+
+  it('renders RegExp fields as unconstrained rather than failing to serialize', () => {
+    // `z.instanceof(RegExp)` has no JSON Schema equivalent; it must degrade to
+    // "anything" instead of throwing while the rest of the schema still renders.
+    const cliAuth = jsonSchemas.cliAuth as {
+      properties: { urlPattern: Record<string, unknown>; command: { type: string } };
+    };
+    expect(cliAuth.properties.urlPattern).toEqual({});
+    expect(cliAuth.properties.command.type).toBe('string');
   });
 });

@@ -1,7 +1,16 @@
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 
 const withId = (schema: unknown, id: string) => Object.assign(schema as Record<string, unknown>, { $id: id });
+
+/**
+ * Render a config schema as JSON Schema draft-7.
+ *
+ * `io: 'input'` describes what a user writes in a config file (fields with a
+ * `.default()` stay optional); `unrepresentable: 'any'` keeps `z.instanceof(RegExp)`
+ * fields — which have no JSON Schema equivalent — from throwing.
+ */
+const toJsonSchema = (schema: z.ZodType) =>
+  z.toJSONSchema(schema, { target: 'draft-7', io: 'input', unrepresentable: 'any' });
 
 // Relay connection defaults (used by broker + wrapper)
 export const ConnectionConfigSchema = z.object({
@@ -37,6 +46,7 @@ export const RelayRuntimeConfigSchema = z.object({
 export const BridgeConfigSchema = z.object({
   projects: z
     .record(
+      z.string(),
       z.object({
         lead: z.string().optional(),
         cli: z.string().optional(),
@@ -75,8 +85,8 @@ export const ShadowPairConfigSchema = z.object({
 export const ShadowConfigSchema = z.object({
   shadows: z
     .object({
-      pairs: z.record(ShadowPairConfigSchema).optional(),
-      roles: z.record(ShadowRoleConfigSchema).optional(),
+      pairs: z.record(z.string(), ShadowPairConfigSchema).optional(),
+      roles: z.record(z.string(), ShadowRoleConfigSchema).optional(),
     })
     .optional(),
 });
@@ -181,31 +191,19 @@ export const CloudConfigSchema = z.object({
     secretKey: z.string(),
     publishableKey: z.string(),
     webhookSecret: z.string(),
-    priceIds: z.record(z.string().optional()),
+    priceIds: z.record(z.string(), z.string().optional()),
   }),
   adminUsers: z.array(z.string()),
 });
 
 export const jsonSchemas = {
-  connection: withId(
-    zodToJsonSchema(ConnectionConfigSchema, { target: 'jsonSchema7' }),
-    'RelayConnectionConfig'
-  ),
-  tmuxWrapper: withId(
-    zodToJsonSchema(TmuxWrapperConfigSchema, { target: 'jsonSchema7' }),
-    'RelayTmuxWrapperConfig'
-  ),
-  relayRuntime: withId(
-    zodToJsonSchema(RelayRuntimeConfigSchema, { target: 'jsonSchema7' }),
-    'RelayRuntimeConfig'
-  ),
-  bridge: withId(zodToJsonSchema(BridgeConfigSchema, { target: 'jsonSchema7' }), 'BridgeConfig'),
-  teams: withId(zodToJsonSchema(TeamsConfigSchema, { target: 'jsonSchema7' }), 'TeamsConfig'),
-  shadow: withId(zodToJsonSchema(ShadowConfigSchema, { target: 'jsonSchema7' }), 'ShadowConfig'),
-  agentFrontmatter: withId(
-    zodToJsonSchema(AgentFrontmatterSchema, { target: 'jsonSchema7' }),
-    'AgentFrontmatter'
-  ),
-  cliAuth: withId(zodToJsonSchema(CLIAuthConfigSchema, { target: 'jsonSchema7' }), 'CLIAuthConfig'),
-  cloud: withId(zodToJsonSchema(CloudConfigSchema, { target: 'jsonSchema7' }), 'CloudConfig'),
+  connection: withId(toJsonSchema(ConnectionConfigSchema), 'RelayConnectionConfig'),
+  tmuxWrapper: withId(toJsonSchema(TmuxWrapperConfigSchema), 'RelayTmuxWrapperConfig'),
+  relayRuntime: withId(toJsonSchema(RelayRuntimeConfigSchema), 'RelayRuntimeConfig'),
+  bridge: withId(toJsonSchema(BridgeConfigSchema), 'BridgeConfig'),
+  teams: withId(toJsonSchema(TeamsConfigSchema), 'TeamsConfig'),
+  shadow: withId(toJsonSchema(ShadowConfigSchema), 'ShadowConfig'),
+  agentFrontmatter: withId(toJsonSchema(AgentFrontmatterSchema), 'AgentFrontmatter'),
+  cliAuth: withId(toJsonSchema(CLIAuthConfigSchema), 'CLIAuthConfig'),
+  cloud: withId(toJsonSchema(CloudConfigSchema), 'CloudConfig'),
 };
