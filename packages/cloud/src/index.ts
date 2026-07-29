@@ -3,10 +3,37 @@ export {
   writeStoredAuth,
   clearStoredAuth,
   refreshStoredAuth,
+  refreshStoredCloudIdentity,
+  hasCurrentStoredCloudIdentity,
+  toCloudIdentity,
   ensureAuthenticated,
   ensureCloudSession,
   authorizedApiFetch,
 } from './auth.js';
+
+export {
+  IDENTITY_ENV_KEYS,
+  IDENTITY_FILE_PATH,
+  identityFilePath,
+  readStoredIdentity,
+  readStoredIdentitySync,
+  writeStoredIdentity,
+  clearStoredIdentity,
+  resolveCloudIdentity,
+  normalizeCloudIdentity,
+  cloudIdentityEnv,
+  cloudIdentityFingerprint,
+  type CloudIdentity,
+} from './identity.js';
+
+export {
+  buildAgentRelayTelemetryHeaders,
+  appendAgentRelayTelemetryHeaders,
+  AGENT_RELAY_DISTINCT_ID_HEADER,
+  AGENT_RELAY_USER_ID_HEADER,
+  AGENT_RELAY_ORG_ID_HEADER,
+  AGENT_RELAY_ORG_SLUG_HEADER,
+} from './telemetry-headers.js';
 
 export {
   CloudApiClient,
