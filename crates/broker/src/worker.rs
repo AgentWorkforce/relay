@@ -139,7 +139,11 @@ impl WorkerRegistry {
         Some(self.worker_logs_dir.join(format!("{worker_name}.log")))
     }
 
-    pub(crate) fn list(&self) -> Vec<Value> {
+    /// Snapshot every spawned worker for `GET /api/spawned` and `GET /api/status`.
+    ///
+    /// `pending_messages` comes from [`crate::runtime::pending_message_counts`];
+    /// a worker missing from the map has nothing waiting.
+    pub(crate) fn list(&self, pending_messages: &HashMap<WorkerName, usize>) -> Vec<Value> {
         self.workers
             .iter()
             .map(|(name, handle)| {
@@ -162,6 +166,7 @@ impl WorkerRegistry {
                         - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
                     "context_budget_pct": handle.context_budget_pct,
                     "current_state": handle.state.as_str(),
+                    "pending_messages": pending_messages.get(name).copied().unwrap_or(0),
                     "runtime_kind": if native_harness.is_some() { "native" } else if handle.spec.runtime == AgentRuntime::Pty { "pty" } else { "headless" },
                     "native_harness_protocol_version": native_harness.as_ref().map(|(version, _)| *version),
                     "native_harness_capabilities": native_harness.and_then(|(_, capabilities)| capabilities),
@@ -1890,7 +1895,7 @@ mod tests {
     #[test]
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
-        assert!(reg.list().is_empty());
+        assert!(reg.list(&HashMap::new()).is_empty());
     }
 
     #[test]

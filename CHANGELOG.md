@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `relay node agent list --pretty` shows a `PENDING` column with the messages still waiting to reach each agent (queued inbound plus in-flight deliveries awaiting confirmation); the broker reports it as `pending_messages` on `GET /api/spawned` and `GET /api/status`.
 - `agent-relay cloud login` now records your user, email, and organization to `~/.agentworkforce/relay/cloud-identity.json`, and the CLI, broker, and Relaycast traffic all report usage under that user and org instead of an anonymous machine id. `agent-relay cloud whoami` refreshes the record; `agent-relay cloud logout` clears it.
 - `agent-relay telemetry status` reports which user and organization usage is attributed to, or says so explicitly when it is anonymous.
 - Every event now carries a `machine_id` alongside the person key, signed in or not, so machine-level questions survive login: how many machines an account runs on, how many accounts share a machine, and (via Relaycast's `actor_machine_id`) how many machines share a workspace.

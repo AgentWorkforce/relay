@@ -151,6 +151,16 @@ function formatRelativeTime(value: string | undefined, now: Date): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+/**
+ * Render the count of messages still waiting to reach the agent. Brokers older
+ * than the field report nothing, which stays `-` rather than claiming an empty
+ * queue.
+ */
+function formatPendingCount(value: number | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '-';
+  return String(Math.floor(value));
+}
+
 /** Keep broker-provided text from escaping its table cell or controlling the terminal. */
 function sanitizeTerminalCell(value: string): string {
   // eslint-disable-next-line no-control-regex
@@ -169,6 +179,7 @@ export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
         [agent.cli ?? agent.provider ?? agent.runtime, agent.model].filter(Boolean).join(' / ')
       ),
       state: sanitizeTerminalCell(state ? `${state.symbol} ${state.label}` : '· unknown'),
+      pending: formatPendingCount(agent.pending_messages),
       lastActive: sanitizeTerminalCell(formatRelativeTime(agent.last_activity_at, now)),
     };
   });
@@ -176,6 +187,7 @@ export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
     { header: 'NAME', values: rows.map((row) => row.name) },
     { header: 'CLI / MODEL', values: rows.map((row) => row.cliModel) },
     { header: 'STATE', values: rows.map((row) => row.state) },
+    { header: 'PENDING', values: rows.map((row) => row.pending) },
     { header: 'LAST ACTIVE', values: rows.map((row) => row.lastActive) },
   ];
   const widths = columns.map((column) =>
@@ -190,7 +202,7 @@ export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
   return [
     formatRow(columns.map((column) => column.header)),
     formatRow(columns.map((_, index) => '-'.repeat(widths[index]!))),
-    ...rows.map((row) => formatRow([row.name, row.cliModel, row.state, row.lastActive])),
+    ...rows.map((row) => formatRow([row.name, row.cliModel, row.state, row.pending, row.lastActive])),
   ].join('\n');
 }
 
