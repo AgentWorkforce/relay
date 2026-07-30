@@ -34,7 +34,7 @@ Before trusting any verification result, check two things:
    failure against a real command.
 2. **What was skipped.** Every check records `pass`, `fail`, or `skip` with a
    reason into `.workflow-artifacts/verify-features/checks.jsonl`, and
-   `verdict.json` is the authoritative result. A SKIP means *not verified*.
+   `verdict.json` is the authoritative result. A SKIP means _not verified_.
    Never read a skip as a pass.
 
 Run the manifest audit before adding checks, so you are not writing coverage
@@ -133,7 +133,7 @@ Add or update entries in `manifest.yaml` when:
 - A feature is removed or deprecated
 
 Then run `node scripts/audit-feature-manifest.mjs` and confirm `MANIFEST_CLEAN`.
-Note that `manifest-contract.test.ts` cannot catch a missing entry for a *new*
+Note that `manifest-contract.test.ts` cannot catch a missing entry for a _new_
 command — a new command is absent from both the manifest and that test's
 hardcoded expectation list, so it passes. The audit script derives the surface
 from `--help` and `tools/list` instead, which is why it is the check that
