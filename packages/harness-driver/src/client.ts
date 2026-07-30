@@ -711,13 +711,15 @@ export class HarnessDriverClient {
    *
    * `rows`/`cols` are optional so a pure ownership release (`release: true`)
    * can omit them entirely rather than sending placeholder dimensions — the
-   * broker defaults them and skips the resize on a release.
+   * broker defaults them to zero and skips the resize on such a release.
    *
    * A release MAY still carry dimensions, in which case the broker applies
    * them and *then* drops ownership. Attach clients that reserved a status row
    * use this to hand the row back atomically: a separate resize would need to
    * land strictly before the release or it re-claims the lease (#1247).
-   * `resized` reports whether that restore reached the worker.
+   * `resized` reports whether the broker *dispatched* the restore resize to the
+   * worker — unlike `write_pty` it parks no pending request, so this is not a
+   * worker-side acknowledgement.
    */
   async resizePty(
     name: string,

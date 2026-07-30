@@ -2095,9 +2095,11 @@ async fn send_pty_input_ws_error(
 
 #[derive(Deserialize)]
 struct ResizePtyBody {
-    /// Target dimensions. Defaulted so a pure ownership release (`release:
-    /// true`) doesn't have to carry dummy dimensions — the handler skips the
-    /// resize entirely on release.
+    /// Target dimensions. Defaulted to zero so a pure ownership release
+    /// (`release: true`) doesn't have to carry dummy dimensions — the handler
+    /// skips the resize when a release carries no real size. A release that
+    /// *does* carry dimensions applies them before dropping ownership, so an
+    /// attach client can hand back a reserved status row in one request.
     #[serde(default)]
     rows: u16,
     #[serde(default)]
