@@ -342,10 +342,11 @@ describe('runUpCommand node-config gating', () => {
 
       const reflexOptions = vi.mocked(startReflexCapture).mock.calls[0]?.[0];
       reflexOptions?.log?.('[reflex] cloud sync failed: database is locked');
+      reflexOptions?.log?.('[reflex] history sync tick');
 
-      expect(fsReal.readFileSync(logFile, 'utf-8')).toContain(
-        '[WARN] [reflex] cloud sync failed: database is locked'
-      );
+      const structuredLog = fsReal.readFileSync(logFile, 'utf-8');
+      expect(structuredLog).toContain('[WARN] [reflex] cloud sync failed: database is locked');
+      expect(structuredLog).toContain('[INFO] [reflex] history sync tick');
       expect(log).not.toHaveBeenCalledWith(expect.stringContaining('[reflex]'));
     } finally {
       if (previousLogFile === undefined) {
