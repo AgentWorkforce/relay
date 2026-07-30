@@ -52,18 +52,22 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  canReserveStatusLine,
   clampStatusLineText,
   createBackpressureAwareWriter,
   DETACH_CLEANUP_DEADLINE_MS,
   pickInitialTerminalCols,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  reserveStatusLineRow,
+  renderChildScrollRegion,
   resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
   StatusLineController,
   StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
+  TerminalScrollRegionTracker,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
@@ -392,10 +396,10 @@ export async function resizeWorker(
   cols: number,
   fetchFn: typeof globalThis.fetch,
   options?: { sessionId?: string }
-): Promise<{ ok: boolean; message?: string }> {
+): Promise<{ ok: boolean; message?: string; applied?: boolean }> {
   try {
-    await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols, options);
-    return { ok: true };
+    const result = await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols, options);
+    return { ok: true, applied: result.applied !== false };
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     return { ok: false, message: failure.message };
@@ -406,17 +410,26 @@ export async function resizeWorker(
  * Release this session's PTY resize ownership on detach (single-resizer
  * policy, #1247), so the next client that attaches can resize the shared PTY.
  * Best-effort: the broker also supersedes a crashed owner after an idle window.
+ *
+ * `restoreSize` gives back the row and column a writable attach reserved for
+ * Relay's status line (see `reserveStatusLineRow`). Without it the worker stays
+ * at `rows - 1`/`cols - 1` after the status line disappears, and since a
+ * read-only `view` session never resizes the PTY, the agent's TUI would remain
+ * one row and column short until the next writable attach. The broker applies
+ * the size before dropping ownership, so this stays one round-trip and cannot
+ * lose the ordering race a separate resize call would introduce.
  */
 export async function releaseResizeOwnership(
   connection: BrokerConnection,
   name: string,
   sessionId: string,
-  fetchFn: typeof globalThis.fetch
+  fetchFn: typeof globalThis.fetch,
+  restoreSize?: { rows: number; cols: number } | null
 ): Promise<void> {
   try {
-    // A pure release carries no dimensions — the broker skips the resize and
-    // only drops ownership, so there are no placeholder sizes to invent.
-    await createBrokerClient(connection, fetchFn).resizePty(name, undefined, undefined, {
+    // Omitting the dimensions is a pure release — the broker skips the resize,
+    // so a session with no local TTY invents no placeholder size.
+    await createBrokerClient(connection, fetchFn).resizePty(name, restoreSize?.rows, restoreSize?.cols, {
       sessionId,
       release: true,
     });
@@ -547,8 +560,13 @@ export function renderStatusLine(opts: {
   rows?: number;
   /** Terminal columns — the label is truncated to fit. Defaults to 80. */
   cols?: number;
+  scrollTop?: number;
+  scrollBottom?: number;
+  originMode?: boolean;
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
+  const scrollTop = Math.max(1, opts.scrollTop ?? 1);
+  const scrollBottom = Math.max(scrollTop + 1, opts.scrollBottom ?? row - 1);
   // The Ctrl+] hint names the action the NEXT press performs: in manual_flush
   // it delivers (drains the parked queue and goes live); in auto_inject it
   // re-holds. Without the hint, a parked message is invisible beyond the
@@ -556,11 +574,16 @@ export function renderStatusLine(opts: {
   const toggleHint = opts.mode === 'manual_flush' ? 'Ctrl+] deliver' : 'Ctrl+] hold';
   const text = clampStatusLineText(
     `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | ${toggleHint} | Ctrl+C detach]`,
-    opts.cols
+    opts.cols,
+    true
   );
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
-  return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
+  // Temporarily restore the full physical scroll region so CUP can reach the
+  // reserved row even if autowrap left the cursor below the child margin.
+  // Reinstall the child margin before restoring its cursor.
+  const restoreOrigin = opts.originMode ? '\x1b[?6h' : '';
+  return `\x1b7\x1b[?6l\x1b[r\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b[${scrollTop};${scrollBottom}r${restoreOrigin}\x1b8`;
 }
 
 /** ----- Main session runner ----- */
@@ -655,9 +678,10 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     const inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
+    const isTtyOutput = state.initialLocalSize !== null;
     // Skip the status line entirely when stdout is not a TTY (e.g. piped to
     // `tee`) — a fabricated row-24 repaint would corrupt the captured log.
-    const statusLineEnabled = state.initialLocalSize !== null;
+    let statusLineEnabled = canReserveStatusLine(state.initialLocalSize);
     // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
     // is painted and reconciled against its per-worker offset.
     const sync = new StreamSyncBuffer();
@@ -665,11 +689,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     // Adaptive predictive echo masks round-trip latency on remote brokers.
     // Seeded with the snapshot (once painted) so its confirmed model matches
     // the screen.
+    let initialAgentSize = reserveStatusLineRow(state.initialLocalSize);
+    const scrollRegion = new TerminalScrollRegionTracker(initialAgentSize?.rows ?? 1);
+    let observeRenderedOutput = (_chunk: string): void => {};
     const predictiveEcho =
       deps.createPredictiveEcho?.({
-        cols: state.initialLocalSize?.cols ?? 0,
-        rows: state.initialLocalSize?.rows ?? 0,
-        write: deps.writeChunk,
+        cols: initialAgentSize?.cols ?? 0,
+        rows: initialAgentSize?.rows ?? 0,
+        write: (chunk) => {
+          deps.writeChunk(chunk);
+          observeRenderedOutput(chunk);
+        },
         getInputSrtt: () => inputStream?.srttMs ?? null,
       }) ?? null;
 
@@ -686,30 +716,85 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       snapshotBytes += chunk;
     };
 
+    const correctSetupResize = async (baseline: { rows: number; cols: number } | null): Promise<void> => {
+      const latest = reserveStatusLineRow(deps.terminal.getSize());
+      if (!latest || (latest.rows === baseline?.rows && latest.cols === baseline?.cols)) return;
+      const correction = resizeWorker(connection, name, latest.rows, latest.cols, deps.fetch, {
+        sessionId: resizeSessionId,
+      });
+      trackResize(correction);
+      const result = await correction;
+      if (!result.ok) {
+        deps.log(`[drive] setup resize correction failed: ${result.message ?? 'unknown error'}`);
+      }
+    };
+
+    const beginSubscribedLayout = (): void => {
+      // Install this before the first resize/snapshot await so a local resize
+      // during setup cannot be lost.
+      unsubscribeResize ??= deps.terminal.onResize(resizeHandler);
+      const currentSize = deps.terminal.getSize();
+      terminalRows = pickInitialTerminalRows(currentSize, undefined);
+      terminalCols = currentSize?.cols;
+      statusLineEnabled = canReserveStatusLine(currentSize);
+      initialAgentSize = reserveStatusLineRow(currentSize);
+      if (initialAgentSize) {
+        scrollRegion.setRows(initialAgentSize.rows);
+        predictiveEcho?.onResize(initialAgentSize.cols, initialAgentSize.rows);
+      }
+      if (statusLineEnabled && initialAgentSize) {
+        deps.writeChunk(renderChildScrollRegion(initialAgentSize.rows));
+      }
+    };
+
     // Boundary-held + coalesced status painter. Holds repaints while the agent
     // is mid escape-sequence (no splicing into a half-sent CSI), rate-limits
     // per-chunk repaints, and skips painting entirely on a non-TTY stdout.
     const statusController = new StatusLineController({
-      render: () =>
-        renderStatusLine({ name, mode: currentMode, pending, rows: terminalRows, cols: terminalCols }),
+      render: () => {
+        const region = scrollRegion.region;
+        return renderStatusLine({
+          name,
+          mode: currentMode,
+          pending,
+          rows: terminalRows,
+          cols: terminalCols,
+          scrollTop: region.top,
+          scrollBottom: region.bottom,
+          originMode: scrollRegion.isOriginMode,
+        });
+      },
       write: deps.writeChunk,
-      enabled: statusLineEnabled,
+      enabled: () => statusLineEnabled,
       coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
     });
     const paintStatus = (): void => {
       statusController.request();
     };
+    observeRenderedOutput = (chunk): void => {
+      scrollRegion.push(chunk);
+      statusController.observeOutput(chunk);
+    };
 
     // Route server output through the predictive-echo engine (which owns
-    // cursor save/restore) or straight to stdout, then repaint the status.
-    // Feed every chunk to the status controller for boundary tracking so the
-    // repaint holds off until the stream is back at a sequence boundary.
+    // cursor save/restore) or straight to stdout. Feed every chunk to the
+    // status controller for boundary tracking. Repaint after each completed
+    // chunk because terminal autowrap can briefly cross a DECSTBM bottom
+    // margin. The clipped label cannot autowrap itself, and the child PTY's
+    // reserved row prevents cursor-addressed TUI frames from fighting it.
     const applyServerOutput = (chunk: string): void => {
-      statusController.observeOutput(chunk);
       if (predictiveEcho) {
-        void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
+        void predictiveEcho.onServerOutput(chunk).then(
+          () => {
+            paintStatus();
+          },
+          () => {
+            paintStatus();
+          }
+        );
       } else {
         deps.writeChunk(chunk);
+        observeRenderedOutput(chunk);
         paintStatus();
       }
     };
@@ -724,13 +809,19 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       if (!size) return;
       terminalRows = size.rows;
       terminalCols = size.cols;
-      predictiveEcho?.onResize(size.cols, size.rows);
+      statusLineEnabled = canReserveStatusLine(size);
+      const agentSize = reserveStatusLineRow(size);
+      if (!agentSize) return;
+      scrollRegion.setRows(agentSize.rows);
+      predictiveEcho?.onResize(agentSize.cols, agentSize.rows);
       trackResize(
-        resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+        resizeWorker(connection, name, agentSize.rows, agentSize.cols, deps.fetch, {
           sessionId: resizeSessionId,
         }).then((res) => {
           if (!res.ok) {
             deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
+          } else if (res.applied === false) {
+            deps.log('[drive] broker did not apply the reserved PTY size; using status repaint fallback');
           }
         })
       );
@@ -868,7 +959,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         // Heal the local terminal: the snapshot + live stream may have left it
         // in app-cursor / mouse / bracketed-paste / alt-screen mode. Gate on a
         // TTY stdout (same signal that gates the status line).
-        resetLocalTerminalOnDetach(deps.writeChunk, statusLineEnabled);
+        resetLocalTerminalOnDetach(deps.writeChunk, isTtyOutput);
       } catch {
         // best effort
       }
@@ -934,7 +1025,15 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           if (outstandingResizes.size > 0) {
             await Promise.allSettled([...outstandingResizes]);
           }
-          await releaseResizeOwnership(connection, name, resizeSessionId, deps.fetch);
+          // Hand the reserved status row/column back in the same request, so
+          // the agent's TUI is not left one row and column short.
+          await releaseResizeOwnership(
+            connection,
+            name,
+            resizeSessionId,
+            deps.fetch,
+            deps.terminal.getSize()
+          );
         } catch {
           // Best-effort — the broker's idle-takeover net still frees ownership.
         }
@@ -1031,7 +1130,6 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         // Subscribe to local-terminal resize events at the same point
         // we take over stdin so the lifecycles match — both go away in
         // `teardownStdin` on any exit path.
-        unsubscribeResize = deps.terminal.onResize(resizeHandler);
         // Start the periodic ownership re-assert so an idle-but-live session
         // keeps the single-resizer lease past the broker's stale window. The
         // broker no-ops a same-size re-assert (no SIGWINCH/repaint).
@@ -1039,9 +1137,10 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         if (reassertMs > 0) {
           reassertTimer = setInterval(() => {
             const size = deps.terminal.getSize() ?? state.initialLocalSize;
-            if (!size) return;
+            const agentSize = reserveStatusLineRow(size);
+            if (!agentSize) return;
             trackResize(
-              resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+              resizeWorker(connection, name, agentSize.rows, agentSize.cols, deps.fetch, {
                 sessionId: resizeSessionId,
               }).then((res) => {
                 if (!res.ok) {
@@ -1061,13 +1160,23 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       }
     };
 
-    // Runs once the event WS is subscribed. Take over stdin before replaying
-    // the snapshot: a source TUI can enable mouse/focus/alternate-scroll
-    // reporting in that replay, and cooked-mode stdin would echo those reports
-    // as visible escape text until the later input-stream setup completed.
+    // Runs once the event WS is subscribed: first reserve the local bottom row
+    // and take over stdin before replaying the snapshot. A source TUI can
+    // enable mouse/focus/alternate-scroll reporting in that replay, and
+    // cooked-mode stdin would echo those reports as visible escape text.
+    // The WS is already buffering, so the resize repaint is reconciled against
+    // the snapshot without a dead zone.
     const onSubscribed = async (): Promise<void> => {
+      beginSubscribedLayout();
       await openInputStreamAndSetRawMode();
       if (settled) return;
+      const initialResize = syncInitialPtySize(connection, name, initialAgentSize, 'drive', deps, {
+        sessionId: resizeSessionId,
+      });
+      trackResize(initialResize);
+      await initialResize;
+      if (settled) return;
+      await correctSetupResize(initialAgentSize);
       const snapshot = await deps.captureAndRenderSnapshot(
         { url: connection.url, apiKey: connection.apiKey },
         name,
@@ -1103,9 +1212,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         }
         if (settled) return;
       }
-      terminalRows = pickInitialTerminalRows(state.initialLocalSize, snapshot.rows);
-      terminalCols = pickInitialTerminalCols(state.initialLocalSize, snapshot.cols);
+      const currentLocalSize = deps.terminal.getSize();
+      terminalRows = pickInitialTerminalRows(currentLocalSize, snapshot.rows);
+      terminalCols = pickInitialTerminalCols(currentLocalSize, snapshot.cols);
       // Track the snapshot bytes for boundary state before the first repaint.
+      scrollRegion.push(snapshotBytes);
       statusController.observeOutput(snapshotBytes);
       paintStatus();
       // Reconcile buffered chunks. On `ok`, drop what the snapshot already
@@ -1114,12 +1225,6 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       // transient snapshot failure nothing was painted, so apply everything.
       const pendingChunks = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
       for (const chunk of pendingChunks) applyServerOutput(chunk);
-      const initialResize = syncInitialPtySize(connection, name, state.initialLocalSize, 'drive', deps, {
-        sessionId: resizeSessionId,
-      });
-      trackResize(initialResize);
-      await initialResize;
-      if (settled) return;
       // Input forwarding starts only after predictive echo has been seeded by
       // the snapshot. Raw mode was already enabled above, so terminal reports
       // could not echo during the setup window.

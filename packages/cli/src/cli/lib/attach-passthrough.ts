@@ -31,18 +31,22 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  canReserveStatusLine,
   clampStatusLineText,
   createBackpressureAwareWriter,
   DETACH_CLEANUP_DEADLINE_MS,
   pickInitialTerminalCols,
   pickInitialTerminalRows,
   prepareAttachTarget,
+  reserveStatusLineRow,
+  renderChildScrollRegion,
   resetLocalTerminalOnDetach,
   restoreInboundDeliveryModeOnDetach,
   StatusLineController,
   StreamSyncBuffer,
   switchInboundDeliveryModeOrAbort,
   syncInitialPtySize,
+  TerminalScrollRegionTracker,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
@@ -274,13 +278,20 @@ export function renderStatusLine(opts: {
   rows?: number;
   /** Terminal columns — the label is truncated to fit. Defaults to 80. */
   cols?: number;
+  scrollTop?: number;
+  scrollBottom?: number;
+  originMode?: boolean;
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
+  const scrollTop = Math.max(1, opts.scrollTop ?? 1);
+  const scrollBottom = Math.max(scrollTop + 1, opts.scrollBottom ?? row - 1);
   const text = clampStatusLineText(
     `[passthrough ${opts.name} | delivery=${opts.mode} | Ctrl+C detach]`,
-    opts.cols
+    opts.cols,
+    true
   );
-  return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
+  const restoreOrigin = opts.originMode ? '\x1b[?6h' : '';
+  return `\x1b7\x1b[?6l\x1b[r\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b[${scrollTop};${scrollBottom}r${restoreOrigin}\x1b8`;
 }
 
 /** ----- Main session runner ----- */
@@ -384,8 +395,9 @@ export async function runPassthroughSession(
     const inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
+    const isTtyOutput = initialLocalSize !== null;
     // Skip the status line entirely when stdout is not a TTY (piped output).
-    const statusLineEnabled = initialLocalSize !== null;
+    let statusLineEnabled = canReserveStatusLine(initialLocalSize);
     // Subscribe-first: buffer live `worker_stream` chunks until the snapshot
     // is painted and reconciled against its per-worker offset (no lost/dup
     // output around attach time). See StreamSyncBuffer.
@@ -396,11 +408,17 @@ export async function runPassthroughSession(
     // Adaptive predictive echo masks round-trip latency on remote brokers.
     // Seeded with the snapshot (after it is painted) so its confirmed model
     // matches the screen.
+    let initialAgentSize = reserveStatusLineRow(initialLocalSize);
+    const scrollRegion = new TerminalScrollRegionTracker(initialAgentSize?.rows ?? 1);
+    let observeRenderedOutput = (_chunk: string): void => {};
     const predictiveEcho =
       deps.createPredictiveEcho?.({
-        cols: initialLocalSize?.cols ?? 0,
-        rows: initialLocalSize?.rows ?? 0,
-        write: deps.writeChunk,
+        cols: initialAgentSize?.cols ?? 0,
+        rows: initialAgentSize?.rows ?? 0,
+        write: (chunk) => {
+          deps.writeChunk(chunk);
+          observeRenderedOutput(chunk);
+        },
         getInputSrtt: () => inputStream?.srttMs ?? null,
       }) ?? null;
 
@@ -417,25 +435,78 @@ export async function runPassthroughSession(
       snapshotBytes += chunk;
     };
 
+    const correctSetupResize = async (baseline: { rows: number; cols: number } | null): Promise<void> => {
+      const latest = reserveStatusLineRow(deps.terminal.getSize());
+      if (!latest || (latest.rows === baseline?.rows && latest.cols === baseline?.cols)) return;
+      const correction = resizeWorker(connection, name, latest.rows, latest.cols, deps.fetch, {
+        sessionId: resizeSessionId,
+      });
+      trackResize(correction);
+      const result = await correction;
+      if (!result.ok) {
+        deps.log(`[passthrough] setup resize correction failed: ${result.message ?? 'unknown error'}`);
+      }
+    };
+
+    const beginSubscribedLayout = (): void => {
+      unsubscribeResize ??= deps.terminal.onResize(resizeHandler);
+      const currentSize = deps.terminal.getSize();
+      terminalRows = pickInitialTerminalRows(currentSize, undefined);
+      terminalCols = currentSize?.cols;
+      statusLineEnabled = canReserveStatusLine(currentSize);
+      initialAgentSize = reserveStatusLineRow(currentSize);
+      if (initialAgentSize) {
+        scrollRegion.setRows(initialAgentSize.rows);
+        predictiveEcho?.onResize(initialAgentSize.cols, initialAgentSize.rows);
+      }
+      if (statusLineEnabled && initialAgentSize) {
+        deps.writeChunk(renderChildScrollRegion(initialAgentSize.rows));
+      }
+    };
+
     // Boundary-held + coalesced status painter (skips non-TTY stdout).
     const statusController = new StatusLineController({
-      render: () => renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows, cols: terminalCols }),
+      render: () => {
+        const region = scrollRegion.region;
+        return renderStatusLine({
+          name,
+          mode: 'auto_inject',
+          rows: terminalRows,
+          cols: terminalCols,
+          scrollTop: region.top,
+          scrollBottom: region.bottom,
+          originMode: scrollRegion.isOriginMode,
+        });
+      },
       write: deps.writeChunk,
-      enabled: statusLineEnabled,
+      enabled: () => statusLineEnabled,
       coalesceMs: deps.statusRepaintCoalesceMs ?? 40,
     });
     const paintStatus = (): void => {
       statusController.request();
     };
+    observeRenderedOutput = (chunk): void => {
+      scrollRegion.push(chunk);
+      statusController.observeOutput(chunk);
+    };
 
     // Route server output through the predictive-echo engine (which owns
-    // cursor save/restore) or straight to stdout, then repaint the status.
+    // cursor save/restore) or straight to stdout. Repaint at safe ANSI
+    // boundaries after each chunk: cursor-addressed output remains confined
+    // to the smaller PTY, while this restores the row after terminal autowrap.
     const applyServerOutput = (chunk: string): void => {
-      statusController.observeOutput(chunk);
       if (predictiveEcho) {
-        void predictiveEcho.onServerOutput(chunk).then(paintStatus, paintStatus);
+        void predictiveEcho.onServerOutput(chunk).then(
+          () => {
+            paintStatus();
+          },
+          () => {
+            paintStatus();
+          }
+        );
       } else {
         deps.writeChunk(chunk);
+        observeRenderedOutput(chunk);
         paintStatus();
       }
     };
@@ -445,13 +516,21 @@ export async function runPassthroughSession(
       if (!size) return;
       terminalRows = size.rows;
       terminalCols = size.cols;
-      predictiveEcho?.onResize(size.cols, size.rows);
+      statusLineEnabled = canReserveStatusLine(size);
+      const agentSize = reserveStatusLineRow(size);
+      if (!agentSize) return;
+      scrollRegion.setRows(agentSize.rows);
+      predictiveEcho?.onResize(agentSize.cols, agentSize.rows);
       trackResize(
-        resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+        resizeWorker(connection, name, agentSize.rows, agentSize.cols, deps.fetch, {
           sessionId: resizeSessionId,
         }).then((res) => {
           if (!res.ok) {
             deps.log(`[passthrough] resize forward failed: ${res.message ?? 'unknown error'}`);
+          } else if (res.applied === false) {
+            deps.log(
+              '[passthrough] broker did not apply the reserved PTY size; using status repaint fallback'
+            );
           }
         })
       );
@@ -520,7 +599,7 @@ export async function runPassthroughSession(
         // Heal the local terminal on detach: the snapshot + live stream may
         // have left it in app-cursor / mouse / bracketed-paste / alt-screen
         // mode. Gate on TTY stdout (same signal as the status line).
-        resetLocalTerminalOnDetach(deps.writeChunk, statusLineEnabled);
+        resetLocalTerminalOnDetach(deps.writeChunk, isTtyOutput);
       } catch {
         // best effort
       }
@@ -585,7 +664,15 @@ export async function runPassthroughSession(
           if (outstandingResizes.size > 0) {
             await Promise.allSettled([...outstandingResizes]);
           }
-          await releaseResizeOwnership(connection, name, resizeSessionId, deps.fetch);
+          // Hand the reserved status row/column back in the same request, so
+          // the agent's TUI is not left one row and column short.
+          await releaseResizeOwnership(
+            connection,
+            name,
+            resizeSessionId,
+            deps.fetch,
+            deps.terminal.getSize()
+          );
         } catch {
           // Best-effort — the broker's idle-takeover net still frees ownership.
         }
@@ -663,7 +750,6 @@ export async function runPassthroughSession(
       try {
         if (settled) return;
         stdinReady = true;
-        unsubscribeResize = deps.terminal.onResize(resizeHandler);
         // Periodic ownership re-assert (see `ownershipReassertMs`): keeps the
         // single-resizer lease alive on an idle-but-live session; the broker
         // no-ops a same-size re-assert (no SIGWINCH/repaint).
@@ -671,9 +757,10 @@ export async function runPassthroughSession(
         if (reassertMs > 0) {
           reassertTimer = setInterval(() => {
             const size = deps.terminal.getSize() ?? initialLocalSize;
-            if (!size) return;
+            const agentSize = reserveStatusLineRow(size);
+            if (!agentSize) return;
             trackResize(
-              resizeWorker(connection, name, size.rows, size.cols, deps.fetch, {
+              resizeWorker(connection, name, agentSize.rows, agentSize.cols, deps.fetch, {
                 sessionId: resizeSessionId,
               }).then((res) => {
                 if (!res.ok) {
@@ -694,13 +781,22 @@ export async function runPassthroughSession(
       }
     };
 
-    // Runs once the event WS is subscribed. Take over stdin before replaying
-    // the snapshot: a source TUI can enable mouse/focus/alternate-scroll
-    // reporting in that replay, and cooked-mode stdin would echo those reports
-    // as visible escape text until the later input-stream setup completed.
+    // Runs once the event WS is subscribed: first reserve the local bottom row
+    // and take over stdin before replaying the snapshot. A source TUI can
+    // enable mouse/focus/alternate-scroll reporting in that replay, and
+    // cooked-mode stdin would echo those reports as visible escape text. The
+    // subscribed WS buffers the resize repaint for reconciliation.
     const onSubscribed = async (): Promise<void> => {
+      beginSubscribedLayout();
       await openInputStreamAndSetRawMode();
       if (settled) return;
+      const initialResize = syncInitialPtySize(connection, name, initialAgentSize, 'passthrough', deps, {
+        sessionId: resizeSessionId,
+      });
+      trackResize(initialResize);
+      await initialResize;
+      if (settled) return;
+      await correctSetupResize(initialAgentSize);
       const snapshot = await deps.captureAndRenderSnapshot(
         { url: connection.url, apiKey: connection.apiKey },
         name,
@@ -736,9 +832,11 @@ export async function runPassthroughSession(
         }
         if (settled) return;
       }
-      terminalRows = pickInitialTerminalRows(initialLocalSize, snapshot.rows);
-      terminalCols = pickInitialTerminalCols(initialLocalSize, snapshot.cols);
+      const currentLocalSize = deps.terminal.getSize();
+      terminalRows = pickInitialTerminalRows(currentLocalSize, snapshot.rows);
+      terminalCols = pickInitialTerminalCols(currentLocalSize, snapshot.cols);
       // Track the snapshot bytes for boundary state before the first repaint.
+      scrollRegion.push(snapshotBytes);
       statusController.observeOutput(snapshotBytes);
       paintStatus();
       // Reconcile buffered chunks. On `ok`, drop what the snapshot already
@@ -747,12 +845,6 @@ export async function runPassthroughSession(
       // transient snapshot failure nothing was painted, so apply everything.
       const pending = snapshot.status === 'ok' ? sync.reconcile(snapshot.offset) : sync.flushAll();
       for (const chunk of pending) applyServerOutput(chunk);
-      const initialResize = syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps, {
-        sessionId: resizeSessionId,
-      });
-      trackResize(initialResize);
-      await initialResize;
-      if (settled) return;
       // Input forwarding starts only after predictive echo has been seeded by
       // the snapshot. Raw mode was already enabled above, so terminal reports
       // could not echo during the setup window.

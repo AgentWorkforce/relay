@@ -1392,26 +1392,56 @@ impl BrokerRuntime {
 
                 // Explicit ownership release on detach (see `resize_owners`
                 // doc on `BrokerRuntime`). A release carries the owning
-                // `session_id`; we drop ownership only if it matches, then
-                // return without touching the PTY size. A release without a
-                // session id, or from a non-owner, is a no-op. The response
-                // reports the *actual* outcome so the client can tell a real
-                // release from a no-op.
+                // `session_id`; we drop ownership only if it matches. A release
+                // without a session id, or from a non-owner, is a no-op. The
+                // response reports the *actual* outcome so the client can tell
+                // a real release from a no-op.
+                //
+                // A release MAY carry dimensions, which are applied to the
+                // worker before ownership is dropped. Attach clients that
+                // reserve a status row need to hand that row back on detach,
+                // and doing it here keeps the restore atomic with the release:
+                // a separate resize call would need to land strictly before the
+                // release (a later one re-claims the lease — the detach race in
+                // #1247) and would add a second round-trip to teardown. Zero
+                // dimensions mean "no restore", so a pure release still needs
+                // no placeholder size.
                 if release {
-                    let released = match session_id.as_deref() {
-                        Some(sid)
-                            if resize_owners
-                                .get(&name)
-                                .is_some_and(|owner| owner.session_id == sid) =>
-                        {
-                            resize_owners.remove(&name);
-                            true
-                        }
-                        _ => false,
+                    let owns = match session_id.as_deref() {
+                        Some(sid) => resize_owners
+                            .get(&name)
+                            .is_some_and(|owner| owner.session_id == sid),
+                        None => false,
                     };
+                    // Only the owner may resize, and only a real size restores.
+                    // A worker that has already exited just releases: teardown
+                    // is best-effort and must not fail on a gone worker.
+                    let resized = owns
+                        && rows > 0
+                        && cols > 0
+                        && matches!(
+                            workers
+                                .workers
+                                .get(&name)
+                                .map(|handle| handle.spec.runtime.clone()),
+                            Some(AgentRuntime::Pty)
+                        )
+                        && workers
+                            .send_to_worker(
+                                &name,
+                                "resize_pty",
+                                Some(RequestId::new(format!("api_{}", Uuid::new_v4().simple()))),
+                                json!({ "rows": rows, "cols": cols }),
+                            )
+                            .await
+                            .is_ok();
+                    if owns {
+                        resize_owners.remove(&name);
+                    }
                     let _ = reply.send(Ok(json!({
                         "name": name,
-                        "released": released,
+                        "released": owns,
+                        "resized": resized,
                     })));
                 } else if rows == 0 || cols == 0 {
                     let _ =

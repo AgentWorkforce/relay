@@ -254,6 +254,73 @@ test(
   }
 );
 
+test(
+  'mcp-injection: codex — named Relay participants are not replaced by built-in subagents',
+  { timeout: 180_000 },
+  async (t) => {
+    if (skipIfMissing(t)) return;
+    if (skipIfNotRealCli(t)) return;
+    if (skipIfCliMissing(t, 'codex')) return;
+
+    const harness = new BrokerHarness();
+    const suffix = uniqueSuffix();
+    const playerName = `PlayerA-${suffix}`;
+    const gameMasterName = `Gamemaster-${suffix}`;
+
+    // Startup is inside the try so a failing `start()` still runs the cleanup
+    // below — a partially-created broker must not survive the test.
+    try {
+      await harness.start();
+      // A lightweight, already-running Relay participant. The assertion is on
+      // the Gamemaster's outbound Relay message, so PlayerA need not answer.
+      await harness.spawnAgent(playerName, 'cat', ['general']);
+      await harness.spawnAgent(gameMasterName, 'codex', ['general'], {
+        task:
+          `Work with the existing participant ${playerName} to choose a tic-tac-toe move. ` +
+          `Ask ${playerName} which move they choose, then wait for their response. ` +
+          `Do not choose or play the move on their behalf.`,
+      });
+
+      // Wait for the routing evidence itself rather than a fixed delay: a slow
+      // Codex run used to fail before its message arrived, and a fast one still
+      // paid the full sleep. A timeout here is not the assertion — fall through
+      // so the descriptive checks below report what actually happened.
+      const isMessageToPlayer = (event: BrokerEvent): boolean => {
+        if (event.kind !== 'relay_inbound') return false;
+        const message = event as Extract<BrokerEvent, { kind: 'relay_inbound' }>;
+        return (
+          message.from === gameMasterName &&
+          message.target === playerName &&
+          /move|choose|tic-tac-toe/i.test(message.body)
+        );
+      };
+      await harness.waitForEvent('relay_inbound', 90_000, isMessageToPlayer).promise.catch(() => undefined);
+
+      const events = harness.getEvents();
+      const agentMessages = getRelayInboundFromAgent(events, gameMasterName);
+      const messagesToPlayer = agentMessages.filter((event) => {
+        const message = event as Extract<BrokerEvent, { kind: 'relay_inbound' }>;
+        return message.target === playerName && /move|choose|tic-tac-toe/i.test(message.body);
+      });
+      assert.ok(
+        messagesToPlayer.length >= 1,
+        `Codex Gamemaster should contact the existing Relay participant instead of starting ` +
+          `a built-in subagent; got ${messagesToPlayer.length} relevant messages to ${playerName}.`
+      );
+      const output = collectStreamOutput(events, gameMasterName);
+      assert.doesNotMatch(
+        output,
+        /No agents completed yet|Finished waiting|Waiting for agents/i,
+        'Codex Gamemaster should not enter its provider-native subagent wait flow'
+      );
+    } finally {
+      await harness.releaseAgent(gameMasterName).catch(() => undefined);
+      await harness.releaseAgent(playerName).catch(() => undefined);
+      await harness.stop();
+    }
+  }
+);
+
 // ══════════════════════════════════════════════════════════════════════════════
 // OPENCODE MCP INJECTION
 // Verifies opencode.json is written and --agent agent-relay flag is passed.

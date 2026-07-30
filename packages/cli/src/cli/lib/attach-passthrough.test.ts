@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { LOCAL_TERMINAL_RESET_SEQUENCE } from './attach.js';
 import type { CliPtyInputStream } from './attach-drive.js';
 import {
   PassthroughKeybindParser,
@@ -501,9 +502,9 @@ describe('renderStatusLine', () => {
   it('truncates the label to the terminal width so it can never wrap', () => {
     const cols = 40;
     // eslint-disable-next-line no-control-regex -- matching the raw ESC bytes this module emits
-    const strip = (s: string) => s.replace(/\x1b(?:[78]|\[[0-9;]*[A-Za-z])/g, '');
+    const strip = (s: string) => s.replace(/\x1b(?:[78]|\[[?0-9;]*[A-Za-z])/g, '');
     const text = strip(renderStatusLine({ name: 'Gamemaster', mode: 'auto_inject', rows: 24, cols }));
-    expect(text.length).toBeLessThanOrEqual(cols);
+    expect(text.length).toBeLessThan(cols);
     expect(text).toContain('[passthrough');
     expect(text).toContain('detach]');
   });
@@ -675,16 +676,29 @@ describe('runPassthroughSession', () => {
     await sessionPromise;
   });
 
-  it('writes worker_stream chunks to stdout and repaints the status line', async () => {
+  it('writes worker_stream chunks and safely restores the reserved status row', async () => {
     const { deps, sockets, writes, stdin } = createHarness();
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'live output' }));
     expect(writes.includes('live output')).toBe(true);
-    const liveIdx = writes.indexOf('live output');
-    const repaintAfter = writes.slice(liveIdx + 1).some((w) => w.includes('passthrough Alice'));
-    expect(repaintAfter).toBe(true);
+    const paintsAfter = writes.filter((w) => w.includes('passthrough Alice')).length;
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'more output' }));
+    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsAfter);
 
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('repaints after worker output erases the full display', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    const paintsBefore = writes.filter((w) => w.includes('passthrough Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '\x1b[2J' }));
+
+    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsBefore);
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
@@ -811,7 +825,7 @@ describe('runPassthroughSession', () => {
     }
   });
 
-  it('forwards the local terminal size to the broker on attach', async () => {
+  it('reserves the final local row when sizing the agent PTY on attach', async () => {
     const { deps, sockets, signals, fetchLog } = createHarness({
       terminalSize: { rows: 60, cols: 200 },
     });
@@ -821,9 +835,82 @@ describe('runPassthroughSession', () => {
     const resizeCalls = fetchLog.filter((c) => c.method === 'POST' && c.url.includes('/resize/'));
     expect(resizeCalls).toHaveLength(1);
     const body = resizeCalls[0].body as { rows: number; cols: number; session_id?: string };
-    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 60, cols: 200 });
+    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 59, cols: 199 });
     // The on-attach sync carries a session id for the single-resizer policy.
     expect(body.session_id).toEqual(expect.any(String));
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('refreshes terminal size when it changes before the event socket opens', async () => {
+    const { deps, sockets, terminal, signals, fetchLog, writes } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    terminal.setSize({ rows: 42, cols: 120 });
+    await openSocket(sockets);
+
+    const firstResize = fetchLog.find((call) => call.url.includes('/api/resize/'));
+    expect(firstResize?.body).toMatchObject({ rows: 41, cols: 119 });
+    expect([...writes].reverse().find((write) => write.includes('[passthrough Alice'))).toContain(
+      '\x1b[42;1H'
+    );
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('reapplies the latest size after a stale initial resize completes', async () => {
+    let resolveInitialResize: ((response: Response) => void) | undefined;
+    let resizeCalls = 0;
+    const { deps, sockets, terminal, signals, fetchLog, writes } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      routes: {
+        'POST /resize': async () => {
+          resizeCalls += 1;
+          if (resizeCalls === 1) {
+            return new Promise<Response>((resolve) => {
+              resolveInitialResize = resolve;
+            });
+          }
+          return new Response(JSON.stringify({ applied: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    sockets[0]?.emit('open');
+    await new Promise((resolve) => setImmediate(resolve));
+    terminal.setSize({ rows: 42, cols: 120 });
+    await new Promise((resolve) => setImmediate(resolve));
+    // Without this the test can pass on the SIGWINCH resize alone: if setup
+    // never reached the first `POST /resize`, the optional resolve below is a
+    // no-op and the stale path is never exercised (silent false green).
+    expect(resolveInitialResize).toBeTypeOf('function');
+    resolveInitialResize?.(
+      new Response(JSON.stringify({ applied: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+
+    const activeResizes = fetchLog.filter(
+      (call) => call.url.includes('/api/resize/') && !(call.body as { release?: boolean }).release
+    );
+    expect(activeResizes.at(-1)?.body).toMatchObject({ rows: 41, cols: 119 });
+    expect([...writes].reverse().find((write) => write.includes('[passthrough Alice'))).toContain(
+      '\x1b[42;1H'
+    );
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
@@ -873,6 +960,32 @@ describe('runPassthroughSession', () => {
       .filter((call) => call.url.includes('/resize/'))
       .map((call) => call.body as { release?: boolean });
     expect(resizeBodies.map((body) => body.release === true)).toEqual([false, true]);
+  });
+
+  it('restores the reserved row and column on the release itself', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // The attach sizes the worker one row and column short to reserve the
+    // status line.
+    const attachResize = fetchLog.find((call) => call.method === 'POST' && call.url.includes('/resize/'));
+    expect(attachResize?.body).toMatchObject({ rows: 29, cols: 99 });
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Detach hands the reserved row and column back on the release request, so
+    // a later read-only `view` session doesn't inherit a short PTY. Doing it on
+    // the release keeps it atomic: a separate resize could land afterwards and
+    // re-claim ownership (#1247).
+    const releaseCalls = fetchLog.filter(
+      (call) => call.url.includes('/resize/') && (call.body as { release?: boolean }).release === true
+    );
+    expect(releaseCalls).toHaveLength(1);
+    expect(releaseCalls[0]?.body).toMatchObject({ rows: 30, cols: 100 });
   });
 
   // ---- predictive-echo wiring ----
@@ -954,16 +1067,69 @@ describe('runPassthroughSession', () => {
   // ---- status line boundary-hold (item 4) ----
 
   it('holds the status repaint while a worker chunk ends mid escape sequence', async () => {
-    const { deps, sockets, writes, stdin } = createHarness();
+    const { deps, sockets, writes, stdin, terminal } = createHarness();
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
 
     const paintsBefore = writes.filter((w) => w.includes('passthrough Alice')).length;
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
+    const writesBeforeResize = writes.length;
+    // A local resize requests a status repaint, but it must wait until the
+    // worker completes its split CSI sequence.
+    terminal.setSize({ rows: 31, cols: 100 });
     expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBe(paintsBefore);
+    expect(writes).toHaveLength(writesBeforeResize);
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
     expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsBefore);
 
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it.each([1, 2])('disables status painting when a large terminal shrinks to %i rows', async (rows) => {
+    const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
+      terminalSize: { rows: 10, cols: 80 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    terminal.setSize({ rows, cols: 80 });
+    const paintsAfterShrink = writes.filter((write) => write.includes('[passthrough Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'only row' }));
+
+    expect(writes.filter((write) => write.includes('[passthrough Alice'))).toHaveLength(paintsAfterShrink);
+    expect(
+      fetchLog.some(
+        (call) =>
+          call.url.includes('/api/resize/') &&
+          (call.body as { rows?: number; cols?: number }).rows === rows &&
+          (call.body as { rows?: number; cols?: number }).cols === 80
+      )
+    ).toBe(true);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(writes).toContain(LOCAL_TERMINAL_RESET_SEQUENCE);
+  });
+
+  it.each([1, 2])('activates row reservation when a %i-row terminal grows', async (rows) => {
+    const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
+      terminalSize: { rows, cols: 80 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(writes.some((write) => write.includes('[passthrough Alice'))).toBe(false);
+
+    terminal.setSize({ rows: 10, cols: 80 });
+
+    expect(writes.some((write) => write.includes('[passthrough Alice'))).toBe(true);
+    expect(
+      fetchLog.some(
+        (call) =>
+          call.url.includes('/api/resize/') &&
+          (call.body as { rows?: number; cols?: number }).rows === 9 &&
+          (call.body as { rows?: number; cols?: number }).cols === 79
+      )
+    ).toBe(true);
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
