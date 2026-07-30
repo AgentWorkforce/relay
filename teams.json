@@ -4,7 +4,7 @@
   "agents": [
     {
       "name": "relay",
-      "cli": "codex",
+      "cli": "claude --model opus",
       "role": "resident lead — relay (core product)",
       "task": "Read CLAUDE.md fully (including the Resident lead section) and follow its guidance plus the session-start ritual: CLAUDE.md, recent git log, relay inbox. You are the resident relay repo lead: stay online, answer DMs from chief and Will, never self-remove. Assignments arrive by DM from chief; ACK on start, DONE with evidence. Publishing releases needs chief green-light."
     }
