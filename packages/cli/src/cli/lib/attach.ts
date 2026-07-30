@@ -603,7 +603,8 @@ export async function syncInitialPtySize(
  * Read the worker's prior inbound delivery mode and flip it to
  * `targetMode`. Returns the previous mode on success so the caller can
  * restore it on detach; returns `null` (and writes an error) when the
- * flip fails so the caller bails before touching the terminal.
+ * request fails or the broker reports that the requested transition did not
+ * complete, so the caller bails before touching the terminal.
  *
  * Non-404 errors are surfaced as `Error: could not ${actionPhrase}:
  * ${message}` so callers pass verb-appropriate wording (e.g. "switch to
@@ -626,6 +627,17 @@ export async function switchInboundDeliveryModeOrAbort(
   }
   try {
     const result = await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
+    // A manual_flush → auto_inject transition can fail partway through when
+    // draining a parked message into the harness fails. The broker deliberately
+    // keeps and reports manual_flush in that case even though the PUT itself
+    // succeeded. Starting an attach session as if the target mode landed would
+    // render false state and make its first guarded toggle a no-op.
+    if (result.mode !== targetMode) {
+      deps.error(
+        `Error: could not ${actionPhrase}: broker remained in ${result.mode} mode while draining queued messages`
+      );
+      return null;
+    }
     return { previousMode, sessionRevision: result.revision };
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);

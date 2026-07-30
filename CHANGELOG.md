@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/config`, `@agent-relay/cli`, `@agent-relay/fleet`, and `@agent-relay/harness-driver` now build on Zod 4, matching `@agent-relay/sdk`; Relay no longer ships a split Zod 3/Zod 4 install.
 - `@agent-relay/config` builds `jsonSchemas` with Zod's built-in `z.toJSONSchema` and drops the `zod-to-json-schema` dependency. Output stays draft-7 and still describes config files as authored, but some keywords differ (records gain `propertyNames`, integers gain explicit bounds, and `RegExp` fields render as unconstrained).
 - `@agent-relay/harness-driver` now exports `SpawnAgentResultSchema` as a Zod 4 schema, and `@agent-relay/fleet` `action()` validates its `input` with Zod 4. Code that pairs either with its own Zod 3 instance — `z.infer`, `.extend()` — needs `zod@^4`.
+- `node agent attach --mode drive` keeps the agent in `auto_inject`, so a driven agent goes on receiving relay messages while you watch it instead of having them parked for the whole session. `Ctrl+]` now holds delivery when you want the screen still while typing; a second press drains the queue and returns to live delivery.
 
 ### Added
 
@@ -33,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PTY `node agent attach --mode drive|passthrough` sessions now reserve and safely clip their status row, preventing full-screen agent CLIs from tearing, scrolling, or duplicating Relay's controls.
 - Detaching from `node agent attach --mode drive|passthrough` restores the row and column the status line reserved, so a later `--mode view` session no longer inherits a PTY one row and column short. `POST /api/resize/{name}` applies dimensions sent alongside `release: true`.
 - Agent Relay MCP instructions now route work with existing named participants through Relay instead of provider-native subagents.
+- The `drive` status line counts only messages actually parked by the inbound hold. It previously also counted every delivery a harness queued for injection, so `pending` climbed on ordinary traffic and never came back down.
 - `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
 - The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
 - The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
