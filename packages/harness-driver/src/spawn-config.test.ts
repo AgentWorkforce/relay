@@ -20,7 +20,7 @@ describe('buildBrokerSpawnConfig', () => {
     expect(config.env.RELAY_API_KEY).toBe('rk_live_legacy');
   });
 
-  it('promotes canonical workspace-key env vars into explicit workspace-key argv', () => {
+  it('carries the canonical workspace key in env only, never on argv', () => {
     const config = buildBrokerSpawnConfig(
       {
         cwd: '/tmp/my-project',
@@ -34,8 +34,8 @@ describe('buildBrokerSpawnConfig', () => {
     );
 
     expect(config.workspaceKey).toBe('rk_live_workspace');
-    expect(config.args).toContain('--workspace-key');
-    expect(config.args).toContain('rk_live_workspace');
+    expect(config.args).not.toContain('--workspace-key');
+    expect(config.args).not.toContain('rk_live_workspace');
     expect(config.env.AGENT_RELAY_WORKSPACE_KEY).toBe('rk_live_workspace');
     expect(config.env.RELAY_WORKSPACE_KEY).toBe('rk_live_workspace');
     expect(config.env.RELAY_API_KEY).toBe('rk_live_workspace');
@@ -66,12 +66,11 @@ describe('buildBrokerSpawnConfig', () => {
 
     expect(config.brokerName).toBe('parent-broker');
     expect(config.workspaceKey).toBe('rk_live_env_workspace');
+    expect(config.env.AGENT_RELAY_WORKSPACE_KEY).toBe('rk_live_env_workspace');
     expect(config.args).toEqual([
       'init',
       '--instance-name',
       'parent-broker',
-      '--workspace-key',
-      'rk_live_env_workspace',
       '--channels',
       'general',
       '--persist',

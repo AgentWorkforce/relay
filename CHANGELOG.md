@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- CLI output masks credentials: `node up` / `node status` print the workspace key as `rk_live_…xxxx`, `cloud session --json` masks the access token unless `--reveal-token` is passed, and `workspace active --json` / `workspace create` mask workspace keys unless `--reveal-secrets` is passed. The new `workspace key [name]` command reads a stored key back from the local store (masked unless `--reveal-secrets`).
+- The workspace key no longer appears on any child argv: the broker child and the `--background` daemon both receive it via the environment only, so `ps` output and startup error messages never carry it. Verbose startup steps mask the key in the handshake line.
+- Error output redacts embedded credentials: cloud endpoint errors (which carry key-bearing URLs) and Commander unknown-option errors (which echo mistyped flags like `--workspce-key=rk_live_…` verbatim) mask any live credential in the text.
 - Upgraded `axios`, `concurrently`, `fast-uri`, `form-data`, `hono`, `js-yaml`, `postcss`, `shell-quote`, and `tar` past their high- and critical-severity advisories.
 
 ## [11.2.0] - 2026-07-25

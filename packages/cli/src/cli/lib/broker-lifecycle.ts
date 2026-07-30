@@ -21,6 +21,7 @@ import {
   type NodeDefinitionDescriptor,
   type RunningNodeProviderChild,
 } from './node-provider-child.js';
+import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
 import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
@@ -980,12 +981,15 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
 }
 
 function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies): string[] {
-  const args = cliUserArgs(deps).filter((arg) => !matchesCliOption(arg, '--background'));
+  // The workspace key travels to the detached child via env only (set on
+  // deps.env before the spawn): strip every argv spelling so the daemon's
+  // command line never carries it into `ps` output.
+  const args = stripCliOptionsWithValue(
+    cliUserArgs(deps).filter((arg) => !matchesCliOption(arg, '--background')),
+    ['--workspace-key', '--wk']
+  );
   if (options.stateDir && !hasCliOption(args, '--state-dir')) {
     args.push('--state-dir', path.resolve(options.stateDir));
-  }
-  if (options.workspaceKey && !hasCliOption(args, '--workspace-key')) {
-    args.push('--workspace-key', options.workspaceKey);
   }
   if (options.brokerName && !hasCliOption(args, '--broker-name')) {
     args.push('--broker-name', options.brokerName);
@@ -994,6 +998,23 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
     args.push('--verbose');
   }
   return args;
+}
+
+/** Drop each named option and, for the space-separated form, its value token. */
+function stripCliOptionsWithValue(args: string[], names: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (names.includes(arg)) {
+      i++;
+      continue;
+    }
+    if (names.some((name) => arg.startsWith(`${name}=`))) {
+      continue;
+    }
+    result.push(arg);
+  }
+  return result;
 }
 
 function cliUserArgs(deps: CoreDependencies): string[] {
@@ -1333,6 +1354,16 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.env.AGENT_RELAY_STATE_DIR = resolved;
   }
 
+  // If a workspace key was explicitly provided, inject it into the environment
+  // for both current tools and older compatibility paths. This must happen
+  // before the --background spawn: the detached child inherits deps.env, and
+  // env is the key's only channel — it never rides on argv, where `ps` would
+  // expose it for the daemon's whole lifetime.
+  if (options.workspaceKey) {
+    deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
+    deps.env.RELAY_API_KEY = options.workspaceKey;
+  }
+
   if (options.background) {
     const preflight = await recoverHalfStartedBroker(paths, deps);
     if (preflight === 'running') {
@@ -1500,13 +1531,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
     }
 
-    // If a workspace key was explicitly provided, inject it into the environment
-    // for both current tools and older compatibility paths.
-    if (options.workspaceKey) {
-      deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
-      deps.env.RELAY_API_KEY = options.workspaceKey;
-    }
-
     // Point the shared logger at a file / level / format before the fleet
     // sidecar (which reads this env when it builds its logger) starts.
     applyNodeLogEnv(options, deps);
@@ -1544,7 +1568,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log(`Relay API: http://localhost:${started.apiPort}`);
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
-    deps.log(`Workspace Key: ${relay.workspaceKey ?? 'unknown'}`);
+    deps.log(`Workspace Key: ${relay.workspaceKey ? maskSecret(relay.workspaceKey) : 'unknown'}`);
     deps.log('Broker started.');
 
     // Record the workspace this broker joined (explicitly passed or auto-minted)
@@ -1818,8 +1842,7 @@ export async function runStatusCommand(
       deps.log(`Node: ${session.node_name?.trim() || session.node_id} (${session.node_id})`);
     }
     if (session?.workspace_key) {
-      deps.log(`Workspace Key: ${session.workspace_key}`);
-      deps.log(`Observer: https://agentrelay.com/observer?key=${session.workspace_key}`);
+      deps.log(`Workspace Key: ${maskSecret(session.workspace_key)}`);
     }
   }
 }

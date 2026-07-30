@@ -33,6 +33,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { maskSecret } from '../lib/redact.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
 import { registerCloudRoomCommands } from './cloud-room.js';
@@ -518,45 +519,55 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .command('session')
     .description('Show the canonical Agent Relay Cloud session')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--json', 'Output the session as JSON')
+    .option('--json', 'Output the session as JSON (access token masked unless --reveal-token)')
+    .option('--reveal-token', 'Include the raw access token in --json output')
     .option(
       '--refresh-timeout <milliseconds>',
       'Timeout for refreshing the cloud session',
       parsePositiveInteger
     )
-    .action(async (options: { apiUrl?: string; json?: boolean; refreshTimeout?: number }) => {
-      const apiUrl = options.apiUrl || defaultApiUrl();
-      const session = await ensureCloudSession({
-        apiUrl,
-        interactive: false,
-        refreshTimeoutMs: options.refreshTimeout,
-      });
+    .action(
+      async (options: {
+        apiUrl?: string;
+        json?: boolean;
+        revealToken?: boolean;
+        refreshTimeout?: number;
+      }) => {
+        const apiUrl = options.apiUrl || defaultApiUrl();
+        const session = await ensureCloudSession({
+          apiUrl,
+          interactive: false,
+          refreshTimeoutMs: options.refreshTimeout,
+        });
 
-      if (options.json) {
-        deps.log(
-          JSON.stringify(
-            {
-              apiUrl: session.auth.apiUrl,
-              accessToken: session.auth.accessToken,
-              accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
-              ...(session.auth.refreshTokenExpiresAt
-                ? { refreshTokenExpiresAt: session.auth.refreshTokenExpiresAt }
-                : {}),
-            },
-            null,
-            2
-          )
-        );
-        return;
-      }
+        if (options.json) {
+          deps.log(
+            JSON.stringify(
+              {
+                apiUrl: session.auth.apiUrl,
+                accessToken: options.revealToken
+                  ? session.auth.accessToken
+                  : maskSecret(session.auth.accessToken),
+                accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
+                ...(session.auth.refreshTokenExpiresAt
+                  ? { refreshTokenExpiresAt: session.auth.refreshTokenExpiresAt }
+                  : {}),
+              },
+              null,
+              2
+            )
+          );
+          return;
+        }
 
-      deps.log(`API URL: ${session.auth.apiUrl}`);
-      deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
-      if (session.auth.refreshTokenExpiresAt) {
-        deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
+        deps.log(`API URL: ${session.auth.apiUrl}`);
+        deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
+        if (session.auth.refreshTokenExpiresAt) {
+          deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
+        }
+        deps.log(`Token file: ${AUTH_FILE_PATH}`);
       }
-      deps.log(`Token file: ${AUTH_FILE_PATH}`);
-    });
+    );
 
   cloudCommand
     .command('whoami')

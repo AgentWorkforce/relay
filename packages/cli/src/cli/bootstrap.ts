@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
+import { redactCredentialValues } from '@agent-relay/cloud';
 import {
   cloudIdentityEnv,
   readStoredIdentitySync,
@@ -371,6 +372,14 @@ function installExitHooks(): void {
 
 export function createProgram(options: { name?: string } = {}): Command {
   const program = new Command();
+
+  // Commander echoes offending tokens verbatim (`error: unknown option
+  // '--workspce-key=rk_live_…'`), so a mistyped credential flag would land a
+  // live key in stderr, scrollback, and CI logs. Redact at the output
+  // boundary; subcommands inherit this via copyInheritedSettings.
+  program.configureOutput({
+    writeErr: (str) => process.stderr.write(redactCredentialValues(str)),
+  });
 
   program
     .name(options.name ?? 'agent-relay')

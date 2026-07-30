@@ -87,7 +87,7 @@ describe('registerWorkspaceCommands', () => {
     });
     expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
       name: 'Ops',
-      key: 'rk_live_ops',
+      key: 'rk_live_…',
       cloudWorkspaceId: 'rw_ops',
       relaycastWorkspaceId: 'rc_ops',
       relayfileWorkspaceId: 'rw_ops',
@@ -97,6 +97,48 @@ describe('registerWorkspaceCommands', () => {
       urls: {},
       apiUrl: 'https://cloud.test',
     });
+  });
+
+  it('workspace active --json includes raw keys only with --reveal-secrets', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'rw_ops',
+      relaycastWorkspaceId: 'rc_ops',
+      relaycastApiKey: 'rk_live_castkey01',
+      relayfileWorkspaceId: 'rw_ops',
+      relayauthWorkspaceId: 'rw_ops',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--json', '--reveal-secrets']);
+
+    const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(printed.key).toBe('rk_live_ops');
+    expect(printed.relaycastApiKey).toBe('rk_live_castkey01');
+  });
+
+  it('workspace active --json masks relaycastApiKey by default', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'rw_ops',
+      relaycastWorkspaceId: 'rc_ops',
+      relaycastApiKey: 'rk_live_castkey01',
+      relayfileWorkspaceId: 'rw_ops',
+      relayauthWorkspaceId: 'rw_ops',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--json']);
+
+    const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(printed.key).toBe('rk_live_…');
+    expect(printed.relaycastApiKey).toBe('rk_live_…ey01');
   });
 
   it('workspace create starts and persists a new workspace session', async () => {
@@ -110,6 +152,11 @@ describe('registerWorkspaceCommands', () => {
     expect(persistWorkspaceSession).toHaveBeenCalledWith({
       name: 'session-two',
       workspaceKey: 'rk_live_session_two',
+    });
+    // The raw key lands in the store; the printed output only carries the mask.
+    expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
+      name: 'session-two',
+      workspaceKey: 'rk_live_…_two',
     });
   });
 
@@ -137,6 +184,30 @@ describe('registerWorkspaceCommands', () => {
     });
     expect(setWorkspaceKey).not.toHaveBeenCalled();
     expect(switchWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('workspace key prints the stored key masked by default and raw with --reveal-secrets', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValue({
+      active: 'default',
+      workspaces: {
+        default: { key: 'rk_live_defaultkey01' },
+        shared: { key: 'rk_live_sharedkey02' },
+      },
+    });
+    const first = createHarness();
+    await first.program.parseAsync(['node', 'agent-relay', 'workspace', 'key']);
+    expect(first.deps.log).toHaveBeenCalledWith('rk_live_…ey01');
+
+    const second = createHarness();
+    await second.program.parseAsync([
+      'node',
+      'agent-relay',
+      'workspace',
+      'key',
+      'shared',
+      '--reveal-secrets',
+    ]);
+    expect(second.deps.log).toHaveBeenCalledWith('rk_live_sharedkey02');
   });
 
   it('workspace switch pins the selected workspace to the current project', async () => {
