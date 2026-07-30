@@ -170,11 +170,16 @@ record() {
 }
 
 # Run a command and match its output. Records pass/fail either way.
+#
+# Note the plain "grep -i" rather than "grep -qi": under "set -o pipefail", a
+# -q grep exits at the first match, the writer upstream takes SIGPIPE, and the
+# pipeline reports failure even though the match succeeded. That turned a
+# demonstrably running broker into a "capability absent" result in a live run.
 run_check() {
   _name="$1"
   _cmd="$2"
   _expect="$3"
-  if _out=$(eval "$_cmd" 2>&1) && printf '%s' "$_out" | grep -qi -- "$_expect"; then
+  if _out=$(eval "$_cmd" 2>&1) && printf '%s' "$_out" | grep -i -- "$_expect" >/dev/null; then
     echo "  PASS  $_name" | tee -a "$LOG"
     record "$TIER" "$_name" pass ""
   else
@@ -428,7 +433,7 @@ relay node up --background 2>&1 | tee -a "$LOG" || true
 
 BROKER_READY=0
 for i in $(seq 1 30); do
-  if relay node status 2>&1 | grep -qi "running"; then
+  if relay node status 2>&1 | grep -i "running" >/dev/null; then
     BROKER_READY=1
     break
   fi
@@ -529,6 +534,7 @@ set -uo pipefail
 
 LOG="${ARTIFACTS}/capabilities.log"
 CAPS="${ARTIFACTS}/caps.env"
+${ENV_DEFAULTS}
 : > "$CAPS"
 
 echo "=== Capability probe ===" | tee "$LOG"
@@ -545,7 +551,7 @@ probe() {
   fi
 }
 
-probe broker        'relay node status 2>&1 | grep -qi running'
+probe broker        'relay node status 2>&1 | grep -i running >/dev/null'
 probe workspace     'relay workspace active'
 probe cloud         'relay cloud whoami'
 probe gh            'gh auth status'
@@ -669,7 +675,12 @@ MSG_TEXT="verify-msg-${SUFFIX}"
 
 echo "=== Tier 3: Channels, Messages, Threads, Reactions, Inbox ===" | tee "$LOG"
 
-TOKEN=$(relay agent register "$AGENT" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' | tail -1 || echo "")
+# Parse the JSON token field rather than matching any long-ish string:
+# "agent register" on an existing name prints that the agent already exists,
+# and a 20+ char agent name matched the old heuristic, so a failed registration
+# silently yielded the agent own name as its token. Every downstream call then
+# failed for reasons that had nothing to do with the feature under test.
+TOKEN=$(relay agent register "$AGENT" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
 if [ -z "$TOKEN" ]; then
   record "$TIER" "agent register + token" fail "no token returned from relay agent register"
   echo "  FAIL  agent register (no token returned)" | tee -a "$LOG"
@@ -719,7 +730,18 @@ run_check "message search"  "relay message search '$MSG_TEXT'"  "$MSG_TEXT"
 run_check "channel leave"   "relay channel leave '$CHANNEL'"     "."
 run_check "channel archive" "relay channel archive '$CHANNEL'"   "."
 
-relay agent remove "$AGENT" 2>/dev/null || true
+# Assert the removal actually took effect rather than assuming it did. A live
+# run found "agent remove" failing for any agent that had sent a message,
+# leaking a raw SQL error, which left test identities accumulating in the
+# workspace while every tier still reported clean.
+run_check "agent remove" "relay agent remove '$AGENT'" "."
+if relay agent list 2>&1 | grep "\"name\": \"$AGENT\"" >/dev/null; then
+  echo "  FAIL  agent gone after remove" | tee -a "$LOG"
+  record "$TIER" "agent gone after remove" fail "$AGENT is still listed after a remove that reported success"
+else
+  echo "  PASS  agent gone after remove" | tee -a "$LOG"
+  record "$TIER" "agent gone after remove" pass ""
+fi
 
 finish_tier
 exit 0
@@ -746,8 +768,8 @@ CHANNEL="vf-private-${SUFFIX}"
 
 echo "=== Tier 4: Cross-Agent DMs, Invites, Read Receipts, Files ===" | tee "$LOG"
 
-TOKEN_A=$(relay agent register "$AGENT_A" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' | tail -1 || echo "")
-TOKEN_B=$(relay agent register "$AGENT_B" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' | tail -1 || echo "")
+TOKEN_A=$(relay agent register "$AGENT_A" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
+TOKEN_B=$(relay agent register "$AGENT_B" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
 
 if [ -z "$TOKEN_A" ] || [ -z "$TOKEN_B" ]; then
   record "$TIER" "register two agents" fail "token A empty=$([ -z "$TOKEN_A" ] && echo yes || echo no), token B empty=$([ -z "$TOKEN_B" ] && echo yes || echo no)"
@@ -807,8 +829,14 @@ fi
 
 UPLOAD_FILE="${ARTIFACTS}/upload-fixture.txt"
 echo "verify-upload-${SUFFIX}" > "$UPLOAD_FILE"
+# Signature is "upload <path> --channel <channel>" — the channel is an option,
+# not a positional. A live run caught this check passing the channel first.
+# --text is passed explicitly even though --help documents it as defaulting to
+# "": the API rejects an empty text with "text is required", so the documented
+# default cannot succeed. Tracked as a product finding, not worked around
+# silently — the check exercises the path that actually works.
 run_check "message file upload" \
-  "RELAY_AGENT_TOKEN='$TOKEN_A' relay message file upload '$CHANNEL' '$UPLOAD_FILE'" "."
+  "RELAY_AGENT_TOKEN='$TOKEN_A' relay message file upload '$UPLOAD_FILE' --channel '$CHANNEL' --text 'verify upload ${SUFFIX}'" "."
 
 RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive "$CHANNEL" >/dev/null 2>&1 || true
 relay agent remove "$AGENT_A" 2>/dev/null || true
@@ -845,7 +873,7 @@ fi
 
 gated_check cloud "cloud whoami"    "relay cloud whoami"    "."
 gated_check cloud "cloud session"   "relay cloud session"   "."
-gated_check cloud "cloud status"    "relay cloud status"    "."
+skip_check "cloud status" "takes a required <runId>; no disposable cloud run is made (see the cloud run skip)"
 gated_check cloud "cloud schedules" "relay cloud schedules" "."
 gated_check cloud "cloud logs"      "relay cloud logs 2>&1 || true" "."
 gated_check cloud "cloud sync --help" "relay cloud sync --help" "Usage"
@@ -873,15 +901,17 @@ gated_check cloud "reflex status" "relay reflex status" "."
 skip_check "reflex on"  "mutates history sync state for the workspace"
 skip_check "reflex off" "mutates history sync state for the workspace"
 
-WEBHOOK_NAME="vf-hook-${SUFFIX}"
+# The command registers a URL, not a name — example.com is reserved by RFC 2606
+# precisely so test registrations cannot reach anyone's real endpoint.
+WEBHOOK_URL="https://example.com/relay-verify/${SUFFIX}"
 if have_cap cloud; then
   run_check "integration webhook list" "relay integration webhook list" "."
   run_check "integration subscription list" "relay integration subscription list" "."
-  if relay integration webhook create "$WEBHOOK_NAME" >/dev/null 2>&1; then
+  if relay integration webhook create "$WEBHOOK_URL" >/dev/null 2>&1; then
     echo "  PASS  integration webhook create" | tee -a "$LOG"
     record "$TIER" "integration webhook create" pass ""
-    run_check "integration webhook trigger" "relay integration webhook trigger '$WEBHOOK_NAME' 2>&1 || true" "."
-    run_check "integration webhook delete"  "relay integration webhook delete '$WEBHOOK_NAME'" "."
+    run_check "integration webhook trigger" "relay integration webhook trigger '$WEBHOOK_URL' 2>&1 || true" "."
+    run_check "integration webhook delete"  "relay integration webhook delete '$WEBHOOK_URL'" "."
   else
     record "$TIER" "integration webhook create" fail "relay integration webhook create exited non-zero"
     echo "  FAIL  integration webhook create" | tee -a "$LOG"
@@ -1004,12 +1034,12 @@ mkdir -p "$CP1_STATE"
 CP1=0
 relay node up --background --no-spawn --state-dir "$CP1_STATE" >/dev/null 2>&1 || true
 sleep 2
-relay node status --state-dir "$CP1_STATE" 2>&1 | grep -qi running && CP1=$((CP1 + 1))
+relay node status --state-dir "$CP1_STATE" 2>&1 | grep -i running >/dev/null && CP1=$((CP1 + 1))
 relay node metrics >/dev/null 2>&1 && CP1=$((CP1 + 1))
 relay node deadletters --json >/dev/null 2>&1 && CP1=$((CP1 + 1))
 relay node down --state-dir "$CP1_STATE" >/dev/null 2>&1 || true
 sleep 2
-relay node status --state-dir "$CP1_STATE" 2>&1 | grep -qiv running && CP1=$((CP1 + 1))
+relay node status --state-dir "$CP1_STATE" 2>&1 | grep -iv running >/dev/null && CP1=$((CP1 + 1))
 if [ "$CP1" -ge 4 ]; then
   echo "  PASS  CP1 ($CP1/4)" | tee -a "$LOG"
   record "$TIER" "CP1 broker lifecycle" pass ""
@@ -1024,13 +1054,13 @@ CP2_A="cp2a-${SUFFIX}"
 CP2_B="cp2b-${SUFFIX}"
 CP2_CH="cp2-ch-${SUFFIX}"
 CP2_MSG="cp2-msg-${SUFFIX}"
-TOKEN_2A=$(relay agent register "$CP2_A" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' | tail -1 || echo "")
-TOKEN_2B=$(relay agent register "$CP2_B" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' | tail -1 || echo "")
+TOKEN_2A=$(relay agent register "$CP2_A" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
+TOKEN_2B=$(relay agent register "$CP2_B" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
 if [ -n "$TOKEN_2A" ] && [ -n "$TOKEN_2B" ]; then
   RELAY_AGENT_TOKEN="$TOKEN_2A" relay channel create "$CP2_CH" >/dev/null 2>&1 || true
   RELAY_AGENT_TOKEN="$TOKEN_2A" relay channel invite "$CP2_CH" "$CP2_B" >/dev/null 2>&1 || true
   RELAY_AGENT_TOKEN="$TOKEN_2A" relay message post "$CP2_CH" "$CP2_MSG" >/dev/null 2>&1 || true
-  if RELAY_AGENT_TOKEN="$TOKEN_2B" relay message list "$CP2_CH" --limit 10 2>&1 | grep -q "$CP2_MSG"; then
+  if RELAY_AGENT_TOKEN="$TOKEN_2B" relay message list "$CP2_CH" --limit 10 2>&1 | grep "$CP2_MSG" >/dev/null; then
     echo "  PASS  CP2 (B read A's exact text)" | tee -a "$LOG"
     record "$TIER" "CP2 cross-agent channel message" pass ""
   else
@@ -1056,7 +1086,7 @@ else
   CP3_WORKER="cp3-${SUFFIX}"
   if relay node agent spawn "$CP3_PROVIDER" --name "$CP3_WORKER" \
       --task 'Reply critical-ok' --spawn-mode task-exit --exit-after-task >/dev/null 2>&1 \
-      && relay node agent list 2>&1 | grep -q "$CP3_WORKER"; then
+      && relay node agent list 2>&1 | grep "$CP3_WORKER" >/dev/null; then
     relay node agent message hold "$CP3_WORKER" >/dev/null 2>&1 || true
     relay node agent message auto "$CP3_WORKER" >/dev/null 2>&1 || true
     relay node agent release "$CP3_WORKER" >/dev/null 2>&1 || true
@@ -1152,22 +1182,45 @@ mkdir -p "$CP5_DIR"
 echo 'console.log("critical-workflow-ok")' > "$CP5_DIR/workflow.js"
 CP5_JSON=$(relay node workflow run "$CP5_DIR/workflow.js" --json 2>&1 || echo "")
 CP5_RUN_ID=$(printf '%s' "$CP5_JSON" | grep -o '"runId": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
-if [ -n "$CP5_RUN_ID" ] && printf '%s' "$CP5_JSON" | grep -q "critical-workflow-ok\|completed"; then
-  relay node workflow logs "$CP5_RUN_ID" --json >/dev/null 2>&1 || true
-  relay node workflow sync "$CP5_RUN_ID" --dry-run --json >/dev/null 2>&1 || true
-  echo "  PASS  CP5 (run $CP5_RUN_ID)" | tee -a "$LOG"
-  record "$TIER" "CP5 local workflow lifecycle" pass ""
-else
-  echo "  FAIL  CP5" | tee -a "$LOG"
+
+# "workflow run" is asynchronous: it returns status "running" with a run id and
+# the sentinel only reaches the log later. Poll the log the way critical-path 5
+# documents (--follow), rather than asserting against the launch response, which
+# can never contain the output.
+CP5_SEEN=0
+if [ -n "$CP5_RUN_ID" ]; then
+  for _ in $(seq 1 20); do
+    if relay node workflow logs "$CP5_RUN_ID" 2>&1 | grep "critical-workflow-ok" >/dev/null; then
+      CP5_SEEN=1
+      break
+    fi
+    sleep 1
+  done
+fi
+
+if [ "$CP5_SEEN" -eq 1 ]; then
+  CP5_SYNC=$(relay node workflow sync "$CP5_RUN_ID" --dry-run --json 2>&1 || echo "")
+  if printf '%s' "$CP5_SYNC" | grep '"status": *"completed"' >/dev/null; then
+    echo "  PASS  CP5 (run $CP5_RUN_ID, sentinel + completed)" | tee -a "$LOG"
+    record "$TIER" "CP5 local workflow lifecycle" pass ""
+  else
+    echo "  FAIL  CP5 (sentinel seen but run did not report completed)" | tee -a "$LOG"
+    record "$TIER" "CP5 local workflow lifecycle" fail "sync did not report completed: $(printf '%s' "$CP5_SYNC" | head -c 200)"
+  fi
+elif [ -z "$CP5_RUN_ID" ]; then
+  echo "  FAIL  CP5 (no runId from workflow run)" | tee -a "$LOG"
   record "$TIER" "CP5 local workflow lifecycle" fail "$(printf '%s' "$CP5_JSON" | head -c 300)"
+else
+  echo "  FAIL  CP5 (sentinel never appeared in the run log)" | tee -a "$LOG"
+  record "$TIER" "CP5 local workflow lifecycle" fail "run $CP5_RUN_ID produced no critical-workflow-ok within 20s"
 fi
 
 # ── CP6: direct message and read receipt ────────────────────────────────
 echo "-- CP6: Direct Message and Read Receipt --" | tee -a "$LOG"
 CP6_A="cp6a-${SUFFIX}"
 CP6_B="cp6b-${SUFFIX}"
-TOKEN_6A=$(relay agent register "$CP6_A" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' | tail -1 || echo "")
-TOKEN_6B=$(relay agent register "$CP6_B" 2>&1 | grep -oE '[A-Za-z0-9_-]{20,}' | tail -1 || echo "")
+TOKEN_6A=$(relay agent register "$CP6_A" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
+TOKEN_6B=$(relay agent register "$CP6_B" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
 if [ -n "$TOKEN_6A" ] && [ -n "$TOKEN_6B" ]; then
   CP6_MSG="cp6-dm-${SUFFIX}"
   CP6_OUT="${ARTIFACTS}/cp6-dm.out"
@@ -1176,11 +1229,11 @@ if [ -n "$TOKEN_6A" ] && [ -n "$TOKEN_6B" ]; then
   CP6_ID=$(grep -oE '"(messageId|id)": *"[^"]*"' "$CP6_OUT" | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
   CP6=0
   if [ -n "$CP6_CONV" ]; then
-    RELAY_AGENT_TOKEN="$TOKEN_6B" relay message dm list "$CP6_CONV" 2>&1 | grep -q "$CP6_MSG" && CP6=$((CP6 + 1))
+    RELAY_AGENT_TOKEN="$TOKEN_6B" relay message dm list "$CP6_CONV" 2>&1 | grep "$CP6_MSG" >/dev/null && CP6=$((CP6 + 1))
   fi
   if [ -n "$CP6_ID" ]; then
     RELAY_AGENT_TOKEN="$TOKEN_6B" relay message inbox mark_read "$CP6_ID" >/dev/null 2>&1 && CP6=$((CP6 + 1))
-    RELAY_AGENT_TOKEN="$TOKEN_6A" relay message inbox get_readers "$CP6_ID" 2>&1 | grep -q "$CP6_B" && CP6=$((CP6 + 1))
+    RELAY_AGENT_TOKEN="$TOKEN_6A" relay message inbox get_readers "$CP6_ID" 2>&1 | grep "$CP6_B" >/dev/null && CP6=$((CP6 + 1))
   fi
   if [ "$CP6" -ge 3 ]; then
     echo "  PASS  CP6 ($CP6/3)" | tee -a "$LOG"
@@ -1240,6 +1293,11 @@ set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
 ${ENV_DEFAULTS}
+
+# Published for the fix chain: attempt-fix is an agent step and cannot read the
+# workflow's own constants, so the operator's autofix decision has to reach it
+# through the filesystem.
+echo "AUTOFIX=${AUTOFIX ? '1' : '0'}" > "$ARTIFACTS/autofix.env"
 
 node <<'VERDICTEOF'
 const fs = require('node:fs');
@@ -1709,13 +1767,17 @@ exit 0
 
 ## FIRST: check whether there is anything to do
 
-Read ${VERDICT_FILE}.
+Read ${ARTIFACTS}/autofix.env and ${VERDICT_FILE}.
 
-- If the file does not exist, or its "verdict" field is "PASS", there is NOTHING
-  to fix. Write "No failures — nothing to fix." to
-  ${ARTIFACTS}/fix-summary.md and STOP IMMEDIATELY. Do not read other files, do
-  not create a branch, do not edit anything, do not run any commands.
-- Only if "verdict" is "FAIL" do you continue with the rest of this task.
+- If ${ARTIFACTS}/autofix.env contains \`AUTOFIX=0\`, the operator has disabled
+  the fix path. Write "Autofix disabled." to ${ARTIFACTS}/fix-summary.md and
+  STOP IMMEDIATELY.
+- If ${VERDICT_FILE} does not exist, or its "verdict" field is "PASS", there is
+  NOTHING to fix. Write "No failures — nothing to fix." to
+  ${ARTIFACTS}/fix-summary.md and STOP IMMEDIATELY.
+- In either case: do not read other files, do not create a branch, do not edit
+  anything, do not run any commands.
+- Only if autofix is enabled AND "verdict" is "FAIL" do you continue.
 
 (The workflow engine has no conditional steps, so this step is scheduled on
 every run. The early exit above is what keeps a green run from spending model
@@ -1780,6 +1842,12 @@ WORKFLOW_FILE="workflows/verify-features.ts"
 # so a green run reaches it with nothing to check. Exit before the git
 # assertions below, which would otherwise report a misleading INTEGRITY_FAIL
 # just because HEAD is still main on a clean run.
+if grep -q '^AUTOFIX=0$' "$ARTIFACTS/autofix.env" 2>/dev/null; then
+  echo "INTEGRITY_NOT_APPLICABLE: autofix disabled, no fix was attempted"
+  echo "INTEGRITY=not-applicable" > "$ARTIFACTS/fix-integrity.env"
+  exit 0
+fi
+
 if [ -f "$ARTIFACTS/verdict.json" ]; then
   VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json" 2>/dev/null || true)
   if [ "$VERDICT" = "PASS" ]; then
