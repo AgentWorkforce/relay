@@ -118,6 +118,23 @@ NIGHTCTO_EVIDENCE_URL="$(printenv NIGHTCTO_EVIDENCE_URL || true)"
 NIGHTCTO_EVIDENCE_TOKEN="$(printenv NIGHTCTO_EVIDENCE_TOKEN || true)"
 CLOUD_API_URL="$(printenv CLOUD_API_URL || true)"
 CLOUD_API_TOKEN="$(printenv CLOUD_API_TOKEN || true)"
+# The cloud sandbox injects CLOUD_API_ACCESS_TOKEN, not CLOUD_API_TOKEN (see
+# the launcher's env bundle), but @relayflows/slack-primitive only reads
+# CLOUD_API_TOKEN. Without this bridge every scheduled run fails Slack
+# delivery with auth_token_missing. github-primitive already falls back the
+# same way (RELAY_CLOUD_API_TOKEN -> CLOUD_API_ACCESS_TOKEN); slack does not.
+if [ -z "$CLOUD_API_TOKEN" ]; then
+  CLOUD_API_TOKEN="$(printenv RELAY_CLOUD_API_TOKEN || true)"
+fi
+if [ -z "$CLOUD_API_TOKEN" ]; then
+  CLOUD_API_TOKEN="$(printenv CLOUD_API_ACCESS_TOKEN || true)"
+fi
+
+# These are read by the node children this workflow writes and runs (the Slack
+# post script), so they must be exported, not just assigned. Plain assignment
+# left the child seeing only the original process env, which silently defeated
+# the fallback above.
+export CLOUD_API_URL CLOUD_API_TOKEN
 VERIFY_ENVIRONMENT="$(printenv VERIFY_ENVIRONMENT || true)"
 if [ -z "$POSTHOG_HOST" ]; then POSTHOG_HOST="https://i.agentrelay.com"; fi
 if [ -z "$VERIFY_ENVIRONMENT" ]; then VERIFY_ENVIRONMENT="sandbox"; fi
