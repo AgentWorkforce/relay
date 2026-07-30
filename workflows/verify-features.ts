@@ -59,8 +59,11 @@
  *   POSTHOG_API_KEY         Enables PostHog emission. Host: POSTHOG_HOST.
  *   NIGHTCTO_EVIDENCE_URL   Enables infra escalation to NightCTO.
  *   NIGHTCTO_EVIDENCE_TOKEN Bearer token for the above.
- *   SLACK_BOT_TOKEN         Slack local runtime. Falls back to CLOUD_API_URL +
- *                           CLOUD_API_TOKEN (cloud-relay runtime).
+ *   CLOUD_API_URL           Required for Slack delivery. Slack posts go through
+ *   CLOUD_API_TOKEN         the relayflows Slack primitive's cloud-relay runtime
+ *                           (/api/v1/slack/post-message), which uses the
+ *                           workspace's configured Slack integration. No bot
+ *                           token is read.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -78,7 +81,14 @@ const SUFFIX = `vf-${Date.now()}`;
 /** Canonical fix branch. RUN_ID already carries the "verify-" prefix. */
 const FIX_BRANCH = `fix/${RUN_ID}`;
 
-const SLACK_CHANNEL = process.env.VERIFY_SLACK_CHANNEL ?? '#relay-health';
+/**
+ * Slack destination, as a channel ID.
+ *
+ * An ID rather than a #name because the cloud-relay runtime does not implement
+ * channel resolution — `resolveChannel` is unsupported there, so a "#name" only
+ * works if Slack itself accepts it for that workspace. An ID always resolves.
+ */
+const SLACK_CHANNEL = process.env.VERIFY_SLACK_CHANNEL ?? 'C0AEKNLDNKW';
 const AUTOFIX = process.env.VERIFY_AUTOFIX !== '0';
 
 /**
@@ -106,7 +116,6 @@ POSTHOG_API_KEY="$(printenv POSTHOG_API_KEY || true)"
 POSTHOG_HOST="$(printenv POSTHOG_HOST || true)"
 NIGHTCTO_EVIDENCE_URL="$(printenv NIGHTCTO_EVIDENCE_URL || true)"
 NIGHTCTO_EVIDENCE_TOKEN="$(printenv NIGHTCTO_EVIDENCE_TOKEN || true)"
-SLACK_BOT_TOKEN="$(printenv SLACK_BOT_TOKEN || true)"
 CLOUD_API_URL="$(printenv CLOUD_API_URL || true)"
 CLOUD_API_TOKEN="$(printenv CLOUD_API_TOKEN || true)"
 VERIFY_ENVIRONMENT="$(printenv VERIFY_ENVIRONMENT || true)"
@@ -204,6 +213,63 @@ finish_tier() {
   else
     echo "TIER_PASS" >> "$LOG"
   fi
+}
+`;
+
+/**
+ * Post to Slack through the relayflows Slack primitive.
+ *
+ * Deliberately pins `runtime: 'cloud-relay'` rather than letting the adapter
+ * auto-detect. `selectRuntime` in @relayflows/slack-primitive prefers
+ * cloud-relay but falls back to a local `SLACK_BOT_TOKEN` runtime that talks to
+ * slack.com directly — and this workflow must post through the workspace's
+ * configured Slack integration (the Nango connection behind
+ * `/api/v1/slack/post-message`), not whatever bot token happens to be in the
+ * environment. Pinning makes a missing CLOUD_API_* pair throw
+ * `auth_token_missing` instead of silently taking a different path.
+ *
+ * The primitive is a hard dependency of @relayflows/core, which this workflow
+ * already imports, so it resolves wherever the workflow itself does.
+ */
+const SLACK_POST_FN = String.raw`
+slack_post() {
+  _sp_channel="$1"
+  _sp_textfile="$2"
+
+  cat > "$ARTIFACTS/slack-post.mjs" <<'SLACKPOSTEOF'
+import { readFileSync } from 'node:fs';
+import { SlackClient } from '@relayflows/slack-primitive';
+
+const [channel, textFile] = process.argv.slice(2);
+const text = readFileSync(textFile, 'utf8');
+
+const client = new SlackClient({
+  runtime: 'cloud-relay',
+  cloudApiUrl: process.env.CLOUD_API_URL,
+  cloudApiToken: process.env.CLOUD_API_TOKEN,
+});
+
+try {
+  const out = await client.postMessage({ channel, text, unfurl: false });
+  console.log('SLACK_POSTED channel=' + out.channel + ' ts=' + out.ts);
+} catch (err) {
+  const code = err && err.code ? err.code : 'unknown';
+  console.log('SLACK_ERROR ' + code + ': ' + (err && err.message ? err.message : String(err)));
+  process.exitCode = 1;
+}
+SLACKPOSTEOF
+
+  if node "$ARTIFACTS/slack-post.mjs" "$_sp_channel" "$_sp_textfile"; then
+    return 0
+  fi
+
+  # Undelivered alerts must be loud. Echo the payload so it is at least
+  # recoverable from the run log rather than lost with the process.
+  echo "SLACK_UNDELIVERED to $_sp_channel — payload follows:"
+  echo "---- undelivered Slack payload ----"
+  cat "$_sp_textfile"
+  echo "---- end payload ----"
+  return 1
 }
 `;
 
@@ -485,7 +551,7 @@ probe cloud         'relay cloud whoami'
 probe gh            'gh auth status'
 probe git_repo      'git rev-parse --git-dir'
 probe jq            'command -v jq'
-probe slack         '[ -n "$SLACK_BOT_TOKEN" ] || { [ -n "$CLOUD_API_URL" ] && [ -n "$CLOUD_API_TOKEN" ]; }'
+probe slack         '[ -n "$CLOUD_API_URL" ] && [ -n "$CLOUD_API_TOKEN" ]'
 probe provider_claude   'command -v claude'
 probe provider_codex    'command -v codex'
 probe provider_opencode 'command -v opencode'
@@ -1424,11 +1490,12 @@ exit 0
 
   // ── Phase 15: Slack escalation ───────────────────────────────────────────
   //
-  // Posts on FAIL. Delivery is attempted through the Slack local runtime
-  // (SLACK_BOT_TOKEN) and falls back to the cloud-relay runtime
-  // (CLOUD_API_URL + CLOUD_API_TOKEN). When neither is configured the step
-  // says so loudly and records it — a silent no-op must never be mistakable
-  // for a delivered alert.
+  // Posts on FAIL through the relayflows Slack primitive, pinned to its
+  // cloud-relay runtime so delivery always goes via the workspace's Slack
+  // integration rather than a bot token. When CLOUD_API_URL/CLOUD_API_TOKEN are
+  // absent the primitive throws auth_token_missing and the step echoes the
+  // undelivered payload — a silent no-op must never be mistakable for a
+  // delivered alert.
 
   wf.step('slack-alert', {
     type: 'deterministic',
@@ -1441,6 +1508,7 @@ set -uo pipefail
 ARTIFACTS="${ARTIFACTS}"
 CHANNEL="${SLACK_CHANNEL}"
 ${ENV_DEFAULTS}
+${SLACK_POST_FN}
 
 if [ ! -f "$ARTIFACTS/verdict.json" ]; then
   echo "SLACK_SKIPPED: no verdict.json to report"
@@ -1492,37 +1560,7 @@ lines.push('Artifacts: ${BT}' + artifacts + '${BT}');
 process.stdout.write(lines.join('\n'));
 SLACKEOF
 
-MESSAGE=$(cat "$ARTIFACTS/slack-message.txt")
-
-if [ -n "$SLACK_BOT_TOKEN" ]; then
-  RESP=$(curl -sS -m 20 -X POST https://slack.com/api/chat.postMessage \
-    -H "authorization: Bearer $SLACK_BOT_TOKEN" \
-    -H 'content-type: application/json; charset=utf-8' \
-    --data "$(node -e 'const fs=require("node:fs");process.stdout.write(JSON.stringify({channel:process.argv[1],text:fs.readFileSync(process.argv[2],"utf8"),unfurl_links:false}))' "$CHANNEL" "$ARTIFACTS/slack-message.txt")" 2>&1 || echo '{"ok":false}')
-  if printf '%s' "$RESP" | grep -q '"ok":true'; then
-    echo "SLACK_POSTED: $CHANNEL (local runtime)"
-    exit 0
-  fi
-  echo "SLACK_FAILED via SLACK_BOT_TOKEN: $(printf '%s' "$RESP" | head -c 300)"
-fi
-
-if [ -n "$CLOUD_API_URL" ] && [ -n "$CLOUD_API_TOKEN" ]; then
-  RESP=$(curl -sS -m 20 -X POST "$CLOUD_API_URL/api/v1/integrations/slack/messages" \
-    -H "authorization: Bearer $CLOUD_API_TOKEN" \
-    -H 'content-type: application/json' \
-    --data "$(node -e 'const fs=require("node:fs");process.stdout.write(JSON.stringify({channel:process.argv[1],text:fs.readFileSync(process.argv[2],"utf8")}))' "$CHANNEL" "$ARTIFACTS/slack-message.txt")" 2>&1 || echo "")
-  if [ -n "$RESP" ] && ! printf '%s' "$RESP" | grep -qi 'error\|unauthorized\|not found'; then
-    echo "SLACK_POSTED: $CHANNEL (cloud-relay runtime)"
-    exit 0
-  fi
-  echo "SLACK_FAILED via CLOUD_API: $(printf '%s' "$RESP" | head -c 300)"
-fi
-
-# Neither runtime available. Print the payload so the alert is at least
-# recoverable from the run log, and make the gap explicit.
-echo "SLACK_UNDELIVERED: no SLACK_BOT_TOKEN and no CLOUD_API_URL/CLOUD_API_TOKEN."
-echo "---- undelivered Slack payload ----"
-printf '%s\n' "$MESSAGE"
+slack_post "$CHANNEL" "$ARTIFACTS/slack-message.txt" || true
 exit 0
 `,
   });
@@ -1918,6 +1956,7 @@ set -uo pipefail
 ARTIFACTS="${ARTIFACTS}"
 CHANNEL="${SLACK_CHANNEL}"
 ${ENV_DEFAULTS}
+${SLACK_POST_FN}
 
 ISSUE=$(cat "$ARTIFACTS/issue-url.txt" 2>/dev/null || true)
 PR=$(cat "$ARTIFACTS/pr-url.txt" 2>/dev/null || true)
@@ -1927,24 +1966,18 @@ if [ -z "$ISSUE" ] && [ -z "$PR" ]; then
   exit 0
 fi
 
-TEXT="Follow-up for \`${RUN_ID}\`:"
-[ -n "$ISSUE" ] && TEXT="$TEXT
-• Issue: $ISSUE"
-[ -n "$PR" ] && TEXT="$TEXT
-• Draft fix PR: $PR"
-[ -z "$PR" ] && TEXT="$TEXT
-• No fix PR — the fix attempt did not pass the integrity gate. Needs a human."
+FOLLOWUP="$ARTIFACTS/slack-followup.txt"
+{
+  echo "Follow-up for \`${RUN_ID}\`:"
+  [ -n "$ISSUE" ] && echo "• Issue: $ISSUE"
+  if [ -n "$PR" ]; then
+    echo "• Draft fix PR: $PR"
+  else
+    echo "• No fix PR — the fix attempt did not pass the integrity gate. Needs a human."
+  fi
+} > "$FOLLOWUP"
 
-if [ -n "$SLACK_BOT_TOKEN" ]; then
-  curl -sS -m 20 -X POST https://slack.com/api/chat.postMessage \
-    -H "authorization: Bearer $SLACK_BOT_TOKEN" \
-    -H 'content-type: application/json; charset=utf-8' \
-    --data "$(TEXT="$TEXT" CH="$CHANNEL" node -e 'process.stdout.write(JSON.stringify({channel:process.env.CH,text:process.env.TEXT}))')" >/dev/null 2>&1 \
-    && echo "FOLLOWUP_POSTED" && exit 0
-fi
-
-echo "FOLLOWUP_UNDELIVERED (no SLACK_BOT_TOKEN):"
-printf '%s\n' "$TEXT"
+slack_post "$CHANNEL" "$FOLLOWUP" || true
 exit 0
 `,
   });
