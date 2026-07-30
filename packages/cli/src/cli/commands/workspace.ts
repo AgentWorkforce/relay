@@ -39,6 +39,7 @@ export function registerWorkspaceCommands(
           apiUrl: options.apiUrl,
           interactive: false,
           refreshTimeoutMs: options.refreshTimeout,
+          bootstrapFromCloud: true,
         });
 
         if (options.json) {
