@@ -382,7 +382,10 @@ Assert the downloaded skill and delete only this disposable project. Do not run 
 ```bash
 : "${CAPTURE_URL:?See Externally provisioned fixtures}"
 : "${CAPTURE_FETCH_URL:?GET endpoint returning the current run captured requests}"
-HOOK="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook create "$CAPTURE_URL" --event message.created)"; HOOK_ID="$(jq -er '.id // .webhookId' <<<"$HOOK")"
+# `webhook create` is INBOUND: it takes the channel to deliver into and returns
+# the URL external services POST to. It does not take a destination URL.
+HOOK="$(RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook create "$CHANNEL")"; HOOK_ID="$(jq -er '.webhookId // .id' <<<"$HOOK")"
+HOOK_URL="$(jq -er '.url' <<<"$HOOK")"; HOOK_TOKEN="$(jq -er '.token' <<<"$HOOK")"
 RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook trigger "$HOOK_ID" --payload '{"audit":true}'
 DELIVERED=false
 for _ in $(seq 1 15); do
@@ -407,7 +410,7 @@ RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook list | jq -e --arg id "$H
 RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook delete "$HOOK_ID"
 ```
 
-The capture assertion requires the exact parsed payload `{"audit":true}` and a nonempty header whose lowercased name contains `signature`; it runs before deletion. For inbound, create channel/hook, POST the returned URL with token and documented payload, assert message, delete hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
+`webhook create` and `create-inbound` are aliases over the same `POST /v1/webhooks`, whose request is `{ channel, name? }` — there is no outbound registration surface, so a capture receiver is only reachable through `webhook trigger`, not by registering `CAPTURE_URL` as a destination. The capture assertion requires the exact parsed payload `{"audit":true}` and a nonempty header whose lowercased name contains `signature`; it runs before deletion. For the inbound path proper, create the channel and hook, POST `$HOOK_URL` with `$HOOK_TOKEN` and the documented payload, assert the message lands in the channel, then delete the hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
 
 ## reflex-history
 
