@@ -190,6 +190,12 @@ EXIT_CODE=$?
 node scripts/audit-feature-manifest.mjs $CLI_ARG --json > "${ARTIFACTS}/audit.json" 2>"${ARTIFACTS}/audit.err" || true
 
 echo "$EXIT_CODE" > "${ARTIFACTS}/audit-exit.txt"
+
+# Published for the fix chain: update-manifest is an agent step and cannot read
+# this workflow's constants, so the operator's autofix decision has to reach it
+# through the filesystem.
+echo "AUTOFIX=${AUTOFIX ? '1' : '0'}" > "${ARTIFACTS}/autofix.env"
+
 echo "audit exit code: $EXIT_CODE"
 exit 0
 `,
@@ -362,7 +368,20 @@ if (exitCode === 2) {
   lines.push(detail);
   lines.push('${BT}${BT}${BT}');
 } else {
-  const r = JSON.parse(fs.readFileSync(artifacts + '/audit.json', 'utf8'));
+  // audit.json is produced by a "|| true" invocation, so it can be missing,
+  // empty, or truncated while audit-exit.txt still says 1. Falling over here
+  // would leave the message file empty and the surrounding "|| true" would
+  // swallow it — drift with no alert.
+  let r = null;
+  try {
+    r = JSON.parse(fs.readFileSync(artifacts + '/audit.json', 'utf8'));
+  } catch (err) {
+    lines.push(':warning: *Feature manifest drifted, but the report is unreadable* — ${BT}' + process.env.AUDIT_RUN_ID + '${BT}');
+    lines.push('audit.json could not be parsed: ' + err.message);
+    lines.push('Run ${BT}node scripts/audit-feature-manifest.mjs${BT} locally to see the drift.');
+    process.stdout.write(lines.join('\n'));
+    process.exit(0);
+  }
   lines.push(':clipboard: *Feature manifest has drifted* — ${BT}' + process.env.AUDIT_RUN_ID + '${BT}');
   lines.push(
     'manifest ' + r.manifestVersion + ' (updated ' + r.manifestUpdated + ') — ' +
@@ -430,7 +449,19 @@ fi
 node <<'ISSUEEOF' > "$ARTIFACTS/issue-body.md"
 const fs = require('node:fs');
 const artifacts = process.env.AUDIT_ARTIFACTS;
-const r = JSON.parse(fs.readFileSync(artifacts + '/audit.json', 'utf8'));
+// Same guard as the Slack payload: a truncated audit.json must still produce
+// a filed issue, not an empty body swallowed by the gh call.
+let r = null;
+try {
+  r = JSON.parse(fs.readFileSync(artifacts + '/audit.json', 'utf8'));
+} catch (err) {
+  process.stdout.write(
+    'The feature manifest drifted, but the machine-readable report could not be parsed: ' +
+      err.message +
+      '\n\nRun ${BT}node scripts/audit-feature-manifest.mjs${BT} locally to see the drift.\n'
+  );
+  process.exit(0);
+}
 
 const out = [];
 out.push('The feature manifest no longer matches the CLI surface.');
@@ -509,12 +540,16 @@ exit 0
 
 ## FIRST: check whether there is anything to do
 
-Read ${ARTIFACTS}/audit-exit.txt.
+Read ${ARTIFACTS}/autofix.env and ${ARTIFACTS}/audit-exit.txt.
 
-- If it does not contain exactly \`1\`, there is NOTHING to do. Write "No drift —
-  nothing to update." to ${ARTIFACTS}/update-summary.md and STOP IMMEDIATELY:
-  do not create a branch, edit files, or run commands.
-- Only if it contains \`1\` do you continue.
+- If ${ARTIFACTS}/autofix.env contains \`AUTOFIX=0\`, the operator has disabled
+  the fix path. Write "Autofix disabled." to ${ARTIFACTS}/update-summary.md and
+  STOP IMMEDIATELY.
+- If audit-exit.txt does not contain exactly \`1\`, there is NOTHING to do.
+  Write "No drift — nothing to update." to ${ARTIFACTS}/update-summary.md and
+  STOP IMMEDIATELY.
+- In either case: do not create a branch, edit files, or run commands.
+- Only if autofix is enabled AND audit-exit.txt contains \`1\` do you continue.
 
 (The engine has no conditional steps, so this step is scheduled on every run.
 The early exit is what keeps an agent away from a clean tree.)
@@ -555,10 +590,13 @@ node scripts/audit-feature-manifest.mjs
 npx vitest run .agentworkforce/agents/relay-feature-guardian/manifest-contract.test.ts
 \`\`\`
 
-The audit must print MANIFEST_CLEAN and the contract test must pass. If the
-contract test's hardcoded expectation list now disagrees with the manifest, add
-the new commands to that list too — it is a snapshot that must be maintained
-alongside the manifest.
+The audit must print MANIFEST_CLEAN and the contract test must pass.
+
+Do NOT edit any file other than the manifest. The integrity gate rejects a
+branch that touches CLI sources, the audit script, or
+manifest-contract.test.ts — resolving drift by changing what is measured is
+exactly what it exists to stop. If the contract test's hardcoded expectation
+list needs new entries, say so in your summary and leave it to a human.
 
 ## Deliverable
 
@@ -587,6 +625,12 @@ set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
 MANIFEST=".agentworkforce/features/manifest.yaml"
+
+if grep -q '^AUTOFIX=0$' "$ARTIFACTS/autofix.env" 2>/dev/null; then
+  echo "INTEGRITY_NOT_APPLICABLE: autofix disabled, no update was attempted"
+  echo "INTEGRITY=not-applicable" > "$ARTIFACTS/update-integrity.env"
+  exit 0
+fi
 
 EXIT_CODE=$(cat "$ARTIFACTS/audit-exit.txt" 2>/dev/null || true)
 if [ "$EXIT_CODE" != "1" ]; then
@@ -635,11 +679,24 @@ if [ "$AFTER" -lt "$MIN_ALLOWED" ]; then
   exit 0
 fi
 
-# The audit script is the measuring instrument. Editing it to resolve drift is
-# moving the goalposts, so require an explicit human decision for that.
-if ! git diff --quiet "$BASE_REF" -- scripts/audit-feature-manifest.mjs 2>/dev/null; then
-  echo "INTEGRITY_FAIL: the branch modified scripts/audit-feature-manifest.mjs."
-  echo "The audit script is the measuring instrument — changing it to resolve drift needs human review."
+# An editor can make the audit clean three ways: document the command (wanted),
+# delete the command (not wanted), or move the goalposts by editing the audit
+# script or its expectation list (not wanted). Only the manifest is allowed to
+# change, so assert the whole changed-file set rather than one script.
+ALLOWED_CHANGES=".agentworkforce/features/manifest.yaml"
+CHANGED=$(git diff --name-only "$BASE_REF" 2>/dev/null || true)
+UNEXPECTED=""
+for f in $CHANGED; do
+  case "$f" in
+    "$ALLOWED_CHANGES") ;;
+    *) UNEXPECTED="$UNEXPECTED $f" ;;
+  esac
+done
+
+if [ -n "$UNEXPECTED" ]; then
+  echo "INTEGRITY_FAIL: the branch changed files other than the manifest:$UNEXPECTED"
+  echo "A manifest sync may only edit the manifest. Changing CLI sources, the audit"
+  echo "script, or manifest-contract.test.ts resolves drift by moving what is measured."
   echo "INTEGRITY=fail" > "$ARTIFACTS/update-integrity.env"
   exit 0
 fi

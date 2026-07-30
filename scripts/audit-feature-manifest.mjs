@@ -54,6 +54,17 @@ const UNDOCUMENTED_ALLOWLIST = new Set(['help']);
 /** Subcommand trees too costly or destructive to walk during an audit. */
 const NO_WALK = new Set(['help', 'uninstall']);
 
+/**
+ * Commands that dispatch on a positional argument instead of a subcommand, so
+ * their documented usages (`relay telemetry enable`) are real but never appear
+ * as leaves in the Commander tree.
+ *
+ * Keep this explicit. Treating any surviving parent as proof would mean a
+ * removed child command could never be detected, because `deriveCliLeaves`
+ * records every parent group as a leaf too.
+ */
+const POSITIONAL_DISPATCH = new Set(['telemetry']);
+
 // ── surface derivation: CLI ───────────────────────────────────────────────────
 
 function runHelp(argPath) {
@@ -188,6 +199,12 @@ function deriveMcpTools() {
       clearTimeout(timer);
       finish(null);
     });
+
+    // A broken pipe here — spawn failure, or our own SIGTERM in finish() — must
+    // not surface as an uncaught 'error' event. That is not a promise
+    // rejection, so it would escape main().catch and exit 1, which the audit
+    // workflow reads as confirmed drift and acts on.
+    child.stdin.on('error', () => finish(null));
 
     const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
     send({
@@ -367,14 +384,19 @@ async function main() {
   const cliLeafSet = new Set(cliLeaves);
 
   // Some commands dispatch on a positional argument rather than a subcommand
-  // (`relay telemetry enable` is `telemetry [action]`). `relay telemetry enable`
-  // is a real, documented usage, so a documented command is stale only when no
-  // prefix of it exists in the CLI at all.
+  // (`relay telemetry enable` is `telemetry [action]`), so those documented
+  // usages have no leaf of their own.
+  //
+  // Accepting *any* surviving prefix would hide almost every real removal:
+  // deleting `fleet spawn` still leaves `fleet`, so the entry would validate
+  // against its own parent and never be reported. A documented command must
+  // therefore match a real leaf exactly, unless its parent is a known
+  // positional-dispatch command listed above.
   const staleCommands = [...documentedCommands].filter((cmd) => {
+    if (cliLeafSet.has(cmd)) return false;
     const parts = cmd.split(' ');
-    for (let i = parts.length; i >= 1; i--) {
-      if (cliLeafSet.has(parts.slice(0, i).join(' '))) return false;
-    }
+    const parent = parts.slice(0, -1).join(' ');
+    if (parts.length > 1 && POSITIONAL_DISPATCH.has(parent) && cliLeafSet.has(parent)) return false;
     return true;
   });
 
@@ -392,6 +414,25 @@ async function main() {
   const conditionalMcp = documentedMcpMissing.filter((tool) => registeredInSource.has(tool));
 
   const drift = undocumentedCommands.length + staleCommands.length + undocumentedMcp.length + staleMcp.length;
+
+  // Half an audit is not a clean audit. If the MCP surface could not be
+  // derived, MCP drift was never checked, so reporting "clean" would be a
+  // false negative of exactly the kind this script exists to prevent. Exit 2
+  // marks it unrunnable rather than clean or drifted.
+  if (mcpTools === null) {
+    const failure = {
+      ok: false,
+      auditable: false,
+      error:
+        'MCP tool list could not be derived, so MCP drift was not checked. ' +
+        'Refusing to report a partial audit as clean.',
+      cliCommand,
+      undocumentedCommands,
+      staleCommands,
+    };
+    console.error(asJson ? JSON.stringify(failure, null, 2) : `AUDIT_ERROR: ${failure.error}`);
+    process.exit(2);
+  }
 
   const report = {
     ok: drift === 0,

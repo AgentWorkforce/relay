@@ -159,7 +159,11 @@ RUN_ID="${RUN_ID}"
 # Reason text is flattened and bounded so a multi-line stack trace cannot
 # corrupt the ledger.
 record() {
-  _reason=$(printf '%s' "$4" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-400)
+  # Strip ALL control bytes, not just newlines: ANSI escapes and stray control
+  # characters from CLI output would otherwise land raw inside the JSON string
+  # and make the line unparseable. The verdict reader skips unparseable lines,
+  # so a corrupted reason could silently erase a failing check.
+  _reason=$(printf '%s' "$4" | tr -d '\000-\010\013\014\016-\037\177' | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-400)
   printf '{"run":"%s","tier":"%s","check":"%s","status":"%s","reason":"%s"}\n' \
     "$RUN_ID" "$1" "$2" "$3" "$_reason" >> "$CHECKS"
   case "$3" in
@@ -512,6 +516,39 @@ else
   record "$TIER" "cli-matches-repo" fail "CLI under test is $CLI_VERSION but the repo is $REPO_VERSION; results do not describe this checkout"
 fi
 
+# Matching versions prove nothing on a feature branch: between releases the
+# globally installed CLI and this checkout report the same version, so a global
+# binary would pass the check above while exercising none of the branch's
+# changes. Resolve the binary and require it to live inside this checkout.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+CLI_REAL=$(node -e 'const fs=require("node:fs");try{process.stdout.write(fs.realpathSync(process.argv[1]))}catch(e){process.stdout.write(process.argv[1])}' "$CLI_PATH" 2>/dev/null || printf '%s' "$CLI_PATH")
+REPO_REAL=$(node -e 'const fs=require("node:fs");try{process.stdout.write(fs.realpathSync(process.argv[1]))}catch(e){process.stdout.write(process.argv[1])}' "$REPO_ROOT" 2>/dev/null || printf '%s' "$REPO_ROOT")
+echo "  resolved CLI: $CLI_REAL" | tee -a "$LOG"
+echo "  repo root:    $REPO_REAL" | tee -a "$LOG"
+
+if [ -z "$REPO_ROOT" ]; then
+  # Falling back to $PWD would only prove the binary sits under the current
+  # directory, which is not provenance. Say so instead of claiming a pass.
+  skip_check "cli-belongs-to-checkout" "not a git checkout — cannot establish which tree the CLI was built from"
+else
+
+case "$CLI_REAL" in
+  "$REPO_REAL"/*)
+    echo "  PASS  cli-belongs-to-checkout" | tee -a "$LOG"
+    record "$TIER" "cli-belongs-to-checkout" pass ""
+    ;;
+  *)
+    if [ "$VERIFY_ALLOW_CLI_DRIFT" = "1" ]; then
+      skip_check "cli-belongs-to-checkout" "CLI at $CLI_REAL is outside $REPO_REAL (allowed by env)"
+    else
+      echo "  FAIL  cli-belongs-to-checkout: $CLI_REAL is outside $REPO_REAL" | tee -a "$LOG"
+      record "$TIER" "cli-belongs-to-checkout" fail "the CLI under test resolves to $CLI_REAL, outside this checkout ($REPO_REAL); a matching version number does not make it this branch's build"
+    fi
+    ;;
+esac
+
+fi
+
 finish_tier
 exit 0
 `,
@@ -642,8 +679,11 @@ run_check "fleet status"             "relay fleet status"        "."
 
 # 'relay node tail' streams until interrupted; bound it and accept a timeout
 # kill as success. Without the bound this step hangs until the run times out.
+# Only a clean exit (0) or the timeout's own kill (124/137) counts. The old
+# "-le 124" also accepted exit 1, so a removed or broken 'node tail' still
+# scored PASS — precisely the false green this file exists to prevent.
 run_check "node tail (bounded)" \
-  "timeout 5 relay node tail >/dev/null 2>&1; [ \$? -le 124 ] && echo tail-ok" "tail-ok"
+  "timeout 5 relay node tail >/dev/null 2>&1; _rc=\$?; case \$_rc in 0|124|137) echo tail-ok ;; *) echo \"tail-failed rc=\$_rc\" ;; esac" "tail-ok"
 
 # Redeliver against an empty queue is a no-op, so this exercises the command
 # path without mutating real delivery state.
@@ -875,7 +915,7 @@ gated_check cloud "cloud whoami"    "relay cloud whoami"    "."
 gated_check cloud "cloud session"   "relay cloud session"   "."
 skip_check "cloud status" "takes a required <runId>; no disposable cloud run is made (see the cloud run skip)"
 gated_check cloud "cloud schedules" "relay cloud schedules" "."
-gated_check cloud "cloud logs"      "relay cloud logs 2>&1 || true" "."
+skip_check "cloud logs" "takes a required <runId>; no disposable cloud run is made (see the cloud run skip)"
 gated_check cloud "cloud sync --help" "relay cloud sync --help" "Usage"
 
 # Deliberately not exercised: 'cloud run' bills real sandbox time, and
@@ -1054,7 +1094,11 @@ relay node metrics >/dev/null 2>&1 && CP1=$((CP1 + 1))
 relay node deadletters --json >/dev/null 2>&1 && CP1=$((CP1 + 1))
 relay node down --state-dir "$CP1_STATE" >/dev/null 2>&1 || true
 sleep 2
-relay node status --state-dir "$CP1_STATE" 2>&1 | grep -iv running >/dev/null && CP1=$((CP1 + 1))
+# "grep -v" succeeds when ANY line lacks the pattern, so a multi-line status
+# that still says running satisfied it. Negate the match over the whole output.
+if ! relay node status --state-dir "$CP1_STATE" 2>&1 | grep -i running >/dev/null; then
+  CP1=$((CP1 + 1))
+fi
 if [ "$CP1" -ge 4 ]; then
   echo "  PASS  CP1 ($CP1/4)" | tee -a "$LOG"
   record "$TIER" "CP1 broker lifecycle" pass ""
@@ -1276,13 +1320,21 @@ exit 0
     captureOutput: true,
     failOnError: false,
     command: String.raw`
-relay agent list 2>/dev/null | grep -oE '(vf|cp[0-9])[A-Za-z0-9_-]*' | while read -r name; do
-  relay agent remove "$name" >/dev/null 2>&1 || true
-done
+# Scope teardown to THIS run's suffix. The previous pattern matched the
+# substrings "vf"/"cp<digit>" anywhere in the listing, so any pre-existing
+# workspace agent or channel whose name happened to contain them — or an
+# unrelated column of the JSON — would have been removed or archived.
+SUFFIX="${SUFFIX}"
 
-relay channel list 2>/dev/null | grep -oE '(vf|cp[0-9])[A-Za-z0-9_-]*' | while read -r name; do
-  relay channel archive "$name" >/dev/null 2>&1 || true
-done
+relay agent list 2>/dev/null | grep -oE '"name": "[^"]*"' | sed 's/"name": "//;s/"$//' |
+  grep -E "^(vf|cp[0-9])[A-Za-z0-9_-]*-$SUFFIX\$" | while read -r name; do
+    relay agent remove "$name" >/dev/null 2>&1 || true
+  done
+
+relay channel list 2>/dev/null | grep -oE '"name": "[^"]*"' | sed 's/"name": "//;s/"$//' |
+  grep -E "^(vf|cp[0-9])[A-Za-z0-9_-]*-$SUFFIX\$" | while read -r name; do
+    relay channel archive "$name" >/dev/null 2>&1 || true
+  done
 
 echo "Cleanup complete"
 exit 0
@@ -1336,19 +1388,22 @@ const EXPECTED_TIERS = [
 
 let checks = [];
 let ledgerError = null;
+// A line the reader cannot parse is a check whose result was lost. Counting
+// them is the difference between "no failures" and "we could not tell", so
+// they are tracked and fail the run rather than being quietly discarded.
+let malformedLines = 0;
 try {
-  checks = fs
+  const raw = fs
     .readFileSync(ledgerPath, 'utf8')
     .split('\n')
-    .filter((line) => line.trim().startsWith('{'))
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+    .filter((line) => line.trim().startsWith('{'));
+  for (const line of raw) {
+    try {
+      checks.push(JSON.parse(line));
+    } catch {
+      malformedLines += 1;
+    }
+  }
 } catch (err) {
   ledgerError = err.message;
 }
@@ -1391,12 +1446,16 @@ const reasons = [];
 if (ledgerError) reasons.push('check ledger unreadable: ' + ledgerError);
 if (notRun.length > 0) reasons.push('tiers produced no records: ' + notRun.join(', '));
 if (totals.fail > 0) reasons.push(totals.fail + ' check(s) failed');
+if (malformedLines > 0) {
+  reasons.push(malformedLines + ' unparseable ledger line(s) — check results were lost');
+}
 
 const verdict = {
   runId: process.env.VERIFY_RUN_ID,
   verdict: reasons.length === 0 ? 'PASS' : 'FAIL',
   reasons,
   totals,
+  malformedLines,
   tiers: byTier,
   tiersNotRun: notRun,
   provenance,

@@ -846,7 +846,7 @@ categories:
       - id: webhook-create
         name: Create Webhook
         cli: relay integration webhook create <channel> [--name <name>]
-        description: Register an outbound webhook
+        description: Register an inbound webhook that external services POST to, delivering into a channel
         location: packages/cli/src/cli/commands/integration.ts
         verify_tier: 5
 
