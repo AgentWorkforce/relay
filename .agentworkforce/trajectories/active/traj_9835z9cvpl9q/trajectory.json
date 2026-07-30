@@ -80,7 +80,7 @@
             "question": "Replace fixed standalone smoke delay with bounded readiness polling",
             "chosen": "Replace fixed standalone smoke delay with bounded readiness polling",
             "alternatives": [],
-            "reasoning": "The test was tearing down  after eight seconds even when a retried Relaycast handshake was still in progress. Polling for  up to thirty seconds prevents the cleanup from creating a false startup failure while retaining deterministic timeout diagnostics."
+            "reasoning": "The scripts/ci-standalone-smoke.sh test was tearing down `agent-relay node up` after eight seconds even when a retried Relaycast handshake was still in progress. Polling for its `Broker started.` readiness line for up to thirty seconds prevents cleanup from creating a false startup failure while retaining deterministic timeout diagnostics."
           },
           "significance": "high"
         }
