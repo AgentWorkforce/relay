@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe('reserveStatusLineRow', () => {
-  it('gives a TUI one fewer row while preserving its width', () => {
+  it('gives a TUI one fewer row and column', () => {
     expect(reserveStatusLineRow({ rows: 40, cols: 120 })).toEqual({ rows: 39, cols: 119 });
   });
 
