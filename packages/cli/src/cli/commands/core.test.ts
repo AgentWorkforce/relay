@@ -1191,7 +1191,8 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Pending deliveries: 2');
     expect(deps.log).toHaveBeenCalledWith('Node: sf-mini (node_enrolled)');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…s123');
-    expect(deps.log).toHaveBeenCalledWith('Observer: https://agentrelay.com/observer?key=<workspace-key>');
+    const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(logCalls.some((call) => String(call[0]).startsWith('Observer:'))).toBe(false);
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
   });
 

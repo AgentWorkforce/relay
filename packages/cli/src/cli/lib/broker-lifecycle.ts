@@ -1817,9 +1817,6 @@ export async function runStatusCommand(
     }
     if (session?.workspace_key) {
       deps.log(`Workspace Key: ${maskSecret(session.workspace_key)}`);
-      // A masked key would make this a dead link; print a template instead so
-      // nothing usable leaks and nothing broken looks clickable.
-      deps.log('Observer: https://agentrelay.com/observer?key=<workspace-key>');
     }
   }
 }
