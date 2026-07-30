@@ -18,7 +18,7 @@ workspace that already existed, unless the operator has explicitly asked for a
 new one.
 
 **One data-plane ID per workspace.** Relaycast, Relayfile, and RelayAuth must
-all resolve the canonical workspace to the *same* `rw_…` identity. The Cloud
+all resolve the canonical workspace to the _same_ `rw_…` identity. The Cloud
 workspace ID is deliberately excluded from the comparison: it is the
 control-plane record that points at the data plane, and it lives in a different
 ID space (a UUID).
@@ -111,7 +111,7 @@ node token, or a credential-bearing observer URL.
 
 - Keys that are printed on purpose go through `maskSecret` — prefix plus last
   four characters.
-- Error and log *text* goes through `redactCredentialValues`, which catches
+- Error and log _text_ goes through `redactCredentialValues`, which catches
   credentials embedded in URL paths and query strings, where key-name redaction
   cannot help.
 - Structured dumps go through `redactSecrets`, which replaces the value of any
@@ -149,16 +149,16 @@ $ agent-relay node status                       # Workspace: <canonical rw_…>
 
 ## 6. Coverage
 
-| Guarantee | Test |
-|---|---|
-| Workspace and resident address survive a stop/start | `packages/cli/src/cli/lib/workspace-identity-restart.test.ts` |
-| First start with no pin joins the canonical workspace | same |
-| The resolved workspace is pinned to the project | same |
-| Explicit `--workspace-key` still wins | same |
-| A second checkout shares the canonical workspace | same |
-| Precedence: pin over canonical store | `packages/cli/src/cli/commands/core.test.ts` |
-| No canonical workspace ⇒ unchanged legacy behavior | same |
-| `node status` shows the workspace ID and leaks no credential | same |
-| `workspace active` emits convergence evidence | `packages/cli/src/cli/commands/workspace.test.ts` |
-| `--require-unified` exits non-zero on divergence | same |
-| Convergence detection itself | `packages/cloud/src/workspace-convergence.test.ts` |
+| Guarantee                                                    | Test                                                          |
+| ------------------------------------------------------------ | ------------------------------------------------------------- |
+| Workspace and resident address survive a stop/start          | `packages/cli/src/cli/lib/workspace-identity-restart.test.ts` |
+| First start with no pin joins the canonical workspace        | same                                                          |
+| The resolved workspace is pinned to the project              | same                                                          |
+| Explicit `--workspace-key` still wins                        | same                                                          |
+| A second checkout shares the canonical workspace             | same                                                          |
+| Precedence: pin over canonical store                         | `packages/cli/src/cli/commands/core.test.ts`                  |
+| No canonical workspace ⇒ unchanged legacy behavior           | same                                                          |
+| `node status` shows the workspace ID and leaks no credential | same                                                          |
+| `workspace active` emits convergence evidence                | `packages/cli/src/cli/commands/workspace.test.ts`             |
+| `--require-unified` exits non-zero on divergence             | same                                                          |
+| Convergence detection itself                                 | `packages/cloud/src/workspace-convergence.test.ts`            |

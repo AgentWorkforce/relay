@@ -1246,9 +1246,7 @@ describe('registerCoreCommands', () => {
     await runCommand(program, ['status']);
 
     expect(deps.log).toHaveBeenCalledWith('Workspace: rw_7ccfea89');
-    const output = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls
-      .flat()
-      .join('\n');
+    const output = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join('\n');
     expect(output).not.toContain('rk_live_teststatus123');
     expect(output).not.toContain('nt_live_nodetoken456');
     // Observer URLs carry a scoped token in the query string; status never

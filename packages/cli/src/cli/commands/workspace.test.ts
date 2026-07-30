@@ -125,14 +125,7 @@ describe('registerWorkspaceCommands', () => {
       apiUrl: 'https://cloud.test',
     });
 
-    await program.parseAsync([
-      'node',
-      'agent-relay',
-      'workspace',
-      'active',
-      '--json',
-      '--require-unified',
-    ]);
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--json', '--require-unified']);
 
     const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
     expect(printed.dataPlane).toEqual({
