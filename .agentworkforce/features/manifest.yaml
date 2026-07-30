@@ -1,5 +1,5 @@
 version: '1.1'
-updated: '2026-07-20'
+updated: '2026-07-30'
 
 # Every user-facing feature in this repo, categorized and scored.
 #
@@ -596,6 +596,20 @@ categories:
         name: List Fleet Nodes
         cli: relay fleet nodes
         description: Show all fleet nodes registered in the workspace (returns empty list if none configured)
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-spawn
+        name: Spawn Fleet Agent
+        cli: relay fleet spawn <cli> [--name <name>] [--task <text>] [--node <name>] [--persona <persona>] [--model <model>]
+        description: Spawn a worker agent onto a live fleet node, by explicit node or by persona placement
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
+      - id: fleet-release
+        name: Release Fleet Agent
+        cli: relay fleet release <name> [--reason <reason>] [--delete-agent]
+        description: Release a spawned fleet agent, optionally deleting the agent identity
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
 

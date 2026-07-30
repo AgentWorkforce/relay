@@ -137,6 +137,8 @@ describe('feature manifest contract', () => {
       'relay skills add',
       'relay mcp',
       'relay fleet nodes',
+      'relay fleet spawn',
+      'relay fleet release',
       'relay fleet config',
       'relay fleet enable',
       'relay fleet disable',
