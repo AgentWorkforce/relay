@@ -1,12 +1,20 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@agent-relay/cloud', () => ({
-  readWorkspaceStore: vi.fn(() => ({ workspaces: {} })),
-  resolveActiveWorkspace: vi.fn(),
-  setWorkspaceKey: vi.fn(),
-  switchWorkspace: vi.fn(),
-}));
+vi.mock('@agent-relay/cloud', async (importOriginal) => {
+  // The convergence helpers are pure and are the thing under test here — keep
+  // the real implementations so the command's evidence output isn't asserted
+  // against a stub that could drift from it.
+  const actual = await importOriginal<typeof import('@agent-relay/cloud')>();
+  return {
+    describeDataPlaneConvergence: actual.describeDataPlaneConvergence,
+    formatDataPlaneDivergence: actual.formatDataPlaneDivergence,
+    readWorkspaceStore: vi.fn(() => ({ workspaces: {} })),
+    resolveActiveWorkspace: vi.fn(),
+    setWorkspaceKey: vi.fn(),
+    switchWorkspace: vi.fn(),
+  };
+});
 
 vi.mock('../lib/workspace-session.js', () => ({
   persistWorkspaceSession: vi.fn(),
@@ -59,7 +67,7 @@ describe('registerWorkspaceCommands', () => {
       name: 'Ops',
       key: 'rk_live_ops',
       cloudWorkspaceId: 'rw_ops',
-      relaycastWorkspaceId: 'rc_ops',
+      relaycastWorkspaceId: 'rw_ops',
       relayfileWorkspaceId: 'rw_ops',
       relayauthWorkspaceId: 'rw_ops',
       organizationId: 'org_1',
@@ -89,14 +97,116 @@ describe('registerWorkspaceCommands', () => {
       name: 'Ops',
       key: 'rk_live_…',
       cloudWorkspaceId: 'rw_ops',
-      relaycastWorkspaceId: 'rc_ops',
+      relaycastWorkspaceId: 'rw_ops',
       relayfileWorkspaceId: 'rw_ops',
       relayauthWorkspaceId: 'rw_ops',
       organizationId: 'org_1',
       slug: 'ops',
       urls: {},
       apiUrl: 'https://cloud.test',
+      dataPlane: {
+        unified: true,
+        workspaceId: 'rw_ops',
+        planes: { relaycast: 'rw_ops', relayfile: 'rw_ops', relayauth: 'rw_ops' },
+        divergent: [],
+      },
     });
+  });
+
+  it('workspace active --json proves the three data planes share one workspace ID', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      key: 'rk_live_ops',
+      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      relaycastWorkspaceId: 'rw_7ccfea89',
+      relayfileWorkspaceId: 'rw_7ccfea89',
+      relayauthWorkspaceId: 'rw_7ccfea89',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'workspace',
+      'active',
+      '--json',
+      '--require-unified',
+    ]);
+
+    const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(printed.dataPlane).toEqual({
+      unified: true,
+      workspaceId: 'rw_7ccfea89',
+      planes: { relaycast: 'rw_7ccfea89', relayfile: 'rw_7ccfea89', relayauth: 'rw_7ccfea89' },
+      divergent: [],
+    });
+    expect(deps.error).not.toHaveBeenCalled();
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  it('workspace active --require-unified exits 1 when the planes diverge', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'rw_ops',
+      relaycastWorkspaceId: 'rw_cast',
+      relayfileWorkspaceId: 'rw_file',
+      relayauthWorkspaceId: 'rw_cast',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--json', '--require-unified'])
+    ).rejects.toThrow('exit:1');
+
+    const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(printed.dataPlane).toMatchObject({ unified: false, divergent: ['relayfile'] });
+    expect(printed.dataPlane.workspaceId).toBeUndefined();
+    expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).toContain('not durable');
+  });
+
+  it('workspace active warns but still succeeds on divergence without --require-unified', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'rw_ops',
+      relaycastWorkspaceId: 'rw_cast',
+      relayfileWorkspaceId: 'rw_file',
+      relayauthWorkspaceId: 'rw_cast',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--json']);
+
+    expect(deps.error).toHaveBeenCalled();
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  it('workspace active prints every plane ID, including Relaycast, in human output', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'default',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'cloud-uuid',
+      relaycastWorkspaceId: 'rw_7ccfea89',
+      relayfileWorkspaceId: 'rw_7ccfea89',
+      relayauthWorkspaceId: 'rw_7ccfea89',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active']);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('Relaycast workspace ID: rw_7ccfea89');
+    expect(output).toContain('Relayfile workspace ID: rw_7ccfea89');
+    expect(output).toContain('Relayauth workspace ID: rw_7ccfea89');
+    expect(output).toContain('Data-plane workspace ID: rw_7ccfea89 (unified)');
+    // Human output must not carry the credential that unlocks the workspace.
+    expect(output).not.toContain('rk_live_ops');
   });
 
   it('workspace active --json includes raw keys only with --reveal-secrets', async () => {
@@ -105,7 +215,7 @@ describe('registerWorkspaceCommands', () => {
       name: 'Ops',
       key: 'rk_live_ops',
       cloudWorkspaceId: 'rw_ops',
-      relaycastWorkspaceId: 'rc_ops',
+      relaycastWorkspaceId: 'rw_ops',
       relaycastApiKey: 'rk_live_castkey01',
       relayfileWorkspaceId: 'rw_ops',
       relayauthWorkspaceId: 'rw_ops',
@@ -126,7 +236,7 @@ describe('registerWorkspaceCommands', () => {
       name: 'Ops',
       key: 'rk_live_ops',
       cloudWorkspaceId: 'rw_ops',
-      relaycastWorkspaceId: 'rc_ops',
+      relaycastWorkspaceId: 'rw_ops',
       relaycastApiKey: 'rk_live_castkey01',
       relayfileWorkspaceId: 'rw_ops',
       relayauthWorkspaceId: 'rw_ops',

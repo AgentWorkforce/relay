@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
+### Added
+
+- `agent-relay workspace active` now reports whether Relaycast, Relayfile, and RelayAuth resolve the workspace to one data-plane ID. `--json` gains a `dataPlane` object (`unified`, the shared `workspaceId`, per-plane IDs, and the names of any that diverge), the human output prints the Relaycast ID it used to omit, and `--require-unified` turns a divergence into a non-zero exit for setup doctors and supervisors.
+- `agent-relay node status` prints the durable `Workspace:` ID alongside the masked workspace key, so an operator can confirm a restart preserved workspace identity. See `specs/workspace-identity.md`.
+
 ### Fixed
+
+- A node started with no project-pinned workspace no longer mints a throwaway workspace. `agent-relay node up` now falls back to the machine-global canonical workspace (`agent-relay workspace join|switch`) before letting the broker create one, so the node and its resident agents keep the same workspace — and the same delivery addresses — across a stop/start. Explicit `--workspace-key`, workspace env vars, and an existing project pin all still win; a machine with no canonical workspace set behaves as before.
 
 - `agent-relay integration webhook create` now works. It took a `<url>` argument and sent `{ url, event }`, but `POST /v1/webhooks` accepts `{ channel, name? }` and returns the URL — so every invocation failed with `channel is required`. It now takes `<channel>` with an optional `--name`, matching `create-inbound`, which posts to the same endpoint.
 - `@agent-relay/sdk` `RelayCreateWebhookInput` declared a required `url` and an `event`, neither of which the endpoint accepts. It is now `{ channel, name? }`. Code passing `url`/`event` was already failing at runtime.

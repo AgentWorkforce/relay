@@ -65,6 +65,12 @@ export {
 } from './connect.js';
 
 export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
+export {
+  describeDataPlaneConvergence,
+  formatDataPlaneDivergence,
+  type DataPlaneConvergence,
+  type DataPlaneWorkspaceIds,
+} from './workspace-convergence.js';
 export { redactCredentialValues } from './redact.js';
 
 export {

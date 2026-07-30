@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readProjectWorkspaceKey, readProjectWorkspaceSession } from '../lib/project-workspace-key.js';
 
@@ -12,8 +12,10 @@ const sdkStatusClient = {
     async () =>
       ({ workspace_key: '' }) as {
         workspace_key?: string;
+        default_workspace_id?: string;
         node_id?: string;
         node_name?: string;
+        node_token?: string;
       }
   ),
   disconnect: vi.fn(() => undefined),
@@ -58,6 +60,12 @@ beforeEach(() => {
   sdkStatusClient.disconnect.mockClear();
   harnessConnectMock.mockReset();
   telemetryMocks.track.mockClear();
+});
+
+afterEach(() => {
+  for (const dir of relayHomes.splice(0)) {
+    nodeFs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 import {
@@ -127,6 +135,25 @@ function createFsMock(initialFiles: Record<string, string> = {}): CoreFileSystem
 }
 
 // eslint-disable-next-line complexity
+const relayHomes: string[] = [];
+
+/** An `AGENT_RELAY_HOME` with no workspace store — no canonical workspace exists. */
+function emptyRelayHome(): string {
+  const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'core-relay-home-'));
+  relayHomes.push(dir);
+  return dir;
+}
+
+/** An `AGENT_RELAY_HOME` whose active workspace is `key`. */
+function relayHomeWithCanonicalWorkspace(key: string): string {
+  const dir = emptyRelayHome();
+  nodeFs.writeFileSync(
+    nodePath.join(dir, 'workspaces.json'),
+    JSON.stringify({ active: 'default', workspaces: { default: { key } } })
+  );
+  return dir;
+}
+
 function createHarness(options?: {
   fs?: CoreFileSystem;
   relay?: CoreRelay;
@@ -156,6 +183,10 @@ function createHarness(options?: {
   const spawnedProcess = options?.spawnedProcess ?? createSpawnedProcessMock();
   const env = options?.env ?? {};
   env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE ??= '1';
+  // `up` now falls back to the machine-global workspace store. Point every
+  // harness at an isolated home by default so a test never picks up (or
+  // prints) whatever workspace the developer's own machine has active.
+  env.AGENT_RELAY_HOME ??= emptyRelayHome();
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -1196,6 +1227,35 @@ describe('registerCoreCommands', () => {
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
   });
 
+  it('status reports the durable workspace ID without leaking any credential', async () => {
+    // The workspace ID is what an operator compares before and after a restart
+    // to confirm identity held; everything credential-shaped stays masked.
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 1 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({
+      workspace_key: 'rk_live_teststatus123',
+      default_workspace_id: 'rw_7ccfea89',
+      node_id: 'node_enrolled',
+      node_name: 'sf-mini',
+      node_token: 'nt_live_nodetoken456',
+    });
+
+    const { program, deps } = createHarness({ fs });
+
+    await runCommand(program, ['status']);
+
+    expect(deps.log).toHaveBeenCalledWith('Workspace: rw_7ccfea89');
+    const output = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .flat()
+      .join('\n');
+    expect(output).not.toContain('rk_live_teststatus123');
+    expect(output).not.toContain('nt_live_nodetoken456');
+    // Observer URLs carry a scoped token in the query string; status never
+    // prints one at all, which is the only way to guarantee it can't leak.
+    expect(output).not.toMatch(/ot_live_|[?&](token|key|api_key)=/);
+  });
+
   it('status omits workspace key and observer when broker has no workspace_key', async () => {
     const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
@@ -1509,8 +1569,11 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…ag88');
   });
 
-  it('up without --workspace-key or a pinned session does not set workspace key env vars', async () => {
-    const env: NodeJS.ProcessEnv = {};
+  it('up without --workspace-key, a pinned session, or a canonical workspace sets no key env vars', async () => {
+    // AGENT_RELAY_HOME points at an empty dir so the machine-global workspace
+    // store is genuinely absent rather than whatever the dev box happens to
+    // have active.
+    const env: NodeJS.ProcessEnv = { AGENT_RELAY_HOME: emptyRelayHome() };
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env });
 
@@ -1519,6 +1582,41 @@ describe('registerCoreCommands', () => {
     expect(exitCode).toBeUndefined();
     expect(env.RELAY_WORKSPACE_KEY).toBeUndefined();
     expect(env.RELAY_API_KEY).toBeUndefined();
+  });
+
+  it('up falls back to the machine-global canonical workspace when nothing else selects one', async () => {
+    const env: NodeJS.ProcessEnv = {
+      AGENT_RELAY_HOME: relayHomeWithCanonicalWorkspace('rk_live_canonicalstore01'),
+    };
+    const relay = createRelayMock({ workspaceKey: 'rk_live_canonicalstore01' });
+    const { program, deps } = createHarness({ relay, env });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_canonicalstore01');
+    expect(env.RELAY_API_KEY).toBe('rk_live_canonicalstore01');
+    // Only the source is named; the key itself is a live credential.
+    const output = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join('\n');
+    expect(output).toContain('machine-global canonical Agent Relay workspace');
+    expect(output).not.toContain('rk_live_canonicalstore01');
+  });
+
+  it('up prefers the project pin over the machine-global canonical workspace', async () => {
+    const env: NodeJS.ProcessEnv = {
+      AGENT_RELAY_HOME: relayHomeWithCanonicalWorkspace('rk_live_canonicalstore01'),
+    };
+    const fs = createFsMock({
+      '/tmp/project/.agentworkforce/relay/workspace-key.json': JSON.stringify({
+        workspaceKey: 'rk_live_projectpin01',
+      }),
+    });
+    const relay = createRelayMock({ workspaceKey: 'rk_live_projectpin01' });
+    const { program } = createHarness({ relay, env, fs });
+
+    await runCommand(program, ['up']);
+
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_projectpin01');
   });
 
   it('up resumes the workspace session pinned to the project', async () => {

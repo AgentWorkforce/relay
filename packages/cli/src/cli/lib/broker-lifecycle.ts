@@ -25,6 +25,9 @@ import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
 import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
+// The narrow subpath, not the package barrel: broker startup must not drag the
+// cloud package's HTTP/auth surface into its module graph.
+import { resolveActiveWorkspaceKey } from '@agent-relay/cloud/workspace-key';
 
 type UpOptions = {
   spawn?: boolean;
@@ -1314,8 +1317,22 @@ function readPinnedProjectWorkspaceSession(
   }
 }
 
-/** Resume the pinned project session unless explicit credentials override it. */
-function resumePinnedProjectWorkspace(
+/**
+ * Resolve the workspace this broker start must join, and apply it to the env.
+ *
+ * Precedence, highest first:
+ *   1. an explicit `--workspace-key`/env key, or a node token that already
+ *      implies a workspace — the operator chose; don't second-guess it;
+ *   2. the project pin written by a previous start in this checkout;
+ *   3. the machine-global canonical workspace (`agent-relay workspace switch`).
+ *
+ * Step 3 is what makes identity durable: without it a start with no project pin
+ * falls through to the broker, which mints a brand-new messaging-only workspace
+ * and hands every resident agent a new address. Resolving the canonical
+ * workspace here means `node up` needs no manual key copying, and the key is
+ * pinned to the project after startup so later starts take step 2.
+ */
+function resolveStartupWorkspace(
   options: UpOptions,
   deps: CoreDependencies,
   projectDataDir: string
@@ -1327,13 +1344,41 @@ function resumePinnedProjectWorkspace(
 
   const session = readPinnedProjectWorkspaceSession(projectDataDir, deps);
   if (session) {
-    deps.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
-    deps.env.RELAY_API_KEY = session.workspaceKey;
-    if (session.enrolledNodeId) {
-      deps.env.AGENT_RELAY_ENROLLED_NODE_ID = session.enrolledNodeId;
-    }
+    applyStartupWorkspace(session, deps);
+    return session;
   }
-  return session;
+
+  const canonicalKey = readCanonicalWorkspaceKey(deps);
+  if (!canonicalKey) {
+    return undefined;
+  }
+  const canonical: PinnedProjectWorkspaceSession = { workspaceKey: canonicalKey };
+  applyStartupWorkspace(canonical, deps);
+  // Identifies the source, never the key — the key is a live credential.
+  deps.log('Using the machine-global canonical Agent Relay workspace for this node.');
+  return canonical;
+}
+
+/** Apply a resolved workspace session to the env the broker (and any detached child) inherits. */
+function applyStartupWorkspace(session: PinnedProjectWorkspaceSession, deps: CoreDependencies): void {
+  deps.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
+  deps.env.RELAY_API_KEY = session.workspaceKey;
+  if (session.enrolledNodeId) {
+    deps.env.AGENT_RELAY_ENROLLED_NODE_ID = session.enrolledNodeId;
+  }
+}
+
+/**
+ * Read the active workspace from the machine-global store. A malformed or
+ * unreadable store must not abort startup — the broker can still come up on a
+ * fresh workspace, which is strictly better than refusing to start.
+ */
+function readCanonicalWorkspaceKey(deps: CoreDependencies): string | undefined {
+  try {
+    return resolveActiveWorkspaceKey(deps.env)?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
@@ -1346,7 +1391,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   // --state-dir), so the key must be persisted here even when broker state is
   // redirected elsewhere.
   const projectWorkspaceKeyDataDir = paths.dataDir;
-  const resumedProjectSession = resumePinnedProjectWorkspace(options, deps, projectWorkspaceKeyDataDir);
+  const resumedProjectSession = resolveStartupWorkspace(options, deps, projectWorkspaceKeyDataDir);
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1840,6 +1885,11 @@ export async function runStatusCommand(
     deps.log(`Node delivery: ${formatNodeDeliveryStatus(status)}`);
     if (session?.node_id) {
       deps.log(`Node: ${session.node_name?.trim() || session.node_id} (${session.node_id})`);
+    }
+    // The workspace ID is the durable identity an operator compares across a
+    // stop/start; the key that unlocks it is a credential and stays masked.
+    if (session?.default_workspace_id) {
+      deps.log(`Workspace: ${session.default_workspace_id}`);
     }
     if (session?.workspace_key) {
       deps.log(`Workspace Key: ${maskSecret(session.workspace_key)}`);

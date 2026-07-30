@@ -1,6 +1,10 @@
 import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
-import { resolveActiveWorkspace } from '@agent-relay/cloud';
+import {
+  describeDataPlaneConvergence,
+  formatDataPlaneDivergence,
+  resolveActiveWorkspace,
+} from '@agent-relay/cloud';
 
 import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
@@ -31,6 +35,10 @@ export function registerWorkspaceCommands(
     .option('--json', 'Output the active workspace as JSON (keys masked unless --reveal-secrets)')
     .option('--reveal-secrets', 'Include raw workspace keys in --json output')
     .option(
+      '--require-unified',
+      'Exit non-zero when Relaycast, Relayfile, and RelayAuth do not share one data-plane workspace ID'
+    )
+    .option(
       '--refresh-timeout <milliseconds>',
       'Timeout for refreshing the cloud session',
       parsePositiveInteger
@@ -40,6 +48,7 @@ export function registerWorkspaceCommands(
         apiUrl?: string;
         json?: boolean;
         revealSecrets?: boolean;
+        requireUnified?: boolean;
         refreshTimeout?: number;
       }) => {
         await runSdk(deps, async () => {
@@ -48,27 +57,44 @@ export function registerWorkspaceCommands(
             interactive: false,
             refreshTimeoutMs: options.refreshTimeout,
           });
+          // The evidence for the durability invariant. Emitted on every call so
+          // `workspace active --json` is self-sufficient proof, not something a
+          // caller has to recompute from the three per-plane ids.
+          const dataPlane = describeDataPlaneConvergence(workspace);
 
           if (options.json) {
             printJson(
               deps,
               options.revealSecrets
-                ? workspace
+                ? { ...workspace, dataPlane }
                 : {
                     ...workspace,
                     key: maskSecret(workspace.key),
                     ...(workspace.relaycastApiKey
                       ? { relaycastApiKey: maskSecret(workspace.relaycastApiKey) }
                       : {}),
+                    dataPlane,
                   }
             );
-            return;
+          } else {
+            deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
+            deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
+            deps.log(`Relaycast workspace ID: ${workspace.relaycastWorkspaceId}`);
+            deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
+            deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
+            deps.log(
+              dataPlane.unified
+                ? `Data-plane workspace ID: ${dataPlane.workspaceId} (unified)`
+                : `Data-plane workspace ID: divergent across ${dataPlane.divergent.join(', ')}`
+            );
           }
 
-          deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
-          deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
-          deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
-          deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
+          if (!dataPlane.unified) {
+            deps.error(formatDataPlaneDivergence(dataPlane));
+            if (options.requireUnified) {
+              deps.exit(1);
+            }
+          }
         });
       }
     );
