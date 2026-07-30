@@ -717,6 +717,42 @@ describe('runDriveSession', () => {
     });
   });
 
+  it('aborts when the broker cannot complete the transition to auto_inject', async () => {
+    const { deps, sockets, fetchLog, errors, stdin } = createHarness({
+      initialMode: 'manual_flush',
+      routes: {
+        'PUT /delivery-mode': async () =>
+          new Response(
+            JSON.stringify({
+              mode: 'manual_flush',
+              flushed: 0,
+              matched: true,
+              revision: '1',
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          ),
+      },
+    });
+
+    await expect(runDriveSession('Alice', {}, deps)).resolves.toBe(1);
+
+    expect(sockets).toHaveLength(0);
+    expect(stdin.rawModeCalls).toEqual([]);
+    expect(
+      fetchLog.filter((call) => call.method === 'PUT' && call.url.endsWith('/delivery-mode'))
+    ).toHaveLength(1);
+    expect(
+      errors.some((args) =>
+        String(args[0]).includes(
+          "could not switch 'Alice' to auto_inject mode: broker remained in manual_flush mode"
+        )
+      )
+    ).toBe(true);
+  });
+
   it('takes stdin raw before replaying a TUI snapshot', async () => {
     const { deps, sockets, stdin } = createHarness();
     deps.captureAndRenderSnapshot = vi.fn(async () => {
@@ -992,7 +1028,7 @@ describe('runDriveSession', () => {
           // out-of-band change and reports the current (unchanged) state.
           const body =
             putCalls === 1
-              ? { mode: 'manual_flush', flushed: 0, matched: true, revision: '1' }
+              ? { mode: 'auto_inject', flushed: 0, matched: true, revision: '1' }
               : { mode: 'manual_flush', flushed: 0, matched: false, revision: '7' };
           return new Response(JSON.stringify(body), {
             status: 200,
@@ -1772,7 +1808,15 @@ describe('runDriveSession', () => {
     // repaint. Painting now would splice reverse-video controls into the
     // agent's half-sent sequence.
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }));
+    socket.emit(
+      'message',
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: 'e1',
+        reason: 'inbound_delivery_manual_flush',
+      })
+    );
     expect(writes.filter((w) => w.includes('drive Alice')).length).toBe(paintsBefore);
     // Completing the CSI lands at a boundary → the deferred repaint fires.
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
@@ -1806,7 +1850,15 @@ describe('runDriveSession', () => {
     const paintsBefore = writes.filter((write) => write.includes('[drive Alice')).length;
 
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
-    socket.emit('message', jsonMessage({ kind: 'delivery_queued', name: 'Alice', event_id: 'e1' }));
+    socket.emit(
+      'message',
+      jsonMessage({
+        kind: 'delivery_queued',
+        name: 'Alice',
+        event_id: 'e1',
+        reason: 'inbound_delivery_manual_flush',
+      })
+    );
     expect(writes.filter((write) => write.includes('[drive Alice'))).toHaveLength(paintsBefore);
 
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
