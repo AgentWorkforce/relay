@@ -1844,17 +1844,17 @@ export function registerIntegrationCommands(
   addSdkOptions(
     webhook
       .command('create')
-      .description('Register a webhook')
-      .argument('<url>', 'Webhook URL')
-      .option('--event <event>', 'Event to deliver')
-  ).action(async (url: string, o: Record<string, unknown>) => {
+      .description('Register an inbound webhook that delivers into a channel (alias of create-inbound)')
+      .argument('<channel>', 'Target channel the webhook posts into')
+      .option('--name <name>', 'Human-readable webhook name (e.g. "GitHub Alerts")')
+  ).action(async (channel: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       printJson(
         deps,
         await runIntegrationOperation(deps, o, (relay) =>
           relay.integrations.webhooks.create({
-            url,
-            event: o.event as string | undefined,
+            channel,
+            name: o.name as string | undefined,
           })
         )
       );

@@ -17,6 +17,37 @@ Use when you need to verify that a specific feature or set of features works cor
 .agentworkforce/features/verify/procedures.md  # step-by-step verification by tier
 ```
 
+## Automation
+
+```text
+workflows/verify-features.ts            # runs tiers 1-6 + critical paths 1-6
+workflows/audit-feature-manifest.ts     # checks the manifest still matches the CLI
+scripts/audit-feature-manifest.mjs      # the audit itself; run it directly
+```
+
+Before trusting any verification result, check two things:
+
+1. **Which CLI ran.** `verify-features.ts` has a `provenance` step that fails
+   when `relay version` disagrees with the repo's `package.json`. A run against
+   a stale globally-installed CLI describes that CLI, not your checkout — this
+   has already produced a full green run plus one bogus "unknown command"
+   failure against a real command.
+2. **What was skipped.** Every check records `pass`, `fail`, or `skip` with a
+   reason into `.workflow-artifacts/verify-features/checks.jsonl`, and
+   `verdict.json` is the authoritative result. A SKIP means _not verified_.
+   Never read a skip as a pass.
+
+Run the manifest audit before adding checks, so you are not writing coverage
+against a stale map:
+
+```bash
+node scripts/audit-feature-manifest.mjs          # human-readable
+node scripts/audit-feature-manifest.mjs --json   # for tooling
+```
+
+Exit 0 = clean, 1 = drift, 2 = the audit itself could not run. Exit 2 is
+deliberately distinct: a broken audit must never be read as a clean manifest.
+
 ## How to use it
 
 ### 1. Read the manifest to find the feature
@@ -100,6 +131,13 @@ Add or update entries in `manifest.yaml` when:
 - An MCP tool is added or renamed
 - A new harness is supported
 - A feature is removed or deprecated
+
+Then run `node scripts/audit-feature-manifest.mjs` and confirm `MANIFEST_CLEAN`.
+Note that `manifest-contract.test.ts` cannot catch a missing entry for a _new_
+command — a new command is absent from both the manifest and that test's
+hardcoded expectation list, so it passes. The audit script derives the surface
+from `--help` and `tools/list` instead, which is why it is the check that
+matters here. Add new commands to both.
 
 Update `critical-paths.md` when:
 

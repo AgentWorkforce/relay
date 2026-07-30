@@ -90,6 +90,7 @@ __pycache__/
 !/workflows/relayauth-integration/
 !/workflows/cloud-connect/
 !/workflows/verify-features.ts
+!/workflows/audit-feature-manifest.ts
 
 # Eval harness JSON reports (generated per run)
 tests/integration/broker/evals-reports/

@@ -41,9 +41,11 @@ describe('SDK integrations / capabilities / workspace passthrough', () => {
     const relaycast = createRelaycastMock();
     const client = new RelaycastMessagingClient({ relaycast: relaycast as never });
 
-    const webhook = await client.integrations.webhooks.create({ url: 'https://x', event: 'message.created' });
+    // POST /v1/webhooks takes { channel, name? } and returns the generated URL.
+    // This previously asserted { url, event }, a shape the endpoint rejects.
+    const webhook = await client.integrations.webhooks.create({ channel: 'deploy-status' });
     expect(webhook.id).toBe('wh1');
-    expect(relaycast.webhooks.create).toHaveBeenCalledWith({ url: 'https://x', event: 'message.created' });
+    expect(relaycast.webhooks.create).toHaveBeenCalledWith({ channel: 'deploy-status' });
 
     await client.integrations.webhooks.trigger('wh1', { hello: 'world' });
     expect(relaycast.webhooks.trigger).toHaveBeenCalledWith('wh1', { hello: 'world' });

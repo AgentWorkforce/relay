@@ -165,12 +165,12 @@ describe('SDK-backed CLI groups', () => {
   it('integration webhook create routes to integrations.webhooks.create', async () => {
     const { program, relay } = harness(registerIntegrationCommands);
     await program.parseAsync(
-      ['integration', 'webhook', 'create', 'https://x', '--event', 'message.created'],
+      ['integration', 'webhook', 'create', 'deploy-status', '--name', 'GitHub Alerts'],
       { from: 'user' }
     );
     expect(relay.integrations.webhooks.create).toHaveBeenCalledWith({
-      url: 'https://x',
-      event: 'message.created',
+      channel: 'deploy-status',
+      name: 'GitHub Alerts',
     });
   });
 
@@ -196,10 +196,9 @@ describe('SDK-backed CLI groups', () => {
       resolveLocalRelayOptions,
     } satisfies Partial<IntegrationCommandDependencies>);
 
-    await program.parseAsync(
-      ['integration', 'webhook', 'create', 'https://x', '--event', 'message.created'],
-      { from: 'user' }
-    );
+    await program.parseAsync(['integration', 'webhook', 'create', 'deploy-status'], {
+      from: 'user',
+    });
 
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
@@ -207,8 +206,8 @@ describe('SDK-backed CLI groups', () => {
       expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
     );
     expect(secondRelay.integrations.webhooks.create).toHaveBeenCalledWith({
-      url: 'https://x',
-      event: 'message.created',
+      channel: 'deploy-status',
+      name: undefined,
     });
     expect(log).toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
