@@ -123,6 +123,7 @@ function createFsMock(initialFiles: Record<string, string> = {}): CoreFileSystem
       files.delete(filePath);
     }),
     accessSync: vi.fn(() => undefined),
+    realpathSync: vi.fn((filePath: string) => filePath),
   };
 }
 
@@ -136,6 +137,7 @@ function createHarness(options?: {
   spawnedProcess?: SpawnedProcess;
   spawnImpl?: CoreDependencies['spawnProcess'];
   execCommand?: CoreDependencies['execCommand'];
+  execFileCommand?: CoreDependencies['execFileCommand'];
   killImpl?: CoreDependencies['killProcess'];
   nowImpl?: CoreDependencies['now'];
   sleepImpl?: CoreDependencies['sleep'];
@@ -174,6 +176,7 @@ function createHarness(options?: {
     spawnProcess:
       options?.spawnImpl ?? (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
     execCommand: options?.execCommand ?? vi.fn(async () => ({ stdout: '', stderr: '' })),
+    execFileCommand: options?.execFileCommand ?? vi.fn(async () => ({ stdout: '', stderr: '' })),
     killProcess: options?.killImpl ?? vi.fn(() => undefined),
     fs,
     generateAgentName: vi.fn(() => 'AutoAgent'),
@@ -1406,9 +1409,12 @@ describe('registerCoreCommands', () => {
   });
 
   it('update tracks successful install attempts', async () => {
+    const execCommand = vi.fn(async () => ({ stdout: 'updated\n', stderr: '' }));
+    const execFileCommand = vi.fn(async () => ({ stdout: '2.0.0\n', stderr: '' }));
     const { deps } = createHarness({
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
-      execCommand: vi.fn(async () => ({ stdout: 'updated\n', stderr: '' })),
+      execCommand,
+      execFileCommand,
     });
     const program = new Command();
     registerCoreMaintenance(program, deps);
@@ -1417,6 +1423,10 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.execCommand).toHaveBeenCalledWith('npm install -g agent-relay@latest');
+    expect(deps.execFileCommand).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', '--version'], {
+      timeout: 30_000,
+    });
+    expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
     expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
       from_version: '1.2.3',
       to_version: '2.0.0',
@@ -1443,6 +1453,203 @@ describe('registerCoreCommands', () => {
       success: false,
       error_class: 'Error',
     });
+    const output = [
+      ...vi.mocked(deps.log).mock.calls.flat(),
+      ...vi.mocked(deps.error).mock.calls.flat(),
+      ...vi.mocked(deps.warn).mock.calls.flat(),
+    ].join('\n');
+    expect(output).not.toContain('registry token');
+    expect(output).not.toContain('/tmp/private');
+  });
+
+  it('update fails instead of reporting success when the npm-installed CLI version is unchanged', async () => {
+    const execCommand = vi.fn(async () => ({ stdout: 'updated\n', stderr: '' }));
+    const execFileCommand = vi.fn(async () => ({
+      stdout: 'agent-relay v1.2.3\n',
+      stderr: '',
+    }));
+    const { deps } = createHarness({
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand,
+      execFileCommand,
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('Successfully updated'));
+    expect(deps.warn).toHaveBeenCalledWith('The update could not be installed and verified.');
+    expect(deps.log).toHaveBeenCalledWith('Try running manually: npm install -g agent-relay@latest');
+    expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
+      from_version: '1.2.3',
+      to_version: '2.0.0',
+      success: false,
+      error_class: 'Error',
+    });
+  });
+
+  it('update verifies npm installs with argv-safe Windows paths', async () => {
+    const execPath = String.raw`C:\Program Files\nodejs\node.exe`;
+    const cliScript = String.raw`C:\Users\relay user\AppData\Roaming\npm\node_modules\agent-relay\dist\cli.js`;
+    const execFileCommand = vi.fn(async () => ({ stdout: 'agent-relay v2.0.0\n', stderr: '' }));
+    const { deps } = createHarness({
+      execPath,
+      cliScript,
+      execCommand: vi.fn(async () => ({ stdout: '', stderr: '' })),
+      execFileCommand,
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBeUndefined();
+    expect(execFileCommand).toHaveBeenCalledWith(execPath, [cliScript, '--version'], {
+      timeout: 30_000,
+    });
+    expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
+  });
+
+  it('update never replays captured npm output when verification fails', async () => {
+    const execFileCommand = vi.fn(async () => ({
+      stdout: 'agent-relay v1.2.3\n',
+      stderr: '',
+    }));
+    const { deps } = createHarness({
+      execCommand: vi.fn(async () => ({
+        stdout: 'registry token secret-output\n',
+        stderr: 'private path /tmp/installer-secret\n',
+      })),
+      execFileCommand,
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+    const output = [
+      ...vi.mocked(deps.log).mock.calls.flat(),
+      ...vi.mocked(deps.error).mock.calls.flat(),
+      ...vi.mocked(deps.warn).mock.calls.flat(),
+    ].join('\n');
+
+    expect(exitCode).toBe(1);
+    expect(output).not.toContain('secret-output');
+    expect(output).not.toContain('/tmp/installer-secret');
+  });
+
+  it.runIf(
+    (process.platform === 'darwin' || process.platform === 'linux') &&
+      (process.arch === 'x64' || process.arch === 'arm64')
+  )('update resolves the standalone target behind ~/.local/bin and atomically replaces it', async () => {
+    const home = os.homedir();
+    const launcher = nodePath.join(home, '.local', 'bin', 'agent-relay');
+    const target = nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay');
+    const temporary = nodePath.join(nodePath.dirname(target), '.agent-relay.update-4242');
+    const fs = createFsMock({ [launcher]: 'shim', [target]: 'old-binary' });
+    fs.realpathSync = vi.fn((filePath: string) => (filePath === launcher ? target : filePath));
+    const execCommand = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const execFileCommand = vi.fn(async () => ({ stdout: 'agent-relay v2.0.0\n', stderr: '' }));
+    const { deps } = createHarness({
+      fs,
+      execPath: launcher,
+      cliScript: '/$bunfs/root/agent-relay',
+      execCommand,
+      execFileCommand,
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBeUndefined();
+    expect(execCommand).not.toHaveBeenCalledWith('npm install -g agent-relay@latest');
+    expect(execCommand).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `https://github.com/AgentWorkforce/relay/releases/download/v2.0.0/agent-relay-${process.platform}-${process.arch}`
+      )
+    );
+    expect(execCommand).toHaveBeenCalledWith(`chmod +x '${temporary}'`);
+    expect(execFileCommand).toHaveBeenCalledWith(temporary, ['--version'], { timeout: 30_000 });
+    expect(execCommand).toHaveBeenCalledWith(`mv -f '${temporary}' '${target}'`);
+    expect(execFileCommand).toHaveBeenCalledWith(target, ['--version'], { timeout: 30_000 });
+    expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
+  });
+
+  it.runIf(
+    (process.platform === 'darwin' || process.platform === 'linux') &&
+      (process.arch === 'x64' || process.arch === 'arm64')
+  )('update does not replace a standalone binary whose download reports the old version', async () => {
+    const home = os.homedir();
+    const target = nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay');
+    const fs = createFsMock({ [target]: 'old-binary' });
+    const execCommand = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const execFileCommand = vi.fn(async () => ({
+      stdout: 'agent-relay v1.2.3\n',
+      stderr: '',
+    }));
+    const { deps } = createHarness({
+      fs,
+      execPath: target,
+      cliScript: '/$bunfs/root/agent-relay',
+      execCommand,
+      execFileCommand,
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBe(1);
+    expect(execCommand).not.toHaveBeenCalledWith(expect.stringMatching(/^mv -f /));
+    expect(execCommand).not.toHaveBeenCalledWith('npm install -g agent-relay@latest');
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('Successfully updated'));
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringContaining('Reinstall the standalone CLI manually: curl -fsSL')
+    );
+  });
+
+  it.runIf(
+    (process.platform === 'darwin' || process.platform === 'linux') &&
+      (process.arch === 'x64' || process.arch === 'arm64')
+  )('update reports failure when the resolved standalone target still has the old version', async () => {
+    const home = os.homedir();
+    const target = nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay');
+    const temporary = nodePath.join(nodePath.dirname(target), '.agent-relay.update-4242');
+    const fs = createFsMock({ [target]: 'old-binary' });
+    const execCommand = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const execFileCommand = vi.fn(async (file: string) => {
+      if (file === temporary) {
+        return { stdout: 'agent-relay v2.0.0\n', stderr: '' };
+      }
+      if (file === target) {
+        return { stdout: 'agent-relay v1.2.3\n', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const { deps } = createHarness({
+      fs,
+      execPath: target,
+      cliScript: '/$bunfs/root/agent-relay',
+      execCommand,
+      execFileCommand,
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBe(1);
+    expect(execCommand).toHaveBeenCalledWith(`mv -f '${temporary}' '${target}'`);
+    expect(execFileCommand).toHaveBeenCalledWith(target, ['--version'], { timeout: 30_000 });
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('Successfully updated'));
+    expect(deps.warn).toHaveBeenCalledWith('The update could not be installed and verified.');
   });
 
   it('uninstall dry-run covers renamed and legacy installer bin directories', async () => {

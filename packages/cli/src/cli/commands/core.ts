@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec, spawn as spawnProcess } from 'node:child_process';
+import { exec, execFile, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command, InvalidArgumentError } from 'commander';
 
@@ -16,6 +16,7 @@ import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 type ExitFn = (code: number) => never;
 
@@ -74,6 +75,7 @@ export interface CoreFileSystem {
   mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
   rmSync: (path: string, options?: { recursive?: boolean; force?: boolean }) => void;
   accessSync: (path: string, mode?: number) => void;
+  realpathSync: (path: string) => string;
 }
 
 type UpdateInfo = {
@@ -93,6 +95,11 @@ export interface CoreDependencies {
   ) => CoreRelay | Promise<CoreRelay>;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
+  execFileCommand: (
+    file: string,
+    args: string[],
+    options?: { timeout?: number }
+  ) => Promise<{ stdout: string; stderr: string }>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   fs: CoreFileSystem;
   generateAgentName: () => string;
@@ -208,6 +215,7 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
     mkdirSync: (dirPath, options) => fs.mkdirSync(dirPath, options),
     rmSync: (targetPath, options) => fs.rmSync(targetPath, options),
     accessSync: fs.accessSync,
+    realpathSync: fs.realpathSync,
   };
 
   const defaultVersion = resolveCliVersion(fileSystem);
@@ -221,6 +229,13 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
       spawnProcess(command, args, options as Parameters<typeof spawnProcess>[2]) as unknown as SpawnedProcess,
     execCommand: async (command: string) => {
       const result = await execAsync(command);
+      return {
+        stdout: result.stdout ?? '',
+        stderr: result.stderr ?? '',
+      };
+    },
+    execFileCommand: async (file: string, args: string[], options?: { timeout?: number }) => {
+      const result = await execFileAsync(file, args, { timeout: options?.timeout ?? 30_000 });
       return {
         stdout: result.stdout ?? '',
         stderr: result.stderr ?? '',
