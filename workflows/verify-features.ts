@@ -901,17 +901,29 @@ gated_check cloud "reflex status" "relay reflex status" "."
 skip_check "reflex on"  "mutates history sync state for the workspace"
 skip_check "reflex off" "mutates history sync state for the workspace"
 
-# The command registers a URL, not a name — example.com is reserved by RFC 2606
-# precisely so test registrations cannot reach anyone's real endpoint.
-WEBHOOK_URL="https://example.com/relay-verify/${SUFFIX}"
+# The endpoint takes the channel to deliver into and returns a generated URL,
+# and the channel must already exist, so create it before registering the hook.
+WEBHOOK_CHANNEL="vf-hook-${SUFFIX}"
+WEBHOOK_AGENT="vf-hookagent-${SUFFIX}"
+WEBHOOK_TOKEN=$(relay agent register "$WEBHOOK_AGENT" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || true)
+RELAY_AGENT_TOKEN="$WEBHOOK_TOKEN" relay channel create "$WEBHOOK_CHANNEL" >/dev/null 2>&1 || true
 if have_cap cloud; then
   run_check "integration webhook list" "relay integration webhook list" "."
   run_check "integration subscription list" "relay integration subscription list" "."
-  if relay integration webhook create "$WEBHOOK_URL" >/dev/null 2>&1; then
+  # create returns the generated webhook; trigger and delete take its id, so the
+  # id has to be carried between them rather than reusing the channel name.
+  WEBHOOK_OUT="${ARTIFACTS}/webhook-create.json"
+  if relay integration webhook create "$WEBHOOK_CHANNEL" > "$WEBHOOK_OUT" 2>&1; then
     echo "  PASS  integration webhook create" | tee -a "$LOG"
     record "$TIER" "integration webhook create" pass ""
-    run_check "integration webhook trigger" "relay integration webhook trigger '$WEBHOOK_URL' 2>&1 || true" "."
-    run_check "integration webhook delete"  "relay integration webhook delete '$WEBHOOK_URL'" "."
+    WEBHOOK_ID=$(grep -o '"webhookId": *"[^"]*"' "$WEBHOOK_OUT" | head -1 | sed 's/.*: *"//;s/".*//' || true)
+    if [ -n "$WEBHOOK_ID" ]; then
+      run_check "integration webhook trigger" "relay integration webhook trigger '$WEBHOOK_ID' 2>&1 || true" "."
+      run_check "integration webhook delete"  "relay integration webhook delete '$WEBHOOK_ID'" "."
+    else
+      skip_check "integration webhook trigger" "no webhookId in create response"
+      skip_check "integration webhook delete"  "no webhookId in create response"
+    fi
   else
     record "$TIER" "integration webhook create" fail "relay integration webhook create exited non-zero"
     echo "  FAIL  integration webhook create" | tee -a "$LOG"
@@ -924,6 +936,9 @@ else
     skip_check "$remaining" "requires capability: cloud"
   done
 fi
+
+RELAY_AGENT_TOKEN="$WEBHOOK_TOKEN" relay channel archive "$WEBHOOK_CHANNEL" >/dev/null 2>&1 || true
+relay agent remove "$WEBHOOK_AGENT" >/dev/null 2>&1 || true
 
 gated_check cloud "capabilities list" "relay capabilities list" "."
 gated_check cloud "skills add --help" "relay skills add --help" "Usage"

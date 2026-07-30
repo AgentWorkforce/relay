@@ -33,6 +33,8 @@ verification:
     local-workflows: local-workflow-lifecycle
     cloud: cloud-workflows
     cloud-workers: cloud-workers
+    cloud-integrations: integrations-and-webhooks
+    cloud-rooms: cloud-workflows
     fleet: fleet-management
     workspace: workspace-management
     skills: skills-installation
@@ -121,6 +123,20 @@ categories:
         name: List Agents
         cli: relay agent list [--status <status>]
         description: Show all agents in the workspace with status
+        location: packages/cli/src/cli/commands/agent.ts
+        verify_tier: 3
+
+      - id: agent-me
+        name: Show Current Agent Identity
+        cli: relay agent me
+        description: Show the identity the current agent token resolves to
+        location: packages/cli/src/cli/commands/agent.ts
+        verify_tier: 3
+
+      - id: agent-presence
+        name: List Agent Presence
+        cli: relay agent presence
+        description: List visible agent presence in the workspace
         location: packages/cli/src/cli/commands/agent.ts
         verify_tier: 3
 
@@ -554,6 +570,100 @@ categories:
         location: packages/cli/src/cli/commands/cloud.ts
         verify_tier: 5
 
+  cloud-integrations:
+    name: Cloud Integrations
+    description: Connect third-party providers to the workspace through Cloud
+    criticality: standard
+    features:
+      - id: cloud-integration-catalog
+        name: Integration Catalog
+        cli: relay cloud integration catalog [--static] [--json]
+        description: Discover static and dynamic (Nango, Composio) Cloud integrations
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-integration-connect
+        name: Connect Integration
+        cli: relay cloud integration connect <provider> [--json]
+        description: Create a Cloud connection session for a provider
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 6
+
+      - id: cloud-integration-connections
+        name: List Connections
+        cli: relay cloud integration connections [--json]
+        description: List connected workspace integrations
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-integration-disconnect
+        name: Disconnect Integration
+        cli: relay cloud integration disconnect <provider> [--json]
+        description: Disconnect a provider from the workspace
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+  cloud-rooms:
+    name: Cloud Rooms
+    description: Workspace-scoped multiplayer rooms and their membership
+    criticality: standard
+    features:
+      - id: cloud-room-session
+        name: Create Room Session
+        cli: relay cloud room session
+        description: Create or resume this device's full room-participant session
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-room-revoke-session
+        name: Revoke Room Session
+        cli: relay cloud room revoke-session
+        description: Revoke this member's scoped session for one device
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-room-members
+        name: List Room Members
+        cli: relay cloud room members
+        description: List workspace room members
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-room-remove-member
+        name: Remove Room Member
+        cli: relay cloud room remove-member <member-id>
+        description: Remove a member and revoke their live room access
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-room-invite
+        name: Invite Room Participant
+        cli: relay cloud room invite
+        description: Invite a full participant to a workspace room
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-room-invites
+        name: List Room Invitations
+        cli: relay cloud room invites
+        description: List workspace room invitations
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
+      - id: cloud-room-accept
+        name: Accept Room Invitation
+        cli: relay cloud room accept
+        description: Accept an email-bound room invitation
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 6
+
+      - id: cloud-room-revoke-invite
+        name: Revoke Room Invitation
+        cli: relay cloud room revoke-invite <invite-id>
+        description: Revoke an unused workspace room invitation
+        location: packages/cli/src/cli/commands/cloud.ts
+        verify_tier: 5
+
   cloud-workers:
     name: Cloud Worker Nodes
     description: Register and manage machines as cloud worker nodes
@@ -735,7 +845,7 @@ categories:
 
       - id: webhook-create
         name: Create Webhook
-        cli: relay integration webhook create <url> [--event <event>]
+        cli: relay integration webhook create <channel> [--name <name>]
         description: Register an outbound webhook
         location: packages/cli/src/cli/commands/integration.ts
         verify_tier: 5

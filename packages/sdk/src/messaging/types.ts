@@ -437,9 +437,19 @@ export interface RelayWebhook {
   [key: string]: unknown;
 }
 
+/**
+ * Input for `integrations.webhooks.create`.
+ *
+ * The endpoint (`POST /v1/webhooks`) takes the channel to deliver into and
+ * returns the generated URL. It previously declared a required `url` and an
+ * `event`, neither of which the API accepts — `url` is part of the *response*,
+ * and `event` belongs to subscriptions — so every call was rejected with
+ * "channel is required".
+ */
 export interface RelayCreateWebhookInput {
-  url: string;
-  event?: string;
+  /** Channel the webhook posts into. A leading `#` is stripped. */
+  channel: string;
+  name?: string;
   [key: string]: unknown;
 }
 

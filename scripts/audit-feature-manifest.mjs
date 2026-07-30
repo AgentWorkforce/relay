@@ -26,7 +26,7 @@
  * "the manifest is clean".
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
@@ -244,6 +244,61 @@ function mcpToolsRegisteredInSource() {
   return names;
 }
 
+/**
+ * Warn when the built CLI is older than the sources it is derived from.
+ *
+ * The audit can only see what the built CLI exposes, so a stale `dist` makes it
+ * under-report and print MANIFEST_CLEAN while real commands go undocumented.
+ * That is exactly what happened here: a stale dist hid 16 shipped commands
+ * (`agent me`, `agent presence`, the whole `cloud room` and `cloud integration`
+ * trees) across several audit runs that all reported clean.
+ *
+ * @returns A warning string, or null when the build is current or unknowable.
+ */
+function staleBuildWarning() {
+  const distEntry = join(repoRoot, 'packages/cli/dist/cli/index.js');
+  const srcDir = join(repoRoot, 'packages/cli/src');
+
+  let distMtime;
+  try {
+    distMtime = statSync(distEntry).mtimeMs;
+  } catch {
+    return null; // auditing a published CLI, not this checkout
+  }
+
+  let newest = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules' && entry.name !== 'dist') walk(full);
+        continue;
+      }
+      if (!entry.name.endsWith('.ts') || entry.name.includes('.test.')) continue;
+      try {
+        newest = Math.max(newest, statSync(full).mtimeMs);
+      } catch {
+        // unreadable file; ignore
+      }
+    }
+  };
+  walk(srcDir);
+
+  if (newest === 0 || newest <= distMtime) return null;
+  const minutes = Math.round((newest - distMtime) / 60_000);
+  return (
+    `packages/cli/dist is ${minutes} minute(s) older than packages/cli/src. ` +
+    `This audit only sees what the BUILT CLI exposes, so newer commands are invisible ` +
+    `and a "clean" result understates drift. Rebuild first: npm run build --workspace=agent-relay`
+  );
+}
+
 // ── manifest ─────────────────────────────────────────────────────────────────
 
 function loadManifest() {
@@ -290,6 +345,7 @@ async function main() {
   }
 
   const mcpTools = await deriveMcpTools();
+  const staleBuild = staleBuildWarning();
 
   const documentedCommands = new Set(
     features.flatMap((f) => (f.cli ? [documentedCommandPath(f.cli)] : [])).filter(Boolean)
@@ -344,6 +400,7 @@ async function main() {
     manifestUpdated: manifest.updated,
     cliCommand,
     mcpDerivable: mcpTools !== null,
+    staleBuildWarning: staleBuild,
     counts: {
       cliLeaves: cliLeaves.length,
       documentedCommands: documentedCommands.size,
@@ -369,6 +426,9 @@ async function main() {
         `manifest documents ${documentedCommands.size} commands, ${documentedMcp.size} MCP tools ` +
         `across ${features.length} features`
     );
+    if (staleBuild) {
+      console.log(`\nWARN  ${staleBuild}`);
+    }
     if (mcpTools === null) {
       console.log('\nWARN  MCP tool list could not be derived — MCP drift not checked.');
     }
