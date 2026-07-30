@@ -222,6 +222,7 @@ import os from 'node:os';
 import pathReal from 'node:path';
 import { startServeNode } from '@agent-relay/fleet';
 import { runUpCommand } from './broker-lifecycle.js';
+import { startReflexCapture } from './reflex-capture.js';
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
     super(`exit:${code}`);
@@ -301,12 +302,61 @@ function createUpHarness() {
 
 afterEach(() => {
   vi.mocked(startServeNode).mockClear();
+  vi.mocked(startReflexCapture).mockClear();
   for (const dir of upTmpRoots.splice(0)) {
     fsReal.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 describe('runUpCommand node-config gating', () => {
+  it('keeps Reflex diagnostics out of normal broker output', async () => {
+    const { deps, log } = createUpHarness();
+
+    await runUpCommand({}, deps);
+
+    const reflexOptions = vi.mocked(startReflexCapture).mock.calls[0]?.[0];
+    reflexOptions?.log?.('[reflex] cloud sync failed: database is locked');
+
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('[reflex]'));
+  });
+
+  it('shows Reflex diagnostics when --verbose is requested', async () => {
+    const { deps, log } = createUpHarness();
+
+    await runUpCommand({ verbose: true }, deps);
+
+    const reflexOptions = vi.mocked(startReflexCapture).mock.calls[0]?.[0];
+    reflexOptions?.log?.('[reflex] cloud sync failed: database is locked');
+
+    expect(log).toHaveBeenCalledWith('[verbose] [reflex] cloud sync failed: database is locked');
+  });
+
+  it('writes Reflex diagnostics to the configured structured log file', async () => {
+    const { deps, projectRoot, log } = createUpHarness();
+    const logFile = pathReal.join(projectRoot, 'relay.log');
+    const previousLogFile = process.env.AGENT_RELAY_LOG_FILE;
+    process.env.AGENT_RELAY_LOG_FILE = logFile;
+
+    try {
+      await runUpCommand({ logFile }, deps);
+
+      const reflexOptions = vi.mocked(startReflexCapture).mock.calls[0]?.[0];
+      reflexOptions?.log?.('[reflex] cloud sync failed: database is locked');
+      reflexOptions?.log?.('[reflex] history sync tick');
+
+      const structuredLog = fsReal.readFileSync(logFile, 'utf-8');
+      expect(structuredLog).toContain('[WARN] [reflex] cloud sync failed: database is locked');
+      expect(structuredLog).toContain('[INFO] [reflex] history sync tick');
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining('[reflex]'));
+    } finally {
+      if (previousLogFile === undefined) {
+        delete process.env.AGENT_RELAY_LOG_FILE;
+      } else {
+        process.env.AGENT_RELAY_LOG_FILE = previousLogFile;
+      }
+    }
+  });
+
   it('fails fast on a missing explicit --config BEFORE the broker starts', async () => {
     const { deps, createRelay, error } = createUpHarness();
 
