@@ -122,7 +122,7 @@ export type ConfinementCode =
 export class ConfinementError extends Error {
   constructor(
     readonly code: ConfinementCode,
-    message: string,
+    message: string
   ) {
     super(message);
     this.name = 'ConfinementError';
@@ -141,8 +141,7 @@ interface NodeIdentity {
 
 const identityOf = (st: Stats): NodeIdentity => ({ dev: Number(st.dev), ino: Number(st.ino) });
 
-const sameIdentity = (a: NodeIdentity, b: NodeIdentity): boolean =>
-  a.dev === b.dev && a.ino === b.ino;
+const sameIdentity = (a: NodeIdentity, b: NodeIdentity): boolean => a.dev === b.dev && a.ino === b.ino;
 
 export type ResolutionMode = 'descriptor-relative' | 'pinned-path';
 
@@ -247,7 +246,7 @@ export class ConfinedRoot {
     segments: string[],
     contents: string,
     hooks: WriteHooks,
-    pinned: PinnedDir[],
+    pinned: PinnedDir[]
   ): ConfinedWrite {
     // ── walk, descriptor-relative ────────────────────────────────────────────
     // Each component is opened relative to the descriptor of the one before it.
@@ -264,7 +263,7 @@ export class ConfinedRoot {
       } else if (existing.isSymbolicLink()) {
         fail(
           'symlink_component',
-          `path component is a symlink and is refused rather than followed: ${segment}`,
+          `path component is a symlink and is refused rather than followed: ${segment}`
         );
       } else if (!existing.isDirectory()) {
         fail('not_a_directory', `path component is not a directory: ${segment}`);
@@ -276,10 +275,7 @@ export class ConfinedRoot {
       // being swapped on disk after we pinned it.
       let childFd: number;
       try {
-        childFd = openSync(
-          childPath,
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-        );
+        childFd = openSync(childPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code === 'ELOOP') {
@@ -375,7 +371,7 @@ export class ConfinedRoot {
       if (now === null || !sameIdentity(identityOf(now), step.identity)) {
         fail(
           'component_swapped',
-          `path component changed identity between resolution and open: ${step.path}`,
+          `path component changed identity between resolution and open: ${step.path}`
         );
       }
     }
@@ -405,7 +401,7 @@ export class ConfinedRoot {
     const tempFd = openSync(
       tempPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o644,
+      0o644
     );
 
     const payload = Buffer.from(contents, 'utf8');

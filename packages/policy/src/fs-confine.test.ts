@@ -195,7 +195,7 @@ describe('ConfinedRoot — concurrent mutation', () => {
     expectRefusal(s, 'symlink_target', () =>
       cr.writeFile('notes.md', 'PWNED', {
         beforeOpen: () => symlinkSync(s.victim, join(s.root, 'notes.md')),
-      }),
+      })
     );
   });
 
@@ -209,7 +209,7 @@ describe('ConfinedRoot — concurrent mutation', () => {
           rmSync(join(s.root, 'docs'), { recursive: true, force: true });
           symlinkSync(s.outside, join(s.root, 'docs'));
         },
-      }),
+      })
     );
   });
 
@@ -230,7 +230,7 @@ describe('ConfinedRoot — concurrent mutation', () => {
           rmSync(join(s.root, 'docs'), { recursive: true, force: true });
           symlinkSync(s.outside, join(s.root, 'docs'));
         },
-      }),
+      })
     );
     expect(readFileSync(join(s.outside, 'notes.md'), 'utf8')).toBe('VICTIM FILE');
   });
@@ -249,7 +249,7 @@ describe('ConfinedRoot — concurrent mutation', () => {
           symlinkSync(s.outside, join(shim, 'b'));
           symlinkSync(shim, join(s.root, 'a'));
         },
-      }),
+      })
     );
   });
 
@@ -260,7 +260,7 @@ describe('ConfinedRoot — concurrent mutation', () => {
     expectRefusal(s, 'hardlink', () =>
       cr.writeFile('late.md', 'PWNED', {
         afterValidate: () => linkSync(join(s.root, 'late.md'), join(s.outside, 'late-link.md')),
-      }),
+      })
     );
   });
 
