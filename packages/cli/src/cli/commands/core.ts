@@ -59,6 +59,8 @@ export interface CoreRelay {
   shutdown: () => Promise<unknown>;
   /** Agent Relay workspace key, available after the hello handshake. */
   workspaceKey?: string;
+  /** Relay workspace id the broker joined, available after the hello handshake. */
+  workspaceId?: string;
   /** PID of the underlying broker process, when available. */
   brokerPid?: number;
   /** Actual HTTP API port bound by the broker, including OS-assigned ports. */
@@ -186,6 +188,9 @@ async function createDefaultRelay(
     shutdown: () => client.shutdown(),
     get workspaceKey() {
       return client.workspaceKey;
+    },
+    get workspaceId() {
+      return client.workspaceId;
     },
     get brokerPid() {
       return client.brokerPid;

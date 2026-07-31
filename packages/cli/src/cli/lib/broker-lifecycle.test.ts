@@ -221,6 +221,7 @@ import fsReal from 'node:fs';
 import os from 'node:os';
 import pathReal from 'node:path';
 import { startServeNode } from '@agent-relay/fleet';
+import { setWorkspaceKey } from '@agent-relay/cloud';
 import { runUpCommand } from './broker-lifecycle.js';
 import { startReflexCapture } from './reflex-capture.js';
 class ExitSignal extends Error {
@@ -248,6 +249,7 @@ function createUpHarness() {
     getStatus: vi.fn(async () => ({})),
     shutdown: vi.fn(async () => undefined),
     workspaceKey: 'rk_test',
+    workspaceId: 'rw_test',
   }));
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -297,7 +299,19 @@ function createUpHarness() {
     exit,
   } as unknown as CoreDependencies;
 
-  return { deps, projectRoot, createRelay, log, warn, error, exit };
+  // Every start now consults the machine-global workspace store, so point it at
+  // a scratch home instead of the developer's real one.
+  const home = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-home-'));
+  upTmpRoots.push(home);
+  (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_HOME = home;
+
+  return { deps, projectRoot, dataDir, home, createRelay, log, warn, error, exit };
+}
+
+/** Pin a workspace to the harness project, as a previous `up` would have. */
+function writeRepositoryPin(dataDir: string, session: Record<string, string>): void {
+  fsReal.mkdirSync(dataDir, { recursive: true });
+  fsReal.writeFileSync(pathReal.join(dataDir, 'workspace-key.json'), JSON.stringify(session, null, 2));
 }
 
 afterEach(() => {
@@ -477,6 +491,94 @@ describe('runUpCommand node-config gating', () => {
 
     expect(exit).toHaveBeenCalledWith(1);
     expect(error.mock.calls.flat().join('\n')).toContain('exited unexpectedly');
+  });
+});
+
+describe('runUpCommand workspace precedence', () => {
+  const readPin = (dataDir: string): Record<string, string> =>
+    JSON.parse(fsReal.readFileSync(pathReal.join(dataDir, 'workspace-key.json'), 'utf-8'));
+
+  it('prefers the repository pin over the machine-global active workspace (#1406)', async () => {
+    const { deps, dataDir, home, log } = createUpHarness();
+    setWorkspaceKey('stale-global', 'rk_stale_global', { AGENT_RELAY_HOME: home });
+    writeRepositoryPin(dataDir, { workspaceKey: 'rk_repository', workspaceId: 'rw_repository' });
+
+    await runUpCommand({}, deps);
+
+    expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_repository');
+    expect(deps.env.RELAY_API_KEY).toBe('rk_repository');
+    expect(log.mock.calls.flat().join('\n')).toContain('Workspace source: repository pin');
+  });
+
+  it('applies the repository pin even when an enrollment node token is present (#1406)', async () => {
+    const { deps, dataDir } = createUpHarness();
+    // The harness env already carries RELAY_NODE_TOKEN, which is exactly the
+    // condition that used to skip the pin and let the broker mint instead.
+    expect(deps.env.RELAY_NODE_TOKEN).toBeTruthy();
+    writeRepositoryPin(dataDir, { workspaceKey: 'rk_repository', enrolledNodeId: 'node_a' });
+
+    await runUpCommand({}, deps);
+
+    expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_repository');
+    expect(deps.env.AGENT_RELAY_ENROLLED_NODE_ID).toBe('node_a');
+  });
+
+  it('joins the machine-global active workspace in a fresh directory instead of minting (#1378)', async () => {
+    const { deps, home, log } = createUpHarness();
+    setWorkspaceKey('account', 'rk_account_active', { AGENT_RELAY_HOME: home });
+
+    await runUpCommand({}, deps);
+
+    expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_account_active');
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain('Workspace source: machine-global active workspace');
+    expect(output).toContain('active: "account"');
+    expect(output).not.toContain('created new workspace');
+  });
+
+  it('announces a mint when no source resolves (#1378)', async () => {
+    const { deps, log } = createUpHarness();
+
+    await runUpCommand({}, deps);
+
+    expect(deps.env.RELAY_WORKSPACE_KEY).toBeUndefined();
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain('Workspace: none selected');
+    expect(output).toContain('Workspace: created new workspace rw_test');
+  });
+
+  it('keeps an explicit --workspace-key ahead of both stores', async () => {
+    const { deps, dataDir, home, log } = createUpHarness();
+    setWorkspaceKey('global', 'rk_global', { AGENT_RELAY_HOME: home });
+    writeRepositoryPin(dataDir, { workspaceKey: 'rk_repository' });
+
+    await runUpCommand({ workspaceKey: 'rk_flag' }, deps);
+
+    expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_flag');
+    expect(log.mock.calls.flat().join('\n')).toContain('Workspace source: command-line flag');
+  });
+
+  it('records the resolved workspace id on the pin for later conflict detection', async () => {
+    const { deps, dataDir } = createUpHarness();
+
+    await runUpCommand({}, deps);
+
+    expect(readPin(dataDir)).toMatchObject({ workspaceKey: 'rk_test', workspaceId: 'rw_test' });
+  });
+
+  it('never prints workspace key material while reporting the winning source', async () => {
+    const { deps, dataDir, home, log, warn, error } = createUpHarness();
+    setWorkspaceKey('global', 'rk_global', { AGENT_RELAY_HOME: home });
+    writeRepositoryPin(dataDir, { workspaceKey: 'rk_repository' });
+
+    await runUpCommand({}, deps);
+
+    const output = [log, warn, error]
+      .flatMap((fn) => vi.mocked(fn).mock.calls.flat())
+      .map((arg) => String(arg))
+      .join('\n');
+    expect(output).not.toContain('rk_repository');
+    expect(output).not.toContain('rk_global');
   });
 });
 

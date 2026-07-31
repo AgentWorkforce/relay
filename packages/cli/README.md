@@ -47,6 +47,42 @@ agent-relay node agent release <name>
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
+### Which workspace a broker joins
+
+`agent-relay up` and `agent-relay node up` resolve the workspace through one
+precedence ladder. The first source that resolves wins:
+
+| #   | Source                          | Where it comes from                                                           |
+| --- | ------------------------------- | ----------------------------------------------------------------------------- |
+| 1   | Command-line flag               | `--workspace-key` / `--wk`                                                    |
+| 2   | Environment                     | `RELAY_WORKSPACE_KEY`, then `AGENT_RELAY_WORKSPACE_KEY`, then `RELAY_API_KEY` |
+| 3   | Repository pin                  | `<project>/.agentworkforce/relay/workspace-key.json`                          |
+| 4   | Machine-global active workspace | the `active` entry in `~/.agentworkforce/relay/workspaces.json`               |
+| 5   | New workspace                   | created only when nothing above resolves                                      |
+
+Two rules follow from the order:
+
+- **The repository pin always beats the machine-global active workspace.**
+  Switching your active workspace (`agent-relay workspace use <name>`) never
+  re-homes a checkout that already pinned one.
+- **A new workspace is a last resort, not a default.** A fresh directory joins
+  the machine's active workspace when one is selected. When nothing resolves and
+  a workspace is created, startup says so explicitly.
+
+Startup prints the winning source (a flag name, an environment variable, or a
+file path — never key material):
+
+```
+Workspace source: repository pin (/repo/.agentworkforce/relay/workspace-key.json)
+Workspace: joined rw_7ccfea89
+```
+
+A Cloud enrollment (`RELAY_NODE_TOKEN`, or a record in the Fleet enrollment
+store) selects the node's _identity_, not its workspace, so it never appears on
+this ladder. If a stored enrollment addresses a different workspace than the
+repository pin, `node up` refuses to start and names both source files rather
+than silently choosing one.
+
 ## Remote fleet agents
 
 The `fleet` command group lists and controls agents across all live nodes in
