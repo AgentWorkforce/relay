@@ -24,7 +24,12 @@ import {
 import { describeError } from './describe-error.js';
 import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
-import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
+import {
+  projectWorkspaceKeyPath,
+  resolveActiveWorkspaceSelection,
+  writeProjectWorkspaceKey,
+  type WorkspaceSelection,
+} from './project-workspace-key.js';
 import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
 
 type UpOptions = {
@@ -1290,6 +1295,7 @@ function planCapacitySource(
 interface PinnedProjectWorkspaceSession {
   workspaceKey: string;
   enrolledNodeId?: string;
+  workspaceId?: string;
 }
 
 /** Read the minimal project session needed during broker startup. */
@@ -1301,43 +1307,125 @@ function readPinnedProjectWorkspaceSession(
     const parsed = JSON.parse(deps.fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8')) as Partial<{
       workspaceKey: string;
       enrolledNodeId: string;
+      workspaceId: string;
     }>;
-    const workspaceKey =
-      typeof parsed.workspaceKey === 'string' ? parsed.workspaceKey.trim() || undefined : undefined;
+    const workspaceKey = trimmedOrUndefined(parsed.workspaceKey);
     if (!workspaceKey) {
       return undefined;
     }
-    const enrolledNodeId =
-      typeof parsed.enrolledNodeId === 'string' ? parsed.enrolledNodeId.trim() || undefined : undefined;
+    const enrolledNodeId = trimmedOrUndefined(parsed.enrolledNodeId);
+    const workspaceId = trimmedOrUndefined(parsed.workspaceId);
     return {
       workspaceKey,
       ...(enrolledNodeId ? { enrolledNodeId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
     };
   } catch {
     return undefined;
   }
 }
 
-/** Resume the pinned project session unless explicit credentials override it. */
-function resumePinnedProjectWorkspace(
+/** Narrow an unknown JSON field to a non-blank string. */
+function trimmedOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined;
+}
+
+/**
+ * Resolve the workspace this broker start joins, walking the shared precedence
+ * ladder: `--workspace-key` → env → the repository pin → the machine-global
+ * active workspace. Nothing resolving means the broker will mint a workspace.
+ *
+ * The repository pin is read through {@link CoreDependencies.fs} (tests stub it)
+ * while the machine-global store is read by the shared cloud resolver, so both
+ * halves of the ladder stay in one place.
+ *
+ * A Fleet enrollment (`RELAY_NODE_TOKEN`) selects the node's identity, not its
+ * workspace, and no longer short-circuits this walk — letting it do so is what
+ * re-homed an enrolled node out of its repository's workspace and into a
+ * freshly minted one.
+ */
+function resolveWorkspaceForBrokerStart(
   options: UpOptions,
   deps: CoreDependencies,
   projectDataDir: string
-): PinnedProjectWorkspaceSession | undefined {
+): WorkspaceSelection | undefined {
+  const flag = options.workspaceKey?.trim();
+  if (flag) {
+    return { key: flag, source: 'flag', origin: '--workspace-key' };
+  }
+
   const explicitEnvWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.env);
-  if (options.workspaceKey?.trim() || explicitEnvWorkspaceKey || deps.env.RELAY_NODE_TOKEN?.trim()) {
+  if (explicitEnvWorkspaceKey) {
+    return { key: explicitEnvWorkspaceKey, source: 'env', origin: '$RELAY_WORKSPACE_KEY' };
+  }
+
+  const pinned = readPinnedProjectWorkspaceSession(projectDataDir, deps);
+  if (pinned) {
+    return {
+      key: pinned.workspaceKey,
+      source: 'project',
+      origin: projectWorkspaceKeyPath(projectDataDir),
+      ...(pinned.workspaceId ? { workspaceId: pinned.workspaceId } : {}),
+    };
+  }
+
+  // Everything below the repository pin: the machine-global active workspace.
+  // Without this step a fresh checkout mints its own workspace even though the
+  // machine already has an active one selected.
+  return resolveActiveWorkspaceSelection(deps.env);
+}
+
+/**
+ * Apply the resolved workspace to the environment the broker (and any detached
+ * child) inherits, and report which source won. Returns the pinned project
+ * session when the repository pin supplied the selection.
+ */
+function applyWorkspaceSelection(
+  selection: WorkspaceSelection | undefined,
+  deps: CoreDependencies,
+  projectDataDir: string
+): PinnedProjectWorkspaceSession | undefined {
+  if (!selection) {
+    deps.log(
+      'Workspace: none selected (no --workspace-key, no RELAY_WORKSPACE_KEY, no repository pin, ' +
+        'no active workspace in the machine-global store). A new workspace will be created.'
+    );
     return undefined;
   }
 
-  const session = readPinnedProjectWorkspaceSession(projectDataDir, deps);
-  if (session) {
-    deps.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
-    deps.env.RELAY_API_KEY = session.workspaceKey;
-    if (session.enrolledNodeId) {
-      deps.env.AGENT_RELAY_ENROLLED_NODE_ID = session.enrolledNodeId;
-    }
+  deps.log(`Workspace source: ${describeWorkspaceSource(selection.source)} (${selection.origin})`);
+  if (selection.source === 'flag' || selection.source === 'env') {
+    // Both already live in the environment the broker inherits: the flag is
+    // exported by runUpCommand before the --background fork, and an env alias
+    // was promoted to RELAY_WORKSPACE_KEY during resolution. Writing
+    // RELAY_API_KEY here would clobber a value the caller set deliberately.
+    return undefined;
   }
-  return session;
+  deps.env.RELAY_WORKSPACE_KEY = selection.key;
+  deps.env.RELAY_API_KEY = selection.key;
+  if (selection.source !== 'project') {
+    return undefined;
+  }
+
+  const pinned = readPinnedProjectWorkspaceSession(projectDataDir, deps);
+  if (pinned?.enrolledNodeId) {
+    deps.env.AGENT_RELAY_ENROLLED_NODE_ID = pinned.enrolledNodeId;
+  }
+  return pinned;
+}
+
+/** Human-readable name for a precedence-ladder step, for the startup line. */
+function describeWorkspaceSource(source: WorkspaceSelection['source']): string {
+  switch (source) {
+    case 'flag':
+      return 'command-line flag';
+    case 'env':
+      return 'environment';
+    case 'project':
+      return 'repository pin';
+    case 'store':
+      return 'machine-global active workspace';
+  }
 }
 
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
@@ -1350,7 +1438,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   // --state-dir), so the key must be persisted here even when broker state is
   // redirected elsewhere.
   const projectWorkspaceKeyDataDir = paths.dataDir;
-  const resumedProjectSession = resumePinnedProjectWorkspace(options, deps, projectWorkspaceKeyDataDir);
+  const workspaceSelection = resolveWorkspaceForBrokerStart(options, deps, projectWorkspaceKeyDataDir);
+  const resumedProjectSession = applyWorkspaceSelection(workspaceSelection, deps, projectWorkspaceKeyDataDir);
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1573,6 +1662,18 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
     deps.log(`Workspace Key: ${relay.workspaceKey ? maskSecret(relay.workspaceKey) : 'unknown'}`);
+    // Minting must be observable: without this line "created a workspace" and
+    // "joined the pinned workspace" print identically.
+    const joinedWorkspaceId = relay.workspaceId ?? 'unknown';
+    if (workspaceSelection) {
+      deps.log(`Workspace: joined ${joinedWorkspaceId}`);
+    } else {
+      deps.log(`Workspace: created new workspace ${joinedWorkspaceId}`);
+      deps.log(
+        'Pin a workspace for this repository with `agent-relay up --workspace-key <key>`, ' +
+          'or select one machine-wide with `agent-relay workspace use <name>`.'
+      );
+    }
     deps.log('Broker started.');
 
     // Record the workspace this broker joined (explicitly passed or auto-minted)
@@ -1583,6 +1684,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     try {
       writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined, {
         enrolledNodeId: deps.env.AGENT_RELAY_ENROLLED_NODE_ID ?? resumedProjectSession?.enrolledNodeId,
+        // Recording the resolved workspace id lets the NEXT start detect a
+        // conflicting source (a stored enrollment in another workspace) before
+        // the broker comes up, instead of after agents land in the wrong place.
+        workspaceId: relay.workspaceId ?? resumedProjectSession?.workspaceId,
       });
     } catch {
       // best-effort: a broker that came up should stay up even if the key file

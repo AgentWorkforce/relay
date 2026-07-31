@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - CLI output no longer disappears when stdout or stderr is a pipe instead of a terminal. Node's stdio writes are asynchronous for pipes on macOS, so exiting in the same tick as the write discarded whatever was still buffered — `agent-relay cloud session --json | parser` and `$(agent-relay …)` could come back with empty stdout _and_ empty stderr, hiding the payload and the error that explained the failure. Every hard-exit path now drains stdio first.
+- `agent-relay up` / `node up` resolve the workspace through one documented precedence ladder: `--workspace-key` → `RELAY_WORKSPACE_KEY`/`AGENT_RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` → the repository pin in `.agentworkforce/relay/workspace-key.json` → the machine-global active workspace in `~/.agentworkforce/relay/workspaces.json` → creating one. Startup prints the winning source (flag, variable, or file path — never key material).
+- A Cloud enrollment no longer re-homes an enrolled node out of its repository's workspace. `RELAY_NODE_TOKEN` selects the node's identity, not its workspace, and no longer suppresses the repository pin; when a stored enrollment addresses a different workspace than the pin, `node up` stops and names both sources instead of silently choosing one.
+- A first `up` in a fresh directory joins the machine's active workspace instead of silently creating a new one, and a start that does create a workspace says so instead of printing the same output as a join.
 
 ## [11.4.0] - 2026-08-02
 
