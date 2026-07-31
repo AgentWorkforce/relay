@@ -97,6 +97,37 @@ agent-relay cloud enroll --token ocl_node_enr_...
 agent-relay node up
 ```
 
+### Durable workspace identity
+
+A local Relay node is anchored to one canonical Cloud workspace. That workspace
+is the durable identity for the node and every resident agent that runs on it
+— across `agent-relay node down` and back up, a reboot, or a crash-restart
+supervised by an external watchdog:
+
+- `agent-relay workspace active --json` returns `canonical: true` when the
+  Relaycast, Relayfile, and RelayAuth workspace IDs all resolve to the same
+  cloud workspace, plus a `planes` map with the per-plane IDs. Deploys should
+  gate on `canonical` — a divergent workspace means resident agents may not
+  keep their delivery addresses across restart.
+- `agent-relay node up` reads the pinned workspace from
+  `.agentworkforce/relay/workspace-key.json` under the current project. When
+  the file exists the broker resumes it automatically — no `--workspace-key`
+  copying, and no falling back to the machine-global active workspace.
+- Resident agents (auto-spawned from `teams.json`, or spawned from a
+  `defineNode(...)` config) keep their Relaycast identity across restart. The
+  broker uses idempotent agent registration in persistent mode and spawned
+  workers inherit `RELAY_STRICT_AGENT_NAME=1`, so a name like `khaliq-chief`
+  re-attaches to the same `agent_id` and inbox instead of minting a fresh
+  process-lifetime identity.
+- If a node originally enrolled with `agent-relay cloud enroll`, the enrolled
+  Fleet node id is stored alongside the workspace key. Subsequent
+  `agent-relay node up` invocations look up that specific enrollment rather
+  than picking up whichever enrollment happens to be active machine-wide.
+
+The full invariant, including the on-disk sources of truth and the migration
+behavior for existing local nodes, is documented in
+[`specs/durable-workspace-identity.md`](../../specs/durable-workspace-identity.md).
+
 ## Cloud multiplayer rooms
 
 Cloud room membership is scoped to one Relay workspace. Every v1 invite creates

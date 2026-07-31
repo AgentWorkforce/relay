@@ -53,13 +53,15 @@ function createHarness() {
 }
 
 describe('registerWorkspaceCommands', () => {
-  it('prints the active canonical workspace as JSON', async () => {
+  it('prints the active canonical workspace as JSON with proof the planes align', async () => {
     const { program, deps } = createHarness();
     vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
       name: 'Ops',
       key: 'rk_live_ops',
       cloudWorkspaceId: 'rw_ops',
-      relaycastWorkspaceId: 'rc_ops',
+      // A canonical node has one workspace id shared by every plane — that
+      // shape lets a resident agent's inbox survive a restart.
+      relaycastWorkspaceId: 'rw_ops',
       relayfileWorkspaceId: 'rw_ops',
       relayauthWorkspaceId: 'rw_ops',
       organizationId: 'org_1',
@@ -89,14 +91,93 @@ describe('registerWorkspaceCommands', () => {
       name: 'Ops',
       key: 'rk_live_…',
       cloudWorkspaceId: 'rw_ops',
-      relaycastWorkspaceId: 'rc_ops',
+      relaycastWorkspaceId: 'rw_ops',
       relayfileWorkspaceId: 'rw_ops',
       relayauthWorkspaceId: 'rw_ops',
       organizationId: 'org_1',
       slug: 'ops',
       urls: {},
       apiUrl: 'https://cloud.test',
+      // The JSON output carries a machine-checkable proof of the durable
+      // identity invariant so a downstream deploy gate can `jq .canonical`
+      // rather than re-comparing per-plane ids itself.
+      canonical: true,
+      planes: {
+        cloud: 'rw_ops',
+        relaycast: 'rw_ops',
+        relayfile: 'rw_ops',
+        relayauth: 'rw_ops',
+      },
     });
+  });
+
+  it('workspace active --json flags non-canonical divergence in the JSON payload', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'rw_ops',
+      relaycastWorkspaceId: 'rw_ops',
+      // A Relayfile / RelayAuth id that doesn't match the cloud id would
+      // break the durable-identity guarantee — assert we surface the split.
+      relayfileWorkspaceId: 'rw_ops_relayfile_split',
+      relayauthWorkspaceId: 'rw_ops',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--json']);
+
+    const parsed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(parsed.canonical).toBe(false);
+    expect(parsed.planes).toEqual({
+      cloud: 'rw_ops',
+      relaycast: 'rw_ops',
+      relayfile: 'rw_ops_relayfile_split',
+      relayauth: 'rw_ops',
+    });
+  });
+
+  it('workspace active human output proves the single canonical id when planes agree', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'rw_ops',
+      relaycastWorkspaceId: 'rw_ops',
+      relayfileWorkspaceId: 'rw_ops',
+      relayauthWorkspaceId: 'rw_ops',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active']);
+
+    const logged = vi.mocked(deps.log).mock.calls.map((call) => String(call[0]));
+    expect(logged).toContain('Workspace: Ops');
+    expect(logged).toContain('Canonical workspace ID: rw_ops');
+    expect(logged).toContain('  ✓ Relaycast, Relayfile, and RelayAuth all resolve this workspace');
+  });
+
+  it('workspace active human output warns when the workspace planes diverge', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'rw_ops',
+      relaycastWorkspaceId: 'rw_ops',
+      relayfileWorkspaceId: 'rw_ops_relayfile_split',
+      relayauthWorkspaceId: 'rw_ops',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active']);
+
+    const logged = vi.mocked(deps.log).mock.calls.map((call) => String(call[0])).join('\n');
+    expect(logged).toContain('DIVERGE');
+    expect(logged).toContain('Relayfile : rw_ops_relayfile_split');
+    // The divergence branch must NOT print the canonical-id success banner.
+    expect(logged).not.toContain('Canonical workspace ID:');
   });
 
   it('workspace active --json includes raw keys only with --reveal-secrets', async () => {
@@ -118,6 +199,9 @@ describe('registerWorkspaceCommands', () => {
     const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
     expect(printed.key).toBe('rk_live_ops');
     expect(printed.relaycastApiKey).toBe('rk_live_castkey01');
+    // `--reveal-secrets` still emits the canonical proof; only the raw keys change.
+    expect(printed.canonical).toBe(false);
+    expect(printed.planes.relaycast).toBe('rc_ops');
   });
 
   it('workspace active --json masks relaycastApiKey by default', async () => {
@@ -139,6 +223,8 @@ describe('registerWorkspaceCommands', () => {
     const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
     expect(printed.key).toBe('rk_live_…');
     expect(printed.relaycastApiKey).toBe('rk_live_…ey01');
+    // The canonical proof is emitted even when secrets are masked.
+    expect(printed.canonical).toBe(false);
   });
 
   it('workspace create starts and persists a new workspace session', async () => {

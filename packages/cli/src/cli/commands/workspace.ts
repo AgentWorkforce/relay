@@ -1,11 +1,47 @@
 import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
 import { resolveActiveWorkspace } from '@agent-relay/cloud';
+import type { ActiveWorkspaceDescriptor } from '@agent-relay/cloud';
 
 import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import { persistWorkspaceSession, validateWorkspaceSessionName } from '../lib/workspace-session.js';
+
+/**
+ * Proof that Relaycast, Relayfile, and RelayAuth resolve to the same cloud
+ * workspace — the durable-identity invariant that AR-448 pins in place.
+ *
+ * A local Relay node is anchored to ONE cloud workspace id; if the plane-level
+ * ids diverge, the node cannot deliver messages to a resident agent's inbox on
+ * Relaycast, mount the same Relayfile paths, or issue tokens through RelayAuth
+ * against the same identity across a restart. Surfacing this as a
+ * `canonical: boolean` field lets deploys gate on `jq .canonical` without
+ * having to re-compare the four service ids themselves.
+ */
+export interface CanonicalWorkspaceView {
+  canonical: boolean;
+  planes: {
+    cloud: string;
+    relaycast: string;
+    relayfile: string;
+    relayauth: string;
+  };
+}
+
+export function buildCanonicalWorkspaceView(descriptor: ActiveWorkspaceDescriptor): CanonicalWorkspaceView {
+  const planes = {
+    cloud: descriptor.cloudWorkspaceId,
+    relaycast: descriptor.relaycastWorkspaceId,
+    relayfile: descriptor.relayfileWorkspaceId,
+    relayauth: descriptor.relayauthWorkspaceId,
+  } as const;
+  const canonical =
+    planes.cloud === planes.relaycast &&
+    planes.cloud === planes.relayfile &&
+    planes.cloud === planes.relayauth;
+  return { canonical, planes };
+}
 
 export type WorkspaceCommandDependencies = SdkCommandDeps;
 
@@ -49,26 +85,45 @@ export function registerWorkspaceCommands(
             refreshTimeoutMs: options.refreshTimeout,
           });
 
+          const view = buildCanonicalWorkspaceView(workspace);
+
           if (options.json) {
-            printJson(
-              deps,
-              options.revealSecrets
-                ? workspace
-                : {
-                    ...workspace,
-                    key: maskSecret(workspace.key),
-                    ...(workspace.relaycastApiKey
-                      ? { relaycastApiKey: maskSecret(workspace.relaycastApiKey) }
-                      : {}),
-                  }
-            );
+            const body = options.revealSecrets
+              ? workspace
+              : {
+                  ...workspace,
+                  key: maskSecret(workspace.key),
+                  ...(workspace.relaycastApiKey
+                    ? { relaycastApiKey: maskSecret(workspace.relaycastApiKey) }
+                    : {}),
+                };
+            // Include the canonical-invariant proof so a downstream check like
+            // `agent-relay workspace active --json | jq .canonical` can gate
+            // deploys on the four service ids matching — without callers having
+            // to re-compare them or know which fields to look at.
+            printJson(deps, { ...body, canonical: view.canonical, planes: view.planes });
             return;
           }
 
           deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
-          deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
-          deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
-          deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
+          if (view.canonical) {
+            // The single-id branch is the healthy shape: Relaycast, Relayfile,
+            // and RelayAuth are three views of one canonical workspace — a
+            // restart resolves the same id, so a resident agent's delivery
+            // address survives.
+            deps.log(`Canonical workspace ID: ${workspace.cloudWorkspaceId}`);
+            deps.log('  ✓ Relaycast, Relayfile, and RelayAuth all resolve this workspace');
+          } else {
+            // A divergent set means the durable-identity contract is broken
+            // for this node — surface each plane so an operator can tell which
+            // service is out of sync before it costs them a resident agent's
+            // inbox on restart.
+            deps.log('Workspace planes DIVERGE — durable identity is NOT guaranteed:');
+            deps.log(`  Cloud     : ${view.planes.cloud}`);
+            deps.log(`  Relaycast : ${view.planes.relaycast}`);
+            deps.log(`  Relayfile : ${view.planes.relayfile}`);
+            deps.log(`  Relayauth : ${view.planes.relayauth}`);
+          }
         });
       }
     );

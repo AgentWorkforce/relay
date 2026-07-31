@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay workspace active --json` now emits `canonical: true` and a per-plane `planes` map so deploys can gate on Relaycast, Relayfile, and RelayAuth resolving one workspace ID (`agent-relay workspace active --json | jq .canonical`). Human output prints a single canonical workspace ID or a clear divergence warning.
+
 ### Fixed
 
 - `agent-relay integration webhook create` now works. It took a `<url>` argument and sent `{ url, event }`, but `POST /v1/webhooks` accepts `{ channel, name? }` and returns the URL — so every invocation failed with `channel is required`. It now takes `<channel>` with an optional `--name`, matching `create-inbound`, which posts to the same endpoint.
