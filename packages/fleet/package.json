@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/fleet",
-  "version": "11.3.0",
+  "version": "11.3.1",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -26,8 +26,8 @@
     "test": "vitest run --root ../.. packages/fleet/"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "11.3.0",
-    "@agent-relay/harnesses": "11.3.0",
+    "@agent-relay/harness-driver": "11.3.1",
+    "@agent-relay/harnesses": "11.3.1",
     "@relaycast/sdk": "^6.0.0",
     "ws": "^8.18.3",
     "zod": "^4.4.3"
