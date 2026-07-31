@@ -21,6 +21,7 @@ import {
   type NodeDefinitionDescriptor,
   type RunningNodeProviderChild,
 } from './node-provider-child.js';
+import { describeError } from './describe-error.js';
 import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
@@ -152,7 +153,7 @@ export function readBrokerConnection(dataDir: string): BrokerConnection | null {
 }
 
 function toErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return describeError(err);
 }
 
 /** Emit a `[verbose]`-prefixed step marker via `deps.log` when `--verbose` is set. */
@@ -258,6 +259,9 @@ function errorCode(err: unknown): string | undefined {
 /**
  * Extract a human-meaningful detail string from an error, walking `err.cause`.
  *
+ * The broker-start specialization of {@link describeError}: it starts from the
+ * shared description and appends the cause chain's detail and error codes.
+ *
  * Node's native `fetch()` throws `TypeError: fetch failed` for any network
  * problem and stuffs the real reason (ECONNREFUSED, ENOTFOUND, AbortError,
  * UND_ERR_CONNECT_TIMEOUT, …) into `err.cause`. Without unwrapping, every
@@ -265,7 +269,7 @@ function errorCode(err: unknown): string | undefined {
  *
  * Exported for testing.
  */
-export function describeError(err: unknown): string {
+export function describeErrorWithCause(err: unknown): string {
   const top = toErrorMessage(err);
   if (!(err instanceof Error) || !err.cause) return top;
 
@@ -1392,7 +1396,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         env: deps.env,
       });
     } catch (err: unknown) {
-      deps.error(`Failed to start broker in background: ${describeError(err)}`);
+      deps.error(`Failed to start broker in background: ${describeErrorWithCause(err)}`);
       deps.exit(1);
       return;
     }
@@ -1666,7 +1670,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     if (isBrokerAlreadyRunningError(message)) {
       reportAlreadyRunningError(message, paths.dataDir, deps);
     } else {
-      deps.error(`Failed to start broker: ${describeError(err)}`);
+      deps.error(`Failed to start broker: ${describeErrorWithCause(err)}`);
     }
     deps.exit(1);
   }

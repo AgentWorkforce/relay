@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A CLI command that fails with a non-`Error` value now reports it. A protocol-shaped rejection such as `{ status: 401 }` from a broker client printed `[object Object]`, and an `Error` with an empty message printed nothing at all; both now surface the message, status, and code, with credentials redacted. Applies to the top-level failure handler, `node agent attach`, and broker request failures.
 - `agent-relay integration webhook create` now works. It took a `<url>` argument and sent `{ url, event }`, but `POST /v1/webhooks` accepts `{ channel, name? }` and returns the URL — so every invocation failed with `channel is required`. It now takes `<channel>` with an optional `--name`, matching `create-inbound`, which posts to the same endpoint.
 - `@agent-relay/sdk` `RelayCreateWebhookInput` declared a required `url` and an `event`, neither of which the endpoint accepts. It is now `{ channel, name? }`. Code passing `url`/`event` was already failing at runtime.
 

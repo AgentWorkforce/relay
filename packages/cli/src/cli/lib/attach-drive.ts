@@ -86,6 +86,7 @@ import {
   type PtyInputStreamOptions,
   type PtyInputWriteResult,
 } from '../lib/attach-broker.js';
+import { describeError } from './describe-error.js';
 import { createPredictiveEcho, type CreatePredictiveEchoOptions } from './predictive-echo-screen.js';
 import type { PredictiveEcho } from '@agent-relay/harness-driver';
 
@@ -926,7 +927,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           // event loop on every keystroke.
           void stream.send(decoded).catch((err: unknown) => {
             if (settled) return;
-            const message = err instanceof Error ? err.message : String(err);
+            const message = describeError(err);
             deps.log(`[drive] input stream send failed: ${message}`);
             // The keystroke never reached the PTY — drop any optimistic echo
             // for it so the screen doesn't show input the agent didn't get.
@@ -1126,7 +1127,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         }
       } catch (err: unknown) {
         if (settled) return;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeError(err);
         deps.error(`[drive] could not open PTY input stream: ${message}`);
         finish(1);
       }
@@ -1163,7 +1164,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         }
       } catch (err: unknown) {
         if (settled) return;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeError(err);
         deps.error(`[drive] could not take terminal input: ${message}`);
         finish(1);
       }
@@ -1214,7 +1215,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         try {
           await predictiveEcho.seed(snapshotBytes);
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = describeError(err);
           deps.log(`[drive] could not seed predictive echo: ${message}`);
           finish(1);
           return;

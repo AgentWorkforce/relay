@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { CoreDependencies, CoreFileSystem } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
 import { readBrokerConnection } from './broker-lifecycle.js';
+import { describeError } from './describe-error.js';
 import { errorClassName } from './telemetry-helpers.js';
 
 const SNIPPET_MARKER_START_PREFIX = '<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@';
@@ -17,7 +18,7 @@ const DEFAULT_ZED_SERVER_NAME = 'Agent Relay';
 const INSTALL_DIR_NAMES = ['.agentworkforce/relay', '.agent-relay'] as const;
 
 function toErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return describeError(err);
 }
 
 /**

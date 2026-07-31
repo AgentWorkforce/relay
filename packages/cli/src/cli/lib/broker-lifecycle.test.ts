@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyBrokerStartError,
   classifyBrokerStartStage,
-  describeError,
+  describeErrorWithCause,
   isBundledBunExecutableEntrypoint,
   readNodeDeliveryStatus,
   resolveNodeIdentityFromSession,
@@ -34,9 +34,9 @@ describe('isBundledBunExecutableEntrypoint', () => {
   });
 });
 
-describe('describeError', () => {
+describe('describeErrorWithCause', () => {
   it('returns plain message for a bare Error', () => {
-    expect(describeError(new Error('boom'))).toBe('boom');
+    expect(describeErrorWithCause(new Error('boom'))).toBe('boom');
   });
 
   it('unwraps the Node fetch failed cause and surfaces the network code', () => {
@@ -46,7 +46,7 @@ describe('describeError', () => {
     });
     const err = new TypeError('fetch failed', { cause });
 
-    const result = describeError(err);
+    const result = describeErrorWithCause(err);
     expect(result).toContain('fetch failed');
     expect(result).toContain('ECONNREFUSED');
     expect(result).toContain('127.0.0.1');
@@ -58,15 +58,15 @@ describe('describeError', () => {
     });
     const err = new TypeError('fetch failed', { cause });
 
-    const result = describeError(err);
+    const result = describeErrorWithCause(err);
     expect(result).toContain('ENOTFOUND');
     expect(result).toContain('agentrelay.com');
   });
 
   it('handles non-Error values without throwing', () => {
-    expect(describeError('something went wrong')).toBe('something went wrong');
-    expect(describeError(undefined)).toBe('undefined');
-    expect(describeError(null)).toBe('null');
+    expect(describeErrorWithCause('something went wrong')).toBe('something went wrong');
+    expect(describeErrorWithCause(undefined)).toBe('undefined');
+    expect(describeErrorWithCause(null)).toBe('null');
   });
 
   it('caps the cause-chain walk so a cycle cannot loop forever', () => {
@@ -75,7 +75,7 @@ describe('describeError', () => {
     a.cause = b;
     b.cause = a;
     // Just needs to terminate — the assertion is the absence of a hang.
-    expect(typeof describeError(a)).toBe('string');
+    expect(typeof describeErrorWithCause(a)).toBe('string');
   });
 });
 
