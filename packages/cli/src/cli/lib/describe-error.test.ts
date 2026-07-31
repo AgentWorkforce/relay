@@ -37,6 +37,29 @@ describe('describeError', () => {
     expect(described).toContain('[redacted]');
   });
 
+  it('redacts a credential echoed back inside the message text', () => {
+    // A server error payload is free to quote whatever was sent to it, and that
+    // text is lifted out whole — key-name redaction cannot reach it.
+    expect(describeError({ status: 401, message: 'invalid key rk_live_abcdefghij1234' })).toBe(
+      'invalid key rk_live_…1234 (status 401)'
+    );
+    expect(describeError(new Error('enroll failed for nt_live_0123456789abcdef'))).toBe(
+      'enroll failed for nt_live_…cdef'
+    );
+  });
+
+  it('keeps JSON-hostile members readable', () => {
+    // JSON.stringify throws on BigInt; the old fallback answered [object Object].
+    expect(describeError({ status: 429, retryAfter: 30n })).toBe('{"status":429,"retryAfter":"30n"}');
+
+    const throwingGetter = {
+      get status(): number {
+        throw new Error('nope');
+      },
+    };
+    expect(describeError(throwingGetter)).toBe('[unserializable Object]');
+  });
+
   it('tolerates cycles and truncates oversized payloads', () => {
     const cyclic: Record<string, unknown> = { status: 500 };
     cyclic.self = cyclic;

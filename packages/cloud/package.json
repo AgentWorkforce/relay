@@ -41,6 +41,10 @@
       "types": "./dist/audit.d.ts",
       "import": "./dist/audit.js"
     },
+    "./redact": {
+      "types": "./dist/redact.d.ts",
+      "import": "./dist/redact.js"
+    },
     "./workspace-key": {
       "types": "./dist/workspace-key.d.ts",
       "import": "./dist/workspace-key.js"
