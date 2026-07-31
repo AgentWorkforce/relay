@@ -26,12 +26,12 @@ Workspace identity is pinned in two on-disk stores. Precedence (highest wins)
 is enforced by
 [`resolveWorkspaceKey`](../packages/cloud/src/project-workspace-key.ts):
 
-| Rank | Source                                            | File / env                                                                    | Scope                                        |
-| ---- | ------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------- |
-| 1    | Explicit CLI flag                                 | `--workspace-key <key>`                                                       | Single invocation                            |
-| 2    | Explicit env override                             | `RELAY_WORKSPACE_KEY` / `AGENT_RELAY_WORKSPACE_KEY` / `RELAY_API_KEY`         | Single invocation                            |
-| 3    | **Project pin** (what `agent-relay node up` uses) | `<projectDataDir>/workspace-key.json`                                         | This checkout                                |
-| 4    | Machine-global active workspace                   | `~/.agentworkforce/relay/workspaces.json` (or `$AGENT_RELAY_HOME`-relocated)  | This user account                            |
+| Rank | Source                                            | File / env                                                                   | Scope             |
+| ---- | ------------------------------------------------- | ---------------------------------------------------------------------------- | ----------------- |
+| 1    | Explicit CLI flag                                 | `--workspace-key <key>`                                                      | Single invocation |
+| 2    | Explicit env override                             | `RELAY_WORKSPACE_KEY` / `AGENT_RELAY_WORKSPACE_KEY` / `RELAY_API_KEY`        | Single invocation |
+| 3    | **Project pin** (what `agent-relay node up` uses) | `<projectDataDir>/workspace-key.json`                                        | This checkout     |
+| 4    | Machine-global active workspace                   | `~/.agentworkforce/relay/workspaces.json` (or `$AGENT_RELAY_HOME`-relocated) | This user account |
 
 Both stores are written with `0o600` and their containing directories with
 `0o700`. Neither store contains any secret beyond the workspace bearer key
@@ -53,7 +53,7 @@ per-plane ids themselves:
   "relaycastWorkspaceId": "rw_ops",
   "relayfileWorkspaceId": "rw_ops",
   "relayauthWorkspaceId": "rw_ops",
-  "urls": { },
+  "urls": {},
   "apiUrl": "https://cloud.agentrelay.com",
   "canonical": true,
   "planes": {
@@ -151,16 +151,16 @@ Existing brokers on this contract require no operator action:
 
 ## 7. Test coverage
 
-| Concern                                                    | Test                                                                                                                            |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace pin survives stop → start                        | [`packages/cli/src/cli/lib/durable-workspace-identity.test.ts`](../packages/cli/src/cli/lib/durable-workspace-identity.test.ts) |
-| Enrolled node id is pinned across restarts                 | same file                                                                                                                       |
-| Mask is stable N vs N+1; rotated key visibly diffs         | same file                                                                                                                       |
-| `workspace active --json` returns the four service IDs     | [`packages/cli/src/cli/commands/workspace.test.ts`](../packages/cli/src/cli/commands/workspace.test.ts)                         |
-| `workspace active --json` includes `canonical` + `planes`  | same file                                                                                                                       |
-| `node status` prints mask, never key or observer           | [`packages/cli/src/cli/commands/core.test.ts`](../packages/cli/src/cli/commands/core.test.ts)                                   |
-| `maskSecret` masks and prefix-preserves credentials        | [`packages/cli/src/cli/lib/redact.test.ts`](../packages/cli/src/cli/lib/redact.test.ts)                                         |
-| Node id derivation is stable + workspace-scoped            | [`crates/broker/src/node_control.rs`](../crates/broker/src/node_control.rs)                                                     |
+| Concern                                                   | Test                                                                                                                            |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace pin survives stop → start                       | [`packages/cli/src/cli/lib/durable-workspace-identity.test.ts`](../packages/cli/src/cli/lib/durable-workspace-identity.test.ts) |
+| Enrolled node id is pinned across restarts                | same file                                                                                                                       |
+| Mask is stable N vs N+1; rotated key visibly diffs        | same file                                                                                                                       |
+| `workspace active --json` returns the four service IDs    | [`packages/cli/src/cli/commands/workspace.test.ts`](../packages/cli/src/cli/commands/workspace.test.ts)                         |
+| `workspace active --json` includes `canonical` + `planes` | same file                                                                                                                       |
+| `node status` prints mask, never key or observer          | [`packages/cli/src/cli/commands/core.test.ts`](../packages/cli/src/cli/commands/core.test.ts)                                   |
+| `maskSecret` masks and prefix-preserves credentials       | [`packages/cli/src/cli/lib/redact.test.ts`](../packages/cli/src/cli/lib/redact.test.ts)                                         |
+| Node id derivation is stable + workspace-scoped           | [`crates/broker/src/node_control.rs`](../crates/broker/src/node_control.rs)                                                     |
 
 ## 8. What this unblocks
 
@@ -168,5 +168,5 @@ Chiefs owned by different principals can share one company workspace: their
 brokers resolve the same `cloudWorkspaceId` even if their local
 `workspace-key.json` files hold different bearer keys, because the descriptor
 is derived from what the Cloud resolves — not from the raw key. AR-448 is the
-prerequisite that keeps *each Chief's* identity stable while that sharing
+prerequisite that keeps _each Chief's_ identity stable while that sharing
 happens.

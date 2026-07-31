@@ -57,9 +57,7 @@ function writeStartupState(state: WorkspaceKeyFile): void {
 /** Mirror what `resumePinnedProjectWorkspace` reads back on the next start. */
 function readStartupState(): WorkspaceKeyFile | undefined {
   try {
-    return JSON.parse(
-      fs.readFileSync(path.join(dataDir, 'workspace-key.json'), 'utf-8')
-    ) as WorkspaceKeyFile;
+    return JSON.parse(fs.readFileSync(path.join(dataDir, 'workspace-key.json'), 'utf-8')) as WorkspaceKeyFile;
   } catch {
     return undefined;
   }

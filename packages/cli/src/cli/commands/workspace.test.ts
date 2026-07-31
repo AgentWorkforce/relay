@@ -173,7 +173,10 @@ describe('registerWorkspaceCommands', () => {
 
     await program.parseAsync(['node', 'agent-relay', 'workspace', 'active']);
 
-    const logged = vi.mocked(deps.log).mock.calls.map((call) => String(call[0])).join('\n');
+    const logged = vi
+      .mocked(deps.log)
+      .mock.calls.map((call) => String(call[0]))
+      .join('\n');
     expect(logged).toContain('DIVERGE');
     expect(logged).toContain('Relayfile : rw_ops_relayfile_split');
     // The divergence branch must NOT print the canonical-id success banner.
