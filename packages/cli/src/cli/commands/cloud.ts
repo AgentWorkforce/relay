@@ -24,6 +24,7 @@ import {
   normalizeProvider,
   enrollFleetNode,
   upsertFleetNodeEnrollment,
+  redactCredentialValues,
   toCloudIdentity,
   writeStoredIdentity,
   IDENTITY_FILE_PATH,
@@ -33,6 +34,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { sanitizeForTerminalLine } from '../lib/formatting.js';
 import { maskSecret } from '../lib/redact.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
@@ -155,8 +157,27 @@ type ResolvedCloudWorkspace = {
   auth: CloudAuth;
 };
 
+/** One entry of `GET /api/v1/workspaces` — the workspaces this login can use. */
+type CloudWorkspaceSummary = {
+  id: string;
+  slug: string;
+  name: string;
+};
+
 const CLOUD_WORKSPACE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UNIFIED_WORKSPACE_ID_PATTERN = /^rw_[a-z0-9]{8}$/;
+
+const WORKSPACE_SELECTOR_HELP =
+  "Run 'agent-relay cloud workspaces' to list the workspaces this login can use.";
+
+/**
+ * True when the value carries a live credential prefix. A pasted secret must
+ * never be treated as a workspace name: name resolution matches locally
+ * against the listing, but reporting "no workspace named X" would echo it.
+ */
+function looksLikeCredential(value: string): boolean {
+  return redactCredentialValues(value) !== value;
+}
 
 function isCloudLoginError(error: unknown): boolean {
   if (!isObject(error) || typeof error.code !== 'string') {
@@ -248,17 +269,129 @@ async function resolveCloudWorkspace(
   return { cloudWorkspaceId, auth: activeAuth };
 }
 
+function workspaceListError(response: Response): Error {
+  if (response.status === 401) {
+    return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+  }
+  if (response.status === 403) {
+    return new Error('This login is not allowed to list Cloud workspaces.');
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    return new Error(
+      `Cloud workspace list rate limit exceeded.${
+        retryAfter ? ` Retry-After: ${retryAfter} seconds.` : ' Wait and retry.'
+      }`
+    );
+  }
+
+  const detail = `${response.status} ${response.statusText}`.trim();
+  return new Error(`Failed to list Cloud workspaces: ${detail}`);
+}
+
+function toWorkspaceSummary(entry: unknown): CloudWorkspaceSummary | null {
+  if (!isObject(entry) || typeof entry.id !== 'string' || !entry.id.trim()) {
+    return null;
+  }
+  const id = entry.id.trim();
+  const slug = typeof entry.slug === 'string' && entry.slug.trim() ? entry.slug.trim() : id;
+  const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : slug;
+  return { id, slug, name };
+}
+
+/**
+ * List the Cloud workspaces reachable from the stored login. This is the only
+ * discovery path the CLI has for workspace IDs, so both `cloud workspaces` and
+ * name-based `--workspace` resolution go through it.
+ */
+async function listCloudWorkspaces(
+  auth: CloudAuth,
+  deps: Pick<CloudDependencies, 'authorizedApiFetch'>
+): Promise<{ workspaces: CloudWorkspaceSummary[]; auth: CloudAuth }> {
+  const { response, auth: activeAuth } = await deps.authorizedApiFetch(
+    auth,
+    '/api/v1/workspaces',
+    { method: 'GET' },
+    { interactive: false }
+  );
+  const payload = (await response.json().catch(() => null)) as unknown;
+
+  if (!response.ok) {
+    throw workspaceListError(response);
+  }
+  if (!isObject(payload) || !Array.isArray(payload.workspaces)) {
+    throw new Error('Cloud workspace list returned an invalid response.');
+  }
+
+  const workspaces = payload.workspaces
+    .map(toWorkspaceSummary)
+    .filter((entry): entry is CloudWorkspaceSummary => entry !== null);
+
+  return { workspaces, auth: activeAuth };
+}
+
+/**
+ * Match a user-supplied selector against the listing. ID beats slug beats
+ * name so an exact identifier is never shadowed by someone else's display
+ * name, and each tier is matched case-insensitively.
+ */
+function matchWorkspaceSelector(
+  selector: string,
+  workspaces: CloudWorkspaceSummary[]
+): CloudWorkspaceSummary[] {
+  const needle = selector.trim().toLowerCase();
+  for (const field of ['id', 'slug', 'name'] as const) {
+    const matches = workspaces.filter((workspace) => workspace[field].toLowerCase() === needle);
+    if (matches.length > 0) {
+      return matches;
+    }
+  }
+  return [];
+}
+
+/**
+ * Turn `--workspace` into an identifier the resolver accepts. UUIDs and
+ * unified `rw_` IDs pass straight through; anything else is looked up by name
+ * or slug against the login's workspace listing.
+ */
+async function resolveWorkspaceSelector(
+  selector: string,
+  auth: CloudAuth,
+  deps: Pick<CloudDependencies, 'authorizedApiFetch'>
+): Promise<{ workspaceId: string; auth: CloudAuth }> {
+  if (CLOUD_WORKSPACE_UUID_PATTERN.test(selector) || UNIFIED_WORKSPACE_ID_PATTERN.test(selector)) {
+    return { workspaceId: selector, auth };
+  }
+
+  const listed = await listCloudWorkspaces(auth, deps);
+  const matches = matchWorkspaceSelector(selector, listed.workspaces);
+
+  if (matches.length === 0) {
+    // Never echo the selector: an unmatched value may be a mistyped secret.
+    throw new Error(`No Cloud workspace matched that name. ${WORKSPACE_SELECTOR_HELP}`);
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `That name matches ${matches.length} Cloud workspaces (${matches
+        .map((workspace) => workspace.id)
+        .join(', ')}). Pass the workspace ID instead.`
+    );
+  }
+
+  return { workspaceId: matches[0].id, auth: listed.auth };
+}
+
 async function mintFleetNodeEnrollment(
   options: { workspaceId: string; name?: string; maxAgents?: number },
   deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
 ): Promise<MintedFleetNodeEnrollment> {
   const workspaceId = options.workspaceId.trim();
   if (!workspaceId) {
-    throw new Error('A workspace ID is required for session-based enrollment.');
+    throw new Error('A workspace name or ID is required for session-based enrollment.');
   }
-  if (!CLOUD_WORKSPACE_UUID_PATTERN.test(workspaceId) && !UNIFIED_WORKSPACE_ID_PATTERN.test(workspaceId)) {
+  if (looksLikeCredential(workspaceId)) {
     throw new Error(
-      'Unsupported Cloud workspace identifier. Use a Cloud workspace UUID or unified rw_ workspace ID.'
+      `That value is a credential, not a workspace identifier. Pass a workspace name, Cloud workspace UUID, or unified rw_ workspace ID. ${WORKSPACE_SELECTOR_HELP}`
     );
   }
 
@@ -267,7 +400,8 @@ async function mintFleetNodeEnrollment(
       apiUrl: defaultApiUrl(),
       interactive: false,
     });
-    const resolved = await resolveCloudWorkspace(workspaceId, session.auth, deps);
+    const selected = await resolveWorkspaceSelector(workspaceId, session.auth, deps);
+    const resolved = await resolveCloudWorkspace(selected.workspaceId, selected.auth, deps);
     const { response } = await deps.authorizedApiFetch(
       resolved.auth,
       '/api/v1/fleet/enrollment-tokens',
@@ -284,7 +418,9 @@ async function mintFleetNodeEnrollment(
     const payload = (await response.json().catch(() => null)) as unknown;
 
     if (!response.ok) {
-      throw enrollmentTokenMintError(response, payload, workspaceId);
+      // Report the resolved identifier, never the raw selector: by this point
+      // the selector has matched a real workspace, so the ID is safe to echo.
+      throw enrollmentTokenMintError(response, payload, selected.workspaceId);
     }
     if (
       !isObject(payload) ||
@@ -340,6 +476,34 @@ async function resolveFleetNodeEnrollmentInput(
     enrollmentToken: minted.token,
     enrollmentUrl: minted.enrollmentUrl,
   };
+}
+
+/** Render `name (id)` for whoami, or `(none)` when the login has no selection. */
+function formatWorkspaceLabel(entry: { id: string; name?: string | null } | null | undefined): string {
+  if (!entry) {
+    return '(none)';
+  }
+  const name = entry.name?.trim() ? sanitizeForTerminalLine(entry.name.trim()) : '(no name)';
+  return `${name} (${entry.id})`;
+}
+
+function renderWorkspaceList(workspaces: CloudWorkspaceSummary[], log: (...args: unknown[]) => void): void {
+  if (workspaces.length === 0) {
+    log('No Cloud workspaces are available to this login.');
+    return;
+  }
+
+  const idWidth = Math.max(...workspaces.map((workspace) => workspace.id.length));
+  const slugWidth = Math.max(
+    ...workspaces.map((workspace) => sanitizeForTerminalLine(workspace.slug).length)
+  );
+  for (const workspace of workspaces) {
+    const slug = sanitizeForTerminalLine(workspace.slug);
+    log(
+      `${workspace.id.padEnd(idWidth)}  ${slug.padEnd(slugWidth)}  ${sanitizeForTerminalLine(workspace.name)}`
+    );
+  }
+  log("\nPass an ID or a name to 'agent-relay cloud enroll --workspace'.");
 }
 
 function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => void): void {
@@ -598,8 +762,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         deps.log(
           `User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`
         );
-        deps.log(`Organization: ${payload.currentOrganization?.name ?? '(none)'}`);
-        deps.log(`Workspace: ${payload.currentWorkspace?.name ?? '(none)'}`);
+        // Print IDs, not just names: the workspace ID is what `cloud enroll`
+        // and the other workspace-scoped commands take, and whoami is where
+        // people look for it first.
+        deps.log(`Organization: ${formatWorkspaceLabel(payload.currentOrganization)}`);
+        deps.log(`Workspace: ${formatWorkspaceLabel(payload.currentWorkspace)}`);
         deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
         deps.log(`Token file: ${AUTH_FILE_PATH}`);
 
@@ -617,6 +784,50 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       } finally {
         track('cloud_auth', {
           action: 'whoami',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
+    });
+
+  // ── workspaces ─────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('workspaces')
+    .description('List the Cloud workspaces this login can use, with their IDs')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (options: { apiUrl?: string; json?: boolean }) => {
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      try {
+        const session = await deps.ensureCloudSession({
+          apiUrl: options.apiUrl || defaultApiUrl(),
+          interactive: false,
+        });
+        const { workspaces } = await listCloudWorkspaces(session.auth, deps);
+
+        if (options.json) {
+          deps.log(JSON.stringify({ workspaces }, null, 2));
+        } else {
+          renderWorkspaceList(workspaces, deps.log);
+        }
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        deps.error(
+          isCloudLoginError(err)
+            ? 'Cloud login required. Run `agent-relay cloud login` and retry.'
+            : err instanceof Error
+              ? err.message
+              : String(err)
+        );
+        deps.exit(1);
+      } finally {
+        track('cloud_auth', {
+          action: 'workspaces',
           success,
           duration_ms: Date.now() - started,
           ...(errorClass ? { error_class: errorClass } : {}),
@@ -673,8 +884,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     )
     .addOption(
       new Option(
-        '--workspace <workspaceId>',
-        'Resolve a Cloud workspace UUID or unified rw_ ID and mint using the stored login'
+        '--workspace <workspace>',
+        'Workspace name, Cloud workspace UUID, or unified rw_ ID to mint into using the stored login'
       ).conflicts('token')
     )
     .option('--enrollment-url <url>', 'Cloud enrollment endpoint that redeems the token')

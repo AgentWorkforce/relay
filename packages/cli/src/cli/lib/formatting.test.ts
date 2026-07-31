@@ -83,6 +83,11 @@ describe('sanitizeForTerminal', () => {
     expect(sanitizeForTerminal('x\x9bDy')).toBe('xy');
     expect(sanitizeForTerminal('p\x1b]0;t\x1b\\q')).toBe('pq');
   });
+
+  it('removes bidirectional overrides that let text reorder itself on the line', () => {
+    expect(sanitizeForTerminal('safe\u202ename\u202c')).toBe('safename');
+    expect(sanitizeForTerminal('a\u2066b\u2069c')).toBe('abc');
+  });
 });
 
 describe('sanitizeForTerminalLine', () => {
