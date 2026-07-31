@@ -20,7 +20,7 @@ const cloudMocks = vi.hoisted(() => ({
   upsertFleetNodeEnrollment: vi.fn(),
 }));
 
-vi.mock('@agent-relay/cloud', () => ({
+vi.mock('@agent-relay/cloud', async (importOriginal) => ({
   AUTH_FILE_PATH: '/tmp/cloud-auth.json',
   REFRESH_WINDOW_MS: 5 * 60_000,
   authorizedApiFetch: vi.fn(),
@@ -40,12 +40,10 @@ vi.mock('@agent-relay/cloud', () => ({
     cloudMocks.downloadCloudWorkerAssignmentStorage(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
-  redactCredentialValues: (text: string) =>
-    text.replace(
-      /(rk_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+)/g,
-      (_match: string, prefix: string, body: string) =>
-        body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`
-    ),
+  // The real redactor, not a copy: `looksLikeCredential` keys off its exact
+  // prefix set, so a copy here would let production drift past these tests.
+  redactCredentialValues: (await importOriginal<typeof import('@agent-relay/cloud')>())
+    .redactCredentialValues,
   registerCloudWorker: (...args: unknown[]) => cloudMocks.registerCloudWorker(...args),
   resolveCloudWorkerRecord: (...args: unknown[]) => cloudMocks.resolveCloudWorkerRecord(...args),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
@@ -1028,8 +1026,19 @@ describe('registerCloudCommands', () => {
   });
 
   it.each(['rk_live_SECRET', 'ocl_node_enr_SECRET'])(
-    'cloud enroll --workspace rejects credential %s without disclosing it or calling Cloud',
+    'cloud enroll --workspace rejects credential %s without transmitting or disclosing it',
     async (workspaceId) => {
+      const auth = {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      };
+      vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+        response: jsonResponse({ workspaces: [{ id: 'ws-1', slug: 'chief', name: 'Chief HQ' }] }),
+        auth,
+      });
       const { program, deps } = createHarness();
 
       await expect(
@@ -1037,15 +1046,68 @@ describe('registerCloudCommands', () => {
       ).rejects.toThrow('exit:1');
 
       expect(deps.error).toHaveBeenCalledWith(
-        'That value is a credential, not a workspace identifier. Pass a workspace name, Cloud workspace UUID, ' +
+        'That value looks like a credential, not a workspace. Pass a workspace name, Cloud workspace UUID, ' +
           "or unified rw_ workspace ID. Run 'agent-relay cloud workspaces' to list the workspaces this login can use."
       );
+      // The selector is matched locally against the listing, so it must never
+      // reach an outbound request or the terminal.
       expect(deps.error.mock.calls.flat().join('\n')).not.toContain(workspaceId);
-      expect(ensureCloudSession).not.toHaveBeenCalled();
-      expect(authorizedApiFetch).not.toHaveBeenCalled();
+      expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).not.toContain(workspaceId);
+      expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(vi.mocked(authorizedApiFetch).mock.calls)).not.toContain(workspaceId);
       expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
     }
   );
+
+  it('cloud enroll --workspace accepts a listed name that looks credential-like', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce({
+        // `br_` is one of the redactor's deliberately broad prefixes, so this
+        // name must resolve on the strength of being in the listing.
+        response: jsonResponse({ workspaces: [{ id: 'ws-1', slug: 'br-team', name: 'br_team' }] }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          workspaceId: 'rw_7ccfea89',
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          token: 'ocl_node_enr_minted_secret',
+          enrollmentUrl: 'https://cloud.test/api/v1/fleet/register',
+        }),
+        auth,
+      });
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'br',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_7ccfea89',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const { program } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'br_team']);
+
+    expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      auth,
+      '/api/v1/workspaces/ws-1/resolve',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(cloudMocks.enrollFleetNode).toHaveBeenCalled();
+  });
 
   it('cloud enroll --workspace resolves a workspace name against the login listing', async () => {
     const auth = {
@@ -1283,8 +1345,9 @@ describe('registerCloudCommands', () => {
       response: jsonResponse({
         workspaces: [
           { id: '50587328-441d-4acb-b8f3-dbe1b3c5de99', slug: 'chief', name: 'Chief HQ' },
-          // Terminal control sequences in a Cloud-provided name must not survive.
-          { id: 'a1b2c3d4-0000-4000-8000-000000000000', slug: 'scratch', name: `Scr\x1b[2Jatch` },
+          // Terminal control sequences in Cloud-provided text must not survive,
+          // in the ID as much as in the name.
+          { id: `a1b2c3d4\x1b[2J-0000-4000-8000-000000000000`, slug: 'scratch', name: `Scr\x1b[2Jatch` },
         ],
       }),
       auth,
@@ -1303,6 +1366,7 @@ describe('registerCloudCommands', () => {
     expect(output).toContain('50587328-441d-4acb-b8f3-dbe1b3c5de99');
     expect(output).toContain('Chief HQ');
     expect(output).toContain('Scratch');
+    expect(output).toContain('a1b2c3d4-0000-4000-8000-000000000000');
     expect(output).not.toContain('\x1b');
     expect(output).not.toContain('access-secret');
   });

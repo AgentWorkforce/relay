@@ -366,9 +366,8 @@ async function resolveWorkspaceSelector(
   const listed = await listCloudWorkspaces(auth, deps);
   const matches = matchWorkspaceSelector(selector, listed.workspaces);
 
-  if (matches.length === 0) {
-    // Never echo the selector: an unmatched value may be a mistyped secret.
-    throw new Error(`No Cloud workspace matched that name. ${WORKSPACE_SELECTOR_HELP}`);
+  if (matches.length === 1) {
+    return { workspaceId: matches[0].id, auth: listed.auth };
   }
   if (matches.length > 1) {
     throw new Error(
@@ -378,7 +377,15 @@ async function resolveWorkspaceSelector(
     );
   }
 
-  return { workspaceId: matches[0].id, auth: listed.auth };
+  // Nothing matched. The credential check only picks the error message — it
+  // must not gate the lookup, because the redactor's prefixes are deliberately
+  // broad and a real workspace may legitimately be named `br_team`. Neither
+  // message echoes the selector: an unmatched value may be a pasted secret.
+  throw new Error(
+    looksLikeCredential(selector)
+      ? `That value looks like a credential, not a workspace. Pass a workspace name, Cloud workspace UUID, or unified rw_ workspace ID. ${WORKSPACE_SELECTOR_HELP}`
+      : `No Cloud workspace matched that name. ${WORKSPACE_SELECTOR_HELP}`
+  );
 }
 
 async function mintFleetNodeEnrollment(
@@ -388,11 +395,6 @@ async function mintFleetNodeEnrollment(
   const workspaceId = options.workspaceId.trim();
   if (!workspaceId) {
     throw new Error('A workspace name or ID is required for session-based enrollment.');
-  }
-  if (looksLikeCredential(workspaceId)) {
-    throw new Error(
-      `That value is a credential, not a workspace identifier. Pass a workspace name, Cloud workspace UUID, or unified rw_ workspace ID. ${WORKSPACE_SELECTOR_HELP}`
-    );
   }
 
   try {
@@ -478,13 +480,16 @@ async function resolveFleetNodeEnrollmentInput(
   };
 }
 
-/** Render `name (id)` for whoami, or `(none)` when the login has no selection. */
+/**
+ * Render `name (id)` for whoami, or `(none)` when the login has no selection.
+ * The ID is Cloud-provided text like the name, so it is sanitized too.
+ */
 function formatWorkspaceLabel(entry: { id: string; name?: string | null } | null | undefined): string {
   if (!entry) {
     return '(none)';
   }
   const name = entry.name?.trim() ? sanitizeForTerminalLine(entry.name.trim()) : '(no name)';
-  return `${name} (${entry.id})`;
+  return `${name} (${sanitizeForTerminalLine(entry.id)})`;
 }
 
 function renderWorkspaceList(workspaces: CloudWorkspaceSummary[], log: (...args: unknown[]) => void): void {
@@ -493,15 +498,17 @@ function renderWorkspaceList(workspaces: CloudWorkspaceSummary[], log: (...args:
     return;
   }
 
-  const idWidth = Math.max(...workspaces.map((workspace) => workspace.id.length));
-  const slugWidth = Math.max(
-    ...workspaces.map((workspace) => sanitizeForTerminalLine(workspace.slug).length)
-  );
-  for (const workspace of workspaces) {
-    const slug = sanitizeForTerminalLine(workspace.slug);
-    log(
-      `${workspace.id.padEnd(idWidth)}  ${slug.padEnd(slugWidth)}  ${sanitizeForTerminalLine(workspace.name)}`
-    );
+  // Sanitize before measuring: padding computed from raw text would be wrong
+  // for any row whose displayed form is shorter than its stored form.
+  const rows = workspaces.map((workspace) => ({
+    id: sanitizeForTerminalLine(workspace.id),
+    slug: sanitizeForTerminalLine(workspace.slug),
+    name: sanitizeForTerminalLine(workspace.name),
+  }));
+  const idWidth = Math.max(...rows.map((row) => row.id.length));
+  const slugWidth = Math.max(...rows.map((row) => row.slug.length));
+  for (const row of rows) {
+    log(`${row.id.padEnd(idWidth)}  ${row.slug.padEnd(slugWidth)}  ${row.name}`);
   }
   log("\nPass an ID or a name to 'agent-relay cloud enroll --workspace'.");
 }
