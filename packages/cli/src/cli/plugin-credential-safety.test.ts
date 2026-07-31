@@ -1,5 +1,4 @@
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -24,20 +23,24 @@ function readRepoFile(path: string): string {
   return readFileSync(join(repoRoot, path), 'utf8');
 }
 
-function listTrackedPluginFiles(): string[] {
-  return execFileSync(
-    'git',
-    ['ls-files', '-z', 'plugins/gemini-relay-extension', 'plugins/codex-relay-skill'],
-    { cwd: repoRoot, encoding: 'utf8' }
-  )
-    .split('\0')
-    .filter(Boolean);
+function listPluginFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') return [];
+
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? listPluginFiles(path) : [path];
+  });
 }
 
 describe('shipped relay plugin credential safety', () => {
   it('does not construct observer URLs from workspace keys in shipped plugin assets', () => {
-    for (const path of listTrackedPluginFiles()) {
-      const source = readRepoFile(path);
+    const pluginFiles = [
+      ...listPluginFiles(join(repoRoot, 'plugins/gemini-relay-extension')),
+      ...listPluginFiles(join(repoRoot, 'plugins/codex-relay-skill')),
+    ];
+
+    for (const path of pluginFiles) {
+      const source = readFileSync(path, 'utf8');
       expect(source, path).not.toMatch(/agentrelay\.com\/observer\?key=/i);
     }
   });
