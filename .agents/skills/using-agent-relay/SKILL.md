@@ -189,13 +189,16 @@ remove_agent(name: "reviewer-1", reason: "Review accepted")
 
 ## Current CLI Reference
 
+Startup and status commands are intentionally omitted from these agent-facing
+examples. Published Agent Relay versions through 11.3.0 can print live
+workspace credentials when those commands run in a transcribed session. Upgrade
+to a patched release before running them there.
+
 These are the current CLI forms for local broker and SDK-backed messaging
 operations:
 
 ```bash
 agent-relay status
-agent-relay node up --verbose
-agent-relay node status --wait-for 10
 agent-relay node agent list
 agent-relay node agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
 agent-relay node tail --agent Worker

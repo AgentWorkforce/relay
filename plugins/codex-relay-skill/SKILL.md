@@ -29,7 +29,12 @@ Every relay-connected Codex agent must complete these steps IN ORDER before subs
 
 2. **Register as an agent.** Call `register_agent` with your agent name and `type: "agent"`. Use `RELAY_AGENT_NAME` from the environment if set, otherwise derive a name from the task context (e.g., `lead`, `auth-worker`).
 
-3. **Tell the user** they can follow the conversation live at `https://agentrelay.com/observer?key=<workspace_key>` (use the workspace key from step 1). This lets them watch all agent messages in real time.
+3. **Keep workspace credentials out of output.** Never print the workspace key
+   or construct an observer URL from it. If the user asks to follow the
+   conversation, explain that observation requires a separately provisioned,
+   read-only observer token (`ot_live_...`) delivered through an explicit
+   secret handoff. Do not print the token or place it in a URL query string;
+   when no scoped observer token is available, omit the observer link.
 
 4. **Check the relay inbox.** Call `check_inbox` to see if there are any pending messages or task assignments.
 

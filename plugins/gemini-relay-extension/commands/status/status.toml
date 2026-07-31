@@ -1,5 +1,5 @@
 prompt = """Check the relay status:
-1. Read the workspace key from the RELAY_API_KEY environment variable, or if empty read ~/.relay/workspace-key. Print the observer URL: https://agentrelay.com/observer?key=<the actual key>. Do not print a placeholder — print the real clickable URL.
+1. Do not read or print the workspace key and do not construct an observer URL from it. Observation requires a separately provisioned, read-only observer token delivered through an explicit secret handoff. If none is available, omit the observer link.
 2. Call mcp_agent_relay_list_agents to see who's online
 3. Call mcp_agent_relay_check_inbox to see unread messages
-4. Report a summary of the observer URL, agents, and any pending messages"""
+4. Report a summary of the agents and any pending messages"""

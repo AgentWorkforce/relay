@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay integration webhook create` now works. It took a `<url>` argument and sent `{ url, event }`, but `POST /v1/webhooks` accepts `{ channel, name? }` and returns the URL — so every invocation failed with `channel is required`. It now takes `<channel>` with an optional `--name`, matching `create-inbound`, which posts to the same endpoint.
 - `@agent-relay/sdk` `RelayCreateWebhookInput` declared a required `url` and an `event`, neither of which the endpoint accepts. It is now `{ channel, name? }`. Code passing `url`/`event` was already failing at runtime.
 
+### Security
+
+- Bundled Gemini and Codex relay instructions and hooks no longer expose workspace administration keys in observer URLs or terminal transcripts; observation now requires a separately provisioned, read-only observer token.
+
 ## [11.3.0] - 2026-07-30
 
 ### Changed
