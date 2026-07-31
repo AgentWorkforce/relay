@@ -19,3 +19,12 @@ export {
 } from './agent-policy.js';
 
 export { createCloudPolicyFetcher } from './cloud-policy-fetcher.js';
+
+export {
+  ConfinedRoot,
+  ConfinementError,
+  type ConfinedWrite,
+  type ConfinementCode,
+  type ResolutionMode,
+  type WriteHooks,
+} from './fs-confine.js';

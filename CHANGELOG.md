@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@agent-relay/policy` exports `ConfinedRoot`: filesystem confinement that binds a write to a directory it cannot escape. Refuses path traversal, symlinked components, hardlinks to files outside the root, non-regular targets, and components swapped mid-operation; writes atomically so an interrupted write never leaves a partial or empty file. A security refusal makes no observable filesystem change. Nothing consumes it yet — it is available for callers that execute agent-directed writes.
+
 ## [11.3.1] - 2026-07-31
 
 ### Fixed
