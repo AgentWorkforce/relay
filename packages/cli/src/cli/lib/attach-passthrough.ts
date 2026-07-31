@@ -64,6 +64,7 @@ import {
   resizeWorker,
   type InboundDeliveryMode,
 } from './attach-drive.js';
+import { describeError } from './describe-error.js';
 import { createPredictiveEcho, type CreatePredictiveEchoOptions } from './predictive-echo-screen.js';
 import type { PredictiveEcho } from '@agent-relay/harness-driver';
 
@@ -560,7 +561,7 @@ export async function runPassthroughSession(
         if (decoded.length > 0) {
           void stream.send(decoded).catch((err: unknown) => {
             if (settled) return;
-            const message = err instanceof Error ? err.message : String(err);
+            const message = describeError(err);
             deps.log(`[passthrough] input stream send failed: ${message}`);
             // The keystroke never reached the PTY — drop any optimistic echo
             // for it so the screen doesn't show input the agent didn't get.
@@ -740,7 +741,7 @@ export async function runPassthroughSession(
         }
       } catch (err: unknown) {
         if (settled) return;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeError(err);
         deps.error(`[passthrough] could not open PTY input stream: ${message}`);
         finish(1);
       }
@@ -775,7 +776,7 @@ export async function runPassthroughSession(
         }
       } catch (err: unknown) {
         if (settled) return;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeError(err);
         deps.error(`[passthrough] could not take terminal input: ${message}`);
         finish(1);
       }
@@ -825,7 +826,7 @@ export async function runPassthroughSession(
         try {
           await predictiveEcho.seed(snapshotBytes);
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = describeError(err);
           deps.log(`[passthrough] could not seed predictive echo: ${message}`);
           finish(1);
           return;

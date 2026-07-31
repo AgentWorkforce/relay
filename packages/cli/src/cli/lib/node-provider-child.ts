@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createLogger } from '@agent-relay/utils';
 
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
+import { describeError } from './describe-error.js';
 
 /**
  * Credentials handed to an out-of-process node provider, mirroring the env
@@ -644,7 +645,7 @@ function extractChildFailure(err: unknown): string {
   if (trimmed) {
     return trimmed;
   }
-  return err instanceof Error ? err.message : String(err);
+  return describeError(err);
 }
 
 /**
