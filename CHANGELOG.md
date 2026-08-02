@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay cloud whoami` prints the organization and workspace IDs alongside their names.
 
+### Security
+
+- Bundled Gemini and Codex relay instructions and hooks no longer expose workspace administration keys in observer URLs or terminal transcripts; observation now requires a separately provisioned, read-only observer token.
+
 ## [11.3.1] - 2026-07-31
 
 ### Fixed
