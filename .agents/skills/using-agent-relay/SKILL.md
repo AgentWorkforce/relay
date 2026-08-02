@@ -192,7 +192,7 @@ remove_agent(name: "reviewer-1", reason: "Review accepted")
 Startup and status commands are intentionally omitted from these agent-facing
 examples. Published Agent Relay versions through 11.3.0 can print live
 workspace credentials when those commands run in a transcribed session. Upgrade
-to a patched release before running them there.
+to Agent Relay 11.3.1 or later before running them there.
 
 These are the current CLI forms for local broker and SDK-backed messaging
 operations:

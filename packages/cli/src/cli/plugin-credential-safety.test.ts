@@ -5,15 +5,6 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
-const observerInstructionFiles = [
-  'plugins/gemini-relay-extension/GEMINI.md',
-  'plugins/gemini-relay-extension/commands/status/status.toml',
-  'plugins/gemini-relay-extension/commands/team/team.toml',
-  'plugins/gemini-relay-extension/commands/fanout/fanout.toml',
-  'plugins/gemini-relay-extension/hooks/session-start.sh',
-  'plugins/codex-relay-skill/SKILL.md',
-] as const;
-
 const agentFacingSkillFiles = [
   '.agents/skills/using-agent-relay/SKILL.md',
   '.claude/skills/using-agent-relay/SKILL.md',
@@ -34,10 +25,7 @@ function listPluginFiles(directory: string): string[] {
 
 describe('shipped relay plugin credential safety', () => {
   it('does not construct observer URLs from workspace keys in shipped plugin assets', () => {
-    const pluginFiles = [
-      ...listPluginFiles(join(repoRoot, 'plugins/gemini-relay-extension')),
-      ...listPluginFiles(join(repoRoot, 'plugins/codex-relay-skill')),
-    ];
+    const pluginFiles = listPluginFiles(join(repoRoot, 'plugins'));
 
     for (const path of pluginFiles) {
       const source = readFileSync(path, 'utf8');
@@ -46,8 +34,10 @@ describe('shipped relay plugin credential safety', () => {
   });
 
   it('does not instruct agents to print real workspace keys or observer links', () => {
-    for (const path of observerInstructionFiles) {
-      const source = readRepoFile(path);
+    const pluginFiles = listPluginFiles(join(repoRoot, 'plugins'));
+
+    for (const path of pluginFiles) {
+      const source = readFileSync(path, 'utf8');
       expect(source, path).not.toMatch(/\b(?:actual key|real clickable URL)\b/i);
       expect(source, path).not.toMatch(/\bprint the observer URL\b/i);
 
