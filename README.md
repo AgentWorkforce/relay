@@ -348,6 +348,7 @@ References:
 
 - [TypeScript SDK README](./packages/sdk/README.md)
 - [CHANGELOG.md](./CHANGELOG.md)
+- [SECURITY.md](./SECURITY.md) — reporting a vulnerability
 - [GitHub Issues](https://github.com/AgentWorkforce/relay/issues)
 
 ## License
