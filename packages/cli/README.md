@@ -97,6 +97,20 @@ agent-relay cloud enroll --token ocl_node_enr_...
 agent-relay node up
 ```
 
+With a stored `agent-relay cloud login` you can mint the token yourself instead.
+`cloud workspaces` lists the workspaces the login can use, and `--workspace`
+takes a name, a Cloud workspace UUID, or a unified `rw_` ID:
+
+```bash
+agent-relay cloud workspaces
+# 50587328-441d-4acb-b8f3-dbe1b3c5de99  chief  Chief HQ
+
+agent-relay cloud enroll --workspace "Chief HQ"
+agent-relay node up
+```
+
+`agent-relay cloud whoami` also prints the current organization and workspace IDs.
+
 ## Cloud multiplayer rooms
 
 Cloud room membership is scoped to one Relay workspace. Every v1 invite creates
