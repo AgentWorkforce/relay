@@ -231,7 +231,8 @@ function registerAgentResultTool(server: McpServer, config: AgentResultCallbackC
     {
       title: 'Submit Result',
       description:
-        'Submit the structured result for this spawned Agent Relay task. Call this when the requested work is complete and the result object is ready.' +
+        'Submit the structured result for this spawned Agent Relay task. Call this when the requested work is complete and the result object is ready. ' +
+        'Returns the acknowledgement payload from the spawning caller. Throws if the caller rejects the submission or the request times out, in which case the result was not recorded and the call can be retried.' +
         schemaText,
       inputSchema: {
         data: z.unknown().describe('The JSON result payload requested by the spawning SDK caller.'),
@@ -406,7 +407,9 @@ function registerAgentRelayTools(
     'create_workspace',
     {
       title: 'Create Workspace',
-      description: 'Explicitly start a new Agent Relay workspace session and persist it for this project.',
+      description:
+        'Explicitly start a new Agent Relay workspace session and persist it for this project. ' +
+        'Returns the new workspace key and its resolved name. A `warning` field is present only when the workspace was created but its session could not be saved to disk, meaning the key must be kept and re-supplied to reconnect.',
       inputSchema: {
         name: z.string().describe('Human-readable workspace name'),
       },
@@ -454,7 +457,9 @@ function registerAgentRelayTools(
     'set_workspace_key',
     {
       title: 'Set Workspace Key',
-      description: 'Join this MCP session to an existing Agent Relay workspace using a shared workspace key.',
+      description:
+        'Join this MCP session to an existing Agent Relay workspace using a shared workspace key. ' +
+        'Returns a confirmation message stating whether the key was persisted for this project, and whether "register_agent" must be called to claim an identity in the newly joined workspace.',
       inputSchema: {
         workspace_key: z.string().optional().describe('Workspace key starting with "rk_live_"'),
         api_key: z.string().optional().describe('Deprecated alias for workspace_key'),
@@ -513,7 +518,11 @@ function registerAgentRelayTools(
     'register_agent',
     {
       title: 'Register Agent',
-      description: 'Register an agent identity in the current workspace and obtain an agent token.',
+      description:
+        'Claim a named identity in the current workspace so this session can post messages, read channels, and be addressed by other agents. ' +
+        'Required before any messaging tool will work. ' +
+        'Returns the agent token and the registered name, which can differ from the requested `name` when that name is already taken and the session rebinds to an available one. ' +
+        'The token is stored in this session, so later tool calls do not need to pass it.',
       inputSchema: {
         name: z.string().describe('Unique agent name within the workspace'),
         type: z.enum(['agent', 'human']).optional().describe('Whether this identity is an AI agent or human'),
@@ -561,7 +570,9 @@ function registerAgentRelayTools(
     'list_agents',
     {
       title: 'List Agents',
-      description: 'List agents registered in the current workspace.',
+      description:
+        'List agents registered in the current workspace. ' +
+        'Returns an `agents` array of registered identities, narrowed to only online or only offline agents when `status` is supplied. An empty array means the workspace has no agent matching the filter.',
       inputSchema: {
         status: z.enum(['online', 'offline']).optional().describe('Optional status filter'),
       },
@@ -581,7 +592,9 @@ function registerAgentRelayTools(
     'query_nodes',
     {
       title: 'Query Fleet Nodes',
-      description: 'Query registered fleet nodes by capability or name.',
+      description:
+        'Query registered fleet nodes by capability or name. ' +
+        'Returns a `nodes` array of the fleet nodes matching every supplied filter; an empty array means no node matched. Use it to find a node name to pass as `target_node` when spawning.',
       inputSchema: {
         capability: z.string().optional().describe('Optional capability name filter'),
         name: z.string().optional().describe('Optional node name filter'),
@@ -611,7 +624,8 @@ function registerAgentRelayTools(
         'Examples: "spawn a codex agent" → cli:"codex"; ' +
         '"spawn an opus claude agent" → cli:"claude", model:"claude-opus-4-8"; ' +
         '"spawn a sonnet claude agent" → cli:"claude", model:"claude-sonnet-4-6". ' +
-        'Do NOT use the built-in Agent/Task tool for relay workers.',
+        'Do NOT use the built-in Agent/Task tool for relay workers. ' +
+        'Returns the spawn record for the new worker, including the name it registered under. The worker boots asynchronously, so a successful return means the spawn was accepted, not that the worker is ready — watch for its messages or poll "list_agents" to confirm it came online.',
       inputSchema: {
         name: z.string().describe('Worker agent name'),
         cli: z
@@ -669,7 +683,9 @@ function registerAgentRelayTools(
     'spawn',
     {
       title: 'Spawn Agent',
-      description: 'Invoke the fleet spawn action. Optionally target a specific node.',
+      description:
+        'Invoke the fleet spawn action, optionally targeting a specific node. ' +
+        'Returns an `invocation` record acknowledging the request. The action runs asynchronously, so this confirms the spawn was queued, not that the worker is running.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         cli: z
@@ -713,7 +729,9 @@ function registerAgentRelayTools(
     'remove_agent',
     {
       title: 'Remove Agent',
-      description: 'Release a worker agent from active duty.',
+      description:
+        'Release a worker agent from active duty, optionally deleting it outright. ' +
+        'Returns an `invocation` record acknowledging the request, which is processed asynchronously. Releasing keeps the agent registered and re-spawnable; passing `delete_agent` removes the identity permanently.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         reason: z.string().optional().describe('Removal reason'),
