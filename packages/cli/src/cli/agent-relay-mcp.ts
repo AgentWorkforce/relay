@@ -232,7 +232,7 @@ function registerAgentResultTool(server: McpServer, config: AgentResultCallbackC
       title: 'Submit Result',
       description:
         'Submit the structured result for this spawned Agent Relay task. Call this when the requested work is complete and the result object is ready. ' +
-        'Returns the acknowledgement payload from the spawning caller. Throws if the caller rejects the submission or the request times out, in which case the result was not recorded and the call can be retried.' +
+        'Returns the acknowledgement payload from the spawning caller. Throws if the caller rejects the submission, in which case the result was not recorded. A timeout leaves the outcome unknown — the request may have been recorded before the client stopped waiting — so treat a retry as a possible duplicate rather than a safe repeat.' +
         schemaText,
       inputSchema: {
         data: z.unknown().describe('The JSON result payload requested by the spawning SDK caller.'),

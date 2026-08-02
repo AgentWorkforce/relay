@@ -256,7 +256,7 @@ export function registerMessagingTools(
       title: 'Get Thread',
       description:
         'Retrieve a message thread. ' +
-        'Returns the parent message together with its replies, capped by `limit` when supplied.',
+        'Returns the parent message together with its replies, capped by `limit` when a positive value is supplied. A `limit` of 0 is ignored and returns the full thread.',
       inputSchema: {
         message_id: z.string().describe('Parent message ID'),
         limit: z.number().optional().describe('Maximum replies to return'),
@@ -301,7 +301,7 @@ export function registerMessagingTools(
       title: 'List DM Conversations',
       description:
         'List direct message conversations for the current agent. ' +
-        'Returns a `conversations` array covering both one-to-one and group DMs, with the conversation IDs used to send follow-up messages.',
+        'Returns a `conversations` array covering both one-to-one and group DMs. Each conversation ID addresses the `relay://dm/{conversation_id}` resource, which holds that conversation\'s messages; no tool sends a follow-up message by conversation ID, so reply with "send_dm" to the recipient by name.',
       inputSchema: {
         ...identityOverrideInputShape,
       },
