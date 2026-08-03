@@ -93,9 +93,9 @@ describe('agent-relay observer', () => {
   it('rejects a bare-number expiry rather than guessing a unit', async () => {
     const { program } = setup();
 
-    await expect(
-      program.parseAsync(['observer', '--expires', '24'], { from: 'user' })
-    ).rejects.toThrow(/30m, 24h, or 7d/);
+    await expect(program.parseAsync(['observer', '--expires', '24'], { from: 'user' })).rejects.toThrow(
+      /30m, 24h, or 7d/
+    );
   });
 
   it('fails loudly when the engine returns no token material', async () => {
@@ -103,17 +103,13 @@ describe('agent-relay observer', () => {
       createObserverToken: vi.fn(async () => createdToken({ token: undefined })) as never,
     });
 
-    await expect(program.parseAsync(['observer'], { from: 'user' })).rejects.toBeInstanceOf(
-      ExitSignal
-    );
+    await expect(program.parseAsync(['observer'], { from: 'user' })).rejects.toBeInstanceOf(ExitSignal);
     expect(errors.join('\n')).toContain('did not include token material');
   });
 
   it('list never prints token material', async () => {
     const { program, logs } = setup({
-      listObserverTokens: vi.fn(async () => [
-        createdToken({ token: undefined, lastUsedAt: null }),
-      ]) as never,
+      listObserverTokens: vi.fn(async () => [createdToken({ token: undefined, lastUsedAt: null })]) as never,
     });
 
     await program.parseAsync(['observer', 'list'], { from: 'user' });

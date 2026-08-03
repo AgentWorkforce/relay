@@ -606,7 +606,12 @@ function registerAgentRelayTools(
           .describe('Token lifetime in hours. Defaults to 24.'),
       },
       outputSchema: jsonResult,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async ({ channels, include_dms, expires_in_hours }: any) => {
       const session = getSession();

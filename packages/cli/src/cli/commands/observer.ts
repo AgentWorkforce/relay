@@ -128,19 +128,25 @@ export function registerObserverCommands(
     .description('Mint a read-only observer link so a human can follow this workspace');
 
   group
-    .option('--workspace-key <key>', 'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)')
+    .option(
+      '--workspace-key <key>',
+      'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)'
+    )
     .option('--base-url <url>', 'Override the engine API base URL (defaults to RELAY_BASE_URL)')
     .option('--observer-url <url>', `Observer dashboard URL (defaults to ${DEFAULT_OBSERVER_URL})`)
     .option('--name <name>', 'Token name (defaults to a generated unique name)')
     .option('--channels <names>', 'Restrict to a comma-separated list of channels', parseChannels)
     .option('--include-dms', 'Include agent DM traffic (excluded by default)')
-    .option('--expires <duration>', `Token lifetime, e.g. 30m, 24h, 7d (default ${DEFAULT_OBSERVER_EXPIRES})`, parseDuration)
+    .option(
+      '--expires <duration>',
+      `Token lifetime, e.g. 30m, 24h, 7d (default ${DEFAULT_OBSERVER_EXPIRES})`,
+      parseDuration
+    )
     .option('--json', 'Output the token metadata and URL as JSON')
     .action(async (options: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const lifetimeMs = (options.expires as number | undefined) ?? parseDuration(DEFAULT_OBSERVER_EXPIRES);
-        const name =
-          (options.name as string | undefined)?.trim() || `observer-cli-${deps.randomSuffix()}`;
+        const name = (options.name as string | undefined)?.trim() || `observer-cli-${deps.randomSuffix()}`;
 
         const token = await deps.createObserverToken({
           ...connection(options),
@@ -171,9 +177,7 @@ export function registerObserverCommands(
         deps.log('');
         deps.log(`Read-only. Expires ${token.expiresAt ?? 'never'}.`);
         deps.log(
-          options.includeDms === true
-            ? 'Includes agent DMs.'
-            : 'Channels only — agent DMs are excluded.'
+          options.includeDms === true ? 'Includes agent DMs.' : 'Channels only — agent DMs are excluded.'
         );
         deps.log(`Revoke with: agent-relay observer revoke ${token.id}`);
       });
@@ -182,7 +186,10 @@ export function registerObserverCommands(
   group
     .command('list')
     .description('List observer tokens for this workspace (token material is never shown)')
-    .option('--workspace-key <key>', 'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)')
+    .option(
+      '--workspace-key <key>',
+      'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)'
+    )
     .option('--base-url <url>', 'Override the engine API base URL')
     .option('--json', 'Output as JSON')
     .action(async (options: Record<string, unknown>) => {
@@ -208,7 +215,10 @@ export function registerObserverCommands(
     .command('revoke')
     .description('Revoke an observer token by id')
     .argument('<id>', 'Observer token id')
-    .option('--workspace-key <key>', 'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)')
+    .option(
+      '--workspace-key <key>',
+      'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)'
+    )
     .option('--base-url <url>', 'Override the engine API base URL')
     .action(async (id: string, options: Record<string, unknown>) => {
       await runSdk(deps, async () => {
