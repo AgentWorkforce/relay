@@ -245,12 +245,12 @@ export RELAY_BASE_URL=https://cast.agentrelay.com
 
 ## Common Mistakes
 
-| Mistake                                       | Fix                                                                            |
-| --------------------------------------------- | ------------------------------------------------------------------------------ |
-| Using `message_dm_send` or `message.post`     | Use current flat tools: `send_dm`, `post_message`, `reply_to_thread`           |
-| Acting as orchestrator with participant tools | Use `orchestrating-agent-relay`, or register yourself first                    |
-| Calling tools before selecting a workspace    | Call `set_workspace_key` or `create_workspace` first                           |
-| Reading peer replies via `node tail`         | `node tail` streams broker events; `node tail --agent <name>` streams that worker's raw output — neither is durable messages. Read with `check_inbox` / `list_messages` / `get_message_thread` (or the `message` CLI group) |
-| Spawning with `add_agent(name, type)`         | `add_agent` needs `name`, `cli`, and `task`; use `register_agent` for identity |
-| Forgetting to ACK                             | Send `ACK:` to the lead before starting work                                   |
-| Finishing silently                            | Send `DONE:` with evidence before stopping                                     |
+| Mistake                                       | Fix                                                                                                                                                                                                                         |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Using `message_dm_send` or `message.post`     | Use current flat tools: `send_dm`, `post_message`, `reply_to_thread`                                                                                                                                                        |
+| Acting as orchestrator with participant tools | Use `orchestrating-agent-relay`, or register yourself first                                                                                                                                                                 |
+| Calling tools before selecting a workspace    | Call `set_workspace_key` or `create_workspace` first                                                                                                                                                                        |
+| Reading peer replies via `node tail`          | `node tail` streams broker events; `node tail --agent <name>` streams that worker's raw output — neither is durable messages. Read with `check_inbox` / `list_messages` / `get_message_thread` (or the `message` CLI group) |
+| Spawning with `add_agent(name, type)`         | `add_agent` needs `name`, `cli`, and `task`; use `register_agent` for identity                                                                                                                                              |
+| Forgetting to ACK                             | Send `ACK:` to the lead before starting work                                                                                                                                                                                |
+| Finishing silently                            | Send `DONE:` with evidence before stopping                                                                                                                                                                                  |
