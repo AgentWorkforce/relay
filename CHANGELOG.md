@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- CLI output no longer disappears when stdout or stderr is a pipe instead of a terminal. Node's stdio writes are asynchronous for pipes on macOS, so exiting in the same tick as the write discarded whatever was still buffered — `agent-relay cloud session --json | parser` and `$(agent-relay …)` could come back with empty stdout _and_ empty stderr, hiding the payload and the error that explained the failure. Every hard-exit path now drains stdio first.
 
 ## [11.4.0] - 2026-08-02
 

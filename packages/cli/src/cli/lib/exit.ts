@@ -16,6 +16,7 @@
  */
 
 import { shutdown as shutdownTelemetry } from '../telemetry/index.js';
+import { exitAfterFlush } from './flush-stdio.js';
 
 export class CliExit extends Error {
   /** Intended process exit code. */
@@ -67,10 +68,10 @@ export function runSignalHandler(handler: () => void | Promise<void>): void {
         } catch {
           // Best-effort — never let flush errors mask the intended exit.
         }
-        process.exit(err.code);
+        await exitAfterFlush(err.code);
       }
       // eslint-disable-next-line no-console
       console.error(err);
-      process.exit(1);
+      await exitAfterFlush(1);
     });
 }

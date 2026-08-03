@@ -30,6 +30,7 @@ import {
 import { ensureWebSocketGlobal } from './lib/ensure-websocket.js';
 import { assertSupportedNodeVersion } from './lib/node-version.js';
 import { CliExit } from './lib/exit.js';
+import { exitAfterFlush } from './lib/flush-stdio.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
@@ -522,8 +523,10 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
     }
 
     if (isCliExit) {
-      // Flush is done — now actually exit with the code the command asked for.
-      process.exit(err.code);
+      // Telemetry is flushed — now drain whatever the command printed (a piped
+      // stdout is asynchronous on macOS, so exiting in this tick would drop it)
+      // and exit with the code the command asked for.
+      await exitAfterFlush(err.code);
     }
     throw err;
   }

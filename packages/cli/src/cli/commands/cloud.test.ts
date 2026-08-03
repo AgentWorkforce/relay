@@ -420,6 +420,50 @@ describe('registerCloudCommands', () => {
     expect(sessionJson).not.toHaveProperty('refreshToken');
   });
 
+  it('writes the session JSON through the default stdout logger when stdout is not a TTY', async () => {
+    // Regression: scripted callers (`cloud session --json | parser`, `$(...)`)
+    // got empty stdout. The command must not gate its output on a TTY, and the
+    // production logger — not just an injected test double — must emit it.
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({
+      auth: {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      },
+      client: {} as never,
+    });
+
+    const program = new Command();
+    program.exitOverride();
+    // No dependency overrides: this exercises the production `console.log` path.
+    registerCloudCommands(program);
+
+    const chunks: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      chunks.push(args.map((arg) => String(arg)).join(' '));
+    });
+    const originalIsTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+
+    try {
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'session', '--json']);
+    } finally {
+      log.mockRestore();
+      if (originalIsTty) {
+        Object.defineProperty(process.stdout, 'isTTY', originalIsTty);
+      } else {
+        delete (process.stdout as { isTTY?: boolean }).isTTY;
+      }
+    }
+
+    expect(JSON.parse(chunks.join(''))).toEqual({
+      apiUrl: 'https://cloud.test',
+      accessToken: '…oken',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    });
+  });
+
   it('includes the raw access token in JSON output only with --reveal-token', async () => {
     const { program, deps } = createHarness();
     vi.mocked(ensureCloudSession).mockResolvedValueOnce({
