@@ -32,6 +32,12 @@ export interface ResolveWorkspaceKeyOptions {
   projectRoot?: string;
   /** Explicit project Relay data directory. Takes precedence over projectRoot. */
   projectDataDir?: string;
+  /** Optional filesystem adapter for reading the repository pin. */
+  fileSystem?: WorkspaceKeyFileSystem;
+}
+
+export interface WorkspaceKeyFileSystem {
+  readFileSync(filePath: string, encoding: BufferEncoding): string;
 }
 
 /**
@@ -55,14 +61,20 @@ export function projectWorkspaceKeyPath(dataDir: string): string {
 }
 
 /** Read a project broker's workspace key, falling through on absent or malformed state. */
-export function readProjectWorkspaceKey(dataDir: string): string | undefined {
-  return readProjectWorkspaceSession(dataDir)?.workspaceKey;
+export function readProjectWorkspaceKey(
+  dataDir: string,
+  fileSystem: WorkspaceKeyFileSystem = fs
+): string | undefined {
+  return readProjectWorkspaceSession(dataDir, fileSystem)?.workspaceKey;
 }
 
 /** Read the project workspace and its optional enrolled Fleet identity. */
-export function readProjectWorkspaceSession(dataDir: string): ProjectWorkspaceSession | undefined {
+export function readProjectWorkspaceSession(
+  dataDir: string,
+  fileSystem: WorkspaceKeyFileSystem = fs
+): ProjectWorkspaceSession | undefined {
   try {
-    const raw = fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf-8');
+    const raw = fileSystem.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf-8');
     const parsed = JSON.parse(raw) as Partial<ProjectWorkspaceSession>;
     const workspaceKey = trimOrUndefined(parsed.workspaceKey);
     if (!workspaceKey) return undefined;
@@ -160,7 +172,7 @@ export function resolveWorkspaceSelection(
   }
 
   const dataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
-  const project = dataDir ? readProjectWorkspaceSession(dataDir) : undefined;
+  const project = dataDir ? readProjectWorkspaceSession(dataDir, options.fileSystem ?? fs) : undefined;
   if (project) {
     return {
       key: project.workspaceKey,

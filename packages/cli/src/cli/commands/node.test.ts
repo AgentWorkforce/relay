@@ -9,6 +9,7 @@ const brokerMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../lib/broker-lifecycle.js', () => ({
+  WORKSPACE_BINDING_SOURCE_ENV: 'AGENT_RELAY_WORKSPACE_SOURCE',
   runUpCommand: (...args: unknown[]) => brokerMocks.runUpCommand(...args),
   runDownCommand: (...args: unknown[]) => brokerMocks.runDownCommand(...args),
   runStatusCommand: (...args: unknown[]) => brokerMocks.runStatusCommand(...args),
@@ -373,6 +374,7 @@ describe('registerNodeCommands', () => {
     expect(message).toContain('rw_stale');
     expect(message).toContain('rw_123');
     expect(message).toContain('workspace-key.json');
+    expect(message).toContain('agent-relay workspace rebind <name>');
     // Diagnostics name sources, never credentials.
     expect(message).not.toContain('rk_project_session');
     expect(message).not.toContain('nt_secret');
@@ -434,7 +436,10 @@ describe('registerNodeCommands', () => {
       RELAY_NODE_ID: 'node_abc',
       RELAY_NODE_TOKEN: 'nt_secret',
     });
+    // Node startup resolves identity only. The shared runUpCommand resolver
+    // applies the repository workspace, so there is no second ladder here.
     expect(restart.env.RELAY_WORKSPACE_KEY).toBeUndefined();
+    expect(restart.env.RELAY_API_KEY).toBeUndefined();
     expect(brokerMocks.runUpCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({
         background: true,

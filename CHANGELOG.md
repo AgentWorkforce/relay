@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay cloud login --device` logs in a machine with no browser through the OAuth device flow: the CLI prints a code you approve from any other device. Login and re-authentication fall back to it automatically over SSH or on a Unix host with no display server, and each machine gets its own cloud session instead of a copied `cloud-auth.json`. Requires cloud with the device authorization endpoints.
+- `agent-relay workspace restore` returns to the recorded previous workspace, while `workspace rebind <name>` explicitly pins a project's next broker start without changing the machine-global active workspace.
+
+### Changed
+
+- `workspace create` warns on stderr when it changes the active workspace and records the prior name; named switches now record the same restore point, and first-run telemetry notices no longer contaminate JSON stdout.
 
 ### Fixed
 
@@ -17,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay node up` warns instead of silently ignoring stored Cloud fleet enrollments when the project workspace pin has no enrolled node id. That combination started the broker in the pinned workspace while the node never heartbeat, leaving the Cloud dashboard and `agent-relay fleet nodes` showing different rosters with no error from either.
 - `agent-relay cloud enroll` records the enrolled node on the project workspace pin, so `node up` in that repo serves the node it just enrolled. A pin that already names a different node is reported and left untouched rather than repointed.
 - `agent-relay workspace switch|join` keeps the project's enrolled fleet node id instead of dropping it, which previously produced the pin state that made the next `node up` ignore the enrollment store.
+- `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, startup announces the winning source, and `node status` reports the same five-source provenance.
+- Cloud enrollment selects node identity without overriding workspace resolution. A conflict with the repository pin stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
+- Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
 
 ## [11.4.1] - 2026-08-03
 
@@ -27,9 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - CLI output no longer disappears when stdout or stderr is a pipe instead of a terminal. Node's stdio writes are asynchronous for pipes on macOS, so exiting in the same tick as the write discarded whatever was still buffered — `agent-relay cloud session --json | parser` and `$(agent-relay …)` could come back with empty stdout _and_ empty stderr, hiding the payload and the error that explained the failure. Every hard-exit path now drains stdio first.
-- `agent-relay up` / `node up` resolve the workspace through one documented precedence ladder: `--workspace-key` → `RELAY_WORKSPACE_KEY`/`AGENT_RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` → the repository pin in `.agentworkforce/relay/workspace-key.json` → the machine-global active workspace in `~/.agentworkforce/relay/workspaces.json` → creating one. Startup prints the winning source (flag, variable, or file path — never key material).
-- A Cloud enrollment no longer re-homes an enrolled node out of its repository's workspace. `RELAY_NODE_TOKEN` selects the node's identity, not its workspace, and no longer suppresses the repository pin; when a stored enrollment addresses a different workspace than the pin, `node up` stops and names both sources instead of silently choosing one.
-- A first `up` in a fresh directory joins the machine's active workspace instead of silently creating a new one, and a start that does create a workspace says so instead of printing the same output as a join.
 
 ## [11.4.0] - 2026-08-02
 

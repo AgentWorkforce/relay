@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readProjectWorkspaceKey, readProjectWorkspaceSession } from '../lib/project-workspace-key.js';
 
@@ -34,6 +34,8 @@ const telemetryMocks = vi.hoisted(() => ({
   track: vi.fn(),
 }));
 
+const isolatedWorkspaceHome = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-core-test-home-'));
+
 vi.mock('../telemetry/index.js', () => ({
   track: telemetryMocks.track,
 }));
@@ -60,6 +62,10 @@ beforeEach(() => {
   telemetryMocks.track.mockClear();
 });
 
+afterAll(() => {
+  nodeFs.rmSync(isolatedWorkspaceHome, { recursive: true, force: true });
+});
+
 import {
   registerCoreCommands,
   registerCoreMaintenance,
@@ -76,12 +82,18 @@ class ExitSignal extends Error {
   }
 }
 
-function connectionFile(pid: number, url = 'http://127.0.0.1:3889', apiKey = 'br_secret'): string {
+function connectionFile(
+  pid: number,
+  url = 'http://127.0.0.1:3889',
+  apiKey = 'br_secret',
+  workspaceSource?: string
+): string {
   return JSON.stringify({
     url,
     port: Number(new URL(url).port || '0'),
     api_key: apiKey,
     pid,
+    ...(workspaceSource ? { workspace_source: workspaceSource } : {}),
   });
 }
 
@@ -156,6 +168,7 @@ function createHarness(options?: {
   const spawnedProcess = options?.spawnedProcess ?? createSpawnedProcessMock();
   const env = options?.env ?? {};
   env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE ??= '1';
+  env.AGENT_RELAY_HOME ??= isolatedWorkspaceHome;
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -566,6 +579,7 @@ describe('registerCoreCommands', () => {
     );
     expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_live_customflag77');
     expect(deps.env.RELAY_API_KEY).toBe('rk_live_customflag77');
+    expect(deps.env.AGENT_RELAY_WORKSPACE_SOURCE).toBe('flag');
     expect(deps.env.AGENT_RELAY_STATE_DIR).toBe(stateDir);
     expect(deps.log).toHaveBeenCalledWith('Broker started.');
     expect(deps.log).toHaveBeenCalledWith('Broker PID: 5151');
@@ -882,6 +896,44 @@ describe('registerCoreCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
+  it('up --background reports an early detached-child failure without trying to kill a dead PID', async () => {
+    const spawnedProcess = createSpawnedProcessMock();
+    let now = 0;
+    let childRunning = true;
+    const fs = createFsMock();
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      childRunning = false;
+      fs.writeFileSync(
+        '/tmp/project/.agentworkforce/relay/background-start-error.log',
+        'explicit workspace key was rejected'
+      );
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 9001 && signal === 0 && childRunning) return;
+      throw new Error('not running');
+    });
+    const { program, deps } = createHarness({
+      fs,
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--background', '--workspace-key', 'rk_live_other']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      'Broker background child exited before becoming ready (pid: 9001).'
+    );
+    expect(deps.error).toHaveBeenCalledWith('Detached broker error: explicit workspace key was rejected');
+    expect(killImpl).not.toHaveBeenCalledWith(9001, 'SIGTERM');
+    expect(deps.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('Failed to stop half-started broker process')
+    );
+  });
+
   it('down --force only kills actual orphaned broker executables for the project', async () => {
     const runningPids = new Set([222, 444, 666]);
     const execCommand = vi.fn(async (command: string) => {
@@ -1173,7 +1225,9 @@ describe('registerCoreCommands', () => {
 
   it('status checks broker status and prints metrics', async () => {
     const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
-    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    const fs = createFsMock({
+      [connectionPath]: connectionFile(4242, 'http://127.0.0.1:3889', 'br_secret', 'project'),
+    });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 4, pending_delivery_count: 2 });
     sdkStatusClient.getSession.mockResolvedValueOnce({
       workspace_key: 'rk_live_teststatus123',
@@ -1191,9 +1245,46 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Pending deliveries: 2');
     expect(deps.log).toHaveBeenCalledWith('Node: sf-mini (node_enrolled)');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_…s123');
+    expect(deps.log).toHaveBeenCalledWith(
+      'Workspace source: repository pin (.agentworkforce/relay/workspace-key.json)'
+    );
     const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(logCalls.some((call) => String(call[0]).startsWith('Observer:'))).toBe(false);
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      source: 'flag',
+      label: 'command-line flag (--workspace-key / --wk)',
+    },
+    {
+      source: 'env',
+      label: 'environment (RELAY_WORKSPACE_KEY > AGENT_RELAY_WORKSPACE_KEY > RELAY_API_KEY)',
+    },
+    {
+      source: 'project',
+      label: 'repository pin (.agentworkforce/relay/workspace-key.json)',
+    },
+    {
+      source: 'store',
+      label: 'machine-global active workspace (~/.agentworkforce/relay/workspaces.json)',
+    },
+    {
+      source: 'created',
+      label: 'created (no configured workspace resolved)',
+    },
+  ])('status reports the $source workspace source', async ({ source, label }) => {
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const fs = createFsMock({
+      [connectionPath]: connectionFile(4242, 'http://127.0.0.1:3889', 'br_secret', source),
+    });
+    const { program, deps } = createHarness({ fs });
+
+    const exitCode = await runCommand(program, ['status']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(`Workspace source: ${label}`);
   });
 
   it('status omits workspace key and observer when broker has no workspace_key', async () => {

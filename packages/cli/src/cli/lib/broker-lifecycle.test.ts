@@ -63,6 +63,14 @@ describe('describeErrorWithCause', () => {
     expect(result).toContain('agentrelay.com');
   });
 
+  it('redacts credentials found only in a nested cause', () => {
+    const err = new Error('broker start failed', {
+      cause: new Error('workspace rk_live_0123456789abcdef was rejected'),
+    });
+
+    expect(describeErrorWithCause(err)).toBe('broker start failed — workspace rk_live_…cdef was rejected');
+  });
+
   it('handles non-Error values without throwing', () => {
     expect(describeErrorWithCause('something went wrong')).toBe('something went wrong');
     expect(describeErrorWithCause(undefined)).toBe('undefined');
@@ -497,6 +505,8 @@ describe('runUpCommand node-config gating', () => {
 describe('runUpCommand workspace precedence', () => {
   const readPin = (dataDir: string): Record<string, string> =>
     JSON.parse(fsReal.readFileSync(pathReal.join(dataDir, 'workspace-key.json'), 'utf-8'));
+  const readBindingSource = (dataDir: string): string =>
+    JSON.parse(fsReal.readFileSync(pathReal.join(dataDir, 'connection.json'), 'utf-8')).workspace_source;
 
   it('prefers the repository pin over the machine-global active workspace (#1406)', async () => {
     const { deps, dataDir, home, log } = createUpHarness();
@@ -508,6 +518,7 @@ describe('runUpCommand workspace precedence', () => {
     expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_repository');
     expect(deps.env.RELAY_API_KEY).toBe('rk_repository');
     expect(log.mock.calls.flat().join('\n')).toContain('Workspace source: repository pin');
+    expect(readBindingSource(dataDir)).toBe('project');
   });
 
   it('applies the repository pin even when an enrollment node token is present (#1406)', async () => {
@@ -534,10 +545,11 @@ describe('runUpCommand workspace precedence', () => {
     expect(output).toContain('Workspace source: machine-global active workspace');
     expect(output).toContain('active: "account"');
     expect(output).not.toContain('created new workspace');
+    expect(readBindingSource(deps.getProjectPaths().dataDir)).toBe('store');
   });
 
   it('announces a mint when no source resolves (#1378)', async () => {
-    const { deps, log } = createUpHarness();
+    const { deps, dataDir, log } = createUpHarness();
 
     await runUpCommand({}, deps);
 
@@ -545,6 +557,7 @@ describe('runUpCommand workspace precedence', () => {
     const output = log.mock.calls.flat().join('\n');
     expect(output).toContain('Workspace: none selected');
     expect(output).toContain('Workspace: created new workspace rw_test');
+    expect(readBindingSource(dataDir)).toBe('created');
   });
 
   it('keeps an explicit --workspace-key ahead of both stores', async () => {
@@ -556,6 +569,18 @@ describe('runUpCommand workspace precedence', () => {
 
     expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_flag');
     expect(log.mock.calls.flat().join('\n')).toContain('Workspace source: command-line flag');
+    expect(readBindingSource(dataDir)).toBe('flag');
+  });
+
+  it('records environment provenance after normalizing a workspace-key alias', async () => {
+    const { deps, dataDir, log } = createUpHarness();
+    deps.env.AGENT_RELAY_WORKSPACE_KEY = ' rk_environment ';
+
+    await runUpCommand({}, deps);
+
+    expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_environment');
+    expect(log.mock.calls.flat().join('\n')).toContain('$AGENT_RELAY_WORKSPACE_KEY');
+    expect(readBindingSource(dataDir)).toBe('env');
   });
 
   it('records the resolved workspace id on the pin for later conflict detection', async () => {

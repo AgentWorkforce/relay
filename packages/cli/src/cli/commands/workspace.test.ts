@@ -11,6 +11,7 @@ vi.mock('@agent-relay/cloud', () => ({
 vi.mock('../lib/workspace-session.js', async (importOriginal) => ({
   // Returns a result object describing what the write changed beyond the key.
   persistWorkspaceSession: vi.fn(() => ({})),
+  pinProjectWorkspaceSession: vi.fn(),
   // The real formatter, not a copy: these tests assert on its wording, so a
   // stand-in here would let the command output drift past them.
   describeClearedEnrollment: (await importOriginal<typeof import('../lib/workspace-session.js')>())
@@ -30,7 +31,11 @@ import {
 } from '@agent-relay/cloud';
 
 import { registerWorkspaceCommands, type WorkspaceCommandDependencies } from './workspace.js';
-import { persistWorkspaceSession, validateWorkspaceSessionName } from '../lib/workspace-session.js';
+import {
+  persistWorkspaceSession,
+  pinProjectWorkspaceSession,
+  validateWorkspaceSessionName,
+} from '../lib/workspace-session.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -165,6 +170,46 @@ describe('registerWorkspaceCommands', () => {
     });
   });
 
+  it('workspace create records and visibly warns about the previous active workspace on stderr', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'default',
+      workspaces: { default: { key: 'rk_live_default' } },
+    });
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({
+      workspaceKey: 'rk_live_session_two',
+    } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'session-two']);
+
+    expect(persistWorkspaceSession).toHaveBeenCalledWith({
+      name: 'session-two',
+      workspaceKey: 'rk_live_session_two',
+    });
+    expect(deps.error).toHaveBeenNthCalledWith(1, '⚠  Active workspace changed: default → session-two');
+    expect(deps.error).toHaveBeenNthCalledWith(2, '   Restore with: agent-relay workspace restore');
+    expect(() => JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).not.toThrow();
+  });
+
+  it('workspace create --json keeps stdout parseable and routes the warning away from it', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'default',
+      workspaces: { default: { key: 'rk_live_default' } },
+    });
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({
+      workspaceKey: 'rk_live_json_workspace',
+    } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'json-workspace', '--json']);
+
+    expect(vi.mocked(deps.log).mock.calls).toHaveLength(1);
+    expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toMatchObject({
+      name: 'json-workspace',
+    });
+    expect(deps.error).toHaveBeenCalledWith('⚠  Active workspace changed: default → json-workspace');
+  });
+
   it('workspace create rejects a blank name before provisioning a remote workspace', async () => {
     const { program, deps } = createHarness();
 
@@ -283,5 +328,82 @@ describe('registerWorkspaceCommands', () => {
       name: 'shared',
       workspaceKey: 'rk_live_shared',
     });
+  });
+
+  it('workspace restore switches back to the recorded previous workspace', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'scratch',
+      previous: 'default',
+      workspaces: {
+        default: { key: 'rk_live_default' },
+        scratch: { key: 'rk_live_scratch' },
+      },
+    });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'restore']);
+
+    expect(persistWorkspaceSession).toHaveBeenCalledWith({
+      name: 'default',
+      workspaceKey: 'rk_live_default',
+    });
+    expect(deps.log).toHaveBeenCalledWith('Switched to workspace "default" (was scratch).');
+  });
+
+  it('workspace restore reports when nothing was recorded', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({ active: 'default', workspaces: {} });
+    const { program, deps } = createHarness();
+
+    await expect(program.parseAsync(['node', 'agent-relay', 'workspace', 'restore'])).rejects.toThrow(
+      'exit:1'
+    );
+
+    expect(deps.error).toHaveBeenCalledWith('No previous workspace is recorded.');
+  });
+
+  it('workspace restore reports when the recorded workspace no longer exists', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'scratch',
+      previous: 'deleted',
+      workspaces: { scratch: { key: 'rk_live_scratch' } },
+    });
+    const { program, deps } = createHarness();
+
+    await expect(program.parseAsync(['node', 'agent-relay', 'workspace', 'restore'])).rejects.toThrow(
+      'exit:1'
+    );
+
+    expect(deps.error).toHaveBeenCalledWith('The recorded previous workspace "deleted" no longer exists.');
+  });
+
+  it('workspace restore reports when the recorded workspace is already active', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'default',
+      previous: 'default',
+      workspaces: { default: { key: 'rk_live_default' } },
+    });
+    const { program, deps } = createHarness();
+
+    await expect(program.parseAsync(['node', 'agent-relay', 'workspace', 'restore'])).rejects.toThrow(
+      'exit:1'
+    );
+
+    expect(deps.error).toHaveBeenCalledWith('The recorded previous workspace "default" is already active.');
+  });
+
+  it('workspace rebind pins the selected workspace to this project without changing global state', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'scratch',
+      workspaces: { default: { key: 'rk_live_default' } },
+    });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'rebind', 'default']);
+
+    expect(pinProjectWorkspaceSession).toHaveBeenCalledWith({ workspaceKey: 'rk_live_default' });
+    expect(persistWorkspaceSession).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(
+      `Rebound this project's broker to workspace "default". Restart the broker to apply it.`
+    );
   });
 });

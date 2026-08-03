@@ -145,4 +145,22 @@ describe('workspace precedence ladder diagnostics', () => {
       workspaceId: 'rw_repository',
     });
   });
+
+  it('keeps the shared ladder authoritative when a caller injects repository-pin I/O', () => {
+    const env = { AGENT_RELAY_HOME: home };
+    setWorkspaceKey('global', 'rk_global', env);
+    const fileSystem = {
+      readFileSync: (filePath: string, encoding: BufferEncoding): string => {
+        expect(filePath).toBe(projectWorkspaceKeyPath(dataDir));
+        expect(encoding).toBe('utf-8');
+        return JSON.stringify({ workspaceKey: 'rk_injected', workspaceId: 'rw_injected' });
+      },
+    };
+
+    expect(resolveWorkspaceSelection({ projectDataDir: dataDir, env, fileSystem })).toMatchObject({
+      key: 'rk_injected',
+      source: 'project',
+      workspaceId: 'rw_injected',
+    });
+  });
 });
