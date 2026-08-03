@@ -8,9 +8,8 @@
       "id": "801"
     }
   },
-  "status": "completed",
+  "status": "active",
   "startedAt": "2026-07-15T19:48:09.268Z",
-  "completedAt": "2026-08-02T22:53:57.846Z",
   "agents": [
     {
       "name": "default",
@@ -24,7 +23,6 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-07-15T19:56:40.369Z",
-      "endedAt": "2026-08-02T22:53:57.846Z",
       "events": [
         {
           "ts": 1784145400371,
@@ -85,27 +83,10 @@
             "reasoning": "The scripts/ci-standalone-smoke.sh test was tearing down `agent-relay node up` after eight seconds even when a retried Relaycast handshake was still in progress. Polling for its `Broker started.` readiness line for up to thirty seconds prevents cleanup from creating a false startup failure while retaining deterministic timeout diagnostics."
           },
           "significance": "high"
-        },
-        {
-          "ts": 1785711236093,
-          "type": "decision",
-          "content": "Documented get_message_thread limit:0 behavior instead of changing the handler: Documented get_message_thread limit:0 behavior instead of changing the handler",
-          "raw": {
-            "question": "Documented get_message_thread limit:0 behavior instead of changing the handler",
-            "chosen": "Documented get_message_thread limit:0 behavior instead of changing the handler",
-            "alternatives": [],
-            "reasoning": "Both suggested fixes alter runtime behavior; limit:0 server semantics unverifiable from the client in a description-only PR"
-          },
-          "significance": "high"
         }
       ]
     }
   ],
-  "retrospective": {
-    "summary": "Fixed 6 review findings (3 MCP description overclaims, 3 SECURITY.md inaccuracies); declined CodeRabbit's CHANGELOG heading change as contrary to CLAUDE.md convention. All 40 CI checks green.",
-    "approach": "Standard approach",
-    "confidence": 0.85
-  },
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",
