@@ -279,9 +279,7 @@ export async function createObserverToken(
     // token's stored filters record the decision rather than an absence.
     filters: {
       includeDms: options.filters?.includeDms === true,
-      ...(options.filters?.channelNames?.length
-        ? { channelNames: options.filters.channelNames }
-        : {}),
+      ...(options.filters?.channelNames?.length ? { channelNames: options.filters.channelNames } : {}),
       ...(options.filters?.agentIds?.length ? { agentIds: options.filters.agentIds } : {}),
     },
     ...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
