@@ -176,6 +176,142 @@ export interface RelayRealtimeClientOptions extends RelaycastTelemetryOptions {
   baseUrl?: string;
 }
 
+/**
+ * Read scopes granted to an observer token minted by {@link createObserverToken}.
+ *
+ * Mirrors the engine's `OBSERVER_SCOPES`. `stream:read` is what makes the token
+ * usable on the workspace realtime endpoint (`GET /v1/ws`) — the engine rejects
+ * a workspace key there, so a token without it can read REST but never streams.
+ */
+export const RELAY_OBSERVER_SCOPES = [
+  'stream:read',
+  'messages:read',
+  'threads:read',
+  'dms:read',
+  'channels:read',
+  'search:read',
+  'agents:read',
+  'nodes:read',
+  'deliveries:read',
+  'activity:read',
+  'files:read',
+  'reactions:read',
+] as const;
+
+export type RelayObserverScope = (typeof RELAY_OBSERVER_SCOPES)[number];
+
+/** Visibility filters narrowing what an observer token can see. */
+export interface RelayObserverTokenFilters {
+  /** Restrict to these channel names. Omit for every channel in the workspace. */
+  channelNames?: string[];
+  /** Include agent DM traffic. Off unless explicitly requested. */
+  includeDms?: boolean;
+  /** Restrict to events involving these agent ids. */
+  agentIds?: string[];
+}
+
+export interface RelayCreateObserverTokenOptions extends RelaycastTelemetryOptions {
+  /** Workspace key (`rk_live_...`) — only a workspace key may mint observer tokens. */
+  workspaceKey: string;
+  /** Token name. Must be unique within the workspace. */
+  name: string;
+  description?: string;
+  /** Defaults to every read scope in {@link RELAY_OBSERVER_SCOPES}. */
+  scopes?: readonly RelayObserverScope[];
+  filters?: RelayObserverTokenFilters;
+  /** ISO-8601 expiry. The engine rejects a timestamp in the past. */
+  expiresAt?: string;
+  baseUrl?: string;
+}
+
+/** Observer token metadata. `token` is present only on the create response. */
+export interface RelayObserverToken {
+  id: string;
+  name: string;
+  scopes: RelayObserverScope[];
+  status: string;
+  expiresAt: string | null;
+  createdAt: string;
+  lastUsedAt?: string | null;
+  /** Raw `ot_live_...` material. Returned once, at creation, and never again. */
+  token?: string;
+}
+
+/**
+ * The observer-token slice of the workspace client. Declared structurally so
+ * tests can substitute a fake without standing up a `RelayCast` instance.
+ */
+type ObserverTokenClient = {
+  observerTokens: {
+    create(data: Record<string, unknown>): Promise<RelayObserverToken>;
+    list(): Promise<RelayObserverToken[]>;
+    revoke(id: string): Promise<void>;
+  };
+};
+
+function observerTokenClient(
+  workspaceKey: string,
+  options: { baseUrl?: string } & RelaycastTelemetryOptions
+): ObserverTokenClient {
+  return new RelayCast(clientConfig(workspaceKey, options)) as unknown as ObserverTokenClient;
+}
+
+/**
+ * Mint a scoped, read-only observer token for a workspace.
+ *
+ * This is the supported way to let a human follow a workspace without handing
+ * out the workspace key: the returned `ot_live_...` is accepted everywhere the
+ * observer dashboard accepts a credential, but it cannot send messages, spawn
+ * agents, or administer the workspace.
+ *
+ * @param options - Workspace key, token name, and optional scope/filter/expiry narrowing
+ * @returns The created token, including the raw material in `token`
+ */
+export async function createObserverToken(
+  options: RelayCreateObserverTokenOptions
+): Promise<RelayObserverToken> {
+  const client = observerTokenClient(options.workspaceKey, options);
+  return client.observerTokens.create({
+    name: options.name,
+    ...(options.description === undefined ? {} : { description: options.description }),
+    scopes: [...(options.scopes ?? RELAY_OBSERVER_SCOPES)],
+    // `include_dms` defaults to false server-side, but send it explicitly so the
+    // token's stored filters record the decision rather than an absence.
+    filters: {
+      includeDms: options.filters?.includeDms === true,
+      ...(options.filters?.channelNames?.length
+        ? { channelNames: options.filters.channelNames }
+        : {}),
+      ...(options.filters?.agentIds?.length ? { agentIds: options.filters.agentIds } : {}),
+    },
+    ...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
+  });
+}
+
+/**
+ * List observer-token metadata for a workspace. Raw token material is never
+ * returned — only the creating call ever sees it.
+ *
+ * @param options - Workspace key, optional base URL and telemetry overrides
+ * @returns Token metadata, without `token`
+ */
+export async function listObserverTokens(
+  options: { workspaceKey: string; baseUrl?: string } & RelaycastTelemetryOptions
+): Promise<RelayObserverToken[]> {
+  return observerTokenClient(options.workspaceKey, options).observerTokens.list();
+}
+
+/**
+ * Revoke an observer token by id. The token stops working immediately.
+ *
+ * @param options - Workspace key, token id, optional base URL and telemetry overrides
+ */
+export async function revokeObserverToken(
+  options: { workspaceKey: string; id: string; baseUrl?: string } & RelaycastTelemetryOptions
+): Promise<void> {
+  await observerTokenClient(options.workspaceKey, options).observerTokens.revoke(options.id);
+}
+
 export interface RelayCreateWorkspaceOptions extends Omit<RelaycastTelemetryOptions, 'originActor'> {
   baseUrl?: string;
 }
