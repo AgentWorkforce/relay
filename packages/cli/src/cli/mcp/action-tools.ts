@@ -88,7 +88,9 @@ export function registerAgentRelayActionTools(
     'list_actions',
     {
       title: 'List Actions',
-      description: 'List Agent Relay actions available to this agent.',
+      description:
+        'List Agent Relay actions available to this agent. ' +
+        'Returns an `actions` array of action descriptors, each with its name, description, and input schema. Use it to discover what can be passed to "invoke_action".',
       inputSchema: {},
       outputSchema: jsonResult,
       annotations: {
