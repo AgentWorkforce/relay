@@ -52,7 +52,7 @@
     "@agent-relay/utils": "11.4.0",
     "@modelcontextprotocol/sdk": "^1.23.0",
     "@relayfile/client": "^0.10.27",
-    "@relayflows/cli": "^1.0.1",
+    "@relayflows/cli": "1.0.1",
     "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",

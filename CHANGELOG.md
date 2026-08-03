@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `agent-relay cloud whoami` prints the organization and workspace IDs alongside their names.
+- `agent-relay` pins `@relayflows/cli` exactly, so each Relay release resolves one reviewed workflow dependency tree instead of changing with later compatible Relayflows publishes.
 
 ### Security
 
