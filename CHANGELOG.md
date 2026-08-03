@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay observer` mints a scoped, read-only observer token and prints the observer URL built from it, so sharing a live follow-along view no longer requires hand-rolling a `POST /v1/observer-tokens` call. Defaults to a 24-hour token with agent DMs excluded; `--channels`, `--include-dms`, and `--expires` widen it, and `observer list` / `observer revoke <id>` manage existing tokens.
+- `get_observer_url` MCP tool does the same for an orchestrating agent, so a lead can hand the user a follow-along link without shelling out.
+- `@agent-relay/sdk` exports `createObserverToken`, `listObserverTokens`, and `revokeObserverToken`.
 
 ### Fixed
 
