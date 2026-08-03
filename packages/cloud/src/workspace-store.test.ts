@@ -36,6 +36,20 @@ describe('workspace store', () => {
 
     setActiveWorkspace('support');
     expect(resolveActiveWorkspaceKey()).toBe('rk_support');
+    expect(readWorkspaceStore().previous).toBe('ops');
+  });
+
+  it('records only genuine active-workspace changes', () => {
+    setWorkspaceKey('ops', 'rk_ops');
+    setActiveWorkspace('ops');
+    expect(readWorkspaceStore().previous).toBeUndefined();
+
+    setWorkspaceKey('support', 'rk_support');
+    setActiveWorkspace('support');
+    expect(readWorkspaceStore()).toMatchObject({ active: 'support', previous: 'ops' });
+
+    setActiveWorkspace('support');
+    expect(readWorkspaceStore()).toMatchObject({ active: 'support', previous: 'ops' });
   });
 
   it('throws when switching to an unknown workspace', () => {

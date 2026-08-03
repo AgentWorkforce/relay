@@ -87,6 +87,8 @@ const expectedLeafCommands = [
   'workspace join',
   'workspace key',
   'workspace switch',
+  'workspace restore',
+  'workspace rebind',
   // workspace agents
   'agent register',
   'agent list',

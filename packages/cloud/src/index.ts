@@ -132,6 +132,7 @@ export {
   writeProjectWorkspaceKey,
   type ProjectWorkspaceSession,
   type ResolveWorkspaceKeyOptions,
+  type WorkspaceKeyFileSystem,
   type WorkspaceKeySource,
   type WorkspaceSelection,
 } from './project-workspace-key.js';

@@ -116,8 +116,9 @@ function reportWorkspaceSourceConflict(
     `  fleet enrollment    ${fleetNodeEnrollmentStorePath(deps.core.env)} -> workspace ${enrolledWorkspaceId} (node ${record.nodeId})`
   );
   deps.error(
-    'Pass --workspace-key to choose explicitly, re-enroll this node in the pinned workspace, ' +
-      'or delete the repository pin to adopt the enrollment.'
+    'Run `agent-relay workspace rebind <name>` to repin this project and clear the stale ' +
+      'enrolled-node association; alternatively pass --workspace-key or re-enroll this node in ' +
+      'the pinned workspace.'
   );
   return true;
 }
