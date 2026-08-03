@@ -20,7 +20,7 @@ const cloudMocks = vi.hoisted(() => ({
   upsertFleetNodeEnrollment: vi.fn(),
 }));
 
-vi.mock('@agent-relay/cloud', () => ({
+vi.mock('@agent-relay/cloud', async (importOriginal) => ({
   AUTH_FILE_PATH: '/tmp/cloud-auth.json',
   REFRESH_WINDOW_MS: 5 * 60_000,
   authorizedApiFetch: vi.fn(),
@@ -40,6 +40,10 @@ vi.mock('@agent-relay/cloud', () => ({
     cloudMocks.downloadCloudWorkerAssignmentStorage(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
+  // The real redactor, not a copy: `looksLikeCredential` keys off its exact
+  // prefix set, so a copy here would let production drift past these tests.
+  redactCredentialValues: (await importOriginal<typeof import('@agent-relay/cloud')>())
+    .redactCredentialValues,
   registerCloudWorker: (...args: unknown[]) => cloudMocks.registerCloudWorker(...args),
   resolveCloudWorkerRecord: (...args: unknown[]) => cloudMocks.resolveCloudWorkerRecord(...args),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
@@ -47,6 +51,9 @@ vi.mock('@agent-relay/cloud', () => ({
   scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
   upsertCloudWorkerRecord: vi.fn(),
+  IDENTITY_FILE_PATH: '/tmp/cloud-identity.json',
+  toCloudIdentity: () => null,
+  writeStoredIdentity: vi.fn(),
   cloudWorkerStateDir: (env?: NodeJS.ProcessEnv) =>
     env?.AGENT_RELAY_HOME ? path.join(env.AGENT_RELAY_HOME, 'cloud-workers') : '/tmp/cloud-workers',
 }));
@@ -55,7 +62,7 @@ vi.mock('../telemetry/index.js', () => ({
   track: vi.fn(),
 }));
 
-import { authorizedApiFetch, ensureCloudSession } from '@agent-relay/cloud';
+import { authorizedApiFetch, ensureAuthenticated, ensureCloudSession } from '@agent-relay/cloud';
 
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
 import { createDefaultAssignmentRunner } from './cloud-worker.js';
@@ -87,6 +94,14 @@ function createHarness(overrides?: Partial<CloudDependencies>) {
   registerCloudCommands(program, deps);
 
   return { program, deps };
+}
+
+function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+    ...init,
+  });
 }
 
 async function createTarBuffer(entries: Record<string, string>): Promise<Buffer> {
@@ -121,6 +136,7 @@ describe('registerCloudCommands', () => {
       'logout',
       'session',
       'whoami',
+      'workspaces',
       'connect',
       'enroll',
       'run',
@@ -1053,9 +1069,20 @@ describe('registerCloudCommands', () => {
     expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
   });
 
-  it.each(['204337648549896192', 'rk_live_SECRET'])(
-    'cloud enroll --workspace rejects unsupported identifier %s without disclosing it',
+  it.each(['rk_live_SECRET', 'ocl_node_enr_SECRET'])(
+    'cloud enroll --workspace rejects credential %s without transmitting or disclosing it',
     async (workspaceId) => {
+      const auth = {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      };
+      vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+        response: jsonResponse({ workspaces: [{ id: 'ws-1', slug: 'chief', name: 'Chief HQ' }] }),
+        auth,
+      });
       const { program, deps } = createHarness();
 
       await expect(
@@ -1063,14 +1090,383 @@ describe('registerCloudCommands', () => {
       ).rejects.toThrow('exit:1');
 
       expect(deps.error).toHaveBeenCalledWith(
-        'Unsupported Cloud workspace identifier. Use a Cloud workspace UUID or unified rw_ workspace ID.'
+        'That value looks like a credential, not a workspace. Pass a workspace name, Cloud workspace UUID, ' +
+          "or unified rw_ workspace ID. Run 'agent-relay cloud workspaces' to list the workspaces this login can use."
       );
+      // The selector is matched locally against the listing, so it must never
+      // reach an outbound request or the terminal.
       expect(deps.error.mock.calls.flat().join('\n')).not.toContain(workspaceId);
-      expect(ensureCloudSession).not.toHaveBeenCalled();
-      expect(authorizedApiFetch).not.toHaveBeenCalled();
+      expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).not.toContain(workspaceId);
+      expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(vi.mocked(authorizedApiFetch).mock.calls)).not.toContain(workspaceId);
       expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
     }
   );
+
+  it('cloud enroll --workspace accepts a listed name that looks credential-like', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce({
+        // `br_` is one of the redactor's deliberately broad prefixes, so this
+        // name must resolve on the strength of being in the listing.
+        response: jsonResponse({ workspaces: [{ id: 'ws-1', slug: 'br-team', name: 'br_team' }] }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          workspaceId: 'rw_7ccfea89',
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          token: 'ocl_node_enr_minted_secret',
+          enrollmentUrl: 'https://cloud.test/api/v1/fleet/register',
+        }),
+        auth,
+      });
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'br',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_7ccfea89',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const { program } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'br_team']);
+
+    expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      auth,
+      '/api/v1/workspaces/ws-1/resolve',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(cloudMocks.enrollFleetNode).toHaveBeenCalled();
+  });
+
+  it('cloud enroll --workspace resolves a workspace name against the login listing', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          workspaces: [
+            { id: '50587328-441d-4acb-b8f3-dbe1b3c5de99', slug: 'chief', name: 'Chief HQ' },
+            { id: 'a1b2c3d4-0000-4000-8000-000000000000', slug: 'scratch', name: 'Scratch' },
+          ],
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          workspaceId: 'rw_7ccfea89',
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          token: 'ocl_node_enr_minted_secret',
+          enrollmentUrl: 'https://cloud.test/api/v1/fleet/register',
+        }),
+        auth,
+      });
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'chief',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_7ccfea89',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const { program } = createHarness();
+
+    // Case-insensitive: the listing is the source of truth, not the casing typed.
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'chief hq']);
+
+    expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+      1,
+      auth,
+      '/api/v1/workspaces',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      auth,
+      '/api/v1/workspaces/50587328-441d-4acb-b8f3-dbe1b3c5de99/resolve',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(cloudMocks.enrollFleetNode).toHaveBeenCalledWith({
+      enrollmentToken: 'ocl_node_enr_minted_secret',
+      enrollmentUrl: 'https://cloud.test/api/v1/fleet/register',
+    });
+  });
+
+  it('cloud enroll --workspace matches an ID or slug ahead of another workspace name', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          workspaces: [
+            { id: 'ws-1', slug: 'chief', name: 'Decoy' },
+            { id: 'ws-2', slug: 'scratch', name: 'chief' },
+          ],
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          workspaceId: 'rw_7ccfea89',
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: jsonResponse({
+          token: 'ocl_node_enr_minted_secret',
+          enrollmentUrl: 'https://cloud.test/api/v1/fleet/register',
+        }),
+        auth,
+      });
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'chief',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_7ccfea89',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const { program } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'chief']);
+
+    expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      auth,
+      '/api/v1/workspaces/ws-1/resolve',
+      { method: 'GET' },
+      { interactive: false }
+    );
+  });
+
+  it('cloud enroll --workspace reports an unmatched name without echoing it', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({ workspaces: [{ id: 'ws-1', slug: 'chief', name: 'Chief HQ' }] }),
+      auth,
+    });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', '204337648549896192'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(
+      "No Cloud workspace matched that name. Run 'agent-relay cloud workspaces' to list the workspaces this login can use."
+    );
+    expect(deps.error.mock.calls.flat().join('\n')).not.toContain('204337648549896192');
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it('cloud enroll --workspace refuses an ambiguous name and names the candidates', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        workspaces: [
+          { id: 'ws-1', slug: 'chief-a', name: 'Chief' },
+          { id: 'ws-2', slug: 'chief-b', name: 'chief' },
+        ],
+      }),
+      auth,
+    });
+    const { program, deps } = createHarness();
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--workspace', 'Chief'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(
+      'That name matches 2 Cloud workspaces (ws-1, ws-2). Pass the workspace ID instead.'
+    );
+    expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+
+  it('cloud whoami prints the organization and workspace IDs, not just names', async () => {
+    const auth = { apiUrl: 'https://cloud.test', accessToken: 'access-secret' };
+    vi.mocked(ensureAuthenticated).mockResolvedValueOnce(auth as never);
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        authenticated: true,
+        source: 'session',
+        subjectType: 'user',
+        scopes: [],
+        user: { id: 'u1', email: 'a@b.test', name: 'A', avatarUrl: null },
+        currentOrganization: { id: 'org-1', slug: 'acme', name: 'Acme', role: 'owner', status: 'active' },
+        currentWorkspace: {
+          id: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          organization_id: 'org-1',
+          slug: 'chief',
+          name: 'Chief HQ',
+        },
+      }),
+      auth,
+    } as never);
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'whoami']);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('Organization: Acme (org-1)');
+    expect(output).toContain('Workspace: Chief HQ (50587328-441d-4acb-b8f3-dbe1b3c5de99)');
+  });
+
+  it('cloud whoami still reports a login with no workspace selected', async () => {
+    const auth = { apiUrl: 'https://cloud.test', accessToken: 'access-secret' };
+    vi.mocked(ensureAuthenticated).mockResolvedValueOnce(auth as never);
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        authenticated: true,
+        source: 'session',
+        subjectType: 'user',
+        scopes: [],
+        user: { id: 'u1', email: null, name: null, avatarUrl: null },
+        currentOrganization: null,
+        currentWorkspace: null,
+        workspaceRequired: true,
+      }),
+      auth,
+    } as never);
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'whoami']);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('Organization: (none)');
+    expect(output).toContain('Workspace: (none)');
+  });
+
+  it('cloud workspaces lists every workspace with its ID', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        workspaces: [
+          { id: '50587328-441d-4acb-b8f3-dbe1b3c5de99', slug: 'chief', name: 'Chief HQ' },
+          // Terminal control sequences in Cloud-provided text must not survive,
+          // in the ID as much as in the name.
+          { id: `a1b2c3d4\x1b[2J-0000-4000-8000-000000000000`, slug: 'scratch', name: `Scr\x1b[2Jatch` },
+        ],
+      }),
+      auth,
+    });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'workspaces']);
+
+    expect(authorizedApiFetch).toHaveBeenCalledWith(
+      auth,
+      '/api/v1/workspaces',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('50587328-441d-4acb-b8f3-dbe1b3c5de99');
+    expect(output).toContain('Chief HQ');
+    expect(output).toContain('Scratch');
+    expect(output).toContain('a1b2c3d4-0000-4000-8000-000000000000');
+    expect(output).not.toContain('\x1b');
+    expect(output).not.toContain('access-secret');
+  });
+
+  it('cloud workspaces prints valid JSON with --json', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({ workspaces: [{ id: 'ws-1', slug: 'chief', name: 'Chief HQ' }] }),
+      auth,
+    });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'workspaces', '--json']);
+
+    expect(JSON.parse(vi.mocked(deps.log).mock.calls.flat().join(''))).toEqual({
+      workspaces: [{ id: 'ws-1', slug: 'chief', name: 'Chief HQ' }],
+    });
+  });
+
+  it('cloud workspaces tells logged-out users how to log in', async () => {
+    vi.mocked(ensureCloudSession).mockRejectedValueOnce(
+      Object.assign(new Error('Cloud login required'), { code: 'AUTH_BROWSER_REQUIRED' })
+    );
+    const { program, deps } = createHarness();
+
+    await expect(program.parseAsync(['node', 'agent-relay', 'cloud', 'workspaces'])).rejects.toThrow(
+      'exit:1'
+    );
+
+    expect(deps.error).toHaveBeenCalledWith('Cloud login required. Run `agent-relay cloud login` and retry.');
+  });
+
+  it('cloud workspaces says so when the login has no workspaces', async () => {
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({ workspaces: [] }),
+      auth,
+    });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'workspaces']);
+
+    expect(deps.log).toHaveBeenCalledWith('No Cloud workspaces are available to this login.');
+  });
 
   it('cloud enroll rejects --token and --workspace together before using either credential', async () => {
     const { program } = createHarness();

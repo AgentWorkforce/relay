@@ -1,7 +1,7 @@
 prompt = """Spawn a coordinated team of relay agents for: {{args}}
 
 Follow this protocol:
-1. Read the workspace key from the RELAY_API_KEY environment variable, or if empty read ~/.relay/workspace-key. Print the observer URL so the user can follow along: https://agentrelay.com/observer?key=<the actual key>. This is mandatory.
+1. Do not read or print the workspace key and do not construct an observer URL from it. If the user asks to follow along, explain that observation requires a separately provisioned, read-only observer token delivered through an explicit secret handoff. If none is available, omit the observer link.
 2. Analyze the task and choose the simplest coordination pattern that fits it
 3. Determine how many workers are needed (max 5) and assign each a bounded responsibility
 4. Choose the right sub-agent type for each task:

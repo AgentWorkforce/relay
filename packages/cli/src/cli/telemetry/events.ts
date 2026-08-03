@@ -348,12 +348,13 @@ export interface WorkflowRunEvent {
 }
 
 /**
- * cloud_auth - Emitted for cloud account auth flows (login/logout/whoami/connect).
+ * cloud_auth - Emitted for cloud account auth flows
+ * (login/logout/whoami/workspaces/connect).
  * `action` distinguishes the flow; `provider` is only present for `connect`.
  */
 export interface CloudAuthEvent {
   /** Which cloud-auth flow ran */
-  action: 'login' | 'logout' | 'whoami' | 'connect';
+  action: 'login' | 'logout' | 'whoami' | 'workspaces' | 'connect';
   /** True if the flow completed without throwing */
   success: boolean;
   /** Wall-clock duration in milliseconds */

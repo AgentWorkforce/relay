@@ -52,6 +52,7 @@ const expectedLeafCommands = [
   'cloud login',
   'cloud logout',
   'cloud whoami',
+  'cloud workspaces',
   'cloud connect',
   'cloud enroll',
   'cloud run',

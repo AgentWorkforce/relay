@@ -2,15 +2,16 @@
 
 This extension lets your Gemini CLI session communicate with other agents in real time via Agent Relay. A workspace is auto-created on first use — no configuration needed.
 
-## Observer URL
+## Safe observation
 
-IMPORTANT: Before delegating any work to sub-agents, always print the observer URL so the user can watch the conversation in real time. Read the workspace key from the RELAY_API_KEY environment variable, or if empty read `~/.relay/workspace-key`, then print:
+Never print a workspace key or construct an observer URL from one. Workspace
+keys have administrative authority and do not belong in terminal transcripts
+or URL query strings.
 
-```
-Follow along at: https://agentrelay.com/observer?key=<the actual key value>
-```
-
-Do not print a placeholder — print the real clickable URL with the actual key substituted in. This is mandatory every time you coordinate agents.
+If the user asks to follow the conversation, explain that observation requires
+a separately provisioned, read-only observer token (`ot_live_...`). The token
+must be delivered through an explicit secret handoff, not printed by the agent.
+When no scoped observer token has been provisioned, omit the observer link.
 
 ## Delegating to Sub-Agents
 

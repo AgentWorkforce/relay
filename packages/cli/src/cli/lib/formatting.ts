@@ -58,12 +58,17 @@ export function parseSince(input?: string): number | undefined {
 
 export function sanitizeForTerminal(input: string): string {
   /* eslint-disable no-control-regex -- intentionally matching ANSI/control bytes to strip them */
-  return input
-    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x9B[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1B[@-Z\\-_]/g, '')
-    .replace(/[\x00-\x08\x0B\x0C\x0D\x0E-\x1F\x7F-\x9F]/g, '');
+  return (
+    input
+      .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
+      .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\x9B[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1B[@-Z\\-_]/g, '')
+      .replace(/[\x00-\x08\x0B\x0C\x0D\x0E-\x1F\x7F-\x9F]/g, '')
+      // Bidirectional overrides let server-provided text reorder the line it is
+      // printed on, so a name can visually impersonate another one.
+      .replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
+  );
   /* eslint-enable no-control-regex */
 }
 

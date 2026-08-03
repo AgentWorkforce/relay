@@ -5,7 +5,25 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased]
+
+## [11.4.0] - 2026-08-02
+
+### Added
+
+- `agent-relay cloud workspaces` lists the Cloud workspaces the stored login can use, with their IDs (`--json` for scripts). Workspace IDs previously had no CLI discovery path.
+- `agent-relay cloud enroll --workspace` accepts a workspace name or slug, not just a Cloud workspace UUID or unified `rw_` ID. The name is matched against the login's workspace listing, so enrolling no longer requires fetching an ID from the web dashboard.
+
+### Changed
+
+- `agent-relay cloud whoami` prints the organization and workspace IDs alongside their names.
+- `agent-relay` pins `@relayflows/cli` exactly, so each Relay release resolves one reviewed workflow dependency tree instead of changing with later compatible Relayflows publishes.
+
+### Security
+
+- Bundled Gemini and Codex relay instructions and hooks no longer expose workspace administration keys in observer URLs or terminal transcripts; observation now requires a separately provisioned, read-only observer token.
+
+## [11.3.1] - 2026-07-31
 
 ### Fixed
 
