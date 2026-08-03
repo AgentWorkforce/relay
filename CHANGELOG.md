@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Every `agent-relay` MCP tool description now states what the call returns, so an agent can tell from the tool list whether `post_message` hands back a message ID, whether `spawn` means the worker is running, and what an empty `list_agents` result implies. `register_agent` also explains that the registered name can differ from the requested one.
 
+### Fixed
+
+- CLI output no longer disappears when stdout or stderr is a pipe instead of a terminal. Node's stdio writes are asynchronous for pipes on macOS, so exiting in the same tick as the write discarded whatever was still buffered — `agent-relay cloud session --json | parser` and `$(agent-relay …)` could come back with empty stdout _and_ empty stderr, hiding the payload and the error that explained the failure. Every hard-exit path now drains stdio first.
+
 ## [11.4.0] - 2026-08-02
 
 ### Added
@@ -21,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `agent-relay cloud whoami` prints the organization and workspace IDs alongside their names.
+- `agent-relay` pins `@relayflows/cli` exactly, so each Relay release resolves one reviewed workflow dependency tree instead of changing with later compatible Relayflows publishes.
 
 ### Security
 
