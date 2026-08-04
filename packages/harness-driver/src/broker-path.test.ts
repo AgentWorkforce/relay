@@ -264,6 +264,38 @@ describe('broker binary path resolution', () => {
     expect(execFileSync).toHaveBeenCalledOnce();
   });
 
+  it('falls back to the legacy standalone broker install directory', async () => {
+    const expectedBinaryPath = path.join(
+      os.homedir(),
+      '.agent-relay',
+      'bin',
+      `agent-relay-broker${process.platform === 'win32' ? '.exe' : ''}`
+    );
+
+    vi.doMock('node:fs', async () => ({
+      ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
+      existsSync: vi.fn((candidate: string) => candidate === expectedBinaryPath),
+    }));
+    vi.doMock('node:module', async () => ({
+      ...(await vi.importActual<typeof import('node:module')>('node:module')),
+      createRequire: vi.fn(() => ({
+        resolve: vi.fn(() => {
+          throw new Error('optional package unavailable');
+        }),
+      })),
+    }));
+    vi.doMock('node:child_process', async () => ({
+      ...(await vi.importActual<typeof import('node:child_process')>('node:child_process')),
+      execFileSync: vi.fn(() => {
+        throw new Error('not found on PATH');
+      }),
+    }));
+
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+
+    expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
+  });
+
   it('falls back to PATH lookup after env, optional package, and development paths miss', async () => {
     const pathBinary = '/usr/local/bin/agent-relay-broker';
     const execFileSync = vi.fn(() => `${pathBinary}\n`);

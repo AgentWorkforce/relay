@@ -135,6 +135,7 @@ function getInstalledBinaryPaths(ext: string): string[] {
   const userHome = homedir();
   if (userHome) {
     addUniquePath(binaryPaths, join(userHome, '.agentworkforce', 'relay', 'bin', binaryFile));
+    addUniquePath(binaryPaths, join(userHome, '.agent-relay', 'bin', binaryFile));
     addUniquePath(binaryPaths, join(userHome, '.local', 'bin', binaryFile));
   }
 
