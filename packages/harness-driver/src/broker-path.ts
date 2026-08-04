@@ -231,9 +231,9 @@ function getSourceCheckoutBinaryPaths(ext: string): string[] {
  *      checkout
  *   3. Platform-specific optional-dep package
  *      (`@agent-relay/broker-<platform>-<arch>`) — primary production path
- *   4. Relay installer locations (launcher/executable sibling and user bin)
- *   5. Cargo development paths (target/release and target/debug)
- *   6. PATH lookup via `which` / `where`
+ *   4. Cargo development paths (target/release and target/debug)
+ *   5. PATH lookup via `which` / `where`
+ *   6. Relay installer locations (launcher/executable sibling and user bin)
  *
  * @returns Absolute path to the broker binary, or null if not found
  */
@@ -261,22 +261,15 @@ export function getBrokerBinaryPath(): string | null {
     return optionalDepBinary;
   }
 
-  // 3. Relay's npm/standalone installer locations. This also covers mise and
-  // similar version managers when their activation PATH omits the user bin.
-  for (const installedPath of getInstalledBinaryPaths(ext)) {
-    if (existsSync(installedPath)) {
-      return installedPath;
-    }
-  }
-
-  // 4. Common development paths for local Cargo builds.
+  // 3. Common development paths for local Cargo builds.
   for (const developmentPath of getDevelopmentBinaryPaths(ext)) {
     if (existsSync(developmentPath)) {
       return developmentPath;
     }
   }
 
-  // 5. PATH lookup.
+  // 4. PATH lookup. Prefer the operator's active PATH over fixed user install
+  // directories, which can contain stale brokers from an older Relay install.
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
     const result = execFileSync(cmd, [BROKER_NAME], {
@@ -288,6 +281,14 @@ export function getBrokerBinaryPath(): string | null {
     }
   } catch {
     // Not found on PATH
+  }
+
+  // 5. Relay's npm/standalone installer locations. This also covers mise and
+  // similar version managers when their activation PATH omits the user bin.
+  for (const installedPath of getInstalledBinaryPaths(ext)) {
+    if (existsSync(installedPath)) {
+      return installedPath;
+    }
   }
 
   return null;

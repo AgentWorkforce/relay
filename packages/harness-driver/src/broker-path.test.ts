@@ -183,6 +183,12 @@ describe('broker binary path resolution', () => {
         }),
       })),
     }));
+    vi.doMock('node:child_process', async () => ({
+      ...(await vi.importActual<typeof import('node:child_process')>('node:child_process')),
+      execFileSync: vi.fn(() => {
+        throw new Error('not found on PATH');
+      }),
+    }));
 
     const { getBrokerBinaryPath } = await loadBrokerPathModule();
 
@@ -212,10 +218,50 @@ describe('broker binary path resolution', () => {
         }),
       })),
     }));
+    vi.doMock('node:child_process', async () => ({
+      ...(await vi.importActual<typeof import('node:child_process')>('node:child_process')),
+      execFileSync: vi.fn(() => {
+        throw new Error('not found on PATH');
+      }),
+    }));
 
     const { getBrokerBinaryPath } = await loadBrokerPathModule();
 
     expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
+  });
+
+  it('prefers a broker on PATH over a stale user-install fallback', async () => {
+    const pathBinary = '/current/bin/agent-relay-broker';
+    const staleBinary = path.join(
+      os.homedir(),
+      '.agentworkforce',
+      'relay',
+      'bin',
+      `agent-relay-broker${process.platform === 'win32' ? '.exe' : ''}`
+    );
+    const execFileSync = vi.fn(() => `${pathBinary}\n`);
+
+    vi.doMock('node:fs', async () => ({
+      ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
+      existsSync: vi.fn((candidate: string) => candidate === staleBinary),
+    }));
+    vi.doMock('node:module', async () => ({
+      ...(await vi.importActual<typeof import('node:module')>('node:module')),
+      createRequire: vi.fn(() => ({
+        resolve: vi.fn(() => {
+          throw new Error('optional package unavailable');
+        }),
+      })),
+    }));
+    vi.doMock('node:child_process', async () => ({
+      ...(await vi.importActual<typeof import('node:child_process')>('node:child_process')),
+      execFileSync,
+    }));
+
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+
+    expect(getBrokerBinaryPath()).toBe(pathBinary);
+    expect(execFileSync).toHaveBeenCalledOnce();
   });
 
   it('falls back to PATH lookup after env, optional package, and development paths miss', async () => {
