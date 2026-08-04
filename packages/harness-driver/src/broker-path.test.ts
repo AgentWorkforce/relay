@@ -6,6 +6,7 @@ import path from 'node:path';
 const originalEnv = { ...process.env };
 const originalArgv = [...process.argv];
 const originalCwd = process.cwd();
+const originalExecPath = process.execPath;
 const tempDirs: string[] = [];
 
 async function loadBrokerPathModule(): Promise<typeof import('./broker-path.js')> {
@@ -32,6 +33,7 @@ beforeEach(() => {
   delete process.env.BROKER_BINARY_PATH;
   delete process.env.AGENT_RELAY_BIN;
   process.argv = [...originalArgv];
+  process.execPath = originalExecPath;
 });
 
 afterEach(() => {
@@ -101,6 +103,90 @@ describe('broker binary path resolution', () => {
 
     expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
     expect(resolve).toHaveBeenCalledWith(`${pkgName}/package.json`);
+  });
+
+  it('canonicalizes a symlinked package-manager entry before resolving the optional package', async () => {
+    const root = makeTempDir();
+    const entryPath = path.join(root, 'bin', 'agent-relay');
+    const canonicalEntryPath = path.join(
+      root,
+      'lib',
+      'node_modules',
+      'agent-relay',
+      'dist',
+      'cli',
+      'index.js'
+    );
+    const pkgName = `@agent-relay/broker-${process.platform}-${process.arch}`;
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const pkgJsonPath = path.join(
+      root,
+      'lib',
+      'node_modules',
+      'agent-relay',
+      'node_modules',
+      pkgName,
+      'package.json'
+    );
+    const expectedBinaryPath = path.join(path.dirname(pkgJsonPath), 'bin', `agent-relay-broker${ext}`);
+    const resolvePackage = vi.fn((specifier: string) => {
+      if (specifier === `${pkgName}/package.json`) return pkgJsonPath;
+      throw new Error(`unresolved ${specifier}`);
+    });
+
+    vi.doMock('node:fs', async () => ({
+      ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
+      existsSync: vi.fn((candidate: string) => candidate === expectedBinaryPath),
+      realpathSync: vi.fn((candidate: string) => (candidate === entryPath ? canonicalEntryPath : candidate)),
+    }));
+    vi.doMock('node:module', async () => ({
+      ...(await vi.importActual<typeof import('node:module')>('node:module')),
+      createRequire: vi.fn((reference: string) => ({
+        resolve:
+          reference === canonicalEntryPath
+            ? resolvePackage
+            : vi.fn(() => {
+                throw new Error(`unresolved from ${reference}`);
+              }),
+      })),
+    }));
+    process.argv[1] = entryPath;
+
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+
+    expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
+    expect(resolvePackage).toHaveBeenCalledWith(`${pkgName}/package.json`);
+  });
+
+  it('falls back to a broker installed beside the package-manager launcher', async () => {
+    const root = makeTempDir();
+    const entryPath = path.join(root, 'bin', 'agent-relay');
+    const expectedBinaryPath = path.join(
+      root,
+      'bin',
+      `agent-relay-broker${process.platform === 'win32' ? '.exe' : ''}`
+    );
+    process.argv[1] = entryPath;
+
+    vi.doMock('node:fs', async () => ({
+      ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
+      existsSync: vi.fn((candidate: string) => candidate === expectedBinaryPath),
+      realpathSync: vi.fn(() => {
+        throw new Error('no canonical package path');
+      }),
+    }));
+    vi.doMock('node:module', async () => ({
+      ...(await vi.importActual<typeof import('node:module')>('node:module')),
+      createRequire: vi.fn(() => ({
+        resolve: vi.fn(() => {
+          throw new Error('optional package unavailable');
+        }),
+      })),
+    }));
+
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+
+    expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
   });
 
   it('falls back to PATH lookup after env, optional package, and development paths miss', async () => {

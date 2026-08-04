@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay node up` resolves its installed broker through canonical package-manager links and Relay's user install directories, so mise-managed and minimal-`PATH` launches no longer fail when the broker binary is already installed.
 
 ## [11.4.1] - 2026-08-03
 

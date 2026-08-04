@@ -6,10 +6,11 @@
  *   const binPath = getBrokerBinaryPath();
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const BROKER_NAME = 'agent-relay-broker';
@@ -26,6 +27,22 @@ function addUniquePath(paths: string[], candidate: string | null | undefined): v
     return;
   }
   paths.push(candidate);
+}
+
+function addResolutionReference(refs: string[], candidate: string | null | undefined): void {
+  addUniquePath(refs, candidate);
+  if (!candidate) {
+    return;
+  }
+
+  try {
+    const filePath = candidate.startsWith('file:') ? fileURLToPath(candidate) : candidate;
+    addUniquePath(refs, realpathSync(filePath));
+  } catch {
+    // The cwd fallback intentionally need not exist, and a launcher symlink may
+    // disappear during an in-place package-manager upgrade. Keep the original
+    // reference and let require.resolve handle the miss.
+  }
 }
 
 function getImportMetaUrl(): string | null {
@@ -69,13 +86,15 @@ function getCurrentModuleReference(): string | null {
 
 function getResolutionReferences(): string[] {
   const refs: string[] = [];
-  addUniquePath(refs, getCurrentModuleReference());
+  addResolutionReference(refs, getCurrentModuleReference());
 
   // Also try the entry script so CLI consumers and bundled installs
   // (where the SDK lives under the consuming package's node_modules) can
-  // still find the optional-dep package.
+  // still find the optional-dep package. Package-manager launchers such as
+  // mise expose this as a symlink; its canonical target sits inside the global
+  // package tree and is therefore a separate, necessary resolution anchor.
   if (process.argv[1]) {
-    addUniquePath(refs, process.argv[1]);
+    addResolutionReference(refs, process.argv[1]);
   }
 
   // Fall back to the cwd's package.json as a final resolution anchor.
@@ -86,9 +105,34 @@ function getResolutionReferences(): string[] {
   // some vite/webpack bundling configurations, repl experimentation), but
   // the consumer's cwd is inside their own project. We only use this
   // reference to run require.resolve; no file I/O is triggered on misses.
-  addUniquePath(refs, join(process.cwd(), 'package.json'));
+  addResolutionReference(refs, join(process.cwd(), 'package.json'));
 
   return refs;
+}
+
+/**
+ * Binary locations created by Relay's standalone/npm installer. These are
+ * deliberately checked without shelling out: a version manager can launch
+ * Node with a minimal PATH, which is exactly when `which` cannot see the
+ * broker that the Relay installer placed beside its launcher or under the
+ * canonical user install directory.
+ */
+function getInstalledBinaryPaths(ext: string): string[] {
+  const binaryFile = `${BROKER_NAME}${ext}`;
+  const binaryPaths: string[] = [];
+
+  if (process.argv[1]) {
+    addUniquePath(binaryPaths, join(dirname(resolve(process.argv[1])), binaryFile));
+  }
+  addUniquePath(binaryPaths, join(dirname(process.execPath), binaryFile));
+
+  const userHome = homedir();
+  if (userHome) {
+    addUniquePath(binaryPaths, join(userHome, '.agentworkforce', 'relay', 'bin', binaryFile));
+    addUniquePath(binaryPaths, join(userHome, '.local', 'bin', binaryFile));
+  }
+
+  return binaryPaths;
 }
 
 /**
@@ -181,8 +225,9 @@ function getSourceCheckoutBinaryPaths(ext: string): string[] {
  *      checkout
  *   3. Platform-specific optional-dep package
  *      (`@agent-relay/broker-<platform>-<arch>`) — primary production path
- *   4. Cargo development paths (target/release and target/debug)
- *   5. PATH lookup via `which` / `where`
+ *   4. Relay installer locations (launcher/executable sibling and user bin)
+ *   5. Cargo development paths (target/release and target/debug)
+ *   6. PATH lookup via `which` / `where`
  *
  * @returns Absolute path to the broker binary, or null if not found
  */
@@ -210,14 +255,22 @@ export function getBrokerBinaryPath(): string | null {
     return optionalDepBinary;
   }
 
-  // 3. Common development paths for local Cargo builds.
+  // 3. Relay's npm/standalone installer locations. This also covers mise and
+  // similar version managers when their activation PATH omits the user bin.
+  for (const installedPath of getInstalledBinaryPaths(ext)) {
+    if (existsSync(installedPath)) {
+      return installedPath;
+    }
+  }
+
+  // 4. Common development paths for local Cargo builds.
   for (const developmentPath of getDevelopmentBinaryPaths(ext)) {
     if (existsSync(developmentPath)) {
       return developmentPath;
     }
   }
 
-  // 4. PATH lookup.
+  // 5. PATH lookup.
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
     const result = execFileSync(cmd, [BROKER_NAME], {
