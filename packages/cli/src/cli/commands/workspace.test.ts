@@ -186,7 +186,7 @@ describe('registerWorkspaceCommands', () => {
     expect(() => JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).not.toThrow();
   });
 
-  it('workspace create --json keeps stdout parseable and routes the warning away from it', async () => {
+  it('workspace create keeps stdout parseable and routes the warning away from it', async () => {
     vi.mocked(readWorkspaceStore).mockReturnValueOnce({
       active: 'default',
       workspaces: { default: { key: 'rk_live_default' } },
@@ -196,7 +196,7 @@ describe('registerWorkspaceCommands', () => {
       workspaceKey: 'rk_live_json_workspace',
     } as never);
 
-    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'json-workspace', '--json']);
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'json-workspace']);
 
     expect(vi.mocked(deps.log).mock.calls).toHaveLength(1);
     expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toMatchObject({

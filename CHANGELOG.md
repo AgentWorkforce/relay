@@ -13,13 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `workspace create` warns on stderr when it changes the active workspace and records the prior name; named switches now record the same restore point, and first-run telemetry notices no longer contaminate JSON stdout.
+- `workspace create` warns on stderr when it changes the active workspace and records the prior name; named switches now record the same restore point.
+- `agent-relay node status` reports whether the broker workspace came from a command-line flag, environment variable, repository pin, machine-global active workspace, or first-run creation.
 
 ### Fixed
 
 - `agent-relay node up` resolves its installed broker through canonical package-manager links and Relay's user install directories, so mise-managed and minimal-`PATH` launches no longer fail when the broker binary is already installed.
-- `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, startup announces the winning source, and `node status` reports the same five-source provenance.
-- Cloud enrollment selects node identity without overriding workspace resolution. A conflict with the repository pin stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
+- `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, and startup announces the winning source.
+- Enrolled-node restarts preserve the repository-pinned workspace while resuming the enrolled identity. A conflicting enrollment stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
+- First-run telemetry notices are written to stderr so JSON stdout remains parseable.
 - Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
 
 ## [11.4.1] - 2026-08-03

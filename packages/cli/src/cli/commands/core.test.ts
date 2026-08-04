@@ -507,11 +507,15 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', 'up'], {
-      detached: true,
-      stdio: 'ignore',
-      env: deps.env,
-    });
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/usr/bin/node',
+      ['/tmp/agent-relay.js', 'up', '--background-child'],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: deps.env,
+      }
+    );
     expect(spawnedProcess.unref).toHaveBeenCalled();
     expect(sleepImpl).toHaveBeenCalledWith(500);
     expect(sdkStatusClient.getStatus).toHaveBeenCalledTimes(1);
@@ -570,7 +574,15 @@ describe('registerCoreCommands', () => {
     // `ps` for the daemon's whole lifetime) must never carry it.
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/bin/node',
-      ['/tmp/agent-relay.js', 'up', '--state-dir', stateDir, '--broker-name', 'relayfile-dev'],
+      [
+        '/tmp/agent-relay.js',
+        'up',
+        '--state-dir',
+        stateDir,
+        '--broker-name',
+        'relayfile-dev',
+        '--background-child',
+      ],
       {
         detached: true,
         stdio: 'ignore',
@@ -666,7 +678,7 @@ describe('registerCoreCommands', () => {
     expect(exitCode).toBe(0);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/tmp/agent-relay-darwin-arm64',
-      ['node', 'up', '--config', 'agent-relay.mjs', '--broker-name', 'sf-mini'],
+      ['node', 'up', '--config', 'agent-relay.mjs', '--broker-name', 'sf-mini', '--background-child'],
       {
         detached: true,
         stdio: 'ignore',
@@ -933,6 +945,35 @@ describe('registerCoreCommands', () => {
       expect.stringContaining('Failed to stop half-started broker process')
     );
   });
+
+  it.each(['../../../etc/relay-background-error', '/tmp/relay-background-error-escape'])(
+    'detached-child failure ignores an untrusted background error path %s',
+    async (untrustedPath) => {
+      const fs = createFsMock();
+      const relay = createRelayMock({
+        getStatus: vi.fn(async () => {
+          throw new Error('detached child failed');
+        }),
+      });
+      const { program, dataDir } = createHarness({
+        fs,
+        relay,
+        env: {
+          AGENT_RELAY_BACKGROUND_START_ERROR_FILE: untrustedPath,
+        },
+      });
+
+      const exitCode = await runCommand(program, ['up', '--background-child']);
+
+      expect(exitCode).toBe(1);
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        `${dataDir}/background-start-error.log`,
+        'detached child failed\n',
+        'utf-8'
+      );
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(untrustedPath, expect.anything(), expect.anything());
+    }
+  );
 
   it('down --force only kills actual orphaned broker executables for the project', async () => {
     const runningPids = new Set([222, 444, 666]);
@@ -1629,6 +1670,43 @@ describe('registerCoreCommands', () => {
     expect(env.RELAY_API_KEY).toBe('rk_live_pinned');
   });
 
+  it('up resumes the repository pin when an enrolled node token is present', async () => {
+    const env: NodeJS.ProcessEnv = {
+      RELAY_NODE_ID: 'node_enrolled',
+      RELAY_NODE_TOKEN: 'nt_enrolled',
+    };
+    const projectSessionPath = '/tmp/project/.agentworkforce/relay/workspace-key.json';
+    const fs = createFsMock({
+      [projectSessionPath]: JSON.stringify({
+        workspaceKey: 'rk_live_project_pin',
+        workspaceId: 'rw_project',
+        enrolledNodeId: 'node_enrolled',
+      }),
+    });
+    const relay = createRelayMock({
+      workspaceKey: 'rk_live_project_pin',
+      workspaceId: 'rw_project',
+    });
+    const createRelay = vi.fn(async () => {
+      // This is the non-mocked handoff to broker creation: the project pin is
+      // already canonicalized even though the enrolled identity is present.
+      expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_project_pin');
+      expect(env.RELAY_API_KEY).toBe('rk_live_project_pin');
+      expect(env.RELAY_NODE_TOKEN).toBe('nt_enrolled');
+      return relay;
+    });
+    const { program, deps } = createHarness({ fs, env, relay, createRelay });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(createRelay).toHaveBeenCalledTimes(1);
+    expect(deps.log).toHaveBeenCalledWith(
+      'Workspace source: repository pin (/tmp/project/.agentworkforce/relay/workspace-key.json)'
+    );
+    expect(deps.log).toHaveBeenCalledWith('Workspace: joined rw_project');
+  });
+
   it('up treats a non-blank workspace env alias as explicit when the primary is blank', async () => {
     const env: NodeJS.ProcessEnv = {
       RELAY_WORKSPACE_KEY: '   ',
@@ -1676,7 +1754,7 @@ describe('registerCoreCommands', () => {
     }
   });
 
-  it('background up forwards a resumed enrolled-node association to the detached child', async () => {
+  it('background up forwards the repository pin with an enrolled identity to the detached child', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
     const projectSessionPath = '/tmp/project/.agentworkforce/relay/workspace-key.json';
@@ -1694,9 +1772,21 @@ describe('registerCoreCommands', () => {
       if ((pid === 9001 || pid === 5151) && signal === 0) return;
       throw new Error('unexpected kill check');
     });
+    sdkStatusClient.getStatus.mockResolvedValue({
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValue({
+      workspace_key: 'rk_live_pinned',
+      node_id: 'node_enrolled',
+      node_name: 'project',
+    });
     const { program, deps } = createHarness({
       fs,
-      env: {},
+      env: {
+        RELAY_NODE_ID: 'node_enrolled',
+        RELAY_NODE_TOKEN: 'nt_enrolled',
+      },
       spawnedProcess,
       killImpl,
       nowImpl: vi.fn(() => now),
@@ -1706,15 +1796,21 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', 'up'], {
-      detached: true,
-      stdio: 'ignore',
-      env: expect.objectContaining({
-        AGENT_RELAY_ENROLLED_NODE_ID: 'node_enrolled',
-        RELAY_API_KEY: 'rk_live_pinned',
-        RELAY_WORKSPACE_KEY: 'rk_live_pinned',
-      }),
-    });
+    expect(deps.spawnProcess).toHaveBeenCalledWith(
+      '/usr/bin/node',
+      ['/tmp/agent-relay.js', 'up', '--background-child'],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: expect.objectContaining({
+          AGENT_RELAY_ENROLLED_NODE_ID: 'node_enrolled',
+          RELAY_API_KEY: 'rk_live_pinned',
+          RELAY_NODE_ID: 'node_enrolled',
+          RELAY_NODE_TOKEN: 'nt_enrolled',
+          RELAY_WORKSPACE_KEY: 'rk_live_pinned',
+        }),
+      }
+    );
   });
 
   it('up configures a bundled Agent Relay MCP command when the wrapper script exists', async () => {

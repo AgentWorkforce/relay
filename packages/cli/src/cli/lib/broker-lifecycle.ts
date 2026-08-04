@@ -36,6 +36,8 @@ import {
 type UpOptions = {
   spawn?: boolean;
   background?: boolean;
+  /** Internal marker set only on the detached child re-exec. */
+  backgroundChild?: boolean;
   verbose?: boolean;
   workspaceKey?: string;
   stateDir?: string;
@@ -777,11 +779,18 @@ function readBackgroundStartError(dataDir: string, deps: CoreDependencies): stri
   }
 }
 
-function recordBackgroundStartError(message: string, deps: CoreDependencies): void {
-  const file = deps.env.AGENT_RELAY_BACKGROUND_START_ERROR_FILE?.trim();
-  if (!file) return;
+function recordBackgroundStartError(
+  message: string,
+  dataDir: string,
+  isDetachedChild: boolean,
+  deps: CoreDependencies
+): void {
+  if (!isDetachedChild) return;
   try {
-    deps.fs.writeFileSync(file, `${message}\n`, 'utf-8');
+    // Never trust a project-loaded environment variable as a filesystem path.
+    // Detached startup owns one fixed diagnostic file inside its resolved
+    // broker state directory; foreground failures do not write it at all.
+    deps.fs.writeFileSync(backgroundStartErrorPath(dataDir), `${message}\n`, 'utf-8');
   } catch {
     // Diagnostics must never replace the original startup error.
   }
@@ -1075,6 +1084,9 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
   }
   if (options.verbose === true && !args.includes('--verbose')) {
     args.push('--verbose');
+  }
+  if (!args.includes('--background-child')) {
+    args.push('--background-child');
   }
   return args;
 }
@@ -1488,7 +1500,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     const startErrorPath = backgroundStartErrorPath(paths.dataDir);
     safeUnlink(startErrorPath, deps);
-    deps.env.AGENT_RELAY_BACKGROUND_START_ERROR_FILE = startErrorPath;
     const args = childUpArgsForDetachedStart(options, deps);
     const invocation = detachedCliInvocation(deps, args);
     let child: SpawnedProcess;
@@ -1808,7 +1819,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       error_class: classifyBrokerStartError(err),
     });
     const detailedMessage = describeErrorWithCause(err);
-    recordBackgroundStartError(detailedMessage, deps);
+    recordBackgroundStartError(detailedMessage, paths.dataDir, options.backgroundChild === true, deps);
     if (isBrokerAlreadyRunningError(message)) {
       reportAlreadyRunningError(message, paths.dataDir, deps);
     } else {
