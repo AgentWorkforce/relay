@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay workspace switch|join` keeps the project's enrolled fleet node id instead of dropping it, which previously produced the pin state that made the next `node up` ignore the enrollment store.
 - `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, startup announces the winning source, and `node status` reports the same five-source provenance.
 - Cloud enrollment selects node identity without overriding workspace resolution. A conflict with the repository pin stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
+- `agent-relay node agent spawn` now verifies that the worker process survives startup before reporting success, and reports its exit status and log path when launch fails.
 - Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
 
 ## [11.4.1] - 2026-08-03
