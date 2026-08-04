@@ -98,7 +98,6 @@ export function registerWorkspaceCommands(
     .description('Create a new workspace and store its key')
     .argument('<name>', 'Workspace name')
     .option('--base-url <url>', 'Override the API base URL')
-    .option('--json', 'Output the created workspace as JSON')
     .option('--reveal-secrets', 'Include the raw workspace key in the output')
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {

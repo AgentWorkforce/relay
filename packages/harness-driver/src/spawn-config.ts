@@ -94,10 +94,10 @@ export function buildBrokerSpawnConfig(
     (path.basename(cwd) || 'project');
   const workspaceKey =
     nonEmptyString(options?.workspaceKey) ??
-    nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
     nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(parentEnv.AGENT_RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(parentEnv.RELAY_WORKSPACE_KEY);
+    nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
+    nonEmptyString(parentEnv.RELAY_WORKSPACE_KEY) ??
+    nonEmptyString(parentEnv.AGENT_RELAY_WORKSPACE_KEY);
   const channels = options?.channels ?? ['general'];
   const timeoutMs = options?.startupTimeoutMs ?? 45_000;
   const userArgs = buildBrokerInitArgs(options?.binaryArgs);

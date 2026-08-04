@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Command, InvalidArgumentError } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 
 import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
@@ -278,6 +278,8 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
 export interface UpCommandOptions {
   spawn?: boolean;
   background?: boolean;
+  /** Internal marker set only on the detached child re-exec. */
+  backgroundChild?: boolean;
   verbose?: boolean;
   workspaceKey?: string;
   stateDir?: string;
@@ -298,6 +300,7 @@ export function addUpCommandOptions(command: Command): Command {
       .option('--spawn', 'Force spawn all agents from teams.json')
       .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
       .option('--background', 'Run broker in the background (detached)')
+      .addOption(new Option('--background-child').hideHelp())
       .option('--verbose', 'Enable verbose logging')
       .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
       .option('--wk <key>', 'Alias for --workspace-key')

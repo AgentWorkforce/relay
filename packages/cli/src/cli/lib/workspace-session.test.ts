@@ -199,7 +199,7 @@ describe('workspace session persistence', () => {
     expect(resolveWorkspaceSessionKey({ projectDataDir, env })).toBe('rk_live_project');
   });
 
-  it('rebinds the project without changing the machine-global active workspace or old enrollment', () => {
+  it('rebinds the project without changing the machine-global active workspace and clears the old enrollment', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
     const env = isolatedEnv(root);

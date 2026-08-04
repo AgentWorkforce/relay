@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `workspace create` warns on stderr when it changes the active workspace and records the prior name; named switches now record the same restore point, and first-run telemetry notices no longer contaminate JSON stdout.
+- `agent-relay node status` reports whether the broker workspace came from a command-line flag, environment variable, repository pin, machine-global active workspace, or first-run creation.
 
 ### Fixed
 
