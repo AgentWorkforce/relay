@@ -121,10 +121,16 @@ function getInstalledBinaryPaths(ext: string): string[] {
   const binaryFile = `${BROKER_NAME}${ext}`;
   const binaryPaths: string[] = [];
 
-  if (process.argv[1]) {
-    addUniquePath(binaryPaths, join(dirname(resolve(process.argv[1])), binaryFile));
-  }
-  addUniquePath(binaryPaths, join(dirname(process.execPath), binaryFile));
+  const addSiblingBinaryPaths = (candidate: string | null | undefined): void => {
+    const launcherPaths: string[] = [];
+    addResolutionReference(launcherPaths, candidate);
+    for (const launcherPath of launcherPaths) {
+      addUniquePath(binaryPaths, join(dirname(resolve(launcherPath)), binaryFile));
+    }
+  };
+
+  addSiblingBinaryPaths(process.argv[1]);
+  addSiblingBinaryPaths(process.execPath);
 
   const userHome = homedir();
   if (userHome) {

@@ -189,6 +189,35 @@ describe('broker binary path resolution', () => {
     expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
   });
 
+  it('falls back beside the canonical target of a symlinked package-manager launcher', async () => {
+    const root = makeTempDir();
+    const entryPath = path.join(root, 'shims', 'agent-relay');
+    const canonicalEntryPath = path.join(root, 'installs', 'node', 'bin', 'agent-relay');
+    const expectedBinaryPath = path.join(
+      path.dirname(canonicalEntryPath),
+      `agent-relay-broker${process.platform === 'win32' ? '.exe' : ''}`
+    );
+    process.argv[1] = entryPath;
+
+    vi.doMock('node:fs', async () => ({
+      ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
+      existsSync: vi.fn((candidate: string) => candidate === expectedBinaryPath),
+      realpathSync: vi.fn((candidate: string) => (candidate === entryPath ? canonicalEntryPath : candidate)),
+    }));
+    vi.doMock('node:module', async () => ({
+      ...(await vi.importActual<typeof import('node:module')>('node:module')),
+      createRequire: vi.fn(() => ({
+        resolve: vi.fn(() => {
+          throw new Error('optional package unavailable');
+        }),
+      })),
+    }));
+
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+
+    expect(getBrokerBinaryPath()).toBe(expectedBinaryPath);
+  });
+
   it('falls back to PATH lookup after env, optional package, and development paths miss', async () => {
     const pathBinary = '/usr/local/bin/agent-relay-broker';
     const execFileSync = vi.fn(() => `${pathBinary}\n`);
