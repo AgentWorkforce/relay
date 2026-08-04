@@ -15,6 +15,7 @@ import {
   AgentRelay,
   RELAYCAST_SDK_VERSION,
   createAgentClient,
+  createObserverToken,
   createRealtimeClient,
   createWorkspaceClient,
 } from '@agent-relay/sdk';
@@ -22,6 +23,7 @@ import { z } from 'zod';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinitions } from './mcp/resources.js';
 import { jsonContent, jsonResult, textContent } from './mcp/tool-results.js';
+import { observerUrl, resolveObserverBaseUrl } from './lib/observer-url.js';
 import {
   createWorkspace,
   extractWorkspaceKey,
@@ -585,6 +587,68 @@ function registerAgentRelayTools(
       requireWorkspaceKey(getSession());
       const agents = await getRelay().agents.list(status ? { status } : undefined);
       return jsonContent({ agents });
+    }
+  );
+
+  server.registerTool(
+    'get_observer_url',
+    {
+      title: 'Get Observer URL',
+      description:
+        'Mint a scoped, read-only observer link so a human can follow this workspace live. ' +
+        'Use this whenever the user asks to watch, follow along with, or see the agent conversation. ' +
+        'Returns a URL backed by a read-only observer token that expires — NEVER build an observer ' +
+        'URL from the workspace key, which is an administrative credential.',
+      inputSchema: {
+        channels: z
+          .array(z.string())
+          .optional()
+          .describe('Restrict the view to these channels. Omit to show every channel.'),
+        include_dms: z
+          .boolean()
+          .optional()
+          .describe('Include agent DM traffic. Defaults to false (channels only).'),
+        expires_in_hours: z
+          .number()
+          .int()
+          .min(1)
+          .max(2160)
+          .optional()
+          .describe('Token lifetime in hours. Defaults to 24.'),
+      },
+      outputSchema: jsonResult,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ channels, include_dms, expires_in_hours }: any) => {
+      const session = getSession();
+      requireWorkspaceKey(session);
+      const lifetimeHours = expires_in_hours ?? 24;
+      const token = await createObserverToken({
+        workspaceKey: session.workspaceKey as string,
+        name: `observer-mcp-${Math.random().toString(36).slice(2, 10)}`,
+        description: 'Minted by the get_observer_url MCP tool for read-only follow-along',
+        filters: {
+          includeDms: include_dms === true,
+          ...(channels?.length ? { channelNames: channels } : {}),
+        },
+        expiresAt: new Date(Date.now() + lifetimeHours * 3_600_000).toISOString(),
+        ...(baseUrl ? { baseUrl } : {}),
+      });
+      if (!token.token) {
+        throw new Error('Observer token created, but the response did not include token material.');
+      }
+      return jsonContent({
+        url: observerUrl(resolveObserverBaseUrl(undefined), token.token),
+        tokenId: token.id,
+        expiresAt: token.expiresAt,
+        includesDms: include_dms === true,
+        ...(channels?.length ? { channels } : {}),
+      });
     }
   );
 

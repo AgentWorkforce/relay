@@ -7,6 +7,7 @@ const relaycastMocks = vi.hoisted(() => {
   const relayCastInstances: Array<{
     config: Record<string, unknown>;
     as: Mock;
+    observerTokens: { create: Mock; list: Mock; revoke: Mock };
     agents: { list: Mock; registerOrRotate: Mock; spawn: Mock; release: Mock };
   }> = [];
   const wsClientInstances: Array<Record<string, unknown>> = [];
@@ -32,6 +33,19 @@ const relaycastMocks = vi.hoisted(() => {
     const instance = {
       config,
       as,
+      observerTokens: {
+        create: vi.fn(async (data: Record<string, unknown>) => ({
+          id: 'ot_1',
+          name: data.name,
+          scopes: data.scopes,
+          status: 'active',
+          expiresAt: data.expiresAt ?? null,
+          createdAt: '2026-08-03T00:00:00.000Z',
+          token: 'ot_live_material',
+        })),
+        list: vi.fn(async () => [{ id: 'ot_1', name: 'a', status: 'active' }]),
+        revoke: vi.fn(async () => undefined),
+      },
       agents: {
         list: vi.fn(async () => [{ name: 'A' }]),
         registerOrRotate: vi.fn(async () => ({ name: 'A', token: 'at_live_a', extra_field: 1 })),
@@ -67,10 +81,14 @@ vi.mock('@relaycast/sdk', async (importOriginal) => {
 });
 
 import {
+  RELAY_OBSERVER_SCOPES,
   createAgentClient,
+  createObserverToken,
   createRealtimeClient,
   createWorkspace,
   createWorkspaceClient,
+  listObserverTokens,
+  revokeObserverToken,
 } from '../messaging/thin-client.js';
 
 beforeEach(() => {
@@ -255,5 +273,51 @@ describe('createWorkspace', () => {
     await createWorkspace('Test');
 
     expect(relaycastMocks.createWorkspace).toHaveBeenCalledWith('Test', {});
+  });
+});
+
+describe('observer tokens', () => {
+  it('defaults to every read scope with DMs excluded', async () => {
+    const token = await createObserverToken({
+      workspaceKey: 'rk_live_test',
+      name: 'observer-cli-1',
+    });
+
+    const instance = relaycastMocks.relayCastInstances[0];
+    expect(instance.config).toEqual({ apiKey: 'rk_live_test' });
+    const [payload] = instance.observerTokens.create.mock.calls[0] as [Record<string, unknown>];
+    expect(payload.scopes).toEqual([...RELAY_OBSERVER_SCOPES]);
+    // `stream:read` is what makes the token usable on the realtime endpoint.
+    expect(payload.scopes).toContain('stream:read');
+    // Recorded explicitly rather than left to the server default, so the
+    // token's stored filters show the decision.
+    expect(payload.filters).toEqual({ includeDms: false });
+    expect(token.token).toBe('ot_live_material');
+  });
+
+  it('passes channel and DM narrowing through', async () => {
+    await createObserverToken({
+      workspaceKey: 'rk_live_test',
+      name: 'observer-cli-2',
+      filters: { channelNames: ['general'], includeDms: true },
+      expiresAt: '2026-08-04T00:00:00.000Z',
+      scopes: ['stream:read', 'messages:read'],
+    });
+
+    const instance = relaycastMocks.relayCastInstances[0];
+    const [payload] = instance.observerTokens.create.mock.calls[0] as [Record<string, unknown>];
+    expect(payload).toMatchObject({
+      scopes: ['stream:read', 'messages:read'],
+      filters: { includeDms: true, channelNames: ['general'] },
+      expiresAt: '2026-08-04T00:00:00.000Z',
+    });
+  });
+
+  it('lists and revokes through the workspace client', async () => {
+    await listObserverTokens({ workspaceKey: 'rk_live_test' });
+    expect(relaycastMocks.relayCastInstances[0].observerTokens.list).toHaveBeenCalled();
+
+    await revokeObserverToken({ workspaceKey: 'rk_live_test', id: 'ot_1' });
+    expect(relaycastMocks.relayCastInstances[1].observerTokens.revoke).toHaveBeenCalledWith('ot_1');
   });
 });
