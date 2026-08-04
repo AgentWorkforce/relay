@@ -16,6 +16,10 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
   name?: string;
 }
 
+export interface PinProjectWorkspaceSessionOptions extends WorkspaceSessionOptions {
+  workspaceKey: string;
+}
+
 /** Validate and normalize a workspace session name before local or remote writes. */
 export function validateWorkspaceSessionName(name: string): string {
   return validateWorkspaceName(name);
@@ -42,11 +46,28 @@ export function persistWorkspaceSession(options: PersistWorkspaceSessionOptions)
 
   const name = options.name === undefined ? undefined : validateWorkspaceSessionName(options.name);
 
-  const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
-  writeProjectWorkspaceKey(projectDataDir, workspaceKey);
+  pinProjectWorkspaceSession({
+    workspaceKey,
+    ...(options.projectDataDir ? { projectDataDir: options.projectDataDir } : {}),
+    ...(options.projectRoot ? { projectRoot: options.projectRoot } : {}),
+  });
 
   if (name) {
     setWorkspaceKey(name, workspaceKey, options.env);
     switchWorkspace(name, options.env);
   }
+}
+
+/**
+ * Rebind only the current project to a workspace key. This intentionally drops
+ * any enrolled-node association: a later `node up` must honor the newly pinned
+ * messaging workspace instead of resuming credentials from the old binding.
+ */
+export function pinProjectWorkspaceSession(options: PinProjectWorkspaceSessionOptions): void {
+  const workspaceKey = options.workspaceKey.trim();
+  if (!workspaceKey) {
+    throw new Error('Workspace key is required.');
+  }
+  const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
+  writeProjectWorkspaceKey(projectDataDir, workspaceKey);
 }
