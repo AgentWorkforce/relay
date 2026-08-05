@@ -423,7 +423,7 @@ impl BrokerRuntime {
         let action_control_dedup_key =
             relaycast_spawn_control_dedup_key(workspace_id.as_str(), name.as_str());
 
-        super::relaycast_events::spawn_worker_from_request(
+        let spawn_result = super::relaycast_events::spawn_worker_from_request(
             name.clone(),
             cli,
             task,
@@ -452,19 +452,12 @@ impl BrokerRuntime {
         .await;
 
         self.publish_fleet_load(true).await;
-
-        // `spawn_worker_from_request` does not return a result; treat presence of
-        // the worker as success so the engine's invocation resolves.
-        if self.workers.workers.contains_key(&name) {
-            self.reply_action_output(
-                &invoke.invocation_id,
-                json!({ "spawned": true, "name": name.as_str() }),
-            )
-            .await;
-        } else {
-            self.reply_action_error(&invoke.invocation_id, "spawn_failed")
-                .await;
-        }
+        self.send_fleet_action_result(fleet_spawn_action_result(
+            &invoke.invocation_id,
+            &name,
+            spawn_result,
+        ))
+        .await;
     }
 
     /// Run a `release` node action, routing by the invoke's agent_name (then
@@ -572,6 +565,27 @@ impl BrokerRuntime {
             heartbeat_now,
         )
         .await;
+    }
+}
+
+fn fleet_spawn_action_result(
+    invocation_id: &str,
+    name: &WorkerName,
+    spawn_result: Result<()>,
+) -> ActionResult {
+    let result = match spawn_result {
+        Ok(()) => ActionResultPayload::Output(ActionResultOutput {
+            output: json!({ "spawned": true, "name": name.as_str() }),
+        }),
+        Err(error) => ActionResultPayload::Error(ActionResultError {
+            error: format!("spawn_failed: {error}"),
+        }),
+    };
+    ActionResult {
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id: invocation_id.to_string(),
+        result,
     }
 }
 
@@ -1146,6 +1160,70 @@ pub(super) fn fleet_initial_session_ref(spec: &AgentSpec) -> Option<String> {
 mod tests {
     use super::*;
     use crate::protocol::PtyHarnessConfig;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fleet_spawn_result_uses_verified_failure_not_registry_presence() {
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let (event_tx, _event_rx) = mpsc::channel::<WorkerEvent>(4);
+        let mut workers = WorkerRegistry::new(
+            event_tx,
+            Vec::new(),
+            temp.path().join("worker-logs"),
+            Instant::now(),
+        );
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 19"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("repro child should spawn");
+        let stdin = child.stdin.take().expect("repro child stdin");
+        child.wait().await.expect("repro child should exit");
+        let name = WorkerName::from("fleet-spawn-repro-1430");
+        let mut spec = test_agent_spec(None, None);
+        spec.name = name.clone();
+        workers.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                spec,
+                parent: Some("Relaycast".to_string()),
+                workspace_id: None,
+                child,
+                stdin,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: crate::worker::AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+
+        assert!(!workers.is_worker_live(&name));
+        assert!(workers.workers.contains_key(&name));
+
+        let result = fleet_spawn_action_result(
+            "inv-failed-1430",
+            &name,
+            Err(anyhow::anyhow!(
+                "agent '{name}' process exited during startup (exit status: 19); see worker log /tmp/{name}.log"
+            )),
+        );
+
+        let ActionResultPayload::Error(error) = result.result else {
+            panic!("a verified spawn failure must not produce spawned:true");
+        };
+        assert_eq!(result.invocation_id, "inv-failed-1430");
+        assert_eq!(
+            error.error,
+            format!(
+                "spawn_failed: agent '{name}' process exited during startup (exit status: 19); see worker log /tmp/{name}.log"
+            )
+        );
+    }
 
     fn test_agent_spec(session_id: Option<&str>, harness_session_id: Option<&str>) -> AgentSpec {
         AgentSpec {

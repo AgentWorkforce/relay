@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay node up` resolves its installed broker through canonical package-manager links and Relay's user install directories, so mise-managed and minimal-`PATH` launches no longer fail when the broker binary is already installed.
 - `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, and startup announces the winning source.
 - Enrolled-node restarts preserve the repository-pinned workspace while resuming the enrolled identity. A conflicting enrollment stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
-- `agent-relay node agent spawn` now verifies that the worker process survives startup before reporting success, and reports its exit status and log path when launch fails.
+- `agent-relay node agent spawn` and fleet `spawn:<harness>` actions now verify that the worker process survives startup before reporting success, and report its exit status and log path when launch fails.
 - First-run telemetry notices are written to stderr so JSON stdout remains parseable.
 - Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
 
