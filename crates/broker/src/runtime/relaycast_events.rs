@@ -333,6 +333,8 @@ pub(super) async fn release_worker_locally(
 /// engine-dispatched spawn exits after its task identically to a local HTTP
 /// spawn. `control_dedup_key` carries the firehose control dedup key so the
 /// local spawn-echo dedup behaves identically.
+/// Returns only after `WorkerRegistry::spawn` has completed its process
+/// stability probe, preserving the detailed launch error for the action result.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn spawn_worker_from_request(
     name: WorkerName,
@@ -360,7 +362,7 @@ pub(super) async fn spawn_worker_from_request(
     session_ref: Option<String>,
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
-) {
+) -> Result<()> {
     let workspace_http = &workspace_state.http_client;
     eprintln!(
         "[agent-relay] received spawn request for '{}' (cli: {})",
@@ -379,7 +381,7 @@ pub(super) async fn spawn_worker_from_request(
             "[agent-relay] ignoring spawn request for '{}' (broker self)",
             name
         );
-        return;
+        anyhow::bail!("agent '{name}' is the broker self");
     }
     let local_spawn_echo_key = relaycast_spawn_control_dedup_key(workspace_id, &name);
     if relaycast_ws_should_apply_local_spawn_echo_dedup(control_dedup_key, &local_spawn_echo_key)
@@ -394,7 +396,7 @@ pub(super) async fn spawn_worker_from_request(
             "[agent-relay] dropping duplicate spawn request for '{}'",
             name
         );
-        return;
+        anyhow::bail!("duplicate spawn request for agent '{name}'");
     }
     let task = task.filter(|value| !value.trim().is_empty());
     // Carry the requested model through so the launched CLI is
@@ -413,7 +415,7 @@ pub(super) async fn spawn_worker_from_request(
                 "[agent-relay] rejecting spawn request for '{}': {}",
                 name, error
             );
-            return;
+            return Err(anyhow::anyhow!(error));
         }
     };
     let require_node_registration = harness_config.as_ref().is_some_and(|config| {
@@ -549,7 +551,9 @@ pub(super) async fn spawn_worker_from_request(
                             error = %node_error,
                             "rejecting verified spawn because node agent.register failed"
                         );
-                        return;
+                        anyhow::bail!(
+                            "node agent.register failed for agent '{name}': {node_error}"
+                        );
                     }
                     tracing::warn!(
                         worker = %name,
@@ -761,6 +765,7 @@ pub(super) async fn spawn_worker_from_request(
             .await;
             tracing::info!(child = %name, pid = ?pid, "spawned worker via relaycast WS");
             eprintln!("[agent-relay] spawned worker '{}' via relaycast", name);
+            Ok(())
         }
         Err(e) => {
             let msg = e.to_string();
@@ -770,6 +775,7 @@ pub(super) async fn spawn_worker_from_request(
                 tracing::error!(child = %name, error = %e, "failed to spawn worker via relaycast WS");
                 eprintln!("[agent-relay] failed to spawn '{}': {}", name, e);
             }
+            Err(e)
         }
     }
 }
@@ -778,6 +784,106 @@ pub(super) async fn spawn_worker_from_request(
 mod tests {
     use super::*;
     use ::relaycast::WsEvent;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_request_returns_the_verified_process_failure() {
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+        let mut workers = WorkerRegistry::new(
+            worker_event_tx,
+            Vec::new(),
+            temp.path().join("worker-logs"),
+            Instant::now(),
+        );
+        let workspace_id = WorkspaceId::from("ws_test_1430".to_string());
+        let (ws_control_tx, _ws_control_rx) = mpsc::channel::<WsControl>(4);
+        let workspace = RelayWorkspace {
+            workspace_id: workspace_id.clone(),
+            workspace_alias: None,
+            relay_workspace_key: "rk_live_test".to_string(),
+            self_name: "broker".to_string(),
+            self_agent_id: AgentId::from("agent_broker".to_string()),
+            self_names: HashSet::from(["broker".to_string()]),
+            self_agent_ids: HashSet::from([AgentId::from("agent_broker".to_string())]),
+            http_client: RelaycastHttpClient::new(
+                Some("http://127.0.0.1:9".to_string()),
+                "rk_live_test",
+                "broker",
+                "codex",
+            ),
+            ws_control_tx,
+        };
+        let paths = ensure_ephemeral_paths(temp.path(), "fleet-spawn-1430")
+            .expect("ephemeral runtime paths");
+        let mut state = broker::BrokerState::default();
+        let telemetry = TelemetryClient::default();
+        let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(4);
+        let mut dedup = DedupCache::new(Duration::from_secs(60), 16);
+        let mut agent_spawn_count = 0;
+        let (fleet_control_tx, _fleet_control_rx) = mpsc::channel(4);
+        let mut fleet_delivery_book = FleetDeliveryBook::default();
+        let mut fleet_inventory = HashMap::new();
+        let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
+        let mut pty_observability = HashMap::new();
+        let name = WorkerName::from("failed-native-worker-1430");
+        let ws_value = json!({
+            "token": "at_live_test_worker",
+            "agent": {
+                "harnessConfig": {
+                    "runtime": "native",
+                    "command": "sh",
+                    "args": ["-c", "sleep 0.05; exit 23"],
+                    "sessionId": "native-failed-1430"
+                }
+            }
+        });
+        let control_key = relaycast_spawn_control_dedup_key(&workspace_id, &name);
+
+        let error = spawn_worker_from_request(
+            name.clone(),
+            "codex".to_string(),
+            None,
+            None,
+            None,
+            false,
+            &ws_value,
+            &workspace_id,
+            Some(&control_key),
+            &workspace,
+            &mut workers,
+            &mut state,
+            &paths,
+            &telemetry,
+            &sdk_out_tx,
+            &mut dedup,
+            &mut agent_spawn_count,
+            &fleet_control_tx,
+            &mut fleet_delivery_book,
+            &mut fleet_inventory,
+            "test-node",
+            Some("inv-failed-1430".to_string()),
+            None,
+            &hosted_agent_event_tx,
+            &mut pty_observability,
+        )
+        .await
+        .expect_err("a sidecar that exits during the stability window must fail the spawn");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("process exited during startup"),
+            "{message}"
+        );
+        assert!(message.contains("exit status: 23"), "{message}");
+        assert!(
+            message.contains("failed-native-worker-1430.log"),
+            "{message}"
+        );
+        assert!(!workers.has_worker(&name));
+        assert_eq!(agent_spawn_count, 0);
+        assert!(!state.agents.contains_key(&name));
+    }
 
     #[test]
     fn relaycast_harness_config_accepts_inline_config() {

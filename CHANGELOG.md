@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Spawned agents now launch Agent Relay MCP through an installed local `agent-relay` executable instead of cold `npx` resolution.
 - Spawn now fails before start with an actionable error when no usable Agent Relay MCP executable is available.
+- Fleet `spawn:<harness>` actions resolve from the spawn's own verified result instead of bare worker-registry presence, so a node that registers a worker whose process dies during startup now returns `spawn_failed: <detail>` with the startup exit status and worker log path rather than `spawned: true`.
 
 ## [11.6.1] - 2026-08-13
 

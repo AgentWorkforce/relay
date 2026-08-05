@@ -1128,7 +1128,7 @@ impl BrokerRuntime {
         let action_control_dedup_key =
             relaycast_spawn_control_dedup_key(workspace_id.as_str(), name.as_str());
 
-        super::relaycast_events::spawn_worker_from_request(
+        let spawn_result = super::relaycast_events::spawn_worker_from_request(
             name.clone(),
             cli,
             task,
@@ -1161,73 +1161,96 @@ impl BrokerRuntime {
 
         let verify_ready = super::relaycast_events::relaycast_spawn_verifies_ready(&ws_value);
 
-        // A verified spawn keeps the action open until the harness itself emits
-        // worker_ready. Process creation alone is not proof that the persona is
-        // usable; worker_events resolves this pending entry, while maintenance
-        // fails it after an early exit/readiness timeout and performs cleanup.
-        if self.workers.workers.contains_key(&name) {
-            if verify_ready {
-                if self
-                    .workers
-                    .workers
-                    .get(&name)
-                    .is_some_and(|worker| worker.ready_at.is_some())
-                {
-                    self.send_fleet_action_result(verified_spawn_ready_result(
-                        invoke.invocation_id,
-                        &name,
-                    ))
-                    .await;
-                } else {
-                    let generation = self
-                        .workers
-                        .workers
-                        .get(&name)
-                        .expect("verified spawn worker must still exist")
-                        .generation;
-                    self.pending_verified_spawns.insert(
-                        name,
-                        PendingVerifiedSpawn {
-                            invocation_id: invoke.invocation_id,
-                            deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
-                            generation,
-                        },
-                    );
+        // The spawn's own verified outcome decides this action, not bare registry
+        // presence: `spawn_worker_from_request` returns only after the
+        // process-stability probe, so an `Err` carries the real startup exit
+        // status and worker log path. Registry presence is still required on the
+        // success path — reporting `spawned: true` with no live handle is exactly
+        // the failure this action must never produce.
+        let spawn_outcome = match spawn_result {
+            Ok(()) if !self.workers.workers.contains_key(&name) => Err(anyhow::anyhow!(
+                "agent '{name}' left no live worker handle after spawn"
+            )),
+            other => other,
+        };
+
+        match spawn_outcome {
+            Ok(()) => {
+                // A verified spawn keeps the action open until the harness itself
+                // emits worker_ready. Process creation alone is not proof that the
+                // persona is usable; worker_events resolves this pending entry,
+                // while maintenance fails it after an early exit/readiness timeout
+                // and performs cleanup.
+                if verify_ready {
+                    let (already_ready, generation) = {
+                        let worker = self
+                            .workers
+                            .workers
+                            .get(&name)
+                            .expect("verified spawn worker must still exist");
+                        (worker.ready_at.is_some(), worker.generation)
+                    };
+                    if already_ready {
+                        self.send_fleet_action_result(verified_spawn_ready_result(
+                            invoke.invocation_id,
+                            &name,
+                        ))
+                        .await;
+                    } else {
+                        self.pending_verified_spawns.insert(
+                            name,
+                            PendingVerifiedSpawn {
+                                invocation_id: invoke.invocation_id,
+                                deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
+                                generation,
+                            },
+                        );
+                    }
+                    return;
                 }
-                return;
-            }
-            self.reply_action_output(
-                &invoke.invocation_id,
-                json!({ "spawned": true, "name": name.as_str() }),
-            )
-            .await;
-        } else {
-            // A registration can succeed before process creation fails. Undo
-            // that authoritative identity before reporting the failed launch.
-            match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
-                .await
-            {
-                Ok(_) => {
-                    prune_fleet_agent_state(
-                        &self.fleet_control_tx,
-                        &mut self.fleet_inventory,
-                        &mut self.fleet_delivery_book,
-                        &name,
-                    )
-                    .await
-                }
-                Err(error) => {
-                    tracing::warn!(worker = %name, %error, "retaining fleet identity after failed spawn cleanup");
-                    prune_fleet_inventory_entry(
-                        &self.fleet_control_tx,
-                        &mut self.fleet_inventory,
-                        &name,
-                    )
-                    .await;
-                }
-            }
-            self.reply_action_error(&invoke.invocation_id, "spawn_failed")
+                self.send_fleet_action_result(fleet_spawn_action_result(
+                    &invoke.invocation_id,
+                    &name,
+                    Ok(()),
+                ))
                 .await;
+            }
+            Err(error) => {
+                // A registration can succeed before process creation fails. Undo
+                // that authoritative identity before reporting the failed launch.
+                match deregister_fleet_agent(
+                    &self.fleet_control_tx,
+                    &self.fleet_delivery_book,
+                    &name,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        prune_fleet_agent_state(
+                            &self.fleet_control_tx,
+                            &mut self.fleet_inventory,
+                            &mut self.fleet_delivery_book,
+                            &name,
+                        )
+                        .await
+                    }
+                    Err(cleanup_error) => {
+                        tracing::warn!(worker = %name, error = %cleanup_error, "retaining fleet identity after failed spawn cleanup");
+                        prune_fleet_inventory_entry(
+                            &self.fleet_control_tx,
+                            &mut self.fleet_inventory,
+                            &name,
+                        )
+                        .await;
+                    }
+                }
+                self.send_fleet_action_result(fleet_spawn_action_result(
+                    &invoke.invocation_id,
+                    &name,
+                    Err(error),
+                ))
+                .await;
+            }
         }
     }
 
@@ -1366,6 +1389,27 @@ impl BrokerRuntime {
             heartbeat_now,
         )
         .await;
+    }
+}
+
+fn fleet_spawn_action_result(
+    invocation_id: &str,
+    name: &WorkerName,
+    spawn_result: Result<()>,
+) -> ActionResult {
+    let result = match spawn_result {
+        Ok(()) => ActionResultPayload::Output(ActionResultOutput {
+            output: json!({ "spawned": true, "name": name.as_str() }),
+        }),
+        Err(error) => ActionResultPayload::Error(ActionResultError {
+            error: format!("spawn_failed: {error}"),
+        }),
+    };
+    ActionResult {
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id: invocation_id.to_string(),
+        result,
     }
 }
 
@@ -2055,6 +2099,72 @@ pub(super) fn fleet_initial_session_ref(spec: &AgentSpec) -> Option<String> {
 mod tests {
     use super::*;
     use crate::protocol::PtyHarnessConfig;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fleet_spawn_result_uses_verified_failure_not_registry_presence() {
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let (event_tx, _event_rx) = mpsc::channel::<WorkerEvent>(4);
+        let mut workers = WorkerRegistry::new(
+            event_tx,
+            Vec::new(),
+            temp.path().join("worker-logs"),
+            Instant::now(),
+        );
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 19"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("repro child should spawn");
+        let _stdin = child.stdin.take().expect("repro child stdin");
+        child.wait().await.expect("repro child should exit");
+        let name = WorkerName::from("fleet-spawn-repro-1430");
+        let mut spec = test_agent_spec(None, None);
+        spec.name = name.clone();
+        let (command_tx, _command_rx) = mpsc::channel(4);
+        workers.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation: Uuid::new_v4(),
+                spec,
+                parent: Some("Relaycast".to_string()),
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: crate::worker::AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+
+        assert!(!workers.is_worker_live(&name));
+        assert!(workers.workers.contains_key(&name));
+
+        let result = fleet_spawn_action_result(
+            "inv-failed-1430",
+            &name,
+            Err(anyhow::anyhow!(
+                "agent '{name}' process exited during startup (exit status: 19); see worker log /tmp/{name}.log"
+            )),
+        );
+
+        let ActionResultPayload::Error(error) = result.result else {
+            panic!("a verified spawn failure must not produce spawned:true");
+        };
+        assert_eq!(result.invocation_id, "inv-failed-1430");
+        assert_eq!(
+            error.error,
+            format!(
+                "spawn_failed: agent '{name}' process exited during startup (exit status: 19); see worker log /tmp/{name}.log"
+            )
+        );
+    }
 
     fn test_agent_spec(session_id: Option<&str>, harness_session_id: Option<&str>) -> AgentSpec {
         AgentSpec {
