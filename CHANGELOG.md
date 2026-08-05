@@ -5,11 +5,25 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay workspace restore` returns to the recorded previous workspace, while `workspace rebind <name>` explicitly pins a project's next broker start without changing the machine-global active workspace.
+
+### Changed
+
+- `workspace create` warns on stderr when it changes the active workspace and records the prior name; named switches now record the same restore point.
+- `agent-relay node status` reports whether the broker workspace came from a command-line flag, environment variable, repository pin, machine-global active workspace, or first-run creation.
 
 ### Fixed
 
 - `agent-relay node up` resolves its installed broker through canonical package-manager links and Relay's user install directories, so mise-managed and minimal-`PATH` launches no longer fail when the broker binary is already installed.
+- `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, and startup announces the winning source.
+- Enrolled-node restarts preserve the repository-pinned workspace while resuming the enrolled identity. A conflicting enrollment stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
+- `agent-relay node agent spawn` and fleet `spawn:<harness>` actions now verify that the worker process survives startup before reporting success, and report its exit status and log path when launch fails.
+- First-run telemetry notices are written to stderr so JSON stdout remains parseable.
+- Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
 
 ## [11.4.1] - 2026-08-03
 

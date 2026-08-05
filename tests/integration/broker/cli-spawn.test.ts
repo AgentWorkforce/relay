@@ -480,6 +480,36 @@ test('cli-spawn: duplicate name — second spawn with same name fails', { timeou
   }
 });
 
+test(
+  'cli-spawn: missing CLI fails before success and leaves no listed agent',
+  { timeout: 30_000 },
+  async (t) => {
+    if (skipIfMissing(t)) return;
+
+    const harness = new BrokerHarness();
+    await harness.start();
+    const suffix = uniqueSuffix();
+    const agentName = `missing-cli-${suffix}`;
+    const missingCli = `agent-relay-missing-${suffix}`;
+
+    try {
+      await assert.rejects(
+        () => harness.spawnAgent(agentName, missingCli, ['general']),
+        /process exited during startup/,
+        'a wrapper that cannot launch its CLI must reject the spawn request'
+      );
+
+      const agents = await harness.listAgents();
+      assert.ok(
+        !agents.some((agent) => agent.name === agentName),
+        'a rejected startup must not leave a stale agent in the broker list'
+      );
+    } finally {
+      await harness.stop();
+    }
+  }
+);
+
 // ── Cat Process Tests (lightweight, no real CLI needed) ────────────────────
 
 test('cli-spawn: cat — spawn lightweight process and deliver', { timeout: 30_000 }, async (t) => {

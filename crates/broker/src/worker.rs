@@ -53,6 +53,12 @@ const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 /// healthy-but-slow agent is far worse than listing a dead one a little longer.
 const WORKER_READY_DEADLINE: Duration = Duration::from_secs(90);
 
+/// Briefly hold the spawn acknowledgement so a wrapper that cannot launch its
+/// harness has time to exit. `Command::spawn` only proves that the wrapper was
+/// created; without this stability window the HTTP API can report success even
+/// though the wrapper is already gone by the time the caller lists agents.
+const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
+
 /// How long to wait for a SIGKILLed orphan wrapper to be reaped before giving
 /// up. Bounded so a wrapper stuck in uninterruptible sleep cannot stall the
 /// maintenance tick, which also drives delivery retries.
@@ -117,6 +123,32 @@ pub(crate) fn orphaned_worker(
         return Some(OrphanedWorker::NeverReady);
     }
     None
+}
+
+/// Confirm that a freshly-created worker process survives its initial handoff.
+///
+/// This is intentionally narrower than `worker_ready`: PTY readiness may take
+/// up to 25 seconds and is processed by the same runtime loop that services the
+/// spawn request. The short stability probe catches launch failures without
+/// deadlocking that loop or making every successful spawn wait for a TUI.
+async fn confirm_worker_process_alive(
+    name: &str,
+    child: &mut Child,
+    log_path: Option<&Path>,
+    stability_window: Duration,
+) -> Result<()> {
+    tokio::time::sleep(stability_window).await;
+    let Some(status) = child
+        .try_wait()
+        .with_context(|| format!("failed to verify agent '{name}' process after spawn"))?
+    else {
+        return Ok(());
+    };
+
+    let log_hint = log_path
+        .map(|path| format!("; see worker log {}", path.display()))
+        .unwrap_or_default();
+    anyhow::bail!("agent '{name}' process exited during startup ({status}){log_hint}")
 }
 
 // Working/idle activity inference from PTY output comes from the
@@ -912,6 +944,7 @@ impl WorkerRegistry {
         let stdout = child.stdout.take().context("worker missing stdout pipe")?;
         let stderr = child.stderr.take().context("worker missing stderr pipe")?;
         let log_file = self.worker_log_path(&spec.name);
+        let startup_log_file = log_file.clone();
 
         spawn_worker_reader(
             self.event_tx.clone(),
@@ -955,6 +988,28 @@ impl WorkerRegistry {
             }),
         )
         .await?;
+
+        let startup_confirmation = {
+            let handle = self
+                .workers
+                .get_mut(&spec.name)
+                .with_context(|| format!("unknown worker '{}' after spawn", spec.name))?;
+            confirm_worker_process_alive(
+                &spec.name,
+                &mut handle.child,
+                startup_log_file.as_deref(),
+                WORKER_SPAWN_STABILITY_WINDOW,
+            )
+            .await
+        };
+        if let Err(error) = startup_confirmation {
+            // `try_wait` reaped an exited wrapper. Remove the stale registry
+            // entry before returning the error so `node agent list` cannot
+            // briefly advertise a process the spawn call just rejected.
+            self.workers.remove(&spec.name);
+            self.initial_tasks.remove(&spec.name);
+            return Err(error);
+        }
 
         tracing::info!(
             target = "broker::spawn",
@@ -2013,6 +2068,37 @@ mod tests {
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
         assert!(reg.list(&HashMap::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_confirmation_rejects_a_process_that_exits_immediately() {
+        let mut child = Command::new("sleep").arg("0").spawn().unwrap();
+
+        let error = confirm_worker_process_alive(
+            "failed-worker",
+            &mut child,
+            Some(Path::new("/tmp/failed-worker.log")),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("process exited during startup"));
+        assert!(message.contains("/tmp/failed-worker.log"));
+    }
+
+    #[tokio::test]
+    async fn spawn_confirmation_accepts_a_process_that_stays_alive() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+
+        confirm_worker_process_alive("live-worker", &mut child, None, Duration::from_millis(100))
+            .await
+            .unwrap();
+
+        terminate_child(&mut child, Duration::from_millis(200))
+            .await
+            .unwrap();
     }
 
     // The wrapper process can outlive the harness it hosts, so reaping on the

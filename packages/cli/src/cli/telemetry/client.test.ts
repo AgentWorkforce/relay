@@ -56,12 +56,14 @@ describe('telemetry client events', () => {
     vi.stubEnv('AGENT_RELAY_ORG_ID', '');
     vi.stubEnv('AGENT_RELAY_ORG_SLUG', '');
     vi.stubEnv('AGENT_RELAY_USER_EMAIL', '');
+    vi.stubEnv('AGENT_RELAY_MACHINE_ID', '');
     posthogMocks.capture.mockClear();
     posthogMocks.identify.mockClear();
     posthogMocks.alias.mockClear();
     posthogMocks.groupIdentify.mockClear();
     posthogMocks.shutdown.mockClear();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(async () => {
@@ -99,6 +101,15 @@ describe('telemetry client events', () => {
     });
 
     expect(posthogMocks.capture).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'cli_install' }));
+  });
+
+  it('writes the first-run notice to stderr so JSON stdout stays parseable', () => {
+    initTelemetry({ cliVersion: '1.2.3' });
+
+    expect(console.log).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(
+      'Agent Relay collects usage telemetry to improve the product.'
+    );
   });
 
   describe('anonymous (not logged in)', () => {

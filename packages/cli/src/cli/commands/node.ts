@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { resolveActiveFleetNodeEnrollment } from '@agent-relay/cloud';
+import { fleetNodeEnrollmentStorePath, resolveActiveFleetNodeEnrollment } from '@agent-relay/cloud';
 
 import {
   addUpCommandOptions,
@@ -9,7 +9,11 @@ import {
   type UpCommandOptions,
 } from './core.js';
 import { runUpCommand } from '../lib/broker-lifecycle.js';
-import { readProjectWorkspaceSession, type ProjectWorkspaceSession } from '../lib/project-workspace-key.js';
+import {
+  projectWorkspaceKeyPath,
+  readProjectWorkspaceSession,
+  type ProjectWorkspaceSession,
+} from '../lib/project-workspace-key.js';
 import { promoteWorkspaceKeyEnvAlias } from '../lib/workspace-env.js';
 import { registerLocalAgentCommands } from './local-agent.js';
 import { registerLocalWorkflowCommands } from './local-workflow.js';
@@ -81,10 +85,42 @@ function prepareExplicitWorkspaceForNodeUp(
   return Boolean(options.workspaceKey?.trim() || envWorkspaceKey);
 }
 
-/** Apply a project-pinned workspace without changing the persisted enrolled-node association. */
-function resumeProjectWorkspace(session: ProjectWorkspaceSession, deps: NodeCommandDependencies): void {
-  deps.core.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
-  deps.core.env.RELAY_API_KEY = session.workspaceKey;
+/**
+ * Refuse to start when the stored enrollment addresses a different workspace
+ * than the repository pin.
+ *
+ * The enrollment store is machine-global; the pin is per-repository. When they
+ * disagree, silently preferring either one re-homes the node — so name both
+ * sources and stop. Only possible once a previous start recorded the pin's
+ * workspace id; before that the two are simply passed through together (the
+ * pin wins for workspace selection, the enrollment for node identity) and a
+ * mismatched node token fails loudly at registration instead.
+ */
+function reportWorkspaceSourceConflict(
+  record: NonNullable<ReturnType<typeof resolveActiveFleetNodeEnrollment>>,
+  session: ProjectWorkspaceSession | undefined,
+  deps: NodeCommandDependencies
+): boolean {
+  const pinnedWorkspaceId = session?.workspaceId?.trim();
+  const enrolledWorkspaceId = record.relayWorkspaceId?.trim();
+  if (!pinnedWorkspaceId || !enrolledWorkspaceId || pinnedWorkspaceId === enrolledWorkspaceId) {
+    return false;
+  }
+
+  const pinPath = projectWorkspaceKeyPath(deps.core.getProjectPaths().dataDir);
+  deps.error(
+    'Refusing to start: this repository and the stored Fleet enrollment select different workspaces.'
+  );
+  deps.error(`  repository pin      ${pinPath} -> workspace ${pinnedWorkspaceId}`);
+  deps.error(
+    `  fleet enrollment    ${fleetNodeEnrollmentStorePath(deps.core.env)} -> workspace ${enrolledWorkspaceId} (node ${record.nodeId})`
+  );
+  deps.error(
+    'Run `agent-relay workspace rebind <name>` to repin this project and clear the stale ' +
+      'enrolled-node association; alternatively pass --workspace-key or re-enroll this node in ' +
+      'the pinned workspace.'
+  );
+  return true;
 }
 
 /** Apply stored enrollment credentials and return the enrolled node name, when present. */
@@ -130,7 +166,14 @@ function resolveEnrollmentForProject(
   });
 }
 
-/** Apply an enrollment or safely resume a project workspace when its enrollment is unavailable. */
+/**
+ * Apply the node identity for this start.
+ *
+ * Workspace selection is NOT decided here — `runUpCommand` walks the shared
+ * precedence ladder (flag → env → repository pin → machine-global active) after
+ * this returns. This function only settles which node identity the broker runs
+ * as, so an enrollment can no longer suppress the repository's workspace.
+ */
 function applyResolvedNodeSession(
   record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined,
   projectSession: ProjectWorkspaceSession | undefined,
@@ -139,16 +182,12 @@ function applyResolvedNodeSession(
   if (record) {
     return applyEnrollment(record, deps);
   }
-  if (!projectSession) {
-    return undefined;
-  }
-  if (projectSession.enrolledNodeId) {
+  if (projectSession?.enrolledNodeId) {
     deps.core.env.AGENT_RELAY_ENROLLED_NODE_ID = projectSession.enrolledNodeId;
     deps.warn(
       `Persisted enrollment for node "${projectSession.enrolledNodeId}" was not found; resuming the pinned workspace without that node identity.`
     );
   }
-  resumeProjectWorkspace(projectSession, deps);
   return undefined;
 }
 
@@ -181,6 +220,10 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
       // A missing store resolves to undefined (fine); only an ambiguous
       // multi-match throws, which must surface as a clear CLI error.
       deps.error(err instanceof Error ? err.message : String(err));
+      deps.exit(1);
+      return;
+    }
+    if (record && reportWorkspaceSourceConflict(record, projectSession, deps)) {
       deps.exit(1);
       return;
     }

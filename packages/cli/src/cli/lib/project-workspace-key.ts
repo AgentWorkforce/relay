@@ -4,6 +4,10 @@ export {
   projectWorkspaceKeyPath,
   readProjectWorkspaceKey,
   readProjectWorkspaceSession,
+  resolveActiveWorkspaceSelection,
+  resolveWorkspaceSelection,
   writeProjectWorkspaceKey,
   type ProjectWorkspaceSession,
+  type WorkspaceKeyFileSystem,
+  type WorkspaceSelection,
 } from '@agent-relay/cloud/workspace-key';
