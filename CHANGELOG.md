@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cloud enrollment selects node identity without overriding workspace resolution. A conflict with the repository pin stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
 - `agent-relay node agent spawn` now verifies that the worker process survives startup before reporting success, and reports its exit status and log path when launch fails.
 - Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
+- A fleet node killed and restarted before its stale registration is reaped no longer fails to come back online: the broker now proves its own restart identity from its persisted state directory, so it can reclaim its prior name without an operator setting `RELAY_AGENT_IDENTITY_KEY` by hand.
+
+### Security
+
+- Agent registration no longer hands over an existing agent's id, name, and bearer token to whoever registers with the same name. A name collision is now rejected unless the request proves it's the same work unit via `RELAY_AGENT_IDENTITY_KEY` matching the identity stamped on the existing agent at its creation; strict- and non-strict-name registration now share this same fail-closed admission decision.
+- That identity proof is stored as a one-way hash rather than the raw value, so a workspace member who can read agent metadata can no longer replay another work unit's identity key to reclaim its credentials.
 
 ## [11.4.1] - 2026-08-03
 

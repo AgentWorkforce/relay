@@ -280,16 +280,26 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     let attempt_timeout = handshake_attempt_timeout().saturating_mul(membership_count);
     let max_attempts = handshake_max_attempts();
     let mut backoff = HANDSHAKE_BACKOFF_BASE;
+    // Prove this is the SAME node restarting, not a different one squatting
+    // the name: honor an explicit override, else fall back to a value stable
+    // across restarts of this node's own persisted state directory. Without
+    // this, a node killed and restarted before its stale registration is
+    // reaped would collide on its own name and be fail-closed rejected —
+    // the spawn-admission gate can't tell "myself, restarting" from "a
+    // stranger" unless something proves it.
+    let derived_identity_key =
+        agent_identity_key().unwrap_or_else(|| stable_node_identity_key(&opts.paths.state));
     let sessions = {
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
             match timeout(
                 attempt_timeout,
-                auth.startup_session_set_with_options(
+                auth.startup_session_set_with_identity(
                     Some(opts.requested_name),
                     opts.strict_name,
                     opts.agent_type,
+                    Some(derived_identity_key.as_str()),
                 ),
             )
             .await
