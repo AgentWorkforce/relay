@@ -383,6 +383,21 @@ impl WorkerRegistry {
         self.workers.get(name).and_then(|h| h.harness_pid)
     }
 
+    /// Clean up a worker whose spawn was rejected after the handle was
+    /// already inserted into `self.workers` — whether `init_worker` failed to
+    /// send (e.g. the wrapper's stdin closed before the broker could write to
+    /// it, EPIPE) or the post-spawn stability check rejected it. Shared so
+    /// every rejection path leaves the registry, restart supervisor, and
+    /// child process in the same clean state.
+    async fn cleanup_rejected_spawn(&mut self, name: &WorkerName) {
+        if let Some(handle) = self.workers.get_mut(name) {
+            let _ = terminate_child(&mut handle.child, ORPHAN_REAP_TIMEOUT).await;
+        }
+        self.workers.remove(name);
+        self.initial_tasks.remove(name);
+        self.supervisor.unregister(name);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         &mut self,
@@ -979,15 +994,26 @@ impl WorkerRegistry {
         };
         self.workers.insert(spec.name.clone(), handle);
 
-        self.send_to_worker(
-            &spec.name,
-            "init_worker",
-            None,
-            json!({
-                "agent": spec,
-            }),
-        )
-        .await?;
+        if let Err(error) = self
+            .send_to_worker(
+                &spec.name,
+                "init_worker",
+                None,
+                json!({
+                    "agent": spec,
+                }),
+            )
+            .await
+        {
+            // The wrapper can exit before the broker's first write reaches it
+            // (its stdin closes, and `send_to_worker` fails with EPIPE before
+            // the stability-window check below ever runs). Without this, that
+            // race left a stale entry in `self.workers` that `node agent
+            // list` could briefly advertise, exactly like a startup-check
+            // rejection — so it gets the identical cleanup.
+            self.cleanup_rejected_spawn(&spec.name).await;
+            return Err(error);
+        }
 
         let startup_confirmation = {
             let handle = self
@@ -1003,14 +1029,15 @@ impl WorkerRegistry {
             .await
         };
         if let Err(error) = startup_confirmation {
-            // `try_wait` reaped an exited wrapper. Remove the stale registry
-            // entry before returning the error so `node agent list` cannot
-            // briefly advertise a process the spawn call just rejected. Also
-            // unregister from the restart supervisor so a rejected spawn can
-            // never generate a pending restart for a worker that never launched.
-            self.workers.remove(&spec.name);
-            self.initial_tasks.remove(&spec.name);
-            self.supervisor.unregister(&spec.name);
+            // `confirm_worker_process_alive` rejects here for two different
+            // reasons: `try_wait` confirmed the wrapper exited, or `try_wait`
+            // itself returned an I/O error and we don't actually know the
+            // process is dead. Either way, terminate and reap it before
+            // dropping the handle — the confirmed-exit case is a no-op kill,
+            // but the I/O-error case would otherwise silently orphan a still
+            // -live, unsupervised process. The original verification error is
+            // preserved and returned either way.
+            self.cleanup_rejected_spawn(&spec.name).await;
             return Err(error);
         }
 
@@ -2104,6 +2131,132 @@ mod tests {
         terminate_child(&mut child, Duration::from_millis(200))
             .await
             .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn spec_for_test(name: &str) -> AgentSpec {
+        AgentSpec {
+            name: WorkerName::from(name),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: None,
+            session_id: None,
+            harness_config: None,
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn is_process_alive(pid: u32) -> bool {
+        use nix::{sys::signal::kill, unistd::Pid};
+        // `kill(pid, None)` is the POSIX liveness probe: it signals nothing,
+        // it only reports whether the pid still exists and is ours to signal.
+        kill(Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleanup_rejected_spawn_terminates_a_still_alive_child_and_removes_it() {
+        // Regression test: a rejected spawn used to remove the registry entry
+        // (and, before that fix, sometimes not even run cleanup — see the
+        // EPIPE-race test below) without ever touching the child process
+        // itself. Dropping a `tokio::process::Child` does not kill the OS
+        // process, so a spawn rejected while the wrapper was still alive
+        // orphaned it. `cleanup_rejected_spawn` must kill and reap it.
+        let mut reg = make_registry(vec![]);
+        let name = "cleanup-orphan-candidate";
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id().expect("child has a pid");
+        let stdin = child.stdin.take().expect("piped stdin");
+        assert!(
+            is_process_alive(pid),
+            "precondition: child must start alive"
+        );
+
+        reg.workers.insert(
+            WorkerName::from(name),
+            WorkerHandle {
+                spec: spec_for_test(name),
+                parent: None,
+                workspace_id: None,
+                child,
+                stdin,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+
+        reg.cleanup_rejected_spawn(&WorkerName::from(name)).await;
+
+        assert!(!reg.workers.contains_key(&WorkerName::from(name)));
+        assert!(
+            !is_process_alive(pid),
+            "cleanup_rejected_spawn must terminate the child, not just drop the handle"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn init_worker_send_failure_cleans_up_like_a_startup_rejection() {
+        // Regression test for the EPIPE race: if the wrapper exits before the
+        // broker's first write reaches it, `send_to_worker("init_worker")`
+        // fails before the stability-window check ever runs. Before this fix
+        // that early `?` skipped cleanup entirely, leaving a stale entry
+        // `node agent list` could advertise. Trigger a real write failure —
+        // once a child exits, its stdin's read end closes, so writing to our
+        // held `ChildStdin` fails — rather than asserting on message text.
+        let mut reg = make_registry(vec![]);
+        let name = "epipe-candidate";
+        let mut child = Command::new("true").stdin(Stdio::piped()).spawn().unwrap();
+        let stdin = child.stdin.take().expect("piped stdin");
+        child.wait().await.expect("child exits immediately");
+
+        reg.workers.insert(
+            WorkerName::from(name),
+            WorkerHandle {
+                spec: spec_for_test(name),
+                parent: None,
+                workspace_id: None,
+                child,
+                stdin,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+
+        let send_result = reg
+            .send_to_worker(name, "init_worker", None, json!({}))
+            .await;
+        assert!(
+            send_result.is_err(),
+            "writing to a worker whose process already exited must fail, proving the race is real"
+        );
+
+        // This mirrors exactly what `spawn()` now does on this error path.
+        reg.cleanup_rejected_spawn(&WorkerName::from(name)).await;
+
+        assert!(!reg.workers.contains_key(&WorkerName::from(name)));
     }
 
     // The wrapper process can outlive the harness it hosts, so reaping on the

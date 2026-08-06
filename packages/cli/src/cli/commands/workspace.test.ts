@@ -191,6 +191,25 @@ describe('registerWorkspaceCommands', () => {
     expect(() => JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).not.toThrow();
   });
 
+  it('workspace create suppresses the active-workspace warning when re-creating the already-active workspace', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'session-two',
+      workspaces: { 'session-two': { key: 'rk_live_old' } },
+    });
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({
+      workspaceKey: 'rk_live_session_two',
+    } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'session-two']);
+
+    expect(persistWorkspaceSession).toHaveBeenCalledWith({
+      name: 'session-two',
+      workspaceKey: 'rk_live_session_two',
+    });
+    expect(deps.error).not.toHaveBeenCalled();
+  });
+
   it('workspace create keeps stdout parseable and routes the warning away from it', async () => {
     vi.mocked(readWorkspaceStore).mockReturnValueOnce({
       active: 'default',
