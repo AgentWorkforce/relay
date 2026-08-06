@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay cloud login --device` logs in a machine with no browser through the OAuth device flow: the CLI prints a code you approve from any other device. Login and re-authentication fall back to it automatically over SSH or on a Unix host with no display server, and each machine gets its own cloud session instead of a copied `cloud-auth.json`. Requires cloud with the device authorization endpoints.
-- `agent-relay workspace restore` returns to the recorded previous workspace, while `workspace rebind <name>` explicitly pins a project's next broker start without changing the machine-global active workspace.
+- `agent-relay workspace restore` returns to the recorded previous workspace.
+- `agent-relay workspace rebind <name>` pins a project's next broker start to a named workspace without changing the machine-global active workspace.
 
 ### Changed
 
