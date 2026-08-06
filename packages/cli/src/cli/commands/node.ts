@@ -32,6 +32,12 @@ export interface NodeCommandDependencies {
   exit: ExitFn;
 }
 
+/**
+ * Fill in the real Cloud/enrollment/project lookups for anything the caller did
+ * not inject.
+ * @param overrides - Dependencies to substitute, as tests do.
+ * @returns A fully populated dependency set.
+ */
 function withNodeDefaults(overrides: Partial<NodeCommandDependencies> = {}): NodeCommandDependencies {
   const core = overrides.core ?? withDefaults();
   return {
