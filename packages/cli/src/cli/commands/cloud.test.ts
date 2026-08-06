@@ -86,6 +86,7 @@ function createHarness(overrides?: Partial<CloudDependencies>) {
 
   const deps: CloudDependencies = {
     log: vi.fn(() => undefined),
+    warn: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
     ensureCloudSession: vi.mocked(ensureCloudSession),
@@ -94,6 +95,10 @@ function createHarness(overrides?: Partial<CloudDependencies>) {
     upsertFleetNodeEnrollment:
       cloudMocks.upsertFleetNodeEnrollment as unknown as CloudDependencies['upsertFleetNodeEnrollment'],
     writeEnrollmentRecoveryFile: vi.fn(() => '/tmp/cloud-enrollment-recovery.json'),
+    // Stubbed by default so no test can reach the real checkout's workspace pin.
+    linkEnrolledNodeToProjectPin: vi.fn(() => ({
+      status: 'no-pin',
+    })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'],
     ...overrides,
   };
 
@@ -1768,6 +1773,116 @@ describe('registerCloudCommands', () => {
 
     expect(deps.error).toHaveBeenCalledWith('Enrollment token is invalid');
     expect(cloudMocks.upsertFleetNodeEnrollment).not.toHaveBeenCalled();
+  });
+
+  it('cloud enroll links the enrolled node to this project workspace pin', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const linkEnrolledNodeToProjectPin = vi.fn(() => ({
+      status: 'linked',
+      nodeId: 'node_abc',
+      pinPath: '/repo/.agentworkforce/relay/workspace-key.json',
+    })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
+    const log = vi.fn();
+    const { program } = createHarness({ log, linkEnrolledNodeToProjectPin });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x']);
+
+    expect(linkEnrolledNodeToProjectPin).toHaveBeenCalledWith({ nodeId: 'node_abc' });
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain('/repo/.agentworkforce/relay/workspace-key.json');
+    expect(output).toContain('node_abc');
+  });
+
+  it('cloud enroll warns instead of repointing a pin that names another node', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_new',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const linkEnrolledNodeToProjectPin = vi.fn(() => ({
+      status: 'conflict',
+      nodeId: 'node_new',
+      pinnedNodeId: 'node_existing',
+      pinPath: '/repo/.agentworkforce/relay/workspace-key.json',
+    })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
+    const warn = vi.fn();
+    const { program } = createHarness({ warn, linkEnrolledNodeToProjectPin });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x']);
+
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toContain('already linked to node node_existing');
+    expect(warned).toContain('node_new');
+  });
+
+  it('cloud enroll survives a pin write failure without failing the redeemed enrollment', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const linkEnrolledNodeToProjectPin = vi.fn(() => {
+      throw new Error('EACCES: permission denied');
+    }) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
+    const log = vi.fn();
+    const warn = vi.fn();
+    const { program, deps } = createHarness({ log, warn, linkEnrolledNodeToProjectPin });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x']);
+
+    expect(deps.exit).not.toHaveBeenCalled();
+    expect(log.mock.calls.flat().join('\n')).toContain('Enrolled node "kjglaptop"');
+    expect(warn.mock.calls.flat().join('\n')).toContain('EACCES');
+  });
+
+  it('cloud enroll --json keeps pin reporting off stdout', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const linkEnrolledNodeToProjectPin = vi.fn(() => ({
+      status: 'linked',
+      nodeId: 'node_abc',
+      pinPath: '/repo/.agentworkforce/relay/workspace-key.json',
+    })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
+    const log = vi.fn();
+    const { program } = createHarness({ log, linkEnrolledNodeToProjectPin });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'enroll',
+      '--token',
+      'ocl_node_enr_x',
+      '--json',
+    ]);
+
+    // The pin is still reconciled, but stdout stays parseable JSON.
+    expect(linkEnrolledNodeToProjectPin).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(() => JSON.parse(String(log.mock.calls[0][0]))).not.toThrow();
   });
 
   it('cloud enroll rejects a non-positive --max-agents', async () => {

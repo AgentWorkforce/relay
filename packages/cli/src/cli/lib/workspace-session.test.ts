@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
 import { persistWorkspaceSession, resolveWorkspaceSessionKey } from './workspace-session.js';
-import { readProjectWorkspaceKey } from './project-workspace-key.js';
+import {
+  readProjectWorkspaceKey,
+  readProjectWorkspaceSession,
+  writeProjectWorkspaceKey,
+} from './project-workspace-key.js';
 import { readWorkspaceStore, setWorkspaceKey } from './workspace-store.js';
 
 const tempRoots: string[] = [];
@@ -107,6 +111,37 @@ describe('workspace session persistence', () => {
 
     expect(readProjectWorkspaceKey(projectDataDir)).toBeUndefined();
     expect(readWorkspaceStore(env).workspaces).toEqual({});
+  });
+
+  it('preserves the enrolled Fleet node id when switching the pinned workspace', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+    writeProjectWorkspaceKey(projectDataDir, 'rk_live_enrolled', { enrolledNodeId: 'node_abc' });
+
+    persistWorkspaceSession({
+      workspaceKey: 'rk_live_other',
+      name: 'other',
+      projectDataDir,
+      env,
+    });
+
+    // Dropping the node id here is what manufactures the pin that makes
+    // `node up` silently ignore the fleet enrollment store.
+    expect(readProjectWorkspaceSession(projectDataDir)).toEqual({
+      workspaceKey: 'rk_live_other',
+      enrolledNodeId: 'node_abc',
+    });
+  });
+
+  it('does not invent an enrolled node id for a project that never had one', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+
+    persistWorkspaceSession({ workspaceKey: 'rk_live_fresh', projectDataDir, env });
+
+    expect(readProjectWorkspaceSession(projectDataDir)).toEqual({ workspaceKey: 'rk_live_fresh' });
   });
 
   it('resumes the project workspace ahead of the machine-global active workspace', () => {

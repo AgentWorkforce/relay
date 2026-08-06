@@ -1,7 +1,7 @@
 import { getProjectPaths } from '@agent-relay/config';
 import { resolveWorkspaceKeyWithSource } from '@agent-relay/cloud/workspace-key';
 
-import { writeProjectWorkspaceKey } from './project-workspace-key.js';
+import { readProjectWorkspaceSession, writeProjectWorkspaceKey } from './project-workspace-key.js';
 import { setWorkspaceKey, switchWorkspace, validateWorkspaceName } from './workspace-store.js';
 
 export interface WorkspaceSessionOptions {
@@ -43,7 +43,14 @@ export function persistWorkspaceSession(options: PersistWorkspaceSessionOptions)
   const name = options.name === undefined ? undefined : validateWorkspaceSessionName(options.name);
 
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
-  writeProjectWorkspaceKey(projectDataDir, workspaceKey);
+  // The enrolled Fleet node is a property of this machine+project, not of the
+  // workspace being selected. Dropping it here silently manufactured the broken
+  // state `node up` warns about: a pin with no node id, which makes the next
+  // start ignore the enrollment store entirely.
+  const enrolledNodeId = readProjectWorkspaceSession(projectDataDir)?.enrolledNodeId;
+  writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
+    ...(enrolledNodeId ? { enrolledNodeId } : {}),
+  });
 
   if (name) {
     setWorkspaceKey(name, workspaceKey, options.env);

@@ -34,6 +34,7 @@ import {
   type WorkflowSchedule,
 } from '@agent-relay/cloud';
 
+import { linkEnrolledNodeToProjectPin, type EnrolledNodePinResult } from '../lib/enrollment-pin.js';
 import { defaultExit } from '../lib/exit.js';
 import { sanitizeForTerminalLine } from '../lib/formatting.js';
 import { maskSecret } from '../lib/redact.js';
@@ -62,6 +63,7 @@ type ExitFn = (code: number) => never;
 
 export interface CloudDependencies {
   log: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
   ensureCloudSession: typeof ensureCloudSession;
@@ -74,6 +76,8 @@ export interface CloudDependencies {
    * "recovery write also failed" last resort.
    */
   writeEnrollmentRecoveryFile: (record: unknown) => string;
+  /** Reconcile a freshly enrolled node against this project's workspace pin. */
+  linkEnrolledNodeToProjectPin: typeof linkEnrolledNodeToProjectPin;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -81,6 +85,7 @@ export interface CloudDependencies {
 function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependencies {
   return {
     log: (...args: unknown[]) => console.log(...args),
+    warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
     ensureCloudSession,
@@ -98,6 +103,7 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
       fs.chmodSync(file, 0o600);
       return file;
     },
+    linkEnrolledNodeToProjectPin,
     ...overrides,
   };
 }
@@ -444,6 +450,35 @@ async function mintFleetNodeEnrollment(
       throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
     }
     throw error;
+  }
+}
+
+/**
+ * Link a redeemed enrollment to this project's workspace pin and report anything
+ * the operator must act on. Runs after the one-time token is already consumed,
+ * so every failure here is reported and swallowed — never fatal.
+ */
+function reconcileEnrollmentPin(
+  nodeId: string,
+  deps: Pick<CloudDependencies, 'warn' | 'linkEnrolledNodeToProjectPin'>
+): EnrolledNodePinResult | undefined {
+  try {
+    const result = deps.linkEnrolledNodeToProjectPin({ nodeId });
+    if (result.status === 'conflict') {
+      deps.warn(
+        `This project's workspace pin (${result.pinPath}) is already linked to node ${result.pinnedNodeId}, ` +
+          `so it was left unchanged. 'relay node up' here will keep serving ${result.pinnedNodeId}, not the node ` +
+          `just enrolled (${result.nodeId}). Update or remove the pin to serve the new node.`
+      );
+    }
+    return result;
+  } catch (err) {
+    deps.warn(
+      `Enrollment succeeded but this project's workspace pin could not be updated: ${
+        err instanceof Error ? err.message : String(err)
+      }. 'relay node up' in this project may ignore the new enrollment.`
+    );
+    return undefined;
   }
 }
 
@@ -968,6 +1003,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             return;
           }
 
+          // A repo pinned to a workspace ignores the enrollment store entirely
+          // on `node up`, so link the two now while we know the node id. Never
+          // let this fail the command: the one-time token is already redeemed.
+          const pin = reconcileEnrollmentPin(record.nodeId, deps);
+
           if (options.json) {
             // Never print the node token, even in JSON mode.
             const { nodeToken: _nodeToken, ...safe } = record;
@@ -981,6 +1021,12 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             `Enrolled node "${record.nodeName}"${nodeIdSuffix} in workspace ${record.relayWorkspaceId}. ` +
               "Run 'relay node up' to serve it."
           );
+          if (pin?.status === 'linked') {
+            deps.log(
+              `Linked this project's workspace pin (${pin.pinPath}) to node ${pin.nodeId}, ` +
+                "so 'relay node up' here serves this enrollment."
+            );
+          }
         } catch (err) {
           deps.error(err instanceof Error ? err.message : String(err));
           deps.exit(1);
