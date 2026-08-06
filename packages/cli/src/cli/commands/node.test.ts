@@ -37,6 +37,7 @@ const enrollmentRecord = {
 function createNodeHarness(opts?: {
   env?: NodeJS.ProcessEnv;
   resolveEnrollment?: NodeCommandDependencies['resolveEnrollment'];
+  listFleetEnrollments?: NodeCommandDependencies['listFleetEnrollments'];
   resolveProjectWorkspaceSession?: NodeCommandDependencies['resolveProjectWorkspaceSession'];
 }) {
   const env: NodeJS.ProcessEnv = opts?.env ?? {};
@@ -52,6 +53,9 @@ function createNodeHarness(opts?: {
     opts?.resolveEnrollment ??
     (vi.fn(() => undefined) as unknown as NodeCommandDependencies['resolveEnrollment']);
   const resolveProjectWorkspaceSession = opts?.resolveProjectWorkspaceSession ?? vi.fn(() => undefined);
+  // Never let a test read the developer's real fleet-enrollments.json.
+  const listFleetEnrollments = (opts?.listFleetEnrollments ??
+    vi.fn(() => [])) as NodeCommandDependencies['listFleetEnrollments'];
 
   const program = new Command();
   program.exitOverride();
@@ -62,6 +66,7 @@ function createNodeHarness(opts?: {
     error,
     warn,
     resolveEnrollment,
+    listFleetEnrollments,
     resolveProjectWorkspaceSession,
   });
 
@@ -70,8 +75,10 @@ function createNodeHarness(opts?: {
     env,
     log,
     error,
+    warn,
     exit,
     resolveEnrollment,
+    listFleetEnrollments,
     resolveProjectWorkspaceSession,
   };
 }
@@ -256,6 +263,83 @@ describe('registerNodeCommands', () => {
     expect(env.RELAY_API_KEY).toBe('rk_project_session');
     expect(env.RELAY_NODE_TOKEN).toBeUndefined();
     expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns that a project pin without an enrolled node id is shadowing stored enrollments', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const listFleetEnrollments = vi.fn(() => [
+      enrollmentRecord,
+    ]) as unknown as NodeCommandDependencies['listFleetEnrollments'];
+    const { program, warn, env } = createNodeHarness({
+      env: {},
+      resolveEnrollment,
+      listFleetEnrollments,
+      resolveProjectWorkspaceSession: vi.fn(() => ({ workspaceKey: 'rk_project_session' })),
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    // The silent case: the pin wins, the enrollment is dropped, and before this
+    // fix nothing was printed at all.
+    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warned).toContain('1 stored Cloud fleet enrollment(s)');
+    expect(warned).toContain('pinned to a workspace with no enrolled node id');
+    expect(warned).toContain('relay cloud enroll');
+  });
+
+  it('stays quiet when a project pin shadows nothing', async () => {
+    const { program, warn } = createNodeHarness({
+      env: {},
+      listFleetEnrollments: vi.fn(() => []) as unknown as NodeCommandDependencies['listFleetEnrollments'],
+      resolveProjectWorkspaceSession: vi.fn(() => ({ workspaceKey: 'rk_project_session' })),
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('still warns and still starts when the enrollment store cannot be read', async () => {
+    const listFleetEnrollments = vi.fn(() => {
+      throw new Error('Fleet enrollment store at /tmp/fleet-enrollments.json is corrupt');
+    }) as unknown as NodeCommandDependencies['listFleetEnrollments'];
+    const { program, warn } = createNodeHarness({
+      env: {},
+      listFleetEnrollments,
+      resolveProjectWorkspaceSession: vi.fn(() => ({ workspaceKey: 'rk_project_session' })),
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(warn.mock.calls.flat().join('\n')).toContain('stored Cloud fleet enrollments');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn about shadowed enrollments when the pin names an enrolled node', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const listFleetEnrollments = vi.fn(() => [
+      enrollmentRecord,
+    ]) as unknown as NodeCommandDependencies['listFleetEnrollments'];
+    const { program, warn } = createNodeHarness({
+      env: {},
+      resolveEnrollment,
+      listFleetEnrollments,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_enrolled',
+        enrolledNodeId: 'node_abc',
+      })),
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('preserves an enrolled identity across a consecutive project-session restart', async () => {

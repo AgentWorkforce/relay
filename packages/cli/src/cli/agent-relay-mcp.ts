@@ -33,6 +33,7 @@ import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
 import {
+  describeClearedEnrollment,
   persistWorkspaceSession,
   resolveWorkspaceSessionKey,
   validateWorkspaceSessionName,
@@ -409,7 +410,7 @@ function registerAgentRelayTools(
       title: 'Create Workspace',
       description:
         'Explicitly start a new Agent Relay workspace session and persist it for this project. ' +
-        'Returns the new workspace key and its resolved name. A `warning` field is present only when the workspace was created but its session could not be saved to disk, meaning the key must be kept and re-supplied to reconnect.',
+        "Returns the new workspace key and its resolved name. A `warning` field appears in two cases, and its text says which: the workspace was created but its session could not be saved to disk, meaning the key must be kept and re-supplied to reconnect; or the session was saved and doing so dropped this project's enrolled Cloud fleet node, because the new workspace is not the one that node belongs to.",
       inputSchema: {
         name: z.string().describe('Human-readable workspace name'),
       },
@@ -438,7 +439,12 @@ function registerAgentRelayTools(
       });
       let persistenceWarning: string | undefined;
       try {
-        persistWorkspaceSession({ name: workspaceName, workspaceKey });
+        // A new workspace key never matches an existing pin, so this can drop
+        // the project's enrolled fleet node. Report it rather than letting the
+        // next `node up` be the first thing that mentions it.
+        persistenceWarning = describeClearedEnrollment(
+          persistWorkspaceSession({ name: workspaceName, workspaceKey })
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         persistenceWarning =
@@ -459,7 +465,7 @@ function registerAgentRelayTools(
       title: 'Set Workspace Key',
       description:
         'Join this MCP session to an existing Agent Relay workspace using a shared workspace key. ' +
-        'Returns a confirmation message stating whether the key was persisted for this project, and whether "register_agent" must be called to claim an identity in the newly joined workspace.',
+        'Returns a confirmation message stating whether the key was persisted for this project, and whether "register_agent" must be called to claim an identity in the newly joined workspace. The message also reports when joining dropped this project\'s enrolled Cloud fleet node, which happens when the key names a workspace that node does not belong to.',
       inputSchema: {
         workspace_key: z.string().optional().describe('Workspace key starting with "rk_live_"'),
         api_key: z.string().optional().describe('Deprecated alias for workspace_key'),
@@ -495,7 +501,9 @@ function registerAgentRelayTools(
       }
       let persistenceWarning: string | undefined;
       try {
-        persistWorkspaceSession({ workspaceKey: key });
+        // Joining a different workspace drops this project's enrolled fleet
+        // node; surface that here instead of at the next `node up`.
+        persistenceWarning = describeClearedEnrollment(persistWorkspaceSession({ workspaceKey: key }));
       } catch (error) {
         const persistenceError = error instanceof Error ? error.message : String(error);
         persistenceWarning =

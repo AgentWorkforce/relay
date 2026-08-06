@@ -29,7 +29,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const telemetryTrack = vi.fn();
   const telemetryInit = vi.fn();
   const telemetryShutdown = vi.fn(async () => undefined);
-  const persistWorkspaceSession = vi.fn();
+  // Returns a result object describing what the write changed beyond the key.
+  const persistWorkspaceSession = vi.fn(() => ({}));
   const resolveWorkspaceSessionKey = vi.fn(() => options.persistedWorkspaceKey);
   const validateWorkspaceSessionName = vi.fn((name: string) => {
     const trimmed = name.trim();
@@ -258,8 +259,12 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     shutdown: telemetryShutdown,
     track: telemetryTrack,
   }));
-  vi.doMock('./lib/workspace-session.js', () => ({
+  vi.doMock('./lib/workspace-session.js', async (importOriginal) => ({
     persistWorkspaceSession,
+    // The real formatter, not a copy, so the warning these tools return cannot
+    // drift away from what the CLI prints for the same event.
+    describeClearedEnrollment: (await importOriginal<typeof import('./lib/workspace-session.js')>())
+      .describeClearedEnrollment,
     resolveWorkspaceSessionKey,
     validateWorkspaceSessionName,
   }));
@@ -572,6 +577,22 @@ describe('createAgentRelayMcpServer', () => {
 
     await server.tools.get('register_agent')?.handler({ name: 'WorkerAfterSetWarning' });
     expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'rk_live_selected')).toBe(true);
+  });
+
+  it('reports an enrolled fleet node dropped by joining another workspace', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.persistWorkspaceSession.mockReturnValueOnce({ clearedEnrolledNodeId: 'node_abc' });
+
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://relay.example.com/' });
+    const server = mocks.serverInstances[0];
+    const result = await server.tools
+      .get('set_workspace_key')
+      ?.handler({ workspace_key: 'rk_live_selected' });
+
+    // Silence here is what left the fleet node shadowed until some later
+    // `node up` mentioned it.
+    expect(result.structuredContent.message).toContain('node_abc');
+    expect(result.structuredContent.message).toContain('relay cloud enroll');
   });
 
   it('registers submit_result when a spawned-agent result callback is configured', async () => {

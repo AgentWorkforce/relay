@@ -1,5 +1,9 @@
 import type { Command } from 'commander';
-import { resolveActiveFleetNodeEnrollment } from '@agent-relay/cloud';
+import {
+  readFleetNodeEnrollmentStore,
+  resolveActiveFleetNodeEnrollment,
+  type FleetNodeEnrollmentRecord,
+} from '@agent-relay/cloud';
 
 import {
   addUpCommandOptions,
@@ -19,6 +23,8 @@ type ExitFn = (code: number) => never;
 export interface NodeCommandDependencies {
   core: CoreDependencies;
   resolveEnrollment: typeof resolveActiveFleetNodeEnrollment;
+  /** Every stored fleet enrollment, used only to report how many a project pin is shadowing. */
+  listFleetEnrollments: (env: NodeJS.ProcessEnv) => FleetNodeEnrollmentRecord[];
   resolveProjectWorkspaceSession: () => ProjectWorkspaceSession | undefined;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -26,11 +32,18 @@ export interface NodeCommandDependencies {
   exit: ExitFn;
 }
 
+/**
+ * Fill in the real Cloud/enrollment/project lookups for anything the caller did
+ * not inject.
+ * @param overrides - Dependencies to substitute, as tests do.
+ * @returns A fully populated dependency set.
+ */
 function withNodeDefaults(overrides: Partial<NodeCommandDependencies> = {}): NodeCommandDependencies {
   const core = overrides.core ?? withDefaults();
   return {
     core,
     resolveEnrollment: resolveActiveFleetNodeEnrollment,
+    listFleetEnrollments: (env: NodeJS.ProcessEnv) => Object.values(readFleetNodeEnrollmentStore(env).nodes),
     resolveProjectWorkspaceSession: () => readProjectWorkspaceSession(core.getProjectPaths().dataDir),
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
@@ -108,6 +121,36 @@ function applyEnrollment(
   return record.nodeName?.trim() || undefined;
 }
 
+/**
+ * Report the enrollments a project pin without an `enrolledNodeId` shadows.
+ *
+ * The pin wins over the enrollment store, so the broker starts in the pinned
+ * workspace and this machine never serves its Cloud fleet node. That used to be
+ * completely silent: the Cloud dashboard showed the node, `fleet nodes` showed a
+ * different roster, and nothing said the two were different workspaces.
+ */
+function warnPinShadowsFleetEnrollments(deps: NodeCommandDependencies): void {
+  let count: number | undefined;
+  try {
+    count = deps.listFleetEnrollments(deps.core.env).length;
+  } catch {
+    // A corrupt or unreadable store must not break `node up` here — nothing on
+    // this path needs it. Warn without a count rather than hide the mismatch.
+    count = undefined;
+  }
+  if (count === 0) {
+    return;
+  }
+  const subject =
+    count === undefined ? 'stored Cloud fleet enrollments' : `${count} stored Cloud fleet enrollment(s)`;
+  deps.warn(
+    `This project is pinned to a workspace with no enrolled node id, so ${subject} will be ignored: ` +
+      'the broker starts in the pinned workspace and this machine will not serve its Cloud fleet node. ' +
+      "Re-run 'relay cloud enroll' from this project to link the pin to a node, or export " +
+      "RELAY_NODE_ID and RELAY_NODE_TOKEN and start with 'relay node up --broker-name <node>'."
+  );
+}
+
 /** Resolve the enrollment associated with a project session, avoiding ambiguous global fallback. */
 function resolveEnrollmentForProject(
   session: ProjectWorkspaceSession | undefined,
@@ -122,6 +165,7 @@ function resolveEnrollmentForProject(
     });
   }
   if (session) {
+    warnPinShadowsFleetEnrollments(deps);
     return undefined;
   }
   return deps.resolveEnrollment({
