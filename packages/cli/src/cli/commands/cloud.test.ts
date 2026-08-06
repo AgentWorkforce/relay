@@ -18,6 +18,7 @@ const cloudMocks = vi.hoisted(() => ({
   runCloudWorkerLoop: vi.fn(),
   enrollFleetNode: vi.fn(),
   upsertFleetNodeEnrollment: vi.fn(),
+  isHeadlessEnvironment: vi.fn(() => false),
 }));
 
 vi.mock('@agent-relay/cloud', async (importOriginal) => ({
@@ -32,6 +33,7 @@ vi.mock('@agent-relay/cloud', async (importOriginal) => ({
   upsertFleetNodeEnrollment: (...args: unknown[]) => cloudMocks.upsertFleetNodeEnrollment(...args),
   ensureAuthenticated: vi.fn(),
   ensureCloudSession: vi.fn(),
+  isHeadlessEnvironment: (...args: unknown[]) => cloudMocks.isHeadlessEnvironment(...args),
   getProviderHelpText: () =>
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
@@ -62,7 +64,13 @@ vi.mock('../telemetry/index.js', () => ({
   track: vi.fn(),
 }));
 
-import { authorizedApiFetch, ensureAuthenticated, ensureCloudSession } from '@agent-relay/cloud';
+import {
+  authorizedApiFetch,
+  ensureAuthenticated,
+  ensureCloudSession,
+  readStoredAuth,
+} from '@agent-relay/cloud';
+import { track } from '../telemetry/index.js';
 
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
 import { createDefaultAssignmentRunner } from './cloud-worker.js';
@@ -147,6 +155,113 @@ describe('registerCloudCommands', () => {
       'sync',
       'cancel',
     ]);
+  });
+
+  describe('cloud login', () => {
+    beforeEach(() => {
+      vi.mocked(readStoredAuth).mockResolvedValue(null);
+      vi.mocked(ensureAuthenticated).mockResolvedValue({} as never);
+      cloudMocks.isHeadlessEnvironment.mockReturnValue(false);
+    });
+
+    it('exposes --device for headless hosts', () => {
+      const { program } = createHarness();
+      const login = program.commands
+        .find((command) => command.name() === 'cloud')
+        ?.commands.find((command) => command.name() === 'login');
+
+      expect(login?.options.map((option) => option.long)).toContain('--device');
+    });
+
+    it('requests the device flow when --device is passed', async () => {
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login', '--device'], { from: 'user' });
+
+      expect(vi.mocked(ensureAuthenticated)).toHaveBeenCalledWith(
+        'https://cloud.test',
+        expect.objectContaining({ device: true })
+      );
+    });
+
+    it('leaves the browser flow alone by default', async () => {
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login'], { from: 'user' });
+
+      expect(vi.mocked(ensureAuthenticated)).toHaveBeenCalledWith(
+        'https://cloud.test',
+        expect.objectContaining({ device: undefined })
+      );
+    });
+
+    it('short-circuits when a live session already exists', async () => {
+      vi.mocked(readStoredAuth).mockResolvedValue({
+        apiUrl: 'https://cloud.test',
+        accessTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      });
+
+      const { program, deps } = createHarness();
+      await program.parseAsync(['cloud', 'login', '--device'], { from: 'user' });
+
+      expect(vi.mocked(ensureAuthenticated)).not.toHaveBeenCalled();
+      expect(deps.log).toHaveBeenCalledWith('Already logged in to https://cloud.test');
+    });
+
+    it('re-authenticates on --force even with a live session', async () => {
+      vi.mocked(readStoredAuth).mockResolvedValue({
+        apiUrl: 'https://cloud.test',
+        accessTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      });
+
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login', '--device', '--force'], { from: 'user' });
+
+      expect(vi.mocked(ensureAuthenticated)).toHaveBeenCalledWith(
+        'https://cloud.test',
+        expect.objectContaining({ device: true, force: true })
+      );
+    });
+
+    it('records the method that actually ran', async () => {
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login', '--device'], { from: 'user' });
+
+      expect(vi.mocked(track)).toHaveBeenCalledWith(
+        'cloud_auth',
+        expect.objectContaining({ action: 'login', method: 'device', success: true })
+      );
+    });
+
+    it('attributes an auto-selected device login to the device flow', async () => {
+      // The point of the field is headless adoption, and the auto fallback
+      // means counting `--device` alone would undercount it.
+      cloudMocks.isHeadlessEnvironment.mockReturnValue(true);
+
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login'], { from: 'user' });
+
+      expect(vi.mocked(track)).toHaveBeenCalledWith(
+        'cloud_auth',
+        expect.objectContaining({ method: 'device' })
+      );
+    });
+
+    it('omits the method when the live-session short-circuit ran no flow', async () => {
+      // Reporting `method: 'device'` for an invocation that logged nobody in
+      // inflates exactly the headless-adoption metric the field exists to
+      // measure — and it is the kind of number that later gets trusted.
+      vi.mocked(readStoredAuth).mockResolvedValue({
+        apiUrl: 'https://cloud.test',
+        accessTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      });
+
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login', '--device'], { from: 'user' });
+
+      expect(vi.mocked(ensureAuthenticated)).not.toHaveBeenCalled();
+      const [, payload] = vi.mocked(track).mock.calls.at(-1) as [string, Record<string, unknown>];
+      expect(payload).toMatchObject({ action: 'login', success: true });
+      expect(payload).not.toHaveProperty('method');
+    });
   });
 
   it('registers cloud worker subcommands', () => {

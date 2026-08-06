@@ -9,7 +9,18 @@ export {
   ensureAuthenticated,
   ensureCloudSession,
   authorizedApiFetch,
+  loginWithDevice,
 } from './auth.js';
+
+export {
+  isHeadlessEnvironment,
+  startDeviceAuthorization,
+  pollForDeviceToken,
+  runDeviceAuthorizationFlow,
+  formatDeviceInstructions,
+  type DeviceAuthorization,
+  type DeviceFlowHooks,
+} from './device-auth.js';
 
 export {
   IDENTITY_ENV_KEYS,

@@ -13,6 +13,7 @@ export type CloudAuthErrorCode =
   | 'AUTH_REFRESH_TIMEOUT'
   | 'AUTH_REFRESH_EXPIRED'
   | 'AUTH_BROWSER_REQUIRED'
+  | 'AUTH_DEVICE_FLOW_FAILED'
   | 'AUTH_ENV_REPROVISION_REQUIRED';
 
 export class CloudAuthError extends Error {
@@ -35,6 +36,11 @@ export type CloudSessionOptions = {
   apiUrl?: string;
   force?: boolean;
   interactive?: boolean;
+  /**
+   * Force the RFC 8628 device flow instead of the browser flow. Left unset,
+   * the device flow is still chosen automatically on a headless host.
+   */
+  device?: boolean;
   refreshTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
 };

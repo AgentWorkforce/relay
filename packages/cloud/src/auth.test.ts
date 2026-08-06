@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fsMocks = vi.hoisted(() => ({
   readFile: vi.fn(),
@@ -66,9 +66,26 @@ function createEnvAuth(overrides: Partial<StoredAuth> = {}): NodeJS.ProcessEnv {
   };
 }
 
+// `clearAllMocks` resets call history but leaves `vi.spyOn` spies installed, so
+// a test that failed mid-body used to leave `console.log` silenced for every
+// later test in this file — silencing output exactly when a failure needs it.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+
+  // Pin the browser-availability signal. Login now falls back to the device
+  // flow on a host that cannot open a browser, so tests that exercise the
+  // browser flow must not inherit whether the runner happens to be a headless
+  // Linux CI box.
+  vi.stubEnv('DISPLAY', ':0');
+  vi.stubEnv('SSH_CONNECTION', '');
+  vi.stubEnv('SSH_TTY', '');
+  vi.stubEnv('SSH_CLIENT', '');
 
   fsMocks.readFile.mockReset();
   fsMocks.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
@@ -363,6 +380,74 @@ describe('ensureAuthenticated', () => {
     expect(fsMocks.writeFile).toHaveBeenCalledOnce();
 
     logSpy.mockRestore();
+  });
+
+  it('falls back to the device flow on a host that cannot open a browser', async () => {
+    // barry over ssh: no browser here, so the loopback callback the browser
+    // flow depends on is unreachable and would only hang until it timed out.
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/device/start')) {
+        return new Response(
+          JSON.stringify({
+            device_code: 'cld_dc_test',
+            user_code: 'BCDF-GHJK',
+            verification_uri: 'https://example.com/cloud/device',
+            expires_in: 600,
+            // Keep the mandatory pre-poll wait short; pacing itself is
+            // covered exhaustively in device-auth.test.ts.
+            interval: 1,
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/auth/device/token')) {
+        return new Response(
+          JSON.stringify({
+            access_token: 'device-access',
+            refresh_token: 'device-refresh',
+            access_token_expires_at: '2999-01-01T00:00:00.000Z',
+            refresh_token_expires_at: '2999-04-01T00:00:00.000Z',
+            api_url: 'https://example.com/cloud',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      // whoami, used only to record identity; failing it must not fail login.
+      return new Response('{}', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const session = await ensureCloudSession({ apiUrl: 'https://example.com/cloud' });
+
+    expect(session.auth).toMatchObject({
+      accessToken: 'device-access',
+      refreshToken: 'device-refresh',
+      apiUrl: 'https://example.com/cloud',
+    });
+    // Never tried to launch a browser it does not have.
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    // Persisted through the normal path, so `cloud session --reveal-token`
+    // works afterwards — that is what ai-hist consumes.
+    expect(fsMocks.writeFile).toHaveBeenCalled();
+    // The user was actually told the code.
+    expect(logSpy.mock.calls.map((call) => String(call[0])).join('\n')).toContain('BCDF-GHJK');
+
+    logSpy.mockRestore();
+  });
+
+  it('points a headless host at --device when it cannot prompt', async () => {
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+
+    await expect(
+      ensureCloudSession({ apiUrl: 'https://example.com/cloud', interactive: false })
+    ).rejects.toMatchObject({
+      code: 'AUTH_BROWSER_REQUIRED',
+      message: 'Cloud login required. Run `agent-relay cloud login --device`.',
+    });
   });
 
   it('fails fast without opening a browser when non-interactive auth needs login', async () => {
@@ -746,6 +831,187 @@ describe('authorizedApiFetch telemetry headers', () => {
     const headers = new Headers(init.headers);
     expect(headers.get('x-agent-relay-distinct-id')).toBeNull();
     expect(headers.get('x-relaycast-harness')).toBeNull();
+  });
+});
+
+describe('authorizedApiFetch re-login', () => {
+  it('re-authenticates a headless host through the device flow, not the browser', async () => {
+    // The steady state this feature exists for: barry logged in once over ssh
+    // with `--device`, and now a request 401s with a refresh token the server
+    // will not renew. Sending that host to the browser flow would park it on a
+    // loopback callback nobody can ever complete.
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    let protectedCalls = 0;
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        // Refresh token revoked/rotated away — the branch that falls through
+        // to an interactive login.
+        return new Response('{}', { status: 401 });
+      }
+      if (url.includes('/api/v1/auth/device/start')) {
+        return new Response(
+          JSON.stringify({
+            device_code: 'cld_dc_reauth',
+            user_code: 'MNPQ-RSTV',
+            verification_uri: 'https://api.example.test/cloud/device',
+            expires_in: 600,
+            interval: 1,
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/auth/device/token')) {
+        return new Response(
+          JSON.stringify({
+            access_token: 'reauth-access',
+            refresh_token: 'reauth-refresh',
+            access_token_expires_at: '2999-01-01T00:00:00.000Z',
+            api_url: 'https://api.example.test',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/auth/whoami')) {
+        return new Response('{}', { status: 500 });
+      }
+
+      protectedCalls += 1;
+      // First attempt is unauthorized; the retry after re-login succeeds.
+      return protectedCalls === 1
+        ? new Response('{}', { status: 401 })
+        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { response, auth } = await authorizedApiFetch(
+      {
+        apiUrl: 'https://api.example.test',
+        accessToken: 'stale-access',
+        refreshToken: 'stale-refresh',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      },
+      '/api/v1/workflows/run',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(200);
+    expect(auth).toMatchObject({ accessToken: 'reauth-access', refreshToken: 'reauth-refresh' });
+
+    const requested = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(requested.some((url) => url.includes('/api/v1/auth/device/start'))).toBe(true);
+    // The browser flow is what this fix routes around: no browser launch, and
+    // the retried request carries the token the device flow just issued.
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    const retryInit = fetchSpy.mock.calls.at(-1)?.[1] as RequestInit;
+    expect(new Headers(retryInit.headers).get('authorization')).toBe('Bearer reauth-access');
+
+    logSpy.mockRestore();
+  });
+
+  it('returns the caller cancellation instead of starting a device login', async () => {
+    // Routing re-auth through the device flow made cancellation matter more:
+    // the device grant blocks for minutes, so an aborted request that starts a
+    // login leaves a cancelled CLI or workflow waiting on authorization nobody
+    // asked for. The abort must win before any flow begins.
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const controller = new AbortController();
+
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/device/')) {
+        throw new Error('a cancelled request must not start the device flow');
+      }
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        // Abort while the refresh is in flight, then fail it: this is the
+        // exact interleaving where the old code fell through to a login.
+        controller.abort();
+        return new Response('{}', { status: 401 });
+      }
+      return new Response('{}', { status: 401 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      authorizedApiFetch(
+        {
+          apiUrl: 'https://api.example.test',
+          accessToken: 'stale-access',
+          refreshToken: 'stale-refresh',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        },
+        '/api/v1/workflows/run',
+        { method: 'POST', signal: controller.signal }
+      )
+    ).rejects.toThrow();
+
+    const requested = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(requested.some((url) => url.includes('/api/v1/auth/device/start'))).toBe(false);
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('still uses the browser flow on a host that has one', async () => {
+    // The selector only changes which flow a headless host gets. Everywhere
+    // else the browser flow stays the default, and it must still complete.
+    const realFetch = globalThis.fetch;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    let protectedCalls = 0;
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        return new Response('{}', { status: 401 });
+      }
+      if (url.includes('/api/v1/auth/device/')) {
+        throw new Error('device flow must not run on a host with a browser');
+      }
+      if (url.includes('/api/v1/auth/whoami')) {
+        return new Response('{}', { status: 500 });
+      }
+      protectedCalls += 1;
+      return protectedCalls === 1
+        ? new Response('{}', { status: 401 })
+        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const pending = authorizedApiFetch(
+      {
+        apiUrl: 'https://api.example.test',
+        accessToken: 'stale-access',
+        refreshToken: 'stale-refresh',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      },
+      '/api/v1/workflows/run',
+      { method: 'POST' }
+    );
+
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Opening browser for cloud login: '));
+    });
+
+    // Drive the loopback callback to completion so the login server closes
+    // instead of outliving the test.
+    const loginLine = logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.startsWith('Opening browser for cloud login: '));
+    const loginUrl = new URL(String(loginLine).slice('Opening browser for cloud login: '.length));
+    const callbackUrl = new URL(String(loginUrl.searchParams.get('redirect_uri')));
+    callbackUrl.searchParams.set('state', String(loginUrl.searchParams.get('state')));
+    callbackUrl.searchParams.set('access_token', 'browser-access');
+    callbackUrl.searchParams.set('refresh_token', 'browser-refresh');
+    callbackUrl.searchParams.set('access_token_expires_at', '2999-01-01T00:00:00.000Z');
+    callbackUrl.searchParams.set('api_url', 'https://api.example.test');
+    await realFetch(callbackUrl, { redirect: 'manual' });
+
+    const { auth } = await pending;
+    expect(auth).toMatchObject({ accessToken: 'browser-access' });
+    expect(childProcessMocks.spawn).toHaveBeenCalled();
+
+    logSpy.mockRestore();
   });
 });
 
