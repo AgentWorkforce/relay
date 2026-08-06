@@ -6,6 +6,7 @@ import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import {
+  describeClearedEnrollment,
   persistWorkspaceSession,
   validateWorkspaceSessionName,
   type PersistWorkspaceSessionResult,
@@ -21,14 +22,10 @@ function reportClearedEnrollment(
   result: PersistWorkspaceSessionResult,
   deps: WorkspaceCommandDependencies
 ): void {
-  if (!result.clearedEnrolledNodeId) {
-    return;
+  const message = describeClearedEnrollment(result);
+  if (message) {
+    deps.log(message);
   }
-  deps.log(
-    `Cleared this project's enrolled fleet node (${result.clearedEnrolledNodeId}): it belongs to the ` +
-      "workspace you moved away from. Run 'relay cloud enroll' from this project to serve a node in the " +
-      'new workspace.'
-  );
 }
 
 function parsePositiveInteger(value: string): number {
@@ -105,15 +102,23 @@ export function registerWorkspaceCommands(
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
         const relay = await deps.createWorkspace(workspaceName, o.baseUrl as string | undefined);
-        if (relay.workspaceKey) {
-          persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey });
-        }
+        const persisted = relay.workspaceKey
+          ? persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey })
+          : {};
         // The key is persisted to the workspace store either way; the output
-        // masks it unless the caller explicitly asks for the raw value.
+        // masks it unless the caller explicitly asks for the raw value. A
+        // dropped enrollment rides in the JSON rather than a log line so the
+        // output stays parseable.
         printJson(deps, {
           name: workspaceName,
           workspaceKey:
             relay.workspaceKey && !o.revealSecrets ? maskSecret(relay.workspaceKey) : relay.workspaceKey,
+          ...(persisted.clearedEnrolledNodeId
+            ? {
+                clearedEnrolledNodeId: persisted.clearedEnrolledNodeId,
+                warning: describeClearedEnrollment(persisted),
+              }
+            : {}),
         });
       });
     });

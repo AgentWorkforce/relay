@@ -8,9 +8,13 @@ vi.mock('@agent-relay/cloud', () => ({
   switchWorkspace: vi.fn(),
 }));
 
-vi.mock('../lib/workspace-session.js', () => ({
+vi.mock('../lib/workspace-session.js', async (importOriginal) => ({
   // Returns a result object describing what the write changed beyond the key.
   persistWorkspaceSession: vi.fn(() => ({})),
+  // The real formatter, not a copy: these tests assert on its wording, so a
+  // stand-in here would let the command output drift past them.
+  describeClearedEnrollment: (await importOriginal<typeof import('../lib/workspace-session.js')>())
+    .describeClearedEnrollment,
   validateWorkspaceSessionName: vi.fn((name: string) => {
     const trimmed = name.trim();
     if (!trimmed) throw new Error('Workspace name is required.');
@@ -200,6 +204,31 @@ describe('registerWorkspaceCommands', () => {
     const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
     expect(output).toContain('node_abc');
     expect(output).toContain('relay cloud enroll');
+  });
+
+  it('workspace create reports a dropped enrolled node inside its JSON output', async () => {
+    vi.mocked(persistWorkspaceSession).mockReturnValueOnce({ clearedEnrolledNodeId: 'node_abc' });
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({ workspaceKey: 'rk_live_fresh' } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'fresh']);
+
+    // A new workspace key never matches the existing pin, so create is a
+    // clearing path too — and its output must stay parseable JSON.
+    const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(printed.clearedEnrolledNodeId).toBe('node_abc');
+    expect(printed.warning).toContain('relay cloud enroll');
+  });
+
+  it('workspace create emits no warning key when nothing was dropped', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({ workspaceKey: 'rk_live_fresh' } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'fresh']);
+
+    const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(printed).not.toHaveProperty('clearedEnrolledNodeId');
+    expect(printed).not.toHaveProperty('warning');
   });
 
   it('workspace switch stays quiet when no enrolled node was dropped', async () => {

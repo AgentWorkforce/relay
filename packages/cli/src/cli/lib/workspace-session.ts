@@ -38,6 +38,26 @@ export interface PersistWorkspaceSessionResult {
 }
 
 /**
+ * Operator-facing explanation of a dropped enrollment association.
+ *
+ * Shared by every caller that changes the pin — CLI and MCP alike — so none of
+ * them can report success while the clearing goes unmentioned.
+ *
+ * @param result - What {@link persistWorkspaceSession} reported.
+ * @returns The message, or `undefined` when nothing was cleared.
+ */
+export function describeClearedEnrollment(result: PersistWorkspaceSessionResult): string | undefined {
+  if (!result.clearedEnrolledNodeId) {
+    return undefined;
+  }
+  return (
+    `Cleared this project's enrolled fleet node (${result.clearedEnrolledNodeId}): it belongs to the ` +
+    "workspace you moved away from. Run 'relay cloud enroll' from this project to serve a node in the " +
+    'new workspace.'
+  );
+}
+
+/**
  * Pin a workspace to the current project so later CLI and MCP processes resume
  * the same collaboration session. A named selection also becomes the
  * machine-global active workspace; a bare shared key only changes this project.

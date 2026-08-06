@@ -33,6 +33,7 @@ import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
 import {
+  describeClearedEnrollment,
   persistWorkspaceSession,
   resolveWorkspaceSessionKey,
   validateWorkspaceSessionName,
@@ -438,7 +439,12 @@ function registerAgentRelayTools(
       });
       let persistenceWarning: string | undefined;
       try {
-        persistWorkspaceSession({ name: workspaceName, workspaceKey });
+        // A new workspace key never matches an existing pin, so this can drop
+        // the project's enrolled fleet node. Report it rather than letting the
+        // next `node up` be the first thing that mentions it.
+        persistenceWarning = describeClearedEnrollment(
+          persistWorkspaceSession({ name: workspaceName, workspaceKey })
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         persistenceWarning =
@@ -495,7 +501,9 @@ function registerAgentRelayTools(
       }
       let persistenceWarning: string | undefined;
       try {
-        persistWorkspaceSession({ workspaceKey: key });
+        // Joining a different workspace drops this project's enrolled fleet
+        // node; surface that here instead of at the next `node up`.
+        persistenceWarning = describeClearedEnrollment(persistWorkspaceSession({ workspaceKey: key }));
       } catch (error) {
         const persistenceError = error instanceof Error ? error.message : String(error);
         persistenceWarning =
