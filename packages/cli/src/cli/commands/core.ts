@@ -71,6 +71,7 @@ export interface CoreFileSystem {
   existsSync: (path: string) => boolean;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   writeFileSync: (path: string, data: string, encoding?: BufferEncoding) => void;
+  renameSync: (oldPath: string, newPath: string) => void;
   unlinkSync: (path: string) => void;
   readdirSync: (path: string) => string[];
   mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
@@ -208,6 +209,7 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
     existsSync: fs.existsSync,
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
     writeFileSync: (filePath, data, encoding) => fs.writeFileSync(filePath, data, encoding),
+    renameSync: (oldPath, newPath) => fs.renameSync(oldPath, newPath),
     unlinkSync: fs.unlinkSync,
     readdirSync: (dirPath) => fs.readdirSync(dirPath),
     mkdirSync: (dirPath, options) => fs.mkdirSync(dirPath, options),

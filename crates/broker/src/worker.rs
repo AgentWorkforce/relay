@@ -1005,9 +1005,12 @@ impl WorkerRegistry {
         if let Err(error) = startup_confirmation {
             // `try_wait` reaped an exited wrapper. Remove the stale registry
             // entry before returning the error so `node agent list` cannot
-            // briefly advertise a process the spawn call just rejected.
+            // briefly advertise a process the spawn call just rejected. Also
+            // unregister from the restart supervisor so a rejected spawn can
+            // never generate a pending restart for a worker that never launched.
             self.workers.remove(&spec.name);
             self.initial_tasks.remove(&spec.name);
+            self.supervisor.unregister(&spec.name);
             return Err(error);
         }
 
@@ -2070,6 +2073,7 @@ mod tests {
         assert!(reg.list(&HashMap::new()).is_empty());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn spawn_confirmation_rejects_a_process_that_exits_immediately() {
         let mut child = Command::new("sleep").arg("0").spawn().unwrap();
@@ -2078,7 +2082,7 @@ mod tests {
             "failed-worker",
             &mut child,
             Some(Path::new("/tmp/failed-worker.log")),
-            Duration::from_millis(100),
+            Duration::from_millis(500),
         )
         .await
         .unwrap_err();
@@ -2088,6 +2092,7 @@ mod tests {
         assert!(message.contains("/tmp/failed-worker.log"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn spawn_confirmation_accepts_a_process_that_stays_alive() {
         let mut child = Command::new("sleep").arg("30").spawn().unwrap();

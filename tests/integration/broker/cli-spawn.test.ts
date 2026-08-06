@@ -493,9 +493,15 @@ test(
     const missingCli = `agent-relay-missing-${suffix}`;
 
     try {
+      // The wrapper exits before its CLI ever runs, so two rejection paths
+      // race: the stability-window check ("process exited during startup")
+      // and, if the wrapper's stdin closes before the broker writes the
+      // init_worker frame, an EPIPE from send_to_worker ("failed writing
+      // frame to worker"). Both are the correct rejection for this case, so
+      // accept either instead of pinning to whichever wins the race.
       await assert.rejects(
         () => harness.spawnAgent(agentName, missingCli, ['general']),
-        /process exited during startup/,
+        /process exited during startup|failed writing frame to worker/,
         'a wrapper that cannot launch its CLI must reject the spawn request'
       );
 

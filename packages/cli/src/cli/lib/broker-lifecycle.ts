@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
@@ -83,7 +84,7 @@ const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
 // RELAY_NODE_TOKEN.
 const NODE_TOKEN_WAIT_MS = 15_000;
 
-export type WorkspaceBindingSource = WorkspaceSelection['source'] | 'created';
+export type WorkspaceBindingSource = WorkspaceSelection['source'] | 'created' | 'multi-workspace';
 
 export interface BrokerConnection {
   url: string;
@@ -732,7 +733,8 @@ function workspaceBindingSource(value: string | undefined): WorkspaceBindingSour
     value === 'env' ||
     value === 'project' ||
     value === 'store' ||
-    value === 'created'
+    value === 'created' ||
+    value === 'multi-workspace'
     ? value
     : undefined;
 }
@@ -749,7 +751,18 @@ function workspaceBindingSourceLabel(source: WorkspaceBindingSource): string {
       return 'machine-global active workspace (~/.agentworkforce/relay/workspaces.json)';
     case 'created':
       return 'created (no configured workspace resolved)';
+    case 'multi-workspace':
+      return 'multi-workspace session ($RELAY_WORKSPACES_JSON)';
   }
+}
+
+/** True when `RELAY_WORKSPACES_JSON` carries at least one membership. The broker's
+ * `startup_session_set_with_options` checks this env var before any single
+ * workspace key (flag, env, repository pin, or machine-global store), so the
+ * CLI's precedence ladder must defer to it for provenance too — otherwise
+ * `node up` / `node status` can report a source the broker never used. */
+function usesMultiWorkspaceEnv(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.RELAY_WORKSPACES_JSON?.trim());
 }
 
 function writeBrokerBindingSource(
@@ -760,11 +773,17 @@ function writeBrokerBindingSource(
   const connectionPath = path.join(dataDir, CONNECTION_FILENAME);
   const connection = readBrokerConnectionFromFs(deps.fs, dataDir);
   if (!connection) return;
+  // Every CLI invocation resolves the broker through this file, so a
+  // concurrent writer must never observe a partial or clobbered write.
+  // Write to a private tmp file and rename it into place, which is atomic
+  // on the same filesystem.
+  const tmpPath = `${connectionPath}.tmp-${process.pid}-${randomUUID()}`;
   deps.fs.writeFileSync(
-    connectionPath,
+    tmpPath,
     `${JSON.stringify({ ...connection, workspace_source: source }, null, 2)}\n`,
     'utf-8'
   );
+  deps.fs.renameSync(tmpPath, connectionPath);
 }
 
 function backgroundStartErrorPath(dataDir: string): string {
@@ -1436,11 +1455,13 @@ function describeWorkspaceSource(source: WorkspaceSelection['source']): string {
  */
 function recordWorkspaceBindingSource(
   selection: WorkspaceSelection | undefined,
-  deps: CoreDependencies
+  deps: CoreDependencies,
+  overrideSource?: WorkspaceBindingSource
 ): WorkspaceBindingSource {
   const inheritedSource = workspaceBindingSource(deps.env[WORKSPACE_BINDING_SOURCE_ENV]);
   const source: WorkspaceBindingSource =
-    selection?.source === 'env' && inheritedSource ? inheritedSource : (selection?.source ?? 'created');
+    overrideSource ??
+    (selection?.source === 'env' && inheritedSource ? inheritedSource : (selection?.source ?? 'created'));
   deps.env[WORKSPACE_BINDING_SOURCE_ENV] = source;
   return source;
 }
@@ -1455,14 +1476,29 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   // --state-dir), so the key must be persisted here even when broker state is
   // redirected elsewhere.
   const projectWorkspaceKeyDataDir = paths.dataDir;
-  const workspaceSelection = resolveWorkspaceSelection({
-    workspaceKey: options.workspaceKey,
-    env: deps.env,
-    projectDataDir: projectWorkspaceKeyDataDir,
-    fileSystem: deps.fs,
-  });
-  const workspaceBindingSource = recordWorkspaceBindingSource(workspaceSelection, deps);
-  const resumedProjectSession = applyWorkspaceSelection(workspaceSelection, deps, projectWorkspaceKeyDataDir);
+  // The broker's startup_session_set_with_options() checks RELAY_WORKSPACES_JSON
+  // before any single workspace key, so a flag/env/pin/store resolution here
+  // would report provenance the broker never actually used.
+  const joinsMultiWorkspaceSession = usesMultiWorkspaceEnv(deps.env);
+  const workspaceSelection = joinsMultiWorkspaceSession
+    ? undefined
+    : resolveWorkspaceSelection({
+        workspaceKey: options.workspaceKey,
+        env: deps.env,
+        projectDataDir: projectWorkspaceKeyDataDir,
+        fileSystem: deps.fs,
+      });
+  const workspaceBindingSource = recordWorkspaceBindingSource(
+    workspaceSelection,
+    deps,
+    joinsMultiWorkspaceSession ? 'multi-workspace' : undefined
+  );
+  const resumedProjectSession = joinsMultiWorkspaceSession
+    ? undefined
+    : applyWorkspaceSelection(workspaceSelection, deps, projectWorkspaceKeyDataDir);
+  if (joinsMultiWorkspaceSession) {
+    deps.log(`Workspace source: ${workspaceBindingSourceLabel('multi-workspace')}`);
+  }
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1711,7 +1747,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // Minting must be observable: without this line "created a workspace" and
     // "joined the pinned workspace" print identically.
     const joinedWorkspaceId = relay.workspaceId ?? 'unknown';
-    if (workspaceSelection) {
+    // The multi-workspace session always joins a configured membership; it
+    // never mints a new workspace the way an unresolved single key does.
+    if (workspaceSelection || joinsMultiWorkspaceSession) {
       deps.log(`Workspace: joined ${joinedWorkspaceId}`);
     } else {
       deps.log(`Workspace: created new workspace ${joinedWorkspaceId}`);

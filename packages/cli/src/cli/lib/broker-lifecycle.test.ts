@@ -282,6 +282,7 @@ function createUpHarness() {
       readFileSync: (file: string, encoding: BufferEncoding) =>
         file.endsWith('connection.json') ? connection : fsReal.readFileSync(file, encoding),
       writeFileSync: fsReal.writeFileSync,
+      renameSync: fsReal.renameSync,
       unlinkSync: fsReal.unlinkSync,
       readdirSync: fsReal.readdirSync,
       mkdirSync: fsReal.mkdirSync,
@@ -560,6 +561,27 @@ describe('runUpCommand workspace precedence', () => {
     expect(readBindingSource(dataDir)).toBe('created');
   });
 
+  it('records the workspace source atomically, never truncating connection.json in place (#1429)', async () => {
+    const { deps, dataDir } = createUpHarness();
+    const connectionPath = pathReal.join(dataDir, 'connection.json');
+    const writeFileSpy = vi.spyOn(deps.fs, 'writeFileSync');
+    const renameSpy = vi.spyOn(deps.fs, 'renameSync');
+
+    await runUpCommand({}, deps);
+
+    // A concurrent writer to connection.json (e.g. the broker updating its own
+    // port/pid) must never be clobbered by a direct, non-atomic overwrite here.
+    const directWrites = writeFileSpy.mock.calls.filter(([target]) => target === connectionPath);
+    expect(directWrites).toHaveLength(0);
+
+    const renameToConnection = renameSpy.mock.calls.find(([, dest]) => dest === connectionPath);
+    expect(renameToConnection).toBeDefined();
+    const [tmpPath] = renameToConnection ?? [];
+    expect(String(tmpPath)).not.toBe(connectionPath);
+    expect(writeFileSpy.mock.calls.some(([target]) => target === tmpPath)).toBe(true);
+    expect(readBindingSource(dataDir)).toBe('created');
+  });
+
   it('keeps an explicit --workspace-key ahead of both stores', async () => {
     const { deps, dataDir, home, log } = createUpHarness();
     setWorkspaceKey('global', 'rk_global', { AGENT_RELAY_HOME: home });
@@ -570,6 +592,22 @@ describe('runUpCommand workspace precedence', () => {
     expect(deps.env.RELAY_WORKSPACE_KEY).toBe('rk_flag');
     expect(log.mock.calls.flat().join('\n')).toContain('Workspace source: command-line flag');
     expect(readBindingSource(dataDir)).toBe('flag');
+  });
+
+  it('attributes provenance to the multi-workspace session, not a single key, when RELAY_WORKSPACES_JSON is set (#1429)', async () => {
+    const { deps, dataDir, home, log } = createUpHarness();
+    // Every one of these would normally win the single-key ladder, but the
+    // broker's startup_session_set_with_options() checks RELAY_WORKSPACES_JSON
+    // before any of them, so none is what the broker actually joins.
+    setWorkspaceKey('global', 'rk_global', { AGENT_RELAY_HOME: home });
+    writeRepositoryPin(dataDir, { workspaceKey: 'rk_repository' });
+    deps.env.RELAY_WORKSPACES_JSON = '[{"workspace_id":"rw_a","api_key":"rk_a"}]';
+
+    await runUpCommand({ workspaceKey: 'rk_flag' }, deps);
+
+    expect(log.mock.calls.flat().join('\n')).toContain('Workspace source: multi-workspace session');
+    expect(log.mock.calls.flat().join('\n')).toContain('Workspace: joined');
+    expect(readBindingSource(dataDir)).toBe('multi-workspace');
   });
 
   it('records environment provenance after normalizing a workspace-key alias', async () => {

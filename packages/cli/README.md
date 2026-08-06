@@ -68,11 +68,22 @@ announces creation when none of the first four sources resolves.
 
 Startup and `node status` report the winning source without printing key
 material. Status uses the same five labels: command-line flag, environment,
-repository pin, machine-global active workspace, or created.
+repository pin, machine-global active workspace, or created — but the two
+commands print different strings: startup shows the resolved origin
+(an absolute path for a repository pin), `node status` shows a fixed,
+relative-path label.
+
+Startup output:
 
 ```text
 Workspace source: repository pin (/repo/.agentworkforce/relay/workspace-key.json)
 Workspace: joined rw_7ccfea89
+```
+
+`node status` output:
+
+```text
+Workspace source: repository pin (.agentworkforce/relay/workspace-key.json)
 ```
 
 A Cloud enrollment (`RELAY_NODE_TOKEN`, or a record in the Fleet enrollment

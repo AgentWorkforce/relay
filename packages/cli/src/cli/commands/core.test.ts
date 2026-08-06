@@ -126,6 +126,11 @@ function createFsMock(initialFiles: Record<string, string> = {}): CoreFileSystem
     writeFileSync: vi.fn((filePath: string, data: string) => {
       files.set(filePath, String(data));
     }),
+    renameSync: vi.fn((oldPath: string, newPath: string) => {
+      const data = files.get(oldPath);
+      files.delete(oldPath);
+      if (data !== undefined) files.set(newPath, data);
+    }),
     unlinkSync: vi.fn((filePath: string) => {
       files.delete(filePath);
     }),
