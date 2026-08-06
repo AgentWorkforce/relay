@@ -61,18 +61,14 @@ describe('registerAgentWithRebind', () => {
    */
   function fakeRelay({ persists = true }: { persists?: boolean } = {}) {
     // The platform writes its own block; a verifier must ignore it.
-    const records = new Map<string, Record<string, unknown>>([
-      ['WorkerA', { fleet: { nodeId: 'node_x' } }],
-    ]);
+    const records = new Map<string, Record<string, unknown>>([['WorkerA', { fleet: { nodeId: 'node_x' } }]]);
     const registerOrRotate = vi.fn(async (input: any) => {
       if (persists && input.metadata) {
         records.set(input.name, { ...records.get(input.name), ...input.metadata });
       }
       return { id: 'agent_123', name: input.name, token: 'at_live_rotated', status: 'online' };
     });
-    const list = vi.fn(async () =>
-      [...records].map(([name, metadata]) => ({ name, metadata }))
-    );
+    const list = vi.fn(async () => [...records].map(([name, metadata]) => ({ name, metadata })));
     return { agents: { registerOrRotate, list }, records };
   }
 

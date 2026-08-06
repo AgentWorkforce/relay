@@ -465,9 +465,9 @@ async function verifyMetadataLanded(
     };
   }
 
-  const record = agents.find(
-    (agent) => (agent as { name?: string } | null)?.name === name
-  ) as { metadata?: Record<string, unknown> } | undefined;
+  const record = agents.find((agent) => (agent as { name?: string } | null)?.name === name) as
+    | { metadata?: Record<string, unknown> }
+    | undefined;
 
   if (!record) {
     return {
@@ -477,9 +477,7 @@ async function verifyMetadataLanded(
   }
 
   const stored = record.metadata ?? {};
-  const missing = keys.filter(
-    (key) => JSON.stringify(stored[key]) !== JSON.stringify(metadata[key])
-  );
+  const missing = keys.filter((key) => JSON.stringify(stored[key]) !== JSON.stringify(metadata[key]));
   if (missing.length === 0) return { verified: true, warning: '' };
 
   return {
