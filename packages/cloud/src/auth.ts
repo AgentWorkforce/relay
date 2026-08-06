@@ -15,11 +15,7 @@ import {
   writeStoredIdentity,
   type CloudIdentity,
 } from './identity.js';
-import {
-  isHeadlessEnvironment,
-  runDeviceAuthorizationFlow,
-  type DeviceFlowHooks,
-} from './device-auth.js';
+import { isHeadlessEnvironment, runDeviceAuthorizationFlow, type DeviceFlowHooks } from './device-auth.js';
 import {
   AUTH_FILE_PATH,
   DEFAULT_REFRESH_TIMEOUT_MS,

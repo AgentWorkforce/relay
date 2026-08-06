@@ -92,9 +92,7 @@ describe('device authorization start', () => {
   });
 
   it('rejects a response missing the device code', async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse({ user_code: 'BCDF-GHJK' }, { status: 201 })
-    );
+    const fetchImpl = vi.fn(async () => jsonResponse({ user_code: 'BCDF-GHJK' }, { status: 201 }));
 
     await expect(
       startDeviceAuthorization(API_URL, { fetchImpl: fetchImpl as unknown as typeof fetch })
@@ -192,9 +190,7 @@ describe('device authorization poll', () => {
   });
 
   it('never lets the interval grow without bound', async () => {
-    const responses = Array.from({ length: 30 }, () =>
-      jsonResponse({ error: 'slow_down' }, { status: 400 })
-    );
+    const responses = Array.from({ length: 30 }, () => jsonResponse({ error: 'slow_down' }, { status: 400 }));
     responses.push(
       jsonResponse({
         access_token: 'cld_at_abc',
@@ -205,19 +201,13 @@ describe('device authorization poll', () => {
     // A long-lived grant so the deadline does not end the loop first.
     const { hooks, sleeps } = harness(responses);
 
-    await pollForDeviceToken(
-      API_URL,
-      { ...AUTHORIZATION, expiresInSeconds: 60 * 60 * 24 },
-      hooks
-    );
+    await pollForDeviceToken(API_URL, { ...AUTHORIZATION, expiresInSeconds: 60 * 60 * 24 }, hooks);
 
     expect(Math.max(...sleeps)).toBe(60_000);
   });
 
   it('reports a denial as a clear error rather than hanging', async () => {
-    const { hooks } = harness([
-      jsonResponse({ error: 'access_denied' }, { status: 400 }),
-    ]);
+    const { hooks } = harness([jsonResponse({ error: 'access_denied' }, { status: 400 })]);
 
     await expect(pollForDeviceToken(API_URL, AUTHORIZATION, hooks)).rejects.toThrow(
       /denied\. No credentials were issued/
@@ -225,9 +215,7 @@ describe('device authorization poll', () => {
   });
 
   it('reports an expired grant as a clear error rather than hanging', async () => {
-    const { hooks } = harness([
-      jsonResponse({ error: 'expired_token' }, { status: 400 }),
-    ]);
+    const { hooks } = harness([jsonResponse({ error: 'expired_token' }, { status: 400 })]);
 
     await expect(pollForDeviceToken(API_URL, AUTHORIZATION, hooks)).rejects.toThrow(
       /expired before it was approved/
@@ -235,13 +223,9 @@ describe('device authorization poll', () => {
   });
 
   it('reports a replayed device code as a clear error', async () => {
-    const { hooks } = harness([
-      jsonResponse({ error: 'invalid_grant' }, { status: 400 }),
-    ]);
+    const { hooks } = harness([jsonResponse({ error: 'invalid_grant' }, { status: 400 })]);
 
-    await expect(pollForDeviceToken(API_URL, AUTHORIZATION, hooks)).rejects.toThrow(
-      /no longer valid/
-    );
+    await expect(pollForDeviceToken(API_URL, AUTHORIZATION, hooks)).rejects.toThrow(/no longer valid/);
   });
 
   it('gives up locally once the grant lifetime elapses', async () => {
@@ -261,9 +245,7 @@ describe('device authorization poll', () => {
   });
 
   it('surfaces an unexpected error code instead of looping on it', async () => {
-    const { hooks } = harness([
-      jsonResponse({ error: 'invalid_client' }, { status: 400 }),
-    ]);
+    const { hooks } = harness([jsonResponse({ error: 'invalid_client' }, { status: 400 })]);
 
     await expect(pollForDeviceToken(API_URL, AUTHORIZATION, hooks)).rejects.toThrow(
       /Device login failed: invalid_client/
@@ -271,9 +253,7 @@ describe('device authorization poll', () => {
   });
 
   it('reports a CloudAuthError so callers can branch on the code', async () => {
-    const { hooks } = harness([
-      jsonResponse({ error: 'access_denied' }, { status: 400 }),
-    ]);
+    const { hooks } = harness([jsonResponse({ error: 'access_denied' }, { status: 400 })]);
 
     const error = await pollForDeviceToken(API_URL, AUTHORIZATION, hooks).then(
       () => {

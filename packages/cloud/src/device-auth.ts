@@ -99,11 +99,9 @@ export async function startDeviceAuthorization(
       body: JSON.stringify({ client_name: clientName }),
     });
   } catch (error) {
-    throw new CloudAuthError(
-      'AUTH_DEVICE_FLOW_FAILED',
-      `Could not reach ${apiUrl} to start device login`,
-      { cause: error }
-    );
+    throw new CloudAuthError('AUTH_DEVICE_FLOW_FAILED', `Could not reach ${apiUrl} to start device login`, {
+      cause: error,
+    });
   }
 
   const payload = (await response.json().catch(() => null)) as {
@@ -207,11 +205,7 @@ export async function pollForDeviceToken(
     } | null;
 
     if (response.ok) {
-      if (
-        !payload?.access_token ||
-        !payload.refresh_token ||
-        !payload.access_token_expires_at
-      ) {
+      if (!payload?.access_token || !payload.refresh_token || !payload.access_token_expires_at) {
         throw deviceError('Device login response was missing required fields');
       }
       return {
@@ -250,10 +244,7 @@ export async function pollForDeviceToken(
         // RFC 8628 §3.5. Take whichever is larger: the server's stated
         // interval, or our own +5s step.
         intervalSeconds = clampInterval(
-          Math.max(
-            intervalSeconds + SLOW_DOWN_INCREMENT_SECONDS,
-            payload.interval ?? 0
-          )
+          Math.max(intervalSeconds + SLOW_DOWN_INCREMENT_SECONDS, payload.interval ?? 0)
         );
         continue;
 
@@ -266,13 +257,10 @@ export async function pollForDeviceToken(
         );
 
       case 'invalid_grant':
-        throw deviceError(
-          'This device code is no longer valid. Run the command again to get a new code.'
-        );
+        throw deviceError('This device code is no longer valid. Run the command again to get a new code.');
 
       default: {
-        const detail =
-          payload?.error_description || payload?.error || `HTTP ${response.status}`;
+        const detail = payload?.error_description || payload?.error || `HTTP ${response.status}`;
         throw deviceError(`Device login failed: ${detail}`);
       }
     }
