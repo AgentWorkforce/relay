@@ -489,6 +489,22 @@ describe('headless detection', () => {
     expect(isHeadlessEnvironment({ CI: 'true' }, 'darwin')).toBe(false);
   });
 
+  it('still reports headless on a CI host with no display at all', () => {
+    // Both cases above pin a browser signal — a display, then a platform that
+    // always has `open`. A typical Linux runner has neither, and this is the
+    // branch that actually decides the flow on one, so pin it rather than
+    // leaving the headless path of a headless-login feature untested.
+    //
+    // `CI` is not an escape hatch: it never *suppresses* headless detection,
+    // it simply is not a signal on its own. The absent display is what
+    // decides here. Unattended runs never reach this code anyway — a
+    // non-interactive `ensureCloudSession` throws "login required" before any
+    // flow is chosen — so only an explicit `cloud login` on a runner lands
+    // here, and there the device flow is the one that can work.
+    expect(isHeadlessEnvironment({ CI: 'true' }, 'linux')).toBe(true);
+    expect(isHeadlessEnvironment({ CI: 'true', GITHUB_ACTIONS: 'true' }, 'linux')).toBe(true);
+  });
+
   it('treats a Unix host with no display server as headless', () => {
     expect(isHeadlessEnvironment({}, 'linux')).toBe(true);
     expect(isHeadlessEnvironment({ DISPLAY: ':0' }, 'linux')).toBe(false);
