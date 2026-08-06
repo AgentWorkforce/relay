@@ -298,6 +298,11 @@ beforeEach(() => {
   vi.stubEnv('RELAYCAST_HARNESS', '');
   vi.stubEnv('X_RELAYCAST_HARNESS', '');
   vi.stubEnv('AGENT_RELAY_DISTINCT_ID', '');
+  vi.stubEnv('AGENT_RELAY_MACHINE_ID', '');
+  vi.stubEnv('AGENT_RELAY_USER_ID', '');
+  vi.stubEnv('AGENT_RELAY_ORG_ID', '');
+  vi.stubEnv('AGENT_RELAY_ORG_SLUG', '');
+  vi.stubEnv('AGENT_RELAY_USER_EMAIL', '');
 });
 
 afterEach(() => {

@@ -82,4 +82,22 @@ describe('buildBrokerSpawnConfig', () => {
       '/tmp/relay-state',
     ]);
   });
+
+  it('prefers RELAY_WORKSPACE_KEY over AGENT_RELAY_WORKSPACE_KEY in the same env', () => {
+    const config = buildBrokerSpawnConfig(
+      {
+        cwd: '/tmp/my-project',
+        env: {
+          RELAY_WORKSPACE_KEY: 'rk_live_primary',
+          AGENT_RELAY_WORKSPACE_KEY: 'rk_live_alias',
+        },
+      },
+      'br_test',
+      {}
+    );
+
+    expect(config.workspaceKey).toBe('rk_live_primary');
+    expect(config.env.RELAY_WORKSPACE_KEY).toBe('rk_live_primary');
+    expect(config.env.AGENT_RELAY_WORKSPACE_KEY).toBe('rk_live_primary');
+  });
 });

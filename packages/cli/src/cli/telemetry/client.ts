@@ -233,11 +233,13 @@ function showFirstRunNotice(): void {
     return;
   }
 
-  console.log('');
-  console.log('Agent Relay collects usage telemetry to improve the product.');
-  console.log('Run `agent-relay telemetry disable` to opt out.');
-  console.log('Learn more: https://agentrelay.com/telemetry');
-  console.log('');
+  // Notices are diagnostics, never command data. Keeping them on stderr means
+  // a first run cannot corrupt commands whose stdout is a JSON contract.
+  console.error('');
+  console.error('Agent Relay collects usage telemetry to improve the product.');
+  console.error('Run `agent-relay telemetry disable` to opt out.');
+  console.error('Learn more: https://agentrelay.com/telemetry');
+  console.error('');
 
   markNotified();
 }

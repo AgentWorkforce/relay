@@ -9,6 +9,8 @@ import path from 'node:path';
  */
 export interface WorkspaceStore {
   active?: string;
+  /** Workspace that was active before the most recent named selection. */
+  previous?: string;
   workspaces: Record<string, { key: string }>;
 }
 
@@ -38,7 +40,12 @@ export function readWorkspaceStore(env: NodeJS.ProcessEnv = process.env): Worksp
   const file = workspaceStorePath(env);
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<WorkspaceStore>;
-    return { active: parsed.active, workspaces: parsed.workspaces ?? {} };
+    const previous = typeof parsed.previous === 'string' ? parsed.previous.trim() : '';
+    return {
+      active: parsed.active,
+      ...(previous ? { previous } : {}),
+      workspaces: parsed.workspaces ?? {},
+    };
   } catch (err: unknown) {
     if (isNodeError(err) && err.code === 'ENOENT') {
       return { workspaces: {} };
@@ -74,6 +81,9 @@ export function setActiveWorkspace(name: string, env: NodeJS.ProcessEnv = proces
     throw new Error(
       `Unknown workspace "${workspaceName}". Add it with \`relay workspace set_key ${workspaceName} <key>\`.`
     );
+  }
+  if (store.active && store.active !== workspaceName) {
+    store.previous = store.active;
   }
   store.active = workspaceName;
   writeWorkspaceStore(store, env);

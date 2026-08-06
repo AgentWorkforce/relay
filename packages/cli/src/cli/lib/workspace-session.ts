@@ -16,6 +16,10 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
   name?: string;
 }
 
+export interface PinProjectWorkspaceSessionOptions extends WorkspaceSessionOptions {
+  workspaceKey: string;
+}
+
 /** Validate and normalize a workspace session name before local or remote writes. */
 export function validateWorkspaceSessionName(name: string): string {
   return validateWorkspaceName(name);
@@ -86,6 +90,11 @@ export function persistWorkspaceSession(
   // while every other command in this project reads the new one. That is the
   // split this whole change exists to remove, and the workspace ids the
   // enrollment store holds cannot be checked against the key the pin holds.
+  //
+  // This intentionally does NOT delegate to `pinProjectWorkspaceSession`
+  // below, which always drops the enrolled-node association — that is correct
+  // for an explicit `rebind` but would reintroduce the bug described above
+  // for an ordinary switch/join/create that happens to stay on the same key.
   const keepsWorkspace = existing?.workspaceKey === workspaceKey;
   const enrolledNodeId = keepsWorkspace ? existing?.enrolledNodeId : undefined;
   writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
@@ -100,4 +109,18 @@ export function persistWorkspaceSession(
   return existing?.enrolledNodeId && !enrolledNodeId
     ? { clearedEnrolledNodeId: existing.enrolledNodeId }
     : {};
+}
+
+/**
+ * Rebind only the current project to a workspace key. This intentionally drops
+ * any enrolled-node association: a later `node up` must honor the newly pinned
+ * messaging workspace instead of resuming credentials from the old binding.
+ */
+export function pinProjectWorkspaceSession(options: PinProjectWorkspaceSessionOptions): void {
+  const workspaceKey = options.workspaceKey.trim();
+  if (!workspaceKey) {
+    throw new Error('Workspace key is required.');
+  }
+  const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
+  writeProjectWorkspaceKey(projectDataDir, workspaceKey);
 }

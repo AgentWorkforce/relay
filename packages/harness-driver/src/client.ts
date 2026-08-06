@@ -225,6 +225,8 @@ export class HarnessDriverClient {
   private brokerExitListeners = new Set<BrokerExitListener>();
 
   workspaceKey?: string;
+  /** Relay workspace id the broker joined, as reported on `/api/session`. */
+  workspaceId?: string;
   /** Resolved broker URL — captured so call-site lifecycle contexts can surface it. */
   readonly baseUrl: string;
   /** Shared multi-listener registry. Created bare when no `eventBus` is passed in. */
@@ -502,6 +504,7 @@ export class HarnessDriverClient {
   async getSession(): Promise<SessionInfo> {
     const session = await this.transport.request<SessionInfo>('/api/session');
     this.workspaceKey = session.workspace_key;
+    this.workspaceId = session.default_workspace_id;
     return session;
   }
 

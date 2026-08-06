@@ -5,13 +5,17 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
-import { persistWorkspaceSession, resolveWorkspaceSessionKey } from './workspace-session.js';
+import {
+  persistWorkspaceSession,
+  pinProjectWorkspaceSession,
+  resolveWorkspaceSessionKey,
+} from './workspace-session.js';
 import {
   readProjectWorkspaceKey,
   readProjectWorkspaceSession,
   writeProjectWorkspaceKey,
 } from './project-workspace-key.js';
-import { readWorkspaceStore, setWorkspaceKey } from './workspace-store.js';
+import { readWorkspaceStore, setWorkspaceKey, switchWorkspace } from './workspace-store.js';
 
 const tempRoots: string[] = [];
 
@@ -77,6 +81,22 @@ describe('workspace session persistence', () => {
         'session-two': { key: 'rk_live_session_two' },
       },
     });
+  });
+
+  it('records the previous global workspace when a named session changes it', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+    setWorkspaceKey('default', 'rk_live_default', env);
+
+    persistWorkspaceSession({
+      workspaceKey: 'rk_live_session_two',
+      name: 'session-two',
+      projectDataDir,
+      env,
+    });
+
+    expect(readWorkspaceStore(env)).toMatchObject({ active: 'session-two', previous: 'default' });
   });
 
   it('pins an explicitly supplied key without changing the named global workspace', () => {
@@ -177,5 +197,25 @@ describe('workspace session persistence', () => {
     });
 
     expect(resolveWorkspaceSessionKey({ projectDataDir, env })).toBe('rk_live_project');
+  });
+
+  it('rebinds the project without changing the machine-global active workspace and clears the old enrollment', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+    setWorkspaceKey('default', 'rk_live_default', env);
+    setWorkspaceKey('scratch', 'rk_live_scratch', env);
+    switchWorkspace('scratch', env);
+    writeProjectWorkspaceKey(projectDataDir, 'rk_live_old', {
+      enrolledNodeId: 'node_old',
+      workspaceId: 'rw_old',
+    });
+
+    pinProjectWorkspaceSession({ workspaceKey: 'rk_live_default', projectDataDir, env });
+
+    expect(readProjectWorkspaceKey(projectDataDir)).toBe('rk_live_default');
+    expect(readWorkspaceStore(env).active).toBe('scratch');
+    expect(resolveWorkspaceSessionKey({ projectDataDir, env })).toBe('rk_live_default');
+    expect(readProjectWorkspaceSession(projectDataDir)).toEqual({ workspaceKey: 'rk_live_default' });
   });
 });
