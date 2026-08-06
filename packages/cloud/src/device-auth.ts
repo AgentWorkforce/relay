@@ -22,6 +22,14 @@ const DEFAULT_INTERVAL_SECONDS = 5;
 const SLOW_DOWN_INCREMENT_SECONDS = 5;
 const MAX_INTERVAL_SECONDS = 60;
 const DEFAULT_EXPIRES_IN_SECONDS = 600;
+/**
+ * Node's `fetch` has no default timeout, so a stalled TCP connection never
+ * settles and leaves `cloud login --device` hanging with no output and no
+ * error. That is the worst failure this feature can have: it exists for a
+ * headless host reached over ssh, where nobody is watching a terminal, and a
+ * silent hang there is strictly worse than a visible failure.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export type DeviceAuthorization = {
   deviceCode: string;
@@ -38,6 +46,8 @@ export type DeviceFlowHooks = {
   now?: () => number;
   fetchImpl?: typeof fetch;
   log?: (message: string) => void;
+  /** Per-request abort budget. Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. */
+  requestTimeoutMs?: number;
 };
 
 type DeviceTokenErrorCode =
@@ -50,6 +60,30 @@ type DeviceTokenErrorCode =
 
 function deviceError(message: string): CloudAuthError {
   return new CloudAuthError('AUTH_DEVICE_FLOW_FAILED', message);
+}
+
+function normalizeTimeout(ms: number | undefined): number {
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+function formatDuration(ms: number): string {
+  return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms)}ms`;
+}
+
+/**
+ * `AbortSignal.timeout` rejects with a `TimeoutError`, but fetch stacks differ
+ * in whether they surface it directly, as an `AbortError`, or wrapped in a
+ * `cause` chain. Walk the chain rather than trusting one shape.
+ */
+function isRequestTimeout(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current instanceof Error && depth < 4; depth += 1) {
+    if (current.name === 'TimeoutError' || current.name === 'AbortError') {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 function clampInterval(seconds: number): number {
@@ -86,10 +120,11 @@ export function isHeadlessEnvironment(
 
 export async function startDeviceAuthorization(
   apiUrl: string,
-  options: { clientName?: string; fetchImpl?: typeof fetch } = {}
+  options: { clientName?: string; fetchImpl?: typeof fetch; requestTimeoutMs?: number } = {}
 ): Promise<DeviceAuthorization> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const clientName = options.clientName ?? os.hostname();
+  const timeoutMs = normalizeTimeout(options.requestTimeoutMs);
 
   let response: Response;
   try {
@@ -97,8 +132,18 @@ export async function startDeviceAuthorization(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ client_name: clientName }),
+      // Nothing has been printed yet at this point, so a hang here shows the
+      // user a bare cursor forever. Fail loudly instead.
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
+    if (isRequestTimeout(error)) {
+      throw new CloudAuthError(
+        'AUTH_DEVICE_FLOW_FAILED',
+        `Timed out after ${formatDuration(timeoutMs)} trying to reach ${apiUrl} to start device login`,
+        { cause: error }
+      );
+    }
     throw new CloudAuthError('AUTH_DEVICE_FLOW_FAILED', `Could not reach ${apiUrl} to start device login`, {
       cause: error,
     });
@@ -159,6 +204,8 @@ export async function pollForDeviceToken(
   const fetchImpl = hooks.fetchImpl ?? fetch;
   const sleep = hooks.sleep ?? ((ms: number) => delay(ms));
   const now = hooks.now ?? (() => Date.now());
+  const log = hooks.log ?? ((message: string) => console.log(message));
+  const requestTimeoutMs = normalizeTimeout(hooks.requestTimeoutMs);
 
   let intervalSeconds = authorization.intervalSeconds;
   const deadline = now() + authorization.expiresInSeconds * 1000;
@@ -175,6 +222,11 @@ export async function pollForDeviceToken(
       );
     }
 
+    // Bound every poll, and never past the grant deadline: a stalled socket
+    // must not outlive the grant it is waiting on, or the loop's own expiry
+    // check never gets to run.
+    const pollTimeoutMs = Math.max(1, Math.min(requestTimeoutMs, deadline - now()));
+
     let response: Response;
     try {
       response = await fetchImpl(buildApiUrl(apiUrl, '/api/v1/auth/device/token'), {
@@ -184,8 +236,23 @@ export async function pollForDeviceToken(
           grant_type: DEVICE_GRANT_TYPE,
           device_code: authorization.deviceCode,
         }),
+        signal: AbortSignal.timeout(pollTimeoutMs),
       });
     } catch (error) {
+      if (isRequestTimeout(error)) {
+        if (now() >= deadline) {
+          throw deviceError(
+            'Device login expired before it was approved. Run the command again to get a new code.'
+          );
+        }
+        // Same class as a 5xx: the request stalled, but the approval the human
+        // may already have given is still claimable. Back off and try again
+        // rather than discarding it — the deadline above bounds the loop, and
+        // saying so out loud keeps a slow network from looking like a hang.
+        log(`No response from ${apiUrl} within ${formatDuration(pollTimeoutMs)}; retrying...`);
+        intervalSeconds = clampInterval(intervalSeconds + SLOW_DOWN_INCREMENT_SECONDS);
+        continue;
+      }
       throw new CloudAuthError(
         'AUTH_DEVICE_FLOW_FAILED',
         `Lost connection to ${apiUrl} while waiting for approval`,
@@ -307,6 +374,7 @@ export async function runDeviceAuthorizationFlow(
   const authorization = await startDeviceAuthorization(apiUrl, {
     ...(options.clientName ? { clientName: options.clientName } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
   });
 
   log(formatDeviceInstructions(authorization));

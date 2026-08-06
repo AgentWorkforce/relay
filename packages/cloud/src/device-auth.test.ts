@@ -56,6 +56,55 @@ function harness(responses: Response[]) {
   };
 }
 
+/**
+ * A request that never answers on its own, so only the abort signal can end
+ * it. If the client passes no signal the promise never settles — which is
+ * exactly the hang under test, surfaced here as a test timeout.
+ */
+function stallingFetch() {
+  return vi.fn(
+    (_url: unknown, init: RequestInit = {}) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      })
+  );
+}
+
+/**
+ * A poll harness whose plan entries may be the literal `'stall'`, standing in
+ * for a connection that opens and then goes quiet.
+ */
+function stallHarness(plan: Array<Response | 'stall'>) {
+  const sleeps: number[] = [];
+  const logs: string[] = [];
+  let clock = 0;
+  const fetchImpl = vi.fn((_url: unknown, init: RequestInit = {}) => {
+    const next = plan.shift();
+    if (!next) throw new Error('unexpected extra poll');
+    if (next !== 'stall') return Promise.resolve(next);
+    return new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+    });
+  });
+
+  return {
+    sleeps,
+    logs,
+    fetchImpl,
+    hooks: {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      // Short enough to keep the suite fast; the production default is 30s.
+      requestTimeoutMs: 20,
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      now: () => clock,
+      log: (message: string) => logs.push(message),
+    },
+  };
+}
+
 describe('device authorization start', () => {
   it('sends the hostname so the approval screen can name this machine', async () => {
     const fetchImpl = vi.fn(async () =>
@@ -97,6 +146,40 @@ describe('device authorization start', () => {
     await expect(
       startDeviceAuthorization(API_URL, { fetchImpl: fetchImpl as unknown as typeof fetch })
     ).rejects.toThrow(/missing required fields/);
+  });
+
+  it('times out a stalled connection instead of hanging with no output', async () => {
+    // Node's fetch has no default timeout. Nothing has been printed by this
+    // point in the flow, so an unbounded start request shows an ssh user a
+    // bare cursor forever — the one failure mode this feature cannot have.
+    const fetchImpl = stallingFetch();
+
+    await expect(
+      startDeviceAuthorization(API_URL, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        requestTimeoutMs: 20,
+      })
+    ).rejects.toThrow(/Timed out after 20ms trying to reach https:\/\/agentrelay\.com/);
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('reports a timeout as a CloudAuthError, not a bare DOMException', async () => {
+    const fetchImpl = stallingFetch();
+
+    const error = await startDeviceAuthorization(API_URL, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      requestTimeoutMs: 20,
+    }).then(
+      () => {
+        throw new Error('expected the start request to reject');
+      },
+      (reason: unknown) => reason
+    );
+
+    expect(error).toBeInstanceOf(CloudAuthError);
+    expect((error as CloudAuthError).code).toBe('AUTH_DEVICE_FLOW_FAILED');
   });
 });
 
@@ -300,6 +383,59 @@ describe('device authorization poll', () => {
     await expect(
       pollForDeviceToken(API_URL, { ...AUTHORIZATION, expiresInSeconds: 60 }, hooks)
     ).rejects.toThrow(/expired before it was approved/);
+    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it('bounds every poll request so a stalled socket cannot hang the wait', async () => {
+    const { hooks, fetchImpl } = stallHarness([
+      'stall',
+      jsonResponse({
+        access_token: 'cld_at_abc',
+        refresh_token: 'cld_rt_abc',
+        access_token_expires_at: '2026-08-07T00:00:00.000Z',
+      }),
+    ]);
+
+    await pollForDeviceToken(API_URL, AUTHORIZATION, hooks);
+
+    // Both polls must carry an abort budget, not just the first.
+    for (const call of fetchImpl.mock.calls) {
+      const [, init] = call as unknown as [URL, RequestInit];
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it('retries a stalled poll rather than discarding an approval', async () => {
+    // A stall is the same class of failure as the transient 5xx above: the
+    // request died, but the grant the human may already have approved is
+    // still claimable. Giving up here would make them redo the whole flow.
+    const { hooks, sleeps, logs } = stallHarness([
+      'stall',
+      jsonResponse({
+        access_token: 'cld_at_abc',
+        refresh_token: 'cld_rt_abc',
+        access_token_expires_at: '2026-08-07T00:00:00.000Z',
+      }),
+    ]);
+
+    const auth = await pollForDeviceToken(API_URL, AUTHORIZATION, hooks);
+
+    expect(auth.accessToken).toBe('cld_at_abc');
+    // Backed off after the stall rather than retrying at pace.
+    expect(sleeps).toEqual([5000, 10_000]);
+    // And said so: a slow network must not look like a hang.
+    expect(logs).toContainEqual(
+      expect.stringContaining('No response from https://agentrelay.com within 20ms')
+    );
+  });
+
+  it('gives up with the expiry error when stalls outlast the grant', async () => {
+    const { hooks, fetchImpl } = stallHarness(Array.from({ length: 20 }, () => 'stall' as const));
+
+    await expect(
+      pollForDeviceToken(API_URL, { ...AUTHORIZATION, expiresInSeconds: 60 }, hooks)
+    ).rejects.toThrow(/expired before it was approved/);
+    // Bounded by the grant, not looping forever on a dead host.
     expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(6);
   });
 
