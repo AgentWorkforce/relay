@@ -673,81 +673,26 @@ impl AuthClient {
         }
     }
 
+    /// `strict_name` is retained purely for API/logging compatibility with
+    /// callers (`crates/broker/src/runtime/session.rs` chooses it based on
+    /// `RELAY_STRICT_AGENT_NAME`) and no longer selects a different collision
+    /// strategy: both modes route through `admit_agent_registration`. Their
+    /// prior divergence — strict silently handed over the incumbent's token,
+    /// non-strict silently minted a `-suffix` sibling — was itself the
+    /// spawn-admission defect (see `admit_agent_registration`).
     async fn register_agent_with_workspace_key(
         &self,
         workspace_key: &str,
         requested_name: Option<&str>,
-        strict_name: bool,
+        _strict_name: bool,
         agent_type: Option<&str>,
     ) -> Result<(String, String, String, Option<String>)> {
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
-        let mut attempted_retry = false;
-        let mut name = requested_name
+        let name = requested_name
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        if strict_name {
-            let request = CreateAgentRequest {
-                name,
-                agent_type: Some(agent_type.unwrap_or("agent").to_string()),
-                persona: None,
-                metadata: None,
-            };
-            let result = relay
-                .register_or_get_agent(request)
-                .await
-                .map_err(relay_error_to_anyhow)?;
-            return Ok((result.id, result.name, result.token, result.workspace_id));
-        }
-
-        loop {
-            let request = CreateAgentRequest {
-                name: name.clone(),
-                agent_type: Some(agent_type.unwrap_or("agent").to_string()),
-                persona: None,
-                metadata: None,
-            };
-
-            match relay.register_agent(request).await {
-                Ok(result) => {
-                    return Ok((result.id, result.name, result.token, result.workspace_id));
-                }
-                Err(RelayError::Api { code, status, .. })
-                    if is_conflict_code(&code) || status == 409 =>
-                {
-                    if !attempted_retry {
-                        attempted_retry = true;
-                        let suffix = Uuid::new_v4().simple().to_string();
-                        name = format!("{}-{}", name, &suffix[..8]);
-                        continue;
-                    }
-                    return Err(relay_error_to_anyhow(RelayError::Api {
-                        code: "agent_already_exists".to_string(),
-                        message: format!("agent name '{}' already exists after retry", name),
-                        status: 409,
-                    }));
-                }
-                Err(RelayError::Api {
-                    code,
-                    status,
-                    message,
-                }) if is_agent_token_invalid_code(&code)
-                    || (status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE) =>
-                {
-                    // Surface the typed code even when only the legacy
-                    // status+message pair is present, so downstream callers
-                    // can react with `is_agent_token_invalid_anyhow`.
-                    return Err(relay_error_to_anyhow(RelayError::Api {
-                        code: AGENT_TOKEN_INVALID_CODE.to_string(),
-                        status,
-                        message,
-                    }));
-                }
-                Err(error) => {
-                    return Err(relay_error_to_anyhow(error));
-                }
-            }
-        }
+        admit_agent_registration(&relay, &name, agent_type).await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -899,6 +844,123 @@ fn is_conflict_code(code: &str) -> bool {
     )
 }
 
+/// Metadata key an agent's identity proof is stamped under at registration,
+/// so a later collision can check it back. See `admit_agent_registration`.
+const IDENTITY_METADATA_KEY: &str = "identity_key";
+
+/// Caller-supplied proof of work-unit identity for spawn-admission reclaim.
+///
+/// A crashed (or resumed) work unit that needs to re-register under its
+/// prior name sets this to a value stable across that work unit's restarts.
+/// It gets stamped onto the agent's metadata at creation; a later collision
+/// under the same name is only treated as a reclaim of that SAME work unit
+/// if the value presented then matches what's stored — never by the name
+/// string alone. Absent, registration cannot reclaim on collision.
+fn agent_identity_key() -> Option<String> {
+    std::env::var("RELAY_AGENT_IDENTITY_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Single spawn-admission decision shared by every registration path
+/// (formerly split between a strict branch that always reclaimed a
+/// name-collision via `register_or_get_agent` — handing the caller the
+/// incumbent's id, name, AND bearer token — and a non-strict branch that
+/// silently minted a `-{uuid8}` sibling name once before failing). Both
+/// were the same defect: a spawn-admission gate that doesn't verify who is
+/// asking. This repo's doctrine is a dispatch gate fails closed, so a name
+/// collision is REJECTED by default. A silent suffix would have produced a
+/// second agent doing duplicate work under a near-identical name — exactly
+/// the AR-448 duplicate-agent class this gate exists to stop — so it is not
+/// an acceptable alternative to rejection either.
+///
+/// Reclaim (return the existing agent's identity with a freshly rotated
+/// token, so a crashed broker's resume path keeps working) is permitted
+/// ONLY when the registration request proves it is the same work unit: its
+/// `RELAY_AGENT_IDENTITY_KEY` (see `agent_identity_key`) must match the
+/// identity key stamped on the existing agent's metadata at its own
+/// creation. Absent or mismatched identity on a collision is rejected.
+async fn admit_agent_registration(
+    relay: &RelayCast,
+    name: &str,
+    agent_type: Option<&str>,
+) -> Result<(String, String, String, Option<String>)> {
+    let identity_key = agent_identity_key();
+    let metadata = identity_key.as_ref().map(|key| {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            IDENTITY_METADATA_KEY.to_string(),
+            Value::String(key.clone()),
+        );
+        map
+    });
+
+    let request = CreateAgentRequest {
+        name: name.to_string(),
+        agent_type: Some(agent_type.unwrap_or("agent").to_string()),
+        persona: None,
+        metadata,
+    };
+
+    match relay.register_agent(request).await {
+        Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
+        Err(RelayError::Api { code, status, .. }) if is_conflict_code(&code) || status == 409 => {
+            let existing = relay.get_agent(name).await.map_err(relay_error_to_anyhow)?;
+            let existing_identity = existing
+                .metadata
+                .get(IDENTITY_METADATA_KEY)
+                .and_then(Value::as_str);
+
+            let reclaims_same_work_unit = matches!(
+                (identity_key.as_deref(), existing_identity),
+                (Some(ours), Some(theirs)) if ours == theirs
+            );
+
+            if !reclaims_same_work_unit {
+                return Err(relay_error_to_anyhow(RelayError::Api {
+                    code: "agent_identity_mismatch".to_string(),
+                    status: 409,
+                    message: format!(
+                        "agent name '{name}' is already registered and this registration did \
+                         not prove ownership of that identity; refusing to hand over its \
+                         credentials (set RELAY_AGENT_IDENTITY_KEY to the original work unit's \
+                         identity to reclaim it after a crash)"
+                    ),
+                }));
+            }
+
+            let token_response = relay
+                .rotate_agent_token(&existing.name)
+                .await
+                .map_err(relay_error_to_anyhow)?;
+            Ok((
+                existing.id,
+                existing.name,
+                token_response.token,
+                existing.workspace_id,
+            ))
+        }
+        Err(RelayError::Api {
+            code,
+            status,
+            message,
+        }) if is_agent_token_invalid_code(&code)
+            || (status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE) =>
+        {
+            // Surface the typed code even when only the legacy status+message
+            // pair is present, so downstream callers can react with
+            // `is_agent_token_invalid_anyhow`.
+            Err(relay_error_to_anyhow(RelayError::Api {
+                code: AGENT_TOKEN_INVALID_CODE.to_string(),
+                status,
+                message,
+            }))
+        }
+        Err(error) => Err(relay_error_to_anyhow(error)),
+    }
+}
+
 fn is_workspace_name_conflict(error: &RelayError) -> bool {
     match error {
         RelayError::Api {
@@ -1019,6 +1081,7 @@ mod tests {
             std::env::remove_var("RELAY_API_KEY");
             std::env::remove_var("RELAY_WORKSPACES_JSON");
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
+            std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
         }
         guard
     }
@@ -1234,11 +1297,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_name_conflict_reclaims_via_sdk_register_or_get_agent() {
-        // Regression test for issue #797: when a broker is restarted (or a
-        // second broker joins via shared workspace key) with a name that's
-        // already registered, registration must reclaim the existing agent
-        // through the relaycast SDK instead of failing the broker startup.
+    async fn strict_name_conflict_without_identity_proof_is_rejected_not_handed_incumbent_token() {
+        // Spawn-admission gate regression test: a bare name collision must
+        // never hand the caller the incumbent agent's token. Reclaim is only
+        // permitted when the caller proves the same work-unit identity (see
+        // `admit_agent_registration`); presenting the same name string alone
+        // must be rejected, not silently reclaimed.
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
         unsafe {
@@ -1262,9 +1326,72 @@ mod tests {
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                // Mirrors the live cloud's GET /v1/agents/{name} payload that
-                // relaycast 1.0.1 accepts while reclaiming the agent.
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let result = client
+            .startup_session_with_options(Some("lead"), true, None)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a name collision with no proof of matching identity must be rejected, not reclaimed"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            !message.contains("at_live_rotated"),
+            "rejection must not leak the incumbent's rotated token: {message}"
+        );
+        conflict.assert_hits(1);
+        get_existing.assert_hits(1);
+        rotate.assert_hits(0);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_name_conflict_with_matching_identity_reclaims_existing_agent() {
+        // Crash-recovery resume: the SAME work unit re-registers under the
+        // same name and proves it via RELAY_AGENT_IDENTITY_KEY matching what
+        // was stamped on the agent at its original creation. This must still
+        // reclaim the agent (and rotate its token) rather than being rejected.
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", "work-unit-42");
+        }
+        let conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_shared")
+                .json_body(json!({
+                    "name": "lead",
+                    "type": "agent",
+                    "metadata": { "identity_key": "work-unit-42" }
+                }));
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{"identity_key":"work-unit-42"},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
         let rotate = server.mock(|when, then| {
             when.method(POST)
@@ -1279,23 +1406,28 @@ mod tests {
         let session = client
             .startup_session_with_options(Some("lead"), true, None)
             .await
-            .expect("strict-name conflict should reclaim via relaycast SDK");
+            .expect("matching identity proof should reclaim the existing agent");
 
         assert_eq!(session.token, "at_live_rotated");
         assert_eq!(session.credentials.agent_id, "a_existing");
-        assert_eq!(session.credentials.api_key, "rk_live_shared");
-        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
         rotate.assert_hits(1);
 
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
+            std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
         }
     }
 
     #[tokio::test]
-    async fn default_name_conflict_retries_with_suffix_once() {
+    async fn non_strict_name_conflict_without_identity_proof_is_rejected() {
+        // Strict and non-strict registration must agree: the divergence
+        // between an always-reclaiming strict path and a silently-suffixing
+        // non-strict path WAS the defect (a silent suffix mints a duplicate
+        // agent under a near-identical name, the same AR-448 class a bare
+        // handover produces). Both now route through the same fail-closed
+        // admission decision.
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
         let workspace = server.mock(|when, then| {
@@ -1304,7 +1436,7 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_cached","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
-        let first_conflict = server.mock(|when, then| {
+        let conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_cached")
@@ -1316,28 +1448,36 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
-        let second_success = server.mock(|when, then| {
-            when.method(POST)
-                .path("/v1/agents")
-                .header("authorization", "Bearer rk_live_cached")
-                .body_contains("\"name\":\"lead-");
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_cached");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a10","name":"lead-suffixed","token":"at_live_10","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
 
         let client = AuthClient::new(Some(server.base_url()));
-        let session = client.startup_session(Some("lead")).await.unwrap();
+        let result = client.startup_session(Some("lead")).await;
 
-        assert_eq!(session.token, "at_live_10");
-        assert_eq!(
-            session.credentials.agent_name.as_deref(),
-            Some("lead-suffixed")
+        assert!(
+            result.is_err(),
+            "non-strict registration must also reject an unproven name collision, not mint a silent -suffix sibling"
         );
         workspace.assert_hits(1);
-        first_conflict.assert_hits(1);
-        second_success.assert_hits(1);
+        conflict.assert_hits(1);
+        get_existing.assert_hits(1);
     }
+
+    // `strict_name_conflict_reclaims_via_sdk_register_or_get_agent` (issue
+    // #797) and `default_name_conflict_retries_with_suffix_once` used to live
+    // here. Both encoded the spawn-admission defect as intended behavior —
+    // an unconditional reclaim-on-collision, and a silent `-{uuid8}`
+    // suffix-on-collision, respectively. They're superseded by
+    // `strict_name_conflict_without_identity_proof_is_rejected_not_handed_incumbent_token`,
+    // `strict_name_conflict_with_matching_identity_reclaims_existing_agent`,
+    // and `non_strict_name_conflict_without_identity_proof_is_rejected` above,
+    // which assert the fixed fail-closed contract instead.
 
     #[tokio::test]
     async fn workspace_name_conflict_retries_with_fresh_suffix() {
