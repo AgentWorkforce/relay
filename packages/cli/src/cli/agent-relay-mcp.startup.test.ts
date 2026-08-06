@@ -481,12 +481,25 @@ describe('createAgentRelayMcpServer', () => {
       },
     ]);
 
+    // Delegation identity rides on the spawn action so the agent record
+    // carries it from birth. Without this the only durable identity a
+    // consumer can find is whatever it can guess from the agent's name, and a
+    // multi-token project slug is not recoverable from a name at all.
+    const identityMetadata = {
+      organization: 'AgentWorkforce',
+      project: 'chief-delegation-governance',
+      workstream: 'dispatch-contract',
+      role: 'worker',
+      reportsTo: 'chief-delegation-governance-dispatch-lead',
+    };
+
     const spawnResult = await server.tools.get('spawn')?.handler({
       name: 'FleetWorker',
       cli: 'codex',
       task: 'Implement a fix',
       channel: 'general',
       target_node: 'node-a',
+      metadata: identityMetadata,
     });
     expect(spawnResult.structuredContent.invocation).toEqual({
       invocationId: 'inv_1',
@@ -496,6 +509,7 @@ describe('createAgentRelayMcpServer', () => {
         cli: 'codex',
         task: 'Implement a fix',
         target_node: 'node-a',
+        metadata: identityMetadata,
         channels: ['general'],
       },
     });
