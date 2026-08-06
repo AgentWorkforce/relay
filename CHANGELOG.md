@@ -17,10 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay node up` warns instead of silently ignoring stored Cloud fleet enrollments when the project workspace pin has no enrolled node id. That combination started the broker in the pinned workspace while the node never heartbeat, leaving the Cloud dashboard and `agent-relay fleet nodes` showing different rosters with no error from either.
 - `agent-relay cloud enroll` records the enrolled node on the project workspace pin, so `node up` in that repo serves the node it just enrolled. A pin that already names a different node is reported and left untouched rather than repointed.
 - `agent-relay workspace switch|join` keeps the project's enrolled fleet node id instead of dropping it, which previously produced the pin state that made the next `node up` ignore the enrollment store.
+- A fleet node killed and restarted before its stale registration is reaped no longer fails to come back online: the broker now proves its own restart identity from its persisted state directory, so it can reclaim its prior name without an operator setting `RELAY_AGENT_IDENTITY_KEY` by hand.
 
 ### Security
 
 - Agent registration no longer hands over an existing agent's id, name, and bearer token to whoever registers with the same name. A name collision is now rejected unless the request proves it's the same work unit via `RELAY_AGENT_IDENTITY_KEY` matching the identity stamped on the existing agent at its creation; strict- and non-strict-name registration now share this same fail-closed admission decision.
+- That identity proof is stored as a one-way hash rather than the raw value, so a workspace member who can read agent metadata can no longer replay another work unit's identity key to reclaim its credentials.
 
 ## [11.4.1] - 2026-08-03
 

@@ -307,11 +307,38 @@ impl AuthClient {
             .context("no default workspace session was available")
     }
 
+    /// See [`Self::startup_session_set_with_identity`]. Uses
+    /// `RELAY_AGENT_IDENTITY_KEY` (see `agent_identity_key`) as the identity
+    /// proof, preserving prior behavior for every existing caller.
     pub async fn startup_session_set_with_options(
         &self,
         requested_name: Option<&str>,
         strict_name: bool,
         agent_type: Option<&str>,
+    ) -> Result<AuthSessionSet> {
+        self.startup_session_set_with_identity(
+            requested_name,
+            strict_name,
+            agent_type,
+            agent_identity_key().as_deref(),
+        )
+        .await
+    }
+
+    /// Same as [`Self::startup_session_set_with_options`], but with an
+    /// explicit identity proof rather than reading `RELAY_AGENT_IDENTITY_KEY`
+    /// from the environment. The broker's own startup registration
+    /// (`connect_relay`) uses this to pass a value stable across its own
+    /// restarts (see `stable_node_identity_key`) without mutating process
+    /// env — an env mutation here would leak into every worker this broker
+    /// later spawns, since child processes inherit the full parent
+    /// environment.
+    pub async fn startup_session_set_with_identity(
+        &self,
+        requested_name: Option<&str>,
+        strict_name: bool,
+        agent_type: Option<&str>,
+        identity_key: Option<&str>,
     ) -> Result<AuthSessionSet> {
         if let Some((sources, default_hint)) = self.load_workspace_sources_from_env()? {
             let preferred_name = requested_name;
@@ -328,6 +355,7 @@ impl AuthClient {
                         preferred_name,
                         strict_name,
                         agent_type,
+                        identity_key,
                     )
                     .await
                 {
@@ -374,8 +402,13 @@ impl AuthClient {
             });
         }
 
-        self.startup_single_session_set_from_sources(requested_name, strict_name, agent_type)
-            .await
+        self.startup_single_session_set_from_sources(
+            requested_name,
+            strict_name,
+            agent_type,
+            identity_key,
+        )
+        .await
     }
 
     /// Rotate the token for an existing agent without re-registering.
@@ -399,7 +432,13 @@ impl AuthClient {
                     "agent not found during token rotation, falling back to re-registration"
                 );
                 let registration = self
-                    .register_agent_with_workspace_key(&api_key, Some(agent_name), false, None)
+                    .register_agent_with_workspace_key(
+                        &api_key,
+                        Some(agent_name),
+                        false,
+                        None,
+                        agent_identity_key().as_deref(),
+                    )
                     .await
                     .context("failed to re-register after rotate-token 404")?;
                 let mut session =
@@ -447,6 +486,7 @@ impl AuthClient {
         requested_name: Option<&str>,
         strict_name: bool,
         agent_type: Option<&str>,
+        identity_key: Option<&str>,
     ) -> Result<AuthSessionSet> {
         let env_workspace_key = env_workspace_key()?;
 
@@ -488,6 +528,7 @@ impl AuthClient {
                     preferred_name,
                     strict_name,
                     agent_type,
+                    identity_key,
                 )
                 .await
             {
@@ -545,6 +586,7 @@ impl AuthClient {
                     preferred_name,
                     strict_name,
                     agent_type,
+                    identity_key,
                 )
                 .await
             {
@@ -686,13 +728,14 @@ impl AuthClient {
         requested_name: Option<&str>,
         _strict_name: bool,
         agent_type: Option<&str>,
+        identity_key: Option<&str>,
     ) -> Result<(String, String, String, Option<String>)> {
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
         let name = requested_name
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(&relay, &name, agent_type).await
+        admit_agent_registration(&relay, &name, agent_type, identity_key).await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -856,11 +899,40 @@ const IDENTITY_METADATA_KEY: &str = "identity_key";
 /// under the same name is only treated as a reclaim of that SAME work unit
 /// if the value presented then matches what's stored — never by the name
 /// string alone. Absent, registration cannot reclaim on collision.
-fn agent_identity_key() -> Option<String> {
+pub(crate) fn agent_identity_key() -> Option<String> {
     std::env::var("RELAY_AGENT_IDENTITY_KEY")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+/// Stable per-node identity proof derived from the broker's own persisted
+/// state directory, for the ONE caller (the broker's own startup
+/// registration) that needs restart-reclaim without an operator having to
+/// set `RELAY_AGENT_IDENTITY_KEY` by hand. The same project/state directory
+/// always hashes to the same value across a kill + restart, while a
+/// different project (or a different, unrelated agent) hashes to something
+/// else — so it participates in the same fail-closed identity check as any
+/// other identity key, never bypassing it.
+pub(crate) fn stable_node_identity_key(state_path: &std::path::Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(state_path.to_string_lossy().as_bytes());
+    format!("node-{:x}", hasher.finalize())
+}
+
+/// One-way verifier stored in place of a caller's raw identity key.
+///
+/// `admit_agent_registration` stamps this (never the raw key) onto the
+/// agent's metadata. Metadata is readable by any caller holding the same
+/// workspace key (`get_agent` returns it), so storing the raw key there
+/// would let any workspace member replay it verbatim to reclaim another
+/// work unit's credentials — the identity check would authenticate nothing.
+/// Hashing keeps the credential-bearing capability confined to whoever
+/// starts with the original key.
+fn hash_identity_key(raw: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Single spawn-admission decision shared by every registration path
@@ -877,21 +949,24 @@ fn agent_identity_key() -> Option<String> {
 ///
 /// Reclaim (return the existing agent's identity with a freshly rotated
 /// token, so a crashed broker's resume path keeps working) is permitted
-/// ONLY when the registration request proves it is the same work unit: its
-/// `RELAY_AGENT_IDENTITY_KEY` (see `agent_identity_key`) must match the
-/// identity key stamped on the existing agent's metadata at its own
-/// creation. Absent or mismatched identity on a collision is rejected.
+/// ONLY when the registration request proves it is the same work unit: the
+/// caller-supplied `identity_key` (see `agent_identity_key` and
+/// `stable_node_identity_key`) must match the identity key stamped on the
+/// existing agent's metadata at its own creation — compared by hash
+/// (`hash_identity_key`), never by raw value, since metadata is readable by
+/// any caller with the workspace key. Absent or mismatched identity on a
+/// collision is rejected.
 async fn admit_agent_registration(
     relay: &RelayCast,
     name: &str,
     agent_type: Option<&str>,
+    identity_key: Option<&str>,
 ) -> Result<(String, String, String, Option<String>)> {
-    let identity_key = agent_identity_key();
-    let metadata = identity_key.as_ref().map(|key| {
+    let metadata = identity_key.map(|key| {
         let mut map = serde_json::Map::new();
         map.insert(
             IDENTITY_METADATA_KEY.to_string(),
-            Value::String(key.clone()),
+            Value::String(hash_identity_key(key)),
         );
         map
     });
@@ -913,8 +988,8 @@ async fn admit_agent_registration(
                 .and_then(Value::as_str);
 
             let reclaims_same_work_unit = matches!(
-                (identity_key.as_deref(), existing_identity),
-                (Some(ours), Some(theirs)) if ours == theirs
+                (identity_key, existing_identity),
+                (Some(ours), Some(theirs)) if hash_identity_key(ours) == theirs
             );
 
             if !reclaims_same_work_unit {
@@ -990,8 +1065,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        is_agent_token_invalid, is_agent_token_invalid_anyhow, is_agent_token_invalid_code,
-        relay_error_to_anyhow, AuthClient, CredentialCache, AGENT_TOKEN_INVALID_CODE,
+        hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
+        is_agent_token_invalid_code, relay_error_to_anyhow, stable_node_identity_key, AuthClient,
+        CredentialCache, AGENT_TOKEN_INVALID_CODE,
     };
     use relaycast::RelayError;
 
@@ -1372,6 +1448,10 @@ mod tests {
             std::env::set_var("RELAY_API_KEY", "rk_live_shared");
             std::env::set_var("RELAY_AGENT_IDENTITY_KEY", "work-unit-42");
         }
+        // The identity proof is stored (and matched) as a one-way hash, never
+        // the raw value: metadata is readable by any caller with the same
+        // workspace key, so a raw value there would let a co-tenant replay it.
+        let identity_hash = hash_identity_key("work-unit-42");
         let conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
@@ -1379,7 +1459,7 @@ mod tests {
                 .json_body(json!({
                     "name": "lead",
                     "type": "agent",
-                    "metadata": { "identity_key": "work-unit-42" }
+                    "metadata": { "identity_key": identity_hash }
                 }));
             then.status(409)
                 .header("content-type", "application/json")
@@ -1391,7 +1471,9 @@ mod tests {
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{"identity_key":"work-unit-42"},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+                .body(format!(
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                ));
         });
         let rotate = server.mock(|when, then| {
             when.method(POST)
@@ -1417,6 +1499,156 @@ mod tests {
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
             std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
+        }
+    }
+
+    #[test]
+    fn stable_node_identity_key_is_stable_per_state_path() {
+        use std::path::Path;
+        // Same project/state directory (the "same work unit" across a kill +
+        // restart, per the fleet node harness) must hash identically every
+        // time, or the broker could never reclaim its own name after a crash.
+        let a = stable_node_identity_key(Path::new("/tmp/node-a/.agentworkforce/relay/state.json"));
+        let a_again =
+            stable_node_identity_key(Path::new("/tmp/node-a/.agentworkforce/relay/state.json"));
+        assert_eq!(a, a_again);
+
+        // A different project/state directory (a genuinely different node)
+        // must hash to something else, or two unrelated nodes could reclaim
+        // each other's registrations.
+        let b = stable_node_identity_key(Path::new("/tmp/node-b/.agentworkforce/relay/state.json"));
+        assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn node_restart_reclaims_its_own_prior_registration_via_stable_identity() {
+        // Regression test for the fleet-matrix restart flake this PR's
+        // fail-closed change introduced: `agent-relay node up` on a restart
+        // reuses the same `--broker-name`, and nothing sets
+        // RELAY_AGENT_IDENTITY_KEY for it — so before `connect_relay` passed
+        // a stable, path-derived identity, a restart before the stale
+        // registration was reaped collided on name and was rejected outright,
+        // and the node never came back online. This exercises the exact
+        // entry point `connect_relay` calls (`startup_session_set_with_identity`)
+        // with no env var set, proving the derived identity alone is enough
+        // to reclaim.
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+        }
+        let stable_identity = stable_node_identity_key(std::path::Path::new(
+            "/tmp/node-a/.agentworkforce/relay/state.json",
+        ));
+        let identity_hash = hash_identity_key(&stable_identity);
+        let conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_shared")
+                .json_body(json!({
+                    "name": "node-a",
+                    "type": "agent",
+                    "metadata": { "identity_key": identity_hash }
+                }));
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/node-a")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(format!(
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                ));
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/node-a/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"name":"node-a","token":"at_live_rotated"}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let session = client
+            .startup_session_set_with_identity(Some("node-a"), true, None, Some(&stable_identity))
+            .await
+            .expect("a node restarting under its own stable identity must reclaim, not be rejected")
+            .default_session()
+            .cloned()
+            .expect("a session was registered");
+
+        assert_eq!(session.token, "at_live_rotated");
+        assert_eq!(session.credentials.agent_id, "a_existing");
+        conflict.assert_hits(1);
+        get_existing.assert_hits(1);
+        rotate.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn different_stable_identity_does_not_reclaim_a_same_named_agent() {
+        // The flip side of the restart-reclaim fix: a DIFFERENT node (a
+        // different state directory, hence a different derived identity)
+        // that happens to collide on name must still be rejected — the
+        // fail-closed gate this PR added must not be silently defeated by
+        // handing every node an automatic pass on collision.
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+        }
+        let our_identity = stable_node_identity_key(std::path::Path::new(
+            "/tmp/node-a/.agentworkforce/relay/state.json",
+        ));
+        let their_identity_hash = hash_identity_key(&stable_node_identity_key(
+            std::path::Path::new("/tmp/node-a-impostor/.agentworkforce/relay/state.json"),
+        ));
+        let conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/node-a")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(format!(
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{their_identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                ));
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let error = client
+            .startup_session_set_with_identity(Some("node-a"), true, None, Some(&our_identity))
+            .await
+            .expect_err("a mismatched identity on collision must be rejected, not reclaimed");
+
+        // `to_string()` on an anyhow::Error only shows the outermost context
+        // layer; walk the full chain for the admission-gate's own message.
+        assert!(
+            error
+                .chain()
+                .any(|layer| layer.to_string().contains("did not prove ownership")),
+            "expected an ownership-mismatch rejection, got: {error:#}"
+        );
+        conflict.assert_hits(1);
+        get_existing.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
         }
     }
 
