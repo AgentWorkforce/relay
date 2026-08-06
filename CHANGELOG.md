@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay cloud login --device` authenticates a machine that has no browser, using the OAuth device flow: the CLI prints a short code, you approve it in a browser on any other device, and the headless machine writes its own `cloud-auth.json`. Login now falls back to this automatically over SSH or on a Unix host with no display server, instead of waiting on a loopback callback that can never arrive. Each machine gets its own cloud session, so copying `cloud-auth.json` between hosts — which silently logs them out of each other as refresh tokens rotate — is no longer necessary. Requires cloud with the device authorization endpoints.
 
 ### Fixed
 

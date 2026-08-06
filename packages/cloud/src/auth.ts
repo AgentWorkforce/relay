@@ -16,6 +16,11 @@ import {
   type CloudIdentity,
 } from './identity.js';
 import {
+  isHeadlessEnvironment,
+  runDeviceAuthorizationFlow,
+  type DeviceFlowHooks,
+} from './device-auth.js';
+import {
   AUTH_FILE_PATH,
   DEFAULT_REFRESH_TIMEOUT_MS,
   REFRESH_TOKEN_WINDOW_MS,
@@ -626,8 +631,13 @@ async function requestStoredAuthRefresh(
   return nextAuth;
 }
 
-async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
-  const auth = await beginBrowserLogin(apiUrl);
+/**
+ * Persist a freshly obtained session and announce who it belongs to. Shared by
+ * the browser and device flows so both write `cloud-auth.json` through the same
+ * path — that is what keeps `cloud session --json --reveal-token` working
+ * regardless of how the machine logged in.
+ */
+async function completeLogin(auth: StoredAuth): Promise<StoredAuth> {
   await writeStoredAuth(auth);
   // Record who just logged in so subsequent CLI/broker runs can attribute
   // telemetry to this user and org. Never blocks the login from succeeding.
@@ -640,14 +650,54 @@ async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
   return auth;
 }
 
+async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
+  return completeLogin(await beginBrowserLogin(apiUrl));
+}
+
+/**
+ * Device-code login for machines with no browser. Each run mints its own
+ * session row on the server, so this machine's refresh-token rotation is
+ * independent of every other machine's — which is the reason copying
+ * `cloud-auth.json` between hosts is not a valid substitute.
+ */
+export async function loginWithDevice(
+  apiUrl: string,
+  options: { clientName?: string } & DeviceFlowHooks = {}
+): Promise<StoredAuth> {
+  return completeLogin(await runDeviceAuthorizationFlow(apiUrl, options));
+}
+
+/**
+ * Pick a login style. `--device` is explicit; otherwise fall back to the device
+ * flow when nothing here could open a browser, since the browser flow's
+ * loopback callback is unreachable from another machine and would only hang
+ * until it timed out.
+ */
+async function loginInteractive(
+  apiUrl: string,
+  options: { device?: boolean; env?: NodeJS.ProcessEnv } = {}
+): Promise<StoredAuth> {
+  const env = options.env ?? process.env;
+  if (options.device === true || isHeadlessEnvironment(env)) {
+    return loginWithDevice(apiUrl);
+  }
+  return loginWithBrowser(apiUrl);
+}
+
 export async function ensureAuthenticated(
   apiUrl: string,
-  options?: { force?: boolean; interactive?: boolean; refreshTimeoutMs?: number }
+  options?: {
+    force?: boolean;
+    interactive?: boolean;
+    device?: boolean;
+    refreshTimeoutMs?: number;
+  }
 ): Promise<StoredAuth> {
   const session = await ensureCloudSession({
     apiUrl,
     force: options?.force,
     interactive: options?.interactive,
+    device: options?.device,
     refreshTimeoutMs: options?.refreshTimeoutMs,
   });
   return session.auth;
@@ -668,9 +718,15 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
   // Only `--force` re-links to a different host.
   if (!stored) {
     if (!interactive) {
-      throw browserRequired('Cloud login required. Run `agent-relay login`.');
+      // Point a headless host at the flow that can actually work there,
+      // rather than at a browser it has no way to open.
+      throw browserRequired(
+        isHeadlessEnvironment(env)
+          ? 'Cloud login required. Run `agent-relay cloud login --device`.'
+          : 'Cloud login required. Run `agent-relay login`.'
+      );
     }
-    const auth = await loginWithBrowser(apiUrl);
+    const auth = await loginInteractive(apiUrl, { device: options.device, env });
     return createCloudSession(auth, { refreshTimeoutMs });
   }
 
@@ -690,7 +746,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
       throw error;
     }
 
-    const auth = await loginWithBrowser(stored.apiUrl);
+    const auth = await loginInteractive(stored.apiUrl, { device: options.device, env });
     return createCloudSession(auth, { refreshTimeoutMs });
   }
 }

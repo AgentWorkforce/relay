@@ -69,6 +69,16 @@ function createEnvAuth(overrides: Partial<StoredAuth> = {}): NodeJS.ProcessEnv {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+
+  // Pin the browser-availability signal. Login now falls back to the device
+  // flow on a host that cannot open a browser, so tests that exercise the
+  // browser flow must not inherit whether the runner happens to be a headless
+  // Linux CI box.
+  vi.stubEnv('DISPLAY', ':0');
+  vi.stubEnv('SSH_CONNECTION', '');
+  vi.stubEnv('SSH_TTY', '');
+  vi.stubEnv('SSH_CLIENT', '');
 
   fsMocks.readFile.mockReset();
   fsMocks.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
@@ -363,6 +373,74 @@ describe('ensureAuthenticated', () => {
     expect(fsMocks.writeFile).toHaveBeenCalledOnce();
 
     logSpy.mockRestore();
+  });
+
+  it('falls back to the device flow on a host that cannot open a browser', async () => {
+    // barry over ssh: no browser here, so the loopback callback the browser
+    // flow depends on is unreachable and would only hang until it timed out.
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/device/start')) {
+        return new Response(
+          JSON.stringify({
+            device_code: 'cld_dc_test',
+            user_code: 'BCDF-GHJK',
+            verification_uri: 'https://example.com/cloud/device',
+            expires_in: 600,
+            // Keep the mandatory pre-poll wait short; pacing itself is
+            // covered exhaustively in device-auth.test.ts.
+            interval: 1,
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/auth/device/token')) {
+        return new Response(
+          JSON.stringify({
+            access_token: 'device-access',
+            refresh_token: 'device-refresh',
+            access_token_expires_at: '2999-01-01T00:00:00.000Z',
+            refresh_token_expires_at: '2999-04-01T00:00:00.000Z',
+            api_url: 'https://example.com/cloud',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      // whoami, used only to record identity; failing it must not fail login.
+      return new Response('{}', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const session = await ensureCloudSession({ apiUrl: 'https://example.com/cloud' });
+
+    expect(session.auth).toMatchObject({
+      accessToken: 'device-access',
+      refreshToken: 'device-refresh',
+      apiUrl: 'https://example.com/cloud',
+    });
+    // Never tried to launch a browser it does not have.
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    // Persisted through the normal path, so `cloud session --reveal-token`
+    // works afterwards — that is what ai-hist consumes.
+    expect(fsMocks.writeFile).toHaveBeenCalled();
+    // The user was actually told the code.
+    expect(logSpy.mock.calls.map((call) => String(call[0])).join('\n')).toContain('BCDF-GHJK');
+
+    logSpy.mockRestore();
+  });
+
+  it('points a headless host at --device when it cannot prompt', async () => {
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+
+    await expect(
+      ensureCloudSession({ apiUrl: 'https://example.com/cloud', interactive: false })
+    ).rejects.toMatchObject({
+      code: 'AUTH_BROWSER_REQUIRED',
+      message: 'Cloud login required. Run `agent-relay cloud login --device`.',
+    });
   });
 
   it('fails fast without opening a browser when non-interactive auth needs login', async () => {

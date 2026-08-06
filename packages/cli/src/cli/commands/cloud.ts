@@ -7,6 +7,7 @@ import {
   ensureAuthenticated,
   ensureCloudSession,
   authorizedApiFetch,
+  isHeadlessEnvironment,
   readStoredAuth,
   clearStoredAuth,
   defaultApiUrl,
@@ -600,13 +601,20 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   cloudCommand
     .command('login')
-    .description('Authenticate with Agent Relay Cloud via browser (alias of `relay login`)')
+    .description('Authenticate with Agent Relay Cloud (alias of `relay login`)')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--force', 'Force re-authentication even if already logged in')
-    .action(async (options: { apiUrl?: string; force?: boolean }) => {
+    .option(
+      '--device',
+      'Authorize from a browser on another machine (for headless/ssh hosts). Chosen automatically when no browser is available.'
+    )
+    .action(async (options: { apiUrl?: string; force?: boolean; device?: boolean }) => {
       const started = Date.now();
       let success = false;
       let errorClass: string | undefined;
+      // Recorded so headless adoption is visible in telemetry; the auto
+      // fallback means `--device` alone would undercount it.
+      const method = options.device === true || isHeadlessEnvironment() ? 'device' : 'browser';
       try {
         const apiUrl = options.apiUrl || defaultApiUrl();
 
@@ -622,7 +630,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           }
         }
 
-        await ensureAuthenticated(apiUrl, { force: options.force });
+        await ensureAuthenticated(apiUrl, { force: options.force, device: options.device });
         success = true;
       } catch (err) {
         errorClass = errorClassName(err);
@@ -630,6 +638,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       } finally {
         track('cloud_auth', {
           action: 'login',
+          method,
           success,
           duration_ms: Date.now() - started,
           ...(errorClass ? { error_class: errorClass } : {}),

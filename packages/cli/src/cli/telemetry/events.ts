@@ -361,6 +361,8 @@ export interface CloudAuthEvent {
   duration_ms: number;
   /** Provider id for `connect` flows (e.g., 'anthropic', 'openai') */
   provider?: string;
+  /** Which login style ran; only present for `login` */
+  method?: 'browser' | 'device';
   /** Error constructor name on failure */
   error_class?: string;
 }
