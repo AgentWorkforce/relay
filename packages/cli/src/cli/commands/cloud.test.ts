@@ -70,6 +70,7 @@ import {
   ensureCloudSession,
   readStoredAuth,
 } from '@agent-relay/cloud';
+import { track } from '../telemetry/index.js';
 
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
 import { createDefaultAssignmentRunner } from './cloud-worker.js';
@@ -218,6 +219,48 @@ describe('registerCloudCommands', () => {
         'https://cloud.test',
         expect.objectContaining({ device: true, force: true })
       );
+    });
+
+    it('records the method that actually ran', async () => {
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login', '--device'], { from: 'user' });
+
+      expect(vi.mocked(track)).toHaveBeenCalledWith(
+        'cloud_auth',
+        expect.objectContaining({ action: 'login', method: 'device', success: true })
+      );
+    });
+
+    it('attributes an auto-selected device login to the device flow', async () => {
+      // The point of the field is headless adoption, and the auto fallback
+      // means counting `--device` alone would undercount it.
+      cloudMocks.isHeadlessEnvironment.mockReturnValue(true);
+
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login'], { from: 'user' });
+
+      expect(vi.mocked(track)).toHaveBeenCalledWith(
+        'cloud_auth',
+        expect.objectContaining({ method: 'device' })
+      );
+    });
+
+    it('omits the method when the live-session short-circuit ran no flow', async () => {
+      // Reporting `method: 'device'` for an invocation that logged nobody in
+      // inflates exactly the headless-adoption metric the field exists to
+      // measure — and it is the kind of number that later gets trusted.
+      vi.mocked(readStoredAuth).mockResolvedValue({
+        apiUrl: 'https://cloud.test',
+        accessTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      });
+
+      const { program } = createHarness();
+      await program.parseAsync(['cloud', 'login', '--device'], { from: 'user' });
+
+      expect(vi.mocked(ensureAuthenticated)).not.toHaveBeenCalled();
+      const [, payload] = vi.mocked(track).mock.calls.at(-1) as [string, Record<string, unknown>];
+      expect(payload).toMatchObject({ action: 'login', success: true });
+      expect(payload).not.toHaveProperty('method');
     });
   });
 

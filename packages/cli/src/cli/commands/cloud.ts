@@ -613,8 +613,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       let success = false;
       let errorClass: string | undefined;
       // Recorded so headless adoption is visible in telemetry; the auto
-      // fallback means `--device` alone would undercount it.
-      const method = options.device === true || isHeadlessEnvironment() ? 'device' : 'browser';
+      // fallback means `--device` alone would undercount it. Left undefined
+      // until a login actually runs — a no-op invocation that short-circuits
+      // on a live session performed no flow, and attributing one to it would
+      // overcount whichever method the host happens to prefer.
+      let method: 'browser' | 'device' | undefined;
       try {
         const apiUrl = options.apiUrl || defaultApiUrl();
 
@@ -630,6 +633,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           }
         }
 
+        method = options.device === true || isHeadlessEnvironment() ? 'device' : 'browser';
         await ensureAuthenticated(apiUrl, { force: options.force, device: options.device });
         success = true;
       } catch (err) {
@@ -638,7 +642,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       } finally {
         track('cloud_auth', {
           action: 'login',
-          method,
+          ...(method ? { method } : {}),
           success,
           duration_ms: Date.now() - started,
           ...(errorClass ? { error_class: errorClass } : {}),
