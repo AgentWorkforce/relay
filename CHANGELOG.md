@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay cloud login --device` authenticates a machine that has no browser, using the OAuth device flow: the CLI prints a short code, you approve it in a browser on any other device, and the headless machine writes its own `cloud-auth.json`. Login now falls back to this automatically over SSH or on a Unix host with no display server, instead of waiting on a loopback callback that can never arrive. Each machine gets its own cloud session, so copying `cloud-auth.json` between hosts — which silently logs them out of each other as refresh tokens rotate — is no longer necessary. Requires cloud with the device authorization endpoints.
+- `agent-relay cloud login --device` logs in a machine with no browser through the OAuth device flow: the CLI prints a code you approve from any other device. Login and re-authentication fall back to it automatically over SSH or on a Unix host with no display server, and each machine gets its own cloud session instead of a copied `cloud-auth.json`. Requires cloud with the device authorization endpoints.
 
 ### Fixed
 

@@ -806,7 +806,17 @@ export async function authorizedApiFetch(
   auth: StoredAuth,
   requestPath: string,
   init: RequestInit,
-  options: { interactive?: boolean; refreshTimeoutMs?: number } = {}
+  options: {
+    interactive?: boolean;
+    refreshTimeoutMs?: number;
+    /**
+     * Force the device flow for the re-login below. Callers here are mid-request
+     * rather than mid-`login`, so nobody passes an explicit `--device`; left
+     * unset, a headless host still picks the device flow automatically.
+     */
+    device?: boolean;
+    env?: NodeJS.ProcessEnv;
+  } = {}
 ): Promise<{ response: Response; auth: StoredAuth }> {
   let activeAuth = auth;
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
@@ -830,7 +840,14 @@ export async function authorizedApiFetch(
       throw error;
     }
 
-    activeAuth = await loginWithBrowser(activeAuth.apiUrl);
+    // Must go through the same selector `ensureCloudSession` uses. Calling the
+    // browser flow directly here stranded exactly the machine this feature
+    // exists for: a headless host completes the device flow once, then its
+    // first re-auth sits on a loopback callback it can never reach.
+    activeAuth = await loginInteractive(activeAuth.apiUrl, {
+      device: options.device,
+      env: options.env,
+    });
   }
 
   response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);

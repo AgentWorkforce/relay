@@ -827,6 +827,146 @@ describe('authorizedApiFetch telemetry headers', () => {
   });
 });
 
+describe('authorizedApiFetch re-login', () => {
+  it('re-authenticates a headless host through the device flow, not the browser', async () => {
+    // The steady state this feature exists for: barry logged in once over ssh
+    // with `--device`, and now a request 401s with a refresh token the server
+    // will not renew. Sending that host to the browser flow would park it on a
+    // loopback callback nobody can ever complete.
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    let protectedCalls = 0;
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        // Refresh token revoked/rotated away — the branch that falls through
+        // to an interactive login.
+        return new Response('{}', { status: 401 });
+      }
+      if (url.includes('/api/v1/auth/device/start')) {
+        return new Response(
+          JSON.stringify({
+            device_code: 'cld_dc_reauth',
+            user_code: 'MNPQ-RSTV',
+            verification_uri: 'https://api.example.test/cloud/device',
+            expires_in: 600,
+            interval: 1,
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/auth/device/token')) {
+        return new Response(
+          JSON.stringify({
+            access_token: 'reauth-access',
+            refresh_token: 'reauth-refresh',
+            access_token_expires_at: '2999-01-01T00:00:00.000Z',
+            api_url: 'https://api.example.test',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/auth/whoami')) {
+        return new Response('{}', { status: 500 });
+      }
+
+      protectedCalls += 1;
+      // First attempt is unauthorized; the retry after re-login succeeds.
+      return protectedCalls === 1
+        ? new Response('{}', { status: 401 })
+        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { response, auth } = await authorizedApiFetch(
+      {
+        apiUrl: 'https://api.example.test',
+        accessToken: 'stale-access',
+        refreshToken: 'stale-refresh',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      },
+      '/api/v1/workflows/run',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(200);
+    expect(auth).toMatchObject({ accessToken: 'reauth-access', refreshToken: 'reauth-refresh' });
+
+    const requested = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(requested.some((url) => url.includes('/api/v1/auth/device/start'))).toBe(true);
+    // The browser flow is what this fix routes around: no browser launch, and
+    // the retried request carries the token the device flow just issued.
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    const retryInit = fetchSpy.mock.calls.at(-1)?.[1] as RequestInit;
+    expect(new Headers(retryInit.headers).get('authorization')).toBe('Bearer reauth-access');
+
+    logSpy.mockRestore();
+  });
+
+  it('still uses the browser flow on a host that has one', async () => {
+    // The selector only changes which flow a headless host gets. Everywhere
+    // else the browser flow stays the default, and it must still complete.
+    const realFetch = globalThis.fetch;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    let protectedCalls = 0;
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        return new Response('{}', { status: 401 });
+      }
+      if (url.includes('/api/v1/auth/device/')) {
+        throw new Error('device flow must not run on a host with a browser');
+      }
+      if (url.includes('/api/v1/auth/whoami')) {
+        return new Response('{}', { status: 500 });
+      }
+      protectedCalls += 1;
+      return protectedCalls === 1
+        ? new Response('{}', { status: 401 })
+        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const pending = authorizedApiFetch(
+      {
+        apiUrl: 'https://api.example.test',
+        accessToken: 'stale-access',
+        refreshToken: 'stale-refresh',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      },
+      '/api/v1/workflows/run',
+      { method: 'POST' }
+    );
+
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Opening browser for cloud login: '));
+    });
+
+    // Drive the loopback callback to completion so the login server closes
+    // instead of outliving the test.
+    const loginLine = logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.startsWith('Opening browser for cloud login: '));
+    const loginUrl = new URL(String(loginLine).slice('Opening browser for cloud login: '.length));
+    const callbackUrl = new URL(String(loginUrl.searchParams.get('redirect_uri')));
+    callbackUrl.searchParams.set('state', String(loginUrl.searchParams.get('state')));
+    callbackUrl.searchParams.set('access_token', 'browser-access');
+    callbackUrl.searchParams.set('refresh_token', 'browser-refresh');
+    callbackUrl.searchParams.set('access_token_expires_at', '2999-01-01T00:00:00.000Z');
+    callbackUrl.searchParams.set('api_url', 'https://api.example.test');
+    await realFetch(callbackUrl, { redirect: 'manual' });
+
+    const { auth } = await pending;
+    expect(auth).toMatchObject({ accessToken: 'browser-access' });
+    expect(childProcessMocks.spawn).toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+});
+
 describe('cloud identity capture', () => {
   const WHOAMI_URL = 'https://api.example.test/api/v1/auth/whoami';
 
