@@ -30,6 +30,8 @@ const DEFAULT_EXPIRES_IN_SECONDS = 600;
  * silent hang there is strictly worse than a visible failure.
  */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** Node timers are 32-bit; past this a delay silently becomes 1ms. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export type DeviceAuthorization = {
   deviceCode: string;
@@ -62,8 +64,27 @@ function deviceError(message: string): CloudAuthError {
   return new CloudAuthError('AUTH_DEVICE_FLOW_FAILED', message);
 }
 
+/**
+ * `AbortSignal.timeout` throws a `RangeError` on a fractional delay, and
+ * silently collapses anything past the 32-bit timer range to 1ms — an
+ * immediate abort. Either turns a timeout budget into an instant failure, and
+ * the `RangeError` would surface from inside the fetch call as the misleading
+ * "Could not reach <url>". A fractional value is reachable without a bad
+ * caller: the poll budget is derived from the deadline, which is derived from
+ * the server's `expires_in`.
+ */
+function clampTimerDelay(ms: number): number {
+  if (!Number.isFinite(ms)) {
+    return MAX_TIMER_DELAY_MS;
+  }
+  return Math.min(MAX_TIMER_DELAY_MS, Math.max(1, Math.floor(ms)));
+}
+
 function normalizeTimeout(ms: number | undefined): number {
-  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_REQUEST_TIMEOUT_MS;
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+  return clampTimerDelay(ms);
 }
 
 function formatDuration(ms: number): string {
@@ -213,8 +234,10 @@ export async function pollForDeviceToken(
   for (;;) {
     // Wait first: the user cannot possibly have approved in the microseconds
     // since the grant was minted, and polling immediately only earns a
-    // `slow_down`.
-    await sleep(intervalSeconds * 1000);
+    // `slow_down`. Never wait past the grant, though — every retry path here
+    // widens the interval, and a 60s interval with 5s of grant left would sit
+    // on the expiry report for most of a minute before delivering it.
+    await sleep(Math.min(intervalSeconds * 1000, Math.max(0, deadline - now())));
 
     if (now() >= deadline) {
       throw deviceError(
@@ -225,7 +248,7 @@ export async function pollForDeviceToken(
     // Bound every poll, and never past the grant deadline: a stalled socket
     // must not outlive the grant it is waiting on, or the loop's own expiry
     // check never gets to run.
-    const pollTimeoutMs = Math.max(1, Math.min(requestTimeoutMs, deadline - now()));
+    const pollTimeoutMs = clampTimerDelay(Math.min(requestTimeoutMs, deadline - now()));
 
     let response: Response;
     try {

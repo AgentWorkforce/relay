@@ -165,6 +165,48 @@ describe('device authorization start', () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it('survives a timeout budget Node timers cannot take literally', async () => {
+    // `AbortSignal.timeout` throws a RangeError on a fractional delay. Thrown
+    // from inside the fetch call it would be caught as a connection failure
+    // and misreported as "Could not reach", so normalize before handing it
+    // over rather than relying on the caller.
+    const fetchImpl = stallingFetch();
+
+    await expect(
+      startDeviceAuthorization(API_URL, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        requestTimeoutMs: 20.7,
+      })
+    ).rejects.toThrow(/Timed out after/);
+  });
+
+  it('does not let an oversized budget collapse into an instant abort', async () => {
+    // Node timers are 32-bit: past ~24.9 days the delay silently becomes 1ms,
+    // turning "wait a long time" into "fail immediately".
+    const fetchImpl = vi.fn(async (_url: unknown, init: RequestInit = {}) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(init.signal?.aborted).toBe(false);
+      return jsonResponse(
+        {
+          device_code: 'cld_dc_test',
+          user_code: 'BCDF-GHJK',
+          verification_uri: 'https://agentrelay.com/cloud/device',
+          verification_uri_complete: 'https://agentrelay.com/cloud/device?user_code=BCDF-GHJK',
+          expires_in: 600,
+          interval: 5,
+        },
+        { status: 201 }
+      );
+    });
+
+    const result = await startDeviceAuthorization(API_URL, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      requestTimeoutMs: 3e9,
+    });
+
+    expect(result.userCode).toBe('BCDF-GHJK');
+  });
+
   it('reports a timeout as a CloudAuthError, not a bare DOMException', async () => {
     const fetchImpl = stallingFetch();
 
@@ -437,6 +479,25 @@ describe('device authorization poll', () => {
     ).rejects.toThrow(/expired before it was approved/);
     // Bounded by the grant, not looping forever on a dead host.
     expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it('never sleeps past the grant, so expiry is reported promptly', async () => {
+    // Every retry path widens the interval. Without a cap, a widened interval
+    // outlives the remaining grant and the client sits on the expiry report
+    // instead of delivering it — the same "looks like a hang" failure the
+    // request timeouts exist to prevent, one level up.
+    const { hooks, sleeps } = harness(
+      Array.from({ length: 10 }, () => jsonResponse({ error: 'slow_down' }, { status: 400 }))
+    );
+
+    await expect(
+      pollForDeviceToken(API_URL, { ...AUTHORIZATION, expiresInSeconds: 25 }, hooks)
+    ).rejects.toThrow(/expired before it was approved/);
+
+    // Backoff would reach 5 + 10 + 15 = 30s against a 25s grant; the last wait
+    // is trimmed to the 10s actually left, so expiry lands on time.
+    expect(sleeps).toEqual([5000, 10_000, 10_000]);
+    expect(sleeps.reduce((total, ms) => total + ms, 0)).toBe(25_000);
   });
 
   it('surfaces an unexpected error code instead of looping on it', async () => {
