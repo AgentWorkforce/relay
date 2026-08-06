@@ -9,7 +9,8 @@ vi.mock('@agent-relay/cloud', () => ({
 }));
 
 vi.mock('../lib/workspace-session.js', () => ({
-  persistWorkspaceSession: vi.fn(),
+  // Returns a result object describing what the write changed beyond the key.
+  persistWorkspaceSession: vi.fn(() => ({})),
   validateWorkspaceSessionName: vi.fn((name: string) => {
     const trimmed = name.trim();
     if (!trimmed) throw new Error('Workspace name is required.');
@@ -184,6 +185,33 @@ describe('registerWorkspaceCommands', () => {
     });
     expect(setWorkspaceKey).not.toHaveBeenCalled();
     expect(switchWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('workspace switch reports an enrolled fleet node dropped by the move', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValue({
+      active: 'default',
+      workspaces: { other: { key: 'rk_live_other' } },
+    });
+    vi.mocked(persistWorkspaceSession).mockReturnValueOnce({ clearedEnrolledNodeId: 'node_abc' });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'switch', 'other']);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('node_abc');
+    expect(output).toContain('relay cloud enroll');
+  });
+
+  it('workspace switch stays quiet when no enrolled node was dropped', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValue({
+      active: 'default',
+      workspaces: { other: { key: 'rk_live_other' } },
+    });
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'switch', 'other']);
+
+    expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).not.toContain('Cleared');
   });
 
   it('workspace key prints the stored key masked by default and raw with --reveal-secrets', async () => {

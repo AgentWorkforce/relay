@@ -29,12 +29,24 @@ export function resolveWorkspaceSessionKey(options: WorkspaceSessionOptions = {}
   return resolveWorkspaceKeyWithSource(options)?.key;
 }
 
+export interface PersistWorkspaceSessionResult {
+  /**
+   * Enrolled node association dropped because the project moved to a different
+   * workspace. Present only when there was one to drop.
+   */
+  clearedEnrolledNodeId?: string;
+}
+
 /**
  * Pin a workspace to the current project so later CLI and MCP processes resume
  * the same collaboration session. A named selection also becomes the
  * machine-global active workspace; a bare shared key only changes this project.
+ *
+ * @returns What the write changed beyond the key itself.
  */
-export function persistWorkspaceSession(options: PersistWorkspaceSessionOptions): void {
+export function persistWorkspaceSession(
+  options: PersistWorkspaceSessionOptions
+): PersistWorkspaceSessionResult {
   const workspaceKey = options.workspaceKey.trim();
   if (!workspaceKey) {
     throw new Error('Workspace key is required.');
@@ -43,11 +55,19 @@ export function persistWorkspaceSession(options: PersistWorkspaceSessionOptions)
   const name = options.name === undefined ? undefined : validateWorkspaceSessionName(options.name);
 
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
-  // The enrolled Fleet node is a property of this machine+project, not of the
-  // workspace being selected. Dropping it here silently manufactured the broken
-  // state `node up` warns about: a pin with no node id, which makes the next
-  // start ignore the enrollment store entirely.
-  const enrolledNodeId = readProjectWorkspaceSession(projectDataDir)?.enrolledNodeId;
+  const existing = readProjectWorkspaceSession(projectDataDir);
+  // Re-selecting the same workspace must keep the enrolled node: dropping it
+  // there manufactured the pin `node up` now warns about, where the next start
+  // ignores the enrollment store entirely.
+  //
+  // Moving to a *different* workspace must not. The enrollment resolves by node
+  // id alone, and `node up` applies its credentials without applying the pinned
+  // key — so carrying the id across would run the broker in the old workspace
+  // while every other command in this project reads the new one. That is the
+  // split this whole change exists to remove, and the workspace ids the
+  // enrollment store holds cannot be checked against the key the pin holds.
+  const keepsWorkspace = existing?.workspaceKey === workspaceKey;
+  const enrolledNodeId = keepsWorkspace ? existing?.enrolledNodeId : undefined;
   writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
     ...(enrolledNodeId ? { enrolledNodeId } : {}),
   });
@@ -56,4 +76,8 @@ export function persistWorkspaceSession(options: PersistWorkspaceSessionOptions)
     setWorkspaceKey(name, workspaceKey, options.env);
     switchWorkspace(name, options.env);
   }
+
+  return existing?.enrolledNodeId && !enrolledNodeId
+    ? { clearedEnrolledNodeId: existing.enrolledNodeId }
+    : {};
 }

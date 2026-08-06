@@ -1023,8 +1023,10 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           );
           if (pin?.status === 'linked') {
             deps.log(
-              `Linked this project's workspace pin (${pin.pinPath}) to node ${pin.nodeId}, ` +
-                "so 'relay node up' here serves this enrollment."
+              `Linked this project's workspace pin (${pin.pinPath}) to node ${pin.nodeId}, so ` +
+                `'relay node up' here serves this enrollment in workspace ${record.relayWorkspaceId}. ` +
+                'The pinned workspace key was not verified against that workspace — if they differ, ' +
+                'agent commands in this project keep using the pinned one.'
             );
           }
         } catch (err) {

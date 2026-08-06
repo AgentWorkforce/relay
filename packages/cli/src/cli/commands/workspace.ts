@@ -5,9 +5,31 @@ import { resolveActiveWorkspace } from '@agent-relay/cloud';
 import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
-import { persistWorkspaceSession, validateWorkspaceSessionName } from '../lib/workspace-session.js';
+import {
+  persistWorkspaceSession,
+  validateWorkspaceSessionName,
+  type PersistWorkspaceSessionResult,
+} from '../lib/workspace-session.js';
 
 export type WorkspaceCommandDependencies = SdkCommandDeps;
+
+/**
+ * Say so when moving workspaces drops this project's enrolled fleet node.
+ * Leaving it silent is what produced the split rosters in #1432.
+ */
+function reportClearedEnrollment(
+  result: PersistWorkspaceSessionResult,
+  deps: WorkspaceCommandDependencies
+): void {
+  if (!result.clearedEnrolledNodeId) {
+    return;
+  }
+  deps.log(
+    `Cleared this project's enrolled fleet node (${result.clearedEnrolledNodeId}): it belongs to the ` +
+      "workspace you moved away from. Run 'relay cloud enroll' from this project to serve a node in the " +
+      'new workspace.'
+  );
+}
 
 function parsePositiveInteger(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -148,8 +170,9 @@ export function registerWorkspaceCommands(
     .argument('<key>', 'Workspace key')
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
-        persistWorkspaceSession({ name, workspaceKey: key });
+        const result = persistWorkspaceSession({ name, workspaceKey: key });
         deps.log(`Joined and switched to workspace "${name}".`);
+        reportClearedEnrollment(result, deps);
       });
     });
 
@@ -166,8 +189,9 @@ export function registerWorkspaceCommands(
             `Unknown workspace "${name}". Add it with \`relay workspace set_key ${name} <key>\`.`
           );
         }
-        persistWorkspaceSession({ name, workspaceKey: workspace.key });
+        const result = persistWorkspaceSession({ name, workspaceKey: workspace.key });
         deps.log(`Switched to workspace "${name}".`);
+        reportClearedEnrollment(result, deps);
       });
     });
 }

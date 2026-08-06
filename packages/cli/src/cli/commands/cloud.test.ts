@@ -1799,6 +1799,11 @@ describe('registerCloudCommands', () => {
     const output = log.mock.calls.flat().join('\n');
     expect(output).toContain('/repo/.agentworkforce/relay/workspace-key.json');
     expect(output).toContain('node_abc');
+    // The pinned key holds a workspace *key* and the enrollment holds a
+    // workspace *id*, so the link cannot be verified locally. Say which
+    // workspace will actually be served and do not claim more than that.
+    expect(output).toContain('rw_123');
+    expect(output).toContain('was not verified');
   });
 
   it('cloud enroll warns instead of repointing a pin that names another node', async () => {
