@@ -244,6 +244,65 @@ describe('device authorization poll', () => {
     expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(6);
   });
 
+  // The server keeps the grant claimable across an issuance failure precisely
+  // so the next poll can still succeed (cloud#2941 wraps claim+mint in one
+  // transaction and answers 503 `server_error`). Aborting here would throw away
+  // an approval the human already gave and make them redo the whole flow —
+  // exactly the harm the server-side fix exists to prevent.
+  it('keeps polling through a transient server_error and still logs in', async () => {
+    const { hooks, sleeps, fetchImpl } = harness([
+      jsonResponse({ error: 'authorization_pending', interval: 5 }, { status: 400 }),
+      jsonResponse(
+        { error: 'server_error', error_description: 'Unable to complete device authorization' },
+        { status: 503 }
+      ),
+      jsonResponse({
+        access_token: 'cld_at_abc',
+        refresh_token: 'cld_rt_abc',
+        access_token_expires_at: '2026-08-07T00:00:00.000Z',
+      }),
+    ]);
+
+    const auth = await pollForDeviceToken(API_URL, AUTHORIZATION, hooks);
+
+    expect(auth.accessToken).toBe('cld_at_abc');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // Backs off rather than hammering a server that is already struggling.
+    expect(sleeps).toEqual([5000, 5000, 10_000]);
+  });
+
+  it('retries a gateway 502 with no JSON body at all', async () => {
+    // A proxy blip in front of the app yields HTML, not an OAuth error object.
+    const { hooks, fetchImpl } = harness([
+      new Response('<html>502 Bad Gateway</html>', {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+      }),
+      jsonResponse({
+        access_token: 'cld_at_abc',
+        refresh_token: 'cld_rt_abc',
+        access_token_expires_at: '2026-08-07T00:00:00.000Z',
+      }),
+    ]);
+
+    const auth = await pollForDeviceToken(API_URL, AUTHORIZATION, hooks);
+    expect(auth.accessToken).toBe('cld_at_abc');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('still gives up on a server outage that outlasts the grant', async () => {
+    // Retrying must stay bounded by the grant deadline, not loop forever.
+    const responses = Array.from({ length: 500 }, () =>
+      jsonResponse({ error: 'server_error' }, { status: 503 })
+    );
+    const { hooks, fetchImpl } = harness(responses);
+
+    await expect(
+      pollForDeviceToken(API_URL, { ...AUTHORIZATION, expiresInSeconds: 60 }, hooks)
+    ).rejects.toThrow(/expired before it was approved/);
+    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
   it('surfaces an unexpected error code instead of looping on it', async () => {
     const { hooks } = harness([jsonResponse({ error: 'invalid_client' }, { status: 400 })]);
 

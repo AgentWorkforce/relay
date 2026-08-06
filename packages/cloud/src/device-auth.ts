@@ -231,6 +231,18 @@ export async function pollForDeviceToken(
       continue;
     }
 
+    // A 5xx here is transient by construction. The server claims the grant and
+    // mints the session in one transaction, so a failure rolls the claim back
+    // and leaves the grant `approved` and claimable — it answers `server_error`
+    // rather than burning the approval, specifically so this loop can try
+    // again. Treating it as fatal would discard an approval the human already
+    // gave and make them redo the whole flow. Bounded by the grant deadline
+    // above, so an outage that outlasts the grant still ends the loop.
+    if (response.status >= 500) {
+      intervalSeconds = clampInterval(intervalSeconds + SLOW_DOWN_INCREMENT_SECONDS);
+      continue;
+    }
+
     switch (payload?.error) {
       case 'authorization_pending':
         // Still waiting on the human. The server may also have widened the
