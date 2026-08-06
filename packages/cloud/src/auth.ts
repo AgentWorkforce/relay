@@ -840,6 +840,14 @@ export async function authorizedApiFetch(
       throw error;
     }
 
+    // A caller that already aborted gets its cancellation back, not a login.
+    // The device flow blocks for the grant lifetime — minutes — so starting one
+    // here would leave a cancelled CLI or workflow waiting on authorization it
+    // never asked for. The browser flow masked this by resolving sooner.
+    if (init.signal?.aborted) {
+      throw init.signal.reason ?? new Error('Cloud request aborted before re-authentication');
+    }
+
     // Must go through the same selector `ensureCloudSession` uses. Calling the
     // browser flow directly here stranded exactly the machine this feature
     // exists for: a headless host completes the device flow once, then its

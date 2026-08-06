@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fsMocks = vi.hoisted(() => ({
   readFile: vi.fn(),
@@ -65,6 +65,13 @@ function createEnvAuth(overrides: Partial<StoredAuth> = {}): NodeJS.ProcessEnv {
     ...(next.refreshTokenExpiresAt ? { CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: next.refreshTokenExpiresAt } : {}),
   };
 }
+
+// `clearAllMocks` resets call history but leaves `vi.spyOn` spies installed, so
+// a test that failed mid-body used to leave `console.log` silenced for every
+// later test in this file — silencing output exactly when a failure needs it.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -903,6 +910,47 @@ describe('authorizedApiFetch re-login', () => {
     expect(new Headers(retryInit.headers).get('authorization')).toBe('Bearer reauth-access');
 
     logSpy.mockRestore();
+  });
+
+  it('returns the caller cancellation instead of starting a device login', async () => {
+    // Routing re-auth through the device flow made cancellation matter more:
+    // the device grant blocks for minutes, so an aborted request that starts a
+    // login leaves a cancelled CLI or workflow waiting on authorization nobody
+    // asked for. The abort must win before any flow begins.
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const controller = new AbortController();
+
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/device/')) {
+        throw new Error('a cancelled request must not start the device flow');
+      }
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        // Abort while the refresh is in flight, then fail it: this is the
+        // exact interleaving where the old code fell through to a login.
+        controller.abort();
+        return new Response('{}', { status: 401 });
+      }
+      return new Response('{}', { status: 401 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      authorizedApiFetch(
+        {
+          apiUrl: 'https://api.example.test',
+          accessToken: 'stale-access',
+          refreshToken: 'stale-refresh',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        },
+        '/api/v1/workflows/run',
+        { method: 'POST', signal: controller.signal }
+      )
+    ).rejects.toThrow();
+
+    const requested = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(requested.some((url) => url.includes('/api/v1/auth/device/start'))).toBe(false);
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 
   it('still uses the browser flow on a host that has one', async () => {
