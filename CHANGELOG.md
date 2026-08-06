@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fleet node heartbeats no longer report unbounded capacity as `load: 0`; `load` is omitted when `max_agents` is `0` and remains a measured `[0,1]` utilization ratio when a finite agent limit is configured.
 - `agent-relay node up` resolves its installed broker through canonical package-manager links and Relay's user install directories, so mise-managed and minimal-`PATH` launches no longer fail when the broker binary is already installed.
 - `agent-relay node up` warns instead of silently ignoring stored Cloud fleet enrollments when the project workspace pin has no enrolled node id. That combination started the broker in the pinned workspace while the node never heartbeat, leaving the Cloud dashboard and `agent-relay fleet nodes` showing different rosters with no error from either.
 - `agent-relay cloud enroll` records the enrolled node on the project workspace pin, so `node up` in that repo serves the node it just enrolled. A pin that already names a different node is reported and left untouched rather than repointed.
