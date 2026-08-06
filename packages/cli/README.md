@@ -47,6 +47,79 @@ agent-relay node agent release <name>
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
+### Workspace binding and recovery
+
+`agent-relay up` and `agent-relay node up` resolve the workspace through one
+precedence ladder. The first source that resolves wins:
+
+| #   | Source                          | Where it comes from                                                           |
+| --- | ------------------------------- | ----------------------------------------------------------------------------- |
+| 1   | Command-line flag               | `--workspace-key` / `--wk`                                                    |
+| 2   | Environment                     | `RELAY_WORKSPACE_KEY`, then `AGENT_RELAY_WORKSPACE_KEY`, then `RELAY_API_KEY` |
+| 3   | Repository pin                  | `<project>/.agentworkforce/relay/workspace-key.json`                          |
+| 4   | Machine-global active workspace | the `active` entry in `~/.agentworkforce/relay/workspaces.json`               |
+| 5   | Created workspace               | created only when nothing above resolves                                      |
+
+The repository pin always beats the machine-global active workspace, so
+`agent-relay workspace switch <name>` never silently re-homes a checkout that
+already pinned one. A new workspace is a last resort: a fresh directory joins
+the machine-global active workspace when one exists, and startup explicitly
+announces creation when none of the first four sources resolves.
+
+Startup and `node status` report the winning source without printing key
+material. Status uses the same five labels: command-line flag, environment,
+repository pin, machine-global active workspace, or created — but the two
+commands print different strings: startup shows the resolved origin
+(an absolute path for a repository pin), `node status` shows a fixed,
+relative-path label.
+
+Startup output:
+
+```text
+Workspace source: repository pin (/repo/.agentworkforce/relay/workspace-key.json)
+Workspace: joined rw_7ccfea89
+```
+
+`node status` output:
+
+```text
+Workspace source: repository pin (.agentworkforce/relay/workspace-key.json)
+```
+
+A Cloud enrollment (`RELAY_NODE_TOKEN`, or a record in the Fleet enrollment
+store) selects the node's _identity_, not its workspace, so it never appears on
+the ladder. If a stored enrollment addresses a different workspace than the
+repository pin, `node up` refuses to start and names both source files and
+workspace IDs, never their keys.
+
+`workspace create`, `join`, and `switch` select a named workspace globally and
+pin it to the current project. A changed selection records the old name, so an
+accidental create can be undone:
+
+```bash
+agent-relay workspace restore
+```
+
+To change only the workspace this project's broker will use on its next start,
+without changing the machine-global active workspace, use:
+
+```bash
+agent-relay workspace rebind default
+agent-relay node down
+agent-relay node up
+```
+
+`rebind` is also the supported recovery command for the conflict above: it
+writes the repository pin (which outranks the machine-global active workspace)
+and clears the project's stale enrolled-node association so the next start does
+not fight the conflict guard. It does not stop a running broker; restart the
+broker when you are ready to apply the new pin.
+
+For detached startup failures, `node up --background` reports the child error
+when available and otherwise tells you to retry without `--background`; a child
+that already exited is no longer misreported as an unkillable half-started
+broker.
+
 ## Remote fleet agents
 
 The `fleet` command group lists and controls agents across all live nodes in

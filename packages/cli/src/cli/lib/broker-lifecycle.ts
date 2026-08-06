@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
 import { createLogger } from '@agent-relay/utils';
+import { redactCredentialValues } from '@agent-relay/cloud/redact';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
@@ -24,12 +26,19 @@ import {
 import { describeError } from './describe-error.js';
 import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
-import { projectWorkspaceKeyPath, writeProjectWorkspaceKey } from './project-workspace-key.js';
-import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
+import {
+  readProjectWorkspaceSession,
+  resolveWorkspaceSelection,
+  writeProjectWorkspaceKey,
+  type ProjectWorkspaceSession,
+  type WorkspaceSelection,
+} from './project-workspace-key.js';
 
 type UpOptions = {
   spawn?: boolean;
   background?: boolean;
+  /** Internal marker set only on the detached child re-exec. */
+  backgroundChild?: boolean;
   verbose?: boolean;
   workspaceKey?: string;
   stateDir?: string;
@@ -65,6 +74,8 @@ const DEFAULT_BROKER_BASE_PORT = 3888;
 
 /** The broker writes this file with URL, port, API key, and PID. */
 const CONNECTION_FILENAME = 'connection.json';
+const BACKGROUND_START_ERROR_FILENAME = 'background-start-error.log';
+export const WORKSPACE_BINDING_SOURCE_ENV = 'AGENT_RELAY_WORKSPACE_SOURCE';
 const STATUS_POLL_INTERVAL_MS = 500;
 const DETACHED_START_READY_TIMEOUT_MS = 10_000;
 const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
@@ -73,11 +84,15 @@ const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
 // RELAY_NODE_TOKEN.
 const NODE_TOKEN_WAIT_MS = 15_000;
 
+export type WorkspaceBindingSource = WorkspaceSelection['source'] | 'created' | 'multi-workspace';
+
 export interface BrokerConnection {
   url: string;
   port: number;
   api_key: string;
   pid: number;
+  /** Non-secret provenance recorded by the CLI after the broker handshake. */
+  workspace_source?: WorkspaceBindingSource;
 }
 
 type BrokerStatusDetails = {
@@ -291,7 +306,7 @@ export function describeErrorWithCause(err: unknown): string {
   const parts = [top];
   if (detail && detail !== top) parts.push(detail);
   if (codes.length > 0) parts.push(`[${codes.join(', ')}]`);
-  return parts.join(' — ');
+  return redactCredentialValues(parts.join(' — '));
 }
 
 /**
@@ -713,6 +728,93 @@ function safeUnlink(filePath: string, deps: CoreDependencies): void {
   }
 }
 
+function workspaceBindingSource(value: string | undefined): WorkspaceBindingSource | undefined {
+  return value === 'flag' ||
+    value === 'env' ||
+    value === 'project' ||
+    value === 'store' ||
+    value === 'created' ||
+    value === 'multi-workspace'
+    ? value
+    : undefined;
+}
+
+function workspaceBindingSourceLabel(source: WorkspaceBindingSource): string {
+  switch (source) {
+    case 'flag':
+      return 'command-line flag (--workspace-key / --wk)';
+    case 'env':
+      return 'environment (RELAY_WORKSPACE_KEY > AGENT_RELAY_WORKSPACE_KEY > RELAY_API_KEY)';
+    case 'project':
+      return 'repository pin (.agentworkforce/relay/workspace-key.json)';
+    case 'store':
+      return 'machine-global active workspace (~/.agentworkforce/relay/workspaces.json)';
+    case 'created':
+      return 'created (no configured workspace resolved)';
+    case 'multi-workspace':
+      return 'multi-workspace session ($RELAY_WORKSPACES_JSON)';
+  }
+}
+
+/** True when `RELAY_WORKSPACES_JSON` carries at least one membership. The broker's
+ * `startup_session_set_with_options` checks this env var before any single
+ * workspace key (flag, env, repository pin, or machine-global store), so the
+ * CLI's precedence ladder must defer to it for provenance too — otherwise
+ * `node up` / `node status` can report a source the broker never used. */
+function usesMultiWorkspaceEnv(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.RELAY_WORKSPACES_JSON?.trim());
+}
+
+function writeBrokerBindingSource(
+  dataDir: string,
+  source: WorkspaceBindingSource,
+  deps: CoreDependencies
+): void {
+  const connectionPath = path.join(dataDir, CONNECTION_FILENAME);
+  const connection = readBrokerConnectionFromFs(deps.fs, dataDir);
+  if (!connection) return;
+  // Every CLI invocation resolves the broker through this file, so a
+  // concurrent writer must never observe a partial or clobbered write.
+  // Write to a private tmp file and rename it into place, which is atomic
+  // on the same filesystem.
+  const tmpPath = `${connectionPath}.tmp-${process.pid}-${randomUUID()}`;
+  deps.fs.writeFileSync(
+    tmpPath,
+    `${JSON.stringify({ ...connection, workspace_source: source }, null, 2)}\n`,
+    'utf-8'
+  );
+  deps.fs.renameSync(tmpPath, connectionPath);
+}
+
+function backgroundStartErrorPath(dataDir: string): string {
+  return path.join(dataDir, BACKGROUND_START_ERROR_FILENAME);
+}
+
+function readBackgroundStartError(dataDir: string, deps: CoreDependencies): string | undefined {
+  try {
+    return deps.fs.readFileSync(backgroundStartErrorPath(dataDir), 'utf-8').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recordBackgroundStartError(
+  message: string,
+  dataDir: string,
+  isDetachedChild: boolean,
+  deps: CoreDependencies
+): void {
+  if (!isDetachedChild) return;
+  try {
+    // Never trust a project-loaded environment variable as a filesystem path.
+    // Detached startup owns one fixed diagnostic file inside its resolved
+    // broker state directory; foreground failures do not write it at all.
+    deps.fs.writeFileSync(backgroundStartErrorPath(dataDir), `${message}\n`, 'utf-8');
+  } catch {
+    // Diagnostics must never replace the original startup error.
+  }
+}
+
 function readBrokerPid(dataDir: string, _deps: CoreDependencies): number | null {
   const conn = readBrokerConnectionFromFs(_deps.fs, dataDir);
   return conn?.pid ?? null;
@@ -959,6 +1061,7 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
   safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
   safeUnlink(relaySockPath, deps);
   safeUnlink(runtimePath, deps);
+  safeUnlink(backgroundStartErrorPath(paths.dataDir), deps);
 
   // Clean up lock files and legacy pid files
   try {
@@ -1000,6 +1103,9 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
   }
   if (options.verbose === true && !args.includes('--verbose')) {
     args.push('--verbose');
+  }
+  if (!args.includes('--background-child')) {
+    args.push('--background-child');
   }
   return args;
 }
@@ -1109,13 +1215,17 @@ async function waitForBrokerReadiness(
   deps: CoreDependencies,
   waitMs: number,
   requireApi: boolean,
-  verbose?: boolean
+  verbose?: boolean,
+  stopWhenPidExits?: number
 ): Promise<BrokerReadiness> {
   const deadline = deps.now() + waitMs;
   let latest = await checkBrokerReadiness(paths, deps, requireApi);
   vlog(deps, verbose, `Broker readiness: ${latest.state}`);
 
   while (latest.state !== 'running' && waitMs > 0 && deps.now() < deadline) {
+    if (stopWhenPidExits && !isProcessRunning(stopWhenPidExits, deps)) {
+      return latest;
+    }
     await deps.sleep(Math.min(STATUS_POLL_INTERVAL_MS, Math.max(0, deadline - deps.now())));
     const previousState = latest.state;
     latest = await checkBrokerReadiness(paths, deps, requireApi);
@@ -1287,57 +1397,73 @@ function planCapacitySource(
   return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
 }
 
-interface PinnedProjectWorkspaceSession {
-  workspaceKey: string;
-  enrolledNodeId?: string;
-}
-
-/** Read the minimal project session needed during broker startup. */
-function readPinnedProjectWorkspaceSession(
-  dataDir: string,
-  deps: CoreDependencies
-): PinnedProjectWorkspaceSession | undefined {
-  try {
-    const parsed = JSON.parse(deps.fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8')) as Partial<{
-      workspaceKey: string;
-      enrolledNodeId: string;
-    }>;
-    const workspaceKey =
-      typeof parsed.workspaceKey === 'string' ? parsed.workspaceKey.trim() || undefined : undefined;
-    if (!workspaceKey) {
-      return undefined;
-    }
-    const enrolledNodeId =
-      typeof parsed.enrolledNodeId === 'string' ? parsed.enrolledNodeId.trim() || undefined : undefined;
-    return {
-      workspaceKey,
-      ...(enrolledNodeId ? { enrolledNodeId } : {}),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-/** Resume the pinned project session unless explicit credentials override it. */
-function resumePinnedProjectWorkspace(
-  options: UpOptions,
+/**
+ * Apply the resolved workspace to the environment the broker (and any detached
+ * child) inherits, and report which source won. Returns the pinned project
+ * session when the repository pin supplied the selection.
+ */
+function applyWorkspaceSelection(
+  selection: WorkspaceSelection | undefined,
   deps: CoreDependencies,
   projectDataDir: string
-): PinnedProjectWorkspaceSession | undefined {
-  const explicitEnvWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.env);
-  if (options.workspaceKey?.trim() || explicitEnvWorkspaceKey || deps.env.RELAY_NODE_TOKEN?.trim()) {
+): ProjectWorkspaceSession | undefined {
+  if (!selection) {
+    deps.log(
+      'Workspace: none selected (no --workspace-key, no RELAY_WORKSPACE_KEY, no repository pin, ' +
+        'no active workspace in the machine-global store). A new workspace will be created.'
+    );
     return undefined;
   }
 
-  const session = readPinnedProjectWorkspaceSession(projectDataDir, deps);
-  if (session) {
-    deps.env.RELAY_WORKSPACE_KEY = session.workspaceKey;
-    deps.env.RELAY_API_KEY = session.workspaceKey;
-    if (session.enrolledNodeId) {
-      deps.env.AGENT_RELAY_ENROLLED_NODE_ID = session.enrolledNodeId;
-    }
+  deps.log(`Workspace source: ${describeWorkspaceSource(selection.source)} (${selection.origin})`);
+  // Normalize every winning source to the primary env var inherited by the
+  // broker and any detached child. Keep a caller-supplied RELAY_API_KEY intact
+  // when an explicit flag or environment variable won.
+  deps.env.RELAY_WORKSPACE_KEY = selection.key;
+  if (selection.source === 'project' || selection.source === 'store') {
+    deps.env.RELAY_API_KEY = selection.key;
   }
-  return session;
+  if (selection.source !== 'project') {
+    return undefined;
+  }
+
+  const pinned = readProjectWorkspaceSession(projectDataDir, deps.fs);
+  if (pinned?.enrolledNodeId) {
+    deps.env.AGENT_RELAY_ENROLLED_NODE_ID = pinned.enrolledNodeId;
+  }
+  return pinned;
+}
+
+/** Human-readable name for a precedence-ladder step, for the startup line. */
+function describeWorkspaceSource(source: WorkspaceSelection['source']): string {
+  switch (source) {
+    case 'flag':
+      return 'command-line flag';
+    case 'env':
+      return 'environment';
+    case 'project':
+      return 'repository pin';
+    case 'store':
+      return 'machine-global active workspace';
+  }
+}
+
+/**
+ * Preserve the original source across `--background` re-exec. The detached
+ * child sees the normalized RELAY_WORKSPACE_KEY as an env selection, so this
+ * marker carries only provenance; it never participates in resolution.
+ */
+function recordWorkspaceBindingSource(
+  selection: WorkspaceSelection | undefined,
+  deps: CoreDependencies,
+  overrideSource?: WorkspaceBindingSource
+): WorkspaceBindingSource {
+  const inheritedSource = workspaceBindingSource(deps.env[WORKSPACE_BINDING_SOURCE_ENV]);
+  const source: WorkspaceBindingSource =
+    overrideSource ??
+    (selection?.source === 'env' && inheritedSource ? inheritedSource : (selection?.source ?? 'created'));
+  deps.env[WORKSPACE_BINDING_SOURCE_ENV] = source;
+  return source;
 }
 
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
@@ -1350,7 +1476,29 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   // --state-dir), so the key must be persisted here even when broker state is
   // redirected elsewhere.
   const projectWorkspaceKeyDataDir = paths.dataDir;
-  const resumedProjectSession = resumePinnedProjectWorkspace(options, deps, projectWorkspaceKeyDataDir);
+  // The broker's startup_session_set_with_options() checks RELAY_WORKSPACES_JSON
+  // before any single workspace key, so a flag/env/pin/store resolution here
+  // would report provenance the broker never actually used.
+  const joinsMultiWorkspaceSession = usesMultiWorkspaceEnv(deps.env);
+  const workspaceSelection = joinsMultiWorkspaceSession
+    ? undefined
+    : resolveWorkspaceSelection({
+        workspaceKey: options.workspaceKey,
+        env: deps.env,
+        projectDataDir: projectWorkspaceKeyDataDir,
+        fileSystem: deps.fs,
+      });
+  const workspaceBindingSource = recordWorkspaceBindingSource(
+    workspaceSelection,
+    deps,
+    joinsMultiWorkspaceSession ? 'multi-workspace' : undefined
+  );
+  const resumedProjectSession = joinsMultiWorkspaceSession
+    ? undefined
+    : applyWorkspaceSelection(workspaceSelection, deps, projectWorkspaceKeyDataDir);
+  if (joinsMultiWorkspaceSession) {
+    deps.log(`Workspace source: ${workspaceBindingSourceLabel('multi-workspace')}`);
+  }
   // --state-dir overrides where the broker writes state / connection files
   if (options.stateDir) {
     const resolved = path.resolve(options.stateDir);
@@ -1386,6 +1534,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       return;
     }
 
+    const startErrorPath = backgroundStartErrorPath(paths.dataDir);
+    safeUnlink(startErrorPath, deps);
     const args = childUpArgsForDetachedStart(options, deps);
     const invocation = detachedCliInvocation(deps, args);
     let child: SpawnedProcess;
@@ -1411,23 +1561,36 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps,
       DETACHED_START_READY_TIMEOUT_MS,
       true,
-      options.verbose
+      options.verbose,
+      child.pid
     );
     if (readiness.state !== 'running') {
       const pid = readiness.state === 'starting' ? readiness.conn.pid : child.pid;
-      deps.error(
-        pid
-          ? `Broker background start did not become ready within ${DETACHED_START_READY_TIMEOUT_MS / 1000}s (pid: ${pid}).`
-          : `Broker background start did not become ready within ${DETACHED_START_READY_TIMEOUT_MS / 1000}s.`
-      );
+      const childExited =
+        typeof child.pid === 'number' && child.pid > 0 && !isProcessRunning(child.pid, deps);
+      if (childExited) {
+        deps.error(`Broker background child exited before becoming ready (pid: ${child.pid}).`);
+      } else {
+        deps.error(
+          pid
+            ? `Broker background start did not become ready within ${DETACHED_START_READY_TIMEOUT_MS / 1000}s (pid: ${pid}).`
+            : `Broker background start did not become ready within ${DETACHED_START_READY_TIMEOUT_MS / 1000}s.`
+        );
+      }
       if (readiness.state === 'starting') {
         deps.error('Broker process is running, but the API did not become ready.');
+      }
+      const detachedError = readBackgroundStartError(paths.dataDir, deps);
+      if (detachedError) {
+        deps.error(`Detached broker error: ${detachedError}`);
+      } else if (childExited) {
+        deps.error('Retry without --background to see the broker startup error.');
       }
       deps.error(
         'Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.'
       );
       const cleanupPids = new Set<number>();
-      if (typeof child.pid === 'number' && child.pid > 0) {
+      if (typeof child.pid === 'number' && child.pid > 0 && isProcessRunning(child.pid, deps)) {
         cleanupPids.add(child.pid);
       }
       if (readiness.state === 'starting') {
@@ -1495,6 +1658,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.log('Broker started.');
     deps.log(`Broker PID: ${readiness.conn.pid}`);
     deps.log('Stop with: agent-relay down');
+    safeUnlink(startErrorPath, deps);
     deps.exit(0);
     return;
   }
@@ -1569,10 +1733,31 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     );
     relay = started.relay;
 
+    try {
+      writeBrokerBindingSource(paths.dataDir, workspaceBindingSource, deps);
+    } catch {
+      // Provenance is diagnostic metadata; a broker that came up stays up.
+    }
+    safeUnlink(backgroundStartErrorPath(paths.dataDir), deps);
+
     deps.log(`Relay API: http://localhost:${started.apiPort}`);
     deps.log(`Project: ${paths.projectRoot}`);
     deps.log('Mode: broker (stdio)');
     deps.log(`Workspace Key: ${relay.workspaceKey ? maskSecret(relay.workspaceKey) : 'unknown'}`);
+    // Minting must be observable: without this line "created a workspace" and
+    // "joined the pinned workspace" print identically.
+    const joinedWorkspaceId = relay.workspaceId ?? 'unknown';
+    // The multi-workspace session always joins a configured membership; it
+    // never mints a new workspace the way an unresolved single key does.
+    if (workspaceSelection || joinsMultiWorkspaceSession) {
+      deps.log(`Workspace: joined ${joinedWorkspaceId}`);
+    } else {
+      deps.log(`Workspace: created new workspace ${joinedWorkspaceId}`);
+      deps.log(
+        'Pin a workspace for this repository with `agent-relay up --workspace-key <key>`, ' +
+          'or select one machine-wide with `agent-relay workspace switch <name>`.'
+      );
+    }
     deps.log('Broker started.');
 
     // Record the workspace this broker joined (explicitly passed or auto-minted)
@@ -1583,6 +1768,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     try {
       writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined, {
         enrolledNodeId: deps.env.AGENT_RELAY_ENROLLED_NODE_ID ?? resumedProjectSession?.enrolledNodeId,
+        // Recording the resolved workspace id lets the NEXT start detect a
+        // conflicting source (a stored enrollment in another workspace) before
+        // the broker comes up, instead of after agents land in the wrong place.
+        workspaceId: relay.workspaceId ?? resumedProjectSession?.workspaceId,
       });
     } catch {
       // best-effort: a broker that came up should stay up even if the key file
@@ -1667,10 +1856,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       stage,
       error_class: classifyBrokerStartError(err),
     });
+    const detailedMessage = describeErrorWithCause(err);
+    recordBackgroundStartError(detailedMessage, paths.dataDir, options.backgroundChild === true, deps);
     if (isBrokerAlreadyRunningError(message)) {
       reportAlreadyRunningError(message, paths.dataDir, deps);
     } else {
-      deps.error(`Failed to start broker: ${describeErrorWithCause(err)}`);
+      deps.error(`Failed to start broker: ${detailedMessage}`);
     }
     deps.exit(1);
   }
@@ -1829,6 +2020,12 @@ export async function runStatusCommand(
   deps.log('Mode: broker (stdio)');
   deps.log(`PID: ${readiness.conn.pid}`);
   deps.log(`Project: ${paths.projectRoot}`);
+  const source = workspaceBindingSource(readiness.conn.workspace_source);
+  deps.log(
+    source
+      ? `Workspace source: ${workspaceBindingSourceLabel(source)}`
+      : 'Workspace source: unknown (startup provenance was not recorded)'
+  );
 
   // Query the running broker for additional status info
   const statusDetails =

@@ -9,6 +9,7 @@ const brokerMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../lib/broker-lifecycle.js', () => ({
+  WORKSPACE_BINDING_SOURCE_ENV: 'AGENT_RELAY_WORKSPACE_SOURCE',
   runUpCommand: (...args: unknown[]) => brokerMocks.runUpCommand(...args),
   runDownCommand: (...args: unknown[]) => brokerMocks.runDownCommand(...args),
   runStatusCommand: (...args: unknown[]) => brokerMocks.runStatusCommand(...args),
@@ -48,7 +49,14 @@ function createNodeHarness(opts?: {
   const error = vi.fn();
   const warn = vi.fn();
 
-  const core = { env, exit, log, error, warn } as unknown as CoreDependencies;
+  const core = {
+    env,
+    exit,
+    log,
+    error,
+    warn,
+    getProjectPaths: () => ({ projectRoot: '/repo', dataDir: '/repo/.agentworkforce/relay' }),
+  } as unknown as CoreDependencies;
   const resolveEnrollment =
     opts?.resolveEnrollment ??
     (vi.fn(() => undefined) as unknown as NodeCommandDependencies['resolveEnrollment']);
@@ -243,7 +251,7 @@ describe('registerNodeCommands', () => {
     expect(env.RELAY_NODE_TOKEN).toBeUndefined();
   });
 
-  it('resumes a project-pinned workspace instead of replacing it with an enrollment', async () => {
+  it('never adopts an enrollment for a project that pinned its own workspace', async () => {
     const resolveEnrollment = vi.fn(
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
@@ -258,9 +266,10 @@ describe('registerNodeCommands', () => {
 
     await program.parseAsync(['node', 'up'], { from: 'user' });
 
+    // A pin without an enrolled node id never reaches for the machine-global
+    // enrollment store, and no node token is applied — so `runUpCommand`'s
+    // precedence ladder resolves the repository pin unopposed.
     expect(resolveEnrollment).not.toHaveBeenCalled();
-    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_project_session');
-    expect(env.RELAY_API_KEY).toBe('rk_project_session');
     expect(env.RELAY_NODE_TOKEN).toBeUndefined();
     expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
   });
@@ -342,6 +351,57 @@ describe('registerNodeCommands', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it('refuses to start when the enrollment and the repository pin disagree (#1406)', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env, error, exit } = createNodeHarness({
+      env: { AGENT_RELAY_HOME: '/tmp/relay-home-fixture' },
+      resolveEnrollment,
+      // A previous start recorded rw_stale; the enrollment points at rw_123.
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_project_session',
+        enrolledNodeId: 'node_abc',
+        workspaceId: 'rw_stale',
+      })),
+    });
+
+    await expect(program.parseAsync(['node', 'up'], { from: 'user' })).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    const message = error.mock.calls.flat().join('\n');
+    expect(message).toContain('select different workspaces');
+    expect(message).toContain('rw_stale');
+    expect(message).toContain('rw_123');
+    expect(message).toContain('workspace-key.json');
+    expect(message).toContain('agent-relay workspace rebind <name>');
+    // Diagnostics name sources, never credentials.
+    expect(message).not.toContain('rk_project_session');
+    expect(message).not.toContain('nt_secret');
+    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(brokerMocks.runUpCommand).not.toHaveBeenCalled();
+  });
+
+  it('starts normally when the enrollment matches the pinned workspace', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env } = createNodeHarness({
+      env: {},
+      resolveEnrollment,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_project_session',
+        enrolledNodeId: 'node_abc',
+        workspaceId: 'rw_123',
+      })),
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves an enrolled identity across a consecutive project-session restart', async () => {
     const firstResolveEnrollment = vi.fn(
       () => enrollmentRecord
@@ -376,7 +436,10 @@ describe('registerNodeCommands', () => {
       RELAY_NODE_ID: 'node_abc',
       RELAY_NODE_TOKEN: 'nt_secret',
     });
+    // Node startup resolves identity only. The shared runUpCommand resolver
+    // applies the repository workspace, so there is no second ladder here.
     expect(restart.env.RELAY_WORKSPACE_KEY).toBeUndefined();
+    expect(restart.env.RELAY_API_KEY).toBeUndefined();
     expect(brokerMocks.runUpCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({
         background: true,

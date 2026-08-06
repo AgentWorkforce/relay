@@ -749,6 +749,7 @@ describe('refreshStoredAuth', () => {
 describe('authorizedApiFetch telemetry headers', () => {
   const telemetryEnvKeys = [
     'AGENT_RELAY_DISTINCT_ID',
+    'AGENT_RELAY_MACHINE_ID',
     'AGENT_RELAY_USER_ID',
     'AGENT_RELAY_ORG_ID',
     'AGENT_RELAY_ORG_SLUG',

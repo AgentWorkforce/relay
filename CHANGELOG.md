@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay cloud login --device` logs in a machine with no browser through the OAuth device flow: the CLI prints a code you approve from any other device. Login and re-authentication fall back to it automatically over SSH or on a Unix host with no display server, and each machine gets its own cloud session instead of a copied `cloud-auth.json`. Requires cloud with the device authorization endpoints.
+- `agent-relay workspace restore` returns to the recorded previous workspace.
+- `agent-relay workspace rebind <name>` pins a project's next broker start to a named workspace without changing the machine-global active workspace.
+
+### Changed
+
+- `workspace create` warns on stderr when it changes the active workspace and records the prior name; named switches now record the same restore point, and first-run telemetry notices no longer contaminate JSON stdout.
+- `agent-relay node status` reports whether the broker workspace came from a command-line flag, environment variable, repository pin, machine-global active workspace, or first-run creation.
 
 ### Fixed
 
@@ -17,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay node up` warns instead of silently ignoring stored Cloud fleet enrollments when the project workspace pin has no enrolled node id. That combination started the broker in the pinned workspace while the node never heartbeat, leaving the Cloud dashboard and `agent-relay fleet nodes` showing different rosters with no error from either.
 - `agent-relay cloud enroll` records the enrolled node on the project workspace pin, so `node up` in that repo serves the node it just enrolled. A pin that already names a different node is reported and left untouched rather than repointed.
 - `agent-relay workspace switch|join` keeps the project's enrolled fleet node id instead of dropping it, which previously produced the pin state that made the next `node up` ignore the enrollment store.
+- `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, startup announces the winning source, and `node status` reports the same five-source provenance.
+- Cloud enrollment selects node identity without overriding workspace resolution. A conflict with the repository pin stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
+- `agent-relay node agent spawn` now verifies that the worker process survives startup before reporting success, and reports its exit status and log path when launch fails.
+- Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
 
 ## [11.4.1] - 2026-08-03
 

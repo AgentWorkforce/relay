@@ -8,6 +8,7 @@ import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import {
   describeClearedEnrollment,
   persistWorkspaceSession,
+  pinProjectWorkspaceSession,
   validateWorkspaceSessionName,
   type PersistWorkspaceSessionResult,
 } from '../lib/workspace-session.js';
@@ -102,9 +103,14 @@ export function registerWorkspaceCommands(
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
         const relay = await deps.createWorkspace(workspaceName, o.baseUrl as string | undefined);
+        const previousActive = readWorkspaceStore().active;
         const persisted = relay.workspaceKey
           ? persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey })
           : {};
+        if (relay.workspaceKey && previousActive && previousActive !== workspaceName) {
+          deps.error(`⚠  Active workspace changed: ${previousActive} → ${workspaceName}`);
+          deps.error('   Restore with: agent-relay workspace restore');
+        }
         // The key is persisted to the workspace store either way; the output
         // masks it unless the caller explicitly asks for the raw value. A
         // dropped enrollment rides in the JSON rather than a log line so the
@@ -131,6 +137,7 @@ export function registerWorkspaceCommands(
         const store = readWorkspaceStore();
         printJson(deps, {
           active: store.active,
+          previous: store.previous,
           workspaces: Object.keys(store.workspaces),
         });
       });
@@ -197,6 +204,52 @@ export function registerWorkspaceCommands(
         const result = persistWorkspaceSession({ name, workspaceKey: workspace.key });
         deps.log(`Switched to workspace "${name}".`);
         reportClearedEnrollment(result, deps);
+      });
+    });
+
+  group
+    .command('restore')
+    .description('Switch back to the previously active workspace')
+    .action(async () => {
+      await runSdk(deps, async () => {
+        const store = readWorkspaceStore();
+        const previous = store.previous;
+        if (!previous) {
+          throw new Error('No previous workspace is recorded.');
+        }
+        if (previous === store.active) {
+          throw new Error(`The recorded previous workspace "${previous}" is already active.`);
+        }
+        const workspace = Object.hasOwn(store.workspaces, previous) ? store.workspaces[previous] : undefined;
+        if (!workspace) {
+          throw new Error(`The recorded previous workspace "${previous}" no longer exists.`);
+        }
+        const current = store.active;
+        persistWorkspaceSession({ name: previous, workspaceKey: workspace.key });
+        deps.log(`Switched to workspace "${previous}" (was ${current ?? 'none'}).`);
+      });
+    });
+
+  group
+    .command('rebind')
+    .description("Pin this project's broker to a stored workspace")
+    .argument('<name>', 'Stored workspace name')
+    .action(async (name: string) => {
+      await runSdk(deps, async () => {
+        const workspaceName = validateWorkspaceSessionName(name);
+        const store = readWorkspaceStore();
+        const workspace = Object.hasOwn(store.workspaces, workspaceName)
+          ? store.workspaces[workspaceName]
+          : undefined;
+        if (!workspace) {
+          throw new Error(
+            `Unknown workspace "${workspaceName}". Add it with \`relay workspace set_key ${workspaceName} <key>\`.`
+          );
+        }
+        pinProjectWorkspaceSession({ workspaceKey: workspace.key });
+        deps.log(
+          `Rebound this project's broker to workspace "${workspaceName}". Restart the broker to apply it.`
+        );
       });
     });
 }
