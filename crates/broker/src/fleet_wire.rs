@@ -170,6 +170,8 @@ pub struct NodeHeartbeat {
     pub version: String,
     // Capacity utilization is undefined for an unbounded provider
     // (`max_agents == 0`). Omit it instead of reporting a false idle `0`.
+    // Requires the Relaycast engine to accept an omitted/null `load` before
+    // this broker version is deployed (relaycast#307).
     #[serde(
         default,
         deserialize_with = "deserialize_optional_finite_nonnegative_f64",
@@ -857,6 +859,48 @@ mod tests {
         assert_eq!(value.get("load"), None);
         assert_eq!(value["active_agents"], 25);
         assert_eq!(value["max_agents"], 0);
+
+        // Decode side: a heartbeat with the `load` field absent entirely, and
+        // one with an explicit `"load": null` (e.g. from a relay that
+        // round-trips the omitted value), must both decode to `load: None`.
+        let missing_field = json!({
+            "type": "node.heartbeat",
+            "v": 1,
+            "name": "unbounded-builder",
+            "node_id": "node_unbounded",
+            "capabilities": [],
+            "max_agents": 0,
+            "version": "relay-broker/test",
+            "active_agents": 25,
+            "handlers_live": true
+        });
+        let decoded: BrokerToRelaycast = serde_json::from_value(missing_field).unwrap();
+        match decoded {
+            BrokerToRelaycast::NodeHeartbeat(hb) => {
+                assert_eq!(hb.load, None);
+                assert_eq!(hb.active_agents, 25);
+                assert_eq!(hb.max_agents, 0);
+            }
+            other => panic!("expected NodeHeartbeat, got {other:?}"),
+        }
+
+        let explicit_null = json!({
+            "type": "node.heartbeat",
+            "v": 1,
+            "name": "unbounded-builder",
+            "node_id": "node_unbounded",
+            "capabilities": [],
+            "max_agents": 0,
+            "version": "relay-broker/test",
+            "load": null,
+            "active_agents": 25,
+            "handlers_live": true
+        });
+        let decoded: BrokerToRelaycast = serde_json::from_value(explicit_null).unwrap();
+        match decoded {
+            BrokerToRelaycast::NodeHeartbeat(hb) => assert_eq!(hb.load, None),
+            other => panic!("expected NodeHeartbeat, got {other:?}"),
+        }
     }
 
     #[test]
