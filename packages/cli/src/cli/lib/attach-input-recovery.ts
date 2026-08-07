@@ -45,9 +45,7 @@ export const INPUT_REOPEN_ATTEMPT_TIMEOUT_MS = 15_000;
  */
 export function isBackpressureRejection(error: unknown): boolean {
   return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === 'input_backpressure'
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'input_backpressure'
   );
 }
 

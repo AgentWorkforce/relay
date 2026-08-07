@@ -90,7 +90,9 @@ const settle = async (turns = 80): Promise<void> => {
 describe('isBackpressureRejection', () => {
   it('recognises the transport code and nothing else', () => {
     expect(isBackpressureRejection(Object.assign(new Error('x'), { code: 'input_backpressure' }))).toBe(true);
-    expect(isBackpressureRejection(Object.assign(new Error('x'), { code: 'input_stream_closed' }))).toBe(false);
+    expect(isBackpressureRejection(Object.assign(new Error('x'), { code: 'input_stream_closed' }))).toBe(
+      false
+    );
     expect(isBackpressureRejection(new Error('write EPIPE'))).toBe(false);
     expect(isBackpressureRejection(null)).toBe(false);
     expect(isBackpressureRejection('input_backpressure')).toBe(false);
@@ -141,7 +143,9 @@ describe('identity verification is mandatory', () => {
     // The type requires it; this proves the runtime refuses too, so a JS
     // caller or a partial double cannot reach the unguarded path. Fails if the
     // replacement is adopted — that is the keystroke-misrouting hole.
-    const h = harness({ verifyIdentity: undefined as unknown as InputStreamRecoveryOptions['verifyIdentity'] });
+    const h = harness({
+      verifyIdentity: undefined as unknown as InputStreamRecoveryOptions['verifyIdentity'],
+    });
 
     h.recovery.recover('stream closed');
     await settle();
