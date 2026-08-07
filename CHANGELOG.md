@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- A fleet node no longer drops out of the roster indefinitely when its `/v1/node/ws` connection is blackholed. The broker pings each heartbeat interval and reconnects when no frame arrives for 48s, instead of trusting writes that keep succeeding into a dead socket while `agent-relay fleet nodes` shows the node offline and `/health` still reports `nodeConnected: true`.
 
 ## [11.4.2] - 2026-08-07
 
