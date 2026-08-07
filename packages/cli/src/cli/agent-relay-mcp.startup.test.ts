@@ -598,6 +598,10 @@ describe('createAgentRelayMcpServer', () => {
     // `node up` mentioned it.
     expect(result.structuredContent.message).toContain('node_abc');
     expect(result.structuredContent.message).toContain('relay cloud enroll');
+    // A cleared enrollment means the write SUCCEEDED. Reporting it through the
+    // persistence-failure wording would tell the caller the key never landed.
+    expect(result.structuredContent.message).toContain('persisted for this project');
+    expect(result.structuredContent.message).not.toContain('could not be persisted');
   });
 
   it('registers submit_result when a spawned-agent result callback is configured', async () => {

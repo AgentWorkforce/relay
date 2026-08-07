@@ -499,11 +499,15 @@ function registerAgentRelayTools(
       } else {
         setSession({ workspaceKey: key });
       }
+      // Two distinct outcomes, never conflated: the write failed, or the write
+      // succeeded and dropped this project's enrolled fleet node. Reporting the
+      // second as the first would tell the caller the key had not persisted.
       let persistenceWarning: string | undefined;
+      let clearedEnrollmentWarning: string | undefined;
       try {
         // Joining a different workspace drops this project's enrolled fleet
         // node; surface that here instead of at the next `node up`.
-        persistenceWarning = describeClearedEnrollment(persistWorkspaceSession({ workspaceKey: key }));
+        clearedEnrollmentWarning = describeClearedEnrollment(persistWorkspaceSession({ workspaceKey: key }));
       } catch (error) {
         const persistenceError = error instanceof Error ? error.message : String(error);
         persistenceWarning =
@@ -517,7 +521,9 @@ function registerAgentRelayTools(
       const activeMessage = switchingWorkspace
         ? 'Workspace key set. Call "register_agent" to join this workspace.'
         : 'Workspace key set.';
-      const message = persistenceWarning ? `${activeMessage} ${persistenceWarning}` : persistedMessage;
+      const message = persistenceWarning
+        ? `${activeMessage} ${persistenceWarning}`
+        : [persistedMessage, clearedEnrollmentWarning].filter(Boolean).join(' ');
       return textContent(message);
     }
   );
