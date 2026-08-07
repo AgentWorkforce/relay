@@ -762,6 +762,32 @@ mod tests {
             );
         }
 
+        for load in [0.0, 1.0] {
+            assert_eq!(
+                validate_finite_nonnegative_f64(load),
+                Ok(load),
+                "expected load {load:?} to be accepted"
+            );
+            let boundary = json!({
+                "type": "node.heartbeat",
+                "v": 1,
+                "name": "builder-1",
+                "node_id": "node_1",
+                "capabilities": [],
+                "max_agents": 1,
+                "version": "relay-broker/test",
+                "load": load,
+                "active_agents": 1,
+                "handlers_live": true
+            });
+            let decoded: BrokerToRelaycast = serde_json::from_value(boundary)
+                .unwrap_or_else(|err| panic!("expected load {load:?} to decode: {err}"));
+            match decoded {
+                BrokerToRelaycast::NodeHeartbeat(hb) => assert_eq!(hb.load, Some(load)),
+                other => panic!("expected NodeHeartbeat, got {other:?}"),
+            }
+        }
+
         let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
