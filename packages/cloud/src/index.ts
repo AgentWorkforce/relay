@@ -149,6 +149,13 @@ export {
 } from './project-workspace-key.js';
 
 export {
+  describeDataPlaneConvergence,
+  formatDataPlaneDivergence,
+  type DataPlaneConvergence,
+  type DataPlaneWorkspaceIds,
+} from './workspace-convergence.js';
+
+export {
   deployProactiveAgent,
   listProactiveAgents,
   inspectProactiveAgent,

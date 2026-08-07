@@ -1,6 +1,10 @@
 import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
-import { resolveActiveWorkspace } from '@agent-relay/cloud';
+import {
+  describeDataPlaneConvergence,
+  formatDataPlaneDivergence,
+  resolveActiveWorkspace,
+} from '@agent-relay/cloud';
 
 import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
@@ -51,6 +55,10 @@ export function registerWorkspaceCommands(
     .option('--json', 'Output the active workspace as JSON (keys masked unless --reveal-secrets)')
     .option('--reveal-secrets', 'Include raw workspace keys in --json output')
     .option(
+      '--require-unified',
+      'Exit non-zero when the data planes disagree on the workspace identity'
+    )
+    .option(
       '--refresh-timeout <milliseconds>',
       'Timeout for refreshing the cloud session',
       parsePositiveInteger
@@ -60,6 +68,7 @@ export function registerWorkspaceCommands(
         apiUrl?: string;
         json?: boolean;
         revealSecrets?: boolean;
+        requireUnified?: boolean;
         refreshTimeout?: number;
       }) => {
         await runSdk(deps, async () => {
@@ -68,11 +77,14 @@ export function registerWorkspaceCommands(
             interactive: false,
             refreshTimeoutMs: options.refreshTimeout,
           });
+          // Emitted on every call so the output is self-sufficient evidence of
+          // the AR-448 invariant rather than something a caller has to
+          // recompute from the three plane IDs.
+          const dataPlane = describeDataPlaneConvergence(workspace);
 
           if (options.json) {
-            printJson(
-              deps,
-              options.revealSecrets
+            printJson(deps, {
+              ...(options.revealSecrets
                 ? workspace
                 : {
                     ...workspace,
@@ -80,15 +92,31 @@ export function registerWorkspaceCommands(
                     ...(workspace.relaycastApiKey
                       ? { relaycastApiKey: maskSecret(workspace.relaycastApiKey) }
                       : {}),
-                  }
+                  }),
+              dataPlane,
+            });
+          } else {
+            deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
+            deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
+            deps.log(`Relaycast workspace ID: ${workspace.relaycastWorkspaceId}`);
+            deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
+            deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
+            deps.log(
+              dataPlane.unified
+                ? `Data-plane workspace ID: ${dataPlane.workspaceId} (unified)`
+                : `Data-plane workspace ID: divergent (${dataPlane.divergent.join(', ')})`
             );
-            return;
           }
 
-          deps.log(`Workspace: ${workspace.name ?? workspace.cloudWorkspaceId}`);
-          deps.log(`Cloud workspace ID: ${workspace.cloudWorkspaceId}`);
-          deps.log(`Relayfile workspace ID: ${workspace.relayfileWorkspaceId}`);
-          deps.log(`Relayauth workspace ID: ${workspace.relayauthWorkspaceId}`);
+          if (!dataPlane.unified) {
+            // A divergence is reported on stderr either way; only
+            // --require-unified turns it into a gate, so existing scripted
+            // callers keep their exit code.
+            deps.error(formatDataPlaneDivergence(dataPlane));
+            if (options.requireUnified) {
+              deps.exit(1);
+            }
+          }
         });
       }
     );

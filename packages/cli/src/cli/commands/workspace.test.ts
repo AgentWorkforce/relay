@@ -1,12 +1,20 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@agent-relay/cloud', () => ({
-  readWorkspaceStore: vi.fn(() => ({ workspaces: {} })),
-  resolveActiveWorkspace: vi.fn(),
-  setWorkspaceKey: vi.fn(),
-  switchWorkspace: vi.fn(),
-}));
+vi.mock('@agent-relay/cloud', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/cloud')>();
+  return {
+    readWorkspaceStore: vi.fn(() => ({ workspaces: {} })),
+    resolveActiveWorkspace: vi.fn(),
+    setWorkspaceKey: vi.fn(),
+    switchWorkspace: vi.fn(),
+    // The real convergence helpers, not stand-ins: these tests assert on what
+    // the command reports about the AR-448 data-plane invariant, so a copy here
+    // would let the real check drift past them.
+    describeDataPlaneConvergence: actual.describeDataPlaneConvergence,
+    formatDataPlaneDivergence: actual.formatDataPlaneDivergence,
+  };
+});
 
 vi.mock('../lib/workspace-session.js', async (importOriginal) => ({
   // Returns a result object describing what the write changed beyond the key.
@@ -106,6 +114,13 @@ describe('registerWorkspaceCommands', () => {
       slug: 'ops',
       urls: {},
       apiUrl: 'https://cloud.test',
+      // This fixture's planes genuinely disagree (rc_ops vs rw_ops), so the
+      // evidence block reports the split rather than a shared identity.
+      dataPlane: {
+        unified: false,
+        planes: { relaycast: 'rc_ops', relayfile: 'rw_ops', relayauth: 'rw_ops' },
+        divergent: ['relayfile', 'relayauth'],
+      },
     });
   });
 
@@ -149,6 +164,102 @@ describe('registerWorkspaceCommands', () => {
     const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
     expect(printed.key).toBe('rk_live_…');
     expect(printed.relaycastApiKey).toBe('rk_live_…ey01');
+  });
+
+  it('workspace active --json proves one data-plane workspace ID when the planes agree', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      // The cloud ID is a UUID in a different id space and must not count
+      // against convergence.
+      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      relaycastWorkspaceId: 'rw_7ccfea89',
+      relayfileWorkspaceId: 'rw_7ccfea89',
+      relayauthWorkspaceId: 'rw_7ccfea89',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--json']);
+
+    const printed = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(printed.dataPlane).toEqual({
+      unified: true,
+      workspaceId: 'rw_7ccfea89',
+      planes: { relaycast: 'rw_7ccfea89', relayfile: 'rw_7ccfea89', relayauth: 'rw_7ccfea89' },
+      divergent: [],
+    });
+    expect(deps.error).not.toHaveBeenCalled();
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  it('workspace active reports the Relaycast ID and the unified data plane in human output', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      relaycastWorkspaceId: 'rw_7ccfea89',
+      relayfileWorkspaceId: 'rw_7ccfea89',
+      relayauthWorkspaceId: 'rw_7ccfea89',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active']);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().map(String).join('\n');
+    // The Relaycast ID is the durable delivery identity and was previously the
+    // one plane the human output omitted.
+    expect(output).toContain('Relaycast workspace ID: rw_7ccfea89');
+    expect(output).toContain('Data-plane workspace ID: rw_7ccfea89 (unified)');
+    // Human output is not a place for credentials.
+    expect(output).not.toContain('rk_live_ops');
+  });
+
+  it('workspace active warns on a divergence but still exits 0 without --require-unified', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'cloud-uuid',
+      relaycastWorkspaceId: 'rw_a',
+      relayfileWorkspaceId: 'rw_b',
+      relayauthWorkspaceId: 'rw_a',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'active']);
+
+    expect(vi.mocked(deps.error).mock.calls.flat().map(String).join('\n')).toContain(
+      'relayfile=rw_b'
+    );
+    // Existing scripted callers keep their exit code; only the explicit gate
+    // below changes it.
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  it('workspace active --require-unified exits non-zero on a divergence', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(resolveActiveWorkspace).mockResolvedValueOnce({
+      name: 'Ops',
+      key: 'rk_live_ops',
+      cloudWorkspaceId: 'cloud-uuid',
+      relaycastWorkspaceId: 'rw_a',
+      relayfileWorkspaceId: 'rw_b',
+      relayauthWorkspaceId: 'rw_c',
+      urls: {},
+      apiUrl: 'https://cloud.test',
+    });
+
+    // The harness `exit` throws, which is how a real exit aborts the action.
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'workspace', 'active', '--require-unified'])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.exit).toHaveBeenCalledWith(1);
   });
 
   it('workspace create starts and persists a new workspace session', async () => {
