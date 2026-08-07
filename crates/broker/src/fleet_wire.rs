@@ -168,11 +168,17 @@ pub struct NodeHeartbeat {
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub version: String,
+    // Capacity utilization is undefined for an unbounded provider
+    // (`max_agents == 0`). Omit it instead of reporting a false idle `0`.
+    // Requires the Relaycast engine to accept an omitted/null `load` before
+    // this broker version is deployed (relaycast#307).
     #[serde(
-        deserialize_with = "deserialize_finite_nonnegative_f64",
-        serialize_with = "serialize_finite_nonnegative_f64"
+        default,
+        deserialize_with = "deserialize_optional_finite_nonnegative_f64",
+        serialize_with = "serialize_optional_finite_nonnegative_f64",
+        skip_serializing_if = "Option::is_none"
     )]
-    pub load: f64,
+    pub load: Option<f64>,
     pub active_agents: u32,
     pub handlers_live: bool,
 }
@@ -322,12 +328,16 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-fn deserialize_finite_nonnegative_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+fn deserialize_optional_finite_nonnegative_f64<'de, D>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = f64::deserialize(deserializer)?;
-    validate_finite_nonnegative_f64(value).map_err(de::Error::custom)
+    Option::<f64>::deserialize(deserializer)?
+        .map(validate_finite_nonnegative_f64)
+        .transpose()
+        .map_err(de::Error::custom)
 }
 
 fn serialize_finite_nonnegative_f64<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
@@ -338,12 +348,28 @@ where
     serializer.serialize_f64(*value)
 }
 
+fn serialize_optional_finite_nonnegative_f64<S>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(value) => serialize_finite_nonnegative_f64(value, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
 fn validate_finite_nonnegative_f64(value: f64) -> Result<f64, &'static str> {
     if !value.is_finite() {
         return Err("load must be finite");
     }
     if value < 0.0 {
         return Err("load must be nonnegative");
+    }
+    if value > 1.0 {
+        return Err("load must be at most 1");
     }
     Ok(value)
 }
@@ -633,11 +659,10 @@ pub type RelaycastToBroker = ServerToNode;
 
 #[cfg(test)]
 mod tests {
-    use serde::de::{value::Error as DeError, IntoDeserializer};
     use serde_json::{json, Value};
 
     use super::{
-        deserialize_finite_nonnegative_f64, validate_agent_register_reply_data, ActionResult,
+        validate_agent_register_reply_data, validate_finite_nonnegative_f64, ActionResult,
         ActionResultError, ActionResultPayload, AgentRegister, BrokerToRelaycast, Deliver,
         DeliveryMode, Error, FleetCapability, NodeHeartbeat, RelaycastToBroker, Reply,
         FLEET_WIRE_VERSION,
@@ -716,10 +741,51 @@ mod tests {
         });
         assert!(serde_json::from_value::<BrokerToRelaycast>(negative).is_err());
 
+        let over_capacity = json!({
+            "type": "node.heartbeat",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "version": "relay-broker/test",
+            "load": 1.1,
+            "active_agents": 2,
+            "handlers_live": true
+        });
+        assert!(serde_json::from_value::<BrokerToRelaycast>(over_capacity).is_err());
+
         for load in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let result: Result<f64, DeError> =
-                deserialize_finite_nonnegative_f64(load.into_deserializer());
-            assert!(result.is_err(), "expected load {load:?} to be rejected");
+            assert!(
+                validate_finite_nonnegative_f64(load).is_err(),
+                "expected load {load:?} to be rejected"
+            );
+        }
+
+        for load in [0.0, 1.0] {
+            assert_eq!(
+                validate_finite_nonnegative_f64(load),
+                Ok(load),
+                "expected load {load:?} to be accepted"
+            );
+            let boundary = json!({
+                "type": "node.heartbeat",
+                "v": 1,
+                "name": "builder-1",
+                "node_id": "node_1",
+                "capabilities": [],
+                "max_agents": 1,
+                "version": "relay-broker/test",
+                "load": load,
+                "active_agents": 1,
+                "handlers_live": true
+            });
+            let decoded: BrokerToRelaycast = serde_json::from_value(boundary)
+                .unwrap_or_else(|err| panic!("expected load {load:?} to decode: {err}"));
+            match decoded {
+                BrokerToRelaycast::NodeHeartbeat(hb) => assert_eq!(hb.load, Some(load)),
+                other => panic!("expected NodeHeartbeat, got {other:?}"),
+            }
         }
 
         let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
@@ -731,7 +797,7 @@ mod tests {
             capabilities: vec![],
             max_agents: 1,
             version: "relay-broker/test".to_string(),
-            load: f64::INFINITY,
+            load: Some(f64::INFINITY),
             active_agents: 0,
             handlers_live: true,
         });
@@ -765,7 +831,7 @@ mod tests {
             }],
             max_agents: 4,
             version: "relay-broker/test".to_string(),
-            load: 0.25,
+            load: Some(0.25),
             active_agents: 1,
             handlers_live: true,
         });
@@ -797,6 +863,70 @@ mod tests {
             value.get("last_heartbeat_at").is_none(),
             "broker must not send last_heartbeat_at; the engine stamps it server-side"
         );
+    }
+
+    #[test]
+    fn node_heartbeat_omits_unreported_load() {
+        let msg = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            provider: None,
+            name: "unbounded-builder".to_string(),
+            node_id: "node_unbounded".to_string(),
+            capabilities: vec![],
+            max_agents: 0,
+            version: "relay-broker/test".to_string(),
+            load: None,
+            active_agents: 25,
+            handlers_live: true,
+        });
+
+        let value = serde_json::to_value(msg).unwrap();
+        assert_eq!(value.get("load"), None);
+        assert_eq!(value["active_agents"], 25);
+        assert_eq!(value["max_agents"], 0);
+
+        // Decode side: a heartbeat with the `load` field absent entirely, and
+        // one with an explicit `"load": null` (e.g. from a relay that
+        // round-trips the omitted value), must both decode to `load: None`.
+        let missing_field = json!({
+            "type": "node.heartbeat",
+            "v": 1,
+            "name": "unbounded-builder",
+            "node_id": "node_unbounded",
+            "capabilities": [],
+            "max_agents": 0,
+            "version": "relay-broker/test",
+            "active_agents": 25,
+            "handlers_live": true
+        });
+        let decoded: BrokerToRelaycast = serde_json::from_value(missing_field).unwrap();
+        match decoded {
+            BrokerToRelaycast::NodeHeartbeat(hb) => {
+                assert_eq!(hb.load, None);
+                assert_eq!(hb.active_agents, 25);
+                assert_eq!(hb.max_agents, 0);
+            }
+            other => panic!("expected NodeHeartbeat, got {other:?}"),
+        }
+
+        let explicit_null = json!({
+            "type": "node.heartbeat",
+            "v": 1,
+            "name": "unbounded-builder",
+            "node_id": "node_unbounded",
+            "capabilities": [],
+            "max_agents": 0,
+            "version": "relay-broker/test",
+            "load": null,
+            "active_agents": 25,
+            "handlers_live": true
+        });
+        let decoded: BrokerToRelaycast = serde_json::from_value(explicit_null).unwrap();
+        match decoded {
+            BrokerToRelaycast::NodeHeartbeat(hb) => assert_eq!(hb.load, None),
+            other => panic!("expected NodeHeartbeat, got {other:?}"),
+        }
     }
 
     #[test]
