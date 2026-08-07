@@ -410,8 +410,7 @@ function createHarness(opts: FetchScript = {}): {
       // Index explicitly: a scripted `null` is a meaningful value ("identity
       // unavailable"), so `??` must not collapse it into the fallback.
       const index = identityCalls.length;
-      const value =
-        index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
+      const value = index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
       identityCalls.push(value);
       return value;
     }),

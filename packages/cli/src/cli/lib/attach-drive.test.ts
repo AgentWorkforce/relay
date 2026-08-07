@@ -470,8 +470,7 @@ function createHarness(opts: FetchScript = {}): {
       // Index explicitly: a scripted `null` is a meaningful value ("identity
       // unavailable"), so `??` must not collapse it into the fallback.
       const index = identityCalls.length;
-      const value =
-        index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
+      const value = index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
       identityCalls.push(value);
       return value;
     }),
@@ -2164,7 +2163,6 @@ describe('runDriveSession', () => {
   });
 });
 
-
 /**
  * Regression coverage for #1419: a PTY input stream that dies mid-session used
  * to log `[drive] input stream send failed: PTY input stream is closed` once
@@ -2307,9 +2305,7 @@ describe('runDriveSession — lost PTY input stream', () => {
     await settleRecovery();
     // No further sockets opened after teardown, and no late error printed.
     expect(inputStreams).toHaveLength(before);
-    expect(errors.map((a) => String(a[0])).filter((l) => l.includes('could not be reopened'))).toEqual(
-      []
-    );
+    expect(errors.map((a) => String(a[0])).filter((l) => l.includes('could not be reopened'))).toEqual([]);
   });
 
   it('refuses a reopen that landed on a different worker process', async () => {
@@ -2357,9 +2353,7 @@ describe('runDriveSession — lost PTY input stream', () => {
     stdin.type(Buffer.from('a'));
 
     expect(await sessionPromise).toBe(1);
-    expect(
-      errors.map((args) => String(args[0])).find((l) => l.includes('could not be read'))
-    ).toBeDefined();
+    expect(errors.map((args) => String(args[0])).find((l) => l.includes('could not be read'))).toBeDefined();
     expect(inputStreams[1].writes).toHaveLength(0);
   });
 
