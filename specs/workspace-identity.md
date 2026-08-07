@@ -114,11 +114,11 @@ the gate it does not, and should not: two checkouts are two work units, and
 handing the second one the incumbent's credentials is the duplicate-agent
 failure the gate exists to stop. So:
 
-| Situation                                                  | Outcome                        |
-| ---------------------------------------------------------- | ------------------------------ |
-| Same node restarts, same state dir, same name              | Reclaims its address and inbox |
-| Different checkout, same workspace, same name              | Rejected — no credential hand-off |
-| Any node, name not currently held                          | Registers fresh                |
+| Situation                                     | Outcome                           |
+| --------------------------------------------- | --------------------------------- |
+| Same node restarts, same state dir, same name | Reclaims its address and inbox    |
+| Different checkout, same workspace, same name | Rejected — no credential hand-off |
+| Any node, name not currently held             | Registers fresh                   |
 
 An operator who genuinely needs to move a resident to a new checkout sets
 `RELAY_AGENT_IDENTITY_KEY` to the original work unit's identity, which is the
@@ -233,22 +233,22 @@ prove the CLI **selects** the right workspace across starts and that the broker
 **decides** reclaim correctly. They do not prove that identity survives a real
 stop/start of a live node — that is a live proof, and it is not automated here.
 
-| Guarantee                                                        | Test                                                        |
-| ---------------------------------------------------------------- | ----------------------------------------------------------- |
-| Workspace and resident address are preserved across a restart    | `packages/cli/src/cli/lib/workspace-identity-restart.test.ts` |
-| A first start with no pin joins the canonical workspace          | same                                                         |
-| The resolved workspace is pinned, so start 2 resumes from the pin | same                                                        |
-| An explicit `--workspace-key` re-pins durably                     | same                                                         |
-| A second checkout joins the same canonical workspace              | same                                                         |
-| A second checkout may **not** take the resident's name            | same                                                         |
-| No canonical workspace ⇒ per-checkout drift (negative control)    | same                                                         |
-| Single-start ladder precedence, each step                         | `packages/cli/src/cli/lib/broker-lifecycle.test.ts`          |
-| Startup prints the winning source and leaks no credential         | same                                                         |
-| The shared ladder itself                                          | `packages/cloud/src/project-workspace-key.test.ts`           |
-| Data-plane convergence detection                                  | `packages/cloud/src/workspace-convergence.test.ts`           |
-| `workspace active` emits convergence evidence                     | `packages/cli/src/cli/commands/workspace.test.ts`            |
-| `--require-unified` exits non-zero on divergence                  | same                                                         |
-| A restart reclaims its own registration; another node cannot      | `crates/broker/src/relaycast/auth.rs` (`#[cfg(test)]`)       |
+| Guarantee                                                         | Test                                                          |
+| ----------------------------------------------------------------- | ------------------------------------------------------------- |
+| Workspace and resident address are preserved across a restart     | `packages/cli/src/cli/lib/workspace-identity-restart.test.ts` |
+| A first start with no pin joins the canonical workspace           | same                                                          |
+| The resolved workspace is pinned, so start 2 resumes from the pin | same                                                          |
+| An explicit `--workspace-key` re-pins durably                     | same                                                          |
+| A second checkout joins the same canonical workspace              | same                                                          |
+| A second checkout may **not** take the resident's name            | same                                                          |
+| No canonical workspace ⇒ per-checkout drift (negative control)    | same                                                          |
+| Single-start ladder precedence, each step                         | `packages/cli/src/cli/lib/broker-lifecycle.test.ts`           |
+| Startup prints the winning source and leaks no credential         | same                                                          |
+| The shared ladder itself                                          | `packages/cloud/src/project-workspace-key.test.ts`            |
+| Data-plane convergence detection                                  | `packages/cloud/src/workspace-convergence.test.ts`            |
+| `workspace active` emits convergence evidence                     | `packages/cli/src/cli/commands/workspace.test.ts`             |
+| `--require-unified` exits non-zero on divergence                  | same                                                          |
+| A restart reclaims its own registration; another node cannot      | `crates/broker/src/relaycast/auth.rs` (`#[cfg(test)]`)        |
 
 **Not covered by any test:** the live proof that a resident agent keeps its
 address and mailbox across a real `node down` / `node up`. It requires an

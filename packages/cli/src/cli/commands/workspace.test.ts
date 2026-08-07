@@ -233,9 +233,7 @@ describe('registerWorkspaceCommands', () => {
 
     await program.parseAsync(['node', 'agent-relay', 'workspace', 'active']);
 
-    expect(vi.mocked(deps.error).mock.calls.flat().map(String).join('\n')).toContain(
-      'relayfile=rw_b'
-    );
+    expect(vi.mocked(deps.error).mock.calls.flat().map(String).join('\n')).toContain('relayfile=rw_b');
     // Existing scripted callers keep their exit code; only the explicit gate
     // below changes it.
     expect(deps.exit).not.toHaveBeenCalled();

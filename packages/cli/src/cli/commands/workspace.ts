@@ -54,10 +54,7 @@ export function registerWorkspaceCommands(
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--json', 'Output the active workspace as JSON (keys masked unless --reveal-secrets)')
     .option('--reveal-secrets', 'Include raw workspace keys in --json output')
-    .option(
-      '--require-unified',
-      'Exit non-zero when the data planes disagree on the workspace identity'
-    )
+    .option('--require-unified', 'Exit non-zero when the data planes disagree on the workspace identity')
     .option(
       '--refresh-timeout <milliseconds>',
       'Timeout for refreshing the cloud session',
