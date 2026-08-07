@@ -1040,25 +1040,33 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         // sends us. Input during the outage is dropped, not buffered: replaying
         // stale keystrokes into a recovered PTY would execute them out of
         // context, which is worse than losing them.
+        //
+        // Skip only the *forwarding*; fall through to the action loop below.
+        // Ctrl+C can share a chunk with ordinary bytes, and returning here
+        // would swallow the detach — leaving the human unable to escape a
+        // broken session, which is worse than the flood.
         if (!inputRecovery.isUsable(stream)) {
           inputRecovery.recover('stream closed');
-          return;
+        } else {
+          // Decode through the stateful UTF-8 decoder so a multi-byte character
+          // split across stdin chunks is forwarded intact rather than as U+FFFD.
+          // An incomplete trailing sequence decodes to '' and is held until the
+          // next chunk completes it.
+          const decoded = inputDecoder.write(outcome.forward);
+          if (decoded.length > 0) {
+            // Fire-and-forget; don't block the event loop on every keystroke.
+            void stream.send(decoded).then(
+              () => inputRecovery.noteSendSuccess(),
+              (err: unknown) => {
+                if (settled) return;
+                // Classified, not assumed: backpressure leaves the stream
+                // healthy and must not trigger a teardown.
+                inputRecovery.handleSendFailure(err);
+              }
+            );
+          }
+          predictiveEcho?.onUserInput(outcome.forward);
         }
-        // Decode through the stateful UTF-8 decoder so a multi-byte character
-        // split across stdin chunks is forwarded intact rather than as U+FFFD.
-        // An incomplete trailing sequence decodes to '' and is held until the
-        // next chunk completes it.
-        const decoded = inputDecoder.write(outcome.forward);
-        if (decoded.length > 0) {
-          // Fire-and-forget; don't block the event loop on every keystroke.
-          void stream.send(decoded).catch((err: unknown) => {
-            if (settled) return;
-            // Only the first failure speaks; `recover` no-ops while a recovery
-            // is already in flight, and it does the echo rollback.
-            inputRecovery.recover(describeError(err));
-          });
-        }
-        predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
         switch (action) {

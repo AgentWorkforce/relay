@@ -1286,3 +1286,23 @@ describe('runPassthroughSession — lost PTY input stream', () => {
     expect(exhausted).toContain('Alice is still running');
   });
 });
+
+describe('runPassthroughSession — Ctrl+C during an input-stream outage', () => {
+  it('still detaches when Ctrl+C shares a chunk with other input', async () => {
+    // The dead-stream branch used to `return` before the keybind actions ran,
+    // so a chunk like "ab\x03" was swallowed whole and the user could not
+    // escape a broken session. Fails if the session never exits.
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 4,
+      inputReopenBaseDelayMs: 50,
+      reopenOpenErrors: [new Error('x'), new Error('x'), new Error('x'), new Error('x')],
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from([0x61, 0x62, 0x03]));
+
+    expect(await sessionPromise).toBe(0);
+  });
+});

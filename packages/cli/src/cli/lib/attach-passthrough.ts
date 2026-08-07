@@ -611,20 +611,27 @@ export async function runPassthroughSession(
         // A dead or missing stream is a liveness event, not a per-keystroke
         // error — see `attach-input-recovery.ts` (#1419). Drop this input
         // silently; recovery has already announced itself once.
+        //
+        // Skip only the *forwarding* and fall through to the action loop:
+        // Ctrl+C can share a chunk with ordinary bytes, and returning here
+        // would swallow the detach mid-outage.
         if (!inputRecovery.isUsable(stream)) {
           inputRecovery.recover('stream closed');
-          return;
+        } else {
+          // Decode through the stateful UTF-8 decoder so a multi-byte character
+          // split across stdin chunks is forwarded intact rather than as U+FFFD.
+          const decoded = inputDecoder.write(outcome.forward);
+          if (decoded.length > 0) {
+            void stream.send(decoded).then(
+              () => inputRecovery.noteSendSuccess(),
+              (err: unknown) => {
+                if (settled) return;
+                inputRecovery.handleSendFailure(err);
+              }
+            );
+          }
+          predictiveEcho?.onUserInput(outcome.forward);
         }
-        // Decode through the stateful UTF-8 decoder so a multi-byte character
-        // split across stdin chunks is forwarded intact rather than as U+FFFD.
-        const decoded = inputDecoder.write(outcome.forward);
-        if (decoded.length > 0) {
-          void stream.send(decoded).catch((err: unknown) => {
-            if (settled) return;
-            inputRecovery.recover(describeError(err));
-          });
-        }
-        predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
         switch (action) {

@@ -232,6 +232,10 @@ interface FetchScript {
    * Defaults to a stable pid, i.e. "same worker throughout".
    */
   workerIdentities?: Array<string | null>;
+  /** Make `getWorkerIdentity` reject, simulating a verifier that cannot answer. */
+  identityError?: Error;
+  /** Park `getWorkerIdentity` on this promise so a detach can race verification. */
+  identityGate?: Promise<void>;
   /** Ownership re-assert interval (ms). Defaults to disabled (0) in tests so
    *  the keep-alive timer doesn't interfere; the re-assert test sets it small. */
   ownershipReassertMs?: number;
@@ -264,6 +268,7 @@ function createHarness(opts: FetchScript = {}): {
     headers: Record<string, string>;
   }> = [];
   const identityCalls: Array<string | null> = [];
+  const identityCallCount = { value: 0 };
   const stdin = new FakeStdin();
   const terminal = new FakeTerminal(
     opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
@@ -466,11 +471,21 @@ function createHarness(opts: FetchScript = {}): {
     inputReopenMaxAttempts: opts.inputReopenMaxAttempts ?? 2,
     inputReopenBaseDelayMs: opts.inputReopenBaseDelayMs ?? 1,
     getWorkerIdentity: vi.fn(async () => {
+      // Count EVERY call, not just scripted ones: call 0 is the attach-time
+      // baseline and calls 1+ are post-reopen checks. Deriving the index from a
+      // list that some tests never populate left the counter stuck at 0, so the
+      // reopen branch below never fired and the session hung instead.
+      const index = identityCallCount.value;
+      identityCallCount.value += 1;
+      // The baseline must resolve normally; only post-reopen checks are made to
+      // fail or stall, since that is where the gate actually runs.
+      const isReopenCheck = index > 0;
+      if (isReopenCheck && opts.identityGate) await opts.identityGate;
+      if (isReopenCheck && opts.identityError) throw opts.identityError;
       const scripted = opts.workerIdentities;
       if (!scripted) return 'pid-1';
       // Index explicitly: a scripted `null` is a meaningful value ("identity
       // unavailable"), so `??` must not collapse it into the fallback.
-      const index = identityCalls.length;
       const value = index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
       identityCalls.push(value);
       return value;
@@ -2303,7 +2318,10 @@ describe('runDriveSession — lost PTY input stream', () => {
 
     expect(await sessionPromise).toBe(0);
     const before = inputStreams.length;
-    await settleRecovery();
+    // Must outlast the WHOLE backoff schedule (20+40+80+160 = 300ms here), not
+    // just the first delay: a timer that survives teardown and fires at 80ms or
+    // 160ms would otherwise land outside the window and go unnoticed.
+    await settleRecovery(400);
     // No further sockets opened after teardown, and no late error printed.
     expect(inputStreams).toHaveLength(before);
     expect(errors.map((a) => String(a[0])).filter((l) => l.includes('could not be reopened'))).toEqual([]);
@@ -2375,6 +2393,112 @@ describe('runDriveSession — lost PTY input stream', () => {
     expect(
       errors.map((args) => String(args[0])).find((l) => l.includes('unavailable at attach'))
     ).toBeDefined();
+    expect(inputStreams[1].writes).toHaveLength(0);
+  });
+
+  it('does NOT tear down a healthy stream when a send hits backpressure', async () => {
+    // Regression guard for the defect this PR introduced. `PtyInputStream.send()`
+    // rejects `input_backpressure` while the socket is open and usable
+    // (transport.ts:206-214, retryable: true). Treating that as stream loss
+    // closes a healthy socket, drops outstanding input, and can detach the
+    // session non-zero just because the broker was briefly slow.
+    // Fails if backpressure starts a recovery, opens a second stream, or ends
+    // the session.
+    const backpressure = Object.assign(
+      new Error('PTY input stream buffered 1048576 bytes; refusing 1 more over high water mark 1048576'),
+      { code: 'input_backpressure', retryable: true }
+    );
+    const { deps, sockets, stdin, logs, errors, inputStreams } = createHarness({
+      inputStreamSendError: backpressure,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    for (let i = 0; i < 50; i++) stdin.type(Buffer.from(`k${i}`));
+    await settleRecovery();
+
+    const all = [...logs, ...errors].map((a) => String(a[0]));
+    expect(all.filter((l) => l.includes('input stream lost'))).toEqual([]);
+    expect(all.filter((l) => l.includes('could not be reopened'))).toEqual([]);
+    // No replacement stream: the original was never torn down.
+    expect(inputStreams).toHaveLength(1);
+    expect(inputStreams[0].closed).toBe(false);
+    // The user is told once, not fifty times.
+    expect(all.filter((l) => l.includes('faster than'))).toHaveLength(1);
+
+    // And the session is still alive and detachable.
+    stdin.type(Buffer.from([0x03]));
+    expect(await sessionPromise).toBe(0);
+  });
+
+  it('still detaches on Ctrl+C when it shares a chunk with input during an outage', async () => {
+    // The dead-stream branch used to `return` before the keybind actions ran,
+    // so a chunk like "ab\x03" was swallowed whole and the user could not
+    // escape a broken session. Fails if the session does not exit.
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 4,
+      inputReopenBaseDelayMs: 50,
+      reopenOpenErrors: [new Error('x'), new Error('x'), new Error('x'), new Error('x')],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    // Ordinary bytes AND the detach byte in one chunk — exactly what a paste or
+    // a fast typist produces.
+    stdin.type(Buffer.from([0x61, 0x62, 0x03]));
+
+    expect(await sessionPromise).toBe(0);
+  });
+
+  it('refuses the reopen when the identity verifier throws', async () => {
+    // A verifier that cannot answer has not said yes. Before this, the throw
+    // escaped the attempt loop, leaving the session with no input stream and no
+    // exhaustion path — it hung instead of exiting. Fails on a hang or exit 0.
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+      identityError: new Error('broker unreachable'),
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    expect(await sessionPromise).toBe(1);
+    const refusal = errors.map((a) => String(a[0])).find((l) => l.includes('not the same worker'));
+    expect(refusal).toContain('identity check failed');
+    expect(refusal).toContain('broker unreachable');
+    expect(inputStreams[1].writes).toHaveLength(0);
+    expect(inputStreams[1].closed).toBe(true);
+  });
+
+  it('closes the replacement stream when the user detaches mid-verification', async () => {
+    // Teardown sees `inputStream` as null during recovery, so if the attempt
+    // does not close its own replacement the socket leaks with no owner and can
+    // keep the CLI alive past a clean detach. Fails if it is left open.
+    let releaseVerify: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseVerify = resolve;
+    });
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+      identityGate: gate,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+    await settleRecovery(30);
+    expect(inputStreams).toHaveLength(2); // replacement opened, verify parked
+
+    stdin.type(Buffer.from([0x03])); // detach while verification is pending
+    releaseVerify?.();
+
+    expect(await sessionPromise).toBe(0);
+    await settleRecovery(20);
+    expect(inputStreams[1].closed).toBe(true);
     expect(inputStreams[1].writes).toHaveLength(0);
   });
 
