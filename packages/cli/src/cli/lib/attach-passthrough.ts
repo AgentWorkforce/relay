@@ -58,7 +58,13 @@ import {
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 import {
+  createInputStreamRecovery,
+  INPUT_REOPEN_BASE_DELAY_MS,
+  INPUT_REOPEN_MAX_ATTEMPTS,
+} from './attach-input-recovery.js';
+import {
   type CliPtyInputStream,
+  fetchWorkerIdentity,
   openPtyInputStream,
   releaseResizeOwnership,
   resizeWorker,
@@ -150,6 +156,19 @@ export interface PassthroughDependencies {
    * refresh (no SIGWINCH). Defaults to 60000. Set `0` to disable (tests).
    */
   ownershipReassertMs?: number;
+  /**
+   * How many times to reopen a dead PTY input stream before giving up and
+   * exiting non-zero. Defaults to 5. Set `0` to disable recovery.
+   */
+  inputReopenMaxAttempts?: number;
+  /** Base delay (ms) for the input-stream reopen backoff. Defaults to 250. */
+  inputReopenBaseDelayMs?: number;
+  /**
+   * Reads the identity of the worker process behind `name`, or `null` when it
+   * cannot be established. Used to reject a reopen that landed on a different
+   * process. See `fetchWorkerIdentity` in attach-drive.ts.
+   */
+  getWorkerIdentity: (connection: BrokerConnection, name: string) => Promise<string | null>;
 }
 
 function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
@@ -189,6 +208,7 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
       },
     },
     openInputStream: (connection, name) => openPtyInputStream(connection, name, fetchFn),
+    getWorkerIdentity: (connection, name) => fetchWorkerIdentity(connection, name, fetchFn),
     createPredictiveEcho,
     ...overrides,
   };
@@ -538,6 +558,43 @@ export async function runPassthroughSession(
       paintStatus();
     };
 
+    // ---- input-stream liveness ----
+    // Same defect and same contract as drive; see `attach-input-recovery.ts`.
+    // Identity of the worker this session attached to; see attach-drive.ts.
+    let attachedWorkerIdentity: string | null = null;
+    const inputRecovery = createInputStreamRecovery({
+      label: 'passthrough',
+      name,
+      maxAttempts: deps.inputReopenMaxAttempts ?? INPUT_REOPEN_MAX_ATTEMPTS,
+      baseDelayMs: deps.inputReopenBaseDelayMs ?? INPUT_REOPEN_BASE_DELAY_MS,
+      log: (message) => deps.log(message),
+      error: (message) => deps.error(message),
+      isSettled: () => settled,
+      getStream: () => inputStream,
+      setStream: (stream) => {
+        inputStream = stream;
+      },
+      openStream: () => deps.openInputStream(connection, name),
+      onRollback: () => predictiveEcho?.rollback(),
+      onExhausted: () => finish(1),
+      verifyIdentity: async () => {
+        if (attachedWorkerIdentity === null) {
+          return { ok: false, reason: 'worker identity was unavailable at attach' };
+        }
+        const current = await deps.getWorkerIdentity(connection, name);
+        if (current === null) {
+          return { ok: false, reason: 'worker identity could not be read after reconnect' };
+        }
+        if (current !== attachedWorkerIdentity) {
+          return {
+            ok: false,
+            reason: `worker process changed (${attachedWorkerIdentity} → ${current})`,
+          };
+        }
+        return { ok: true };
+      },
+    });
+
     let stdinReady = false;
     const stdinDataHandler = (chunk: Buffer): void => {
       // Raw mode starts before snapshot replay so terminal input reports cannot
@@ -551,24 +608,30 @@ export async function runPassthroughSession(
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
         const stream = inputStream;
-        if (!stream) {
-          deps.log('[passthrough] input stream is not ready');
-          return;
+        // A dead or missing stream is a liveness event, not a per-keystroke
+        // error — see `attach-input-recovery.ts` (#1419). Drop this input
+        // silently; recovery has already announced itself once.
+        //
+        // Skip only the *forwarding* and fall through to the action loop:
+        // Ctrl+C can share a chunk with ordinary bytes, and returning here
+        // would swallow the detach mid-outage.
+        if (!inputRecovery.isUsable(stream)) {
+          inputRecovery.recover('stream closed');
+        } else {
+          // Decode through the stateful UTF-8 decoder so a multi-byte character
+          // split across stdin chunks is forwarded intact rather than as U+FFFD.
+          const decoded = inputDecoder.write(outcome.forward);
+          if (decoded.length > 0) {
+            void stream.send(decoded).then(
+              () => inputRecovery.noteSendSuccess(),
+              (err: unknown) => {
+                if (settled) return;
+                inputRecovery.handleSendFailure(err);
+              }
+            );
+          }
+          predictiveEcho?.onUserInput(outcome.forward);
         }
-        // Decode through the stateful UTF-8 decoder so a multi-byte character
-        // split across stdin chunks is forwarded intact rather than as U+FFFD.
-        const decoded = inputDecoder.write(outcome.forward);
-        if (decoded.length > 0) {
-          void stream.send(decoded).catch((err: unknown) => {
-            if (settled) return;
-            const message = describeError(err);
-            deps.log(`[passthrough] input stream send failed: ${message}`);
-            // The keystroke never reached the PTY — drop any optimistic echo
-            // for it so the screen doesn't show input the agent didn't get.
-            predictiveEcho?.rollback();
-          });
-        }
-        predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
         switch (action) {
@@ -629,6 +692,9 @@ export async function runPassthroughSession(
     };
 
     const closeInputStream = (): void => {
+      // Cancel any pending reopen backoff so a detach mid-recovery doesn't
+      // leave a timer holding a reference to a torn-down session.
+      inputRecovery.cancel();
       const stream = inputStream;
       inputStream = null;
       if (!stream) return;
@@ -726,6 +792,13 @@ export async function runPassthroughSession(
       try {
         inputStream = deps.openInputStream(connection, name);
         await inputStream.waitUntilOpen();
+        if (settled) {
+          closeInputStream();
+          return;
+        }
+        // Baseline for the reopen identity gate; null makes a later reopen
+        // refuse rather than guess. See attach-drive.ts.
+        attachedWorkerIdentity = await deps.getWorkerIdentity(connection, name);
         if (settled) {
           closeInputStream();
           return;

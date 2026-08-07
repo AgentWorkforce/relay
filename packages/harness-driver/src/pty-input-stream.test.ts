@@ -189,3 +189,36 @@ describe('PtyInputStream pipelining', () => {
     await expect(p2).rejects.toMatchObject({ code: 'input_stream_closed' });
   });
 });
+
+describe('PtyInputStream after its socket closes', () => {
+  /**
+   * The CLI's recovery logic (attach-input-recovery.ts) is built on the
+   * assumption that this stream never heals itself, so that assumption is
+   * pinned here. If PtyInputStream ever grows its own reconnect, this test
+   * fails and the CLI-side recovery must be revisited rather than silently
+   * doubling up.
+   */
+  it('latches closed and rejects every later send with the same message', async () => {
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    // An idle-timeout reap or a PTY worker restart: abnormal close, no warning.
+    socket.emit('close', 1006, Buffer.from(''));
+    expect(stream.closed).toBe(true);
+
+    const messages: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      await stream.send('x').catch((err: Error) => messages.push(err.message));
+    }
+
+    // Every send rejects — no retry, no backoff, no self-heal. This exact
+    // string is what used to reach the terminal once per keystroke (#1419).
+    expect(messages).toHaveLength(50);
+    expect([...new Set(messages)]).toEqual(['PTY input stream is closed']);
+    // Nothing was put back on the wire, and no replacement socket was opened.
+    expect(socket.sends).toHaveLength(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+});

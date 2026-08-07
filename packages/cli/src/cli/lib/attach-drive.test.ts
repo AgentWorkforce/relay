@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LOCAL_TERMINAL_RESET_SEQUENCE } from './attach.js';
 import {
+  fetchWorkerIdentity,
   KeybindParser,
   classifyWsEvent,
   renderStatusLine,
@@ -152,6 +153,9 @@ class FakeInputStream implements CliPtyInputStream {
   }
 
   async send(data: string): Promise<{ name: string; bytes_written: number }> {
+    // Mirror the real PtyInputStream: once the socket is gone the guard rejects
+    // immediately and permanently, with this exact message (transport.ts:199).
+    if (this.closed) throw new Error('PTY input stream is closed');
     if (this.sendError) throw this.sendError;
     this.writes.push(data);
     return { name: this.name, bytes_written: Buffer.byteLength(data, 'utf8') };
@@ -161,6 +165,15 @@ class FakeInputStream implements CliPtyInputStream {
     this.closed = true;
     this.closeCode = code;
     this.closeReason = reason;
+  }
+
+  /**
+   * Test helper: the broker/proxy drops the socket underneath us. This is the
+   * real-world event — an idle-timeout reap or a PTY worker restart — and it
+   * latches `closed` exactly as the SDK stream does, without the CLI being told.
+   */
+  killFromServer(): void {
+    this.closed = true;
   }
 }
 
@@ -203,6 +216,26 @@ interface FetchScript {
   terminalSize?: { rows: number; cols: number } | null;
   inputStreamOpenError?: Error;
   inputStreamSendError?: Error;
+  /**
+   * Open-errors applied to *reopen* attempts only, in order. `undefined` at an
+   * index means that attempt succeeds. Lets a test make the first N reopens
+   * fail and the N+1th succeed, or make every one fail to reach exhaustion.
+   */
+  reopenOpenErrors?: Array<Error | undefined>;
+  /** Reopen attempts before the session gives up. Defaults to 2 for speed. */
+  inputReopenMaxAttempts?: number;
+  /** Reopen backoff base in ms. Defaults to 1 so tests don't wait. */
+  inputReopenBaseDelayMs?: number;
+  /**
+   * Worker identities returned by successive `getWorkerIdentity` calls. Index 0
+   * is the attach-time baseline; later entries answer post-reopen checks.
+   * Defaults to a stable pid, i.e. "same worker throughout".
+   */
+  workerIdentities?: Array<string | null>;
+  /** Make `getWorkerIdentity` reject, simulating a verifier that cannot answer. */
+  identityError?: Error;
+  /** Park `getWorkerIdentity` on this promise so a detach can race verification. */
+  identityGate?: Promise<void>;
   /** Ownership re-assert interval (ms). Defaults to disabled (0) in tests so
    *  the keep-alive timer doesn't interfere; the re-assert test sets it small. */
   ownershipReassertMs?: number;
@@ -234,6 +267,7 @@ function createHarness(opts: FetchScript = {}): {
     body?: unknown;
     headers: Record<string, string>;
   }> = [];
+  const identityCallCount = { value: 0 };
   const stdin = new FakeStdin();
   const terminal = new FakeTerminal(
     opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
@@ -414,7 +448,14 @@ function createHarness(opts: FetchScript = {}): {
     stdin,
     terminal,
     openInputStream: vi.fn((_connection, streamName) => {
-      const stream = new FakeInputStream(streamName, opts.inputStreamOpenError, opts.inputStreamSendError);
+      // Index 0 is the initial open; 1..N are reopen attempts, which a test can
+      // script independently via `reopenOpenErrors`.
+      const reopenIndex = inputStreams.length - 1;
+      const openError =
+        reopenIndex >= 0 && opts.reopenOpenErrors
+          ? opts.reopenOpenErrors[reopenIndex]
+          : opts.inputStreamOpenError;
+      const stream = new FakeInputStream(streamName, openError, opts.inputStreamSendError);
       inputStreams.push(stream);
       return stream;
     }),
@@ -424,6 +465,29 @@ function createHarness(opts: FetchScript = {}): {
     // Disable the ownership re-assert timer by default so it can't perturb
     // resize-count assertions; individual tests opt in with a small value.
     ownershipReassertMs: opts.ownershipReassertMs ?? 0,
+    // Small, deterministic reopen policy: real defaults (5 attempts, 250ms
+    // doubling) would make these tests slow without testing anything more.
+    inputReopenMaxAttempts: opts.inputReopenMaxAttempts ?? 2,
+    inputReopenBaseDelayMs: opts.inputReopenBaseDelayMs ?? 1,
+    getWorkerIdentity: vi.fn(async () => {
+      // Count EVERY call, not just scripted ones: call 0 is the attach-time
+      // baseline and calls 1+ are post-reopen checks. Deriving the index from a
+      // list that some tests never populate left the counter stuck at 0, so the
+      // reopen branch below never fired and the session hung instead.
+      const index = identityCallCount.value;
+      identityCallCount.value += 1;
+      // The baseline must resolve normally; only post-reopen checks are made to
+      // fail or stall, since that is where the gate actually runs.
+      const isReopenCheck = index > 0;
+      if (isReopenCheck && opts.identityGate) await opts.identityGate;
+      if (isReopenCheck && opts.identityError) throw opts.identityError;
+      const scripted = opts.workerIdentities;
+      if (!scripted) return 'pid-1';
+      // Index explicitly: a scripted `null` is a meaningful value ("identity
+      // unavailable"), so `??` must not collapse it into the fallback.
+      const value = index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
+      return value;
+    }),
   };
 
   return {
@@ -2110,5 +2174,404 @@ describe('runDriveSession', () => {
       { mode: 'auto_inject' },
       { mode: 'auto_inject', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
+  });
+});
+
+/**
+ * Regression coverage for #1419: a PTY input stream that dies mid-session used
+ * to log `[drive] input stream send failed: PTY input stream is closed` once
+ * per inbound stdin chunk, forever, while the session stayed alive and
+ * eventually exited 0. Each test below pins one half of that contract.
+ */
+describe('runDriveSession — lost PTY input stream', () => {
+  /** Drain enough microtask/timer turns for the reopen backoff to run out. */
+  async function settleRecovery(turns = 60): Promise<void> {
+    for (let i = 0; i < turns; i++) await new Promise((r) => setTimeout(r, 1));
+  }
+
+  function floodLines(logs: unknown[][], errors: unknown[][]): string[] {
+    return [...logs, ...errors]
+      .map((args) => String(args[0]))
+      .filter((line) => line.includes('input stream'));
+  }
+
+  it('reports the loss exactly once no matter how much input arrives', async () => {
+    // THE FLOOD ASSERTION. Fails if the loss is announced more than once.
+    // 200 SGR mouse reports and ZERO keystrokes: KeybindParser forwards every
+    // byte except 0x03/0x1d, so a source TUI with mouse tracking on generates
+    // this load from pointer movement alone — which is how Khaliq hit it
+    // without typing. Before the fix this produced 200 identical lines.
+    const { deps, sockets, stdin, logs, errors, inputStreams } = createHarness({
+      // Never let the reopen succeed, so the only thing that can vary is how
+      // often the *loss* is announced.
+      reopenOpenErrors: [new Error('still down'), new Error('still down')],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+
+    for (let i = 0; i < 200; i++) {
+      stdin.type(Buffer.from(`\x1b[<35;${i};10M`));
+    }
+    await settleRecovery();
+
+    const lost = floodLines(logs, errors).filter((l) => l.includes('input stream lost'));
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain('reconnecting');
+
+    // And nothing was smuggled onto the dead stream.
+    expect(inputStreams[0].writes).toHaveLength(0);
+    await sessionPromise;
+  });
+
+  it('exits non-zero with a readable message when every reopen fails', async () => {
+    // THE EXIT-CODE ASSERTION. Fails if the session resolves 0 (the old
+    // behaviour: degraded forever, then exit 0 when the human pressed Ctrl+C),
+    // and fails if the operator is not told the agent survived.
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 2,
+      reopenOpenErrors: [new Error('broker down'), new Error('broker down')],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    const code = await sessionPromise;
+    expect(code).toBe(1);
+
+    const exhausted = errors
+      .map((args) => String(args[0]))
+      .find((line) => line.includes('could not be reopened'));
+    expect(exhausted).toBeDefined();
+    // A readable message names the attempt count, the agent, and the way out.
+    expect(exhausted).toContain('after 2 attempts');
+    expect(exhausted).toContain('Alice is still running');
+    expect(exhausted).toContain('reattach');
+  });
+
+  it('tries exactly the configured number of reopens, then stops', async () => {
+    // Fails if recovery loops unbounded (the failure mode that would turn a
+    // flood of log lines into a flood of sockets).
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 3,
+      reopenOpenErrors: [new Error('x'), new Error('x'), new Error('x'), new Error('x')],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+    await sessionPromise;
+    await settleRecovery();
+
+    // 1 initial open + exactly 3 reopen attempts.
+    expect(inputStreams).toHaveLength(4);
+  });
+
+  it('recovers and routes later keystrokes to the replacement stream', async () => {
+    // Fails if reopen "succeeds" but input still goes nowhere — i.e. if the
+    // session reports recovery it did not actually achieve.
+    const { deps, sockets, stdin, logs, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('lost'));
+    await settleRecovery();
+
+    expect(inputStreams).toHaveLength(2);
+    expect(logs.map((a) => String(a[0])).filter((l) => l.includes('reconnected'))).toHaveLength(1);
+
+    stdin.type(Buffer.from('typed after recovery'));
+    await settleRecovery(5);
+
+    expect(inputStreams[1].writes.join('')).toBe('typed after recovery');
+    // The keystroke sent during the outage was dropped, not replayed: feeding
+    // stale input into a recovered PTY would execute it out of context.
+    expect(inputStreams[1].writes.join('')).not.toContain('lost');
+
+    stdin.type(Buffer.from([0x03]));
+    expect(await sessionPromise).toBe(0);
+  });
+
+  it('a detach during recovery still exits 0 and cancels the reopen', async () => {
+    // Fails if a user detach mid-outage is misreported as a transport failure,
+    // or if a pending backoff timer fires into a torn-down session.
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 4,
+      inputReopenBaseDelayMs: 20,
+      reopenOpenErrors: [new Error('x'), new Error('x'), new Error('x'), new Error('x')],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+    stdin.type(Buffer.from([0x03])); // user detaches while reconnecting
+
+    expect(await sessionPromise).toBe(0);
+    const before = inputStreams.length;
+    // Must outlast the WHOLE backoff schedule (20+40+80+160 = 300ms here), not
+    // just the first delay: a timer that survives teardown and fires at 80ms or
+    // 160ms would otherwise land outside the window and go unnoticed.
+    await settleRecovery(400);
+    // No further sockets opened after teardown, and no late error printed.
+    expect(inputStreams).toHaveLength(before);
+    expect(errors.map((a) => String(a[0])).filter((l) => l.includes('could not be reopened'))).toEqual([]);
+  });
+
+  it('refuses a reopen that landed on a different worker process', async () => {
+    // THE IDENTITY ASSERTION. The input stream is reopened *by name*, and a
+    // name is not an identity. If the worker was replaced, a socket that opens
+    // successfully would route the human's keystrokes into a different PTY.
+    // Fails if the session accepts the replacement, or exits 0.
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+      // Baseline pid-1 at attach; a different process answers after reconnect.
+      workerIdentities: ['pid-1', 'pid-2'],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    expect(await sessionPromise).toBe(1);
+
+    const refusal = errors
+      .map((args) => String(args[0]))
+      .find((line) => line.includes('not the same worker'));
+    expect(refusal).toBeDefined();
+    expect(refusal).toContain('pid-1');
+    expect(refusal).toContain('pid-2');
+
+    // The replacement socket was opened but must have been closed unused —
+    // nothing may be written to a stream we could not vouch for.
+    expect(inputStreams[1].writes).toHaveLength(0);
+    expect(inputStreams[1].closed).toBe(true);
+  });
+
+  it('refuses a reopen when worker identity cannot be read', async () => {
+    // Fails closed on "don't know", not just on "known different". An
+    // unreadable identity is not evidence of sameness.
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+      workerIdentities: ['pid-1', null],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    expect(await sessionPromise).toBe(1);
+    expect(errors.map((args) => String(args[0])).find((l) => l.includes('could not be read'))).toBeDefined();
+    expect(inputStreams[1].writes).toHaveLength(0);
+  });
+
+  it('refuses a reopen when identity was never established at attach', async () => {
+    // If we never learned who we attached to, we cannot claim the replacement
+    // matches. Fails if a null baseline is treated as a wildcard.
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+      workerIdentities: [null, 'pid-9'],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    expect(await sessionPromise).toBe(1);
+    expect(
+      errors.map((args) => String(args[0])).find((l) => l.includes('unavailable at attach'))
+    ).toBeDefined();
+    expect(inputStreams[1].writes).toHaveLength(0);
+  });
+
+  it('does NOT tear down a healthy stream when a send hits backpressure', async () => {
+    // Regression guard for the defect this PR introduced. `PtyInputStream.send()`
+    // rejects `input_backpressure` while the socket is open and usable
+    // (transport.ts:206-214, retryable: true). Treating that as stream loss
+    // closes a healthy socket, drops outstanding input, and can detach the
+    // session non-zero just because the broker was briefly slow.
+    // Fails if backpressure starts a recovery, opens a second stream, or ends
+    // the session.
+    const backpressure = Object.assign(
+      new Error('PTY input stream buffered 1048576 bytes; refusing 1 more over high water mark 1048576'),
+      { code: 'input_backpressure', retryable: true }
+    );
+    const { deps, sockets, stdin, logs, errors, inputStreams } = createHarness({
+      inputStreamSendError: backpressure,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    for (let i = 0; i < 50; i++) stdin.type(Buffer.from(`k${i}`));
+    await settleRecovery();
+
+    const all = [...logs, ...errors].map((a) => String(a[0]));
+    expect(all.filter((l) => l.includes('input stream lost'))).toEqual([]);
+    expect(all.filter((l) => l.includes('could not be reopened'))).toEqual([]);
+    // No replacement stream: the original was never torn down.
+    expect(inputStreams).toHaveLength(1);
+    expect(inputStreams[0].closed).toBe(false);
+    // The user is told once, not fifty times.
+    expect(all.filter((l) => l.includes('faster than'))).toHaveLength(1);
+
+    // And the session is still alive and detachable.
+    stdin.type(Buffer.from([0x03]));
+    expect(await sessionPromise).toBe(0);
+  });
+
+  it('still detaches on Ctrl+C when it shares a chunk with input during an outage', async () => {
+    // The dead-stream branch used to `return` before the keybind actions ran,
+    // so a chunk like "ab\x03" was swallowed whole and the user could not
+    // escape a broken session. Fails if the session does not exit.
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 4,
+      inputReopenBaseDelayMs: 50,
+      reopenOpenErrors: [new Error('x'), new Error('x'), new Error('x'), new Error('x')],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    // Ordinary bytes AND the detach byte in one chunk — exactly what a paste or
+    // a fast typist produces.
+    stdin.type(Buffer.from([0x61, 0x62, 0x03]));
+
+    expect(await sessionPromise).toBe(0);
+  });
+
+  it('refuses the reopen when the identity verifier throws', async () => {
+    // A verifier that cannot answer has not said yes. Before this, the throw
+    // escaped the attempt loop, leaving the session with no input stream and no
+    // exhaustion path — it hung instead of exiting. Fails on a hang or exit 0.
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+      identityError: new Error('broker unreachable'),
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    expect(await sessionPromise).toBe(1);
+    const refusal = errors.map((a) => String(a[0])).find((l) => l.includes('not the same worker'));
+    expect(refusal).toContain('identity check failed');
+    expect(refusal).toContain('broker unreachable');
+    expect(inputStreams[1].writes).toHaveLength(0);
+    expect(inputStreams[1].closed).toBe(true);
+  });
+
+  it('closes the replacement stream when the user detaches mid-verification', async () => {
+    // Teardown sees `inputStream` as null during recovery, so if the attempt
+    // does not close its own replacement the socket leaks with no owner and can
+    // keep the CLI alive past a clean detach. Fails if it is left open.
+    let releaseVerify: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseVerify = resolve;
+    });
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      reopenOpenErrors: [undefined],
+      identityGate: gate,
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+    await settleRecovery(30);
+    expect(inputStreams).toHaveLength(2); // replacement opened, verify parked
+
+    stdin.type(Buffer.from([0x03])); // detach while verification is pending
+    releaseVerify?.();
+
+    expect(await sessionPromise).toBe(0);
+    await settleRecovery(20);
+    expect(inputStreams[1].closed).toBe(true);
+    expect(inputStreams[1].writes).toHaveLength(0);
+  });
+
+  it('rolls back predictive echo once for input that never reached the PTY', async () => {
+    // Fails if the screen keeps optimistically-echoed glyphs for keystrokes the
+    // agent never received — a silent lie about what the agent has seen.
+    const echo = new FakePredictiveEcho();
+    const rollback = vi.spyOn(echo, 'rollback');
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      predictiveEcho: echo,
+      reopenOpenErrors: [undefined],
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    // Several separate chunks during one outage. Pre-fix this rolled back once
+    // per chunk; the contract is one rollback per outage, so a per-chunk
+    // implementation fails here.
+    for (let i = 0; i < 5; i++) stdin.type(Buffer.from(`chunk${i}`));
+    await settleRecovery();
+
+    expect(rollback).toHaveBeenCalledTimes(1);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+});
+
+describe('fetchWorkerIdentity', () => {
+  const connection = { url: 'http://localhost:3889', apiKey: 'k' };
+
+  function fetchReturning(agents: unknown[]): typeof globalThis.fetch {
+    return (async () =>
+      new Response(JSON.stringify({ agents }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof globalThis.fetch;
+  }
+
+  it('uses workerPid when the harness pid is null', async () => {
+    // The shape a live broker actually returns for a plain PTY worker: the
+    // harness `pid` stays null until the ready handshake, while `workerPid`
+    // (the PTY child) is populated immediately. Keying on `pid` alone made
+    // every reopen unverifiable for exactly the workers drive attaches to.
+    const identity = await fetchWorkerIdentity(
+      connection,
+      'Alice',
+      fetchReturning([{ name: 'Alice', runtime: 'pty', channels: [], pid: null, workerPid: 30209 }])
+    );
+    expect(identity).toBe('worker:30209');
+  });
+
+  it('folds in the harness pid when the broker has both', async () => {
+    // A change in *either* process means the thing behind the name changed.
+    const identity = await fetchWorkerIdentity(
+      connection,
+      'Alice',
+      fetchReturning([{ name: 'Alice', runtime: 'pty', channels: [], pid: 99778, workerPid: 30209 }])
+    );
+    expect(identity).toBe('worker:30209/harness:99778');
+  });
+
+  it('returns null when the broker reports no pid of either kind', async () => {
+    // "Cannot verify" — the caller must fail closed rather than treat a
+    // missing identity as a match.
+    const identity = await fetchWorkerIdentity(
+      connection,
+      'Alice',
+      fetchReturning([{ name: 'Alice', runtime: 'pty', channels: [] }])
+    );
+    expect(identity).toBeNull();
+  });
+
+  it('returns null for an agent the broker does not list', async () => {
+    const identity = await fetchWorkerIdentity(connection, 'Ghost', fetchReturning([]));
+    expect(identity).toBeNull();
   });
 });
