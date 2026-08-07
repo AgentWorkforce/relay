@@ -131,6 +131,22 @@ fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfi
     }
 }
 
+fn harness_metadata_flag(config: &ResolvedHarnessConfig, snake: &str, camel: &str) -> bool {
+    config
+        .metadata()
+        .and_then(|metadata| metadata.get(snake).or_else(|| metadata.get(camel)))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub(super) fn relaycast_spawn_verifies_ready(value: &Value) -> bool {
+    relaycast_harness_config(value)
+        .ok()
+        .flatten()
+        .as_ref()
+        .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
+}
+
 /// Bind a freshly HTTP-registered agent to this broker's relaycast node so it
 /// becomes `locationType='via_node'`.
 ///
@@ -399,6 +415,13 @@ pub(super) async fn spawn_worker_from_request(
             return;
         }
     };
+    let require_node_registration = harness_config.as_ref().is_some_and(|config| {
+        harness_metadata_flag(
+            config,
+            "require_node_registration",
+            "requireNodeRegistration",
+        )
+    });
     let runtime = harness_config
         .as_ref()
         .map(ResolvedHarnessConfig::runtime)
@@ -466,7 +489,9 @@ pub(super) async fn spawn_worker_from_request(
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
     let worker_relay_key = {
-        if let Some(token) = relaycast_ws_spawn_token(ws_value) {
+        if let Some(token) =
+            relaycast_ws_spawn_token(ws_value).filter(|_| !require_node_registration)
+        {
             seed_supplied_agent_token(workspace_http, &name, &token);
             Some(token)
         } else {
@@ -487,6 +512,14 @@ pub(super) async fn spawn_worker_from_request(
                     Some(token.token)
                 }
                 Err(node_error) => {
+                    if require_node_registration {
+                        tracing::warn!(
+                            worker = %name,
+                            error = %node_error,
+                            "rejecting verified spawn because node agent.register failed"
+                        );
+                        return;
+                    }
                     tracing::warn!(
                         worker = %name,
                         error = %node_error,
@@ -704,6 +737,31 @@ mod tests {
         let error = relaycast_harness_config(&value).expect_err("harnessId should fail");
 
         assert!(error.contains("harnessId is not supported"));
+    }
+
+    #[test]
+    fn verified_spawn_contract_is_read_from_harness_metadata() {
+        let verified = json!({
+            "harness_config": {
+                "runtime": "pty",
+                "command": "codex",
+                "args": [],
+                "metadata": {
+                    "verify_ready": true,
+                    "require_node_registration": true
+                }
+            }
+        });
+        let ordinary = json!({
+            "harness_config": {
+                "runtime": "pty",
+                "command": "codex",
+                "args": []
+            }
+        });
+
+        assert!(relaycast_spawn_verifies_ready(&verified));
+        assert!(!relaycast_spawn_verifies_ready(&ordinary));
     }
 
     /// Regression guard for the v5.0.1 firehose control path.

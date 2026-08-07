@@ -107,6 +107,31 @@ describe('SpawnedAgentHandle.waitForResult', () => {
 // ── lifecycle helpers ──────────────────────────────────────────────────────
 
 describe('SpawnedAgentHandle lifecycle helpers', () => {
+  it('waits for the harness worker_ready handshake', async () => {
+    const stub = createStubClient();
+    const handle = createHandle(stub);
+
+    const pending = handle.waitForReady();
+    stub.emit({ kind: 'worker_ready', name: 'someone-else', runtime: 'pty' } as BrokerEvent);
+    stub.emit({ kind: 'worker_ready', name: 'worker', runtime: 'pty', pid: 42 } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 42 });
+  });
+
+  it('reports an exit before readiness and times out when no handshake arrives', async () => {
+    const exitedStub = createStubClient();
+    const exitedHandle = createHandle(exitedStub);
+    const exited = exitedHandle.waitForReady();
+    exitedStub.emit({ kind: 'agent_exited', name: 'worker', code: 1 } as BrokerEvent);
+    await expect(exited).resolves.toEqual({
+      reason: 'exited',
+      exit: { reason: 'exited', code: 1, signal: undefined },
+    });
+
+    const timeoutHandle = createHandle(createStubClient());
+    await expect(timeoutHandle.waitForReady(5)).resolves.toEqual({ reason: 'timeout' });
+  });
+
   it('exposes prior exit info and replays it for waitForExit', async () => {
     const stub = createStubClient([
       { kind: 'agent_exited', name: 'worker', code: 7, signal: 'SIGTERM' } as BrokerEvent,

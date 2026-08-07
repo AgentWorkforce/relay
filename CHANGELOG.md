@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- The Agent Relay `spawn` MCP tool accepts an AgentWorkforce `persona` id or path instead of a raw CLI, routes it to a `spawn:persona` fleet node, and waits for broker registration plus harness readiness before reporting success. `@agent-relay/fleet` documents the corresponding `defineWorkforcePersonaSpawnNode` setup.
 
 ## [11.4.3] - 2026-08-09
 

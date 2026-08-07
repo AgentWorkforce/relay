@@ -62,6 +62,52 @@ function withExitAfterTaskInstruction(task: string): string {
   return `${task}\n\n${EXIT_AFTER_TASK_INSTRUCTION}`;
 }
 
+const PERSONA_SPAWN_TIMEOUT_MS = 130_000;
+const PERSONA_SPAWN_POLL_MS = 250;
+
+type InvocationReader = {
+  getInvocation(name: string, invocationId: string): Promise<unknown>;
+};
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function invocationText(record: Record<string, unknown>, camel: string, snake?: string): string | undefined {
+  const value = record[camel] ?? (snake ? record[snake] : undefined);
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+async function waitForPersonaSpawn(
+  actions: InvocationReader,
+  ackValue: unknown,
+  timeoutMs = PERSONA_SPAWN_TIMEOUT_MS
+): Promise<unknown> {
+  const ack = recordValue(ackValue);
+  const actionName = invocationText(ack, 'actionName', 'action_name') ?? 'spawn';
+  const invocationId = invocationText(ack, 'invocationId', 'invocation_id');
+  if (!invocationId) throw new Error('Persona spawn did not return an invocation id.');
+
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const invocation = await actions.getInvocation(actionName, invocationId);
+    const record = recordValue(invocation);
+    const status = invocationText(record, 'status')?.toLowerCase();
+    if (status === 'completed' || status === 'succeeded' || status === 'success') {
+      return invocation;
+    }
+    if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') {
+      throw new Error(invocationText(record, 'error') ?? `Persona spawn ${status}.`);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error('Persona spawn timed out before broker registration and harness readiness.');
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, PERSONA_SPAWN_POLL_MS));
+  }
+}
+
 export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
 
 ## Coordination rule
@@ -86,7 +132,8 @@ export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborat
 
 ## Fleet
 - Use "query_nodes" to find fleet nodes by capability or name
-- Use "spawn" to invoke the fleet spawn action on an eligible node
+- Use "spawn" with either a CLI or an AgentWorkforce persona to invoke the fleet spawn action on an eligible node
+- Persona spawns require a node exposing "spawn:persona" through @agentworkforce/local-surface's defineWorkforcePersonaSpawnNode
 
 ## Best Practices
 - Check your inbox regularly for new messages and mentions
@@ -692,14 +739,20 @@ function registerAgentRelayTools(
     {
       title: 'Spawn Agent',
       description:
-        'Invoke the fleet spawn action, optionally targeting a specific node. ' +
-        'Returns an `invocation` record acknowledging the request. The action runs asynchronously, so this confirms the spawn was queued, not that the worker is running.',
+        'Invoke the fleet spawn action with either a raw `cli` or an AgentWorkforce `persona` name/path. ' +
+        'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`) and return only after broker registration and harness readiness are verified. Raw CLI requests retain asynchronous acknowledgement behavior.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         cli: z
           .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'])
-          .describe('AI CLI to launch'),
+          .optional()
+          .describe('AI CLI to launch; mutually exclusive with persona'),
+        persona: z
+          .string()
+          .optional()
+          .describe('AgentWorkforce persona id or JSON path; mutually exclusive with cli'),
         task: z.string().optional().describe('Initial task instructions'),
+        cwd: z.string().optional().describe('Project cwd used for persona registry resolution'),
         channel: z.string().optional().describe('Channel to join'),
         channels: z.array(z.string()).optional().describe('Channels to join'),
         model: z.string().optional().describe('Model powering the worker'),
@@ -715,21 +768,43 @@ function registerAgentRelayTools(
         openWorldHint: true,
       },
     },
-    async ({ name, cli, task, channel, channels, model, session_ref, target_node, as }) => {
+    async ({ name, cli, persona, task, cwd, channel, channels, model, session_ref, target_node, as }) => {
       const actions = getAgentClient(as).actions;
       if (!actions) {
         throw new Error('spawn requires an agent-scoped Relaycast actions client.');
       }
+      if (Boolean(cli) === Boolean(persona)) {
+        throw new Error('spawn requires exactly one of `cli` or `persona`.');
+      }
+      if (persona && model) {
+        throw new Error('Persona harness and model come from the persona spec; omit `model`.');
+      }
+      if (persona && session_ref) {
+        throw new Error('Persona session settings come from the persona launch plan; omit `session_ref`.');
+      }
       const actionInput = {
         name,
-        cli,
+        ...(cli ? { cli } : { persona, capability: 'spawn:persona' }),
         ...(task ? { task } : {}),
+        ...(persona && cwd ? { cwd } : {}),
         ...(model ? { model } : {}),
         ...(session_ref ? { session_ref } : {}),
         ...(target_node ? { target_node } : {}),
         ...((channels ?? (channel ? [channel] : undefined)) ? { channels: channels ?? [channel] } : {}),
       };
-      return jsonContent({ invocation: await actions.invoke('spawn', actionInput) });
+      if (!persona) {
+        return jsonContent({ invocation: await actions.invoke('spawn', actionInput) });
+      }
+      const session = getSession();
+      const agentToken = as ? session.agents.get(as)?.agentToken : session.agentToken;
+      if (!agentToken) {
+        throw new Error('Persona spawn requires a registered agent identity.');
+      }
+      const relay = new AgentRelay({ agentToken, baseUrl });
+      const invocation = await relay.messaging.commands.invoke('spawn', actionInput);
+      return jsonContent({
+        invocation: await waitForPersonaSpawn(relay.messaging.commands, invocation),
+      });
     }
   );
 

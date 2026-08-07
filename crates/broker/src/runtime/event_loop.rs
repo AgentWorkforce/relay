@@ -222,6 +222,9 @@ pub(crate) struct BrokerRuntime {
     pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
+    /// Persona/capability spawns whose action result is held until the harness
+    /// proves readiness with worker_ready. Keyed by the node-local worker name.
+    pub(super) pending_verified_spawns: HashMap<WorkerName, super::fleet::PendingVerifiedSpawn>,
     /// Per-worker PTY resize ownership (single-resizer policy, see #1247).
     ///
     /// A shared PTY has exactly one size, so letting every attached client

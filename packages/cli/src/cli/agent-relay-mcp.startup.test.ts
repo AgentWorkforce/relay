@@ -145,6 +145,12 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
         actionName: name,
         input,
       })),
+      getInvocation: vi.fn(async (name: string, invocationId: string) => ({
+        invocationId,
+        actionName: name,
+        status: 'completed',
+        output: { spawned: true, ready: true },
+      })),
     },
     send: vi.fn(async (channel: string, text: string) => ({ id: 'msg_1', channel, text })),
     messages: vi.fn(async () => []),
@@ -228,6 +234,21 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const AgentRelayMock = vi.fn(function (this: unknown) {
     return {
       nodes: { list: agentRelayNodesList },
+      messaging: {
+        commands: {
+          invoke: vi.fn(async (name: string, input: unknown) => ({
+            invocationId: 'inv_1',
+            actionName: name,
+            input,
+          })),
+          getInvocation: vi.fn(async (name: string, invocationId: string) => ({
+            invocationId,
+            actionName: name,
+            status: 'completed',
+            output: { spawned: true, ready: true },
+          })),
+        },
+      },
     };
   }) as any;
 
@@ -510,6 +531,19 @@ describe('createAgentRelayMcpServer', () => {
       },
     });
 
+    const personaSpawnResult = await server.tools.get('spawn')?.handler({
+      name: 'IntegrationExpert',
+      persona: 'nango-integrations',
+      task: 'Fix the sync',
+      cwd: '/workspace/project',
+      target_node: 'node-a',
+    });
+    expect(personaSpawnResult.structuredContent.invocation).toEqual({
+      invocationId: 'inv_1',
+      actionName: 'spawn',
+      status: 'completed',
+      output: { spawned: true, ready: true },
+    });
     const toolsList = await server.listToolsHandler?.({}, {});
     expect(toolsList?.tools).toEqual([
       {
