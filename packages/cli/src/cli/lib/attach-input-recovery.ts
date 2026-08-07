@@ -121,7 +121,7 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
   const recover = (reason: string): void => {
     if (isSettled() || inFlight) return;
 
-    // Drop the dead handle first: `isDead()` then short-circuits every chunk
+    // Drop the dead handle first: `isUsable()` then short-circuits every chunk
     // that arrives mid-recovery, which is what actually silences the flood.
     const dead = getStream();
     setStream(null);
