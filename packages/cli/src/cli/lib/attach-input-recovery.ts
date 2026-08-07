@@ -88,9 +88,7 @@ export interface InputStreamRecovery {
   cancel(): void;
 }
 
-export function createInputStreamRecovery(
-  options: InputStreamRecoveryOptions
-): InputStreamRecovery {
+export function createInputStreamRecovery(options: InputStreamRecoveryOptions): InputStreamRecovery {
   const {
     label,
     name,
@@ -161,9 +159,7 @@ export function createInputStreamRecovery(
      * retried, because a replaced worker does not become the original one on a
      * later attempt.
      */
-    const attemptReopen = async (
-      attempt: number
-    ): Promise<'opened' | 'retry' | 'rejected' | 'settled'> => {
+    const attemptReopen = async (attempt: number): Promise<'opened' | 'retry' | 'rejected' | 'settled'> => {
       let replacement: CliPtyInputStream;
       try {
         replacement = openStream();
