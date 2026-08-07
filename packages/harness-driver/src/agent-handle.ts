@@ -41,6 +41,17 @@ export interface AgentIdleInfo {
   exit?: AgentExitInfo;
 }
 
+export interface AgentReadyInfo {
+  /** `'ready'` after worker_ready, `'exited'` if startup died, or `'timeout'`. */
+  reason: 'ready' | 'exited' | 'timeout';
+  /** Runtime reported by the ready handshake. */
+  runtime?: AgentRuntime;
+  /** Harness process id reported by the ready handshake. */
+  pid?: number;
+  /** Exit details when the worker died before readiness. */
+  exit?: AgentExitInfo;
+}
+
 export interface AgentResultInfo<T = unknown> {
   /** `'result'` on a submitted result, `'exited'` if the agent exited first, `'timeout'` otherwise. */
   reason: 'result' | 'exited' | 'timeout';
@@ -91,6 +102,51 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
 
   get exitSignal(): string | undefined {
     return this.exit?.signal;
+  }
+
+  /**
+   * Resolve only after the broker has received the harness `worker_ready`
+   * handshake. A successful `/api/spawn` response proves process creation,
+   * not harness readiness, so callers that advertise a running agent should
+   * gate on this method and release on `exited` / `timeout`.
+   */
+  waitForReady(timeoutMs = 90_000): Promise<AgentReadyInfo> {
+    this.client.connectEvents();
+
+    return new Promise<AgentReadyInfo>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let unsub: () => void = () => undefined;
+      let settled = false;
+      const settle = (info: AgentReadyInfo) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        unsub();
+        resolve(info);
+      };
+      unsub = this.client.onEvent((event: BrokerEvent) => {
+        if (event.kind === 'worker_ready' && event.name === this.name) {
+          settle({ reason: 'ready', runtime: event.runtime, pid: event.pid });
+          return;
+        }
+        const exit = matchExit(event, this.name);
+        if (exit) settle({ reason: 'exited', exit });
+      });
+
+      // Subscribe before replaying history so worker_ready cannot land in the
+      // gap between the history check and listener registration.
+      const replayed = this.client.getLastEvent('worker_ready', this.name);
+      if (replayed?.kind === 'worker_ready') {
+        settle({ reason: 'ready', runtime: replayed.runtime, pid: replayed.pid });
+        return;
+      }
+      const alreadyExited = this.exit;
+      if (alreadyExited) {
+        settle({ reason: 'exited', exit: alreadyExited });
+        return;
+      }
+      timer = setTimeout(() => settle({ reason: 'timeout' }), timeoutMs);
+    });
   }
 
   /**
