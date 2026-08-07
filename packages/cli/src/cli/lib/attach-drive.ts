@@ -412,17 +412,28 @@ export async function sendInput(
  * it cannot be established.
  *
  * The broker exposes no per-instance token for a worker — no `instance_id`,
- * `run_id`, `epoch`, or absolute spawn timestamp reaches the wire. The only
- * restart-discriminating value on `GET /api/spawned` is the harness `pid`
- * (`crates/broker/src/worker.rs:242`, an `Option<u32>` that is null until the
- * worker reports ready), so that is what this returns.
+ * `run_id`, `epoch`, or absolute spawn timestamp reaches the wire (#1454). The
+ * only restart-discriminating values on `GET /api/spawned` are two pids, and
+ * they are not interchangeable:
+ *
+ * - `workerPid` (`crates/broker/src/worker.rs:243` = `handle.child.id()`) is the
+ *   PTY child itself — the process whose terminal we are driving. Present as
+ *   soon as the worker is spawned.
+ * - `pid` (`worker.rs:242` = `handle.harness_pid`) is the *harness* wrapper, and
+ *   stays null until the worker completes the harness ready handshake
+ *   (`worker_events.rs:849`). Verified against a live broker: a plain PTY worker
+ *   reports `pid: null` and `workerPid: 30209`, so keying on `pid` alone would
+ *   make every reopen unverifiable for exactly the workers this path serves.
+ *
+ * So prefer `workerPid` and fold in `pid` when the broker also has it — a change
+ * in either means the process behind the name changed.
  *
  * This is a heuristic, not a nonce: the OS can reuse a pid. It is used to
  * *reject* a reopen that lands on a visibly different process, never to prove
  * two processes are the same — callers treat `null` as "cannot verify" and
  * fail closed. The durable fix is for the broker to surface the per-spawn
  * identity it already holds in memory (`WorkerHandle.spawned_at`,
- * `PersistedAgent.started_at`, or the `MetricsCollector` spawn counter).
+ * `PersistedAgent.started_at`, or the `MetricsCollector` spawn counter) — #1454.
  */
 export async function fetchWorkerIdentity(
   connection: BrokerConnection,
@@ -432,8 +443,15 @@ export async function fetchWorkerIdentity(
   try {
     const agents = await createBrokerClient(connection, fetchFn).listAgents();
     const agent = agents.find((candidate) => candidate.name === name);
-    if (!agent || typeof agent.pid !== 'number') return null;
-    return String(agent.pid);
+    if (!agent) return null;
+    // `workerPid` is on the wire but absent from the typed contract, so read it
+    // off the record defensively rather than widening `ListAgent` here.
+    const workerPid = (agent as { workerPid?: unknown }).workerPid;
+    const parts: string[] = [];
+    if (typeof workerPid === 'number') parts.push(`worker:${workerPid}`);
+    if (typeof agent.pid === 'number') parts.push(`harness:${agent.pid}`);
+    // No pid of either kind means the broker cannot tell us who this is.
+    return parts.length > 0 ? parts.join('/') : null;
   } catch {
     return null;
   }
@@ -996,7 +1014,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           return { ok: false, reason: 'worker identity could not be read after reconnect' };
         }
         if (current !== attachedWorkerIdentity) {
-          return { ok: false, reason: `worker process changed (pid ${attachedWorkerIdentity} → ${current})` };
+          return { ok: false, reason: `worker process changed (${attachedWorkerIdentity} → ${current})` };
         }
         return { ok: true };
       },

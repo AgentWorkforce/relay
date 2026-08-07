@@ -588,7 +588,7 @@ export async function runPassthroughSession(
         if (current !== attachedWorkerIdentity) {
           return {
             ok: false,
-            reason: `worker process changed (pid ${attachedWorkerIdentity} → ${current})`,
+            reason: `worker process changed (${attachedWorkerIdentity} → ${current})`,
           };
         }
         return { ok: true };

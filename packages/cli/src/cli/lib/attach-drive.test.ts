@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LOCAL_TERMINAL_RESET_SEQUENCE } from './attach.js';
 import {
+  fetchWorkerIdentity,
   KeybindParser,
   classifyWsEvent,
   renderStatusLine,
@@ -2405,5 +2406,56 @@ describe('runDriveSession — lost PTY input stream', () => {
     expect(rollback).toHaveBeenCalledTimes(1);
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
+  });
+});
+
+describe('fetchWorkerIdentity', () => {
+  const connection = { url: 'http://localhost:3889', apiKey: 'k' };
+
+  function fetchReturning(agents: unknown[]): typeof globalThis.fetch {
+    return (async () =>
+      new Response(JSON.stringify({ agents }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof globalThis.fetch;
+  }
+
+  it('uses workerPid when the harness pid is null', async () => {
+    // The shape a live broker actually returns for a plain PTY worker: the
+    // harness `pid` stays null until the ready handshake, while `workerPid`
+    // (the PTY child) is populated immediately. Keying on `pid` alone made
+    // every reopen unverifiable for exactly the workers drive attaches to.
+    const identity = await fetchWorkerIdentity(
+      connection,
+      'Alice',
+      fetchReturning([{ name: 'Alice', runtime: 'pty', channels: [], pid: null, workerPid: 30209 }])
+    );
+    expect(identity).toBe('worker:30209');
+  });
+
+  it('folds in the harness pid when the broker has both', async () => {
+    // A change in *either* process means the thing behind the name changed.
+    const identity = await fetchWorkerIdentity(
+      connection,
+      'Alice',
+      fetchReturning([{ name: 'Alice', runtime: 'pty', channels: [], pid: 99778, workerPid: 30209 }])
+    );
+    expect(identity).toBe('worker:30209/harness:99778');
+  });
+
+  it('returns null when the broker reports no pid of either kind', async () => {
+    // "Cannot verify" — the caller must fail closed rather than treat a
+    // missing identity as a match.
+    const identity = await fetchWorkerIdentity(
+      connection,
+      'Alice',
+      fetchReturning([{ name: 'Alice', runtime: 'pty', channels: [] }])
+    );
+    expect(identity).toBeNull();
+  });
+
+  it('returns null for an agent the broker does not list', async () => {
+    const identity = await fetchWorkerIdentity(connection, 'Ghost', fetchReturning([]));
+    expect(identity).toBeNull();
   });
 });
