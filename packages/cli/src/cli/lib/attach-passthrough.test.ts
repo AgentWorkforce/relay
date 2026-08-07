@@ -138,6 +138,9 @@ class FakeInputStream implements CliPtyInputStream {
   }
 
   async send(data: string): Promise<{ name: string; bytes_written: number }> {
+    // Mirror the real PtyInputStream: once the socket is gone the guard rejects
+    // immediately and permanently (transport.ts:199).
+    if (this.closed) throw new Error('PTY input stream is closed');
     if (this.sendError) throw this.sendError;
     this.writes.push(data);
     return { name: this.name, bytes_written: Buffer.byteLength(data, 'utf8') };
@@ -147,6 +150,11 @@ class FakeInputStream implements CliPtyInputStream {
     this.closed = true;
     this.closeCode = code;
     this.closeReason = reason;
+  }
+
+  /** Test helper: the broker/proxy drops the socket without telling the CLI. */
+  killFromServer(): void {
+    this.closed = true;
   }
 }
 
@@ -160,6 +168,16 @@ interface FetchScript {
   terminalSize?: { rows: number; cols: number } | null;
   inputStreamOpenError?: Error;
   inputStreamSendError?: Error;
+  /** Open-errors applied to reopen attempts only, in order. */
+  reopenOpenErrors?: Array<Error | undefined>;
+  inputReopenMaxAttempts?: number;
+  inputReopenBaseDelayMs?: number;
+  /**
+   * Worker identities returned by successive `getWorkerIdentity` calls. Index 0
+   * is the attach-time baseline; later entries answer post-reopen checks.
+   * Defaults to a stable pid, i.e. "same worker throughout".
+   */
+  workerIdentities?: Array<string | null>;
   /** When set, inject this fake engine via the createPredictiveEcho factory. */
   predictiveEcho?: FakePredictiveEcho;
 }
@@ -220,6 +238,7 @@ function createHarness(opts: FetchScript = {}): {
     body?: unknown;
     headers: Record<string, string>;
   }> = [];
+  const identityCalls: Array<string | null> = [];
   const stdin = new FakeStdin();
   const terminal = new FakeTerminal(
     opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
@@ -370,13 +389,32 @@ function createHarness(opts: FetchScript = {}): {
     stdin,
     terminal,
     openInputStream: vi.fn((_connection, streamName) => {
-      const stream = new FakeInputStream(streamName, opts.inputStreamOpenError, opts.inputStreamSendError);
+      const reopenIndex = inputStreams.length - 1;
+      const openError =
+        reopenIndex >= 0 && opts.reopenOpenErrors
+          ? opts.reopenOpenErrors[reopenIndex]
+          : opts.inputStreamOpenError;
+      const stream = new FakeInputStream(streamName, openError, opts.inputStreamSendError);
       inputStreams.push(stream);
       return stream;
     }),
     createPredictiveEcho: opts.predictiveEcho ? () => opts.predictiveEcho ?? null : undefined,
     // Immediate, deterministic status repaints in tests (no coalescing timer).
     statusRepaintCoalesceMs: 0,
+    // Small, deterministic reopen policy so tests don't wait on real backoff.
+    inputReopenMaxAttempts: opts.inputReopenMaxAttempts ?? 2,
+    inputReopenBaseDelayMs: opts.inputReopenBaseDelayMs ?? 1,
+    getWorkerIdentity: vi.fn(async () => {
+      const scripted = opts.workerIdentities;
+      if (!scripted) return 'pid-1';
+      // Index explicitly: a scripted `null` is a meaningful value ("identity
+      // unavailable"), so `??` must not collapse it into the fallback.
+      const index = identityCalls.length;
+      const value =
+        index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
+      identityCalls.push(value);
+      return value;
+    }),
   };
 
   return {
@@ -1197,5 +1235,55 @@ describe('runPassthroughSession', () => {
       { mode: 'auto_inject' },
       { mode: 'manual_flush', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
+  });
+});
+
+/**
+ * Passthrough carries the same lost-input-stream defect drive did (#1419) and
+ * now shares its recovery (`attach-input-recovery.ts`). These pin the two
+ * halves of the contract that matter most; the drive suite covers the rest of
+ * the shared behaviour.
+ */
+describe('runPassthroughSession — lost PTY input stream', () => {
+  async function settleRecovery(turns = 60): Promise<void> {
+    for (let i = 0; i < turns; i++) await new Promise((r) => setTimeout(r, 1));
+  }
+
+  it('reports the loss exactly once however much input arrives', async () => {
+    const { deps, sockets, stdin, logs, errors, inputStreams } = createHarness({
+      reopenOpenErrors: [new Error('still down'), new Error('still down')],
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    // Mouse reports, not keystrokes — the amplifier that made this a flood.
+    for (let i = 0; i < 200; i++) stdin.type(Buffer.from(`\x1b[<35;${i};10M`));
+    await settleRecovery();
+
+    const lost = [...logs, ...errors]
+      .map((args) => String(args[0]))
+      .filter((line) => line.includes('input stream lost'));
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain('[passthrough]');
+    await sessionPromise;
+  });
+
+  it('exits non-zero with a readable message when every reopen fails', async () => {
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 2,
+      reopenOpenErrors: [new Error('broker down'), new Error('broker down')],
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    expect(await sessionPromise).toBe(1);
+    const exhausted = errors
+      .map((args) => String(args[0]))
+      .find((line) => line.includes('could not be reopened'));
+    expect(exhausted).toContain('Alice is still running');
   });
 });

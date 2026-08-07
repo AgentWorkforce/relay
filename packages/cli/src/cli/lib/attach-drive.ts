@@ -53,6 +53,11 @@ import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
 import WebSocket from 'ws';
 
 import {
+  createInputStreamRecovery,
+  INPUT_REOPEN_BASE_DELAY_MS,
+  INPUT_REOPEN_MAX_ATTEMPTS,
+} from './attach-input-recovery.js';
+import {
   captureAndRenderSnapshot,
   canReserveStatusLine,
   clampStatusLineText,
@@ -143,6 +148,13 @@ export interface CliPtyInputStream {
   close(code?: number, reason?: string): void;
   /** Smoothed input→ack RTT (ms), or null before the first ack. */
   readonly srttMs?: number | null;
+  /**
+   * True once the underlying socket has closed. The stream never reopens
+   * itself, so this latches: every later `send()` rejects immediately. Read it
+   * before sending so a dead stream is handled as one liveness event rather
+   * than once per keystroke.
+   */
+  readonly closed?: boolean;
 }
 
 export interface DriveDependencies {
@@ -205,6 +217,24 @@ export interface DriveDependencies {
    * refresh (no SIGWINCH). Defaults to 60000. Set `0` to disable (tests).
    */
   ownershipReassertMs?: number;
+  /**
+   * How many times to reopen a dead PTY input stream before giving up and
+   * exiting non-zero. Defaults to 5. Set `0` to disable recovery and fail on
+   * the first loss.
+   */
+  inputReopenMaxAttempts?: number;
+  /**
+   * Base delay (ms) for the input-stream reopen backoff; doubles per attempt up
+   * to {@link INPUT_REOPEN_MAX_DELAY_MS}. Defaults to 250. Tests set a small
+   * value to keep the backoff deterministic and fast.
+   */
+  inputReopenBaseDelayMs?: number;
+  /**
+   * Reads the identity of the worker process behind `name`, or `null` when it
+   * cannot be established. Used to reject a reopen that landed on a different
+   * process. See {@link fetchWorkerIdentity}.
+   */
+  getWorkerIdentity: (connection: BrokerConnection, name: string) => Promise<string | null>;
 }
 
 function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependencies {
@@ -248,6 +278,7 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
       },
     },
     openInputStream: (connection, name, options) => openPtyInputStream(connection, name, fetchFn, options),
+    getWorkerIdentity: (connection, name) => fetchWorkerIdentity(connection, name, fetchFn),
     createPredictiveEcho,
     ...overrides,
   };
@@ -373,6 +404,38 @@ export async function sendInput(
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     return { ok: false, message: failure.message };
+  }
+}
+
+/**
+ * Best-available identity for the worker process behind `name`, or `null` when
+ * it cannot be established.
+ *
+ * The broker exposes no per-instance token for a worker — no `instance_id`,
+ * `run_id`, `epoch`, or absolute spawn timestamp reaches the wire. The only
+ * restart-discriminating value on `GET /api/spawned` is the harness `pid`
+ * (`crates/broker/src/worker.rs:242`, an `Option<u32>` that is null until the
+ * worker reports ready), so that is what this returns.
+ *
+ * This is a heuristic, not a nonce: the OS can reuse a pid. It is used to
+ * *reject* a reopen that lands on a visibly different process, never to prove
+ * two processes are the same — callers treat `null` as "cannot verify" and
+ * fail closed. The durable fix is for the broker to surface the per-spawn
+ * identity it already holds in memory (`WorkerHandle.spawned_at`,
+ * `PersistedAgent.started_at`, or the `MetricsCollector` spawn counter).
+ */
+export async function fetchWorkerIdentity(
+  connection: BrokerConnection,
+  name: string,
+  fetchFn: typeof globalThis.fetch
+): Promise<string | null> {
+  try {
+    const agents = await createBrokerClient(connection, fetchFn).listAgents();
+    const agent = agents.find((candidate) => candidate.name === name);
+    if (!agent || typeof agent.pid !== 'number') return null;
+    return String(agent.pid);
+  } catch {
+    return null;
   }
 }
 
@@ -899,6 +962,46 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       return deliveryToggleInFlight;
     };
 
+    // ---- input-stream liveness ----
+    // A closed PTY input stream is a session-liveness event, not a
+    // per-keystroke error. See `attach-input-recovery.ts` for why (#1419).
+    //
+    // Identity of the worker this session attached to, captured once at attach
+    // and compared after any reopen. `null` means the broker could not tell us,
+    // which is treated as "cannot verify" — never as "verified".
+    let attachedWorkerIdentity: string | null = null;
+    const inputRecovery = createInputStreamRecovery({
+      label: 'drive',
+      name,
+      maxAttempts: deps.inputReopenMaxAttempts ?? INPUT_REOPEN_MAX_ATTEMPTS,
+      baseDelayMs: deps.inputReopenBaseDelayMs ?? INPUT_REOPEN_BASE_DELAY_MS,
+      log: (message) => deps.log(message),
+      error: (message) => deps.error(message),
+      isSettled: () => settled,
+      getStream: () => inputStream,
+      setStream: (stream) => {
+        inputStream = stream;
+      },
+      openStream: () => deps.openInputStream(connection, name),
+      onRollback: () => predictiveEcho?.rollback(),
+      onExhausted: () => finish(1),
+      verifyIdentity: async () => {
+        // Fail closed in both directions: if we never learned who we attached
+        // to, we cannot claim the replacement is the same process either.
+        if (attachedWorkerIdentity === null) {
+          return { ok: false, reason: 'worker identity was unavailable at attach' };
+        }
+        const current = await deps.getWorkerIdentity(connection, name);
+        if (current === null) {
+          return { ok: false, reason: 'worker identity could not be read after reconnect' };
+        }
+        if (current !== attachedWorkerIdentity) {
+          return { ok: false, reason: `worker process changed (pid ${attachedWorkerIdentity} → ${current})` };
+        }
+        return { ok: true };
+      },
+    });
+
     // ---- stdin handling ----
     let stdinReady = false;
     const stdinDataHandler = (chunk: Buffer): void => {
@@ -913,8 +1016,14 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
         const stream = inputStream;
-        if (!stream) {
-          deps.log('[drive] input stream is not ready');
+        // A dead or missing stream is a liveness event, not a per-keystroke
+        // error. Drop this input silently — recovery has already announced
+        // itself — rather than emitting a line for every byte the terminal
+        // sends us. Input during the outage is dropped, not buffered: replaying
+        // stale keystrokes into a recovered PTY would execute them out of
+        // context, which is worse than losing them.
+        if (!inputRecovery.isUsable(stream)) {
+          inputRecovery.recover('stream closed');
           return;
         }
         // Decode through the stateful UTF-8 decoder so a multi-byte character
@@ -923,15 +1032,12 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         // next chunk completes it.
         const decoded = inputDecoder.write(outcome.forward);
         if (decoded.length > 0) {
-          // Fire-and-forget; surface errors via log but don't block the
-          // event loop on every keystroke.
+          // Fire-and-forget; don't block the event loop on every keystroke.
           void stream.send(decoded).catch((err: unknown) => {
             if (settled) return;
-            const message = describeError(err);
-            deps.log(`[drive] input stream send failed: ${message}`);
-            // The keystroke never reached the PTY — drop any optimistic echo
-            // for it so the screen doesn't show input the agent didn't get.
-            predictiveEcho?.rollback();
+            // Only the first failure speaks; `recover` no-ops while a recovery
+            // is already in flight, and it does the echo rollback.
+            inputRecovery.recover(describeError(err));
           });
         }
         predictiveEcho?.onUserInput(outcome.forward);
@@ -998,6 +1104,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     };
 
     const closeInputStream = (): void => {
+      // Cancel any pending reopen backoff so a detach mid-recovery doesn't
+      // leave a timer holding a reference to a torn-down session.
+      inputRecovery.cancel();
       const stream = inputStream;
       inputStream = null;
       if (!stream) return;
@@ -1112,6 +1221,15 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       try {
         inputStream = deps.openInputStream(connection, name);
         await inputStream.waitUntilOpen();
+        if (settled) {
+          closeInputStream();
+          return;
+        }
+        // Baseline for the reopen identity gate. Best-effort: a broker that
+        // won't tell us leaves this null, which makes any later reopen refuse
+        // rather than guess. Not fatal here — the initial attach is the seat
+        // the human asked for.
+        attachedWorkerIdentity = await deps.getWorkerIdentity(connection, name);
         if (settled) {
           closeInputStream();
           return;
