@@ -267,7 +267,6 @@ function createHarness(opts: FetchScript = {}): {
     body?: unknown;
     headers: Record<string, string>;
   }> = [];
-  const identityCalls: Array<string | null> = [];
   const identityCallCount = { value: 0 };
   const stdin = new FakeStdin();
   const terminal = new FakeTerminal(
@@ -487,7 +486,6 @@ function createHarness(opts: FetchScript = {}): {
       // Index explicitly: a scripted `null` is a meaningful value ("identity
       // unavailable"), so `??` must not collapse it into the fallback.
       const value = index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
-      identityCalls.push(value);
       return value;
     }),
   };

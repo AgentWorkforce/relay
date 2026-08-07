@@ -173,6 +173,28 @@ describe('identity verification is mandatory', () => {
     expect(h.errors.some((e) => e.includes('identity check failed: broker unreachable'))).toBe(true);
   });
 
+  it('refuses when the verifier throws synchronously', async () => {
+    // The type allows a non-async function. A synchronous throw evaluated in
+    // the argument position escaped before `.catch()` was attached, so the
+    // session was stranded with no stream, no exhaustion exit, and the
+    // replacement left open — the exact failure the async-throw fix closed,
+    // reachable by a different route. Fails if `onExhausted` is skipped.
+    const h = harness({
+      verifyIdentity: (() => {
+        throw new Error('verifier blew up synchronously');
+      }) as unknown as InputStreamRecoveryOptions['verifyIdentity'],
+    });
+
+    h.recovery.recover('stream closed');
+    await settle();
+
+    expect(h.counts().exhausted).toBe(1);
+    expect(h.getCurrent()).toBeNull();
+    expect(h.errors.some((e) => e.includes('verifier blew up synchronously'))).toBe(true);
+    // And the socket it opened was closed, not leaked.
+    expect(h.opened[0].closed).toBe(true);
+  });
+
   it('refuses when the verifier stalls past the attempt timeout', async () => {
     // Without a deadline a hung broker call parks the session in recovery
     // forever, so neither the attempt count nor the non-zero exit is bounded.

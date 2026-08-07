@@ -303,15 +303,22 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       // A verifier that throws or stalls has not said yes, so both collapse
       // into the same refusal rather than escaping and stranding the session
       // with no stream and no exit.
-      const verdict = await withDeadline(verifyIdentity(), 'worker identity check').catch(
-        (verifyError: unknown) => ({
-          ok: false as const,
-          reason:
-            verifyError instanceof Error
-              ? `identity check failed: ${verifyError.message}`
-              : `identity check failed: ${String(verifyError)}`,
-        })
-      );
+      //
+      // `verifyIdentity()` is invoked inside the promise chain, not as an
+      // argument to it: the type permits a non-`async` function, and a
+      // synchronous throw evaluated in the argument position would escape
+      // before `.catch()` was ever attached — skipping the refusal, the
+      // exhaustion exit, and the close below.
+      const verdict = await withDeadline(
+        Promise.resolve().then(() => verifyIdentity()),
+        'worker identity check'
+      ).catch((verifyError: unknown) => ({
+        ok: false as const,
+        reason:
+          verifyError instanceof Error
+            ? `identity check failed: ${verifyError.message}`
+            : `identity check failed: ${String(verifyError)}`,
+      }));
       if (isSettled()) {
         closeQuietly(replacement, `${label} client exiting`);
         return 'settled';
