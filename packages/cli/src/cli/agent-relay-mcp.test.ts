@@ -37,6 +37,186 @@ describe('registerAgentWithRebind', () => {
     });
   });
 
+  const IDENTITY = {
+    organization: 'AgentWorkforce',
+    project: 'chief-delegation-governance',
+    workstream: 'dispatch-contract',
+    role: 'lead',
+    reportsTo: 'chief-khaliq',
+  };
+
+  const strictSession = () => ({
+    workspaceKey: 'rk_live_test',
+    agentToken: 'at_live_existing',
+    agentName: 'WorkerA',
+    agents: new Map([['WorkerA', { agentName: 'WorkerA', agentToken: 'at_live_existing' }]]),
+  });
+
+  /**
+   * A relay that actually stores what it is given, so a test can read the
+   * record back instead of trusting that the call was made. Asserting only
+   * "registerOrRotate was called with metadata" would repeat the mistake this
+   * whole change is about: the parameter being passed is not the field
+   * landing. `persists: false` models the broken platform.
+   */
+  function fakeRelay({ persists = true }: { persists?: boolean } = {}) {
+    // The platform writes its own block; a verifier must ignore it.
+    const records = new Map<string, Record<string, unknown>>([['WorkerA', { fleet: { nodeId: 'node_x' } }]]);
+    const registerOrRotate = vi.fn(async (input: any) => {
+      if (persists && input.metadata) {
+        records.set(input.name, { ...records.get(input.name), ...input.metadata });
+      }
+      return { id: 'agent_123', name: input.name, token: 'at_live_rotated', status: 'online' };
+    });
+    const list = vi.fn(async () => [...records].map(([name, metadata]) => ({ name, metadata })));
+    return { agents: { registerOrRotate, list }, records };
+  }
+
+  it('writes supplied metadata through and proves it landed on the record', async () => {
+    // The short-circuit exists to avoid handing back a dead token. It must not
+    // also swallow a write: a caller supplying metadata is asking for the
+    // agent record to change, and returning a cached token discarded that
+    // silently — success, no warnings, record untouched.
+    const relay = fakeRelay();
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: IDENTITY,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(relay.agents.registerOrRotate).toHaveBeenCalledOnce();
+
+    // The round trip, not just the call: read the record back and assert the
+    // fields are actually there.
+    const [record] = (await relay.agents.list()).filter((a) => a.name === 'WorkerA');
+    expect(record.metadata).toMatchObject(IDENTITY);
+    expect(record.metadata.fleet).toEqual({ nodeId: 'node_x' }, 'must not clobber platform keys');
+
+    expect(payload.metadata_verified).toBe(true);
+    expect(payload.warnings).toEqual([]);
+  });
+
+  it('says so loudly when the platform accepts metadata and does not persist it', async () => {
+    // This is the exact defect being fixed, reproduced: the write is accepted,
+    // the response looks like success, and the record is untouched. A
+    // passthrough that fails this way is worse than none, because it looks
+    // like it worked. It must never again be reported as a clean success.
+    const relay = fakeRelay({ persists: false });
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: IDENTITY,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.metadata_verified).toBe(false);
+    expect(payload.warnings).toHaveLength(1);
+    expect(payload.warnings[0]).toContain('was not persisted');
+    expect(payload.warnings[0]).toContain('organization');
+    expect(payload.warnings[0]).toContain('Treat this registration as unattributed');
+  });
+
+  it('reports unverified rather than throwing when the record cannot be read back', async () => {
+    // The registration itself succeeded; claiming it failed would be its own
+    // kind of lie. But it must not be reported as verified either.
+    const relay = fakeRelay();
+    relay.agents.list = vi.fn(async () => {
+      throw new Error('workspace unreachable');
+    }) as never;
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: IDENTITY,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.token).toBe('at_live_rotated');
+    expect(payload.metadata_verified).toBe(false);
+    expect(payload.warnings[0]).toContain('could not read the record back');
+    expect(payload.warnings[0]).toContain('workspace unreachable');
+  });
+
+  it('writes a supplied persona through, and claims no metadata verification', async () => {
+    const relay = fakeRelay();
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      persona: 'Accountable lead for chief-delegation-governance',
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(relay.agents.registerOrRotate).toHaveBeenCalledOnce();
+    // No metadata was supplied, so there is nothing to verify and no read-back
+    // cost is paid.
+    expect(relay.agents.list).not.toHaveBeenCalled();
+    expect(payload.metadata_verified).toBeUndefined();
+  });
+
+  it("reports 'unchecked' rather than success when nobody verified the write", async () => {
+    // Verification costs a workspace listing, so the per-spawn `{model}` hint
+    // does not pay for it. But "nobody looked" must not be reported as "it is
+    // there" — collapsing those two is the same error as the silent discard.
+    const relay = fakeRelay({ persists: false });
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: { model: 'gpt-5' },
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.metadata_verified).toBe('unchecked');
+    expect(relay.agents.list).not.toHaveBeenCalled();
+    // Not a warning: nothing is known to be wrong. The claim is simply scoped.
+    expect(payload.warnings).toEqual([]);
+  });
+
+  it('still short-circuits when the caller only wants a token', async () => {
+    // The original behaviour has to survive: a bare re-registration with no
+    // write to make should not rotate the token for nothing.
+    const registerOrRotate = vi.fn();
+
+    const payload = await registerAgentWithRebind({
+      session: {
+        workspaceKey: 'rk_live_test',
+        agentToken: 'at_live_existing',
+        agentName: 'WorkerA',
+        agents: new Map([['WorkerA', { agentName: 'WorkerA', agentToken: 'at_live_existing' }]]),
+      },
+      setSession: vi.fn(),
+      getRelay: () => ({ agents: { registerOrRotate } }) as never,
+      name: 'WorkerA',
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(registerOrRotate).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({ token: 'at_live_existing' });
+  });
+
   it('re-registers when the strict-named identity was dropped from the agents map', async () => {
     // After an `agent_token_invalid` recovery, the active token is null and
     // the identity is missing from session.agents. The short-circuit must
