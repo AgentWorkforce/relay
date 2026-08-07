@@ -8,6 +8,9 @@ import type {
   JsonValue,
 } from '@agent-relay/harness-driver/protocol';
 
+/** Runtime compatibility marker for dynamic `spawn:*` action delegation. */
+export const FLEET_DYNAMIC_SPAWN_DELEGATION = true;
+
 export type MaybePromise<T> = T | Promise<T>;
 
 export interface FleetNodeInfo {

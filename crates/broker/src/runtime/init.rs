@@ -594,6 +594,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // so each new request/response route (`snapshot_pty`, `delivery-mode`,
     // `pending`, `flush`, ...) costs about five lines of broker plumbing.
     let pending_requests: HashMap<String, worker_request::PendingRequest> = HashMap::new();
+    let pending_verified_spawns = HashMap::new();
     // Per-worker inbound-delivery-mode + pending-relay-message queue. Lives
     // parallel to `workers.workers` so we can swap modes / inspect /
     // drain without touching `WorkerHandle` (which holds OS-level
@@ -679,6 +680,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         dead_letters,
         terminal_failed_deliveries,
         pending_requests,
+        pending_verified_spawns,
         resize_owners: HashMap::new(),
         delivery_states,
         agent_result_tokens,

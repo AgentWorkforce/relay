@@ -1,4 +1,4 @@
-use super::fleet::refresh_fleet_inventory_session_ref;
+use super::fleet::{refresh_fleet_inventory_session_ref, verified_spawn_ready_result};
 use super::*;
 use crate::worker::AgentWorkState;
 
@@ -322,6 +322,7 @@ impl BrokerRuntime {
         let dead_letters = &mut self.dead_letters;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
+        let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
@@ -884,6 +885,15 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
+                        if let Some(pending) = pending_verified_spawns.remove(&name) {
+                            let _ = fleet_control_tx
+                                .send(FleetControlCommand::Send(
+                                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                        verified_spawn_ready_result(pending.invocation_id, &name),
+                                    ),
+                                ))
+                                .await;
+                        }
                     } else if msg_type == "agent_idle" {
                         let idle_secs = value
                             .get("payload")

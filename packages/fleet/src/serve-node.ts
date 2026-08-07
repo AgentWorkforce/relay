@@ -312,9 +312,11 @@ function makeContext(
   // harness identity lives in the capability name, not the handler's transformed
   // `cli` (which is the executable to run — for a stub, an arbitrary command), so
   // carry it as the delegated spawn's capacity key.
-  const shadowedHarness = capabilityName.startsWith('spawn:')
-    ? capabilityName.slice('spawn:'.length)
-    : undefined;
+  const capability = options.definition.capabilities[capabilityName];
+  const shadowedHarness =
+    capability?.kind === 'spawn' && capabilityName.startsWith('spawn:')
+      ? capabilityName.slice('spawn:'.length)
+      : undefined;
   return {
     node: {
       ...info,
