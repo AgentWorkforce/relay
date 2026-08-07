@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Spawned agents now launch Agent Relay MCP through an installed local `agent-relay` executable instead of cold `npx` resolution.
 - Spawn now fails before start with an actionable error when no usable Agent Relay MCP executable is available.
+- A fleet node whose connection to the engine goes dead now reconnects on its own instead of disappearing from `agent-relay fleet nodes` until the broker is restarted.
 
 ## [11.6.1] - 2026-08-13
 
