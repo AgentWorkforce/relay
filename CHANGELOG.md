@@ -18,9 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `send_dm` and `agent-relay message dm send` receipts name the exact requested and resolved recipients and report unconfirmed enqueue without claiming delivery.
-- `get_message_readers` and `agent-relay message inbox get_readers` surface a queued-or-unread signal for an empty reader list.
-- `send_dm` mode docs and `agent-relay message dm send --mode` help explain that `wait` injects on idle while `steer` injects immediately and may interrupt active work.
+- `send_dm` and `agent-relay message dm send` receipts now name the exact requested and resolved recipients and report unconfirmed enqueue without claiming delivery.
+- `get_message_readers` and `agent-relay message inbox get_readers` now surface a queued-or-unread signal for an empty reader list.
+- `send_dm` mode docs and `agent-relay message dm send --mode` help now explain that `wait` injects on idle while `steer` injects immediately and may interrupt active work.
 - Fleet brokers now periodically renew authoritative worker inventory, including empty snapshots that clear stale server entries, so quiet agents remain active in Relaycast instead of aging offline while their node is healthy.
 
 ## [11.6.0] - 2026-08-13
