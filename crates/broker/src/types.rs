@@ -176,6 +176,28 @@ pub struct SpawnParams {
     pub cli: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Optional dispatch context for the worker process.
+    ///
+    /// Absent context is a strict no-op so existing spawn callers do not gain
+    /// git configuration or commit-message behavior.
+    #[serde(default)]
+    pub metadata: SpawnMetadata,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnMetadata {
+    /// Public commit-attribution values supplied by the dispatcher. The broker
+    /// installs its git hook only when this complete value is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<CommitAttestation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAttestation {
+    pub jti: String,
+    pub agent_id: String,
+    pub sponsor_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

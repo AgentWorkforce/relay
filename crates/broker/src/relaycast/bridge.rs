@@ -726,6 +726,43 @@ mod tests {
                 name: "Worker1".into(),
                 cli: "codex".into(),
                 args: vec!["--full-auto".into()],
+                metadata: crate::types::SpawnMetadata::default(),
+            })
+        );
+    }
+
+    #[test]
+    fn maps_spawn_attestation_metadata_from_the_dispatch_input() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_attestation",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerAttested",
+                "cli": "codex",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-public-123",
+                        "agentId": "agent_worker_42",
+                        "sponsorId": "user_owner_7"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn attestation metadata");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        assert_eq!(
+            params.metadata.attestation,
+            Some(crate::types::CommitAttestation {
+                jti: "jti-public-123".into(),
+                agent_id: "agent_worker_42".into(),
+                sponsor_id: "user_owner_7".into(),
             })
         );
     }
@@ -774,6 +811,7 @@ mod tests {
                 name: "Worker2".into(),
                 cli: "codex".into(),
                 args: vec!["--full-auto".into()],
+                metadata: crate::types::SpawnMetadata::default(),
             })
         );
     }
