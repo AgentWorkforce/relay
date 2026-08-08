@@ -58,6 +58,7 @@ function createRelayMock() {
     messages: {
       send: vi.fn(async (i: unknown) => ({ id: 'm1', ...(i as object) })),
       direct: vi.fn(async (i: unknown) => ({ id: 'd1', ...(i as object) })),
+      readers: vi.fn(async () => []),
       react: vi.fn(async () => ({ emoji: 'eyes', count: 1, agents: [] })),
     },
     integrations: {
@@ -164,6 +165,14 @@ describe('SDK-backed CLI groups', () => {
     });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"mode": "steer"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('immediate injection'));
+  });
+
+  it('message inbox get_readers signals that an empty reader list is still queued or unread', async () => {
+    const { program, relay, log } = harness(registerMessageCommands);
+    await program.parseAsync(['message', 'inbox', 'get_readers', 'd1'], { from: 'user' });
+    expect(relay.messages.readers).toHaveBeenCalledWith('d1');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_or_unread"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"readConfirmed": false'));
   });
 
   it('integration webhook create routes to integrations.webhooks.create', async () => {

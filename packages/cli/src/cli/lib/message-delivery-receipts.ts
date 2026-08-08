@@ -47,6 +47,8 @@ export function directMessageReceipt(
   resolvedRecipient?: string
 ): DirectMessageDeliveryReceipt {
   const message = asRecord(value);
+  const messageWithoutUntrustedTarget = { ...message };
+  delete messageWithoutUntrustedTarget.target;
   const recipientMatched = resolvedRecipient ? resolvedRecipient === requestedRecipient : null;
   const status =
     recipientMatched === null
@@ -64,7 +66,7 @@ export function directMessageReceipt(
         : `Recipient mismatch: requested ${requestedRecipient}, but the directory resolved ${resolvedRecipient}.`;
 
   return {
-    ...message,
+    ...messageWithoutUntrustedTarget,
     ...(resolvedRecipient ? { target: { kind: 'agent' as const, agentName: resolvedRecipient } } : {}),
     delivery: {
       status,

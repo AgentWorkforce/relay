@@ -89,7 +89,13 @@ describe('direct message delivery receipts', () => {
   });
 
   it('does not present the request as independently resolved when directory lookup is unavailable', () => {
-    const receipt = directMessageReceipt({ id: 'msg_unresolved' }, 'chief-khaliq');
+    const receipt = directMessageReceipt(
+      {
+        id: 'msg_unresolved',
+        target: { kind: 'agent', agentName: 'chief-khaliq' },
+      },
+      'chief-khaliq'
+    );
 
     expect(receipt.delivery).toMatchObject({
       status: 'recipient_unresolved',
