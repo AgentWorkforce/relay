@@ -522,6 +522,7 @@ describe('RelaycastMessagingClient', () => {
       kind: 'dm',
       conversationId: 'dm-1',
       createdAt: '2026-05-27T11:20:00.000Z',
+      target: { kind: 'agent', agentName: 'Lead' },
     });
 
     const groupDirect = await client.messages.groupDirect({

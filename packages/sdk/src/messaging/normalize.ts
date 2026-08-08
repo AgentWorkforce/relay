@@ -401,6 +401,7 @@ export function normalizeReaction(input: unknown): RelayMessageReaction {
 
 interface MessageContext {
   kind?: RelayMessageKind;
+  agentName?: string;
   channelId?: string;
   channelName?: string;
   conversationId?: string;
@@ -426,6 +427,7 @@ export function normalizeMessage(input: unknown, context: MessageContext = {}): 
     kind,
     text: message.text ?? message.body ?? '',
     from: compact<RelayMessageSender>({ id: opt(message.agent_id), name: opt(message.agent_name) }),
+    target: context.agentName ? { kind: 'agent', agentName: context.agentName } : undefined,
     channel:
       channelId || channelName
         ? compact<RelayMessageChannelRef>({ id: opt(channelId), name: opt(channelName) })

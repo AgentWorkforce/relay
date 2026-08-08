@@ -1,9 +1,32 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
+import { directMessageReceipt, messageReadersReceipt } from '../lib/message-delivery-receipts.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
 import type { AgentClientLike } from './types.js';
+
+const directMessageResult = z.looseObject({
+  target: z.object({ kind: z.literal('agent'), agentName: z.string() }),
+  delivery: z.object({
+    status: z.enum(['queued_unconfirmed', 'recipient_mismatch']),
+    mode: z.enum(['wait', 'steer']),
+    requestedRecipient: z.string(),
+    resolvedRecipient: z.string(),
+    recipientMatched: z.boolean(),
+    readConfirmed: z.literal(false),
+    note: z.string(),
+  }),
+});
+
+const messageReadersResult = {
+  readers: z.array(z.looseObject({})).describe('Readers'),
+  delivery: z.object({
+    status: z.enum(['read', 'queued_or_unread']),
+    readConfirmed: z.boolean(),
+    signal: z.string(),
+  }),
+};
 
 function resolveEmoji(input: string): string {
   const normalized = input.trim().replace(/^:/, '').replace(/:$/, '').toLowerCase();
@@ -187,7 +210,12 @@ export function registerMessagingTools(
         channel: z.string().describe('Channel name'),
         text: z.string().describe('Message text'),
         attachments: z.array(z.string()).optional().describe('File attachment IDs'),
-        mode: z.enum(['wait', 'steer']).optional().describe('Delivery mode'),
+        mode: z
+          .enum(['wait', 'steer'])
+          .optional()
+          .describe(
+            'wait (default): queue delivery until each recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work.'
+          ),
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -275,15 +303,23 @@ export function registerMessagingTools(
       title: 'Send Direct Message',
       description:
         'Send a private direct message visible only to the recipient and this agent. ' +
-        'Returns the created message record, including its message ID.',
+        'Returns the created message and an explicit queued/unconfirmed delivery receipt. ' +
+        'A message ID confirms enqueue, not injection or reading; use "get_message_readers" to confirm consumption. ' +
+        'Mode "wait" (the default) waits for the recipient\'s next safe idle boundary and can remain unread while they are busy. ' +
+        'Mode "steer" requests immediate injection and may interrupt active work.',
       inputSchema: {
         to: z.string().describe('Recipient agent name'),
         text: z.string().describe('DM text'),
-        mode: z.enum(['wait', 'steer']).optional().describe('Delivery mode'),
+        mode: z
+          .enum(['wait', 'steer'])
+          .optional()
+          .describe(
+            'wait (default): queue until the recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work. Both modes return before reading is confirmed.'
+          ),
         attachments: z.array(z.string()).optional().describe('File attachment IDs'),
         ...identityOverrideInputShape,
       },
-      outputSchema: jsonResult,
+      outputSchema: directMessageResult,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -291,8 +327,10 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ to, text, mode, attachments, as }) =>
-      jsonContent(await getAgentClient(as).dm(to, text, { mode, attachments }))
+    async ({ to, text, mode, attachments, as }) => {
+      const message = await getAgentClient(as).dm(to, text, { mode, attachments });
+      return jsonContent(directMessageReceipt(message, to, mode));
+    }
   );
 
   server.registerTool(
@@ -453,16 +491,15 @@ export function registerMessagingTools(
       title: 'Get Readers',
       description:
         'Check which agents have read a message, to confirm delivery before acting on silence. ' +
-        'Returns a `readers` array of the agents that have read it; an empty array means nobody has.',
+        'Returns a `readers` array plus an explicit delivery signal. An empty array is reported as queued-or-unread: nobody has consumed the message yet, even if the recipient is live.',
       inputSchema: {
         message_id: z.string().describe('Message ID'),
         ...identityOverrideInputShape,
       },
-      outputSchema: {
-        readers: z.array(z.looseObject({})).describe('Readers'),
-      },
+      outputSchema: messageReadersResult,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ message_id, as }) => jsonContent({ readers: await getAgentClient(as).readers(message_id) })
+    async ({ message_id, as }) =>
+      jsonContent(messageReadersReceipt(await getAgentClient(as).readers(message_id)))
   );
 }

@@ -18,6 +18,13 @@ export type RelayAgentType = wire.AgentType;
 /** Canonical agent statuses plus the relay-only `unknown` fallback. */
 export type RelayAgentStatus = wire.AgentStatus | 'unknown';
 export type RelayChannelMemberRole = wire.ChannelMemberInfo['role'];
+/**
+ * Message injection policy. `wait` (the default when omitted) queues for the
+ * recipient's next safe idle boundary and can remain unread while they are
+ * busy. `steer` requests immediate injection and may interrupt active work.
+ * A successful send confirms enqueue only; use read receipts to confirm
+ * consumption.
+ */
 export type RelayMessageMode = wire.MessageInjectionMode;
 export type RelayMessageKind = 'channel' | 'dm' | 'group_dm' | 'thread_reply' | 'unknown';
 

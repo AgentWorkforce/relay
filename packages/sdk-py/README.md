@@ -155,7 +155,10 @@ human = relay.system()
 await human.send_message(
     to="Agent1",
     text="Please start the analysis",
-    mode="wait",   # or "steer"
+    # wait (default) queues for the next safe idle boundary and can remain
+    # unread while the recipient is busy. steer requests immediate injection
+    # and may interrupt active work. Send success confirms enqueue only.
+    mode="wait",
 )
 ```
 

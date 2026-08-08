@@ -146,7 +146,10 @@ agent-relay fleet spawn codex \
 agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
 
 agent-relay message dm send api-worker "Detailed task instructions"
-# Wake an idle worker immediately instead of queueing for its next tool boundary.
+# wait is the default: it queues for the recipient's next safe idle boundary and
+# can remain unread while that recipient is busy. steer requests immediate
+# injection and may interrupt active work. A send ID confirms enqueue only;
+# use `message inbox get_readers <id>` to confirm that the recipient consumed it.
 agent-relay message dm send api-worker "Please check Relay now." --mode steer
 agent-relay message inbox check --limit 20
 agent-relay fleet release api-worker --reason "Work accepted"

@@ -1,0 +1,88 @@
+import { describe, expect, it } from 'vitest';
+
+import { directMessageReceipt, messageReadersReceipt } from '../lib/message-delivery-receipts.js';
+
+describe('direct message delivery receipts', () => {
+  it('labels default wait-mode sends as queued and preserves the exact requested recipient', () => {
+    const receipt = directMessageReceipt(
+      { id: 'msg_wait', text: 'status', agentName: 'sender' },
+      'chief-khaliq'
+    );
+
+    expect(receipt).toMatchObject({
+      id: 'msg_wait',
+      target: { kind: 'agent', agentName: 'chief-khaliq' },
+      delivery: {
+        status: 'queued_unconfirmed',
+        mode: 'wait',
+        requestedRecipient: 'chief-khaliq',
+        resolvedRecipient: 'chief-khaliq',
+        recipientMatched: true,
+        readConfirmed: false,
+      },
+    });
+  });
+
+  it('labels steer-mode sends as immediate injection requests without claiming delivery', () => {
+    const receipt = directMessageReceipt(
+      { id: 'msg_steer', text: 'urgent', agentName: 'sender' },
+      'busy-worker',
+      'steer'
+    );
+
+    expect(receipt.delivery).toMatchObject({
+      status: 'queued_unconfirmed',
+      mode: 'steer',
+      requestedRecipient: 'busy-worker',
+      resolvedRecipient: 'busy-worker',
+      readConfirmed: false,
+    });
+    expect(receipt.delivery.note).toContain('immediate injection');
+  });
+
+  it('fails the recipient-match signal when the send response names a different agent', () => {
+    const receipt = directMessageReceipt(
+      {
+        id: 'msg_misdirected',
+        target: { kind: 'agent', agentName: 'chief' },
+      },
+      'chief-khaliq'
+    );
+
+    expect(receipt).toMatchObject({
+      target: { kind: 'agent', agentName: 'chief' },
+      delivery: {
+        status: 'recipient_mismatch',
+        requestedRecipient: 'chief-khaliq',
+        resolvedRecipient: 'chief',
+        recipientMatched: false,
+      },
+    });
+    expect(receipt.delivery.note).toContain('Recipient mismatch');
+  });
+
+  it('surfaces an explicit signal when no recipient has consumed the message', () => {
+    expect(messageReadersReceipt([])).toEqual({
+      readers: [],
+      delivery: {
+        status: 'queued_or_unread',
+        readConfirmed: false,
+        signal:
+          'No agent has read this message. A send receipt confirms enqueue only; the recipient may still be busy or offline.',
+      },
+    });
+  });
+
+  it('reports read only when the reader list is non-empty', () => {
+    const readers = [{ agentName: 'busy-worker', readAt: '2026-08-08T20:00:00Z' }];
+
+    expect(messageReadersReceipt(readers)).toEqual({
+      readers,
+      delivery: {
+        status: 'read',
+        readConfirmed: true,
+        signal: 'At least one agent has read this message.',
+      },
+    });
+  });
+});

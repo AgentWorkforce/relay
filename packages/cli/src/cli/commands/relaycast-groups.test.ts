@@ -145,13 +145,15 @@ describe('SDK-backed CLI groups', () => {
   });
 
   it('message dm send routes to messages.direct', async () => {
-    const { program, relay } = harness(registerMessageCommands);
+    const { program, relay, log } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_unconfirmed"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": "lead"'));
   });
 
   it('message dm send exposes immediate Relay delivery', async () => {
-    const { program, relay } = harness(registerMessageCommands);
+    const { program, relay, log } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'wake up', '--mode', 'steer'], {
       from: 'user',
     });
@@ -160,6 +162,8 @@ describe('SDK-backed CLI groups', () => {
       text: 'wake up',
       mode: 'steer',
     });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"mode": "steer"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('immediate injection'));
   });
 
   it('integration webhook create routes to integrations.webhooks.create', async () => {
