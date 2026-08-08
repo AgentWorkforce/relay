@@ -285,7 +285,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           idempotencyKey: input.idempotencyKey,
         })
       );
-      return this.normalizeDirectResponse(response, 'dm', undefined, input.to);
+      return this.normalizeDirectResponse(response, 'dm');
     },
     groupDirect: async (input: RelaySendGroupDirectMessageInput): Promise<RelayMessage> => {
       const agent = this.requireAgentClient('messages.groupDirect');
@@ -1074,8 +1074,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   private normalizeDirectResponse(
     input: unknown,
     kind: 'dm' | 'group_dm',
-    conversationId?: string,
-    agentName?: string
+    conversationId?: string
   ): RelayMessage {
     const record =
       input !== null && typeof input === 'object' && !Array.isArray(input)
@@ -1097,7 +1096,6 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
     return normalizeMessage(record.message, {
       kind,
-      agentName,
       conversationId: resolvedConversationId,
       createdAt,
     });

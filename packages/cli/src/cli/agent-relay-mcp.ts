@@ -725,7 +725,10 @@ function registerAgentRelayTools(
     }
   );
 
-  registerMessagingTools(server, getAgentClient);
+  registerMessagingTools(server, getAgentClient, async () => {
+    requireWorkspaceKey(getSession());
+    return getRelay().agents.list();
+  });
 
   server.registerTool(
     'add_agent',

@@ -1,13 +1,13 @@
 export type DirectMessageMode = 'wait' | 'steer';
 
 export type DirectMessageDeliveryReceipt = Record<string, unknown> & {
-  target: { kind: 'agent'; agentName: string };
+  target?: { kind: 'agent'; agentName: string };
   delivery: {
-    status: 'queued_unconfirmed' | 'recipient_mismatch';
+    status: 'queued_unconfirmed' | 'recipient_mismatch' | 'recipient_unresolved';
     mode: DirectMessageMode;
     requestedRecipient: string;
-    resolvedRecipient: string;
-    recipientMatched: boolean;
+    resolvedRecipient: string | null;
+    recipientMatched: boolean | null;
     readConfirmed: false;
     note: string;
   };
@@ -19,46 +19,58 @@ function asRecord(value: unknown): Record<string, unknown> {
     : { value };
 }
 
-function resolvedDirectRecipient(message: Record<string, unknown>, requestedRecipient: string): string {
-  const target = asRecord(message.target);
-  const targetName = target.agentName ?? target.agent_name;
-  if (typeof targetName === 'string' && targetName.length > 0) return targetName;
-
-  const recipient = asRecord(message.recipient);
-  const recipientName = recipient.agentName ?? recipient.agent_name ?? recipient.name;
-  if (typeof recipientName === 'string' && recipientName.length > 0) return recipientName;
-
-  const directName = message.recipientName ?? message.recipient_name ?? message.to;
-  return typeof directName === 'string' && directName.length > 0 ? directName : requestedRecipient;
+/** Resolve only a full, exact agent name; never fall back to a prefix. */
+export function resolveExactAgentName(agents: readonly unknown[], requestedRecipient: string): string {
+  const resolvedRecipient = agents
+    .map((agent) => {
+      const name = asRecord(agent).name;
+      return typeof name === 'string' ? name : undefined;
+    })
+    .find((name) => name === requestedRecipient);
+  if (!resolvedRecipient) {
+    throw new Error(`Recipient "${requestedRecipient}" was not found by exact agent-name match.`);
+  }
+  return resolvedRecipient;
 }
 
 /**
  * Add the delivery facts that Relaycast's create-message response does not
  * contain. A message id confirms durable enqueue only; delivery/read
- * confirmation remains observable through get_message_readers.
+ * confirmation remains observable through get_message_readers. The resolved
+ * recipient must come from an independent directory lookup; the created
+ * message's target may only echo the request and is deliberately not trusted.
  */
 export function directMessageReceipt(
   value: unknown,
   requestedRecipient: string,
-  mode: DirectMessageMode = 'wait'
+  mode: DirectMessageMode = 'wait',
+  resolvedRecipient?: string
 ): DirectMessageDeliveryReceipt {
   const message = asRecord(value);
-  const resolvedRecipient = resolvedDirectRecipient(message, requestedRecipient);
-  const recipientMatched = resolvedRecipient === requestedRecipient;
-  const note = recipientMatched
-    ? mode === 'steer'
-      ? 'Queued as an immediate injection request that may interrupt active work. This receipt does not confirm delivery or reading; call get_message_readers with the message id.'
-      : "Queued for injection at the recipient's next safe idle boundary. It can remain unread while the recipient is busy. This receipt does not confirm delivery or reading; call get_message_readers with the message id."
-    : `Recipient mismatch: requested ${requestedRecipient}, but the send response resolved ${resolvedRecipient}.`;
+  const recipientMatched = resolvedRecipient ? resolvedRecipient === requestedRecipient : null;
+  const status =
+    recipientMatched === null
+      ? 'recipient_unresolved'
+      : recipientMatched
+        ? 'queued_unconfirmed'
+        : 'recipient_mismatch';
+  const note =
+    recipientMatched === null
+      ? `Recipient resolution was unavailable for ${requestedRecipient}; enqueue is not reported as successful delivery.`
+      : recipientMatched
+        ? mode === 'steer'
+          ? 'Queued as an immediate injection request that may interrupt active work. This receipt does not confirm delivery or reading; call get_message_readers with the message id.'
+          : "Queued for injection at the recipient's next safe idle boundary. It can remain unread while the recipient is busy. This receipt does not confirm delivery or reading; call get_message_readers with the message id."
+        : `Recipient mismatch: requested ${requestedRecipient}, but the directory resolved ${resolvedRecipient}.`;
 
   return {
     ...message,
-    target: { kind: 'agent', agentName: resolvedRecipient },
+    ...(resolvedRecipient ? { target: { kind: 'agent' as const, agentName: resolvedRecipient } } : {}),
     delivery: {
-      status: recipientMatched ? 'queued_unconfirmed' : 'recipient_mismatch',
+      status,
       mode,
       requestedRecipient,
-      resolvedRecipient,
+      resolvedRecipient: resolvedRecipient ?? null,
       recipientMatched,
       readConfirmed: false,
       note,

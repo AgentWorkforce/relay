@@ -8,7 +8,7 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
-import { directMessageReceipt } from '../lib/message-delivery-receipts.js';
+import { directMessageReceipt, resolveExactAgentName } from '../lib/message-delivery-receipts.js';
 
 export type MessageCommandDependencies = SdkCommandDeps;
 
@@ -128,16 +128,19 @@ export function registerMessageCommands(
   ).action(async (agent: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const mode = o.mode as 'wait' | 'steer' | undefined;
+      const relay = deps.createAgentRelay(opts(o));
+      const resolvedRecipient = resolveExactAgentName(await relay.agents.list(), agent);
       printJson(
         deps,
         directMessageReceipt(
-          await deps.createAgentRelay(opts(o)).messages.direct({
+          await relay.messages.direct({
             to: agent,
             text,
             ...(mode ? { mode } : {}),
           }),
           agent,
-          mode
+          mode,
+          resolvedRecipient
         )
       );
     });

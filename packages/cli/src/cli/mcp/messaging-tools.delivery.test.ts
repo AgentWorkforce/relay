@@ -1,11 +1,35 @@
 import { describe, expect, it } from 'vitest';
 
-import { directMessageReceipt, messageReadersReceipt } from '../lib/message-delivery-receipts.js';
+import {
+  directMessageReceipt,
+  messageReadersReceipt,
+  resolveExactAgentName,
+} from '../lib/message-delivery-receipts.js';
+
+describe('exact agent-name resolution', () => {
+  it('chooses the full hyphenated name instead of an existing strict prefix', () => {
+    expect(resolveExactAgentName([{ name: 'chief' }, { name: 'chief-khaliq' }], 'chief-khaliq')).toBe(
+      'chief-khaliq'
+    );
+  });
+
+  it('resolves an exact prefix-name request to that agent', () => {
+    expect(resolveExactAgentName([{ name: 'chief' }, { name: 'chief-khaliq' }], 'chief')).toBe('chief');
+  });
+
+  it('fails visibly when there is no exact match', () => {
+    expect(() => resolveExactAgentName([{ name: 'chief' }], 'chief-missing')).toThrow(
+      'Recipient "chief-missing" was not found by exact agent-name match.'
+    );
+  });
+});
 
 describe('direct message delivery receipts', () => {
   it('labels default wait-mode sends as queued and preserves the exact requested recipient', () => {
     const receipt = directMessageReceipt(
       { id: 'msg_wait', text: 'status', agentName: 'sender' },
+      'chief-khaliq',
+      'wait',
       'chief-khaliq'
     );
 
@@ -27,7 +51,8 @@ describe('direct message delivery receipts', () => {
     const receipt = directMessageReceipt(
       { id: 'msg_steer', text: 'urgent', agentName: 'sender' },
       'busy-worker',
-      'steer'
+      'steer',
+      'busy-worker'
     );
 
     expect(receipt.delivery).toMatchObject({
@@ -46,7 +71,9 @@ describe('direct message delivery receipts', () => {
         id: 'msg_misdirected',
         target: { kind: 'agent', agentName: 'chief' },
       },
-      'chief-khaliq'
+      'chief-khaliq',
+      'wait',
+      'chief'
     );
 
     expect(receipt).toMatchObject({
@@ -59,6 +86,18 @@ describe('direct message delivery receipts', () => {
       },
     });
     expect(receipt.delivery.note).toContain('Recipient mismatch');
+  });
+
+  it('does not present the request as independently resolved when directory lookup is unavailable', () => {
+    const receipt = directMessageReceipt({ id: 'msg_unresolved' }, 'chief-khaliq');
+
+    expect(receipt.delivery).toMatchObject({
+      status: 'recipient_unresolved',
+      requestedRecipient: 'chief-khaliq',
+      resolvedRecipient: null,
+      recipientMatched: null,
+    });
+    expect(receipt.target).toBeUndefined();
   });
 
   it('surfaces an explicit signal when no recipient has consumed the message', () => {

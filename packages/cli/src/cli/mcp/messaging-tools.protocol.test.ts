@@ -10,7 +10,11 @@ describe('messaging delivery receipts over MCP', () => {
     const dm = vi.fn(async () => ({ id: 'msg_1', text: 'hello' }));
     const readers = vi.fn(async () => []);
     const server = new McpServer({ name: 'messaging-test', version: '1.0.0' });
-    registerMessagingTools(server, () => ({ dm, readers }) as never);
+    registerMessagingTools(
+      server,
+      () => ({ dm, readers }) as never,
+      async () => [{ name: 'chief' }, { name: 'chief-khaliq' }]
+    );
 
     const client = new Client({ name: 'messaging-client-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

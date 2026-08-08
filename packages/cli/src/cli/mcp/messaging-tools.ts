@@ -1,19 +1,23 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-import { directMessageReceipt, messageReadersReceipt } from '../lib/message-delivery-receipts.js';
+import {
+  directMessageReceipt,
+  messageReadersReceipt,
+  resolveExactAgentName,
+} from '../lib/message-delivery-receipts.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
 import type { AgentClientLike } from './types.js';
 
 const directMessageResult = z.looseObject({
-  target: z.object({ kind: z.literal('agent'), agentName: z.string() }),
+  target: z.object({ kind: z.literal('agent'), agentName: z.string() }).optional(),
   delivery: z.object({
-    status: z.enum(['queued_unconfirmed', 'recipient_mismatch']),
+    status: z.enum(['queued_unconfirmed', 'recipient_mismatch', 'recipient_unresolved']),
     mode: z.enum(['wait', 'steer']),
     requestedRecipient: z.string(),
-    resolvedRecipient: z.string(),
-    recipientMatched: z.boolean(),
+    resolvedRecipient: z.string().nullable(),
+    recipientMatched: z.boolean().nullable(),
     readConfirmed: z.literal(false),
     note: z.string(),
   }),
@@ -51,7 +55,8 @@ function resolveEmoji(input: string): string {
  */
 export function registerMessagingTools(
   server: McpServer,
-  getAgentClient: (asIdentity?: string) => AgentClientLike
+  getAgentClient: (asIdentity?: string) => AgentClientLike,
+  listAgentsForRecipientResolution?: () => Promise<unknown[]>
 ): void {
   server.registerTool(
     'create_channel',
@@ -328,8 +333,10 @@ export function registerMessagingTools(
       },
     },
     async ({ to, text, mode, attachments, as }) => {
+      const agents = await listAgentsForRecipientResolution?.();
+      const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
       const message = await getAgentClient(as).dm(to, text, { mode, attachments });
-      return jsonContent(directMessageReceipt(message, to, mode));
+      return jsonContent(directMessageReceipt(message, to, mode, resolvedRecipient));
     }
   );
 
