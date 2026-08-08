@@ -47,8 +47,12 @@ function createStubClient(history: BrokerEvent[] = []) {
   return stub;
 }
 
-function createHandle(stub: ReturnType<typeof createStubClient>, name = 'worker') {
-  return new SpawnedAgentHandle({ name, runtime: 'pty' }, stub as unknown as HarnessDriverClient);
+function createHandle(stub: ReturnType<typeof createStubClient>, name = 'worker', eventSeqBeforeSpawn = 0) {
+  return new SpawnedAgentHandle(
+    { name, runtime: 'pty' },
+    stub as unknown as HarnessDriverClient,
+    eventSeqBeforeSpawn
+  );
 }
 
 const resultEvent = (name: string, data: unknown, final = true): BrokerEvent =>
@@ -116,6 +120,17 @@ describe('SpawnedAgentHandle lifecycle helpers', () => {
     stub.emit({ kind: 'worker_ready', name: 'worker', runtime: 'pty', pid: 42 } as BrokerEvent);
 
     await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 42 });
+  });
+
+  it("ignores a reused name's prior generation when replaying worker_ready", async () => {
+    const staleReady = { kind: 'worker_ready', name: 'worker', runtime: 'pty', seq: 12 } as BrokerEvent;
+    const stub = createStubClient([staleReady]);
+    const handle = createHandle(stub, 'worker', 12);
+
+    const pending = handle.waitForReady();
+    stub.emit({ kind: 'worker_ready', name: 'worker', runtime: 'pty', pid: 43, seq: 13 } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 43 });
   });
 
   it('reports an exit before readiness and times out when no handshake arrives', async () => {

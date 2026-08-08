@@ -160,6 +160,7 @@ impl BrokerRuntime {
         };
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, code, signal, exit_reason) in &exited {
+            let mut retain_fleet_identity = false;
             if let Some(pending) = pending_verified_spawns.remove(name) {
                 // A failed verified launch has no owner after its action is
                 // failed. Do not let the normal supervisor revive it later.
@@ -171,23 +172,10 @@ impl BrokerRuntime {
                 )
                 .await
                 {
-                    Ok(_) => {
-                        super::fleet::prune_fleet_agent_state(
-                            fleet_control_tx,
-                            fleet_inventory,
-                            fleet_delivery_book,
-                            name,
-                        )
-                        .await
-                    }
+                    Ok(_) => {}
                     Err(error) => {
                         tracing::warn!(worker = %name, %error, "retaining fleet identity after early verified-spawn exit");
-                        super::fleet::prune_fleet_inventory_entry(
-                            fleet_control_tx,
-                            fleet_inventory,
-                            name,
-                        )
-                        .await;
+                        retain_fleet_identity = true;
                     }
                 }
                 let _ = fleet_control_tx
@@ -333,13 +321,22 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
-                    super::fleet::prune_fleet_agent_state(
-                        fleet_control_tx,
-                        fleet_inventory,
-                        fleet_delivery_book,
-                        name,
-                    )
-                    .await;
+                    if retain_fleet_identity {
+                        super::fleet::prune_fleet_inventory_entry(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            name,
+                        )
+                        .await;
+                    } else {
+                        super::fleet::prune_fleet_agent_state(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            fleet_delivery_book,
+                            name,
+                        )
+                        .await;
+                    }
                 }
                 None => {
                     // Not supervised — original behavior
@@ -398,13 +395,22 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
-                    super::fleet::prune_fleet_agent_state(
-                        fleet_control_tx,
-                        fleet_inventory,
-                        fleet_delivery_book,
-                        name,
-                    )
-                    .await;
+                    if retain_fleet_identity {
+                        super::fleet::prune_fleet_inventory_entry(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            name,
+                        )
+                        .await;
+                    } else {
+                        super::fleet::prune_fleet_agent_state(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            fleet_delivery_book,
+                            name,
+                        )
+                        .await;
+                    }
                 }
             }
         }

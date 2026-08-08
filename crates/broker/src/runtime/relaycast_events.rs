@@ -512,7 +512,7 @@ pub(super) async fn spawn_worker_from_request(
                     Some(token.token)
                 }
                 Err(node_error) => {
-                    if require_node_registration {
+                    if require_node_registration || relaycast_spawn_verifies_ready(ws_value) {
                         tracing::warn!(
                             worker = %name,
                             error = %node_error,

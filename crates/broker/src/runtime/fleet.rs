@@ -595,13 +595,26 @@ impl BrokerRuntime {
         self.resize_owners.remove(&name);
         self.pty_observability.remove(&name);
 
-        prune_fleet_agent_state(
-            &self.fleet_control_tx,
-            &mut self.fleet_inventory,
-            &mut self.fleet_delivery_book,
-            &name,
-        )
-        .await;
+        if outcome == super::relaycast_events::ReleaseOutcome::Released {
+            match deregister_fleet_agent(&self.fleet_control_tx, &mut self.fleet_delivery_book, &name)
+                .await
+            {
+                Ok(_) => {
+                    prune_fleet_agent_state(
+                        &self.fleet_control_tx,
+                        &mut self.fleet_inventory,
+                        &mut self.fleet_delivery_book,
+                        &name,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    tracing::warn!(worker = %name, %error, "retaining fleet identity after release cleanup");
+                    prune_fleet_inventory_entry(&self.fleet_control_tx, &mut self.fleet_inventory, &name)
+                        .await;
+                }
+            }
+        }
         if let Some(pending) = self.pending_verified_spawns.remove(&name) {
             self.send_fleet_action_result(verified_spawn_failed_result(
                 pending.invocation_id,

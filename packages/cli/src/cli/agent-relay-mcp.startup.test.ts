@@ -550,6 +550,7 @@ describe('createAgentRelayMcpServer', () => {
         actionInput: {
           name: 'IntegrationExpert',
           persona: 'nango-integrations',
+          capability: 'spawn:persona',
           task: 'Fix the sync',
           cwd: '/workspace/project',
           target_node: 'node-a',

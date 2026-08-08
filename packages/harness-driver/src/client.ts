@@ -578,13 +578,14 @@ export class HarnessDriverClient {
     const t0 = Date.now();
     const resolvedInput = await this.runBeforeSpawn(beforeCtx);
     try {
+      const eventSeqBeforeSpawn = await this.currentEventSeq().catch(() => 0);
       const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnPtyBody(resolvedInput)),
       });
       const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
-      return new SpawnedAgentHandle(result, this);
+      return new SpawnedAgentHandle(result, this, eventSeqBeforeSpawn);
     } catch (err) {
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
       throw err;
@@ -620,13 +621,14 @@ export class HarnessDriverClient {
     }
 
     try {
+      const eventSeqBeforeSpawn = await this.currentEventSeq().catch(() => 0);
       const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnCliBody(resolvedInput, transport)),
       });
       const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
-      return new SpawnedAgentHandle(result, this);
+      return new SpawnedAgentHandle(result, this, eventSeqBeforeSpawn);
     } catch (err) {
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
       throw err;

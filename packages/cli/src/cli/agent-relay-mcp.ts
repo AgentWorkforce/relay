@@ -17,6 +17,7 @@ import {
   createAgentClient,
   createRealtimeClient,
   createWorkspaceClient,
+  isInvalidAgentTokenError,
 } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
@@ -97,7 +98,12 @@ async function waitForPersonaSpawn(
       invocation = await actions.getInvocation(actionName, invocationId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/invalid.?agent.?token|unauthori[sz]ed|forbidden/i.test(message)) throw error;
+      if (
+        isInvalidAgentTokenError(error) ||
+        /invalid.?agent.?token|unauthori[sz]ed|forbidden/i.test(message)
+      ) {
+        throw error;
+      }
       if (Date.now() >= deadline) {
         throw new Error('Persona spawn timed out before broker registration and harness readiness.');
       }

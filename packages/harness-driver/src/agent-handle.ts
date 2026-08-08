@@ -23,6 +23,8 @@ import type { HarnessDriverClient } from './client.js';
 import type { AgentRuntime, BrokerEvent } from './protocol.js';
 import type { SpawnAgentResult } from './types.js';
 
+type SequencedBrokerEvent = BrokerEvent & { seq?: number };
+
 export interface AgentExitInfo {
   /** `'exited'` when the agent exited; `'timeout'` when the wait elapsed first. */
   reason: 'exited' | 'timeout';
@@ -72,11 +74,12 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   readonly runtime: AgentRuntime;
   readonly sessionId?: string;
   readonly pid?: number;
-  private readonly readyNotBefore = Date.now();
 
   constructor(
     result: SpawnAgentResult,
-    private readonly client: HarnessDriverClient
+    private readonly client: HarnessDriverClient,
+    /** Last broker event sequence observed immediately before the spawn request. */
+    private readonly eventSeqBeforeSpawn = 0
   ) {
     this.name = result.name;
     this.runtime = result.runtime;
@@ -86,11 +89,11 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
 
   /** Exit info if the agent has already exited (from broker event history), else `undefined`. */
   get exit(): AgentExitInfo | undefined {
-    const exited = this.client.getLastEvent('agent_exited', this.name);
+    const exited = this.lastEvent('agent_exited');
     if (exited && exited.kind === 'agent_exited') {
       return { reason: 'exited', code: exited.code, signal: exited.signal };
     }
-    const exit = this.client.getLastEvent('agent_exit', this.name);
+    const exit = this.lastEvent('agent_exit');
     if (exit && exit.kind === 'agent_exit') {
       return { reason: 'exited' };
     }
@@ -126,18 +129,19 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
         resolve(info);
       };
       unsub = this.client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'worker_ready' && event.name === this.name) {
+        if (this.isCurrentGeneration(event) && event.kind === 'worker_ready' && event.name === this.name) {
           settle({ reason: 'ready', runtime: event.runtime, pid: event.pid });
           return;
         }
-        const exit = matchExit(event, this.name);
+        const exit = this.isCurrentGeneration(event) ? matchExit(event, this.name) : undefined;
         if (exit) settle({ reason: 'exited', exit });
       });
 
       // Subscribe before replaying history so worker_ready cannot land in the
       // gap between the history check and listener registration.
       const replayed = this.client
-        .queryEvents({ kind: 'worker_ready', name: this.name, since: this.readyNotBefore, limit: 1 })
+        .queryEvents({ kind: 'worker_ready', name: this.name })
+        .filter((event) => this.isCurrentGeneration(event))
         .at(-1);
       if (replayed?.kind === 'worker_ready') {
         settle({ reason: 'ready', runtime: replayed.runtime, pid: replayed.pid });
@@ -173,7 +177,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
         resolve(info);
       };
       const unsub = this.client.onEvent((event: BrokerEvent) => {
-        const exit = matchExit(event, this.name);
+        const exit = this.isCurrentGeneration(event) ? matchExit(event, this.name) : undefined;
         if (exit) settle(exit);
       });
       if (timeoutMs !== undefined) {
@@ -205,11 +209,11 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
       // `agentIdle` event bus is only populated by call-site hooks (not broker
       // events) in direct-client usage, so it must not be used here.
       const unsub = this.client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'agent_idle' && event.name === this.name) {
+        if (this.isCurrentGeneration(event) && event.kind === 'agent_idle' && event.name === this.name) {
           settle({ reason: 'idle', idleSecs: event.idle_secs });
           return;
         }
-        const exit = matchExit(event, this.name);
+        const exit = this.isCurrentGeneration(event) ? matchExit(event, this.name) : undefined;
         if (exit) settle({ reason: 'exited', exit });
       });
       if (timeoutMs !== undefined) {
@@ -235,7 +239,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
       .queryEvents({ kind: 'agent_result', name: this.name })
       .find(
         (event): event is Extract<BrokerEvent, { kind: 'agent_result' }> =>
-          event.kind === 'agent_result' && event.name === this.name
+          this.isCurrentGeneration(event) && event.kind === 'agent_result' && event.name === this.name
       );
     if (replayed) {
       return Promise.resolve(toResultInfo<T>(replayed));
@@ -251,11 +255,11 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
         resolve(info);
       };
       const unsub = this.client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'agent_result' && event.name === this.name) {
+        if (this.isCurrentGeneration(event) && event.kind === 'agent_result' && event.name === this.name) {
           settle(toResultInfo<T>(event));
           return;
         }
-        const exit = matchExit(event, this.name);
+        const exit = this.isCurrentGeneration(event) ? matchExit(event, this.name) : undefined;
         if (exit) settle({ reason: 'exited', exit });
       });
       if (timeoutMs !== undefined) {
@@ -267,6 +271,19 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   /** Release the agent via the broker. */
   release(reason?: string): Promise<{ name: string }> {
     return this.client.release(this.name, reason);
+  }
+
+  private isCurrentGeneration(event: BrokerEvent): boolean {
+    if (this.eventSeqBeforeSpawn === 0) return true;
+    const seq = (event as SequencedBrokerEvent).seq;
+    return typeof seq === 'number' && seq > this.eventSeqBeforeSpawn;
+  }
+
+  private lastEvent(kind: string): BrokerEvent | undefined {
+    return this.client
+      .queryEvents({ kind, name: this.name })
+      .filter((event) => this.isCurrentGeneration(event))
+      .at(-1);
   }
 }
 
