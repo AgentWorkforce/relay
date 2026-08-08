@@ -633,6 +633,49 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_a_repository_configured_hooks_path() {
+        let repo = fixture_repository();
+        let repository_hooks_dir = repo.path().join(".repository-hooks");
+        fs::create_dir_all(&repository_hooks_dir).expect("create repository hooks directory");
+        assert!(git(
+            repo.path(),
+            &["config", "core.hooksPath", ".repository-hooks"],
+            &[],
+        )
+        .status
+        .success());
+        let repository_hook = repository_hooks_dir.join("prepare-commit-msg");
+        fs::write(
+            &repository_hook,
+            "#!/bin/sh\nprintf '\\nConfigured-Hook: preserved\\n' >> \"$1\"\n",
+        )
+        .expect("write configured repository hook");
+        let mut permissions = fs::metadata(&repository_hook)
+            .expect("configured repository hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&repository_hook, permissions)
+            .expect("make configured repository hook executable");
+
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let env = broker_hook_env(&attestation(), hooks_dir.path());
+        let commit = git(
+            repo.path(),
+            &["commit", "-m", "preserve configured hook"],
+            &env,
+        );
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with a configured hooks path"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(message.contains("Configured-Hook: preserved"));
+    }
+
+    #[test]
     fn broker_hook_preserves_existing_git_config_environment() {
         let hooks_dir = tempdir().expect("broker hooks directory");
         let mut env = vec![
