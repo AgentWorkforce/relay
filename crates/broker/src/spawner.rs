@@ -51,6 +51,7 @@ configured_hooks_path="$(git config --get core.hooksPath 2>/dev/null || true)"
 if [ -n "$configured_hooks_path" ]; then
   case "$configured_hooks_path" in
     /*) existing_hooks_dir="$configured_hooks_path" ;;
+    "~/"*) existing_hooks_dir="$HOME${configured_hooks_path#\~}" ;;
     *) repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
        existing_hooks_dir="$repo_root/$configured_hooks_path" ;;
   esac
@@ -115,10 +116,7 @@ fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
 }
 
 fn is_valid_attestation_value(value: &str) -> bool {
-    !value.trim().is_empty()
-        && !value
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    !value.trim().is_empty() && !value.chars().any(|character| character.is_control())
 }
 
 fn write_prepare_commit_msg_hook(hooks_dir: &Path) -> Result<PathBuf> {
@@ -151,17 +149,16 @@ fn git_config_count_with_inherited(
     env_vars: &[(String, String)],
     inherited_count: Option<&str>,
 ) -> usize {
+    let inherited_count = inherited_count.and_then(|value| value.parse().ok());
     if let Some((_, value)) = env_vars
         .iter()
         .rev()
         .find(|(key, _)| key == "GIT_CONFIG_COUNT")
     {
-        return value.parse().unwrap_or(0);
+        return value.parse().ok().or(inherited_count).unwrap_or(0);
     }
 
-    inherited_count
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
+    inherited_count.unwrap_or(0)
 }
 
 fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_dir: &Path) {
@@ -690,6 +687,57 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_a_home_relative_configured_hooks_path() {
+        let repo = fixture_repository();
+        assert!(git(
+            repo.path(),
+            &["config", "core.hooksPath", "~/repository-hooks"],
+            &[],
+        )
+        .status
+        .success());
+        let home_dir = tempdir().expect("home directory");
+        let repository_hooks_dir = home_dir.path().join("repository-hooks");
+        fs::create_dir_all(&repository_hooks_dir).expect("create repository hooks directory");
+        let repository_hook = repository_hooks_dir.join("prepare-commit-msg");
+        fs::write(
+            &repository_hook,
+            "#!/bin/sh\nprintf '\\nHome-Hook: preserved\\n' >> \"$1\"\n",
+        )
+        .expect("write home-relative repository hook");
+        let mut permissions = fs::metadata(&repository_hook)
+            .expect("home-relative repository hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&repository_hook, permissions)
+            .expect("make home-relative repository hook executable");
+
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let mut env = broker_hook_env(&attestation(), hooks_dir.path());
+        env.push((
+            "HOME".to_string(),
+            home_dir.path().to_string_lossy().into_owned(),
+        ));
+        let commit = git(
+            repo.path(),
+            &["commit", "-m", "preserve home-relative hook"],
+            &env,
+        );
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with a home-relative hooks path"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(
+            message.contains("Home-Hook: preserved"),
+            "commit message: {message}"
+        );
+    }
+
+    #[test]
     fn broker_hook_preserves_existing_git_config_environment() {
         let hooks_dir = tempdir().expect("broker hooks directory");
         let mut env = vec![
@@ -719,6 +767,12 @@ mod tests {
             git_config_count_with_inherited(&worker_override, Some("2")),
             1
         );
+        let malformed_worker_override =
+            vec![("GIT_CONFIG_COUNT".to_string(), "invalid".to_string())];
+        assert_eq!(
+            git_config_count_with_inherited(&malformed_worker_override, Some("2")),
+            2
+        );
         assert_eq!(git_config_count_with_inherited(&[], Some("invalid")), 0);
     }
 
@@ -744,6 +798,9 @@ mod tests {
             "jti\nsecond-trailer",
             "jti\rsecond-trailer",
             "jti\0",
+            "jti\twith-tab",
+            "jti\u{000b}with-vertical-tab",
+            "jti\u{000c}with-form-feed",
         ] {
             let original = vec![("RELAY_AGENT_NAME".to_string(), "worker".to_string())];
             let invalid = CommitAttestation {
