@@ -92,7 +92,18 @@ async function waitForPersonaSpawn(
 
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const invocation = await actions.getInvocation(actionName, invocationId);
+    let invocation: unknown;
+    try {
+      invocation = await actions.getInvocation(actionName, invocationId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/invalid.?agent.?token|unauthori[sz]ed|forbidden/i.test(message)) throw error;
+      if (Date.now() >= deadline) {
+        throw new Error('Persona spawn timed out before broker registration and harness readiness.');
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, PERSONA_SPAWN_POLL_MS));
+      continue;
+    }
     const record = recordValue(invocation);
     const status = invocationText(record, 'status')?.toLowerCase();
     if (status === 'completed' || status === 'succeeded' || status === 'success') {

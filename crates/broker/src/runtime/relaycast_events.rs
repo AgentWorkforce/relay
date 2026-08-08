@@ -489,8 +489,9 @@ pub(super) async fn spawn_worker_from_request(
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
     let worker_relay_key = {
-        if let Some(token) =
-            relaycast_ws_spawn_token(ws_value).filter(|_| !require_node_registration)
+        if let Some(token) = relaycast_ws_spawn_token(ws_value).filter(|_| {
+            !require_node_registration && !relaycast_spawn_verifies_ready(ws_value)
+        })
         {
             seed_supplied_agent_token(workspace_http, &name, &token);
             Some(token)

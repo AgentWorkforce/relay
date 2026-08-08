@@ -730,6 +730,19 @@ impl BrokerRuntime {
                                     .map(str::to_string),
                             );
                         }
+                        // Resolve the verified Fleet action before optional SDK
+                        // notifications and initial-task work. A congested SDK
+                        // output queue must not turn a ready worker into an
+                        // action timeout.
+                        if let Some(pending) = pending_verified_spawns.remove(&name) {
+                            let _ = fleet_control_tx
+                                .send(FleetControlCommand::Send(
+                                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                        verified_spawn_ready_result(pending.invocation_id, &name),
+                                    ),
+                                ))
+                                .await;
+                        }
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
@@ -1009,15 +1022,6 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        if let Some(pending) = pending_verified_spawns.remove(&name) {
-                            let _ = fleet_control_tx
-                                .send(FleetControlCommand::Send(
-                                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                                        verified_spawn_ready_result(pending.invocation_id, &name),
-                                    ),
-                                ))
-                                .await;
-                        }
                     } else if msg_type == "agent_idle" {
                         let idle_secs = value
                             .get("payload")

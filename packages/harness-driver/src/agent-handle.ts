@@ -72,6 +72,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   readonly runtime: AgentRuntime;
   readonly sessionId?: string;
   readonly pid?: number;
+  private readonly readyNotBefore = Date.now();
 
   constructor(
     result: SpawnAgentResult,
@@ -135,7 +136,9 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
 
       // Subscribe before replaying history so worker_ready cannot land in the
       // gap between the history check and listener registration.
-      const replayed = this.client.getLastEvent('worker_ready', this.name);
+      const replayed = this.client
+        .queryEvents({ kind: 'worker_ready', name: this.name, since: this.readyNotBefore, limit: 1 })
+        .at(-1);
       if (replayed?.kind === 'worker_ready') {
         settle({ reason: 'ready', runtime: replayed.runtime, pid: replayed.pid });
         return;

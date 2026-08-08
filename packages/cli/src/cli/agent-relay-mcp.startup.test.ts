@@ -544,6 +544,18 @@ describe('createAgentRelayMcpServer', () => {
       status: 'completed',
       output: { spawned: true, ready: true },
     });
+    expect(messaging.commands.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionName: 'spawn',
+        actionInput: {
+          name: 'IntegrationExpert',
+          persona: 'nango-integrations',
+          task: 'Fix the sync',
+          cwd: '/workspace/project',
+          target_node: 'node-a',
+        },
+      })
+    );
     const toolsList = await server.listToolsHandler?.({}, {});
     expect(toolsList?.tools).toEqual([
       {

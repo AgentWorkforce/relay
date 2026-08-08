@@ -530,16 +530,19 @@ impl BrokerRuntime {
         } else {
             // A registration can succeed before process creation fails. Undo
             // that authoritative identity before reporting the failed launch.
-            let _ =
-                deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
-                    .await;
-            prune_fleet_agent_state(
-                &self.fleet_control_tx,
-                &mut self.fleet_inventory,
-                &mut self.fleet_delivery_book,
-                &name,
-            )
-            .await;
+            match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name).await {
+                Ok(_) => prune_fleet_agent_state(
+                    &self.fleet_control_tx,
+                    &mut self.fleet_inventory,
+                    &mut self.fleet_delivery_book,
+                    &name,
+                )
+                .await,
+                Err(error) => {
+                    tracing::warn!(worker = %name, %error, "retaining fleet identity after failed spawn cleanup");
+                    prune_fleet_inventory_entry(&self.fleet_control_tx, &mut self.fleet_inventory, &name).await;
+                }
+            }
             self.reply_action_error(&invoke.invocation_id, "spawn_failed")
                 .await;
         }
