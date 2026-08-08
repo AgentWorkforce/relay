@@ -143,11 +143,24 @@ fn write_prepare_commit_msg_hook(hooks_dir: &Path) -> Result<PathBuf> {
 }
 
 fn git_config_count(env_vars: &[(String, String)]) -> usize {
-    env_vars
+    let inherited_count = std::env::var("GIT_CONFIG_COUNT").ok();
+    git_config_count_with_inherited(env_vars, inherited_count.as_deref())
+}
+
+fn git_config_count_with_inherited(
+    env_vars: &[(String, String)],
+    inherited_count: Option<&str>,
+) -> usize {
+    if let Some((_, value)) = env_vars
         .iter()
         .rev()
         .find(|(key, _)| key == "GIT_CONFIG_COUNT")
-        .and_then(|(_, value)| value.parse().ok())
+    {
+        return value.parse().unwrap_or(0);
+    }
+
+    inherited_count
+        .and_then(|value| value.parse().ok())
         .unwrap_or(0)
 }
 
@@ -477,9 +490,10 @@ mod tests {
     use crate::types::CommitAttestation;
 
     use super::{
-        add_broker_hooks_path, attestation_env_present, spawn_env_vars, terminate_child,
-        with_commit_attestation_env, write_prepare_commit_msg_hook, Spawner, RELAY_ATTEST_AGENT_ID,
-        RELAY_ATTEST_JTI, RELAY_ATTEST_SPONSOR_ID,
+        add_broker_hooks_path, attestation_env_present, git_config_count_with_inherited,
+        spawn_env_vars, terminate_child, with_commit_attestation_env,
+        write_prepare_commit_msg_hook, Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
+        RELAY_ATTEST_SPONSOR_ID,
     };
 
     fn git(repo: &Path, args: &[&str], env: &[(String, String)]) -> std::process::Output {
@@ -694,6 +708,18 @@ mod tests {
             "GIT_CONFIG_VALUE_1".to_string(),
             hooks_dir.path().to_string_lossy().into_owned(),
         )));
+    }
+
+    #[test]
+    fn git_config_count_uses_an_inherited_value_when_worker_env_has_no_override() {
+        assert_eq!(git_config_count_with_inherited(&[], Some("2")), 2);
+
+        let worker_override = vec![("GIT_CONFIG_COUNT".to_string(), "1".to_string())];
+        assert_eq!(
+            git_config_count_with_inherited(&worker_override, Some("2")),
+            1
+        );
+        assert_eq!(git_config_count_with_inherited(&[], Some("invalid")), 0);
     }
 
     #[test]
