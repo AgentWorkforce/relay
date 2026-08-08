@@ -596,8 +596,12 @@ impl BrokerRuntime {
         self.pty_observability.remove(&name);
 
         if outcome == super::relaycast_events::ReleaseOutcome::Released {
-            match deregister_fleet_agent(&self.fleet_control_tx, &mut self.fleet_delivery_book, &name)
-                .await
+            match deregister_fleet_agent(
+                &self.fleet_control_tx,
+                &mut self.fleet_delivery_book,
+                &name,
+            )
+            .await
             {
                 Ok(_) => {
                     prune_fleet_agent_state(
@@ -610,8 +614,12 @@ impl BrokerRuntime {
                 }
                 Err(error) => {
                     tracing::warn!(worker = %name, %error, "retaining fleet identity after release cleanup");
-                    prune_fleet_inventory_entry(&self.fleet_control_tx, &mut self.fleet_inventory, &name)
-                        .await;
+                    prune_fleet_inventory_entry(
+                        &self.fleet_control_tx,
+                        &mut self.fleet_inventory,
+                        &name,
+                    )
+                    .await;
                 }
             }
         }
