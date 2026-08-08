@@ -117,17 +117,26 @@ impl BrokerRuntime {
                 agent_result_tokens,
             )
             .await;
-            match super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name).await {
-                Ok(_) => super::fleet::prune_fleet_agent_state(
-                    fleet_control_tx,
-                    fleet_inventory,
-                    fleet_delivery_book,
-                    name,
-                )
-                .await,
+            match super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
+                .await
+            {
+                Ok(_) => {
+                    super::fleet::prune_fleet_agent_state(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await
+                }
                 Err(error) => {
                     tracing::warn!(worker = %name, %error, "retaining fleet identity after readiness timeout cleanup");
-                    super::fleet::prune_fleet_inventory_entry(fleet_control_tx, fleet_inventory, name).await;
+                    super::fleet::prune_fleet_inventory_entry(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        name,
+                    )
+                    .await;
                 }
             }
             let _ = fleet_control_tx
@@ -155,17 +164,30 @@ impl BrokerRuntime {
                 // A failed verified launch has no owner after its action is
                 // failed. Do not let the normal supervisor revive it later.
                 workers.supervisor.unregister(name);
-                match super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name).await {
-                    Ok(_) => super::fleet::prune_fleet_agent_state(
-                        fleet_control_tx,
-                        fleet_inventory,
-                        fleet_delivery_book,
-                        name,
-                    )
-                    .await,
+                match super::fleet::deregister_fleet_agent(
+                    fleet_control_tx,
+                    fleet_delivery_book,
+                    name,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        super::fleet::prune_fleet_agent_state(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            fleet_delivery_book,
+                            name,
+                        )
+                        .await
+                    }
                     Err(error) => {
                         tracing::warn!(worker = %name, %error, "retaining fleet identity after early verified-spawn exit");
-                        super::fleet::prune_fleet_inventory_entry(fleet_control_tx, fleet_inventory, name).await;
+                        super::fleet::prune_fleet_inventory_entry(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            name,
+                        )
+                        .await;
                     }
                 }
                 let _ = fleet_control_tx
