@@ -19,6 +19,9 @@ use crate::types::CommitAttestation;
 const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
 const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
 const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
+const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
+const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
+const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
 
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # Installed by the broker through core.hooksPath. Keep repository hooks in the
@@ -32,9 +35,31 @@ if [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n 
     "$RELAY_ATTEST_JTI" >> "$message_file"
 fi
 
-git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 0
-repo_hook="$git_common_dir/hooks/prepare-commit-msg"
-if [ -x "$repo_hook" ]; then
+# Resolve hooks with the broker's temporary core.hooksPath setting removed.
+# This retains both an inherited GIT_CONFIG_* hooks path and a repository's
+# configured/default hooks directory.
+original_count="${RELAY_ATTEST_GIT_CONFIG_COUNT:-0}"
+broker_index="${RELAY_ATTEST_GIT_CONFIG_INDEX:-}"
+case "$original_count" in
+  ''|*[!0-9]*) exit 0 ;;
+esac
+export GIT_CONFIG_COUNT="$original_count"
+if [ -n "$broker_index" ]; then
+  unset "GIT_CONFIG_KEY_$broker_index" "GIT_CONFIG_VALUE_$broker_index"
+fi
+configured_hooks_path="$(git config --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$configured_hooks_path" ]; then
+  case "$configured_hooks_path" in
+    /*) existing_hooks_dir="$configured_hooks_path" ;;
+    *) repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+       existing_hooks_dir="$repo_root/$configured_hooks_path" ;;
+  esac
+else
+  git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 0
+  existing_hooks_dir="$git_common_dir/hooks"
+fi
+repo_hook="$existing_hooks_dir/prepare-commit-msg"
+if [ -x "$repo_hook" ] && [ "$repo_hook" != "$RELAY_ATTEST_BROKER_HOOK_PATH" ]; then
   exec "$repo_hook" "$@"
 fi
 "#;
@@ -52,9 +77,9 @@ pub fn with_commit_attestation_env(
         return env_vars;
     };
 
-    if attestation.jti.is_empty()
-        || attestation.agent_id.is_empty()
-        || attestation.sponsor_id.is_empty()
+    if !is_valid_attestation_value(&attestation.jti)
+        || !is_valid_attestation_value(&attestation.agent_id)
+        || !is_valid_attestation_value(&attestation.sponsor_id)
     {
         return env_vars;
     }
@@ -83,8 +108,17 @@ fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
     .all(|expected| {
         env_vars
             .iter()
-            .any(|(key, value)| key == expected && !value.is_empty())
+            .rev()
+            .find(|(key, _)| key == expected)
+            .is_some_and(|(_, value)| is_valid_attestation_value(value))
     })
+}
+
+fn is_valid_attestation_value(value: &str) -> bool {
+    !value.trim().is_empty()
+        && !value
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
 }
 
 fn write_prepare_commit_msg_hook(hooks_dir: &Path) -> Result<PathBuf> {
@@ -119,6 +153,13 @@ fn git_config_count(env_vars: &[(String, String)]) -> usize {
 
 fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_dir: &Path) {
     let count = git_config_count(env_vars);
+    let hook_path = hooks_dir.join("prepare-commit-msg");
+    env_vars.push((RELAY_ATTEST_GIT_CONFIG_COUNT.to_string(), count.to_string()));
+    env_vars.push((RELAY_ATTEST_GIT_CONFIG_INDEX.to_string(), count.to_string()));
+    env_vars.push((
+        RELAY_ATTEST_BROKER_HOOK_PATH.to_string(),
+        hook_path.to_string_lossy().into_owned(),
+    ));
     env_vars.push(("GIT_CONFIG_COUNT".to_string(), (count + 1).to_string()));
     env_vars.push((
         format!("GIT_CONFIG_KEY_{count}"),
@@ -436,9 +477,9 @@ mod tests {
     use crate::types::CommitAttestation;
 
     use super::{
-        add_broker_hooks_path, spawn_env_vars, terminate_child, with_commit_attestation_env,
-        write_prepare_commit_msg_hook, Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
-        RELAY_ATTEST_SPONSOR_ID,
+        add_broker_hooks_path, attestation_env_present, spawn_env_vars, terminate_child,
+        with_commit_attestation_env, write_prepare_commit_msg_hook, Spawner, RELAY_ATTEST_AGENT_ID,
+        RELAY_ATTEST_JTI, RELAY_ATTEST_SPONSOR_ID,
     };
 
     fn git(repo: &Path, args: &[&str], env: &[(String, String)]) -> std::process::Output {
@@ -585,7 +626,10 @@ mod tests {
         assert!(message.contains("Agent-Id: agent_worker_42"));
         assert!(message.contains("Sponsor-Id: user_owner_7"));
         assert!(message.contains("Relay-Attestation: jti-public-123"));
-        assert!(message.contains("Repository-Hook: preserved"));
+        assert!(
+            message.contains("Repository-Hook: preserved"),
+            "commit message: {message}"
+        );
     }
 
     #[test]
@@ -621,6 +665,92 @@ mod tests {
             RELAY_ATTEST_SPONSOR_ID.to_string(),
             "user_owner_7".to_string(),
         )));
+    }
+
+    #[test]
+    fn invalid_attestation_metadata_is_not_exported_or_hook_enabled() {
+        for invalid_value in [
+            "",
+            "   ",
+            "jti\nsecond-trailer",
+            "jti\rsecond-trailer",
+            "jti\0",
+        ] {
+            let original = vec![("RELAY_AGENT_NAME".to_string(), "worker".to_string())];
+            let invalid = CommitAttestation {
+                jti: invalid_value.to_string(),
+                agent_id: "agent_worker_42".to_string(),
+                sponsor_id: "user_owner_7".to_string(),
+            };
+            assert_eq!(
+                with_commit_attestation_env(original.clone(), Some(&invalid)),
+                original,
+                "invalid jti must leave the environment unchanged"
+            );
+        }
+
+        let invalid_environment = vec![
+            (
+                RELAY_ATTEST_JTI.to_string(),
+                "jti\nsecond-trailer".to_string(),
+            ),
+            (
+                RELAY_ATTEST_AGENT_ID.to_string(),
+                "agent_worker_42".to_string(),
+            ),
+            (
+                RELAY_ATTEST_SPONSOR_ID.to_string(),
+                "user_owner_7".to_string(),
+            ),
+        ];
+        assert!(!attestation_env_present(&invalid_environment));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_an_inherited_core_hooks_path() {
+        let repo = fixture_repository();
+        let inherited_hooks_dir = tempdir().expect("inherited hooks directory");
+        let inherited_hook = inherited_hooks_dir.path().join("prepare-commit-msg");
+        fs::write(
+            &inherited_hook,
+            "#!/bin/sh\nprintf '\\nInherited-Hook: preserved\\n' >> \"$1\"\n",
+        )
+        .expect("write inherited hook");
+        let mut permissions = fs::metadata(&inherited_hook)
+            .expect("inherited hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&inherited_hook, permissions).expect("make inherited hook executable");
+
+        let broker_hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(broker_hooks_dir.path()).expect("write broker hook");
+        let mut env = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            ("GIT_CONFIG_KEY_0".to_string(), "core.hooksPath".to_string()),
+            (
+                "GIT_CONFIG_VALUE_0".to_string(),
+                inherited_hooks_dir.path().to_string_lossy().into_owned(),
+            ),
+        ];
+        env = with_commit_attestation_env(env, Some(&attestation()));
+        add_broker_hooks_path(&mut env, broker_hooks_dir.path());
+
+        let commit = git(
+            repo.path(),
+            &["commit", "-m", "preserve inherited hook"],
+            &env,
+        );
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with the inherited hooks path"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(
+            message.contains("Inherited-Hook: preserved"),
+            "commit message: {message}"
+        );
     }
 
     #[tokio::test]
