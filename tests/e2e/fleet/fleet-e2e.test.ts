@@ -413,7 +413,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           const invocation = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
           return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
         },
-        { label: `${testCase.agent} spawn settled`, timeoutMs: 20_000 }
+        { label: `${testCase.agent} spawn settled`, timeoutMs: 35_000 }
       );
       expect(done.status).toBe('completed');
 

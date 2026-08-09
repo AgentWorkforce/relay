@@ -36,10 +36,12 @@ try {
   process.stdin.on('data', (chunk) => {
     if (!ready) return;
     input += chunk.toString();
-    for (const match of input.matchAll(/RELAY_E2E_BRIEF_NONCE=([A-Za-z0-9_-]+)/g)) {
+    // Require a delimiter after the nonce. PTY chunks can split anywhere, so
+    // treating the current buffer end as a complete token could record a
+    // truncated nonce before its remaining characters arrive.
+    for (const match of input.matchAll(/RELAY_E2E_BRIEF_NONCE=([A-Za-z0-9_-]+)(?=[^A-Za-z0-9_-])/g)) {
       recordBriefNonce(match[1]);
     }
-    if (input.length > 32_000) input = input.slice(-16_000);
   });
 } catch {
   /* no stdin */
