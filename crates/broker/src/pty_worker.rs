@@ -37,6 +37,7 @@ use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
+use crate::util::terminal::detect_codex_trust_prompt;
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
@@ -267,6 +268,15 @@ fn evaluate_startup_gate(
     post_boot_output: &str,
     grid: GridReadinessSnapshot<'_>,
 ) -> bool {
+    // A menu-selection glyph is not the harness input prompt. In particular,
+    // Codex's directory-trust interstitial contains the same `›` glyph as its
+    // composer, so the generic prompt detector would otherwise release the
+    // queued brief before the auto-responder's Enter takes effect. Every gate
+    // path (output, init, and timer tick) passes through this exclusion.
+    if detect_codex_trust_prompt(grid.screen) {
+        return false;
+    }
+
     if wait_for_agent_relay_boot {
         saw_agent_relay_boot
             && output_has_prompt(resolved_cli, post_boot_output)
@@ -1167,6 +1177,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 last_context_low_pct = Some(pct);
                             }
                         }
+                        // Clear startup interstitials before evaluating the
+                        // prompt. The gate below still explicitly rejects the
+                        // trust screen until Codex redraws its real composer.
+                        pty_auto.handle_codex_trust(&text, &pty).await;
                         let startup_ready = startup_gate_ready(
                             &resolved_cli,
                             &startup_output,
@@ -1244,7 +1258,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
-                        pty_auto.handle_codex_trust(&text, &pty).await;
                         pty_auto.handle_opencode_permission(&text, &pty).await;
                         pty_auto.handle_gemini_action(&text, &pty).await;
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
@@ -2121,6 +2134,26 @@ mod tests {
             GridReadinessSnapshot {
                 screen: "Ready\n> \n",
                 cursor: Some((2, 3)),
+            },
+        ));
+    }
+
+    #[test]
+    fn startup_gate_rejects_codex_directory_trust_menu() {
+        let trust_screen = "Do you trust the contents of this directory?\n\
+                            › 1. Yes, continue\n\
+                              2. No, quit\n\
+                            Press enter to continue";
+        assert!(!evaluate_startup_gate(
+            "codex",
+            trust_screen,
+            600,
+            false,
+            false,
+            "",
+            GridReadinessSnapshot {
+                screen: trust_screen,
+                cursor: Some((2, 1)),
             },
         ));
     }
