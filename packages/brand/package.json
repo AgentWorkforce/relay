@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/brand",
-  "version": "11.4.2",
+  "version": "11.4.3",
   "engines": {
     "node": ">=22.0.0"
   },
