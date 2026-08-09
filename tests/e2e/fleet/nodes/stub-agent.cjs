@@ -12,6 +12,9 @@ const readyDelayMs = Number.parseInt(process.env.RELAY_E2E_STUB_READY_DELAY_MS ?
 let ready = false;
 let input = '';
 const recordedNonces = new Set();
+const nonceMarker = 'RELAY_E2E_BRIEF_NONCE=';
+const maxNonceLength = 256;
+const noncePattern = new RegExp(`${nonceMarker}([A-Za-z0-9_-]{1,${maxNonceLength}})(?=[^A-Za-z0-9_-])`, 'g');
 
 function recordBriefNonce(nonce) {
   if (recordedNonces.has(nonce)) return;
@@ -39,8 +42,23 @@ try {
     // Require a delimiter after the nonce. PTY chunks can split anywhere, so
     // treating the current buffer end as a complete token could record a
     // truncated nonce before its remaining characters arrive.
-    for (const match of input.matchAll(/RELAY_E2E_BRIEF_NONCE=([A-Za-z0-9_-]+)(?=[^A-Za-z0-9_-])/g)) {
+    let consumedThrough = 0;
+    for (const match of input.matchAll(noncePattern)) {
       recordBriefNonce(match[1]);
+      consumedThrough = match.index + match[0].length + 1;
+    }
+    if (consumedThrough > 0) input = input.slice(consumedThrough);
+
+    // Keep only a possible partial marker/candidate between chunks. This
+    // bounds memory and avoids rescanning already-consumed PTY input while
+    // preserving a nonce whose marker or delimiter straddles a chunk boundary.
+    const maxCandidateLength = nonceMarker.length + maxNonceLength;
+    if (input.length > maxCandidateLength) {
+      const candidateStart = input.lastIndexOf(nonceMarker);
+      input =
+        candidateStart >= 0 && input.length - candidateStart <= maxCandidateLength
+          ? input.slice(candidateStart)
+          : input.slice(-(nonceMarker.length - 1));
     }
   });
 } catch {
