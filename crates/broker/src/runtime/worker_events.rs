@@ -58,6 +58,10 @@ fn record_started_harness_pid(
     true
 }
 
+fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
+    current_generation == Some(event_generation)
+}
+
 #[cfg(test)]
 mod pty_observability_tests {
     use super::*;
@@ -143,6 +147,14 @@ mod pty_observability_tests {
             None
         );
         assert_eq!(protocol_pid(&json!({"payload": {"pid": "42"}})), None);
+    }
+
+    #[test]
+    fn worker_generation_gate_rejects_stale_same_name_events() {
+        let current = Uuid::new_v4();
+        assert!(worker_event_is_current(Some(current), current));
+        assert!(!worker_event_is_current(Some(current), Uuid::new_v4()));
+        assert!(!worker_event_is_current(None, current));
     }
 
     #[test]
@@ -417,7 +429,22 @@ impl BrokerRuntime {
         let delivery_states = &self.delivery_states;
 
         match worker_event {
-            WorkerEvent::Message { name, value } => {
+            WorkerEvent::Message {
+                name,
+                generation,
+                value,
+            } => {
+                let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
+                if !worker_event_is_current(current_generation, generation) {
+                    tracing::debug!(
+                        target = "agent_relay::broker",
+                        worker = %name,
+                        event_generation = %generation,
+                        current_generation = ?current_generation,
+                        "ignoring event from stale worker generation"
+                    );
+                    return;
+                }
                 if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
                     if msg_type == "delivery_ack" {
                         if let Some(payload) = value.get("payload") {

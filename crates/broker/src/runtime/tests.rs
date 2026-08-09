@@ -30,6 +30,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
@@ -85,6 +86,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     registry.workers.insert(
         WorkerName::from(name),
         WorkerHandle {
+            generation: Uuid::new_v4(),
             spec: AgentSpec {
                 name: WorkerName::from(name),
                 runtime: AgentRuntime::Pty,

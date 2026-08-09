@@ -26,6 +26,7 @@ use tokio::{
     sync::mpsc,
     time::timeout,
 };
+use uuid::Uuid;
 
 use crate::{
     cli::command_parse::{normalize_cli_name, parse_cli_command},
@@ -155,6 +156,8 @@ pub(crate) use relay_pty::detection;
 
 #[derive(Debug)]
 pub(crate) struct WorkerHandle {
+    /// Unique identity for this same-name worker process generation.
+    pub(crate) generation: Uuid,
     pub(crate) spec: AgentSpec,
     pub(crate) parent: Option<String>,
     pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
@@ -191,7 +194,11 @@ impl AgentWorkState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkerEvent {
-    Message { name: WorkerName, value: Value },
+    Message {
+        name: WorkerName,
+        generation: Uuid,
+        value: Value,
+    },
 }
 
 pub(crate) struct WorkerRegistry {
@@ -959,9 +966,11 @@ impl WorkerRegistry {
         let log_file = self.worker_log_path(&spec.name);
         let startup_log_file = log_file.clone();
 
+        let generation = Uuid::new_v4();
         spawn_worker_reader(
             self.event_tx.clone(),
             spec.name.clone(),
+            generation,
             "stdout",
             stdout,
             true,
@@ -970,6 +979,7 @@ impl WorkerRegistry {
         spawn_worker_reader(
             self.event_tx.clone(),
             spec.name.clone(),
+            generation,
             "stderr",
             stderr,
             false,
@@ -977,6 +987,7 @@ impl WorkerRegistry {
         );
 
         let handle = WorkerHandle {
+            generation,
             spec: spec.clone(),
             parent,
             workspace_id,
@@ -1925,6 +1936,7 @@ fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
 fn spawn_worker_reader<R>(
     tx: mpsc::Sender<WorkerEvent>,
     name: WorkerName,
+    generation: Uuid,
     stream_name: &'static str,
     reader: R,
     parse_json: bool,
@@ -2029,6 +2041,7 @@ fn spawn_worker_reader<R>(
                     if tx
                         .send(WorkerEvent::Message {
                             name: name.clone(),
+                            generation,
                             value,
                         })
                         .await
@@ -2071,6 +2084,7 @@ fn spawn_worker_reader<R>(
             if tx
                 .send(WorkerEvent::Message {
                     name: name.clone(),
+                    generation,
                     value: fallback,
                 })
                 .await
@@ -2185,6 +2199,7 @@ mod tests {
         reg.workers.insert(
             WorkerName::from(name),
             WorkerHandle {
+                generation: Uuid::new_v4(),
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
@@ -2228,6 +2243,7 @@ mod tests {
         reg.workers.insert(
             WorkerName::from(name),
             WorkerHandle {
+                generation: Uuid::new_v4(),
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
