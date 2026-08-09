@@ -86,6 +86,18 @@ pub fn detect_codex_model_prompt(clean_output: &str) -> (bool, bool) {
     (has_upgrade_ref, has_model_options)
 }
 
+/// Detect Codex's startup directory-trust prompt.
+///
+/// Codex shows this interstitial before its normal input prompt when the
+/// selected working directory has not been trusted yet. A spawned worker
+/// cannot receive its queued initial task until this menu is dismissed.
+pub fn detect_codex_trust_prompt(clean_output: &str) -> bool {
+    let lower = clean_output.to_lowercase();
+    lower.contains("do you trust the contents of this directory?")
+        && lower.contains("yes, continue")
+        && lower.contains("no, quit")
+}
+
 /// Detect opencode/droid EXECUTE permission prompt in output.
 /// Returns (has_header, has_allow_option).
 /// The prompt looks like:
@@ -185,6 +197,26 @@ mod tests {
         let (has_upgrade, has_options) = detect_codex_model_prompt(output);
         assert!(has_upgrade);
         assert!(has_options);
+    }
+
+    #[test]
+    fn codex_directory_trust_prompt() {
+        let output =
+            "Do you trust the contents of this directory? Working with untrusted contents\n\
+                      comes with higher risk of prompt injection.\n\
+                      > 1. Yes, continue\n\
+                        2. No, quit";
+        assert!(detect_codex_trust_prompt(output));
+    }
+
+    #[test]
+    fn codex_directory_trust_requires_the_complete_menu() {
+        assert!(!detect_codex_trust_prompt(
+            "Do you trust the contents of this directory?"
+        ));
+        assert!(!detect_codex_trust_prompt(
+            "The agent said yes, continue, then no, quit."
+        ));
     }
 
     #[test]
