@@ -37,6 +37,7 @@ use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
+use crate::util::terminal::detect_codex_trust_prompt;
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
@@ -149,10 +150,22 @@ fn cli_basename(command: &str) -> &str {
         .unwrap_or(command)
 }
 
-const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(25);
+/// Emit one diagnostic when a harness has not reached a proven input prompt in
+/// this long. This is deliberately a warning threshold, not a readiness
+/// fallback: declaring a booting TUI ready causes its initial task to be typed
+/// into startup UI and silently consumed. Harness liveness is reported to the
+/// broker independently so a live but unrecognized prompt is not reaped.
+const STARTUP_READY_WARNING: Duration = Duration::from_secs(25);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const PROMPT_WINDOW_BYTES: usize = 800;
+
+#[derive(Default)]
+struct StartupReadinessState {
+    ready_sent: bool,
+    wait_warned: bool,
+}
+
 const AGENT_RELAY_BOOT_MARKER: &str = "booting mcp server: agent-relay";
 const AGENT_RELAY_SERVER_NAME: &str = "agent-relay";
 const LEGACY_RELAY_SERVER_NAME: &str = "relaycast";
@@ -255,6 +268,15 @@ fn evaluate_startup_gate(
     post_boot_output: &str,
     grid: GridReadinessSnapshot<'_>,
 ) -> bool {
+    // A menu-selection glyph is not the harness input prompt. In particular,
+    // Codex's directory-trust interstitial contains the same `›` glyph as its
+    // composer, so the generic prompt detector would otherwise release the
+    // queued brief before the auto-responder's Enter takes effect. Every gate
+    // path (output, init, and timer tick) passes through this exclusion.
+    if detect_codex_trust_prompt(grid.screen) {
+        return false;
+    }
+
     if wait_for_agent_relay_boot {
         saw_agent_relay_boot
             && output_has_prompt(resolved_cli, post_boot_output)
@@ -411,30 +433,29 @@ async fn try_emit_worker_ready(
     child_pid: Option<u32>,
     init_request_id: &mut Option<RequestId>,
     init_received_at: Option<Instant>,
-    worker_ready_sent: &mut bool,
+    readiness: &mut StartupReadinessState,
     startup_ready: bool,
 ) {
     // init_received_at is Some only after init_worker has been received.
     // We use it (not init_request_id) as the gate because the broker sends
     // init_worker without a request_id.
-    if *worker_ready_sent || init_received_at.is_none() {
+    if readiness.ready_sent || init_received_at.is_none() {
         return;
     }
 
-    let timed_out = init_received_at
-        .map(|started| started.elapsed() >= STARTUP_READY_TIMEOUT)
-        .unwrap_or(false);
-    if !startup_ready && !timed_out {
+    if !startup_ready {
+        if !readiness.wait_warned
+            && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_WARNING)
+        {
+            tracing::warn!(
+                target: "agent_relay::worker::pty",
+                worker = %worker_name,
+                warning_secs = STARTUP_READY_WARNING.as_secs(),
+                "harness prompt not ready yet; preserving queued work until readiness is proven"
+            );
+            readiness.wait_warned = true;
+        }
         return;
-    }
-
-    if timed_out && !startup_ready {
-        tracing::warn!(
-            target: "agent_relay::worker::pty",
-            worker = %worker_name,
-            timeout_secs = STARTUP_READY_TIMEOUT.as_secs(),
-            "startup readiness timed out; emitting worker_ready fallback"
-        );
     }
 
     let request_id = init_request_id.take();
@@ -445,7 +466,21 @@ async fn try_emit_worker_ready(
         json!({"name": worker_name, "runtime": "pty", "pid": child_pid}),
     )
     .await;
-    *worker_ready_sent = true;
+    readiness.ready_sent = true;
+}
+
+async fn emit_harness_started(
+    out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    worker_name: &str,
+    child_pid: Option<u32>,
+) {
+    let _ = send_frame(
+        out_tx,
+        "harness_started",
+        None,
+        json!({"name": worker_name, "runtime": "pty", "pid": child_pid}),
+    )
+    .await;
 }
 
 pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
@@ -571,7 +606,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut post_boot_output = String::new();
     let mut init_request_id: Option<RequestId> = None;
     let mut init_received_at: Option<Instant> = None;
-    let mut worker_ready_sent = false;
+    let mut startup_readiness = StartupReadinessState::default();
     let suppress_multiline_mcp_reminder = cli_basename(&resolved_cli).eq_ignore_ascii_case("agent")
         || cli_basename(&resolved_cli).eq_ignore_ascii_case("cursor-agent")
         || cmd.cli.to_ascii_lowercase().contains("cursor");
@@ -741,6 +776,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .unwrap_or_else(|| "pty-worker".to_string());
                                 init_request_id = frame.request_id;
                                 init_received_at = Some(Instant::now());
+                                // Process liveness and safe input readiness are
+                                // separate facts. Report the child pid now so
+                                // the broker can reap a dead harness without
+                                // killing a live one whose prompt takes longer
+                                // than its startup deadline or is unrecognized.
+                                // Initial work remains queued until the later
+                                // worker_ready frame.
+                                emit_harness_started(
+                                    &out_tx,
+                                    &worker_name,
+                                    pty.child_pid(),
+                                )
+                                .await;
                                 let startup_ready = startup_gate_ready(
                                     &resolved_cli,
                                     &startup_output,
@@ -756,7 +804,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     pty.child_pid(),
                                     &mut init_request_id,
                                     init_received_at,
-                                    &mut worker_ready_sent,
+                                    &mut startup_readiness,
                                     startup_ready,
                                 )
                                 .await;
@@ -1129,6 +1177,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 last_context_low_pct = Some(pct);
                             }
                         }
+                        // Clear startup interstitials before evaluating the
+                        // prompt. The gate below still explicitly rejects the
+                        // trust screen until Codex redraws its real composer.
+                        pty_auto.handle_codex_trust(&text, &pty).await;
                         let startup_ready = startup_gate_ready(
                             &resolved_cli,
                             &startup_output,
@@ -1144,7 +1196,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             pty.child_pid(),
                             &mut init_request_id,
                             init_received_at,
-                            &mut worker_ready_sent,
+                            &mut startup_readiness,
                             startup_ready,
                         )
                         .await;
@@ -1714,7 +1766,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     pty.child_pid(),
                     &mut init_request_id,
                     init_received_at,
-                    &mut worker_ready_sent,
+                    &mut startup_readiness,
                     startup_ready,
                 )
                 .await;
@@ -2084,6 +2136,83 @@ mod tests {
                 cursor: Some((2, 3)),
             },
         ));
+    }
+
+    #[test]
+    fn startup_gate_rejects_codex_directory_trust_menu() {
+        let trust_screen = "Do you trust the contents of this directory?\n\
+                            › 1. Yes, continue\n\
+                              2. No, quit\n\
+                            Press enter to continue";
+        assert!(!evaluate_startup_gate(
+            "codex",
+            trust_screen,
+            600,
+            false,
+            false,
+            "",
+            GridReadinessSnapshot {
+                screen: trust_screen,
+                cursor: Some((2, 1)),
+            },
+        ));
+    }
+
+    #[tokio::test]
+    async fn startup_warning_preserves_work_until_real_readiness() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_WARNING - Duration::from_secs(1);
+        let mut readiness = StartupReadinessState::default();
+
+        try_emit_worker_ready(
+            &tx,
+            "slow-worker",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            false,
+        )
+        .await;
+
+        assert!(
+            readiness.wait_warned,
+            "slow startup should emit its one diagnostic"
+        );
+        assert!(
+            !readiness.ready_sent,
+            "elapsed time is not proof of a ready prompt"
+        );
+        assert!(rx.try_recv().is_err(), "no worker_ready frame may escape");
+
+        try_emit_worker_ready(
+            &tx,
+            "slow-worker",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            true,
+        )
+        .await;
+
+        let frame = rx.try_recv().expect("proven readiness should emit a frame");
+        assert_eq!(frame.msg_type, "worker_ready");
+        assert!(readiness.ready_sent);
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_is_reported_without_claiming_input_readiness() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        emit_harness_started(&tx, "slow-worker", Some(42)).await;
+
+        let frame = rx.try_recv().expect("harness_started frame");
+        assert_eq!(frame.msg_type, "harness_started");
+        assert_eq!(frame.payload["name"], "slow-worker");
+        assert_eq!(frame.payload["runtime"], "pty");
+        assert_eq!(frame.payload["pid"], 42);
     }
 
     #[test]

@@ -26,6 +26,7 @@ use tokio::{
     sync::mpsc,
     time::timeout,
 };
+use uuid::Uuid;
 
 use crate::{
     cli::command_parse::{normalize_cli_name, parse_cli_command},
@@ -45,12 +46,10 @@ const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 /// How long a worker may go without reporting `worker_ready` before the broker
 /// treats its harness as failed-to-start.
 ///
-/// The worker process emits `worker_ready` itself — the PTY runtime even has a
-/// 25s fallback that fires when readiness detection times out
-/// (`pty_worker::STARTUP_READY_TIMEOUT`). So silence past this deadline does not
-/// mean "slow": it means the worker died, or wedged, before it could report.
-/// The margin over that 25s fallback is deliberately generous — reaping a
-/// healthy-but-slow agent is far worse than listing a dead one a little longer.
+/// The worker process emits `worker_ready` itself, but only after its harness
+/// has exposed a proven input prompt. PTY wrappers report the child pid earlier,
+/// so this deadline only applies when the broker has neither readiness nor
+/// separate proof of harness liveness.
 const WORKER_READY_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Briefly hold the spawn acknowledgement so a wrapper that cannot launch its
@@ -157,6 +156,8 @@ pub(crate) use relay_pty::detection;
 
 #[derive(Debug)]
 pub(crate) struct WorkerHandle {
+    /// Unique identity for this same-name worker process generation.
+    pub(crate) generation: Uuid,
     pub(crate) spec: AgentSpec,
     pub(crate) parent: Option<String>,
     pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
@@ -193,7 +194,11 @@ impl AgentWorkState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkerEvent {
-    Message { name: WorkerName, value: Value },
+    Message {
+        name: WorkerName,
+        generation: Uuid,
+        value: Value,
+    },
 }
 
 pub(crate) struct WorkerRegistry {
@@ -961,9 +966,11 @@ impl WorkerRegistry {
         let log_file = self.worker_log_path(&spec.name);
         let startup_log_file = log_file.clone();
 
+        let generation = Uuid::new_v4();
         spawn_worker_reader(
             self.event_tx.clone(),
             spec.name.clone(),
+            generation,
             "stdout",
             stdout,
             true,
@@ -972,6 +979,7 @@ impl WorkerRegistry {
         spawn_worker_reader(
             self.event_tx.clone(),
             spec.name.clone(),
+            generation,
             "stderr",
             stderr,
             false,
@@ -979,6 +987,7 @@ impl WorkerRegistry {
         );
 
         let handle = WorkerHandle {
+            generation,
             spec: spec.clone(),
             parent,
             workspace_id,
@@ -1927,6 +1936,7 @@ fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
 fn spawn_worker_reader<R>(
     tx: mpsc::Sender<WorkerEvent>,
     name: WorkerName,
+    generation: Uuid,
     stream_name: &'static str,
     reader: R,
     parse_json: bool,
@@ -2031,6 +2041,7 @@ fn spawn_worker_reader<R>(
                     if tx
                         .send(WorkerEvent::Message {
                             name: name.clone(),
+                            generation,
                             value,
                         })
                         .await
@@ -2073,6 +2084,7 @@ fn spawn_worker_reader<R>(
             if tx
                 .send(WorkerEvent::Message {
                     name: name.clone(),
+                    generation,
                     value: fallback,
                 })
                 .await
@@ -2187,6 +2199,7 @@ mod tests {
         reg.workers.insert(
             WorkerName::from(name),
             WorkerHandle {
+                generation: Uuid::new_v4(),
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
@@ -2230,6 +2243,7 @@ mod tests {
         reg.workers.insert(
             WorkerName::from(name),
             WorkerHandle {
+                generation: Uuid::new_v4(),
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
@@ -2332,9 +2346,11 @@ mod tests {
         }
 
         #[test]
-        fn the_deadline_clears_the_pty_runtime_startup_fallback() {
-            // `pty_worker::STARTUP_READY_TIMEOUT` is 25s; the broker must wait
-            // comfortably longer than the worker's own fallback.
+        fn the_deadline_allows_slow_pty_startup_before_reaping() {
+            // The PTY emits a one-shot warning at 25s but keeps waiting for a
+            // proven prompt. A reported live child pid bypasses this deadline;
+            // without either signal, the broker still leaves a generous margin
+            // before classifying the wrapper as orphaned.
             assert!(WORKER_READY_DEADLINE > Duration::from_secs(25) * 3);
         }
     }

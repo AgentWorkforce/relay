@@ -21,7 +21,7 @@ engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
 | capability query        | `GET /v1/nodes?capability=` returns the right node(s), incl. a shared capability on both                                                                                                                                              |
 | cross-node dispatch     | `echo`→node-a, `ping`→node-b each dispatch over the owning node's control connection and ack                                                                                                                                          |
 | declarative trigger     | a `#general` `/deploy/` message fires the action exactly once; the action-generated reply does **not** re-trigger — asserted by counting the `echo:` **prefix** (a broken guard cascades to `echo:echo:…`, growing the total)         |
-| spawn completes E2E     | targeted spawn mints+injects the agent token, binds the agent via-node, and the node heartbeats the count up — the regression guard for the token-authority handshake                                                                 |
+| spawn completes E2E     | five consecutive targeted spawns across both nodes mint+inject agent tokens, bind via-node, wait for proven harness prompts, and cause each PTY child to record its unique brief nonce — registration alone is insufficient           |
 | capability-routed spawn | with no target, placement picks the only node advertising the capability                                                                                                                                                              |
 | scheduled spawn         | a shared-capability spawn routes to the least-loaded node (pre-loaded node is skipped)                                                                                                                                                |
 | resume                  | a resumable spawn carries `session_ref`; after release, the resume re-targets the **origin** node                                                                                                                                     |
@@ -63,7 +63,7 @@ BROKER_BINARY_PATH="$PWD/target/release/agent-relay-broker" \
 The suite **skips cleanly** (never fails) when prerequisites are missing — the
 default `npm test` does not run it. The `Fleet E2E` GitHub Actions workflow
 provisions the engine (pinned to the relaycast#194 SHA) + broker and runs the
-full matrix; the matrix itself is ~30s, the wall-clock is build-dominated.
+full matrix; the matrix itself is ~2 minutes, the wall-clock is build-dominated.
 
 ## Isolation notes
 

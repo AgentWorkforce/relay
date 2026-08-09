@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AgentStream,
@@ -373,36 +375,89 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(settled).toBe(before + 1);
   }, 30_000);
 
-  it('spawn completes end-to-end: targeted spawn mints+injects the token, binds the agent via-node, node reports it', async () => {
-    // Regression guard for the token-authority handshake (engine agent.register
-    // reply frame ↔ broker). Before the fix this hung to a 30s timeout.
-    const before = node(await getNodes(engine, workspaceKey), 'node-a')!.active_agents;
-    const spawn = await invokeAction(engine, driverToken, 'spawn', {
-      cli: 'claude',
-      name: 'worker-a',
-      target_node: 'node-a',
-    });
-    expect(spawn.status).toBe(201);
-    expect(spawn.body.data.handler_node_id).toBe('node_a');
-
-    const done = await waitFor(
-      async () => {
-        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
-        return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
-      },
-      { label: 'spawn settled', timeoutMs: 20_000 }
+  it('spawn completes end-to-end: targeted spawn delivers its brief after harness readiness and the agent acts', async () => {
+    // Five consecutive spawns across both nodes prove this is not a lucky
+    // one-off. Node A's stub delays readiness past the historical 25s fallback
+    // and discards pre-ready input; node B provides the fast-ready control.
+    const cases = [
+      { agent: 'worker-a', cli: 'claude', nodeName: 'node-a', nodeId: 'node_a', host: nodeA },
+      { agent: 'worker-b1', cli: 'codex', nodeName: 'node-b', nodeId: 'node_b', host: nodeB },
+      { agent: 'worker-a2', cli: 'claude', nodeName: 'node-a', nodeId: 'node_a', host: nodeA },
+      { agent: 'worker-b2', cli: 'codex', nodeName: 'node-b', nodeId: 'node_b', host: nodeB },
+      { agent: 'worker-a3', cli: 'claude', nodeName: 'node-a', nodeId: 'node_a', host: nodeA },
+    ] as const;
+    const before = new Map(
+      (await getNodes(engine, workspaceKey)).map((entry) => [entry.name, entry.active_agents])
     );
-    expect(done.status).toBe('completed'); // the agent registered + token minted, not a timeout
 
-    // The broker bound the agent via-node and heartbeated the count up.
+    for (const [index, testCase] of cases.entries()) {
+      const nonce = `spawn-brief-${index + 1}-${Date.now().toString(36)}`;
+      const observationPath = path.join(
+        testCase.host.projectDir,
+        '.agentworkforce',
+        'relay',
+        'e2e-brief-actions',
+        `${nonce}.json`
+      );
+      const spawn = await invokeAction(engine, driverToken, 'spawn', {
+        cli: testCase.cli,
+        name: testCase.agent,
+        target_node: testCase.nodeName,
+        task: `First, act on this brief by recording RELAY_E2E_BRIEF_NONCE=${nonce}`,
+      });
+      expect(spawn.status).toBe(201);
+      expect(spawn.body.data.handler_node_id).toBe(testCase.nodeId);
+
+      const done = await waitFor(
+        async () => {
+          const invocation = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+          return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
+        },
+        { label: `${testCase.agent} spawn settled`, timeoutMs: 35_000 }
+      );
+      expect(done.status).toBe('completed');
+
+      // Registration and heartbeat only prove that a process exists. The nonce
+      // file is written by the PTY child from the injected task, so it proves
+      // the brief crossed the harness readiness boundary and caused action.
+      const observation = await waitFor(
+        async () => {
+          try {
+            return JSON.parse(readFileSync(observationPath, 'utf8')) as {
+              nonce: string;
+              agent: string;
+              node: string;
+              observedAt: string;
+            };
+          } catch {
+            return null;
+          }
+        },
+        { label: `${testCase.agent} acted on nonce-bearing brief`, timeoutMs: 40_000 }
+      );
+      expect(observation).toMatchObject({
+        nonce,
+        agent: testCase.agent,
+        node: testCase.nodeName,
+      });
+      expect(Number.isNaN(Date.parse(observation.observedAt))).toBe(false);
+    }
+
     await waitFor(
       async () => {
-        const a = node(await getNodes(engine, workspaceKey), 'node-a');
-        return a && a.active_agents > before ? a : null;
+        const nodes = await getNodes(engine, workspaceKey);
+        const a = node(nodes, 'node-a');
+        const b = node(nodes, 'node-b');
+        return a &&
+          b &&
+          a.active_agents >= (before.get('node-a') ?? 0) + 3 &&
+          b.active_agents >= (before.get('node-b') ?? 0) + 2
+          ? { a, b }
+          : null;
       },
-      { label: 'node-a active_agents incremented', timeoutMs: 20_000 }
+      { label: 'both nodes heartbeat all five spawned agents', timeoutMs: 20_000 }
     );
-  }, 45_000);
+  }, 150_000);
 
   it('capability-routed spawn: with no target, placement picks the only node advertising the capability', async () => {
     const spawn = await invokeAction(engine, driverToken, 'spawn', { cli: 'codex', name: 'worker-codex' });

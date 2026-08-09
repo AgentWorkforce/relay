@@ -15,13 +15,28 @@ import { action, defineNode, spawn } from '@agent-relay/fleet';
  */
 const stubPath = fileURLToPath(new URL('./stub-agent.cjs', import.meta.url));
 const stub = definePtyHarness({ runtime: 'pty', command: process.execPath, args: [stubPath] });
+const delayedReadyStub = definePtyHarness({
+  runtime: 'pty',
+  command: process.execPath,
+  args: [stubPath],
+  // Longer than the broker's historical 25s false-readiness fallback. The
+  // stub discards startup input, so only a delivery after its real prompt can
+  // produce the nonce observation asserted by the fleet E2E.
+  env: {
+    RELAY_E2E_STUB_READY_DELAY_MS: '27000',
+    RELAY_E2E_NODE_NAME: 'node-a',
+    // Keep the assertion focused on readiness ordering rather than the generic
+    // harness's character pacing; real Codex tasks already use bulk injection.
+    RELAY_INJECT_RATE_MS: '0',
+  },
+});
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default defineNode({
   name: 'node-a',
   maxAgents: 8,
   capabilities: {
-    'spawn:claude': spawn(stub),
+    'spawn:claude': spawn(delayedReadyStub),
     'spawn:pool': spawn(stub),
     echo: action(
       {

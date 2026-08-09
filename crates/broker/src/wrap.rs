@@ -37,9 +37,9 @@ use crate::util::{
     ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
         detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
-        detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
-        detect_opencode_permission_prompt, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode,
+        detect_codex_trust_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
+        detect_gemini_untrusted_banner, detect_opencode_permission_prompt, is_auto_suggestion,
+        is_bypass_selection_menu, is_in_editor_mode,
     },
 };
 use crate::worker::detection::ActivityDetector;
@@ -153,6 +153,9 @@ pub(crate) struct PtyAutoState {
     // Codex model upgrade prompt
     pub(crate) codex_model_prompt_handled: bool,
     pub(crate) codex_model_buffer: String,
+    // Codex directory trust prompt
+    pub(crate) codex_trust_buffer: String,
+    pub(crate) codex_trust_handled: bool,
     // Opencode/droid EXECUTE permission prompt
     pub(crate) opencode_perm_buffer: String,
     pub(crate) last_opencode_perm_approval: Option<Instant>,
@@ -197,6 +200,8 @@ impl PtyAutoState {
             bypass_perms_send_count: 0,
             codex_model_prompt_handled: false,
             codex_model_buffer: String::new(),
+            codex_trust_buffer: String::new(),
+            codex_trust_handled: false,
             opencode_perm_buffer: String::new(),
             last_opencode_perm_approval: None,
             gemini_action_buffer: String::new(),
@@ -330,6 +335,27 @@ impl PtyAutoState {
             tokio::time::sleep(Duration::from_millis(100)).await;
             warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "codex_model_enter"); // Enter to confirm
             self.codex_model_buffer.clear();
+        }
+    }
+
+    /// Detect and accept Codex's startup directory-trust prompt.
+    /// "Yes, continue" is pre-selected as option 1, so Enter is sufficient.
+    pub(crate) async fn handle_codex_trust(&mut self, text: &str, pty: &PtySession) {
+        if self.interactive_hold || self.codex_trust_handled {
+            return;
+        }
+        Self::append_buf(&mut self.codex_trust_buffer, text, 2500, 2000);
+        let clean = strip_ansi(&self.codex_trust_buffer);
+        // Codex redraws this TUI with cursor motion, so the raw byte stream can
+        // spell only fragments even though the terminal grid contains the
+        // complete menu. Check both representations, just like readiness does.
+        let visible_screen = pty.screen_text();
+        if detect_codex_trust_prompt(&clean) || detect_codex_trust_prompt(&visible_screen) {
+            tracing::info!("Detected Codex directory trust prompt, auto-accepting");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "codex_trust");
+            self.codex_trust_buffer.clear();
+            self.codex_trust_handled = true;
         }
     }
 
@@ -1217,6 +1243,7 @@ pub(crate) async fn run_wrap(
                             pty_auto.handle_mcp_approval(&text, &pty).await;
                             pty_auto.handle_bypass_permissions(&text, &pty).await;
                             pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                            pty_auto.handle_codex_trust(&text, &pty).await;
                             pty_auto.handle_opencode_permission(&text, &pty).await;
                             pty_auto.handle_gemini_action(&text, &pty).await;
                             pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;

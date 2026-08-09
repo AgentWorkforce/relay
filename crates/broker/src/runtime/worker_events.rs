@@ -34,6 +34,34 @@ fn enqueue_pty_event(
     }
 }
 
+fn protocol_pid(value: &Value) -> Option<u32> {
+    value
+        .get("payload")
+        .and_then(|payload| payload.get("pid"))
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+}
+
+fn record_started_harness_pid(
+    runtime: &AgentRuntime,
+    harness_pid: &mut Option<u32>,
+    value: &Value,
+) -> bool {
+    if *runtime != AgentRuntime::Pty {
+        return false;
+    }
+    let Some(pid) = protocol_pid(value) else {
+        return false;
+    };
+    *harness_pid = Some(pid);
+    true
+}
+
+fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
+    current_generation == Some(event_generation)
+}
+
 #[cfg(test)]
 mod pty_observability_tests {
     use super::*;
@@ -108,6 +136,79 @@ mod pty_observability_tests {
         assert_eq!(hosted.payload["protocol_version"], 1);
         assert_eq!(hosted.payload["sequence"], 9);
         assert_eq!(hosted.workspace_id, Some(workspace_id));
+    }
+
+    #[test]
+    fn protocol_pid_accepts_only_u32_payload_values() {
+        assert_eq!(protocol_pid(&json!({"payload": {"pid": 42}})), Some(42));
+        assert_eq!(protocol_pid(&json!({"payload": {"pid": 0}})), None);
+        assert_eq!(
+            protocol_pid(&json!({"payload": {"pid": u64::from(u32::MAX) + 1}})),
+            None
+        );
+        assert_eq!(protocol_pid(&json!({"payload": {"pid": "42"}})), None);
+    }
+
+    #[test]
+    fn worker_generation_gate_rejects_stale_same_name_events() {
+        let current = Uuid::new_v4();
+        assert!(worker_event_is_current(Some(current), current));
+        assert!(!worker_event_is_current(Some(current), Uuid::new_v4()));
+        assert!(!worker_event_is_current(None, current));
+    }
+
+    #[test]
+    fn harness_started_records_liveness_without_readiness() {
+        let mut harness_pid = None;
+        assert!(record_started_harness_pid(
+            &AgentRuntime::Pty,
+            &mut harness_pid,
+            &json!({"payload": {"pid": 42}})
+        ));
+        assert_eq!(harness_pid, Some(42));
+
+        let now = Instant::now();
+        let live_pid = std::process::id();
+        assert!(record_started_harness_pid(
+            &AgentRuntime::Pty,
+            &mut harness_pid,
+            &json!({"payload": {"pid": live_pid}})
+        ));
+        assert_eq!(
+            crate::worker::orphaned_worker(
+                harness_pid,
+                None,
+                now - std::time::Duration::from_secs(120),
+                now,
+            ),
+            None,
+            "reported harness liveness must bypass the never-ready deadline"
+        );
+
+        let mut zero_pid = None;
+        assert!(!record_started_harness_pid(
+            &AgentRuntime::Pty,
+            &mut zero_pid,
+            &json!({"payload": {"pid": 0}})
+        ));
+        assert_eq!(
+            crate::worker::orphaned_worker(
+                zero_pid,
+                None,
+                now - std::time::Duration::from_secs(120),
+                now,
+            ),
+            Some(crate::worker::OrphanedWorker::NeverReady),
+            "a zero pid must not suppress the never-ready deadline"
+        );
+
+        let mut headless_pid = None;
+        assert!(!record_started_harness_pid(
+            &AgentRuntime::Headless,
+            &mut headless_pid,
+            &json!({"payload": {"pid": 42}})
+        ));
+        assert_eq!(headless_pid, None);
     }
 }
 
@@ -328,7 +429,22 @@ impl BrokerRuntime {
         let delivery_states = &self.delivery_states;
 
         match worker_event {
-            WorkerEvent::Message { name, value } => {
+            WorkerEvent::Message {
+                name,
+                generation,
+                value,
+            } => {
+                let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
+                if !worker_event_is_current(current_generation, generation) {
+                    tracing::debug!(
+                        target = "agent_relay::broker",
+                        worker = %name,
+                        event_generation = %generation,
+                        current_generation = ?current_generation,
+                        "ignoring event from stale worker generation"
+                    );
+                    return;
+                }
                 if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
                     if msg_type == "delivery_ack" {
                         if let Some(payload) = value.get("payload") {
@@ -731,6 +847,19 @@ impl BrokerRuntime {
                             }
                         }
                         let _ = send_event(sdk_out_tx, stream_event).await;
+                    } else if msg_type == "harness_started" {
+                        // A running child process proves liveness but not that
+                        // its TUI is ready for injected input. Record the pid so
+                        // startup maintenance can distinguish a live, slow (or
+                        // unrecognized) prompt from a dead harness. Do not set
+                        // ready_at or release initial_tasks here.
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            record_started_harness_pid(
+                                &handle.spec.runtime,
+                                &mut handle.harness_pid,
+                                &value,
+                            );
+                        }
                     } else if msg_type == "worker_ready" {
                         // If this (re)spawned worker's inbound delivery mode is
                         // already manual_flush — e.g. it crashed and restarted
@@ -835,12 +964,7 @@ impl BrokerRuntime {
                                 workspace_id,
                             );
                         }
-                        let payload_pid = value
-                            .get("payload")
-                            .and_then(|p| p.get("pid"))
-                            .and_then(Value::as_u64)
-                            .filter(|pid| *pid <= u32::MAX as u64)
-                            .map(|pid| pid as u32);
+                        let payload_pid = protocol_pid(&value);
                         let (provider_val, cli_val, model_val, session_id_val, pid_val) = workers
                             .workers
                             .get_mut(&name)
