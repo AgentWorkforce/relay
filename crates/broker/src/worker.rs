@@ -45,12 +45,11 @@ const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 /// How long a worker may go without reporting `worker_ready` before the broker
 /// treats its harness as failed-to-start.
 ///
-/// The worker process emits `worker_ready` itself — the PTY runtime even has a
-/// 25s fallback that fires when readiness detection times out
-/// (`pty_worker::STARTUP_READY_TIMEOUT`). So silence past this deadline does not
-/// mean "slow": it means the worker died, or wedged, before it could report.
-/// The margin over that 25s fallback is deliberately generous — reaping a
-/// healthy-but-slow agent is far worse than listing a dead one a little longer.
+/// The worker process emits `worker_ready` itself, but only after its harness
+/// has exposed a proven input prompt. Silence past this deliberately generous
+/// deadline means the worker died or wedged before it could become deliverable;
+/// reaping a healthy-but-slow agent is far worse than listing a dead one a
+/// little longer.
 const WORKER_READY_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Briefly hold the spawn acknowledgement so a wrapper that cannot launch its
@@ -2332,9 +2331,10 @@ mod tests {
         }
 
         #[test]
-        fn the_deadline_clears_the_pty_runtime_startup_fallback() {
-            // `pty_worker::STARTUP_READY_TIMEOUT` is 25s; the broker must wait
-            // comfortably longer than the worker's own fallback.
+        fn the_deadline_allows_slow_pty_startup_before_reaping() {
+            // The PTY emits a one-shot warning at 25s but keeps waiting for a
+            // proven prompt. The broker must leave a generous margin before it
+            // classifies the never-ready wrapper as orphaned.
             assert!(WORKER_READY_DEADLINE > Duration::from_secs(25) * 3);
         }
     }

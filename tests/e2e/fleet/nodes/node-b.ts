@@ -15,7 +15,15 @@ import { action, defineNode, spawn } from '@agent-relay/fleet';
  * harness (`stub-agent.cjs`) is a launchable PTY child that idles.
  */
 const stubPath = fileURLToPath(new URL('./stub-agent.cjs', import.meta.url));
-const stub = definePtyHarness({ runtime: 'pty', command: process.execPath, args: [stubPath] });
+const stub = definePtyHarness({
+  runtime: 'pty',
+  command: process.execPath,
+  args: [stubPath],
+  env: {
+    RELAY_E2E_NODE_NAME: 'node-b',
+    RELAY_INJECT_RATE_MS: '0',
+  },
+});
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default defineNode({

@@ -149,10 +149,22 @@ fn cli_basename(command: &str) -> &str {
         .unwrap_or(command)
 }
 
-const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(25);
+/// Emit one diagnostic when a harness has not reached a proven input prompt in
+/// this long. This is deliberately a warning threshold, not a readiness
+/// fallback: declaring a booting TUI ready causes its initial task to be typed
+/// into startup UI and silently consumed. The broker's independent
+/// `WORKER_READY_DEADLINE` reaps a harness that never becomes ready.
+const STARTUP_READY_WARNING: Duration = Duration::from_secs(25);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const PROMPT_WINDOW_BYTES: usize = 800;
+
+#[derive(Default)]
+struct StartupReadinessState {
+    ready_sent: bool,
+    wait_warned: bool,
+}
+
 const AGENT_RELAY_BOOT_MARKER: &str = "booting mcp server: agent-relay";
 const AGENT_RELAY_SERVER_NAME: &str = "agent-relay";
 const LEGACY_RELAY_SERVER_NAME: &str = "relaycast";
@@ -411,30 +423,29 @@ async fn try_emit_worker_ready(
     child_pid: Option<u32>,
     init_request_id: &mut Option<RequestId>,
     init_received_at: Option<Instant>,
-    worker_ready_sent: &mut bool,
+    readiness: &mut StartupReadinessState,
     startup_ready: bool,
 ) {
     // init_received_at is Some only after init_worker has been received.
     // We use it (not init_request_id) as the gate because the broker sends
     // init_worker without a request_id.
-    if *worker_ready_sent || init_received_at.is_none() {
+    if readiness.ready_sent || init_received_at.is_none() {
         return;
     }
 
-    let timed_out = init_received_at
-        .map(|started| started.elapsed() >= STARTUP_READY_TIMEOUT)
-        .unwrap_or(false);
-    if !startup_ready && !timed_out {
+    if !startup_ready {
+        if !readiness.wait_warned
+            && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_WARNING)
+        {
+            tracing::warn!(
+                target: "agent_relay::worker::pty",
+                worker = %worker_name,
+                warning_secs = STARTUP_READY_WARNING.as_secs(),
+                "harness prompt not ready yet; preserving queued work until readiness is proven"
+            );
+            readiness.wait_warned = true;
+        }
         return;
-    }
-
-    if timed_out && !startup_ready {
-        tracing::warn!(
-            target: "agent_relay::worker::pty",
-            worker = %worker_name,
-            timeout_secs = STARTUP_READY_TIMEOUT.as_secs(),
-            "startup readiness timed out; emitting worker_ready fallback"
-        );
     }
 
     let request_id = init_request_id.take();
@@ -445,7 +456,7 @@ async fn try_emit_worker_ready(
         json!({"name": worker_name, "runtime": "pty", "pid": child_pid}),
     )
     .await;
-    *worker_ready_sent = true;
+    readiness.ready_sent = true;
 }
 
 pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
@@ -571,7 +582,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut post_boot_output = String::new();
     let mut init_request_id: Option<RequestId> = None;
     let mut init_received_at: Option<Instant> = None;
-    let mut worker_ready_sent = false;
+    let mut startup_readiness = StartupReadinessState::default();
     let suppress_multiline_mcp_reminder = cli_basename(&resolved_cli).eq_ignore_ascii_case("agent")
         || cli_basename(&resolved_cli).eq_ignore_ascii_case("cursor-agent")
         || cmd.cli.to_ascii_lowercase().contains("cursor");
@@ -756,7 +767,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     pty.child_pid(),
                                     &mut init_request_id,
                                     init_received_at,
-                                    &mut worker_ready_sent,
+                                    &mut startup_readiness,
                                     startup_ready,
                                 )
                                 .await;
@@ -1144,7 +1155,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             pty.child_pid(),
                             &mut init_request_id,
                             init_received_at,
-                            &mut worker_ready_sent,
+                            &mut startup_readiness,
                             startup_ready,
                         )
                         .await;
@@ -1714,7 +1725,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     pty.child_pid(),
                     &mut init_request_id,
                     init_received_at,
-                    &mut worker_ready_sent,
+                    &mut startup_readiness,
                     startup_ready,
                 )
                 .await;
@@ -2084,6 +2095,50 @@ mod tests {
                 cursor: Some((2, 3)),
             },
         ));
+    }
+
+    #[tokio::test]
+    async fn startup_warning_preserves_work_until_real_readiness() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_WARNING - Duration::from_secs(1);
+        let mut readiness = StartupReadinessState::default();
+
+        try_emit_worker_ready(
+            &tx,
+            "slow-worker",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            false,
+        )
+        .await;
+
+        assert!(
+            readiness.wait_warned,
+            "slow startup should emit its one diagnostic"
+        );
+        assert!(
+            !readiness.ready_sent,
+            "elapsed time is not proof of a ready prompt"
+        );
+        assert!(rx.try_recv().is_err(), "no worker_ready frame may escape");
+
+        try_emit_worker_ready(
+            &tx,
+            "slow-worker",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            true,
+        )
+        .await;
+
+        let frame = rx.try_recv().expect("proven readiness should emit a frame");
+        assert_eq!(frame.msg_type, "worker_ready");
+        assert!(readiness.ready_sent);
     }
 
     #[test]
