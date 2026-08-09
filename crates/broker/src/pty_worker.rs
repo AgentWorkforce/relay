@@ -152,8 +152,8 @@ fn cli_basename(command: &str) -> &str {
 /// Emit one diagnostic when a harness has not reached a proven input prompt in
 /// this long. This is deliberately a warning threshold, not a readiness
 /// fallback: declaring a booting TUI ready causes its initial task to be typed
-/// into startup UI and silently consumed. The broker's independent
-/// `WORKER_READY_DEADLINE` reaps a harness that never becomes ready.
+/// into startup UI and silently consumed. Harness liveness is reported to the
+/// broker independently so a live but unrecognized prompt is not reaped.
 const STARTUP_READY_WARNING: Duration = Duration::from_secs(25);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
@@ -459,6 +459,20 @@ async fn try_emit_worker_ready(
     readiness.ready_sent = true;
 }
 
+async fn emit_harness_started(
+    out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    worker_name: &str,
+    child_pid: Option<u32>,
+) {
+    let _ = send_frame(
+        out_tx,
+        "harness_started",
+        None,
+        json!({"name": worker_name, "runtime": "pty", "pid": child_pid}),
+    )
+    .await;
+}
+
 pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Disable Claude Code auto-suggestions to prevent accidental acceptance during injection.
     #[allow(deprecated)]
@@ -752,6 +766,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .unwrap_or_else(|| "pty-worker".to_string());
                                 init_request_id = frame.request_id;
                                 init_received_at = Some(Instant::now());
+                                // Process liveness and safe input readiness are
+                                // separate facts. Report the child pid now so
+                                // the broker can reap a dead harness without
+                                // killing a live one whose prompt takes longer
+                                // than its startup deadline or is unrecognized.
+                                // Initial work remains queued until the later
+                                // worker_ready frame.
+                                emit_harness_started(
+                                    &out_tx,
+                                    &worker_name,
+                                    pty.child_pid(),
+                                )
+                                .await;
                                 let startup_ready = startup_gate_ready(
                                     &resolved_cli,
                                     &startup_output,
@@ -2139,6 +2166,19 @@ mod tests {
         let frame = rx.try_recv().expect("proven readiness should emit a frame");
         assert_eq!(frame.msg_type, "worker_ready");
         assert!(readiness.ready_sent);
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_is_reported_without_claiming_input_readiness() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        emit_harness_started(&tx, "slow-worker", Some(42)).await;
+
+        let frame = rx.try_recv().expect("harness_started frame");
+        assert_eq!(frame.msg_type, "harness_started");
+        assert_eq!(frame.payload["name"], "slow-worker");
+        assert_eq!(frame.payload["runtime"], "pty");
+        assert_eq!(frame.payload["pid"], 42);
     }
 
     #[test]

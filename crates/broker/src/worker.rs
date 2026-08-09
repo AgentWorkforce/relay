@@ -46,10 +46,9 @@ const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 /// treats its harness as failed-to-start.
 ///
 /// The worker process emits `worker_ready` itself, but only after its harness
-/// has exposed a proven input prompt. Silence past this deliberately generous
-/// deadline means the worker died or wedged before it could become deliverable;
-/// reaping a healthy-but-slow agent is far worse than listing a dead one a
-/// little longer.
+/// has exposed a proven input prompt. PTY wrappers report the child pid earlier,
+/// so this deadline only applies when the broker has neither readiness nor
+/// separate proof of harness liveness.
 const WORKER_READY_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Briefly hold the spawn acknowledgement so a wrapper that cannot launch its
@@ -2333,8 +2332,9 @@ mod tests {
         #[test]
         fn the_deadline_allows_slow_pty_startup_before_reaping() {
             // The PTY emits a one-shot warning at 25s but keeps waiting for a
-            // proven prompt. The broker must leave a generous margin before it
-            // classifies the never-ready wrapper as orphaned.
+            // proven prompt. A reported live child pid bypasses this deadline;
+            // without either signal, the broker still leaves a generous margin
+            // before classifying the wrapper as orphaned.
             assert!(WORKER_READY_DEADLINE > Duration::from_secs(25) * 3);
         }
     }

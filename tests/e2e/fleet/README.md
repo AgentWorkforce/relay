@@ -63,7 +63,7 @@ BROKER_BINARY_PATH="$PWD/target/release/agent-relay-broker" \
 The suite **skips cleanly** (never fails) when prerequisites are missing — the
 default `npm test` does not run it. The `Fleet E2E` GitHub Actions workflow
 provisions the engine (pinned to the relaycast#194 SHA) + broker and runs the
-full matrix; the matrix itself is ~30s, the wall-clock is build-dominated.
+full matrix; the matrix itself is ~2 minutes, the wall-clock is build-dominated.
 
 ## Isolation notes
 
