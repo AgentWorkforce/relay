@@ -40,6 +40,7 @@ fn protocol_pid(value: &Value) -> Option<u32> {
         .and_then(|payload| payload.get("pid"))
         .and_then(Value::as_u64)
         .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
 }
 
 fn record_started_harness_pid(
@@ -136,6 +137,7 @@ mod pty_observability_tests {
     #[test]
     fn protocol_pid_accepts_only_u32_payload_values() {
         assert_eq!(protocol_pid(&json!({"payload": {"pid": 42}})), Some(42));
+        assert_eq!(protocol_pid(&json!({"payload": {"pid": 0}})), None);
         assert_eq!(
             protocol_pid(&json!({"payload": {"pid": u64::from(u32::MAX) + 1}})),
             None
@@ -169,6 +171,23 @@ mod pty_observability_tests {
             ),
             None,
             "reported harness liveness must bypass the never-ready deadline"
+        );
+
+        let mut zero_pid = None;
+        assert!(!record_started_harness_pid(
+            &AgentRuntime::Pty,
+            &mut zero_pid,
+            &json!({"payload": {"pid": 0}})
+        ));
+        assert_eq!(
+            crate::worker::orphaned_worker(
+                zero_pid,
+                None,
+                now - std::time::Duration::from_secs(120),
+                now,
+            ),
+            Some(crate::worker::OrphanedWorker::NeverReady),
+            "a zero pid must not suppress the never-ready deadline"
         );
 
         let mut headless_pid = None;
