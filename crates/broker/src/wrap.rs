@@ -346,7 +346,11 @@ impl PtyAutoState {
         }
         Self::append_buf(&mut self.codex_trust_buffer, text, 2500, 2000);
         let clean = strip_ansi(&self.codex_trust_buffer);
-        if detect_codex_trust_prompt(&clean) {
+        // Codex redraws this TUI with cursor motion, so the raw byte stream can
+        // spell only fragments even though the terminal grid contains the
+        // complete menu. Check both representations, just like readiness does.
+        let visible_screen = pty.screen_text();
+        if detect_codex_trust_prompt(&clean) || detect_codex_trust_prompt(&visible_screen) {
             tracing::info!("Detected Codex directory trust prompt, auto-accepting");
             tokio::time::sleep(Duration::from_millis(100)).await;
             warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "codex_trust");
