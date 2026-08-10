@@ -32,7 +32,7 @@ use crate::runtime::{
     extract_mcp_message_ids, get_terminal_size, terminal_cols, terminal_rows, RelaySession,
     RelaySessionOptions, RelayWorkspace,
 };
-use crate::spawner::{spawn_env_vars, Spawner};
+use crate::spawner::{spawn_env_vars, with_commit_attestation_env, Spawner};
 use crate::util::{
     ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
@@ -846,7 +846,21 @@ async fn register_broker_actions(workspace: &RelayWorkspace) {
                 "properties": {
                     "name": { "type": "string", "description": "Worker agent name" },
                     "cli": { "type": "string", "description": "CLI/harness to launch" },
-                    "args": { "type": "array", "items": { "type": "string" } }
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "metadata": {
+                        "type": "object",
+                        "properties": {
+                            "attestation": {
+                                "type": "object",
+                                "required": ["jti", "agentId", "sponsorId"],
+                                "properties": {
+                                    "jti": { "type": "string" },
+                                    "agentId": { "type": "string" },
+                                    "sponsorId": { "type": "string" }
+                                }
+                            }
+                        }
+                    }
                 }
             }),
         ),
@@ -1421,6 +1435,10 @@ pub(crate) async fn run_wrap(
                                         default_workspace_id.as_deref(),
                                         // Per-worker: the harness this agent runs.
                                         crate::telemetry::infer_harness_from_command(&params.cli),
+                                    );
+                                    let env_vars = with_commit_attestation_env(
+                                        env_vars,
+                                        params.metadata.attestation.as_ref(),
                                     );
                                     // Pre-register the child agent so its MCP server
                                     // starts with a valid token (avoiding "Not registered"

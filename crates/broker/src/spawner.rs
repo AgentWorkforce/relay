@@ -1,4 +1,10 @@
-use std::{collections::HashMap, process::Stdio, time::Duration};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use crate::relaycast::configure_agent_relay_mcp_with_token;
 use anyhow::{Context, Result};
@@ -8,6 +14,172 @@ use tokio::{
 };
 
 use crate::cli::command_parse::parse_cli_command;
+use crate::types::CommitAttestation;
+
+const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
+const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
+const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
+const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
+const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
+const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
+
+const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
+# Installed by the broker through core.hooksPath. Keep repository hooks in the
+# chain: core.hooksPath normally replaces them entirely.
+
+message_file="$1"
+if [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n "$RELAY_ATTEST_JTI" ]; then
+  printf '\nAgent-Id: %s\nSponsor-Id: %s\nRelay-Attestation: %s\n' \
+    "$RELAY_ATTEST_AGENT_ID" \
+    "$RELAY_ATTEST_SPONSOR_ID" \
+    "$RELAY_ATTEST_JTI" >> "$message_file"
+fi
+
+# Resolve hooks with the broker's temporary core.hooksPath setting removed.
+# This retains both an inherited GIT_CONFIG_* hooks path and a repository's
+# configured/default hooks directory.
+original_count="${RELAY_ATTEST_GIT_CONFIG_COUNT:-0}"
+broker_index="${RELAY_ATTEST_GIT_CONFIG_INDEX:-}"
+case "$original_count" in
+  ''|*[!0-9]*) exit 0 ;;
+esac
+export GIT_CONFIG_COUNT="$original_count"
+if [ -n "$broker_index" ]; then
+  unset "GIT_CONFIG_KEY_$broker_index" "GIT_CONFIG_VALUE_$broker_index"
+fi
+configured_hooks_path="$(git config --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$configured_hooks_path" ]; then
+  case "$configured_hooks_path" in
+    /*) existing_hooks_dir="$configured_hooks_path" ;;
+    "~/"*) existing_hooks_dir="$HOME${configured_hooks_path#\~}" ;;
+    *) repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+       existing_hooks_dir="$repo_root/$configured_hooks_path" ;;
+  esac
+else
+  git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 0
+  existing_hooks_dir="$git_common_dir/hooks"
+fi
+repo_hook="$existing_hooks_dir/prepare-commit-msg"
+if [ -x "$repo_hook" ] && [ "$repo_hook" != "$RELAY_ATTEST_BROKER_HOOK_PATH" ]; then
+  exec "$repo_hook" "$@"
+fi
+"#;
+
+/// Add the public commit-attribution environment supplied by a dispatcher.
+///
+/// No metadata, or incomplete metadata, leaves the spawn environment exactly
+/// as it was. The hook path is added only by `spawn_wrap_with_token` after the
+/// broker has created its private hooks directory.
+pub fn with_commit_attestation_env(
+    mut env_vars: Vec<(String, String)>,
+    attestation: Option<&CommitAttestation>,
+) -> Vec<(String, String)> {
+    let Some(attestation) = attestation else {
+        return env_vars;
+    };
+
+    if !is_valid_attestation_value(&attestation.jti)
+        || !is_valid_attestation_value(&attestation.agent_id)
+        || !is_valid_attestation_value(&attestation.sponsor_id)
+    {
+        return env_vars;
+    }
+
+    env_vars.extend([
+        (RELAY_ATTEST_JTI.to_string(), attestation.jti.clone()),
+        (
+            RELAY_ATTEST_AGENT_ID.to_string(),
+            attestation.agent_id.clone(),
+        ),
+        (
+            RELAY_ATTEST_SPONSOR_ID.to_string(),
+            attestation.sponsor_id.clone(),
+        ),
+    ]);
+    env_vars
+}
+
+fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
+    [
+        RELAY_ATTEST_JTI,
+        RELAY_ATTEST_AGENT_ID,
+        RELAY_ATTEST_SPONSOR_ID,
+    ]
+    .iter()
+    .all(|expected| {
+        env_vars
+            .iter()
+            .rev()
+            .find(|(key, _)| key == expected)
+            .is_some_and(|(_, value)| is_valid_attestation_value(value))
+    })
+}
+
+fn is_valid_attestation_value(value: &str) -> bool {
+    !value.trim().is_empty() && !value.chars().any(|character| character.is_control())
+}
+
+fn write_prepare_commit_msg_hook(hooks_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(hooks_dir).context("creating broker git hooks directory")?;
+    let hook_path = hooks_dir.join("prepare-commit-msg");
+    fs::write(&hook_path, PREPARE_COMMIT_MSG_HOOK)
+        .context("writing broker prepare-commit-msg hook")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&hook_path)
+            .context("reading broker prepare-commit-msg permissions")?
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&hook_path, permissions)
+            .context("making broker prepare-commit-msg hook executable")?;
+    }
+
+    Ok(hook_path)
+}
+
+fn git_config_count(env_vars: &[(String, String)]) -> usize {
+    let inherited_count = std::env::var("GIT_CONFIG_COUNT").ok();
+    git_config_count_with_inherited(env_vars, inherited_count.as_deref())
+}
+
+fn git_config_count_with_inherited(
+    env_vars: &[(String, String)],
+    inherited_count: Option<&str>,
+) -> usize {
+    let inherited_count = inherited_count.and_then(|value| value.parse().ok());
+    if let Some((_, value)) = env_vars
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "GIT_CONFIG_COUNT")
+    {
+        return value.parse().ok().or(inherited_count).unwrap_or(0);
+    }
+
+    inherited_count.unwrap_or(0)
+}
+
+fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_dir: &Path) {
+    let count = git_config_count(env_vars);
+    let hook_path = hooks_dir.join("prepare-commit-msg");
+    env_vars.push((RELAY_ATTEST_GIT_CONFIG_COUNT.to_string(), count.to_string()));
+    env_vars.push((RELAY_ATTEST_GIT_CONFIG_INDEX.to_string(), count.to_string()));
+    env_vars.push((
+        RELAY_ATTEST_BROKER_HOOK_PATH.to_string(),
+        hook_path.to_string_lossy().into_owned(),
+    ));
+    env_vars.push(("GIT_CONFIG_COUNT".to_string(), (count + 1).to_string()));
+    env_vars.push((
+        format!("GIT_CONFIG_KEY_{count}"),
+        "core.hooksPath".to_string(),
+    ));
+    env_vars.push((
+        format!("GIT_CONFIG_VALUE_{count}"),
+        hooks_dir.to_string_lossy().into_owned(),
+    ));
+}
 
 #[cfg(unix)]
 use nix::{
@@ -24,13 +196,32 @@ struct ManagedChild {
 #[derive(Debug, Default)]
 pub struct Spawner {
     children: HashMap<String, ManagedChild>,
+    commit_hooks_dir: Option<tempfile::TempDir>,
 }
 
 impl Spawner {
     pub fn new() -> Self {
         Self {
             children: HashMap::new(),
+            commit_hooks_dir: None,
         }
+    }
+
+    fn commit_hooks_dir(&mut self) -> Result<&Path> {
+        if self.commit_hooks_dir.is_none() {
+            let hooks_dir = tempfile::Builder::new()
+                .prefix("agent-relay-git-hooks-")
+                .tempdir()
+                .context("creating broker git hooks directory")?;
+            write_prepare_commit_msg_hook(hooks_dir.path())?;
+            self.commit_hooks_dir = Some(hooks_dir);
+        }
+
+        Ok(self
+            .commit_hooks_dir
+            .as_ref()
+            .expect("commit hooks directory is initialized")
+            .path())
     }
 
     pub async fn spawn_wrap_with_token(
@@ -101,7 +292,12 @@ impl Spawner {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
-        for (key, value) in env_vars {
+        let mut child_env = env_vars.to_vec();
+        if attestation_env_present(&child_env) {
+            let hooks_dir = self.commit_hooks_dir()?;
+            add_broker_hooks_path(&mut child_env, hooks_dir);
+        }
+        for (key, value) in &child_env {
             cmd.env(key, value);
         }
         // Inject pre-registered agent token when available so the MCP server
@@ -279,13 +475,74 @@ pub fn spawn_env_vars(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{fs, path::Path, process::Command as StdCommand, time::Duration};
 
     #[cfg(unix)]
     use nix::unistd::{getsid, Pid};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::{tempdir, TempDir};
     use tokio::process::Command;
 
-    use super::{spawn_env_vars, terminate_child, Spawner};
+    use crate::types::CommitAttestation;
+
+    use super::{
+        add_broker_hooks_path, attestation_env_present, git_config_count_with_inherited,
+        spawn_env_vars, terminate_child, with_commit_attestation_env,
+        write_prepare_commit_msg_hook, Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
+        RELAY_ATTEST_SPONSOR_ID,
+    };
+
+    fn git(repo: &Path, args: &[&str], env: &[(String, String)]) -> std::process::Output {
+        StdCommand::new("git")
+            .current_dir(repo)
+            .args(args)
+            .envs(env.iter().map(|(key, value)| (key, value)))
+            .output()
+            .expect("git should run")
+    }
+
+    fn fixture_repository() -> TempDir {
+        let repo = tempdir().expect("fixture repository directory");
+        assert!(git(repo.path(), &["init", "--quiet"], &[]).status.success());
+        assert!(
+            git(repo.path(), &["config", "user.name", "Relay Test"], &[])
+                .status
+                .success()
+        );
+        assert!(git(
+            repo.path(),
+            &["config", "user.email", "relay@example.test"],
+            &[]
+        )
+        .status
+        .success());
+        fs::write(repo.path().join("worker.txt"), "fixture\n").expect("write fixture file");
+        assert!(git(repo.path(), &["add", "worker.txt"], &[])
+            .status
+            .success());
+        repo
+    }
+
+    fn commit_message(repo: &Path) -> String {
+        let output = git(repo, &["log", "-1", "--format=%B"], &[]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).expect("UTF-8 commit message")
+    }
+
+    fn attestation() -> CommitAttestation {
+        CommitAttestation {
+            jti: "jti-public-123".to_string(),
+            agent_id: "agent_worker_42".to_string(),
+            sponsor_id: "user_owner_7".to_string(),
+        }
+    }
+
+    fn broker_hook_env(attestation: &CommitAttestation, hooks_dir: &Path) -> Vec<(String, String)> {
+        let mut env = with_commit_attestation_env(Vec::new(), Some(attestation));
+        add_broker_hooks_path(&mut env, hooks_dir);
+        env
+    }
 
     #[test]
     fn spawn_env_vars_sets_origin_actor_path_when_harness_present() {
@@ -309,6 +566,317 @@ mod tests {
     fn spawn_env_vars_omits_origin_actor_when_absent() {
         let env = spawn_env_vars("a", "rk_live_x", Some("https://gw"), "#c", None, None, None);
         assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_ORIGIN_ACTOR"));
+    }
+
+    #[test]
+    fn absent_attestation_metadata_is_a_complete_no_op() {
+        let original = vec![("RELAY_AGENT_NAME".to_string(), "worker".to_string())];
+        assert_eq!(
+            with_commit_attestation_env(original.clone(), None),
+            original
+        );
+
+        let repo = fixture_repository();
+        let commit = git(repo.path(), &["commit", "-m", "no attestation"], &[]);
+        assert!(
+            commit.status.success(),
+            "git commit must succeed without hook setup"
+        );
+        let message = commit_message(repo.path());
+        assert!(!message.contains("Agent-Id:"));
+        assert!(!message.contains("Sponsor-Id:"));
+        assert!(!message.contains("Relay-Attestation:"));
+    }
+
+    #[test]
+    fn broker_hook_appends_all_attestation_trailers_verbatim() {
+        let repo = fixture_repository();
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let values = attestation();
+        let env = broker_hook_env(&values, hooks_dir.path());
+
+        let commit = git(repo.path(), &["commit", "-m", "with attestation"], &env);
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with broker hook"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Agent-Id: agent_worker_42"));
+        assert!(message.contains("Sponsor-Id: user_owner_7"));
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_the_repository_prepare_commit_msg_hook() {
+        let repo = fixture_repository();
+        let repository_hook = repo.path().join(".git/hooks/prepare-commit-msg");
+        fs::write(
+            &repository_hook,
+            "#!/bin/sh\nprintf '\\nRepository-Hook: preserved\\n' >> \"$1\"\n",
+        )
+        .expect("write repository hook");
+        let mut permissions = fs::metadata(&repository_hook)
+            .expect("repository hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&repository_hook, permissions)
+            .expect("make repository hook executable");
+
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let env = broker_hook_env(&attestation(), hooks_dir.path());
+        let commit = git(repo.path(), &["commit", "-m", "preserve local hook"], &env);
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with both hooks"
+        );
+
+        let message = commit_message(repo.path());
+        assert!(message.contains("Agent-Id: agent_worker_42"));
+        assert!(message.contains("Sponsor-Id: user_owner_7"));
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(
+            message.contains("Repository-Hook: preserved"),
+            "commit message: {message}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_a_repository_configured_hooks_path() {
+        let repo = fixture_repository();
+        let repository_hooks_dir = repo.path().join(".repository-hooks");
+        fs::create_dir_all(&repository_hooks_dir).expect("create repository hooks directory");
+        assert!(git(
+            repo.path(),
+            &["config", "core.hooksPath", ".repository-hooks"],
+            &[],
+        )
+        .status
+        .success());
+        let repository_hook = repository_hooks_dir.join("prepare-commit-msg");
+        fs::write(
+            &repository_hook,
+            "#!/bin/sh\nprintf '\\nConfigured-Hook: preserved\\n' >> \"$1\"\n",
+        )
+        .expect("write configured repository hook");
+        let mut permissions = fs::metadata(&repository_hook)
+            .expect("configured repository hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&repository_hook, permissions)
+            .expect("make configured repository hook executable");
+
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let env = broker_hook_env(&attestation(), hooks_dir.path());
+        let commit = git(
+            repo.path(),
+            &["commit", "-m", "preserve configured hook"],
+            &env,
+        );
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with a configured hooks path"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(message.contains("Configured-Hook: preserved"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_a_home_relative_configured_hooks_path() {
+        let repo = fixture_repository();
+        assert!(git(
+            repo.path(),
+            &["config", "core.hooksPath", "~/repository-hooks"],
+            &[],
+        )
+        .status
+        .success());
+        let home_dir = tempdir().expect("home directory");
+        let repository_hooks_dir = home_dir.path().join("repository-hooks");
+        fs::create_dir_all(&repository_hooks_dir).expect("create repository hooks directory");
+        let repository_hook = repository_hooks_dir.join("prepare-commit-msg");
+        fs::write(
+            &repository_hook,
+            "#!/bin/sh\nprintf '\\nHome-Hook: preserved\\n' >> \"$1\"\n",
+        )
+        .expect("write home-relative repository hook");
+        let mut permissions = fs::metadata(&repository_hook)
+            .expect("home-relative repository hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&repository_hook, permissions)
+            .expect("make home-relative repository hook executable");
+
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let mut env = broker_hook_env(&attestation(), hooks_dir.path());
+        env.push((
+            "HOME".to_string(),
+            home_dir.path().to_string_lossy().into_owned(),
+        ));
+        let commit = git(
+            repo.path(),
+            &["commit", "-m", "preserve home-relative hook"],
+            &env,
+        );
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with a home-relative hooks path"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(
+            message.contains("Home-Hook: preserved"),
+            "commit message: {message}"
+        );
+    }
+
+    #[test]
+    fn broker_hook_preserves_existing_git_config_environment() {
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        let mut env = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            (
+                "GIT_CONFIG_KEY_0".to_string(),
+                "advice.detachedHead".to_string(),
+            ),
+            ("GIT_CONFIG_VALUE_0".to_string(), "false".to_string()),
+        ];
+        add_broker_hooks_path(&mut env, hooks_dir.path());
+
+        assert!(env.contains(&("GIT_CONFIG_COUNT".to_string(), "2".to_string())));
+        assert!(env.contains(&("GIT_CONFIG_KEY_1".to_string(), "core.hooksPath".to_string())));
+        assert!(env.contains(&(
+            "GIT_CONFIG_VALUE_1".to_string(),
+            hooks_dir.path().to_string_lossy().into_owned(),
+        )));
+    }
+
+    #[test]
+    fn git_config_count_uses_an_inherited_value_when_worker_env_has_no_override() {
+        assert_eq!(git_config_count_with_inherited(&[], Some("2")), 2);
+
+        let worker_override = vec![("GIT_CONFIG_COUNT".to_string(), "1".to_string())];
+        assert_eq!(
+            git_config_count_with_inherited(&worker_override, Some("2")),
+            1
+        );
+        let malformed_worker_override =
+            vec![("GIT_CONFIG_COUNT".to_string(), "invalid".to_string())];
+        assert_eq!(
+            git_config_count_with_inherited(&malformed_worker_override, Some("2")),
+            2
+        );
+        assert_eq!(git_config_count_with_inherited(&[], Some("invalid")), 0);
+    }
+
+    #[test]
+    fn complete_attestation_metadata_maps_to_the_three_worker_environment_variables() {
+        let env = with_commit_attestation_env(Vec::new(), Some(&attestation()));
+        assert!(env.contains(&(RELAY_ATTEST_JTI.to_string(), "jti-public-123".to_string())));
+        assert!(env.contains(&(
+            RELAY_ATTEST_AGENT_ID.to_string(),
+            "agent_worker_42".to_string(),
+        )));
+        assert!(env.contains(&(
+            RELAY_ATTEST_SPONSOR_ID.to_string(),
+            "user_owner_7".to_string(),
+        )));
+    }
+
+    #[test]
+    fn invalid_attestation_metadata_is_not_exported_or_hook_enabled() {
+        for invalid_value in [
+            "",
+            "   ",
+            "jti\nsecond-trailer",
+            "jti\rsecond-trailer",
+            "jti\0",
+            "jti\twith-tab",
+            "jti\u{000b}with-vertical-tab",
+            "jti\u{000c}with-form-feed",
+        ] {
+            let original = vec![("RELAY_AGENT_NAME".to_string(), "worker".to_string())];
+            let invalid = CommitAttestation {
+                jti: invalid_value.to_string(),
+                agent_id: "agent_worker_42".to_string(),
+                sponsor_id: "user_owner_7".to_string(),
+            };
+            assert_eq!(
+                with_commit_attestation_env(original.clone(), Some(&invalid)),
+                original,
+                "invalid jti must leave the environment unchanged"
+            );
+        }
+
+        let invalid_environment = vec![
+            (
+                RELAY_ATTEST_JTI.to_string(),
+                "jti\nsecond-trailer".to_string(),
+            ),
+            (
+                RELAY_ATTEST_AGENT_ID.to_string(),
+                "agent_worker_42".to_string(),
+            ),
+            (
+                RELAY_ATTEST_SPONSOR_ID.to_string(),
+                "user_owner_7".to_string(),
+            ),
+        ];
+        assert!(!attestation_env_present(&invalid_environment));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_an_inherited_core_hooks_path() {
+        let repo = fixture_repository();
+        let inherited_hooks_dir = tempdir().expect("inherited hooks directory");
+        let inherited_hook = inherited_hooks_dir.path().join("prepare-commit-msg");
+        fs::write(
+            &inherited_hook,
+            "#!/bin/sh\nprintf '\\nInherited-Hook: preserved\\n' >> \"$1\"\n",
+        )
+        .expect("write inherited hook");
+        let mut permissions = fs::metadata(&inherited_hook)
+            .expect("inherited hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&inherited_hook, permissions).expect("make inherited hook executable");
+
+        let broker_hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(broker_hooks_dir.path()).expect("write broker hook");
+        let mut env = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            ("GIT_CONFIG_KEY_0".to_string(), "core.hooksPath".to_string()),
+            (
+                "GIT_CONFIG_VALUE_0".to_string(),
+                inherited_hooks_dir.path().to_string_lossy().into_owned(),
+            ),
+        ];
+        env = with_commit_attestation_env(env, Some(&attestation()));
+        add_broker_hooks_path(&mut env, broker_hooks_dir.path());
+
+        let commit = git(
+            repo.path(),
+            &["commit", "-m", "preserve inherited hook"],
+            &env,
+        );
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with the inherited hooks path"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(
+            message.contains("Inherited-Hook: preserved"),
+            "commit message: {message}"
+        );
     }
 
     #[tokio::test]
