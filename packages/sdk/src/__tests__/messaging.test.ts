@@ -485,6 +485,7 @@ describe('RelaycastMessagingClient', () => {
       }).repoKeys
     ).toEqual(['explicit']);
     expect(toRelayNode({ name: 'builder-6', tags: ['factory'] }).repoKeys).toBeUndefined();
+    expect(toRelayNode({ name: 'builder-unbounded', max_agents: 0, load: null }).load).toBeUndefined();
 
     await expect(client.nodes.get('builder-2')).resolves.toMatchObject({
       name: 'builder-2',

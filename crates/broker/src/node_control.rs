@@ -464,9 +464,9 @@ impl FleetLoadSnapshot {
     /// time server-side as the single source of truth for liveness.
     fn heartbeat(&self, node: &NodeRegister) -> NodeHeartbeat {
         let load = if self.max_agents == 0 {
-            0.0
+            None
         } else {
-            (self.active_agents as f64 / self.max_agents as f64).clamp(0.0, 1.0)
+            Some((self.active_agents as f64 / self.max_agents as f64).clamp(0.0, 1.0))
         };
         NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
@@ -3543,6 +3543,33 @@ mod tests {
             tags: Some(vec!["test".to_string()]),
             version: Some("sidecar/test".to_string()),
         }
+    }
+
+    #[test]
+    fn heartbeat_reports_only_measured_capacity_load() {
+        let register = build_node_register(
+            &test_manifest(),
+            "node-default",
+            "host-default",
+            "broker/test",
+            None,
+        );
+
+        let measured = FleetLoadSnapshot {
+            active_agents: 3,
+            max_agents: 4,
+            handlers_live: true,
+        }
+        .heartbeat(&register);
+        assert_eq!(measured.load, Some(0.75));
+
+        let unbounded = FleetLoadSnapshot {
+            active_agents: 25,
+            max_agents: 0,
+            handlers_live: true,
+        }
+        .heartbeat(&register);
+        assert_eq!(unbounded.load, None);
     }
 
     #[test]
