@@ -70,6 +70,11 @@ type InvocationReader = {
   getInvocation(name: string, invocationId: string): Promise<unknown>;
 };
 
+type InvocationRef = {
+  actionName: string;
+  invocationId: string;
+};
+
 function recordValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -81,21 +86,41 @@ function invocationText(record: Record<string, unknown>, camel: string, snake?: 
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
+function invocationRef(value: unknown): InvocationRef | undefined {
+  const record = recordValue(value);
+  const invocationId = invocationText(record, 'invocationId', 'invocation_id');
+  if (!invocationId) return undefined;
+  return {
+    invocationId,
+    actionName: invocationText(record, 'actionName', 'action_name') ?? 'spawn',
+  };
+}
+
+function nestedPersonaSpawnRef(invocation: Record<string, unknown>): InvocationRef | undefined {
+  const output = recordValue(invocation.output);
+  for (const candidate of [output, recordValue(output.result)]) {
+    if (invocationText(candidate, 'status')?.toLowerCase() === 'dispatched') {
+      return invocationRef(candidate);
+    }
+  }
+  return undefined;
+}
+
 async function waitForPersonaSpawn(
   actions: InvocationReader,
   ackValue: unknown,
   timeoutMs = PERSONA_SPAWN_TIMEOUT_MS
 ): Promise<unknown> {
   const ack = recordValue(ackValue);
-  const actionName = invocationText(ack, 'actionName', 'action_name') ?? 'spawn';
-  const invocationId = invocationText(ack, 'invocationId', 'invocation_id');
-  if (!invocationId) throw new Error('Persona spawn did not return an invocation id.');
+  let current = invocationRef(ack);
+  if (!current) throw new Error('Persona spawn did not return an invocation id.');
 
   const deadline = Date.now() + timeoutMs;
+  const followed = new Set([`${current.actionName}\u001f${current.invocationId}`]);
   for (;;) {
     let invocation: unknown;
     try {
-      invocation = await actions.getInvocation(actionName, invocationId);
+      invocation = await actions.getInvocation(current.actionName, current.invocationId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
@@ -113,6 +138,16 @@ async function waitForPersonaSpawn(
     const record = recordValue(invocation);
     const status = invocationText(record, 'status')?.toLowerCase();
     if (status === 'completed' || status === 'succeeded' || status === 'success') {
+      const nested = nestedPersonaSpawnRef(record);
+      if (nested) {
+        const key = `${nested.actionName}\u001f${nested.invocationId}`;
+        if (followed.has(key)) {
+          throw new Error('Persona spawn returned a cyclic nested invocation.');
+        }
+        followed.add(key);
+        current = nested;
+        continue;
+      }
       return invocation;
     }
     if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') {
