@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [11.5.1] - 2026-08-10
+
+### Added
+
+- Add commit trailer hook support
+
+### Changed
+
+- Cover configured commit hooks
+
+### Fixed
+
+- Preserve home-relative commit hooks
+- Retain inherited git configuration
+- Preserve existing commit hooks
+
 ## [11.5.0] - 2026-08-10
 
 ### Added
