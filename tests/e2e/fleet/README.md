@@ -10,7 +10,8 @@ Boots a **real** stack and drives the fleet control wire end-to-end:
 Unlike the unit suites (in-process adapter / fake broker WS), this exercises the
 actual broker `node_control` connection, including the `Authorization: Bearer`
 node-token handshake and the `agent.register` token-authority reply — the two
-engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
+engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194), plus the
+omitted/null heartbeat-load compatibility added in relaycast#307.
 
 ## Scenario matrix
 
@@ -55,14 +56,14 @@ engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
 ```bash
 npm run build:core                                   # relay CLI + fleet + harness-driver
 cargo build --release --bin agent-relay-broker       # broker
-RELAYCAST_ENGINE_DIR=/path/to/relaycast \            # must carry relaycast#194's compat fixes
+RELAYCAST_ENGINE_DIR=/path/to/relaycast \            # must carry relaycast#194 and #307 compat fixes
 BROKER_BINARY_PATH="$PWD/target/release/agent-relay-broker" \
   npm run test:e2e
 ```
 
 The suite **skips cleanly** (never fails) when prerequisites are missing — the
 default `npm test` does not run it. The `Fleet E2E` GitHub Actions workflow
-provisions the engine (pinned to the relaycast#194 SHA) + broker and runs the
+provisions a released compatible engine (including relaycast#194 and #307) + broker and runs the
 full matrix; the matrix itself is ~2 minutes, the wall-clock is build-dominated.
 
 ## Isolation notes
