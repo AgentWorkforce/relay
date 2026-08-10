@@ -279,6 +279,50 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it('lets a spawn-prefixed action delegate to its resolved runtime instead of a shadow harness', async () => {
+    const node = defineNode({
+      name: 'p',
+      capabilities: {
+        'spawn:persona': action({}, async (_input, ctx) =>
+          ctx.spawnAgent({
+            agent: {
+              name: 'persona-worker',
+              runtime: 'pty',
+              cli: 'codex',
+              model: 'persona-model',
+            },
+          })
+        ),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+
+    sock.emit({
+      v: 1,
+      type: 'action.invoke',
+      invocation_id: 'inv_persona',
+      action: 'spawn:persona',
+      input: { persona: 'nango-integrations' },
+    });
+    await flush();
+
+    const [nodeSpawn] = sock.sentOfType('node.spawn');
+    expect(nodeSpawn).toBeTruthy();
+    expect(nodeSpawn.input).toMatchObject({
+      name: 'persona-worker',
+      cli: 'codex',
+      model: 'persona-model',
+    });
+    expect(nodeSpawn.input).not.toHaveProperty('capability');
+    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'persona-worker' } });
+    await flush();
+    await running.stop();
+  });
+
   it('reconciles declared triggers with the injected client on registration', async () => {
     const node = defineNode({
       name: 'p',

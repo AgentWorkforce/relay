@@ -220,6 +220,14 @@ impl ResolvedHarnessConfig {
             Self::Native(config) => Some(config.session_id.as_str()),
         }
     }
+
+    pub(crate) fn metadata(&self) -> Option<&HashMap<String, Value>> {
+        match self {
+            Self::Pty(config) => config.metadata.as_ref(),
+            Self::Headless(config) => config.metadata.as_ref(),
+            Self::Native(config) => config.metadata.as_ref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

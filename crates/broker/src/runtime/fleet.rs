@@ -9,6 +9,39 @@ use crate::{
 };
 
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+const VERIFIED_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(90);
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingVerifiedSpawn {
+    pub(super) invocation_id: String,
+    pub(super) deadline: Instant,
+    pub(super) generation: Uuid,
+}
+
+pub(super) fn verified_spawn_ready_result(
+    invocation_id: String,
+    name: &WorkerName,
+) -> ActionResult {
+    ActionResult {
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id,
+        result: ActionResultPayload::Output(ActionResultOutput {
+            output: json!({ "spawned": true, "ready": true, "name": name.as_str() }),
+        }),
+    }
+}
+
+pub(super) fn verified_spawn_failed_result(invocation_id: String, error: &str) -> ActionResult {
+    ActionResult {
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id,
+        result: ActionResultPayload::Error(ActionResultError {
+            error: error.to_string(),
+        }),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FleetDeliverySurfaceOutcome {
@@ -362,6 +395,13 @@ impl BrokerRuntime {
                 .await;
             return;
         };
+        if self.workers.workers.contains_key(&name)
+            || self.pending_verified_spawns.contains_key(&name)
+        {
+            self.reply_action_error(&invoke.invocation_id, "spawn_agent_name_in_use")
+                .await;
+            return;
+        }
         let cli = match action_invoke_string(&invoke.input, &["cli", "command", "provider"]) {
             Some(cli) => cli,
             None => {
@@ -453,15 +493,73 @@ impl BrokerRuntime {
 
         self.publish_fleet_load(true).await;
 
-        // `spawn_worker_from_request` does not return a result; treat presence of
-        // the worker as success so the engine's invocation resolves.
+        let verify_ready = super::relaycast_events::relaycast_spawn_verifies_ready(&ws_value);
+
+        // A verified spawn keeps the action open until the harness itself emits
+        // worker_ready. Process creation alone is not proof that the persona is
+        // usable; worker_events resolves this pending entry, while maintenance
+        // fails it after an early exit/readiness timeout and performs cleanup.
         if self.workers.workers.contains_key(&name) {
+            if verify_ready {
+                if self
+                    .workers
+                    .workers
+                    .get(&name)
+                    .is_some_and(|worker| worker.ready_at.is_some())
+                {
+                    self.send_fleet_action_result(verified_spawn_ready_result(
+                        invoke.invocation_id,
+                        &name,
+                    ))
+                    .await;
+                } else {
+                    let generation = self
+                        .workers
+                        .workers
+                        .get(&name)
+                        .expect("verified spawn worker must still exist")
+                        .generation;
+                    self.pending_verified_spawns.insert(
+                        name,
+                        PendingVerifiedSpawn {
+                            invocation_id: invoke.invocation_id,
+                            deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
+                            generation,
+                        },
+                    );
+                }
+                return;
+            }
             self.reply_action_output(
                 &invoke.invocation_id,
                 json!({ "spawned": true, "name": name.as_str() }),
             )
             .await;
         } else {
+            // A registration can succeed before process creation fails. Undo
+            // that authoritative identity before reporting the failed launch.
+            match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
+                .await
+            {
+                Ok(_) => {
+                    prune_fleet_agent_state(
+                        &self.fleet_control_tx,
+                        &mut self.fleet_inventory,
+                        &mut self.fleet_delivery_book,
+                        &name,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    tracing::warn!(worker = %name, %error, "retaining fleet identity after failed spawn cleanup");
+                    prune_fleet_inventory_entry(
+                        &self.fleet_control_tx,
+                        &mut self.fleet_inventory,
+                        &name,
+                    )
+                    .await;
+                }
+            }
             self.reply_action_error(&invoke.invocation_id, "spawn_failed")
                 .await;
         }
@@ -505,15 +603,45 @@ impl BrokerRuntime {
         self.resize_owners.remove(&name);
         self.pty_observability.remove(&name);
 
-        prune_fleet_agent_state(
-            &self.fleet_control_tx,
-            &mut self.fleet_inventory,
-            &mut self.fleet_delivery_book,
-            &name,
-        )
-        .await;
+        let mut deregistration_failed = false;
+        if outcome == super::relaycast_events::ReleaseOutcome::Released {
+            match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
+                .await
+            {
+                Ok(_) => {
+                    prune_fleet_agent_state(
+                        &self.fleet_control_tx,
+                        &mut self.fleet_inventory,
+                        &mut self.fleet_delivery_book,
+                        &name,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    tracing::warn!(worker = %name, %error, "retaining fleet identity after release cleanup");
+                    deregistration_failed = true;
+                    prune_fleet_inventory_entry(
+                        &self.fleet_control_tx,
+                        &mut self.fleet_inventory,
+                        &name,
+                    )
+                    .await;
+                }
+            }
+        }
+        if let Some(pending) = self.pending_verified_spawns.remove(&name) {
+            self.send_fleet_action_result(verified_spawn_failed_result(
+                pending.invocation_id,
+                "spawn_released_before_ready",
+            ))
+            .await;
+        }
         self.publish_fleet_load(true).await;
         match outcome {
+            super::relaycast_events::ReleaseOutcome::Released if deregistration_failed => {
+                self.reply_action_error(&invoke.invocation_id, "release_deregistration_failed")
+                    .await;
+            }
             super::relaycast_events::ReleaseOutcome::Released => {
                 self.reply_action_output(
                     &invoke.invocation_id,

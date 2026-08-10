@@ -1,4 +1,4 @@
-use super::fleet::refresh_fleet_inventory_session_ref;
+use super::fleet::{refresh_fleet_inventory_session_ref, verified_spawn_ready_result};
 use super::*;
 use crate::worker::AgentWorkState;
 
@@ -423,6 +423,7 @@ impl BrokerRuntime {
         let dead_letters = &mut self.dead_letters;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
+        let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
@@ -872,6 +873,24 @@ impl BrokerRuntime {
                             .get(&name)
                             .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
                             .unwrap_or(false);
+                        // Resolve the verified Fleet action before optional SDK
+                        // notifications and initial-task work. A congested SDK
+                        // output queue must not turn a ready worker into an
+                        // action timeout.
+                        let pending = pending_verified_spawns
+                            .get(&name)
+                            .is_some_and(|pending| pending.generation == generation)
+                            .then(|| pending_verified_spawns.remove(&name))
+                            .flatten();
+                        if let Some(pending) = pending {
+                            let _ = fleet_control_tx
+                                .send(FleetControlCommand::Send(
+                                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                        verified_spawn_ready_result(pending.invocation_id, &name),
+                                    ),
+                                ))
+                                .await;
+                        }
                         let interactive_hold_replayed = is_pty_worker
                             && delivery_states
                                 .get(&name)
@@ -1005,6 +1024,7 @@ impl BrokerRuntime {
                                 "model": model_val,
                                 "sessionId": session_id_val,
                                 "pid": pid_val,
+                                "generation": generation,
                             }),
                         )
                         .await;
@@ -1033,6 +1053,7 @@ impl BrokerRuntime {
                                 "name": name,
                                 "idle_secs": idle_secs,
                                 "since": since,
+                                "generation": generation,
                             }),
                         )
                         .await;
@@ -1111,6 +1132,7 @@ impl BrokerRuntime {
                                 "kind": "agent_exit",
                                 "name": name,
                                 "reason": reason,
+                                "generation": generation,
                             }),
                         )
                         .await;

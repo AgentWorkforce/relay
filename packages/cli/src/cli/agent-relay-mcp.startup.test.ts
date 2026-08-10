@@ -145,6 +145,12 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
         actionName: name,
         input,
       })),
+      getInvocation: vi.fn(async (name: string, invocationId: string) => ({
+        invocationId,
+        actionName: name,
+        status: 'completed',
+        output: { spawned: true, ready: true },
+      })),
     },
     send: vi.fn(async (channel: string, text: string) => ({ id: 'msg_1', channel, text })),
     messages: vi.fn(async () => []),
@@ -225,9 +231,25 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       capabilities: [{ name: 'spawn:codex' }],
     },
   ]);
+  const agentRelayMessagingCommands = {
+    invoke: vi.fn(async (name: string, input: unknown) => ({
+      invocationId: 'inv_1',
+      actionName: name,
+      input,
+    })),
+    getInvocation: vi.fn(async (name: string, invocationId: string) => ({
+      invocationId,
+      actionName: name,
+      status: 'completed',
+      output: { spawned: true, ready: true },
+    })),
+  };
   const AgentRelayMock = vi.fn(function (this: unknown) {
     return {
       nodes: { list: agentRelayNodesList },
+      messaging: {
+        commands: agentRelayMessagingCommands,
+      },
     };
   }) as any;
 
@@ -288,6 +310,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       validateWorkspaceSessionName,
       RelayCast,
       FakeTransport,
+      agentRelayMessagingCommands,
     },
   };
 }
@@ -510,6 +533,27 @@ describe('createAgentRelayMcpServer', () => {
       },
     });
 
+    const personaSpawnResult = await server.tools.get('spawn')?.handler({
+      name: 'IntegrationExpert',
+      persona: 'nango-integrations',
+      task: 'Fix the sync',
+      cwd: '/workspace/project',
+      target_node: 'node-a',
+    });
+    expect(personaSpawnResult.structuredContent.invocation).toEqual({
+      invocationId: 'inv_1',
+      actionName: 'spawn',
+      status: 'completed',
+      output: { spawned: true, ready: true },
+    });
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'IntegrationExpert',
+      persona: 'nango-integrations',
+      capability: 'spawn:persona',
+      task: 'Fix the sync',
+      cwd: '/workspace/project',
+      target_node: 'node-a',
+    });
     const toolsList = await server.listToolsHandler?.({}, {});
     expect(toolsList?.tools).toEqual([
       {
@@ -547,6 +591,131 @@ describe('createAgentRelayMcpServer', () => {
 
     await server.tools.get('register_agent')?.handler({ name: 'WorkerAfterWarning' });
     expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'rk_live_created')).toBe(true);
+  });
+
+  it('follows a persona provider result to the nested verified spawn invocation', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.agentRelayMessagingCommands.invoke.mockResolvedValueOnce({
+      invocationId: 'inv_outer',
+      actionName: 'spawn',
+      status: 'dispatched',
+    });
+    mocks.agentRelayMessagingCommands.getInvocation.mockImplementation(
+      async (_name: string, invocationId: string) => {
+        if (invocationId === 'inv_outer') {
+          return {
+            invocationId,
+            actionName: 'spawn',
+            status: 'completed',
+            output: {
+              invocationId: 'inv_nested',
+              actionName: 'spawn',
+              status: 'dispatched',
+            },
+          };
+        }
+        if (invocationId === 'inv_nested') {
+          return {
+            invocationId,
+            actionName: 'spawn',
+            status: 'completed',
+            output: { spawned: true, ready: true, name: 'PersonaWorker' },
+          };
+        }
+        throw new Error(`unexpected invocation ${invocationId}`);
+      }
+    );
+
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_fleet',
+      agentName: 'orchestrator',
+    });
+    const server = mocks.serverInstances[0];
+    const result = await server.tools.get('spawn')?.handler({
+      name: 'PersonaWorker',
+      persona: 'reviewer',
+      target_node: 'node-a',
+    });
+
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'PersonaWorker',
+      persona: 'reviewer',
+      capability: 'spawn:persona',
+      target_node: 'node-a',
+    });
+    expect(result.structuredContent.invocation).toEqual({
+      invocationId: 'inv_nested',
+      actionName: 'spawn',
+      status: 'completed',
+      output: { spawned: true, ready: true, name: 'PersonaWorker' },
+    });
+    expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenNthCalledWith(1, 'spawn', 'inv_outer');
+    expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenNthCalledWith(2, 'spawn', 'inv_nested');
+  });
+
+  it('surfaces a nested verified spawn failure from the workforce persona result', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.agentRelayMessagingCommands.invoke.mockResolvedValueOnce({
+      invocationId: 'inv_outer',
+      actionName: 'spawn',
+      status: 'dispatched',
+    });
+    mocks.agentRelayMessagingCommands.getInvocation.mockImplementation(
+      async (_name: string, invocationId: string) => {
+        if (invocationId === 'inv_outer') {
+          return {
+            invocationId,
+            actionName: 'spawn',
+            status: 'completed',
+            output: {
+              spawned: true,
+              name: 'PersonaWorker',
+              persona: 'reviewer',
+              harness: 'codex',
+              model: 'gpt-5',
+              source: '/personas/reviewer.json',
+              result: {
+                invocationId: 'inv_nested',
+                actionName: 'spawn',
+                status: 'dispatched',
+              },
+            },
+          };
+        }
+        if (invocationId === 'inv_nested') {
+          return {
+            invocationId,
+            actionName: 'spawn',
+            status: 'failed',
+            error: 'spawn_readiness_timeout',
+          };
+        }
+        throw new Error(`unexpected invocation ${invocationId}`);
+      }
+    );
+
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_fleet',
+      agentName: 'orchestrator',
+    });
+    const server = mocks.serverInstances[0];
+
+    await expect(
+      server.tools.get('spawn')?.handler({
+        name: 'PersonaWorker',
+        persona: 'reviewer',
+        target_node: 'node-a',
+      })
+    ).rejects.toThrow('spawn_readiness_timeout');
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'PersonaWorker',
+      persona: 'reviewer',
+      capability: 'spawn:persona',
+      target_node: 'node-a',
+    });
+    expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenNthCalledWith(2, 'spawn', 'inv_nested');
   });
 
   it('rejects a blank workspace name before provisioning a remote workspace', async () => {

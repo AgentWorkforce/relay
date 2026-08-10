@@ -81,6 +81,8 @@ export interface SpawnAgentResult {
   runtime: AgentRuntime;
   sessionId?: string;
   pid?: number;
+  /** Immutable broker-assigned identity for this same-name worker generation. */
+  generation?: string;
 }
 
 export interface SpawnCliInput {

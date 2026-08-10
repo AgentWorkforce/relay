@@ -73,6 +73,32 @@ await running.stop();
 await serveNode({ definition, connection });
 ```
 
+### AgentWorkforce personas
+
+The built-in `spawn:<harness>` capabilities launch raw harnesses. An
+AgentWorkforce persona also carries its standing instructions, installed skills,
+MCP servers, harness, model, and harness settings, so it must be resolved and
+prepared as a unit on the target node.
+
+Use `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface` to
+advertise the `spawn:persona` capability:
+
+```ts
+import { serveNode } from '@agent-relay/fleet';
+import { defineWorkforcePersonaSpawnNode } from '@agentworkforce/local-surface';
+
+const definition = defineWorkforcePersonaSpawnNode({
+  nodeName: 'workforce-personas',
+  cwd: process.cwd(),
+});
+
+await serveNode({ definition, connection });
+```
+
+Callers can then pass `persona` (an id or JSON path) instead of `cli` to the
+Agent Relay `spawn` MCP tool. Persona spawns are SDK-backed and are reported as
+successful only after node registration and the harness readiness handshake.
+
 ### Logging
 
 The node runtime emits structured events — each capability it registers and every

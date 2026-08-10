@@ -47,8 +47,12 @@ function createStubClient(history: BrokerEvent[] = []) {
   return stub;
 }
 
-function createHandle(stub: ReturnType<typeof createStubClient>, name = 'worker') {
-  return new SpawnedAgentHandle({ name, runtime: 'pty' }, stub as unknown as HarnessDriverClient);
+function createHandle(stub: ReturnType<typeof createStubClient>, name = 'worker', eventSeqBeforeSpawn = 0) {
+  return new SpawnedAgentHandle(
+    { name, runtime: 'pty' },
+    stub as unknown as HarnessDriverClient,
+    eventSeqBeforeSpawn
+  );
 }
 
 const resultEvent = (name: string, data: unknown, final = true): BrokerEvent =>
@@ -107,6 +111,70 @@ describe('SpawnedAgentHandle.waitForResult', () => {
 // ── lifecycle helpers ──────────────────────────────────────────────────────
 
 describe('SpawnedAgentHandle lifecycle helpers', () => {
+  it('waits for the harness worker_ready handshake', async () => {
+    const stub = createStubClient();
+    const handle = createHandle(stub);
+
+    const pending = handle.waitForReady();
+    stub.emit({ kind: 'worker_ready', name: 'someone-else', runtime: 'pty' } as BrokerEvent);
+    stub.emit({ kind: 'worker_ready', name: 'worker', runtime: 'pty', pid: 42 } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 42 });
+  });
+
+  it("ignores a reused name's prior generation when replaying worker_ready", async () => {
+    const staleReady = { kind: 'worker_ready', name: 'worker', runtime: 'pty', seq: 12 } as BrokerEvent;
+    const stub = createStubClient([staleReady]);
+    const handle = createHandle(stub, 'worker', 12);
+
+    const pending = handle.waitForReady();
+    stub.emit({ kind: 'worker_ready', name: 'worker', runtime: 'pty', pid: 43, seq: 13 } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 43 });
+  });
+
+  it('rejects an old lifecycle event emitted after the pre-spawn cursor', async () => {
+    const staleReady = {
+      kind: 'worker_ready',
+      name: 'worker',
+      runtime: 'pty',
+      seq: 13,
+      generation: 'old-generation',
+    } as BrokerEvent;
+    const stub = createStubClient([staleReady]);
+    const handle = new SpawnedAgentHandle(
+      { name: 'worker', runtime: 'pty', generation: 'new-generation' },
+      stub as unknown as HarnessDriverClient,
+      12
+    );
+
+    const pending = handle.waitForReady();
+    stub.emit({
+      kind: 'worker_ready',
+      name: 'worker',
+      runtime: 'pty',
+      pid: 44,
+      seq: 14,
+      generation: 'new-generation',
+    } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 44 });
+  });
+
+  it('reports an exit before readiness and times out when no handshake arrives', async () => {
+    const exitedStub = createStubClient();
+    const exitedHandle = createHandle(exitedStub);
+    const exited = exitedHandle.waitForReady();
+    exitedStub.emit({ kind: 'agent_exited', name: 'worker', code: 1 } as BrokerEvent);
+    await expect(exited).resolves.toEqual({
+      reason: 'exited',
+      exit: { reason: 'exited', code: 1, signal: undefined },
+    });
+
+    const timeoutHandle = createHandle(createStubClient());
+    await expect(timeoutHandle.waitForReady(5)).resolves.toEqual({ reason: 'timeout' });
+  });
+
   it('exposes prior exit info and replays it for waitForExit', async () => {
     const stub = createStubClient([
       { kind: 'agent_exited', name: 'worker', code: 7, signal: 'SIGTERM' } as BrokerEvent,
@@ -182,7 +250,8 @@ describe('HarnessDriverClient spawn serialization', () => {
         body: expect.any(String),
       })
     );
-    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+    const spawnCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/spawn'));
+    expect(JSON.parse(spawnCall?.[1]?.body as string)).toMatchObject({
       name: 'worker',
       cli: 'codex',
       task: 'Ship it',

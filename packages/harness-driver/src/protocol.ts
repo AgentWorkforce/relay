@@ -378,6 +378,7 @@ export type BrokerEvent =
       kind: 'agent_exit';
       name: string;
       reason: string;
+      generation?: string;
     }
   | {
       kind: 'agent_exited';
@@ -385,6 +386,7 @@ export type BrokerEvent =
       code?: number;
       signal?: string;
       reason?: string;
+      generation?: string;
     }
   | {
       kind: 'agent_context_low';
@@ -542,6 +544,7 @@ export type BrokerEvent =
       model?: string;
       sessionId?: string;
       pid?: number;
+      generation?: string;
     }
   | {
       kind: 'worker_error';
@@ -572,6 +575,7 @@ export type BrokerEvent =
       name: string;
       idle_secs: number;
       since?: string;
+      generation?: string;
     }
   | {
       kind: 'agent_result';
@@ -580,6 +584,7 @@ export type BrokerEvent =
       data: unknown;
       final: boolean;
       metadata?: unknown;
+      generation?: string;
     }
   | {
       kind: 'agent_blocked_on_send';

@@ -174,6 +174,14 @@ pub(crate) struct WorkerHandle {
     pub(crate) exit_reason: Option<String>,
 }
 
+pub(crate) type ExitedWorker = (
+    WorkerName,
+    Uuid,
+    Option<i32>,
+    Option<String>,
+    Option<String>,
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentWorkState {
@@ -1156,9 +1164,7 @@ impl WorkerRegistry {
         Ok(())
     }
 
-    pub(crate) async fn reap_exited(
-        &mut self,
-    ) -> Result<Vec<(WorkerName, Option<i32>, Option<String>, Option<String>)>> {
+    pub(crate) async fn reap_exited(&mut self) -> Result<Vec<ExitedWorker>> {
         let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
         for name in names {
@@ -1219,6 +1225,11 @@ impl WorkerRegistry {
                 None
             };
             if let Some(orphan) = orphaned {
+                let generation = self
+                    .workers
+                    .get(&name)
+                    .expect("orphaned worker must still be registered")
+                    .generation;
                 let reason = self
                     .workers
                     .get(&name)
@@ -1256,10 +1267,15 @@ impl WorkerRegistry {
                 }
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, None, None, reason));
+                exited.push((name, generation, None, None, reason));
                 continue;
             }
             if let Some(status) = status {
+                let generation = self
+                    .workers
+                    .get(&name)
+                    .expect("exited worker must still be registered")
+                    .generation;
                 let code = status.code();
                 #[cfg(unix)]
                 let signal = {
@@ -1274,15 +1290,20 @@ impl WorkerRegistry {
                     .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, code, signal, reason));
+                exited.push((name, generation, code, signal, reason));
             } else if gone_via_kill0 {
+                let generation = self
+                    .workers
+                    .get(&name)
+                    .expect("gone worker must still be registered")
+                    .generation;
                 let reason = self
                     .workers
                     .get(&name)
                     .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, None, None, reason));
+                exited.push((name, generation, None, None, reason));
             }
         }
         Ok(exited)
