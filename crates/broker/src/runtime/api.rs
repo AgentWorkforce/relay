@@ -599,6 +599,10 @@ impl BrokerRuntime {
                                 || effective_spec.shadow_mode.is_some(),
                         });
                         let pid = workers.harness_pid(&name);
+                        let generation = workers
+                            .workers
+                            .get(&name)
+                            .map(|handle| handle.generation.to_string());
                         state.agents.insert(
                             name.clone(),
                             broker::PersistedAgent {
@@ -665,6 +669,7 @@ impl BrokerRuntime {
                             "model": effective_spec.model.clone(),
                             "sessionId": effective_spec.session_id.clone(),
                             "pid": pid,
+                            "generation": generation.clone(),
                             "sessionId": effective_spec.session_id.clone(),
                             "pre_registered": worker_relay_key.is_some(),
                             "warning": preregistration_warning,
@@ -699,6 +704,10 @@ impl BrokerRuntime {
                 }
 
                 let result_id = format!("ar_{}", Uuid::new_v4().simple());
+                let generation = workers
+                    .workers
+                    .get(&agent_name)
+                    .map(|handle| handle.generation.to_string());
                 let payload = json!({
                     "kind": "agent_result",
                     "name": agent_name,
@@ -706,6 +715,7 @@ impl BrokerRuntime {
                     "data": data,
                     "final": final_result,
                     "metadata": metadata,
+                    "generation": generation,
                 });
                 let _ = send_event(sdk_out_tx, payload).await;
                 let _ = reply.send(Ok(json!({

@@ -111,6 +111,7 @@ export const SpawnAgentResultSchema = z.looseObject({
   pre_registered: z.boolean().optional(),
   warning: z.string().nullable().optional(),
   sessionId: optionalString,
+  generation: optionalString,
 });
 
 export interface SessionInfo {

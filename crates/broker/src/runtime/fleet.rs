@@ -15,6 +15,7 @@ const VERIFIED_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(90);
 pub(super) struct PendingVerifiedSpawn {
     pub(super) invocation_id: String,
     pub(super) deadline: Instant,
+    pub(super) generation: Uuid,
 }
 
 pub(super) fn verified_spawn_ready_result(
@@ -512,11 +513,18 @@ impl BrokerRuntime {
                     ))
                     .await;
                 } else {
+                    let generation = self
+                        .workers
+                        .workers
+                        .get(&name)
+                        .expect("verified spawn worker must still exist")
+                        .generation;
                     self.pending_verified_spawns.insert(
                         name,
                         PendingVerifiedSpawn {
                             invocation_id: invoke.invocation_id,
                             deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
+                            generation,
                         },
                     );
                 }
@@ -595,13 +603,10 @@ impl BrokerRuntime {
         self.resize_owners.remove(&name);
         self.pty_observability.remove(&name);
 
+        let mut deregistration_failed = false;
         if outcome == super::relaycast_events::ReleaseOutcome::Released {
-            match deregister_fleet_agent(
-                &self.fleet_control_tx,
-                &mut self.fleet_delivery_book,
-                &name,
-            )
-            .await
+            match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
+                .await
             {
                 Ok(_) => {
                     prune_fleet_agent_state(
@@ -614,6 +619,7 @@ impl BrokerRuntime {
                 }
                 Err(error) => {
                     tracing::warn!(worker = %name, %error, "retaining fleet identity after release cleanup");
+                    deregistration_failed = true;
                     prune_fleet_inventory_entry(
                         &self.fleet_control_tx,
                         &mut self.fleet_inventory,
@@ -632,6 +638,10 @@ impl BrokerRuntime {
         }
         self.publish_fleet_load(true).await;
         match outcome {
+            super::relaycast_events::ReleaseOutcome::Released if deregistration_failed => {
+                self.reply_action_error(&invoke.invocation_id, "release_deregistration_failed")
+                    .await;
+            }
             super::relaycast_events::ReleaseOutcome::Released => {
                 self.reply_action_output(
                     &invoke.invocation_id,

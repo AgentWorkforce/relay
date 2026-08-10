@@ -877,7 +877,12 @@ impl BrokerRuntime {
                         // notifications and initial-task work. A congested SDK
                         // output queue must not turn a ready worker into an
                         // action timeout.
-                        if let Some(pending) = pending_verified_spawns.remove(&name) {
+                        let pending = pending_verified_spawns
+                            .get(&name)
+                            .is_some_and(|pending| pending.generation == generation)
+                            .then(|| pending_verified_spawns.remove(&name))
+                            .flatten();
+                        if let Some(pending) = pending {
                             let _ = fleet_control_tx
                                 .send(FleetControlCommand::Send(
                                     crate::fleet_wire::BrokerToRelaycast::ActionResult(
@@ -1019,6 +1024,7 @@ impl BrokerRuntime {
                                 "model": model_val,
                                 "sessionId": session_id_val,
                                 "pid": pid_val,
+                                "generation": generation,
                             }),
                         )
                         .await;
@@ -1047,6 +1053,7 @@ impl BrokerRuntime {
                                 "name": name,
                                 "idle_secs": idle_secs,
                                 "since": since,
+                                "generation": generation,
                             }),
                         )
                         .await;
@@ -1125,6 +1132,7 @@ impl BrokerRuntime {
                                 "kind": "agent_exit",
                                 "name": name,
                                 "reason": reason,
+                                "generation": generation,
                             }),
                         )
                         .await;

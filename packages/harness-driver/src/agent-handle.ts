@@ -23,7 +23,7 @@ import type { HarnessDriverClient } from './client.js';
 import type { AgentRuntime, BrokerEvent } from './protocol.js';
 import type { SpawnAgentResult } from './types.js';
 
-type SequencedBrokerEvent = BrokerEvent & { seq?: number };
+type IdentifiedBrokerEvent = BrokerEvent & { seq?: number; generation?: string };
 
 export interface AgentExitInfo {
   /** `'exited'` when the agent exited; `'timeout'` when the wait elapsed first. */
@@ -74,6 +74,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   readonly runtime: AgentRuntime;
   readonly sessionId?: string;
   readonly pid?: number;
+  readonly generation?: string;
 
   constructor(
     result: SpawnAgentResult,
@@ -85,6 +86,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
     this.runtime = result.runtime;
     this.sessionId = result.sessionId;
     this.pid = result.pid;
+    this.generation = result.generation;
   }
 
   /** Exit info if the agent has already exited (from broker event history), else `undefined`. */
@@ -274,8 +276,11 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   }
 
   private isCurrentGeneration(event: BrokerEvent): boolean {
+    if (this.generation !== undefined) {
+      return (event as IdentifiedBrokerEvent).generation === this.generation;
+    }
     if (this.eventSeqBeforeSpawn === 0) return true;
-    const seq = (event as SequencedBrokerEvent).seq;
+    const seq = (event as IdentifiedBrokerEvent).seq;
     return typeof seq === 'number' && seq > this.eventSeqBeforeSpawn;
   }
 

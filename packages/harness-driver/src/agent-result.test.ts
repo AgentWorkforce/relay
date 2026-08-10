@@ -133,6 +133,34 @@ describe('SpawnedAgentHandle lifecycle helpers', () => {
     await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 43 });
   });
 
+  it('rejects an old lifecycle event emitted after the pre-spawn cursor', async () => {
+    const staleReady = {
+      kind: 'worker_ready',
+      name: 'worker',
+      runtime: 'pty',
+      seq: 13,
+      generation: 'old-generation',
+    } as BrokerEvent;
+    const stub = createStubClient([staleReady]);
+    const handle = new SpawnedAgentHandle(
+      { name: 'worker', runtime: 'pty', generation: 'new-generation' },
+      stub as unknown as HarnessDriverClient,
+      12
+    );
+
+    const pending = handle.waitForReady();
+    stub.emit({
+      kind: 'worker_ready',
+      name: 'worker',
+      runtime: 'pty',
+      pid: 44,
+      seq: 14,
+      generation: 'new-generation',
+    } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'ready', runtime: 'pty', pid: 44 });
+  });
+
   it('reports an exit before readiness and times out when no handshake arrives', async () => {
     const exitedStub = createStubClient();
     const exitedHandle = createHandle(exitedStub);
@@ -222,7 +250,8 @@ describe('HarnessDriverClient spawn serialization', () => {
         body: expect.any(String),
       })
     );
-    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+    const spawnCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/spawn'));
+    expect(JSON.parse(spawnCall?.[1]?.body as string)).toMatchObject({
       name: 'worker',
       cli: 'codex',
       task: 'Ship it',

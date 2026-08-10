@@ -159,9 +159,14 @@ impl BrokerRuntime {
             }
         };
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
-        for (name, code, signal, exit_reason) in &exited {
+        for (name, generation, code, signal, exit_reason) in &exited {
             let mut retain_fleet_identity = false;
-            if let Some(pending) = pending_verified_spawns.remove(name) {
+            let pending = pending_verified_spawns
+                .get(name)
+                .is_some_and(|pending| pending.generation == *generation)
+                .then(|| pending_verified_spawns.remove(name))
+                .flatten();
+            if let Some(pending) = pending {
                 // A failed verified launch has no owner after its action is
                 // failed. Do not let the normal supervisor revive it later.
                 workers.supervisor.unregister(name);
@@ -372,6 +377,7 @@ impl BrokerRuntime {
                             "code":code,
                             "signal":signal,
                             "reason": lifecycle_reason,
+                            "generation": generation,
                         }),
                     )
                     .await;
