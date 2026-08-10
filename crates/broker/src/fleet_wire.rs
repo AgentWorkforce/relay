@@ -169,9 +169,10 @@ pub struct NodeHeartbeat {
     pub max_agents: u32,
     pub version: String,
     // Capacity utilization is undefined for an unbounded provider
-    // (`max_agents == 0`). Omit it instead of reporting a false idle `0`.
-    // Requires the Relaycast engine to accept an omitted/null `load` before
-    // this broker version is deployed (relaycast#307).
+    // (`max_agents == 0`). The wire type accepts an omitted/null value for the
+    // coordinated relaycast#307 rollout, but producers must keep sending the
+    // legacy numeric value until compatible engines are deployed; older engines
+    // reject the entire heartbeat when `load` is absent.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_finite_nonnegative_f64",

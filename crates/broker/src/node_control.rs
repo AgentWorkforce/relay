@@ -464,7 +464,11 @@ impl FleetLoadSnapshot {
     /// time server-side as the single source of truth for liveness.
     fn heartbeat(&self, node: &NodeRegister) -> NodeHeartbeat {
         let load = if self.max_agents == 0 {
-            None
+            // Relaycast releases before relaycast#307 require a numeric load.
+            // Keep emitting the legacy value until the engine accepts an
+            // omitted/null load; otherwise it rejects the whole heartbeat and
+            // loses the authoritative active_agents and liveness updates too.
+            Some(0.0)
         } else {
             Some((self.active_agents as f64 / self.max_agents as f64).clamp(0.0, 1.0))
         };
@@ -3546,7 +3550,7 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_reports_only_measured_capacity_load() {
+    fn heartbeat_keeps_unbounded_load_backward_compatible() {
         let register = build_node_register(
             &test_manifest(),
             "node-default",
@@ -3569,7 +3573,11 @@ mod tests {
             handlers_live: true,
         }
         .heartbeat(&register);
-        assert_eq!(unbounded.load, None);
+        assert_eq!(unbounded.load, Some(0.0));
+
+        let value = serde_json::to_value(BrokerToRelaycast::NodeHeartbeat(unbounded)).unwrap();
+        assert_eq!(value["load"], 0.0);
+        assert_eq!(value["active_agents"], 25);
     }
 
     #[test]
