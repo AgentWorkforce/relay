@@ -638,6 +638,12 @@ describe('createAgentRelayMcpServer', () => {
       target_node: 'node-a',
     });
 
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'PersonaWorker',
+      persona: 'reviewer',
+      capability: 'spawn:persona',
+      target_node: 'node-a',
+    });
     expect(result.structuredContent.invocation).toEqual({
       invocationId: 'inv_nested',
       actionName: 'spawn',
@@ -703,6 +709,12 @@ describe('createAgentRelayMcpServer', () => {
         target_node: 'node-a',
       })
     ).rejects.toThrow('spawn_readiness_timeout');
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'PersonaWorker',
+      persona: 'reviewer',
+      capability: 'spawn:persona',
+      target_node: 'node-a',
+    });
     expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenNthCalledWith(2, 'spawn', 'inv_nested');
   });
 
