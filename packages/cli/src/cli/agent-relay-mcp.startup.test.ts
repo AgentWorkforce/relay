@@ -231,23 +231,24 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       capabilities: [{ name: 'spawn:codex' }],
     },
   ]);
+  const agentRelayMessagingCommands = {
+    invoke: vi.fn(async (name: string, input: unknown) => ({
+      invocationId: 'inv_1',
+      actionName: name,
+      input,
+    })),
+    getInvocation: vi.fn(async (name: string, invocationId: string) => ({
+      invocationId,
+      actionName: name,
+      status: 'completed',
+      output: { spawned: true, ready: true },
+    })),
+  };
   const AgentRelayMock = vi.fn(function (this: unknown) {
     return {
       nodes: { list: agentRelayNodesList },
       messaging: {
-        commands: {
-          invoke: vi.fn(async (name: string, input: unknown) => ({
-            invocationId: 'inv_1',
-            actionName: name,
-            input,
-          })),
-          getInvocation: vi.fn(async (name: string, invocationId: string) => ({
-            invocationId,
-            actionName: name,
-            status: 'completed',
-            output: { spawned: true, ready: true },
-          })),
-        },
+        commands: agentRelayMessagingCommands,
       },
     };
   }) as any;
@@ -309,6 +310,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       validateWorkspaceSessionName,
       RelayCast,
       FakeTransport,
+      agentRelayMessagingCommands,
     },
   };
 }
@@ -544,19 +546,14 @@ describe('createAgentRelayMcpServer', () => {
       status: 'completed',
       output: { spawned: true, ready: true },
     });
-    expect(messaging.commands.invoke).toHaveBeenCalledWith(
-      expect.objectContaining({
-        actionName: 'spawn',
-        actionInput: {
-          name: 'IntegrationExpert',
-          persona: 'nango-integrations',
-          capability: 'spawn:persona',
-          task: 'Fix the sync',
-          cwd: '/workspace/project',
-          target_node: 'node-a',
-        },
-      })
-    );
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'IntegrationExpert',
+      persona: 'nango-integrations',
+      capability: 'spawn:persona',
+      task: 'Fix the sync',
+      cwd: '/workspace/project',
+      target_node: 'node-a',
+    });
     const toolsList = await server.listToolsHandler?.({}, {});
     expect(toolsList?.tools).toEqual([
       {
