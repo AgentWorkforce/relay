@@ -139,6 +139,10 @@ export async function attachFleetNode(
         );
     }
   } finally {
+    // NDJSON is a data contract, unlike an interactive screen: queue every
+    // locally buffered record before teardown so the shared CLI stdio drain
+    // can carry it through a backpressured pipe.
+    jsonWriter?.flush();
     jsonWriter?.dispose();
     await proxy.close();
   }
