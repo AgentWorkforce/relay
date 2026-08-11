@@ -87,8 +87,16 @@ impl BrokerRuntime {
             TerminalControlEvent::Disconnected => {
                 tracing::warn!(
                     target = "relay_broker::terminal",
-                    "fleet terminal transport disconnected; sessions await reconnect"
+                    sessions = self.terminal_sessions.len(),
+                    "fleet terminal transport disconnected; clearing sessions for cloud resync"
                 );
+                // Relaycast re-opens live terminal sessions when this dedicated
+                // lane reconnects. Drop the old connection's state now so input
+                // and snapshot replies cannot be routed into a server-side
+                // session that was invalidated with the old websocket.
+                self.terminal_sessions.clear();
+                self.terminal_snapshot_requests.clear();
+                self.terminal_input_requests.clear();
             }
             TerminalControlEvent::Message(TerminalFromCloud::Open {
                 session_id,
@@ -119,6 +127,8 @@ impl BrokerRuntime {
                                 agent: agent_name.clone(),
                                 mode,
                                 ready: false,
+                                pending_output: Vec::new(),
+                                pending_output_bytes: 0,
                             },
                         );
                         // Request the grid asynchronously. The response is routed

@@ -3,6 +3,8 @@ use super::*;
 use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
 use crate::worker::AgentWorkState;
 
+const TERMINAL_PENDING_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
+
 fn publish_terminal_output(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     terminal_sessions: &mut HashMap<String, TerminalSession>,
@@ -13,11 +15,28 @@ fn publish_terminal_output(
     if terminal_sessions.is_empty() {
         return;
     }
-    let session_ids: Vec<String> = terminal_sessions
-        .iter()
-        .filter(|(_, session)| session.ready && session.agent == *name)
-        .map(|(session_id, _)| session_id.clone())
-        .collect();
+    let chunk_bytes = chunk.len();
+    let mut session_ids = Vec::new();
+    let mut saturated_sessions = Vec::new();
+    for (session_id, session) in terminal_sessions.iter_mut() {
+        if session.agent != *name {
+            continue;
+        }
+        if !session.ready {
+            if session.pending_output_bytes + chunk_bytes > TERMINAL_PENDING_OUTPUT_MAX_BYTES {
+                saturated_sessions.push(session_id.clone());
+            } else {
+                session.pending_output.push((chunk.clone(), offset));
+                session.pending_output_bytes += chunk_bytes;
+            }
+            continue;
+        }
+        session_ids.push(session_id.clone());
+    }
+    for session_id in saturated_sessions {
+        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal snapshot wait exceeded bounded output buffer; ending session");
+        terminal_sessions.remove(&session_id);
+    }
     for session_id in session_ids {
         if let Err(error) =
             terminal_control_tx.try_send(TerminalControlCommand::Send(TerminalToCloud::Output {
@@ -952,8 +971,26 @@ impl BrokerRuntime {
                                 tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while sending snapshot; ending session");
                                 terminal_sessions.remove(&session_id);
                             } else if snapshot_ready {
-                                if let Some(session) = terminal_sessions.get_mut(&session_id) {
-                                    session.ready = true;
+                                let pending_output =
+                                    if let Some(session) = terminal_sessions.get_mut(&session_id) {
+                                        session.ready = true;
+                                        session.pending_output_bytes = 0;
+                                        std::mem::take(&mut session.pending_output)
+                                    } else {
+                                        Vec::new()
+                                    };
+                                for (chunk, offset) in pending_output {
+                                    if let Err(error) = terminal_control_tx.try_send(
+                                        TerminalControlCommand::Send(TerminalToCloud::Output {
+                                            session_id: session_id.clone(),
+                                            chunk,
+                                            offset,
+                                        }),
+                                    ) {
+                                        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while flushing buffered output; ending session");
+                                        terminal_sessions.remove(&session_id);
+                                        break;
+                                    }
                                 }
                             } else if snapshot_failed {
                                 terminal_sessions.remove(&session_id);

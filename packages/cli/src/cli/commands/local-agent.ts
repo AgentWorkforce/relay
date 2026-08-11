@@ -91,18 +91,32 @@ export async function attachFleetNode(
   const proxy = await startFleetNodeAttachProxy({ agent: name, node, mode });
   try {
     const connectionOptions = { brokerUrl: proxy.brokerUrl, apiKey: proxy.apiKey };
+    // Fleet agents expose a PTY stream rather than native-harness envelopes.
+    // In JSON mode retain the machine-readable contract by serializing every
+    // rendered stream chunk as NDJSON, including the initial snapshot.
+    const jsonOutput = (chunk: string) => {
+      process.stdout.write(`${JSON.stringify({ kind: 'worker_stream', name, stream: 'stdout', chunk })}\n`);
+    };
+    if (options.reasoning || options.diagnostics) {
+      process.stderr.write(
+        '[node attach] reasoning and diagnostics are unavailable for remote PTY terminal sessions.\n'
+      );
+    }
     switch (mode) {
       case 'view':
-        return await attachView(name, connectionOptions);
+        return await attachView(name, connectionOptions, options.json ? { writeChunk: jsonOutput } : {});
       case 'passthrough':
-        return await attachPassthrough(name, connectionOptions);
+        return await attachPassthrough(
+          name,
+          connectionOptions,
+          options.json ? { writeChunk: jsonOutput } : {}
+        );
       case 'drive':
       default:
-        return await attachDrive(name, connectionOptions);
+        return await attachDrive(name, connectionOptions, options.json ? { writeChunk: jsonOutput } : {});
     }
   } finally {
     await proxy.close();
-    void options;
   }
 }
 

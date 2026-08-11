@@ -204,10 +204,18 @@ export async function startFleetNodeAttachProxy(
           );
         });
       } catch (error) {
-        json(response, 503, {
+        const terminalError = error instanceof FleetNodeAttachError ? error : undefined;
+        const status =
+          terminalError?.code === 'agent_not_found'
+            ? 404
+            : terminalError?.code === 'unsupported_runtime'
+              ? 409
+              : 503;
+        json(response, status, {
           error: {
-            code: 'snapshot_unavailable',
-            message: error instanceof Error ? error.message : 'snapshot unavailable',
+            code: terminalError?.code ?? 'snapshot_unavailable',
+            message:
+              terminalError?.message ?? (error instanceof Error ? error.message : 'snapshot unavailable'),
           },
         });
         return;

@@ -283,6 +283,11 @@ pub(super) struct TerminalSession {
     /// PTY output is withheld until the initial ANSI grid has been delivered,
     /// so a client always receives `terminal.ready` before stream chunks.
     pub(super) ready: bool,
+    /// Output observed while the snapshot RPC is in flight. It is forwarded
+    /// after `terminal.ready`; per-stream offsets let the client discard bytes
+    /// already represented by the snapshot without losing later bytes.
+    pub(super) pending_output: Vec<(String, Option<u64>)>,
+    pub(super) pending_output_bytes: usize,
 }
 
 pub(super) struct TerminalSnapshotRequest {
