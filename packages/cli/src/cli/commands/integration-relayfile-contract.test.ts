@@ -221,6 +221,38 @@ describe('assertRelayfileVersion', () => {
   });
 });
 
+describe('default Relayfile integration bridge', () => {
+  it('allows a real provider-status request to clear the former 10-second boundary', async () => {
+    await withControlPlaneServer(
+      (request, response) => {
+        if (request.method === 'GET' && request.url === '/v1/hello') {
+          writeJson(response, 200, {
+            daemonVersion: '0.10.27',
+            apiVersion: 3,
+            supportedApiVersions: [1, 2, 3],
+          });
+          return;
+        }
+        if (request.method === 'GET' && request.url?.startsWith('/v1/integrations/provider-status?')) {
+          setTimeout(() => writeJson(response, 200, { provider: 'github', status: 'ready' }), 10_100);
+          return;
+        }
+        writeJson(response, 404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      },
+      async (socketPath) => {
+        const previousSocket = process.env.RELAYFILE_SOCK;
+        process.env.RELAYFILE_SOCK = socketPath;
+        try {
+          await expect(defaultRelayfileBridge().isConnected('github')).resolves.toBe(true);
+        } finally {
+          if (previousSocket === undefined) delete process.env.RELAYFILE_SOCK;
+          else process.env.RELAYFILE_SOCK = previousSocket;
+        }
+      }
+    );
+  }, 15_000);
+});
+
 describe('relayfile control-plane hello negotiation', () => {
   it('discovers supported APIs without a version header, then uses v3 for normal requests', async () => {
     const requests: Array<{ method?: string; path?: string; version?: string }> = [];

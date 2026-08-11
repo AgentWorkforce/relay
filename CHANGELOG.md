@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Increased the Relayfile integration control-plane request budget so subscription provisioning does not fail at the previous 10-second boundary when Cloud provider status is slow.
 
 ## [11.5.2] - 2026-08-11
 

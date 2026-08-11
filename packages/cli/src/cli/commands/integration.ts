@@ -152,9 +152,17 @@ export type IntegrationCommandDependencies = SdkCommandDeps & {
  */
 let sharedClient: RelayfileControlPlaneClient | undefined;
 const RELAYFILE_WEBHOOK_BINDINGS_API_VERSION = 3;
+const RELAYFILE_INTEGRATION_REQUEST_TIMEOUT_MS = 30_000;
 function controlPlaneClient(options?: RelayfileClientOptions): RelayfileControlPlaneClient {
   if (options) return new RelayfileControlPlaneClient(options);
-  if (!sharedClient) sharedClient = new RelayfileControlPlaneClient();
+  if (!sharedClient) {
+    sharedClient = new RelayfileControlPlaneClient({
+      // Provider status can include a Cloud request plus optional runtime
+      // enrichment. Keep subscription provisioning tolerant of a slow upstream
+      // while the daemon independently bounds that optional enrichment.
+      requestTimeoutMs: RELAYFILE_INTEGRATION_REQUEST_TIMEOUT_MS,
+    });
+  }
   return sharedClient;
 }
 
