@@ -15,6 +15,16 @@
  *
  * All errors are silently swallowed — the caller always falls back to the
  * original message on any failure (no credentials, network error, etc.).
+ *
+ * **Workspace-binding caveat:** This helper probes the workspace resolved from
+ * ambient environment variables (the same workspace `agent-relay agent list`
+ * uses). When attach is directed at a broker in a different workspace (via
+ * `--broker-url` / `--api-key`), the workspace this lookup targets may differ
+ * from the one the 404 came from. A same-named agent in the ambient workspace
+ * can produce a false-positive cross-node hint, or a genuinely remote agent
+ * (known only in the target broker's workspace) can be missed. For Phase 1
+ * this is acceptable — the hint is informational only and cannot change attach
+ * semantics. Phase 2's `--node` flag will make node resolution explicit.
  */
 
 import type { AgentRelay } from '@agent-relay/sdk';

@@ -207,6 +207,34 @@ describe('captureAndRenderSnapshot', () => {
     expect(writes).toEqual([]);
   });
 
+  it('returns not_found when fleetHint rejects (never propagates)', async () => {
+    const { deps, writes } = makeDeps({
+      fetch: vi.fn(async () => new Response('', { status: 404 })),
+      fleetHint: vi.fn(async () => Promise.reject(new Error('network failure'))),
+    });
+
+    const result = await captureAndRenderSnapshot(conn, 'Ghost', deps);
+
+    expect(result.status).toBe('not_found');
+    expect(result.message).toContain('Ghost');
+    expect(result.message).not.toContain('cross-node');
+    expect(writes).toEqual([]);
+  });
+
+  it('shell-quotes agent names with spaces in the suggested command', async () => {
+    const { deps, writes } = makeDeps({
+      fetch: vi.fn(async () => new Response('', { status: 404 })),
+      fleetHint: vi.fn(async () => "on node 'finn-mini'"),
+    });
+
+    const result = await captureAndRenderSnapshot(conn, 'my agent name', deps);
+
+    expect(result.status).toBe('not_found');
+    // The suggested command must quote the name so it is not split by the shell.
+    expect(result.message).toContain("'my agent name'");
+    expect(result.message).not.toContain('attach my agent name ');
+  });
+
   it('returns no_pty on HTTP 409', async () => {
     const { deps, writes } = makeDeps({
       fetch: vi.fn(async () => new Response('', { status: 409 })),

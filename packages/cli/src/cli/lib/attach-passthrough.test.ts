@@ -679,6 +679,18 @@ describe('runPassthroughSession', () => {
     expect(errors.some((args) => String(args[0]).includes("no agent named 'Ghost'"))).toBe(true);
   });
 
+  it('emits cross-node hint when mode flip returns 404 and fleetHint resolves a placement', async () => {
+    const { deps, sockets, errors } = createHarness({
+      modeFlipFailure: { status: 404, error: "no agent named 'Ghost'" },
+    });
+    deps.fleetHint = vi.fn(async () => "on node 'barry'");
+    const code = await runPassthroughSession('Ghost', {}, deps);
+    expect(code).toBe(1);
+    expect(sockets).toHaveLength(0);
+    expect(errors.some((args) => String(args[0]).includes("on node 'barry'"))).toBe(true);
+    expect(errors.some((args) => String(args[0]).includes('cross-node attach'))).toBe(true);
+  });
+
   it('aborts on snapshot not_found', async () => {
     const { deps, sockets, errors, fetchLog } = createHarness({
       snapshotResult: { status: 'not_found', message: "no agent named 'Ghost'" },

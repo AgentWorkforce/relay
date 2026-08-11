@@ -99,10 +99,18 @@ export async function captureAndRenderSnapshot(
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     if (failure.status === 404) {
-      const hint = deps.fleetHint ? await deps.fleetHint(agentName) : null;
+      let hint: string | null = null;
+      if (deps.fleetHint) {
+        try {
+          hint = await deps.fleetHint(agentName);
+        } catch {
+          // Best-effort lookup — preserve the existing not-found message.
+        }
+      }
+      const safeArg = `'${agentName.replace(/'/g, "'\\''")}'`;
       const message = hint
         ? `agent '${agentName}' is ${hint}; cross-node attach is not yet supported` +
-          ` — run \`agent-relay node agent attach ${agentName}\` on that machine`
+          ` — run \`agent-relay node agent attach ${safeArg}\` on that machine`
         : `no agent named '${agentName}'`;
       return { status: 'not_found', message };
     }
@@ -629,7 +637,12 @@ export async function switchInboundDeliveryModeOrAbort(
   name: string,
   targetMode: InboundDeliveryMode,
   actionPhrase: string,
-  deps: { fetch: typeof globalThis.fetch; error: (...args: unknown[]) => void }
+  deps: {
+    fetch: typeof globalThis.fetch;
+    error: (...args: unknown[]) => void;
+    /** Optional best-effort fleet placement lookup, same contract as {@link AttachSnapshotDeps.fleetHint}. */
+    fleetHint?: (name: string) => Promise<string | null>;
+  }
 ): Promise<{ previousMode: InboundDeliveryMode | null; sessionRevision: string | null } | null> {
   let previousMode: InboundDeliveryMode | null = null;
   try {
@@ -655,7 +668,23 @@ export async function switchInboundDeliveryModeOrAbort(
   } catch (err: unknown) {
     const failure = mapBrokerSdkFailure(err);
     if (failure.status === 404) {
-      deps.error(`Error: no agent named '${name}'`);
+      let hint: string | null = null;
+      if (deps.fleetHint) {
+        try {
+          hint = await deps.fleetHint(name);
+        } catch {
+          // Best-effort lookup — preserve the existing not-found message.
+        }
+      }
+      if (hint) {
+        const safeArg = `'${name.replace(/'/g, "'\\''")}'`;
+        deps.error(
+          `Error: agent '${name}' is ${hint}; cross-node attach is not yet supported` +
+            ` — run \`agent-relay node agent attach ${safeArg}\` on that machine`
+        );
+      } else {
+        deps.error(`Error: no agent named '${name}'`);
+      }
     } else {
       deps.error(`Error: could not ${actionPhrase}: ${failure.message ?? 'unknown error'}`);
     }
