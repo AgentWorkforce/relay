@@ -870,8 +870,14 @@ mod tests {
         let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
             panic!("expected spawn payload");
         };
-        let attestation = params.metadata.attestation.expect("attestation must be present");
-        assert_eq!(attestation.session_ref.as_deref(), Some("session-camel-xyz"));
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("session-camel-xyz")
+        );
     }
 
     /// When attestation is absent, top-level `session_id` is silently ignored
@@ -930,9 +936,15 @@ mod tests {
         let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
             panic!("expected spawn payload");
         };
-        let attestation = params.metadata.attestation.expect("attestation must be present");
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
         // The nested sessionRef takes precedence; top-level session_id is not applied.
-        assert_eq!(attestation.session_ref.as_deref(), Some("explicit-nested-ref"));
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("explicit-nested-ref")
+        );
     }
 
     #[test]
