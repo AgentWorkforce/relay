@@ -184,10 +184,19 @@ pub fn broker_payload_from_action(
         // present.  Only an already-attested spawn gains a Session-Id trailer;
         // an un-attested spawn has no hook installed so there is nothing to
         // stamp.
+        //
+        // Use the same blank-value guard as spawner.rs `is_valid_attestation_value`:
+        // a nested `sessionRef` that is `None` or blank (all whitespace) is treated
+        // as absent so a valid top-level alias still reaches the hook.
         if let (Some(ref mut attestation), Some(sid)) =
             (&mut spawn.metadata.attestation, session_id)
         {
-            if attestation.session_ref.is_none() {
+            let nested_is_blank = attestation
+                .session_ref
+                .as_deref()
+                .map(str::trim)
+                .map_or(true, |v| v.is_empty());
+            if nested_is_blank {
                 attestation.session_ref = Some(sid);
             }
         }
@@ -1118,6 +1127,49 @@ mod tests {
             attestation.session_ref.as_deref(),
             Some("ai-hist:claudecode-camel-rescue"),
             "whitespace-only session_id must not suppress valid sessionId alias"
+        );
+    }
+
+    /// A blank/whitespace-only `sessionRef` inside `metadata.attestation` must be
+    /// treated as absent so a valid top-level `session_ref` can fill the field.
+    /// The `nested_is_blank` guard in `broker_payload_from_action` handles this;
+    /// a plain `is_none()` check would silently suppress the top-level value.
+    #[test]
+    fn blank_nested_session_ref_is_treated_as_absent() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_blank_nested",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerBlankNested",
+                "cli": "claude",
+                "session_ref": "ai-hist:claudecode-top-level-wins",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-blank-nested",
+                        "agentId": "agent_blank_nested",
+                        "sponsorId": "sponsor_blank_nested",
+                        "sessionRef": "   "
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with blank nested sessionRef");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-top-level-wins"),
+            "blank nested sessionRef must be treated as absent; top-level session_ref must fill the field"
         );
     }
 
