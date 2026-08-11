@@ -83,6 +83,18 @@
             "reasoning": "The scripts/ci-standalone-smoke.sh test was tearing down `agent-relay node up` after eight seconds even when a retried Relaycast handshake was still in progress. Polling for its `Broker started.` readiness line for up to thirty seconds prevents cleanup from creating a false startup failure while retaining deterministic timeout diagnostics."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1786432752227,
+          "type": "decision",
+          "content": "Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook: Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook",
+          "raw": {
+            "question": "Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook",
+            "chosen": "Add session_ref: Option<String> to CommitAttestation; extract from top-level action JSON in broker_payload_from_action; inject RELAY_ATTEST_SESSION_ID env; stamp Session-Id trailer in hook",
+            "alternatives": [],
+            "reasoning": "Fleet dispatch puts session_id at JSON top level; SpawnParams.metadata.attestation.session_ref needs explicit bridging; session_ref is optional so hook fires without it (backward-compatible)"
+          },
+          "significance": "high"
         }
       ]
     }
