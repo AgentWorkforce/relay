@@ -31,6 +31,7 @@ import {
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
+import { resolveFleetHint } from '../lib/fleet-hint.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 type ExitFn = (code: number) => never;
@@ -116,6 +117,12 @@ export interface ViewDependencies {
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
   /**
+   * Best-effort workspace lookup for improving cross-node 404 messages.
+   * Defaults to `resolveFleetHint` from `fleet-hint.ts`. Tests inject a stub
+   * to avoid network calls.
+   */
+  fleetHint?: (name: string) => Promise<string | null>;
+  /**
    * True when stdout is an interactive terminal. Gates the on-detach terminal
    * reset so a piped/redirected `view` never writes reset controls into the
    * captured log. Defaults to `Boolean(process.stdout.isTTY)`.
@@ -160,6 +167,7 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     exit: defaultExit,
     fetch: (input, init) => fetch(input, init),
     captureAndRenderSnapshot,
+    fleetHint: resolveFleetHint,
     stdoutIsTty: Boolean(process.stdout.isTTY),
     ...overrides,
   };
@@ -520,7 +528,7 @@ export async function runViewSession(
       const snapshot = await deps.captureAndRenderSnapshot(
         { url: connection.url, apiKey: connection.apiKey },
         name,
-        { fetch: deps.fetch, writeChunk: guardedWrite }
+        { fetch: deps.fetch, writeChunk: guardedWrite, fleetHint: deps.fleetHint }
       );
       if (settled) return;
       switch (snapshot.status) {

@@ -57,6 +57,7 @@ import {
   type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
+import { resolveFleetHint } from '../lib/fleet-hint.js';
 import {
   createInputStreamRecovery,
   INPUT_REOPEN_BASE_DELAY_MS,
@@ -133,6 +134,12 @@ export interface PassthroughDependencies {
     name: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
+  /**
+   * Best-effort workspace lookup for improving cross-node 404 messages.
+   * Defaults to `resolveFleetHint` from `fleet-hint.ts`. Tests inject a stub
+   * to avoid network calls.
+   */
+  fleetHint?: (name: string) => Promise<string | null>;
   stdin: PassthroughStdin;
   terminal: PassthroughTerminal;
   /** Opens the SDK PTY input stream used for raw human keystrokes. */
@@ -192,6 +199,7 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
     exit: defaultExit,
     fetch: fetchFn,
     captureAndRenderSnapshot,
+    fleetHint: resolveFleetHint,
     stdin: process.stdin as PassthroughStdin,
     terminal: {
       getSize: () => {
@@ -874,7 +882,7 @@ export async function runPassthroughSession(
       const snapshot = await deps.captureAndRenderSnapshot(
         { url: connection.url, apiKey: connection.apiKey },
         name,
-        { fetch: deps.fetch, writeChunk: captureWrite }
+        { fetch: deps.fetch, writeChunk: captureWrite, fleetHint: deps.fleetHint }
       );
       if (settled) return;
       switch (snapshot.status) {
