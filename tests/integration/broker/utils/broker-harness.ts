@@ -89,8 +89,7 @@ export class BrokerHarness {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
       binaryArgs: options.binaryArgs ?? {},
       brokerName:
-        options.brokerName ??
-        `test-harness-${Date.now().toString(36)}-${randomBytes(2).toString('hex')}`,
+        options.brokerName ?? `test-harness-${Date.now().toString(36)}-${randomBytes(2).toString('hex')}`,
       channels: options.channels ?? ['general'],
       cwd: options.cwd ?? process.cwd(),
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
