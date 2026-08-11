@@ -1,3 +1,4 @@
+use super::fleet::try_send_terminal;
 use super::*;
 use crate::terminal_control::TerminalToCloud;
 
@@ -47,14 +48,26 @@ impl BrokerRuntime {
         for (request_id, session_id) in expired_terminal_snapshots {
             terminal_snapshot_requests.remove(&request_id);
             if terminal_sessions.remove(&session_id).is_some() {
-                if let Err(error) = terminal_control_tx.try_send(TerminalControlCommand::Send(
+                terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+                if !try_send_terminal(
+                    terminal_control_tx,
                     TerminalToCloud::Error {
                         session_id: session_id.clone(),
                         code: "snapshot_timeout".into(),
                         message: "terminal snapshot timed out".into(),
                     },
-                )) {
-                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while reporting snapshot timeout");
+                ) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting snapshot timeout");
+                }
+                if !try_send_terminal(
+                    terminal_control_tx,
+                    TerminalToCloud::Closed {
+                        session_id: session_id.clone(),
+                        code: Some("snapshot_timeout".into()),
+                        message: Some("terminal snapshot timed out".into()),
+                    },
+                ) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal close could not be queued after snapshot timeout");
                 }
             }
         }
@@ -65,16 +78,31 @@ impl BrokerRuntime {
             .collect();
         for (request_id, session_id) in expired_terminal_inputs {
             terminal_input_requests.remove(&request_id);
-            if terminal_sessions.contains_key(&session_id) {
-                if let Err(error) = terminal_control_tx.try_send(TerminalControlCommand::Send(
+            // A timed-out write may still reach the PTY after cancellation. End
+            // the whole session before reporting it so a retry cannot duplicate
+            // user keystrokes against that uncertain write.
+            if terminal_sessions.remove(&session_id).is_some() {
+                terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+                terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+                if !try_send_terminal(
+                    terminal_control_tx,
                     TerminalToCloud::Error {
                         session_id: session_id.clone(),
                         code: "input_timeout".into(),
                         message: "terminal input acknowledgement timed out".into(),
                     },
-                )) {
-                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while reporting input timeout");
-                    terminal_sessions.remove(&session_id);
+                ) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting input timeout");
+                }
+                if !try_send_terminal(
+                    terminal_control_tx,
+                    TerminalToCloud::Closed {
+                        session_id: session_id.clone(),
+                        code: Some("input_timeout".into()),
+                        message: Some("terminal input acknowledgement timed out".into()),
+                    },
+                ) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal close could not be queued after input timeout");
                 }
             }
         }
@@ -266,14 +294,15 @@ impl BrokerRuntime {
                 terminal_sessions.remove(&session_id);
                 terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
                 terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
-                if let Err(error) = terminal_control_tx.try_send(TerminalControlCommand::Send(
+                if !try_send_terminal(
+                    terminal_control_tx,
                     TerminalToCloud::Closed {
                         session_id: session_id.clone(),
                         code: Some("agent_exited".into()),
                         message: Some("terminal worker exited".into()),
                     },
-                )) {
-                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while closing exited worker session");
+                ) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while closing exited worker session");
                 }
             }
             // Record crash in insights

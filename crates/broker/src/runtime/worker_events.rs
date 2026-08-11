@@ -1,4 +1,6 @@
-use super::fleet::{refresh_fleet_inventory_session_ref, verified_spawn_ready_result};
+use super::fleet::{
+    refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
+};
 use super::*;
 use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
 use crate::worker::AgentWorkState;
@@ -8,6 +10,8 @@ const TERMINAL_PENDING_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 fn publish_terminal_output(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
     name: &WorkerName,
     chunk: String,
     offset: Option<u64>,
@@ -35,19 +39,64 @@ fn publish_terminal_output(
     }
     for session_id in saturated_sessions {
         tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal snapshot wait exceeded bounded output buffer; ending session");
-        terminal_sessions.remove(&session_id);
+        end_terminal_session(
+            terminal_control_tx,
+            terminal_sessions,
+            terminal_snapshot_requests,
+            terminal_input_requests,
+            &session_id,
+            "output_backpressure",
+            "terminal snapshot wait exceeded bounded output buffer",
+        );
     }
     for session_id in session_ids {
-        if let Err(error) =
-            terminal_control_tx.try_send(TerminalControlCommand::Send(TerminalToCloud::Output {
+        if !try_send_terminal(
+            terminal_control_tx,
+            TerminalToCloud::Output {
                 session_id: session_id.clone(),
                 chunk: chunk.clone(),
                 offset,
-            }))
-        {
-            tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal output queue full or closed; ending session");
-            terminal_sessions.remove(&session_id);
+            },
+        ) {
+            tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal output queue full or closed; ending session");
+            end_terminal_session(
+                terminal_control_tx,
+                terminal_sessions,
+                terminal_snapshot_requests,
+                terminal_input_requests,
+                &session_id,
+                "output_backpressure",
+                "terminal output queue is full",
+            );
         }
+    }
+}
+
+fn end_terminal_session(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    session_id: &str,
+    code: &str,
+    message: &str,
+) {
+    terminal_sessions.remove(session_id);
+    terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+    terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+    if !try_send_terminal(
+        terminal_control_tx,
+        TerminalToCloud::Closed {
+            session_id: session_id.into(),
+            code: Some(code.into()),
+            message: Some(message.into()),
+        },
+    ) {
+        tracing::warn!(
+            target = "relay_broker::terminal",
+            session_id,
+            "terminal close could not be queued after session failure"
+        );
     }
 }
 
@@ -902,11 +951,17 @@ impl BrokerRuntime {
                                     message: "terminal input response was malformed".into(),
                                 }
                             };
-                            if let Err(error) =
-                                terminal_control_tx.try_send(TerminalControlCommand::Send(message))
-                            {
-                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while reporting PTY input result; ending session");
-                                terminal_sessions.remove(&session_id);
+                            if !try_send_terminal(terminal_control_tx, message) {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting PTY input result; ending session");
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    "output_backpressure",
+                                    "terminal output queue is full",
+                                );
                             }
                         } else if let Some(session_id) = terminal_session_id {
                             if !terminal_sessions.contains_key(&session_id) {
@@ -965,11 +1020,17 @@ impl BrokerRuntime {
                             };
                             let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
                             let snapshot_failed = matches!(&message, TerminalToCloud::Error { .. });
-                            if let Err(error) =
-                                terminal_control_tx.try_send(TerminalControlCommand::Send(message))
-                            {
-                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while sending snapshot; ending session");
-                                terminal_sessions.remove(&session_id);
+                            if !try_send_terminal(terminal_control_tx, message) {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while sending snapshot; ending session");
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    "output_backpressure",
+                                    "terminal output queue is full",
+                                );
                             } else if snapshot_ready {
                                 let pending_output =
                                     if let Some(session) = terminal_sessions.get_mut(&session_id) {
@@ -980,15 +1041,24 @@ impl BrokerRuntime {
                                         Vec::new()
                                     };
                                 for (chunk, offset) in pending_output {
-                                    if let Err(error) = terminal_control_tx.try_send(
-                                        TerminalControlCommand::Send(TerminalToCloud::Output {
+                                    if !try_send_terminal(
+                                        terminal_control_tx,
+                                        TerminalToCloud::Output {
                                             session_id: session_id.clone(),
                                             chunk,
                                             offset,
-                                        }),
+                                        },
                                     ) {
-                                        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while flushing buffered output; ending session");
-                                        terminal_sessions.remove(&session_id);
+                                        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while flushing buffered output; ending session");
+                                        end_terminal_session(
+                                            terminal_control_tx,
+                                            terminal_sessions,
+                                            terminal_snapshot_requests,
+                                            terminal_input_requests,
+                                            &session_id,
+                                            "output_backpressure",
+                                            "terminal output queue is full",
+                                        );
                                         break;
                                     }
                                 }
@@ -1058,6 +1128,8 @@ impl BrokerRuntime {
                             publish_terminal_output(
                                 terminal_control_tx,
                                 terminal_sessions,
+                                terminal_snapshot_requests,
+                                terminal_input_requests,
                                 &name,
                                 chunk,
                                 offset,

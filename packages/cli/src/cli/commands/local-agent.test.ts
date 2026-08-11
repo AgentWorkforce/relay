@@ -144,6 +144,7 @@ describe('local agent subtree', () => {
     const { program, error, exit } = harness({ attachNode });
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn'], { from: 'user' });
     expect(error).toHaveBeenCalledWith('Error: terminal unavailable');
+    expect(error).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(1);
   });
 

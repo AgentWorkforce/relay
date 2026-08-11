@@ -203,6 +203,7 @@ export async function startFleetNodeAttachProxy(
   let remote: WebSocket | undefined;
   let stopped = false;
   let terminalEnded = false;
+  let terminalEverReady = false;
   let reconnecting = false;
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -483,6 +484,7 @@ export async function startFleetNodeAttachProxy(
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
+        terminalEverReady = true;
         reconnectAttempts = 0;
         if (readiness === activeReadiness) {
           resolveReadiness(readiness);
@@ -524,7 +526,15 @@ export async function startFleetNodeAttachProxy(
         endTerminal(new FleetNodeAttachError('remote terminal session closed', 'terminal_closed'));
       }
     });
-    socket.on('error', () => undefined);
+    socket.on('error', () => {
+      // Initial connection failure has no terminal state worth preserving.
+      // Fail promptly with the canonical unavailable-node error instead of
+      // letting the HTTP snapshot timeout mask it. Once Ready has been seen,
+      // the close handler retains the bounded resume/backoff behaviour.
+      if (remote === socket && readiness === activeReadiness && !readiness.settled && !terminalEverReady) {
+        failRemote('terminal transport could not connect to the fleet node');
+      }
+    });
     socket.on('close', () => {
       if (remote !== socket || stopped || terminalEnded || reconnecting) return;
       // Any waiter that observed the prior connection must retry against the

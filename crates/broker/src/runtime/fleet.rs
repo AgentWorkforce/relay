@@ -19,6 +19,28 @@ const TERMINAL_INPUT_MAX_BYTES: usize = 64 * 1024;
 const TERMINAL_INPUT_MAX_BASE64_BYTES: usize = TERMINAL_INPUT_MAX_BYTES * 4 / 3 + 4;
 const TERMINAL_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 const TERMINAL_INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+// Terminal worker writes share the broker event loop with fleet control and
+// worker lifecycle events. A wedged PTY must fail only its own attach instead
+// of awaiting an unbounded pipe write in that loop.
+const TERMINAL_WORKER_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+const TERMINAL_INPUT_MAX_IN_FLIGHT_PER_SESSION: usize = 16;
+// Relaycast currently limits a node to 32 terminal sessions. Keep that many
+// slots free from high-volume frames so every affected session can still get a
+// terminal.closed notification when the output lane applies backpressure.
+const TERMINAL_CLOSE_RESERVE: usize = 32;
+
+pub(super) fn try_send_terminal(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    message: TerminalToCloud,
+) -> bool {
+    let is_close = matches!(&message, TerminalToCloud::Closed { .. });
+    if !is_close && terminal_control_tx.capacity() <= TERMINAL_CLOSE_RESERVE {
+        return false;
+    }
+    terminal_control_tx
+        .try_send(TerminalControlCommand::Send(message))
+        .is_ok()
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingVerifiedSpawn {
@@ -135,17 +157,18 @@ impl BrokerRuntime {
                         // from worker_events to the terminal lane, so this never
                         // stalls heartbeat/action processing behind a PTY snapshot.
                         let request_id = format!("terminal_snapshot_{}", Uuid::new_v4().simple());
-                        match self
-                            .workers
-                            .send_to_worker(
+                        match tokio::time::timeout(
+                            TERMINAL_WORKER_WRITE_TIMEOUT,
+                            self.workers.send_to_worker(
                                 agent_name.as_str(),
                                 "snapshot_pty",
                                 Some(RequestId::new(request_id.clone())),
                                 json!({ "format": "ansi" }),
-                            )
-                            .await
+                            ),
+                        )
+                        .await
                         {
-                            Ok(()) => {
+                            Ok(Ok(())) => {
                                 self.terminal_snapshot_requests.insert(
                                     request_id,
                                     TerminalSnapshotRequest {
@@ -154,13 +177,19 @@ impl BrokerRuntime {
                                     },
                                 );
                             }
-                            Err(error) => {
-                                self.terminal_sessions.remove(&session_id);
-                                self.send_terminal(TerminalToCloud::Error {
+                            Ok(Err(error)) => {
+                                self.fail_terminal_session(
                                     session_id,
-                                    code: "snapshot_failed".into(),
-                                    message: error.to_string(),
-                                });
+                                    "snapshot_failed",
+                                    error.to_string(),
+                                );
+                            }
+                            Err(_) => {
+                                self.fail_terminal_session(
+                                    session_id,
+                                    "snapshot_timeout",
+                                    "terminal snapshot write timed out".into(),
+                                );
                             }
                         }
                     }
@@ -224,18 +253,33 @@ impl BrokerRuntime {
                         return;
                     }
                 };
+                if self
+                    .terminal_input_requests
+                    .values()
+                    .filter(|pending| pending.session_id == session_id)
+                    .count()
+                    >= TERMINAL_INPUT_MAX_IN_FLIGHT_PER_SESSION
+                {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "input_backpressure".into(),
+                        message: "terminal input acknowledgement backlog is full".into(),
+                    });
+                    return;
+                }
                 let request_id = format!("terminal_input_{}", Uuid::new_v4().simple());
-                match self
-                    .workers
-                    .send_to_worker(
+                match tokio::time::timeout(
+                    TERMINAL_WORKER_WRITE_TIMEOUT,
+                    self.workers.send_to_worker(
                         session.agent.as_str(),
                         "write_pty",
                         Some(RequestId::new(request_id.clone())),
                         json!({ "data": data }),
-                    )
-                    .await
+                    ),
+                )
+                .await
                 {
-                    Ok(()) => {
+                    Ok(Ok(())) => {
                         self.terminal_input_requests.insert(
                             request_id,
                             TerminalInputRequest {
@@ -244,11 +288,14 @@ impl BrokerRuntime {
                             },
                         );
                     }
-                    Err(error) => self.send_terminal(TerminalToCloud::Error {
+                    Ok(Err(error)) => {
+                        self.fail_terminal_session(session_id, "input_failed", error.to_string())
+                    }
+                    Err(_) => self.fail_terminal_session(
                         session_id,
-                        code: "input_failed".into(),
-                        message: error.to_string(),
-                    }),
+                        "input_timeout",
+                        "terminal input write timed out".into(),
+                    ),
                 }
             }
             TerminalControlEvent::Message(TerminalFromCloud::Resize {
@@ -280,21 +327,26 @@ impl BrokerRuntime {
                     });
                     return;
                 }
-                if let Err(error) = self
-                    .workers
-                    .send_to_worker(
+                match tokio::time::timeout(
+                    TERMINAL_WORKER_WRITE_TIMEOUT,
+                    self.workers.send_to_worker(
                         session.agent.as_str(),
                         "resize_pty",
                         None,
                         json!({ "rows": rows, "cols": cols }),
-                    )
-                    .await
+                    ),
+                )
+                .await
                 {
-                    self.send_terminal(TerminalToCloud::Error {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        self.fail_terminal_session(session_id, "resize_failed", error.to_string())
+                    }
+                    Err(_) => self.fail_terminal_session(
                         session_id,
-                        code: "resize_failed".into(),
-                        message: error.to_string(),
-                    });
+                        "resize_timeout",
+                        "terminal resize write timed out".into(),
+                    ),
                 }
             }
             TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {
@@ -323,17 +375,45 @@ impl BrokerRuntime {
             | TerminalToCloud::Error { session_id, .. }
             | TerminalToCloud::Closed { session_id, .. } => session_id.clone(),
         };
-        if let Err(error) = self
-            .terminal_control_tx
-            .try_send(TerminalControlCommand::Send(message))
-        {
-            tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed; ending session");
+        let is_close = matches!(&message, TerminalToCloud::Closed { .. });
+        if !try_send_terminal(&self.terminal_control_tx, message) {
+            tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed; ending session");
             self.terminal_sessions.remove(&session_id);
             self.terminal_snapshot_requests
                 .retain(|_, pending| pending.session_id != session_id);
             self.terminal_input_requests
                 .retain(|_, pending| pending.session_id != session_id);
+            if !is_close
+                && !try_send_terminal(
+                    &self.terminal_control_tx,
+                    TerminalToCloud::Closed {
+                        session_id: session_id.clone(),
+                        code: Some("output_backpressure".into()),
+                        message: Some("terminal output queue is full".into()),
+                    },
+                )
+            {
+                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal close could not be queued after backpressure");
+            }
         }
+    }
+
+    fn fail_terminal_session(&mut self, session_id: String, code: &str, message: String) {
+        self.terminal_sessions.remove(&session_id);
+        self.terminal_snapshot_requests
+            .retain(|_, pending| pending.session_id != session_id);
+        self.terminal_input_requests
+            .retain(|_, pending| pending.session_id != session_id);
+        self.send_terminal(TerminalToCloud::Error {
+            session_id: session_id.clone(),
+            code: code.into(),
+            message: message.clone(),
+        });
+        self.send_terminal(TerminalToCloud::Closed {
+            session_id,
+            code: Some(code.into()),
+            message: Some(message),
+        });
     }
 
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
@@ -1579,6 +1659,46 @@ mod tests {
             plan_fleet_delivery(DeliveryDecision::IdentityReject),
             FleetDeliveryPlan::RejectWithoutAck
         );
+    }
+
+    #[test]
+    fn terminal_close_reserve_survives_output_backpressure() {
+        let (tx, mut rx) = mpsc::channel(TERMINAL_CLOSE_RESERVE + 1);
+        assert!(try_send_terminal(
+            &tx,
+            TerminalToCloud::Output {
+                session_id: "session-a".into(),
+                chunk: "x".into(),
+                offset: None,
+            },
+        ));
+        assert!(
+            !try_send_terminal(
+                &tx,
+                TerminalToCloud::Output {
+                    session_id: "session-a".into(),
+                    chunk: "y".into(),
+                    offset: None,
+                },
+            ),
+            "non-final terminal traffic must preserve close capacity"
+        );
+        assert!(try_send_terminal(
+            &tx,
+            TerminalToCloud::Closed {
+                session_id: "session-a".into(),
+                code: Some("output_backpressure".into()),
+                message: Some("queue full".into()),
+            },
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TerminalControlCommand::Send(TerminalToCloud::Output { .. }))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TerminalControlCommand::Send(TerminalToCloud::Closed { .. }))
+        ));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use super::fleet::try_send_terminal;
 use super::*;
 use crate::terminal_control::TerminalToCloud;
 use relaycast::{
@@ -841,14 +842,15 @@ impl BrokerRuntime {
                                 .retain(|_, pending| pending.session_id != session_id);
                             terminal_input_requests
                                 .retain(|_, pending| pending.session_id != session_id);
-                            if let Err(error) = terminal_control_tx.try_send(
-                                TerminalControlCommand::Send(TerminalToCloud::Closed {
+                            if !try_send_terminal(
+                                terminal_control_tx,
+                                TerminalToCloud::Closed {
                                     session_id: session_id.clone(),
                                     code: Some("agent_released".into()),
                                     message: Some("terminal worker was released".into()),
-                                }),
+                                },
                             ) {
-                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while closing released worker session");
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while closing released worker session");
                             }
                         }
                         delivery_states.remove(&name);

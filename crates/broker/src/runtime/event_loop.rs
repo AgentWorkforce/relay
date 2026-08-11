@@ -482,12 +482,16 @@ impl BrokerRuntime {
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
         }
-        if let Err(error) = self
+        // A terminal client can be awaiting a full event queue while its own
+        // bounded command queue is full. Shutdown must never await that cycle:
+        // process teardown closes the task/socket if this best-effort enqueue
+        // cannot fit immediately.
+        if self
             .terminal_control_tx
-            .send(TerminalControlCommand::Shutdown)
-            .await
+            .try_send(TerminalControlCommand::Shutdown)
+            .is_err()
         {
-            tracing::debug!(error = %error, "failed to send terminal control shutdown signal");
+            tracing::debug!("terminal control shutdown signal could not be queued immediately");
         }
         // Persist any still-pending deliveries so the next start can
         // redeliver them; only remove the file when nothing is pending.
