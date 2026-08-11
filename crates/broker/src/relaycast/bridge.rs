@@ -143,29 +143,41 @@ fn action_invoked_object(value: &Value) -> Option<&Value> {
 ///
 /// # Session attribution bridging
 ///
-/// Fleet dispatches (e.g. `fleet.spawn()` from `@agent-relay/fleet`) place
-/// `session_id` at the **top level** of the action input JSON alongside `name`
-/// and `cli`.  `SpawnParams.metadata.attestation` has no dedicated field for
-/// it, so serde would otherwise silently drop it.  When the deserialized spawn
-/// carries a commit-attestation and the top-level JSON contains `session_id`
-/// (or its camelCase alias `sessionId`), this function threads it into
-/// `attestation.session_ref` so the broker's `prepare-commit-msg` hook can
+/// Fleet dispatches (e.g. `fleet.spawn()` from `@agent-relay/fleet`) place the
+/// session reference at the **top level** of the action input JSON alongside
+/// `name` and `cli`.  `SpawnParams.metadata.attestation` has no dedicated field
+/// for it, so serde would otherwise silently drop it.  This function lifts it
+/// into `attestation.session_ref` so the broker's `prepare-commit-msg` hook can
 /// stamp a `Session-Id:` trailer on every commit the spawned agent makes.
+///
+/// Key lookup order (first non-blank value wins):
+/// 1. `session_ref` — canonical snake_case key used by the Fleet CLI/API
+///    (see `runtime::relaycast_events::relaycast_spawn_session_ref`).
+/// 2. `sessionRef` — camelCase alias for the same key.
+/// 3. `session_id` — legacy snake_case alias retained for backward compat.
+/// 4. `sessionId` — legacy camelCase alias retained for backward compat.
 pub fn broker_payload_from_action(
     action: &str,
     input: Option<serde_json::Map<String, Value>>,
 ) -> Option<BrokerCommandPayload> {
     let input = input?;
     if action == "spawn" || action.starts_with("spawn-") {
-        // Extract session_id from the top-level map before consuming it.
-        // Fleet dispatches place it here; `SpawnParams` has no matching field
-        // so serde drops it unless we lift it manually.
-        let session_id = input
-            .get("session_id")
-            .or_else(|| input.get("sessionId"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
+        // Lift the session reference from the top-level map before consuming it.
+        // Fleet dispatches use `session_ref`/`sessionRef` as the canonical keys
+        // (matching `relaycast_spawn_session_ref` in `runtime/relaycast_events.rs`).
+        // `session_id`/`sessionId` are kept as fallback aliases for backward compat.
+        // `find_map` is used so a blank value for an earlier key does not suppress
+        // a valid value for a later key (`.or_else()` only falls back on `None`,
+        // not on `Some("")`).
+        let session_id = ["session_ref", "sessionRef", "session_id", "sessionId"]
+            .iter()
+            .find_map(|key| {
+                input
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+            })
             .map(str::to_owned);
         let mut spawn: SpawnParams = serde_json::from_value(Value::Object(input)).ok()?;
         // Thread session_id into attestation.session_ref when both are
@@ -944,6 +956,168 @@ mod tests {
         assert_eq!(
             attestation.session_ref.as_deref(),
             Some("explicit-nested-ref")
+        );
+    }
+
+    /// Fleet CLI/API uses `session_ref` (snake_case) as the canonical top-level
+    /// key — verified against `runtime::relaycast_events::relaycast_spawn_session_ref`.
+    /// The bridge must recognise it even when `session_id` is absent.
+    #[test]
+    fn bridges_top_level_session_ref_canonical_key() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session_ref_canon",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerSessionRef",
+                "cli": "claude",
+                "session_ref": "ai-hist:claudecode-fleet-canonical",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-ref-canon",
+                        "agentId": "agent_ref_canon",
+                        "sponsorId": "sponsor_ref_canon"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with top-level session_ref");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-fleet-canonical"),
+            "session_ref (canonical fleet key) must be bridged into attestation.session_ref"
+        );
+    }
+
+    /// `sessionRef` (camelCase) is the camelCase alias of the canonical fleet key.
+    #[test]
+    fn bridges_top_level_session_ref_camel_case_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session_ref_camel",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerSessionRefCamel",
+                "cli": "claude",
+                "sessionRef": "ai-hist:claudecode-fleet-camel",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-ref-camel",
+                        "agentId": "agent_ref_camel",
+                        "sponsorId": "sponsor_ref_camel"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with top-level sessionRef");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-fleet-camel"),
+            "sessionRef (camelCase fleet alias) must be bridged into attestation.session_ref"
+        );
+    }
+
+    /// When `session_ref` is blank and `sessionRef` holds a valid value, the valid
+    /// value must not be suppressed.  `.or_else()` would fail here because it only
+    /// falls back on `None`; `find_map` skips blank values from earlier keys.
+    #[test]
+    fn blank_session_ref_falls_through_to_valid_session_ref_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_blank_fallthrough",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerBlankFallthrough",
+                "cli": "claude",
+                "session_ref": "",
+                "sessionRef": "ai-hist:claudecode-from-alias",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-blank-fallthrough",
+                        "agentId": "agent_blank",
+                        "sponsorId": "sponsor_blank"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn where session_ref is blank");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-from-alias"),
+            "blank session_ref must not suppress the valid sessionRef alias"
+        );
+    }
+
+    /// A blank `session_id` must not suppress a valid `sessionId` alias.
+    #[test]
+    fn blank_session_id_falls_through_to_valid_session_id_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_blank_session_id",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerBlankSessionId",
+                "cli": "claude",
+                "session_id": "   ",
+                "sessionId": "ai-hist:claudecode-camel-rescue",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-blank-sid",
+                        "agentId": "agent_blank_sid",
+                        "sponsorId": "sponsor_blank_sid"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn where session_id is whitespace-only");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-camel-rescue"),
+            "whitespace-only session_id must not suppress valid sessionId alias"
         );
     }
 
