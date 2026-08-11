@@ -189,7 +189,7 @@ pub(crate) async fn run_terminal_control_client(
                     Some(TerminalControlCommand::Send(message)) => {
                         match serde_json::to_string(&message) {
                             Ok(encoded) => {
-                                if sink.send(Message::Text(encoded.into())).await.is_err() {
+                                if sink.send(Message::Text(encoded)).await.is_err() {
                                     connected = false;
                                 }
                             }
