@@ -95,10 +95,6 @@ for await (const line of lines) {
     event('text.delta', { messageId: 'fixture-message', delta: `echo:${String(payload.text ?? '')}` });
     event('text.finished', { messageId: 'fixture-message' });
     event('turn.finished', { turnId: 'fixture-turn' });
-    // turn.settled is the definitive "turn complete" signal emitted by the
-    // AI-SDK harness after control.done resolves. The sidecar must emit it so
-    // assertRecipientTookTurn can observe completion on the native-fixture path.
-    event('turn.settled', { turnId: 'fixture-turn' });
     event('activity.changed', {
       activity: 'idle',
       previousActivity: 'thinking',

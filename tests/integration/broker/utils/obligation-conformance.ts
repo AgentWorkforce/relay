@@ -38,22 +38,18 @@
  *     that is a stand-in, not the protocol shape.
  *   - Any semantic on a reaction. A `done` from the author and a `done` from
  *     the recipient are byte-identical records; neither names a recipient.
- *   - Boomerang: nothing re-surfaces an unanswered message. Two near misses,
- *     both worth knowing about before anyone builds this:
- *       * crates/broker/src/scheduler.rs is not wired into anything. Its only
- *         references are its own `#[cfg(test)]` module, so it coalesces nothing
- *         in production today. Its shape is still the right one to copy —
- *         `push`/`drain_ready` take `now` as a parameter instead of reading the
- *         clock, which is exactly what would let arm C assert interval spacing
- *         without sleeping through real time.
- *       * crates/broker/src/runtime/maintenance.rs runs a 500ms sweep that
- *         retries deliveries past `next_retry_at`. That is a *transport* retry
- *         keyed on the pending map: a delivery leaves the map the moment the
- *         worker acks, so once a message is injected nothing re-surfaces it.
- *         It is the natural hook for boomerang, and it is not boomerang.
  *   - Any organisational edge, so `dischargeDelegate` and the escalation ladder
  *     have no one to resolve to. Arm C therefore names its escalation target
  *     explicitly rather than resolving it.
+ *
+ * Now exists (as of obligation-lifecycle):
+ *   - Boomerang: `crates/broker/src/obligation.rs` (ObligationStore) wired into
+ *     `crates/broker/src/runtime/maintenance.rs`. Obligating DMs (containing
+ *     OBLIGATION_MARKER) register an ObligationRecord; the 500 ms maintenance
+ *     tick drains due obligations and re-injects a knock carrying RETURN_MARKER
+ *     to the recipient (up to 3 times). A ✅ reaction from the author discharges
+ *     the obligation. Toggle: RELAY_OBLIGATION_BOOMERANG=0 disables all
+ *     boomerang; RELAY_OBLIGATION_INTERVAL_MS=<ms> sets the interval.
  *
  * ── Prerequisite worth checking before reading any result ───────────────────
  *
@@ -509,8 +505,11 @@ function injectionAt(event: BrokerEvent, recipient: string): { body: string; id:
  * satisfy it by writing to a store the model reads on its own initiative, which
  * is why this watches the injection stream rather than the message store.
  *
- * Nothing produces such an injection today. This function is expected to time
- * out on unmodified main, and that timeout is the finding.
+ * The boomerang injection is produced by `crates/broker/src/runtime/maintenance.rs`
+ * draining the ObligationStore (see `crates/broker/src/obligation.rs`). The broker
+ * emits a `relay_inbound` event when injecting boomerang returns, which this function
+ * detects. With RELAY_OBLIGATION_BOOMERANG=0, the injection is suppressed and this
+ * function will time out, which is the expected finding on a disabled or unmodified broker.
  */
 export async function waitForReturn(
   harness: BrokerHarness,

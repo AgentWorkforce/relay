@@ -35,74 +35,8 @@ impl BrokerRuntime {
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
         let default_workspace = &self.default_workspace;
-        let obligation_store = &mut self.obligation_store;
 
         let now = Instant::now();
-
-        // ── Obligation boomerang sweep (#1474) ───────────────────────────────
-        //
-        // When RELAY_OBLIGATION_BOOMERANG is enabled (the default), obligations
-        // whose next_fire_at has passed are re-injected at the recipient as a
-        // knock message.  The maintenance tick fires every 500 ms, so
-        // obligations are re-surfaced promptly after their interval elapses.
-        //
-        // Obligations are registered when an obligating message (body contains
-        // @@c2a-obligation@@) is delivered, and discharged when the author
-        // reacts with ✅ (see handle_fleet_deliver).  A recipient ✅ does NOT
-        // discharge — the store checks reactor == author before clearing.
-        if crate::obligation::boomerang_enabled() {
-            let interval = Duration::from_millis(crate::obligation::interval_ms());
-            let due = obligation_store.drain_due(now, interval);
-            for (msg_id, recipient) in &due {
-                if workers.has_worker(recipient) {
-                    let body = crate::obligation::build_return_body(msg_id);
-                    let event_id = format!("boomerang-{}-{}", msg_id, Uuid::new_v4().simple());
-                    match queue_and_try_delivery_raw(
-                        workers,
-                        pending_deliveries,
-                        recipient,
-                        &event_id,
-                        "system",
-                        recipient,
-                        &body,
-                        None,
-                        None,
-                        None,
-                        1, // P1 — high-priority re-surface
-                        crate::protocol::MessageInjectionMode::Wait,
-                        delivery_retry_interval,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            tracing::info!(
-                                target = "relay_broker::obligation",
-                                msg_id = %msg_id,
-                                recipient = %recipient,
-                                "boomerang return injected"
-                            );
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                target = "relay_broker::obligation",
-                                msg_id = %msg_id,
-                                recipient = %recipient,
-                                error = %err,
-                                "boomerang return injection failed"
-                            );
-                        }
-                    }
-                } else {
-                    tracing::debug!(
-                        target = "relay_broker::obligation",
-                        msg_id = %msg_id,
-                        recipient = %recipient,
-                        "skipping boomerang return: recipient worker not present"
-                    );
-                }
-            }
-            obligation_store.gc(now);
-        }
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
         // terminal-only RPCs so their sessions cannot remain live forever.
@@ -172,6 +106,7 @@ impl BrokerRuntime {
                 }
             }
         }
+
 
         // Time out worker request/response calls whose worker never
         // responded. Common cause: worker crashed between us sending
@@ -751,5 +686,60 @@ impl BrokerRuntime {
         // Pending deliveries are persisted by the event loop whenever the
         // map is mutated (see `BrokerRuntime::flush_pending_deliveries`),
         // so no tick-time snapshot is needed here.
+
+        // Obligation boomerang: GC is unconditional; drain only when feature is
+        // enabled.  The obligation store lives on BrokerRuntime and must be
+        // accessed through `self` here (the local-reference reborrow at the top
+        // of this function does not cover it).
+        self.obligation_store.gc(now);
+        if crate::obligation::boomerang_enabled() {
+            let interval = std::time::Duration::from_millis(crate::obligation::interval_ms());
+            let due = self.obligation_store.drain_due(now, interval);
+            for (msg_id, recipient) in due {
+                let boomerang_body = crate::obligation::build_return_body(&msg_id);
+                let delivery_id = DeliveryId::new(uuid::Uuid::new_v4().to_string());
+                let event_id = EventId::new(uuid::Uuid::new_v4().to_string());
+                let relay_delivery = crate::protocol::RelayDelivery {
+                    delivery_id,
+                    event_id: event_id.clone(),
+                    workspace_id: self.default_workspace_id.clone(),
+                    workspace_alias: self.default_workspace.workspace_alias.clone(),
+                    from: "broker".to_string(),
+                    target: crate::ids::MessageTarget::new(recipient.clone()),
+                    body: boomerang_body,
+                    thread_id: None,
+                    priority: Some(2),
+                    injection_mode: crate::protocol::MessageInjectionMode::Wait,
+                };
+                tracing::info!(
+                    target = "relay_broker::obligation",
+                    recipient = %recipient,
+                    obligation_msg_id = %msg_id,
+                    "injecting boomerang return to recipient"
+                );
+                if let Err(error) = self.workers.deliver(&recipient, relay_delivery).await {
+                    tracing::warn!(
+                        target = "relay_broker::obligation",
+                        recipient = %recipient,
+                        obligation_msg_id = %msg_id,
+                        error = %error,
+                        "failed to inject boomerang return"
+                    );
+                } else {
+                    // Emit a relay_inbound event so waitForReturn in the harness
+                    // driver can detect the boomerang injection.
+                    let _ = send_event(
+                        &self.sdk_out_tx,
+                        serde_json::json!({
+                            "kind": "relay_inbound",
+                            "target": recipient,
+                            "obligation_msg_id": msg_id,
+                            "event_id": event_id.as_str(),
+                        }),
+                    )
+                    .await;
+                }
+            }
+        }
     }
 }

@@ -416,6 +416,7 @@ impl BrokerRuntime {
         });
     }
 
+
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {
@@ -449,49 +450,6 @@ impl BrokerRuntime {
     }
 
     async fn handle_fleet_deliver(&mut self, deliver: Deliver) {
-        // Obligation discharge: before surfacing, check if this is an author
-        // done-reaction that should clear an outstanding obligation (#1474).
-        // Done here (not in surface_fleet_deliver) to avoid borrow conflicts
-        // between &self and &mut self.obligation_store.
-        if crate::obligation::boomerang_enabled() {
-            if deliver
-                .payload
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                == "message.reacted"
-            {
-                let emoji = deliver
-                    .payload
-                    .get("emoji")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let msg_id = deliver
-                    .payload
-                    .get("message_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let reactor = deliver
-                    .payload
-                    .get("agent_name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if emoji == crate::obligation::DONE_EMOJI
-                    && !msg_id.is_empty()
-                    && !reactor.is_empty()
-                {
-                    if self.obligation_store.try_discharge(msg_id, reactor) {
-                        tracing::info!(
-                            target = "relay_broker::obligation",
-                            msg_id = %msg_id,
-                            reactor = %reactor,
-                            "obligation discharged by author done-reaction"
-                        );
-                    }
-                }
-            }
-        }
-
         let decision = self.fleet_delivery_book.observe(&deliver);
         let up_to_seq = match plan_fleet_delivery(decision) {
             FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
@@ -626,29 +584,23 @@ impl BrokerRuntime {
                     )
                     .await;
                 }
-
-                // Obligation registration (#1474): if this is an obligating
-                // message (body contains the marker) register it so the
-                // maintenance boomerang sweep can re-surface it.
-                if crate::obligation::boomerang_enabled()
-                    && crate::obligation::is_obligating(&fields.body)
+                // Register an obligation when the message body carries the obligation
+                // marker and the message will actually be surfaced.
+                if crate::obligation::is_obligating(&fields.body)
+                    && !matches!(
+                        queue_result.outcome,
+                        InboundQueueOutcome::RejectedFull
+                    )
                 {
-                    let interval = Duration::from_millis(crate::obligation::interval_ms());
+                    let interval =
+                        std::time::Duration::from_millis(crate::obligation::interval_ms());
                     self.obligation_store.register(
                         deliver.msg_id.to_string(),
                         fields.from.clone(),
                         deliver.agent.to_string(),
                         interval,
                     );
-                    tracing::info!(
-                        target = "relay_broker::obligation",
-                        msg_id = %deliver.msg_id,
-                        author = %fields.from,
-                        recipient = %deliver.agent,
-                        "obligation registered for boomerang"
-                    );
                 }
-
                 match queue_result.outcome {
                     InboundQueueOutcome::Queued => {
                         tracing::info!(
@@ -737,6 +689,32 @@ impl BrokerRuntime {
                     payload_type = %payload_type,
                     "acking node receipt/reaction delivery without PTY surfacing (deferred)"
                 );
+                // Check for ✅ reaction by author to discharge an obligation.
+                // Read from payload.data first (v5 envelope), then flat payload as fallback.
+                let data = deliver.payload.get("data");
+                let get_field = |field: &str| -> Option<&str> {
+                    data.and_then(|d| d.get(field))
+                        .or_else(|| deliver.payload.get(field))
+                        .and_then(|v| v.as_str())
+                };
+                let action = get_field("action").unwrap_or("");
+                let emoji = get_field("emoji").unwrap_or("");
+                let agent_name = get_field("agent_name").unwrap_or("");
+                let message_id = get_field("message_id").unwrap_or("");
+                if action == "added"
+                    && emoji == crate::obligation::DONE_EMOJI
+                    && !message_id.is_empty()
+                    && !agent_name.is_empty()
+                {
+                    if self.obligation_store.try_discharge(message_id, agent_name) {
+                        tracing::info!(
+                            target = "relay_broker::obligation",
+                            message_id = %message_id,
+                            reactor = %agent_name,
+                            "obligation discharged via ✅ reaction"
+                        );
+                    }
+                }
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge)
             }
             FleetDeliverySurfacing::AckUnknown => {

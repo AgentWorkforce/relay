@@ -45,7 +45,7 @@ pub const DONE_EMOJI: &str = "✅";
 pub const BOOMERANG_FLAG: &str = "RELAY_OBLIGATION_BOOMERANG";
 
 /// Env var that sets the flat boomerang return interval in milliseconds.
-/// Defaults to 5 000 ms when absent or unparseable.
+/// Defaults to 500 ms when absent or unparseable.
 pub const INTERVAL_FLAG: &str = "RELAY_OBLIGATION_INTERVAL_MS";
 
 // ── Feature gate ─────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ pub fn interval_ms() -> u64 {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|&v| v > 0)
-        .unwrap_or(5_000)
+        .unwrap_or(500)
 }
 
 // ── Record ────────────────────────────────────────────────────────────────────
@@ -87,6 +87,9 @@ pub(crate) struct ObligationRecord {
     pub fire_count: u32,
     /// `true` once the author reacts ✅.
     pub discharged: bool,
+    /// `true` once the obligation has fired the maximum number of times (3).
+    /// Exhausted obligations are not drained again.
+    pub exhausted: bool,
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -123,6 +126,7 @@ impl ObligationStore {
                 next_fire_at: now + interval,
                 fire_count: 0,
                 discharged: false,
+                exhausted: false,
             },
         );
     }
@@ -133,7 +137,7 @@ impl ObligationStore {
     /// Returns `true` when the record was found and marked discharged.
     pub fn try_discharge(&mut self, message_id: &str, reactor: &str) -> bool {
         if let Some(record) = self.records.get_mut(message_id) {
-            if !record.discharged && record.author == reactor {
+            if !record.discharged && !record.exhausted && record.author == reactor {
                 record.discharged = true;
                 return true;
             }
@@ -149,12 +153,21 @@ impl ObligationStore {
     pub fn drain_due(&mut self, now: Instant, interval: Duration) -> Vec<(String, String)> {
         let mut due = Vec::new();
         for record in self.records.values_mut() {
-            if record.discharged || record.next_fire_at > now {
+            if record.discharged || record.exhausted || record.next_fire_at > now {
                 continue;
             }
             due.push((record.message_id.clone(), record.recipient.clone()));
             record.fire_count += 1;
-            record.next_fire_at = now + interval;
+            if record.fire_count >= 3 {
+                record.exhausted = true;
+                tracing::warn!(
+                    message_id = %record.message_id,
+                    recipient = %record.recipient,
+                    "obligation exhausted after max fires; no more boomerang returns will be sent"
+                );
+            } else {
+                record.next_fire_at = now + interval;
+            }
         }
         due
     }
@@ -163,7 +176,7 @@ impl ObligationStore {
     pub fn gc(&mut self, now: Instant) {
         const MAX_DISCHARGED_AGE: Duration = Duration::from_secs(3600);
         self.records.retain(|_, r| {
-            !r.discharged || now.duration_since(r.registered_at) < MAX_DISCHARGED_AGE
+            (!r.discharged && !r.exhausted) || now.duration_since(r.registered_at) < MAX_DISCHARGED_AGE
         });
     }
 }
@@ -275,6 +288,24 @@ mod tests {
     fn is_obligating_detects_marker() {
         assert!(is_obligating("hello\n@@c2a-obligation@@{}"));
         assert!(!is_obligating("plain message"));
+    }
+
+    #[test]
+    fn obligation_exhausts_after_max_fires() {
+        let interval = Duration::from_millis(100);
+        let (mut store, _now) = store_with_obligation(interval);
+        // Fire 3 times; after the 3rd fire the obligation must be exhausted.
+        for i in 0..3u32 {
+            let t = Instant::now()
+                + interval * (i + 1)
+                + Duration::from_millis(50 * (i + 1) as u64);
+            let due = store.drain_due(t, interval);
+            assert_eq!(due.len(), 1, "fire {} must still drain", i);
+        }
+        // After 3 fires, obligation is exhausted; 4th drain returns empty.
+        let t4 = Instant::now() + interval * 10;
+        let due = store.drain_due(t4, interval);
+        assert!(due.is_empty(), "exhausted obligation must not drain again");
     }
 
     #[test]

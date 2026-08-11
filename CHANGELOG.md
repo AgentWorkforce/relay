@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Default-enabled obligation/boomerang lifecycle: obligating DMs (containing `@@c2a-obligation@@`) trigger automatic re-injection to the recipient every 500 ms (up to 3 times) until the author reacts with ✅. Controlled via `RELAY_OBLIGATION_BOOMERANG=0` to disable and `RELAY_OBLIGATION_INTERVAL_MS=<ms>` to configure the return interval.
 - `agent-relay node agent attach --node <node>` now opens an authenticated terminal session for physical and Daytona fleet nodes, preserving view, drive, and passthrough modes.
 - `agent-relay node agent attach --ssh-host <host>` now provides an explicit SSH fallback for physical fleet nodes without exporting the remote broker or its API key.
 - Spawned agents now stamp a `Session-Id:` git trailer on commits when the dispatcher supplies a session reference, enabling auditors to trace each commit back to the session that produced it.

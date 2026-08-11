@@ -44,6 +44,7 @@ type TerminalReadiness = {
   reject: (error: Error) => void;
 };
 
+
 export interface FleetNodeAttachOptions {
   agent: string;
   node: string;
