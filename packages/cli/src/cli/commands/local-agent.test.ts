@@ -26,12 +26,14 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
     setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
   };
   const attach = vi.fn(async () => 0);
+  const attachRemote = vi.fn(async () => 0);
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
   const deps: Partial<LocalAgentDependencies> = {
     connect: vi.fn(async () => client as never),
     attach,
+    attachRemote,
     cwd: () => '/tmp/project',
     log,
     error,
@@ -42,7 +44,7 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   program.exitOverride();
   const group = program.command('local');
   registerLocalAgentCommands(group, deps);
-  return { program, client, attach, log, error, exit };
+  return { program, client, attach, attachRemote, log, error, exit };
 }
 
 describe('local agent subtree', () => {
@@ -68,6 +70,33 @@ describe('local agent subtree', () => {
       'view',
       expect.objectContaining({ json: true, reasoning: true, diagnostics: true })
     );
+  });
+
+  it('attach --node runs the existing attach command on an SSH-reachable physical node', async () => {
+    const { program, attach, attachRemote } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'barry', '--mode', 'drive', '--reasoning'],
+      { from: 'user' }
+    );
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachRemote).toHaveBeenCalledWith(
+      'lead',
+      'drive',
+      'barry',
+      expect.objectContaining({ reasoning: true })
+    );
+  });
+
+  it('attach --node rejects raw broker credentials because they must stay on the target', async () => {
+    const { program, attach, attachRemote, error, exit } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'barry', '--api-key', 'do-not-forward'],
+      { from: 'user' }
+    );
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachRemote).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--node cannot be combined'));
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
   it('attach rejects an unknown mode', async () => {
