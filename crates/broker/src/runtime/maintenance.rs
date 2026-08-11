@@ -35,8 +35,74 @@ impl BrokerRuntime {
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
         let default_workspace = &self.default_workspace;
+        let obligation_store = &mut self.obligation_store;
 
         let now = Instant::now();
+
+        // ── Obligation boomerang sweep (#1474) ───────────────────────────────
+        //
+        // When RELAY_OBLIGATION_BOOMERANG is enabled (the default), obligations
+        // whose next_fire_at has passed are re-injected at the recipient as a
+        // knock message.  The maintenance tick fires every 500 ms, so
+        // obligations are re-surfaced promptly after their interval elapses.
+        //
+        // Obligations are registered when an obligating message (body contains
+        // @@c2a-obligation@@) is delivered, and discharged when the author
+        // reacts with ✅ (see handle_fleet_deliver).  A recipient ✅ does NOT
+        // discharge — the store checks reactor == author before clearing.
+        if crate::obligation::boomerang_enabled() {
+            let interval = Duration::from_millis(crate::obligation::interval_ms());
+            let due = obligation_store.drain_due(now, interval);
+            for (msg_id, recipient) in &due {
+                if workers.has_worker(recipient) {
+                    let body = crate::obligation::build_return_body(msg_id);
+                    let event_id = format!("boomerang-{}-{}", msg_id, Uuid::new_v4().simple());
+                    match queue_and_try_delivery_raw(
+                        workers,
+                        pending_deliveries,
+                        recipient,
+                        &event_id,
+                        "system",
+                        recipient,
+                        &body,
+                        None,
+                        None,
+                        None,
+                        1, // P1 — high-priority re-surface
+                        crate::protocol::MessageInjectionMode::Wait,
+                        delivery_retry_interval,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            tracing::info!(
+                                target = "relay_broker::obligation",
+                                msg_id = %msg_id,
+                                recipient = %recipient,
+                                "boomerang return injected"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                target = "relay_broker::obligation",
+                                msg_id = %msg_id,
+                                recipient = %recipient,
+                                error = %err,
+                                "boomerang return injection failed"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::debug!(
+                        target = "relay_broker::obligation",
+                        msg_id = %msg_id,
+                        recipient = %recipient,
+                        "skipping boomerang return: recipient worker not present"
+                    );
+                }
+            }
+            obligation_store.gc(now);
+        }
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
         // terminal-only RPCs so their sessions cannot remain live forever.

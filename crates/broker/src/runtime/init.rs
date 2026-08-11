@@ -715,6 +715,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         delivery_states,
         agent_result_tokens,
         recent_thread_messages,
+        obligation_store: crate::obligation::ObligationStore::default(),
         shutdown,
         lease_duration,
         last_lease_renewal,

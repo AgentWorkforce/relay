@@ -251,6 +251,8 @@ pub(crate) struct BrokerRuntime {
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
     pub(super) recent_thread_messages: VecDeque<Value>,
+    /// Obligation-lifecycle store for boomerang (#1474).
+    pub(super) obligation_store: crate::obligation::ObligationStore,
     pub(super) shutdown: bool,
     pub(super) lease_duration: Option<Duration>,
     pub(super) last_lease_renewal: Instant,

@@ -27,6 +27,7 @@ pub(crate) mod listen_api;
 #[allow(dead_code)]
 pub(crate) mod metrics;
 pub(crate) mod node_control;
+pub(crate) mod obligation;
 pub(crate) mod priorities;
 pub(crate) mod pty_worker;
 #[allow(dead_code)]

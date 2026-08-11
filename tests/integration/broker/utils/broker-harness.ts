@@ -5,6 +5,7 @@
  * Provides helpers to start/stop the broker, spawn/release agents,
  * send messages, and wait for specific broker events.
  */
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -88,8 +89,7 @@ export class BrokerHarness {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
       binaryArgs: options.binaryArgs ?? {},
       brokerName:
-        options.brokerName ??
-        `test-harness-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        options.brokerName ?? `test-harness-${Date.now().toString(36)}-${randomBytes(2).toString('hex')}`,
       channels: options.channels ?? ['general'],
       cwd: options.cwd ?? process.cwd(),
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
@@ -338,5 +338,5 @@ export function checkPrerequisites(): string | null {
  * Generate a unique name suffix for test isolation.
  */
 export function uniqueSuffix(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  return `${Date.now().toString(36)}-${randomBytes(2).toString('hex')}`;
 }

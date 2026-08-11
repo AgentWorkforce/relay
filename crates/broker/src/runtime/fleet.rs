@@ -449,6 +449,49 @@ impl BrokerRuntime {
     }
 
     async fn handle_fleet_deliver(&mut self, deliver: Deliver) {
+        // Obligation discharge: before surfacing, check if this is an author
+        // done-reaction that should clear an outstanding obligation (#1474).
+        // Done here (not in surface_fleet_deliver) to avoid borrow conflicts
+        // between &self and &mut self.obligation_store.
+        if crate::obligation::boomerang_enabled() {
+            if deliver
+                .payload
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                == "message.reacted"
+            {
+                let emoji = deliver
+                    .payload
+                    .get("emoji")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let msg_id = deliver
+                    .payload
+                    .get("message_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let reactor = deliver
+                    .payload
+                    .get("agent_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if emoji == crate::obligation::DONE_EMOJI
+                    && !msg_id.is_empty()
+                    && !reactor.is_empty()
+                {
+                    if self.obligation_store.try_discharge(msg_id, reactor) {
+                        tracing::info!(
+                            target = "relay_broker::obligation",
+                            msg_id = %msg_id,
+                            reactor = %reactor,
+                            "obligation discharged by author done-reaction"
+                        );
+                    }
+                }
+            }
+        }
+
         let decision = self.fleet_delivery_book.observe(&deliver);
         let up_to_seq = match plan_fleet_delivery(decision) {
             FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
@@ -583,6 +626,29 @@ impl BrokerRuntime {
                     )
                     .await;
                 }
+
+                // Obligation registration (#1474): if this is an obligating
+                // message (body contains the marker) register it so the
+                // maintenance boomerang sweep can re-surface it.
+                if crate::obligation::boomerang_enabled()
+                    && crate::obligation::is_obligating(&fields.body)
+                {
+                    let interval = Duration::from_millis(crate::obligation::interval_ms());
+                    self.obligation_store.register(
+                        deliver.msg_id.to_string(),
+                        fields.from.clone(),
+                        deliver.agent.to_string(),
+                        interval,
+                    );
+                    tracing::info!(
+                        target = "relay_broker::obligation",
+                        msg_id = %deliver.msg_id,
+                        author = %fields.from,
+                        recipient = %deliver.agent,
+                        "obligation registered for boomerang"
+                    );
+                }
+
                 match queue_result.outcome {
                     InboundQueueOutcome::Queued => {
                         tracing::info!(
