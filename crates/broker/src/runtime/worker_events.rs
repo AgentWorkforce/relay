@@ -558,9 +558,8 @@ impl BrokerRuntime {
                 );
                 let session_ids: Vec<String> = terminal_sessions
                     .iter()
-                    .filter_map(|(session_id, session)| {
-                        (session.agent == name).then(|| session_id.clone())
-                    })
+                    .filter(|(_, session)| session.agent == name)
+                    .map(|(session_id, _)| session_id.clone())
                     .collect();
                 for session_id in session_ids {
                     fail_terminal_session(
