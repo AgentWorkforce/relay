@@ -86,7 +86,7 @@ export async function attachFleetNode(
   name: string,
   mode: AttachMode,
   node: string,
-  options: NativeAttachOptions,
+  options: NativeAttachOptions
 ): Promise<number> {
   const proxy = await startFleetNodeAttachProxy({ agent: name, node, mode });
   try {
@@ -118,12 +118,7 @@ export interface LocalAgentDependencies {
     node: string,
     options: RemoteNodeAttachOptions
   ) => Promise<number>;
-  attachNode: (
-    name: string,
-    mode: AttachMode,
-    node: string,
-    options: NativeAttachOptions,
-  ) => Promise<number>;
+  attachNode: (name: string, mode: AttachMode, node: string, options: NativeAttachOptions) => Promise<number>;
   cwd: () => string;
   readConnectionFile: (stateDir: string) => unknown;
   getDefaultStateDir: () => string;
@@ -549,13 +544,21 @@ export function registerLocalAgentCommands(
       const sshHost = options.sshHost as string | undefined;
       const node = options.node as string | undefined;
       if (node !== undefined && sshHost !== undefined) {
-        deps.error('Error: --node cannot be combined with --ssh-host. Use --ssh-host only as the explicit SSH fallback.');
+        deps.error(
+          'Error: --node cannot be combined with --ssh-host. Use --ssh-host only as the explicit SSH fallback.'
+        );
         deps.exit(1);
         return;
       }
       if (node !== undefined) {
-        if (options.brokerUrl !== undefined || options.apiKey !== undefined || options.stateDir !== undefined) {
-          deps.error('Error: --node cannot be combined with --broker-url, --api-key, or --state-dir. It opens an ephemeral authenticated loopback session.');
+        if (
+          options.brokerUrl !== undefined ||
+          options.apiKey !== undefined ||
+          options.stateDir !== undefined
+        ) {
+          deps.error(
+            'Error: --node cannot be combined with --broker-url, --api-key, or --state-dir. It opens an ephemeral authenticated loopback session.'
+          );
           deps.exit(1);
           return;
         }

@@ -100,7 +100,7 @@ describe('local agent subtree', () => {
     const { program, attach, attachRemote, attachNode } = harness();
     await program.parseAsync(
       ['local', 'agent', 'attach', 'lead', '--node', 'daytona-live', '--mode', 'passthrough', '--json'],
-      { from: 'user' },
+      { from: 'user' }
     );
     expect(attach).not.toHaveBeenCalled();
     expect(attachRemote).not.toHaveBeenCalled();
@@ -108,13 +108,15 @@ describe('local agent subtree', () => {
       'lead',
       'passthrough',
       'daytona-live',
-      expect.objectContaining({ json: true }),
+      expect.objectContaining({ json: true })
     );
   });
 
   it('attach --node rejects SSH and local broker configuration conflicts', async () => {
     const { program, attachNode, attachRemote, error, exit } = harness();
-    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn', '--ssh-host', 'finn'], { from: 'user' });
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn', '--ssh-host', 'finn'], {
+      from: 'user',
+    });
     expect(attachNode).not.toHaveBeenCalled();
     expect(attachRemote).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith(expect.stringContaining('--node cannot be combined with --ssh-host'));
