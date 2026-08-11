@@ -1,5 +1,6 @@
 use super::fleet::{
-    refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
+    fail_terminal_session, refresh_fleet_inventory_session_ref, try_send_terminal,
+    verified_spawn_ready_result,
 };
 use super::*;
 use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
@@ -532,6 +533,55 @@ impl BrokerRuntime {
         let terminal_input_requests = &mut self.terminal_input_requests;
 
         match worker_event {
+            WorkerEvent::WriterFailed {
+                name,
+                generation,
+                error,
+            } => {
+                let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
+                if !worker_event_is_current(current_generation, generation) {
+                    tracing::debug!(
+                        target = "agent_relay::broker",
+                        worker = %name,
+                        event_generation = %generation,
+                        current_generation = ?current_generation,
+                        "ignoring writer failure from stale worker generation"
+                    );
+                    return;
+                }
+
+                tracing::warn!(
+                    target = "relay_broker::terminal",
+                    worker = %name,
+                    error = %error,
+                    "worker command writer failed; closing attached terminals and resetting worker"
+                );
+                let session_ids: Vec<String> = terminal_sessions
+                    .iter()
+                    .filter_map(|(session_id, session)| {
+                        (session.agent == name).then(|| session_id.clone())
+                    })
+                    .collect();
+                for session_id in session_ids {
+                    fail_terminal_session(
+                        terminal_control_tx,
+                        terminal_sessions,
+                        terminal_snapshot_requests,
+                        terminal_input_requests,
+                        session_id,
+                        "worker_write_failed",
+                        format!("worker command writer failed: {error}"),
+                    );
+                }
+                if let Err(release_error) = workers.release(name.as_str()).await {
+                    tracing::warn!(
+                        target = "relay_broker::terminal",
+                        worker = %name,
+                        error = %release_error,
+                        "failed to terminate worker after command writer failure"
+                    );
+                }
+            }
             WorkerEvent::Message {
                 name,
                 generation,

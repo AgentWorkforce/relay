@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     time::timeout,
 };
 use uuid::Uuid;
@@ -62,6 +62,17 @@ const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
 /// up. Bounded so a wrapper stuck in uninterruptible sleep cannot stall the
 /// maintenance tick, which also drives delivery retries.
 const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
+const WORKER_SHUTDOWN_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// A complete newline-delimited worker protocol frame. A dedicated task owns
+/// each worker's stdin and writes these frames in order, so cancelling a
+/// caller can never cancel an in-progress pipe write and leave a partial JSON
+/// frame for the next command to corrupt.
+pub(crate) struct WorkerWriteCommand {
+    frame: Vec<u8>,
+    completion: Option<oneshot::Sender<std::result::Result<(), String>>>,
+}
 
 /// Why a worker was reaped despite its wrapper process still being alive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,7 +173,7 @@ pub(crate) struct WorkerHandle {
     pub(crate) parent: Option<String>,
     pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
     pub(crate) child: Child,
-    pub(crate) stdin: ChildStdin,
+    pub(crate) command_tx: mpsc::Sender<WorkerWriteCommand>,
     pub(crate) harness_pid: Option<u32>,
     pub(crate) spawned_at: Instant,
     /// When the worker reported `worker_ready`. `None` means the harness has
@@ -207,6 +218,14 @@ pub(crate) enum WorkerEvent {
         generation: Uuid,
         value: Value,
     },
+    /// The worker-owned stdin writer failed after a command was accepted.
+    /// The runtime must close dependent terminal sessions and terminate this
+    /// generation; accepting any more frames would only hide the broken pipe.
+    WriterFailed {
+        name: WorkerName,
+        generation: Uuid,
+        error: String,
+    },
 }
 
 pub(crate) struct WorkerRegistry {
@@ -217,6 +236,76 @@ pub(crate) struct WorkerRegistry {
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
+}
+
+fn encode_worker_frame(
+    msg_type: &str,
+    request_id: Option<RequestId>,
+    payload: Value,
+) -> Result<Vec<u8>> {
+    let frame = ProtocolEnvelope {
+        v: PROTOCOL_VERSION,
+        msg_type: msg_type.to_string(),
+        request_id,
+        payload,
+    };
+    let mut encoded = serde_json::to_vec(&frame)?;
+    encoded.push(b'\n');
+    Ok(encoded)
+}
+
+pub(crate) fn spawn_worker_writer(
+    event_tx: mpsc::Sender<WorkerEvent>,
+    name: WorkerName,
+    generation: Uuid,
+    mut stdin: ChildStdin,
+    mut command_rx: mpsc::Receiver<WorkerWriteCommand>,
+) {
+    tokio::spawn(async move {
+        while let Some(mut command) = command_rx.recv().await {
+            let write_result = async {
+                stdin
+                    .write_all(&command.frame)
+                    .await
+                    .context("failed writing frame to worker stdin")?;
+                stdin
+                    .flush()
+                    .await
+                    .context("failed flushing worker stdin")?;
+                Ok::<(), anyhow::Error>(())
+            }
+            .await
+            .map_err(|error| error.to_string());
+
+            if let Some(completion) = command.completion.take() {
+                let _ = completion.send(write_result.clone());
+            }
+
+            let Err(error) = write_result else {
+                continue;
+            };
+
+            // A failed write may have consumed part of the frame. Do not let
+            // another command reuse this stream: notify the runtime so it can
+            // close the dependent terminal sessions and terminate the worker.
+            let _ = event_tx
+                .send(WorkerEvent::WriterFailed {
+                    name: name.clone(),
+                    generation,
+                    error: error.clone(),
+                })
+                .await;
+
+            while let Ok(mut queued) = command_rx.try_recv() {
+                if let Some(completion) = queued.completion.take() {
+                    let _ = completion.send(Err(format!(
+                        "worker command writer stopped after write failure: {error}"
+                    )));
+                }
+            }
+            break;
+        }
+    });
 }
 
 impl WorkerRegistry {
@@ -993,6 +1082,14 @@ impl WorkerRegistry {
             false,
             log_file,
         );
+        let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        spawn_worker_writer(
+            self.event_tx.clone(),
+            spec.name.clone(),
+            generation,
+            stdin,
+            command_rx,
+        );
 
         let handle = WorkerHandle {
             generation,
@@ -1000,7 +1097,7 @@ impl WorkerRegistry {
             parent,
             workspace_id,
             child,
-            stdin,
+            command_tx,
             harness_pid: initial_harness_pid,
             spawned_at: Instant::now(),
             ready_at: None,
@@ -1074,36 +1171,93 @@ impl WorkerRegistry {
         request_id: Option<RequestId>,
         payload: Value,
     ) -> Result<()> {
-        let handle = self
+        let command_tx = self
             .workers
-            .get_mut(name)
-            .with_context(|| format!("unknown worker '{name}'"))?;
-
-        let frame = ProtocolEnvelope {
-            v: PROTOCOL_VERSION,
-            msg_type: msg_type.to_string(),
-            request_id,
-            payload,
-        };
-
-        let encoded = serde_json::to_string(&frame)?;
-        handle
-            .stdin
-            .write_all(encoded.as_bytes())
+            .get(name)
+            .with_context(|| format!("unknown worker '{name}'"))?
+            .command_tx
+            .clone();
+        let frame = encode_worker_frame(msg_type, request_id, payload)?;
+        let (completion_tx, completion_rx) = oneshot::channel();
+        command_tx
+            .send(WorkerWriteCommand {
+                frame,
+                completion: Some(completion_tx),
+            })
             .await
+            .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))
             .with_context(|| format!("failed writing frame to worker '{name}'"))?;
-        handle
-            .stdin
-            .write_all(b"\n")
+        completion_rx
             .await
-            .with_context(|| format!("failed writing newline to worker '{name}'"))?;
-        handle
-            .stdin
-            .flush()
-            .await
-            .with_context(|| format!("failed flushing worker '{name}' stdin"))?;
+            .map_err(|_| {
+                anyhow::anyhow!("worker command writer stopped before completing '{name}'")
+            })
+            .with_context(|| format!("failed writing frame to worker '{name}'"))?
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("failed writing frame to worker '{name}'"))?;
 
         Ok(())
+    }
+
+    /// Queue an already-framed raw PTY command through the same sole stdin
+    /// writer used for protocol frames. This keeps administrative PTY actions
+    /// such as `/model` from interleaving with JSON protocol traffic.
+    pub(crate) async fn send_raw_to_worker(&self, name: &str, frame: Vec<u8>) -> Result<()> {
+        let command_tx = self
+            .workers
+            .get(name)
+            .with_context(|| format!("unknown worker '{name}'"))?
+            .command_tx
+            .clone();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        command_tx
+            .send(WorkerWriteCommand {
+                frame,
+                completion: Some(completion_tx),
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))?;
+        completion_rx
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("worker command writer stopped before completing '{name}'")
+            })?
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("failed writing raw command to worker '{name}'"))?;
+        Ok(())
+    }
+
+    /// Enqueue a complete worker frame without awaiting its pipe write. This
+    /// is used by terminal attach traffic, which must remain responsive when a
+    /// PTY stops draining stdin. The dedicated writer owns the actual write;
+    /// a later write failure is reported as [`WorkerEvent::WriterFailed`].
+    pub(crate) fn try_send_to_worker(
+        &self,
+        name: &str,
+        msg_type: &str,
+        request_id: Option<RequestId>,
+        payload: Value,
+    ) -> Result<()> {
+        let command_tx = self
+            .workers
+            .get(name)
+            .with_context(|| format!("unknown worker '{name}'"))?
+            .command_tx
+            .clone();
+        let frame = encode_worker_frame(msg_type, request_id, payload)?;
+        command_tx
+            .try_send(WorkerWriteCommand {
+                frame,
+                completion: None,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    anyhow::anyhow!("worker command queue is full for '{name}'")
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    anyhow::anyhow!("worker command writer is unavailable for '{name}'")
+                }
+            })
     }
 
     pub(crate) async fn deliver(&mut self, name: &str, delivery: RelayDelivery) -> Result<()> {
@@ -1139,10 +1293,22 @@ impl WorkerRegistry {
             request_id: None,
             payload: json!({"reason":"release","grace_ms": release_grace.as_millis() as u64}),
         };
-        let encoded = serde_json::to_string(&shutdown_frame)?;
-        let _ = handle.stdin.write_all(encoded.as_bytes()).await;
-        let _ = handle.stdin.write_all(b"\n").await;
-        let _ = handle.stdin.flush().await;
+        let encoded = serde_json::to_vec(&shutdown_frame)?;
+        let mut frame = encoded;
+        frame.push(b'\n');
+        let (completion_tx, completion_rx) = oneshot::channel();
+        if handle
+            .command_tx
+            .try_send(WorkerWriteCommand {
+                frame,
+                completion: Some(completion_tx),
+            })
+            .is_ok()
+        {
+            // Cancelling this wait cannot cancel the worker-owned write; it
+            // only bounds release before the normal process termination path.
+            let _ = timeout(WORKER_SHUTDOWN_WRITE_TIMEOUT, completion_rx).await;
+        }
 
         let result = terminate_child(&mut handle.child, release_grace).await;
         match &result {
@@ -2212,6 +2378,15 @@ mod tests {
             .unwrap();
         let pid = child.id().expect("child has a pid");
         let stdin = child.stdin.take().expect("piped stdin");
+        let generation = Uuid::new_v4();
+        let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        spawn_worker_writer(
+            reg.event_tx.clone(),
+            WorkerName::from(name),
+            generation,
+            stdin,
+            command_rx,
+        );
         assert!(
             is_process_alive(pid),
             "precondition: child must start alive"
@@ -2220,12 +2395,12 @@ mod tests {
         reg.workers.insert(
             WorkerName::from(name),
             WorkerHandle {
-                generation: Uuid::new_v4(),
+                generation,
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
                 child,
-                stdin,
+                command_tx,
                 harness_pid: None,
                 spawned_at: Instant::now(),
                 ready_at: None,
@@ -2260,16 +2435,25 @@ mod tests {
         let mut child = Command::new("true").stdin(Stdio::piped()).spawn().unwrap();
         let stdin = child.stdin.take().expect("piped stdin");
         child.wait().await.expect("child exits immediately");
+        let generation = Uuid::new_v4();
+        let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        spawn_worker_writer(
+            reg.event_tx.clone(),
+            WorkerName::from(name),
+            generation,
+            stdin,
+            command_rx,
+        );
 
         reg.workers.insert(
             WorkerName::from(name),
             WorkerHandle {
-                generation: Uuid::new_v4(),
+                generation,
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
                 child,
-                stdin,
+                command_tx,
                 harness_pid: None,
                 spawned_at: Instant::now(),
                 ready_at: None,
@@ -2292,6 +2476,82 @@ mod tests {
         reg.cleanup_rejected_spawn(&WorkerName::from(name)).await;
 
         assert!(!reg.workers.contains_key(&WorkerName::from(name)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_enqueue_serializes_complete_frames_through_one_writer() {
+        let (event_tx, _event_rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut reg = WorkerRegistry::new(
+            event_tx.clone(),
+            Vec::new(),
+            PathBuf::from("/tmp/worker-tests"),
+            Instant::now(),
+        );
+        let name = "writer-serialization";
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let generation = Uuid::new_v4();
+        let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        spawn_worker_writer(
+            event_tx,
+            WorkerName::from(name),
+            generation,
+            stdin,
+            command_rx,
+        );
+        reg.workers.insert(
+            WorkerName::from(name),
+            WorkerHandle {
+                generation,
+                spec: spec_for_test(name),
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+
+        reg.try_send_to_worker(name, "snapshot_pty", None, json!({ "format": "ansi" }))
+            .unwrap();
+        reg.try_send_to_worker(name, "resize_pty", None, json!({ "rows": 24, "cols": 80 }))
+            .unwrap();
+
+        let mut lines = BufReader::new(stdout).lines();
+        for expected_type in ["snapshot_pty", "resize_pty"] {
+            let line = timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .expect("writer should not block")
+                .expect("cat stdout should remain open")
+                .expect("writer should emit a complete newline-delimited frame");
+            let frame: Value = serde_json::from_str(&line)
+                .expect("each serialized worker command must remain valid JSON");
+            assert_eq!(
+                frame.get("type").and_then(Value::as_str),
+                Some(expected_type)
+            );
+        }
+
+        let handle = reg
+            .workers
+            .get_mut(name)
+            .expect("test worker remains registered");
+        terminate_child(&mut handle.child, Duration::from_millis(200))
+            .await
+            .unwrap();
     }
 
     // The wrapper process can outlive the harness it hosts, so reaping on the

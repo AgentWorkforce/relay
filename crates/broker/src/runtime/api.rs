@@ -736,35 +736,22 @@ impl BrokerRuntime {
                 timeout_ms,
                 reply,
             } => {
-                let Some(handle) = workers.workers.get_mut(&name) else {
+                if !workers.workers.contains_key(&name) {
                     let _ = reply.send(Err(format!("unknown worker '{}'", name)));
                     return;
-                };
+                }
 
                 let model_command = format!("/model {}\n", model);
-                let result = async {
-                    handle
-                        .stdin
-                        .write_all(model_command.as_bytes())
-                        .await
-                        .with_context(|| {
-                            format!("failed writing model command to worker '{}'", name)
-                        })?;
-                    handle
-                        .stdin
-                        .flush()
-                        .await
-                        .with_context(|| format!("failed flushing worker '{}' stdin", name))?;
-                    if let Some(timeout_ms) = timeout_ms {
-                        tracing::info!(
-                            name = %name,
-                            timeout_ms,
-                            "HTTP API set_model timeout_ms is currently advisory only"
-                        );
-                    }
-                    Ok::<(), anyhow::Error>(())
+                let result = workers
+                    .send_raw_to_worker(&name, model_command.into_bytes())
+                    .await;
+                if let Some(timeout_ms) = timeout_ms {
+                    tracing::info!(
+                        name = %name,
+                        timeout_ms,
+                        "HTTP API set_model timeout_ms is currently advisory only"
+                    );
                 }
-                .await;
 
                 match result {
                     Ok(()) => {

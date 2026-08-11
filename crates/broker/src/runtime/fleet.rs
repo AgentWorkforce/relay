@@ -19,10 +19,6 @@ const TERMINAL_INPUT_MAX_BYTES: usize = 64 * 1024;
 const TERMINAL_INPUT_MAX_BASE64_BYTES: usize = TERMINAL_INPUT_MAX_BYTES * 4 / 3 + 4;
 const TERMINAL_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 const TERMINAL_INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
-// Terminal worker writes share the broker event loop with fleet control and
-// worker lifecycle events. A wedged PTY must fail only its own attach instead
-// of awaiting an unbounded pipe write in that loop.
-const TERMINAL_WORKER_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const TERMINAL_INPUT_MAX_IN_FLIGHT_PER_SESSION: usize = 16;
 // Relaycast currently limits a node to 32 terminal sessions. Keep that many
 // slots free from high-volume frames so every affected session can still get a
@@ -40,6 +36,44 @@ pub(super) fn try_send_terminal(
     terminal_control_tx
         .try_send(TerminalControlCommand::Send(message))
         .is_ok()
+}
+
+pub(super) fn fail_terminal_session(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    session_id: String,
+    code: &str,
+    message: String,
+) {
+    terminal_sessions.remove(&session_id);
+    terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+    terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+
+    // Error is useful when the terminal lane has room, but it is non-final and
+    // deliberately gives way to the reserved close capacity. Queue its close
+    // directly instead of routing through `send_terminal`: the generic
+    // backpressure fallback would otherwise produce a second close with a
+    // different reason.
+    let _ = try_send_terminal(
+        terminal_control_tx,
+        TerminalToCloud::Error {
+            session_id: session_id.clone(),
+            code: code.into(),
+            message: message.clone(),
+        },
+    );
+    if !try_send_terminal(
+        terminal_control_tx,
+        TerminalToCloud::Closed {
+            session_id: session_id.clone(),
+            code: Some(code.into()),
+            message: Some(message),
+        },
+    ) {
+        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal close could not be queued after session failure");
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -153,44 +187,29 @@ impl BrokerRuntime {
                                 pending_output_bytes: 0,
                             },
                         );
-                        // Request the grid asynchronously. The response is routed
-                        // from worker_events to the terminal lane, so this never
-                        // stalls heartbeat/action processing behind a PTY snapshot.
+                        // Queue the grid request on the worker-owned stdin
+                        // writer. The event loop never awaits a PTY pipe write;
+                        // the writer serializes complete frames and reports a
+                        // later pipe failure as a terminal session failure.
                         let request_id = format!("terminal_snapshot_{}", Uuid::new_v4().simple());
-                        match tokio::time::timeout(
-                            TERMINAL_WORKER_WRITE_TIMEOUT,
-                            self.workers.send_to_worker(
-                                agent_name.as_str(),
-                                "snapshot_pty",
-                                Some(RequestId::new(request_id.clone())),
-                                json!({ "format": "ansi" }),
-                            ),
-                        )
-                        .await
-                        {
-                            Ok(Ok(())) => {
-                                self.terminal_snapshot_requests.insert(
-                                    request_id,
-                                    TerminalSnapshotRequest {
-                                        session_id,
-                                        deadline: Instant::now() + TERMINAL_SNAPSHOT_TIMEOUT,
-                                    },
-                                );
-                            }
-                            Ok(Err(error)) => {
-                                self.fail_terminal_session(
-                                    session_id,
-                                    "snapshot_failed",
-                                    error.to_string(),
-                                );
-                            }
-                            Err(_) => {
-                                self.fail_terminal_session(
-                                    session_id,
-                                    "snapshot_timeout",
-                                    "terminal snapshot write timed out".into(),
-                                );
-                            }
+                        self.terminal_snapshot_requests.insert(
+                            request_id.clone(),
+                            TerminalSnapshotRequest {
+                                session_id: session_id.clone(),
+                                deadline: Instant::now() + TERMINAL_SNAPSHOT_TIMEOUT,
+                            },
+                        );
+                        if let Err(error) = self.workers.try_send_to_worker(
+                            agent_name.as_str(),
+                            "snapshot_pty",
+                            Some(RequestId::new(request_id.clone())),
+                            json!({ "format": "ansi" }),
+                        ) {
+                            self.fail_terminal_session(
+                                session_id,
+                                "snapshot_failed",
+                                error.to_string(),
+                            );
                         }
                     }
                 }
@@ -268,34 +287,20 @@ impl BrokerRuntime {
                     return;
                 }
                 let request_id = format!("terminal_input_{}", Uuid::new_v4().simple());
-                match tokio::time::timeout(
-                    TERMINAL_WORKER_WRITE_TIMEOUT,
-                    self.workers.send_to_worker(
-                        session.agent.as_str(),
-                        "write_pty",
-                        Some(RequestId::new(request_id.clone())),
-                        json!({ "data": data }),
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {
-                        self.terminal_input_requests.insert(
-                            request_id,
-                            TerminalInputRequest {
-                                session_id,
-                                deadline: Instant::now() + TERMINAL_INPUT_ACK_TIMEOUT,
-                            },
-                        );
-                    }
-                    Ok(Err(error)) => {
-                        self.fail_terminal_session(session_id, "input_failed", error.to_string())
-                    }
-                    Err(_) => self.fail_terminal_session(
-                        session_id,
-                        "input_timeout",
-                        "terminal input write timed out".into(),
-                    ),
+                self.terminal_input_requests.insert(
+                    request_id.clone(),
+                    TerminalInputRequest {
+                        session_id: session_id.clone(),
+                        deadline: Instant::now() + TERMINAL_INPUT_ACK_TIMEOUT,
+                    },
+                );
+                if let Err(error) = self.workers.try_send_to_worker(
+                    session.agent.as_str(),
+                    "write_pty",
+                    Some(RequestId::new(request_id.clone())),
+                    json!({ "data": data }),
+                ) {
+                    self.fail_terminal_session(session_id, "input_failed", error.to_string());
                 }
             }
             TerminalControlEvent::Message(TerminalFromCloud::Resize {
@@ -327,26 +332,13 @@ impl BrokerRuntime {
                     });
                     return;
                 }
-                match tokio::time::timeout(
-                    TERMINAL_WORKER_WRITE_TIMEOUT,
-                    self.workers.send_to_worker(
-                        session.agent.as_str(),
-                        "resize_pty",
-                        None,
-                        json!({ "rows": rows, "cols": cols }),
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        self.fail_terminal_session(session_id, "resize_failed", error.to_string())
-                    }
-                    Err(_) => self.fail_terminal_session(
-                        session_id,
-                        "resize_timeout",
-                        "terminal resize write timed out".into(),
-                    ),
+                if let Err(error) = self.workers.try_send_to_worker(
+                    session.agent.as_str(),
+                    "resize_pty",
+                    None,
+                    json!({ "rows": rows, "cols": cols }),
+                ) {
+                    self.fail_terminal_session(session_id, "resize_failed", error.to_string());
                 }
             }
             TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {
@@ -399,21 +391,15 @@ impl BrokerRuntime {
     }
 
     fn fail_terminal_session(&mut self, session_id: String, code: &str, message: String) {
-        self.terminal_sessions.remove(&session_id);
-        self.terminal_snapshot_requests
-            .retain(|_, pending| pending.session_id != session_id);
-        self.terminal_input_requests
-            .retain(|_, pending| pending.session_id != session_id);
-        self.send_terminal(TerminalToCloud::Error {
-            session_id: session_id.clone(),
-            code: code.into(),
-            message: message.clone(),
-        });
-        self.send_terminal(TerminalToCloud::Closed {
+        fail_terminal_session(
+            &self.terminal_control_tx,
+            &mut self.terminal_sessions,
+            &mut self.terminal_snapshot_requests,
+            &mut self.terminal_input_requests,
             session_id,
-            code: Some(code.into()),
-            message: Some(message),
-        });
+            code,
+            message,
+        );
     }
 
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
@@ -1699,6 +1685,47 @@ mod tests {
             rx.try_recv(),
             Ok(TerminalControlCommand::Send(TerminalToCloud::Closed { .. }))
         ));
+    }
+
+    #[test]
+    fn terminal_failure_queues_one_close_with_the_original_reason_at_reserve() {
+        let (tx, mut rx) = mpsc::channel(TERMINAL_CLOSE_RESERVE + 1);
+        assert!(try_send_terminal(
+            &tx,
+            TerminalToCloud::Output {
+                session_id: "session-a".into(),
+                chunk: "x".into(),
+                offset: None,
+            },
+        ));
+        // This leaves exactly the reserved close capacity. The non-final Error
+        // must be rejected, but the single final close must still carry the
+        // actual failure rather than an output_backpressure fallback.
+        fail_terminal_session(
+            &tx,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            "session-a".into(),
+            "snapshot_failed",
+            "worker command queue is full".into(),
+        );
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TerminalControlCommand::Send(TerminalToCloud::Output { .. }))
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TerminalControlCommand::Send(TerminalToCloud::Closed {
+                session_id,
+                code: Some(code),
+                message: Some(message),
+            })) if session_id == "session-a"
+                && code == "snapshot_failed"
+                && message == "worker command queue is full"
+        ));
+        assert!(rx.try_recv().is_err(), "failure must emit only one close");
     }
 
     #[test]

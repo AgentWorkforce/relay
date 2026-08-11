@@ -17,7 +17,9 @@ use crate::protocol::{
     HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, RelayDelivery,
     ResolvedHarnessConfig,
 };
-use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
+use crate::worker::{
+    spawn_worker_writer, AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry,
+};
 use crate::{
     broker::injection_format::format_injection,
     util::{
@@ -71,7 +73,7 @@ fn env_test_lock() -> &'static Mutex<()> {
 async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
     let mut registry = WorkerRegistry::new(
-        tx,
+        tx.clone(),
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
@@ -83,10 +85,13 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
         .spawn()
         .expect("test worker process should spawn");
     let stdin = child.stdin.take().expect("test worker stdin should exist");
+    let generation = Uuid::new_v4();
+    let (command_tx, command_rx) = mpsc::channel(128);
+    spawn_worker_writer(tx, WorkerName::from(name), generation, stdin, command_rx);
     registry.workers.insert(
         WorkerName::from(name),
         WorkerHandle {
-            generation: Uuid::new_v4(),
+            generation,
             spec: AgentSpec {
                 name: WorkerName::from(name),
                 runtime: AgentRuntime::Pty,
@@ -106,7 +111,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             parent: None,
             workspace_id: Some(WorkspaceId::new("ws_demo")),
             child,
-            stdin,
+            command_tx,
             harness_pid: None,
             spawned_at: Instant::now(),
             // Ready, so the orphan sweep's readiness deadline never applies to
