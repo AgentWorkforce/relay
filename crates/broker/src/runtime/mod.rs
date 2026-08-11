@@ -43,6 +43,7 @@ use crate::{
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
+    terminal_control::{TerminalControlCommand, TerminalControlEvent, TerminalMode},
     types::{
         AgentResultMcpConfig, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
         PendingRelayMessage, RelaycastDeliveryReceipt,

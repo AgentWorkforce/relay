@@ -12,6 +12,7 @@ import type { AttachMode } from '../lib/attach-mode.js';
 import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
 import { attachRemoteNode, type RemoteNodeAttachOptions } from '../lib/attach-remote-node.js';
+import { startFleetNodeAttachProxy } from '../lib/attach-fleet-node.js';
 import { attachView } from '../lib/attach-view.js';
 import {
   defaultStateDir,
@@ -76,6 +77,35 @@ export function runAttach(name: string, mode: AttachMode, options: NativeAttachO
   });
 }
 
+/**
+ * Run an existing attach mode against the short-lived loopback adapter for a
+ * remote fleet node. Deliberately bypasses native-harness detection: the proxy
+ * represents a PTY byte stream, while native mode is an event protocol.
+ */
+export async function attachFleetNode(
+  name: string,
+  mode: AttachMode,
+  node: string,
+  options: NativeAttachOptions,
+): Promise<number> {
+  const proxy = await startFleetNodeAttachProxy({ agent: name, node, mode });
+  try {
+    const connectionOptions = { brokerUrl: proxy.brokerUrl };
+    switch (mode) {
+      case 'view':
+        return await attachView(name, connectionOptions);
+      case 'passthrough':
+        return await attachPassthrough(name, connectionOptions);
+      case 'drive':
+      default:
+        return await attachDrive(name, connectionOptions);
+    }
+  } finally {
+    await proxy.close();
+    void options;
+  }
+}
+
 type ExitFn = (code: number) => never;
 
 export interface LocalAgentDependencies {
@@ -87,6 +117,12 @@ export interface LocalAgentDependencies {
     mode: AttachMode,
     node: string,
     options: RemoteNodeAttachOptions
+  ) => Promise<number>;
+  attachNode: (
+    name: string,
+    mode: AttachMode,
+    node: string,
+    options: NativeAttachOptions,
   ) => Promise<number>;
   cwd: () => string;
   readConnectionFile: (stateDir: string) => unknown;
@@ -109,6 +145,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     fetch: globalThis.fetch,
     attach: runAttach,
     attachRemote: attachRemoteNode,
+    attachNode: attachFleetNode,
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -491,6 +528,7 @@ export function registerLocalAgentCommands(
     .description('Attach to a running agent interactively (drive | view | passthrough)')
     .argument('<name>', 'Agent name')
     .option('--mode <mode>', 'drive | view | passthrough', 'view')
+    .option('--node <node>', 'Canonical authenticated fleet-node terminal attach (physical or Daytona)')
     .option('--ssh-host <host>', 'SSH host fallback for a physical fleet node')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
@@ -509,6 +547,31 @@ export function registerLocalAgentCommands(
         return;
       }
       const sshHost = options.sshHost as string | undefined;
+      const node = options.node as string | undefined;
+      if (node !== undefined && sshHost !== undefined) {
+        deps.error('Error: --node cannot be combined with --ssh-host. Use --ssh-host only as the explicit SSH fallback.');
+        deps.exit(1);
+        return;
+      }
+      if (node !== undefined) {
+        if (options.brokerUrl !== undefined || options.apiKey !== undefined || options.stateDir !== undefined) {
+          deps.error('Error: --node cannot be combined with --broker-url, --api-key, or --state-dir. It opens an ephemeral authenticated loopback session.');
+          deps.exit(1);
+          return;
+        }
+        try {
+          const code = await deps.attachNode(name, mode, node, {
+            json: options.json as boolean | undefined,
+            reasoning: options.reasoning as boolean | undefined,
+            diagnostics: options.diagnostics as boolean | undefined,
+          });
+          if (code !== 0) deps.exit(code);
+        } catch (error) {
+          deps.error(error instanceof Error ? error.message : `Error: ${String(error)}`);
+          deps.exit(1);
+        }
+        return;
+      }
       if (sshHost !== undefined) {
         if (options.brokerUrl !== undefined || options.apiKey !== undefined) {
           deps.error('Error: --ssh-host cannot be combined with --broker-url or --api-key.');

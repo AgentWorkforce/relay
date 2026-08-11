@@ -246,6 +246,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         (!resolved_node_name.trim().is_empty()).then_some(resolved_node_name.as_str()),
     );
     let fleet_ws_url = relaycast::node_control_ws_url(configured_base.as_deref());
+    // Keep terminal traffic on a physically separate websocket. Do not append
+    // terminal frames to the heartbeat/action control endpoint.
+    let terminal_ws_url = fleet_ws_url.replacen("/v1/node/ws", "/v1/node/terminal/ws", 1);
     let broker_version = format!("relay-broker/{}", crate::util::version::broker_version());
     // The broker enrolls as a relaycast node and delivers/injects solely over
     // /v1/node/ws. A node token is required to open that connection: prefer an
@@ -303,6 +306,13 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
+    // The terminal queue is deliberately bounded. A wedged remote attach must
+    // fail its session rather than accumulating unbounded PTY output in the
+    // broker or starving node control.
+    let (terminal_control_tx, terminal_control_rx) =
+        mpsc::channel::<crate::terminal_control::TerminalControlCommand>(256);
+    let (terminal_event_tx, terminal_event_rx) =
+        mpsc::channel::<crate::terminal_control::TerminalControlEvent>(256);
     let node_delivery_token_present = node_token.is_some();
     tokio::spawn(crate::node_control::run_node_control_client(
         crate::node_control::FleetControlConfig {
@@ -316,6 +326,14 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         },
         fleet_control_rx,
         fleet_event_tx,
+    ));
+    tokio::spawn(crate::terminal_control::run_terminal_control_client(
+        crate::terminal_control::TerminalControlConfig {
+            ws_url: terminal_ws_url,
+            session_token: session_node_token.clone(),
+        },
+        terminal_control_rx,
+        terminal_event_tx,
     ));
     // Register this node unconditionally on connect (no sidecar required). This
     // is the only command that flips the control client out of its idle state
@@ -659,6 +677,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_delivery_connected: false,
         fleet_event_rx,
         fleet_control_open: true,
+        terminal_control_tx,
+        terminal_event_rx,
+        terminal_control_open: true,
+        terminal_sessions: HashMap::new(),
+        terminal_snapshot_requests: HashMap::new(),
         fleet_delivery_book: FleetDeliveryBook::default(),
         // Seed the live capacity with the configured max so heartbeats/load
         // updates keep reporting it (they overwrite load.max_agents from this

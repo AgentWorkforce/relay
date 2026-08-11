@@ -204,6 +204,15 @@ pub(crate) struct BrokerRuntime {
     pub(super) node_delivery_connected: bool,
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
+    /// Independent outbound terminal lane. It never shares the node-control
+    /// socket, keeping high-volume PTY bytes away from heartbeats/actions.
+    pub(super) terminal_control_tx: mpsc::Sender<TerminalControlCommand>,
+    pub(super) terminal_event_rx: mpsc::Receiver<TerminalControlEvent>,
+    pub(super) terminal_control_open: bool,
+    pub(super) terminal_sessions: HashMap<String, TerminalSession>,
+    /// Worker snapshot RPCs parked for terminal opens. These are kept outside
+    /// the HTTP request map because their reply belongs on the terminal lane.
+    pub(super) terminal_snapshot_requests: HashMap<String, String>,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
@@ -259,8 +268,15 @@ enum RuntimeEvent {
     Stdin(std::io::Result<Option<String>>),
     Relaycast(Option<WorkspaceInboundMessage>),
     Fleet(Option<FleetControlEvent>),
+    Terminal(Option<TerminalControlEvent>),
     Worker(Option<WorkerEvent>),
     MaintenanceTick,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TerminalSession {
+    pub(super) agent: WorkerName,
+    pub(super) mode: TerminalMode,
 }
 
 impl BrokerRuntime {
@@ -277,6 +293,7 @@ impl BrokerRuntime {
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
                 message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
+                event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
@@ -314,6 +331,12 @@ impl BrokerRuntime {
                 }
                 RuntimeEvent::Fleet(None) => {
                     self.fleet_control_open = false;
+                }
+                RuntimeEvent::Terminal(Some(event)) => {
+                    self.handle_terminal_control_event(event).await;
+                }
+                RuntimeEvent::Terminal(None) => {
+                    self.terminal_control_open = false;
                 }
                 RuntimeEvent::Worker(Some(event)) => {
                     self.handle_worker_event(event).await;
@@ -437,6 +460,13 @@ impl BrokerRuntime {
             .await
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
+        }
+        if let Err(error) = self
+            .terminal_control_tx
+            .send(TerminalControlCommand::Shutdown)
+            .await
+        {
+            tracing::debug!(error = %error, "failed to send terminal control shutdown signal");
         }
         // Persist any still-pending deliveries so the next start can
         // redeliver them; only remove the file when nothing is pending.

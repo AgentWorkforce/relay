@@ -6,7 +6,12 @@ use crate::{
         RelaycastToBroker, FLEET_WIRE_VERSION,
     },
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
+    terminal_control::{
+        TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
+        TerminalToCloud,
+    },
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 const VERIFIED_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(90);
@@ -67,6 +72,214 @@ fn plan_fleet_delivery(decision: DeliveryDecision) -> FleetDeliveryPlan {
 }
 
 impl BrokerRuntime {
+    pub(super) async fn handle_terminal_control_event(&mut self, event: TerminalControlEvent) {
+        match event {
+            TerminalControlEvent::Connected => {
+                tracing::info!(
+                    target = "relay_broker::terminal",
+                    "fleet terminal transport connected"
+                );
+            }
+            TerminalControlEvent::Disconnected => {
+                tracing::warn!(
+                    target = "relay_broker::terminal",
+                    "fleet terminal transport disconnected; sessions await reconnect"
+                );
+            }
+            TerminalControlEvent::Message(TerminalFromCloud::Open {
+                session_id,
+                agent,
+                mode,
+            }) => {
+                let agent_name = WorkerName::new(agent.clone());
+                let runtime = self
+                    .workers
+                    .workers
+                    .get(&agent_name)
+                    .map(|handle| handle.spec.runtime.clone());
+                match runtime {
+                    None => self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "agent_not_found".to_string(),
+                        message: format!("no worker named '{agent}'"),
+                    }),
+                    Some(AgentRuntime::Headless) => self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "unsupported_runtime".to_string(),
+                        message: format!("worker '{agent}' is headless and has no PTY"),
+                    }),
+                    Some(AgentRuntime::Pty) => {
+                        self.terminal_sessions.insert(
+                            session_id.clone(),
+                            TerminalSession {
+                                agent: agent_name.clone(),
+                                mode,
+                            },
+                        );
+                        // Request the grid asynchronously. The response is routed
+                        // from worker_events to the terminal lane, so this never
+                        // stalls heartbeat/action processing behind a PTY snapshot.
+                        let request_id = format!("terminal_snapshot_{}", Uuid::new_v4().simple());
+                        match self
+                            .workers
+                            .send_to_worker(
+                                agent_name.as_str(),
+                                "snapshot_pty",
+                                Some(RequestId::new(request_id.clone())),
+                                json!({ "format": "ansi" }),
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                self.terminal_snapshot_requests
+                                    .insert(request_id, session_id);
+                            }
+                            Err(error) => self.send_terminal(TerminalToCloud::Error {
+                                session_id,
+                                code: "snapshot_failed".into(),
+                                message: error.to_string(),
+                            }),
+                        }
+                    }
+                }
+            }
+            TerminalControlEvent::Message(TerminalFromCloud::Input {
+                session_id,
+                data_base64,
+            }) => {
+                let Some(session) = self.terminal_sessions.get(&session_id).cloned() else {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_found".into(),
+                        message: "terminal session is not active".into(),
+                    });
+                    return;
+                };
+                if session.mode == TerminalMode::View {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "read_only".into(),
+                        message: "view sessions do not accept input".into(),
+                    });
+                    return;
+                }
+                let bytes = match BASE64.decode(data_base64.as_bytes()) {
+                    Ok(bytes) if bytes.len() <= 64 * 1024 => bytes,
+                    _ => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "invalid_input".into(),
+                            message: "terminal input must be bounded base64 UTF-8".into(),
+                        });
+                        return;
+                    }
+                };
+                let data = match String::from_utf8(bytes) {
+                    Ok(data) => data,
+                    Err(_) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "invalid_input".into(),
+                            message: "terminal input must be UTF-8".into(),
+                        });
+                        return;
+                    }
+                };
+                let bytes_written = data.len();
+                match self
+                    .workers
+                    .send_to_worker(
+                        session.agent.as_str(),
+                        "write_pty",
+                        None,
+                        json!({ "data": data }),
+                    )
+                    .await
+                {
+                    Ok(()) => self.send_terminal(TerminalToCloud::InputAck {
+                        session_id,
+                        bytes_written,
+                    }),
+                    Err(error) => self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "input_failed".into(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            TerminalControlEvent::Message(TerminalFromCloud::Resize {
+                session_id,
+                rows,
+                cols,
+            }) => {
+                let Some(session) = self.terminal_sessions.get(&session_id).cloned() else {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_found".into(),
+                        message: "terminal session is not active".into(),
+                    });
+                    return;
+                };
+                if session.mode == TerminalMode::View {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "read_only".into(),
+                        message: "view sessions do not resize the PTY".into(),
+                    });
+                    return;
+                }
+                if let Err(error) = self
+                    .workers
+                    .send_to_worker(
+                        session.agent.as_str(),
+                        "resize_pty",
+                        None,
+                        json!({ "rows": rows, "cols": cols }),
+                    )
+                    .await
+                {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "resize_failed".into(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+            TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {
+                self.terminal_sessions.remove(&session_id);
+                self.terminal_snapshot_requests
+                    .retain(|_, pending_session| pending_session != &session_id);
+                self.send_terminal(TerminalToCloud::Closed {
+                    session_id,
+                    code: None,
+                    message: None,
+                });
+            }
+        }
+    }
+
+    /// Attempts a bounded enqueue onto the dedicated terminal lane. On
+    /// saturation we tear down the affected session instead of accumulating
+    /// unbounded PTY output or delaying control traffic.
+    pub(super) fn send_terminal(&mut self, message: TerminalToCloud) {
+        let session_id = match &message {
+            TerminalToCloud::Ready { session_id, .. }
+            | TerminalToCloud::Output { session_id, .. }
+            | TerminalToCloud::InputAck { session_id, .. }
+            | TerminalToCloud::Error { session_id, .. }
+            | TerminalToCloud::Closed { session_id, .. } => session_id.clone(),
+        };
+        if let Err(error) = self
+            .terminal_control_tx
+            .try_send(TerminalControlCommand::Send(message))
+        {
+            tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed; ending session");
+            self.terminal_sessions.remove(&session_id);
+            self.terminal_snapshot_requests
+                .retain(|_, pending_session| pending_session != &session_id);
+        }
+    }
+
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {

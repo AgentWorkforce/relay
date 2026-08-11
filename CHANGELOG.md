@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay node agent attach --node <node>` now opens a short-lived, authenticated terminal session for both physical and Daytona fleet nodes. It reuses the established view, drive, and passthrough clients through a loopback-only broker-compatible adapter; PTY bytes travel on a separate bounded outbound terminal WebSocket, while `--ssh-host` remains the explicit SSH fallback.
 - `agent-relay node agent attach --ssh-host <host>` now provides an explicit SSH fallback for physical fleet nodes without exporting the remote broker or its API key; `--node` remains reserved for canonical fleet-native attach.
 - Spawned agents now stamp a `Session-Id:` git trailer on commits when the dispatcher supplies a session reference, enabling auditors to trace each commit back to the session that produced it.
 - `agent-relay node agent attach` now distinguishes between "agent does not exist" and "agent is running on a different fleet node": when a 404 resolves to a workspace-registered agent with a fleet placement, the error names the node (`agent 'X' is registered on node 'finn-mini'; cross-node attach is not yet supported`) instead of the indistinguishable "no agent named 'X'".
