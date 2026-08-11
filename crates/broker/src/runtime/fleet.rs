@@ -15,6 +15,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 const VERIFIED_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(90);
+const TERMINAL_INPUT_MAX_BYTES: usize = 64 * 1024;
+const TERMINAL_INPUT_MAX_BASE64_BYTES: usize = TERMINAL_INPUT_MAX_BYTES * 4 / 3 + 4;
+const TERMINAL_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+const TERMINAL_INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingVerifiedSpawn {
@@ -114,6 +118,7 @@ impl BrokerRuntime {
                             TerminalSession {
                                 agent: agent_name.clone(),
                                 mode,
+                                ready: false,
                             },
                         );
                         // Request the grid asynchronously. The response is routed
@@ -131,14 +136,22 @@ impl BrokerRuntime {
                             .await
                         {
                             Ok(()) => {
-                                self.terminal_snapshot_requests
-                                    .insert(request_id, session_id);
+                                self.terminal_snapshot_requests.insert(
+                                    request_id,
+                                    TerminalSnapshotRequest {
+                                        session_id,
+                                        deadline: Instant::now() + TERMINAL_SNAPSHOT_TIMEOUT,
+                                    },
+                                );
                             }
-                            Err(error) => self.send_terminal(TerminalToCloud::Error {
-                                session_id,
-                                code: "snapshot_failed".into(),
-                                message: error.to_string(),
-                            }),
+                            Err(error) => {
+                                self.terminal_sessions.remove(&session_id);
+                                self.send_terminal(TerminalToCloud::Error {
+                                    session_id,
+                                    code: "snapshot_failed".into(),
+                                    message: error.to_string(),
+                                });
+                            }
                         }
                     }
                 }
@@ -163,8 +176,24 @@ impl BrokerRuntime {
                     });
                     return;
                 }
+                if !session.ready {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_ready".into(),
+                        message: "terminal snapshot is not ready".into(),
+                    });
+                    return;
+                }
+                if data_base64.len() > TERMINAL_INPUT_MAX_BASE64_BYTES {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "invalid_input".into(),
+                        message: "terminal input must be bounded base64 UTF-8".into(),
+                    });
+                    return;
+                }
                 let bytes = match BASE64.decode(data_base64.as_bytes()) {
-                    Ok(bytes) if bytes.len() <= 64 * 1024 => bytes,
+                    Ok(bytes) if bytes.len() <= TERMINAL_INPUT_MAX_BYTES => bytes,
                     _ => {
                         self.send_terminal(TerminalToCloud::Error {
                             session_id,
@@ -185,21 +214,26 @@ impl BrokerRuntime {
                         return;
                     }
                 };
-                let bytes_written = data.len();
+                let request_id = format!("terminal_input_{}", Uuid::new_v4().simple());
                 match self
                     .workers
                     .send_to_worker(
                         session.agent.as_str(),
                         "write_pty",
-                        None,
+                        Some(RequestId::new(request_id.clone())),
                         json!({ "data": data }),
                     )
                     .await
                 {
-                    Ok(()) => self.send_terminal(TerminalToCloud::InputAck {
-                        session_id,
-                        bytes_written,
-                    }),
+                    Ok(()) => {
+                        self.terminal_input_requests.insert(
+                            request_id,
+                            TerminalInputRequest {
+                                session_id,
+                                deadline: Instant::now() + TERMINAL_INPUT_ACK_TIMEOUT,
+                            },
+                        );
+                    }
                     Err(error) => self.send_terminal(TerminalToCloud::Error {
                         session_id,
                         code: "input_failed".into(),
@@ -228,6 +262,14 @@ impl BrokerRuntime {
                     });
                     return;
                 }
+                if !session.ready {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_ready".into(),
+                        message: "terminal snapshot is not ready".into(),
+                    });
+                    return;
+                }
                 if let Err(error) = self
                     .workers
                     .send_to_worker(
@@ -248,7 +290,9 @@ impl BrokerRuntime {
             TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {
                 self.terminal_sessions.remove(&session_id);
                 self.terminal_snapshot_requests
-                    .retain(|_, pending_session| pending_session != &session_id);
+                    .retain(|_, pending| pending.session_id != session_id);
+                self.terminal_input_requests
+                    .retain(|_, pending| pending.session_id != session_id);
                 self.send_terminal(TerminalToCloud::Closed {
                     session_id,
                     code: None,
@@ -276,7 +320,9 @@ impl BrokerRuntime {
             tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed; ending session");
             self.terminal_sessions.remove(&session_id);
             self.terminal_snapshot_requests
-                .retain(|_, pending_session| pending_session != &session_id);
+                .retain(|_, pending| pending.session_id != session_id);
+            self.terminal_input_requests
+                .retain(|_, pending| pending.session_id != session_id);
         }
     }
 

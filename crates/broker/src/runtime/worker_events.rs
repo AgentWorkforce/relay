@@ -10,9 +10,12 @@ fn publish_terminal_output(
     chunk: String,
     offset: Option<u64>,
 ) {
+    if terminal_sessions.is_empty() {
+        return;
+    }
     let session_ids: Vec<String> = terminal_sessions
         .iter()
-        .filter(|(_, session)| session.agent == *name)
+        .filter(|(_, session)| session.ready && session.agent == *name)
         .map(|(session_id, _)| session_id.clone())
         .collect();
     for session_id in session_ids {
@@ -458,6 +461,7 @@ impl BrokerRuntime {
         let terminal_control_tx = &self.terminal_control_tx;
         let terminal_sessions = &mut self.terminal_sessions;
         let terminal_snapshot_requests = &mut self.terminal_snapshot_requests;
+        let terminal_input_requests = &mut self.terminal_input_requests;
 
         match worker_event {
             WorkerEvent::Message {
@@ -827,11 +831,65 @@ impl BrokerRuntime {
                         }
                         let _ = send_event(sdk_out_tx, agent_event).await;
                     } else if msg_type.ends_with("_response") {
+                        let terminal_input_session_id = value
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .and_then(|request_id| terminal_input_requests.remove(request_id))
+                            .map(|request| request.session_id);
                         let terminal_session_id = value
                             .get("request_id")
                             .and_then(Value::as_str)
-                            .and_then(|request_id| terminal_snapshot_requests.remove(request_id));
-                        if let Some(session_id) = terminal_session_id {
+                            .and_then(|request_id| terminal_snapshot_requests.remove(request_id))
+                            .map(|request| request.session_id);
+                        if let Some(session_id) = terminal_input_session_id {
+                            if !terminal_sessions.contains_key(&session_id) {
+                                return;
+                            }
+                            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            let message = if msg_type != "write_pty_response" {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "input_failed".into(),
+                                    message:
+                                        "terminal input returned an unexpected worker response"
+                                            .into(),
+                                }
+                            } else if let Some(error) = payload.get("error") {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: error
+                                        .get("code")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("input_failed")
+                                        .to_string(),
+                                    message: error
+                                        .get("message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("terminal input failed")
+                                        .to_string(),
+                                }
+                            } else if let Some(bytes_written) =
+                                payload.get("bytes_written").and_then(Value::as_u64)
+                            {
+                                TerminalToCloud::InputAck {
+                                    session_id: session_id.clone(),
+                                    bytes_written: usize::try_from(bytes_written)
+                                        .unwrap_or(usize::MAX),
+                                }
+                            } else {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "input_failed".into(),
+                                    message: "terminal input response was malformed".into(),
+                                }
+                            };
+                            if let Err(error) =
+                                terminal_control_tx.try_send(TerminalControlCommand::Send(message))
+                            {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while reporting PTY input result; ending session");
+                                terminal_sessions.remove(&session_id);
+                            }
+                        } else if let Some(session_id) = terminal_session_id {
                             if !terminal_sessions.contains_key(&session_id) {
                                 return;
                             }
@@ -858,7 +916,7 @@ impl BrokerRuntime {
                                         .unwrap_or("terminal snapshot failed")
                                         .to_string(),
                                 }
-                            } else if let (Some(screen), Some(rows), Some(cols), Some(offset)) = (
+                            } else if let (Some(screen), Some(rows), Some(cols)) = (
                                 payload.get("screen").and_then(Value::as_str),
                                 payload
                                     .get("rows")
@@ -868,14 +926,16 @@ impl BrokerRuntime {
                                     .get("cols")
                                     .and_then(Value::as_u64)
                                     .and_then(|value| u16::try_from(value).ok()),
-                                payload.get("offset").and_then(Value::as_u64),
                             ) {
                                 TerminalToCloud::Ready {
                                     session_id: session_id.clone(),
                                     screen: screen.to_string(),
                                     rows,
                                     cols,
-                                    offset,
+                                    offset: payload
+                                        .get("offset")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0),
                                 }
                             } else {
                                 TerminalToCloud::Error {
@@ -884,10 +944,18 @@ impl BrokerRuntime {
                                     message: "terminal snapshot response was malformed".into(),
                                 }
                             };
+                            let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
+                            let snapshot_failed = matches!(&message, TerminalToCloud::Error { .. });
                             if let Err(error) =
                                 terminal_control_tx.try_send(TerminalControlCommand::Send(message))
                             {
                                 tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while sending snapshot; ending session");
+                                terminal_sessions.remove(&session_id);
+                            } else if snapshot_ready {
+                                if let Some(session) = terminal_sessions.get_mut(&session_id) {
+                                    session.ready = true;
+                                }
+                            } else if snapshot_failed {
                                 terminal_sessions.remove(&session_id);
                             }
                         } else {
@@ -926,39 +994,38 @@ impl BrokerRuntime {
                         if is_pty {
                             publish_pty_busy(pty_observability, hosted_agent_event_tx, &name);
                         }
-                        let mut stream_event = json!({
-                            "kind": "worker_stream",
-                            "name": name,
-                            "stream": value.get("payload").and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
-                            "chunk": value.get("payload").and_then(|p| p.get("chunk")).cloned().unwrap_or(Value::String(String::new())),
-                        });
-                        // Forward the per-worker stream offset when present so
-                        // attaching clients can correlate the live stream with
-                        // a snapshot. Absent for headless workers (no grid).
-                        if let Some(offset) =
-                            value.get("payload").and_then(|p| p.get("offset")).cloned()
-                        {
-                            if let Some(obj) = stream_event.as_object_mut() {
-                                obj.insert("offset".to_string(), offset);
-                            }
-                        }
-                        let chunk = value
-                            .get("payload")
+                        let payload = value.get("payload");
+                        let chunk = payload
                             .and_then(|payload| payload.get("chunk"))
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string();
-                        let offset = value
-                            .get("payload")
+                        let offset = payload
                             .and_then(|payload| payload.get("offset"))
                             .and_then(Value::as_u64);
-                        publish_terminal_output(
-                            terminal_control_tx,
-                            terminal_sessions,
-                            &name,
-                            chunk,
-                            offset,
-                        );
+                        let mut stream_event = json!({
+                            "kind": "worker_stream",
+                            "name": name,
+                            "stream": payload.and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
+                            "chunk": chunk.clone(),
+                        });
+                        // Forward the per-worker stream offset when present so
+                        // attaching clients can correlate the live stream with
+                        // a snapshot. Absent for headless workers (no grid).
+                        if let Some(offset) = offset {
+                            if let Some(obj) = stream_event.as_object_mut() {
+                                obj.insert("offset".to_string(), Value::from(offset));
+                            }
+                        }
+                        if !chunk.is_empty() {
+                            publish_terminal_output(
+                                terminal_control_tx,
+                                terminal_sessions,
+                                &name,
+                                chunk,
+                                offset,
+                            );
+                        }
                         let _ = send_event(sdk_out_tx, stream_event).await;
                     } else if msg_type == "harness_started" {
                         // A running child process proves liveness but not that

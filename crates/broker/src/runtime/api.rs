@@ -1,4 +1,5 @@
 use super::*;
+use crate::terminal_control::TerminalToCloud;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
@@ -260,6 +261,10 @@ impl BrokerRuntime {
         let resize_owners = &mut self.resize_owners;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
+        let terminal_control_tx = &self.terminal_control_tx;
+        let terminal_sessions = &mut self.terminal_sessions;
+        let terminal_snapshot_requests = &mut self.terminal_snapshot_requests;
+        let terminal_input_requests = &mut self.terminal_input_requests;
         let dedup = &mut self.dedup;
         let recent_thread_messages = &mut self.recent_thread_messages;
         let delivery_retry_interval = self.delivery_retry_interval;
@@ -825,6 +830,27 @@ impl BrokerRuntime {
                         fail_pending_requests_for_worker(pending_requests, &name, "agent_released");
                         resize_owners.remove(&name);
                         pty_observability.remove(&name);
+                        let terminal_session_ids: Vec<String> = terminal_sessions
+                            .iter()
+                            .filter(|(_, session)| session.agent == name)
+                            .map(|(session_id, _)| session_id.clone())
+                            .collect();
+                        for session_id in terminal_session_ids {
+                            terminal_sessions.remove(&session_id);
+                            terminal_snapshot_requests
+                                .retain(|_, pending| pending.session_id != session_id);
+                            terminal_input_requests
+                                .retain(|_, pending| pending.session_id != session_id);
+                            if let Err(error) = terminal_control_tx.try_send(
+                                TerminalControlCommand::Send(TerminalToCloud::Closed {
+                                    session_id: session_id.clone(),
+                                    code: Some("agent_released".into()),
+                                    message: Some("terminal worker was released".into()),
+                                }),
+                            ) {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while closing released worker session");
+                            }
+                        }
                         delivery_states.remove(&name);
                         agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);

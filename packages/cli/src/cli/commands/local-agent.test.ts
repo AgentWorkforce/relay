@@ -112,7 +112,7 @@ describe('local agent subtree', () => {
     );
   });
 
-  it('attach --node rejects SSH and local broker configuration conflicts', async () => {
+  it('attach --node rejects the SSH fallback conflict', async () => {
     const { program, attachNode, attachRemote, error, exit } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn', '--ssh-host', 'finn'], {
       from: 'user',
@@ -120,6 +120,30 @@ describe('local agent subtree', () => {
     expect(attachNode).not.toHaveBeenCalled();
     expect(attachRemote).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith(expect.stringContaining('--node cannot be combined with --ssh-host'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it.each([
+    ['--broker-url', 'http://127.0.0.1:7777'],
+    ['--api-key', 'do-not-forward'],
+    ['--state-dir', '/tmp/relay-state'],
+  ])('attach --node rejects local broker option %s', async (flag, value) => {
+    const { program, attachNode, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn', flag, value], {
+      from: 'user',
+    });
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--node cannot be combined'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('attach --node prefixes a terminal setup error once', async () => {
+    const attachNode = vi.fn(async () => {
+      throw new Error('terminal unavailable');
+    });
+    const { program, error, exit } = harness({ attachNode });
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn'], { from: 'user' });
+    expect(error).toHaveBeenCalledWith('Error: terminal unavailable');
     expect(exit).toHaveBeenCalledWith(1);
   });
 

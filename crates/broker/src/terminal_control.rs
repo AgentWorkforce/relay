@@ -154,6 +154,7 @@ pub(crate) async fn run_terminal_control_client(
                 target = "relay_broker::terminal",
                 "invalid fleet terminal token header"
             );
+            reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
             tokio::time::sleep(reconnect_delay).await;
             continue;
         };
@@ -196,7 +197,10 @@ pub(crate) async fn run_terminal_control_client(
                             Err(_) => connected = false,
                         }
                     }
-                    Some(TerminalControlCommand::Shutdown) | None => return,
+                    Some(TerminalControlCommand::Shutdown) | None => {
+                        let _ = sink.send(Message::Close(None)).await;
+                        return;
+                    }
                 },
                 inbound = stream.next() => match inbound {
                     Some(Ok(Message::Text(text))) => match serde_json::from_str::<TerminalFromCloud>(&text) {
@@ -240,5 +244,85 @@ mod tests {
         })
         .unwrap();
         assert_eq!(output["type"], "terminal.output");
+        assert_eq!(output["offset"], 2);
+
+        let output_without_offset = serde_json::to_value(TerminalToCloud::Output {
+            session_id: "s".into(),
+            chunk: "x".into(),
+            offset: None,
+        })
+        .unwrap();
+        assert!(output_without_offset.get("offset").is_none());
+
+        for (wire, expected) in [
+            (
+                r#"{"type":"terminal.input","session_id":"s","data_base64":"eA=="}"#,
+                TerminalFromCloud::Input {
+                    session_id: "s".into(),
+                    data_base64: "eA==".into(),
+                },
+            ),
+            (
+                r#"{"type":"terminal.resize","session_id":"s","rows":24,"cols":80}"#,
+                TerminalFromCloud::Resize {
+                    session_id: "s".into(),
+                    rows: 24,
+                    cols: 80,
+                },
+            ),
+            (
+                r#"{"type":"terminal.close","session_id":"s"}"#,
+                TerminalFromCloud::Close {
+                    session_id: "s".into(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<TerminalFromCloud>(wire).unwrap(),
+                expected
+            );
+        }
+
+        let ready = serde_json::to_value(TerminalToCloud::Ready {
+            session_id: "s".into(),
+            screen: "screen".into(),
+            rows: 24,
+            cols: 80,
+            offset: 3,
+        })
+        .unwrap();
+        assert_eq!(ready["type"], "terminal.ready");
+        assert_eq!(ready["offset"], 3);
+        let ack = serde_json::to_value(TerminalToCloud::InputAck {
+            session_id: "s".into(),
+            bytes_written: 1,
+        })
+        .unwrap();
+        assert_eq!(ack["type"], "terminal.input_ack");
+        let error = serde_json::to_value(TerminalToCloud::Error {
+            session_id: "s".into(),
+            code: "bad".into(),
+            message: "nope".into(),
+        })
+        .unwrap();
+        assert_eq!(error["type"], "terminal.error");
+        assert_eq!(error["code"], "bad");
+        let closed = serde_json::to_value(TerminalToCloud::Closed {
+            session_id: "s".into(),
+            code: None,
+            message: None,
+        })
+        .unwrap();
+        assert_eq!(closed["type"], "terminal.closed");
+        assert!(closed.get("code").is_none());
+        assert!(closed.get("message").is_none());
+        let closed_with_error = serde_json::to_value(TerminalToCloud::Closed {
+            session_id: "s".into(),
+            code: Some("closed".into()),
+            message: Some("done".into()),
+        })
+        .unwrap();
+        assert_eq!(closed_with_error["code"], "closed");
+        assert_eq!(closed_with_error["message"], "done");
     }
 }

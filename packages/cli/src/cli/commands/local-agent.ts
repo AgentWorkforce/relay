@@ -90,7 +90,7 @@ export async function attachFleetNode(
 ): Promise<number> {
   const proxy = await startFleetNodeAttachProxy({ agent: name, node, mode });
   try {
-    const connectionOptions = { brokerUrl: proxy.brokerUrl };
+    const connectionOptions = { brokerUrl: proxy.brokerUrl, apiKey: proxy.apiKey };
     switch (mode) {
       case 'view':
         return await attachView(name, connectionOptions);
@@ -570,7 +570,8 @@ export function registerLocalAgentCommands(
           });
           if (code !== 0) deps.exit(code);
         } catch (error) {
-          deps.error(error instanceof Error ? error.message : `Error: ${String(error)}`);
+          const message = error instanceof Error ? error.message : String(error);
+          deps.error(message.startsWith('Error:') ? message : `Error: ${message}`);
           deps.exit(1);
         }
         return;

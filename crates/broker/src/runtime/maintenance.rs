@@ -1,4 +1,5 @@
 use super::*;
+use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
@@ -26,11 +27,57 @@ impl BrokerRuntime {
         let delivery_states = &mut self.delivery_states;
         let resize_owners = &mut self.resize_owners;
         let agent_result_tokens = &mut self.agent_result_tokens;
+        let terminal_control_tx = &self.terminal_control_tx;
+        let terminal_sessions = &mut self.terminal_sessions;
+        let terminal_snapshot_requests = &mut self.terminal_snapshot_requests;
+        let terminal_input_requests = &mut self.terminal_input_requests;
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
         let default_workspace = &self.default_workspace;
 
         let now = Instant::now();
+
+        // A worker can disappear before answering `snapshot_pty`. Bound these
+        // terminal-only RPCs so their sessions cannot remain live forever.
+        let expired_terminal_snapshots: Vec<(String, String)> = terminal_snapshot_requests
+            .iter()
+            .filter(|(_, pending)| pending.deadline <= now)
+            .map(|(request_id, pending)| (request_id.clone(), pending.session_id.clone()))
+            .collect();
+        for (request_id, session_id) in expired_terminal_snapshots {
+            terminal_snapshot_requests.remove(&request_id);
+            if terminal_sessions.remove(&session_id).is_some() {
+                if let Err(error) = terminal_control_tx.try_send(TerminalControlCommand::Send(
+                    TerminalToCloud::Error {
+                        session_id: session_id.clone(),
+                        code: "snapshot_timeout".into(),
+                        message: "terminal snapshot timed out".into(),
+                    },
+                )) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while reporting snapshot timeout");
+                }
+            }
+        }
+        let expired_terminal_inputs: Vec<(String, String)> = terminal_input_requests
+            .iter()
+            .filter(|(_, pending)| pending.deadline <= now)
+            .map(|(request_id, pending)| (request_id.clone(), pending.session_id.clone()))
+            .collect();
+        for (request_id, session_id) in expired_terminal_inputs {
+            terminal_input_requests.remove(&request_id);
+            if terminal_sessions.contains_key(&session_id) {
+                if let Err(error) = terminal_control_tx.try_send(TerminalControlCommand::Send(
+                    TerminalToCloud::Error {
+                        session_id: session_id.clone(),
+                        code: "input_timeout".into(),
+                        message: "terminal input acknowledgement timed out".into(),
+                    },
+                )) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while reporting input timeout");
+                    terminal_sessions.remove(&session_id);
+                }
+            }
+        }
 
         // Time out worker request/response calls whose worker never
         // responded. Common cause: worker crashed between us sending
@@ -210,6 +257,25 @@ impl BrokerRuntime {
                 );
             }
             pty_observability.remove(name);
+            let terminal_session_ids: Vec<String> = terminal_sessions
+                .iter()
+                .filter(|(_, session)| session.agent == *name)
+                .map(|(session_id, _)| session_id.clone())
+                .collect();
+            for session_id in terminal_session_ids {
+                terminal_sessions.remove(&session_id);
+                terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+                terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+                if let Err(error) = terminal_control_tx.try_send(TerminalControlCommand::Send(
+                    TerminalToCloud::Closed {
+                        session_id: session_id.clone(),
+                        code: Some("agent_exited".into()),
+                        message: Some("terminal worker exited".into()),
+                    },
+                )) {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, error = %error, "terminal queue full or closed while closing exited worker session");
+                }
+            }
             // Record crash in insights
             let (category, description) =
                 crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());

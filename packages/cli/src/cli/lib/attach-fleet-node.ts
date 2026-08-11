@@ -11,6 +11,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import { Buffer } from 'node:buffer';
+import { randomBytes } from 'node:crypto';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
@@ -19,7 +20,9 @@ import { resolveBaseUrl, resolveWorkspaceKey } from './sdk-client.js';
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const SNAPSHOT_WAIT_MS = 10_000;
-const RECONNECT_DELAY_MS = 500;
+const INITIAL_RECONNECT_DELAY_MS = 500;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 type FleetSessionResponse = {
   ok?: boolean;
@@ -45,6 +48,7 @@ export interface FleetNodeAttachOptions {
 
 export interface FleetNodeAttachProxy {
   brokerUrl: string;
+  apiKey: string;
   close(): Promise<void>;
 }
 
@@ -65,6 +69,12 @@ function json(response: ServerResponse, status: number, payload: unknown): void 
 
 function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (body: Record<string, unknown>) => {
+      if (settled) return;
+      settled = true;
+      resolve(body);
+    };
     let body = '';
     request.setEncoding('utf8');
     request.on('data', (chunk: string) => {
@@ -73,15 +83,17 @@ function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
     request.on('end', () => {
       try {
         const parsed = JSON.parse(body) as unknown;
-        resolve(
+        finish(
           parsed && typeof parsed === 'object' && !Array.isArray(parsed)
             ? (parsed as Record<string, unknown>)
             : {}
         );
       } catch {
-        resolve({});
+        finish({});
       }
     });
+    request.on('error', () => finish({}));
+    request.on('aborted', () => finish({}));
   });
 }
 
@@ -163,17 +175,34 @@ export async function startFleetNodeAttachProxy(
   let remote: WebSocket | undefined;
   let stopped = false;
   let reconnecting = false;
+  let reconnectAttempts = 0;
+  const loopbackApiKey = randomBytes(32).toString('base64url');
+  const loopbackAuthorized = (headers: IncomingMessage['headers']) =>
+    headers.authorization === `Bearer ${loopbackApiKey}` || headers['x-api-key'] === loopbackApiKey;
 
   const server = createServer(async (request, response) => {
+    if (!loopbackAuthorized(request.headers)) {
+      json(response, 401, {
+        error: { code: 'unauthorized', message: 'loopback terminal token is required' },
+      });
+      return;
+    }
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     if (request.method === 'GET' && path === `/api/spawned/${encodeURIComponent(options.agent)}/snapshot`) {
       try {
-        await Promise.race([
-          ready,
-          new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error('terminal snapshot timed out')), SNAPSHOT_WAIT_MS)
-          ),
-        ]);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('terminal snapshot timed out')), SNAPSHOT_WAIT_MS);
+          void ready.then(
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            (error: Error) => {
+              clearTimeout(timer);
+              reject(error);
+            }
+          );
+        });
       } catch (error) {
         json(response, 503, {
           error: {
@@ -280,12 +309,19 @@ export async function startFleetNodeAttachProxy(
     if (path === '/ws') {
       eventSockets.add(socket);
       socket.on('close', () => eventSockets.delete(socket));
+      let replayed = 0;
       for (const event of outputHistory) {
         if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) break;
         socket.send(JSON.stringify(workerStreamEvent(event.chunk, event.offset)));
+        replayed += 1;
       }
-      outputHistory.length = 0;
-      outputHistoryBytes = 0;
+      if (replayed > 0) {
+        const sentBytes = outputHistory
+          .slice(0, replayed)
+          .reduce((total, event) => total + Buffer.byteLength(event.chunk, 'utf8'), 0);
+        outputHistory.splice(0, replayed);
+        outputHistoryBytes -= sentBytes;
+      }
       return;
     }
     if (path === `/api/input/${encodeURIComponent(options.agent)}/stream`) {
@@ -315,6 +351,11 @@ export async function startFleetNodeAttachProxy(
     closeSocket(socket, 1008, 'unknown loopback endpoint');
   });
   server.on('upgrade', (request, socket, head) => {
+    if (!loopbackAuthorized(request.headers)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     websocketServer.handleUpgrade(request, socket, head, (client) =>
       websocketServer.emit('connection', client, request)
     );
@@ -332,7 +373,17 @@ export async function startFleetNodeAttachProxy(
   resumeUrl.searchParams.delete('ticket');
   resumeUrl.searchParams.set('session_id', sessionId);
   resumeUrl.searchParams.set('resume', resumeToken);
-  const connect = (url: string, isResume: boolean) => {
+  const failRemote = (message: string) => {
+    const error = new FleetNodeAttachError(message, 'node_unreachable');
+    remote = undefined;
+    broadcast(inputSockets, { type: 'pty_input_error', code: error.code, message: error.message });
+    for (const socket of eventSockets) closeSocket(socket, 1011, error.message);
+    if (!readySettled) {
+      readySettled = true;
+      rejectReady(error);
+    }
+  };
+  const connect = (url: string) => {
     if (stopped) return;
     const socket = new WebSocket(asWsUrl(url));
     remote = socket;
@@ -344,6 +395,7 @@ export async function startFleetNodeAttachProxy(
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
+        reconnectAttempts = 0;
         if (!readySettled) {
           readySettled = true;
           resolveReady();
@@ -382,27 +434,27 @@ export async function startFleetNodeAttachProxy(
         });
       }
     });
-    socket.on('error', (error) => {
-      if (!readySettled && !isResume) {
-        readySettled = true;
-        rejectReady(
-          new FleetNodeAttachError(`terminal websocket failed: ${error.message}`, 'node_unreachable')
-        );
-      }
-    });
+    socket.on('error', () => undefined);
     socket.on('close', () => {
       if (remote !== socket || stopped || reconnecting) return;
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        failRemote('terminal transport could not reconnect to the fleet node');
+        return;
+      }
       reconnecting = true;
+      const delay = Math.min(INITIAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempts, MAX_RECONNECT_DELAY_MS);
+      reconnectAttempts += 1;
       setTimeout(() => {
         reconnecting = false;
-        connect(resumeUrl.toString(), true);
-      }, RECONNECT_DELAY_MS);
+        connect(resumeUrl.toString());
+      }, delay);
     });
   };
-  connect(terminalUrl, false);
+  connect(terminalUrl);
 
   return {
     brokerUrl: `http://127.0.0.1:${address.port}`,
+    apiKey: loopbackApiKey,
     async close() {
       if (stopped) return;
       stopped = true;

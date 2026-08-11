@@ -212,7 +212,10 @@ pub(crate) struct BrokerRuntime {
     pub(super) terminal_sessions: HashMap<String, TerminalSession>,
     /// Worker snapshot RPCs parked for terminal opens. These are kept outside
     /// the HTTP request map because their reply belongs on the terminal lane.
-    pub(super) terminal_snapshot_requests: HashMap<String, String>,
+    pub(super) terminal_snapshot_requests: HashMap<String, TerminalSnapshotRequest>,
+    /// PTY writes are acknowledged only after the worker drainer confirms
+    /// them; this map correlates that response back to its terminal session.
+    pub(super) terminal_input_requests: HashMap<String, TerminalInputRequest>,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
@@ -277,6 +280,19 @@ enum RuntimeEvent {
 pub(super) struct TerminalSession {
     pub(super) agent: WorkerName,
     pub(super) mode: TerminalMode,
+    /// PTY output is withheld until the initial ANSI grid has been delivered,
+    /// so a client always receives `terminal.ready` before stream chunks.
+    pub(super) ready: bool,
+}
+
+pub(super) struct TerminalSnapshotRequest {
+    pub(super) session_id: String,
+    pub(super) deadline: Instant,
+}
+
+pub(super) struct TerminalInputRequest {
+    pub(super) session_id: String,
+    pub(super) deadline: Instant,
 }
 
 impl BrokerRuntime {
