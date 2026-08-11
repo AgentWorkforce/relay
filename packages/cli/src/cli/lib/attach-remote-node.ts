@@ -61,9 +61,11 @@ function remoteStateSelection(
       `relay_state=${expected}`,
       `attach_agent=${quoteRemoteArg(agentName)}`,
       'if [ ! -f "$relay_state/connection.json" ]; then ' +
-        `broker_pids=$(ps axww -o ppid= -o command= 2>/dev/null | ATTACH_AGENT="$attach_agent" awk '${
+        // The matched `pty` process is the worker wrapper; its parent is the
+        // owning broker whose cwd contains the project-local state directory.
+        `broker_pids=$(ps axww -o ppid= -o ucomm= -o command= 2>/dev/null | ATTACH_AGENT="$attach_agent" awk '${
           'BEGIN { marker = "agent-relay-broker pty --agent-name " ENVIRON["ATTACH_AGENT"] } ' +
-          '{ pos = index($0, marker); if (pos > 0) { after = substr($0, pos + length(marker), 1); ' +
+          '$2 ~ /^agent-relay-brok/ { pos = index($0, marker); if (pos > 0) { after = substr($0, pos + length(marker), 1); ' +
           'if (after == "" || after == " ") print $1 } }'
         }'); ` +
         'broker_state=""; broker_state_ambiguous=0; ' +

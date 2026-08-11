@@ -24,6 +24,8 @@ describe('buildRemoteNodeAttachCommand', () => {
   it('discovers an ordinary project-local broker from the target agent process', () => {
     const target = buildRemoteNodeAttachCommand('project-worker', 'view', 'build-host', {});
     expect(target?.command).toContain('agent-relay-broker pty --agent-name');
+    expect(target?.command).toContain('ps axww -o ppid= -o ucomm= -o command=');
+    expect(target?.command).toContain('$2 ~ /^agent-relay-brok/');
     expect(target?.command).toContain('/proc/$broker_pid/cwd');
     expect(target?.command).toContain('lsof -a -p "$broker_pid" -d cwd');
     expect(target?.command).toContain('broker_state_ambiguous=0');
