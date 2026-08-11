@@ -195,7 +195,7 @@ pub fn broker_payload_from_action(
                 .session_ref
                 .as_deref()
                 .map(str::trim)
-                .map_or(true, |v| v.is_empty());
+                .is_none_or(|v| v.is_empty());
             if nested_is_blank {
                 attestation.session_ref = Some(sid);
             }
