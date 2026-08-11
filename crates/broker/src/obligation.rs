@@ -176,7 +176,8 @@ impl ObligationStore {
     pub fn gc(&mut self, now: Instant) {
         const MAX_DISCHARGED_AGE: Duration = Duration::from_secs(3600);
         self.records.retain(|_, r| {
-            (!r.discharged && !r.exhausted) || now.duration_since(r.registered_at) < MAX_DISCHARGED_AGE
+            (!r.discharged && !r.exhausted)
+                || now.duration_since(r.registered_at) < MAX_DISCHARGED_AGE
         });
     }
 }
@@ -296,9 +297,8 @@ mod tests {
         let (mut store, _now) = store_with_obligation(interval);
         // Fire 3 times; after the 3rd fire the obligation must be exhausted.
         for i in 0..3u32 {
-            let t = Instant::now()
-                + interval * (i + 1)
-                + Duration::from_millis(50 * (i + 1) as u64);
+            let t =
+                Instant::now() + interval * (i + 1) + Duration::from_millis(50 * (i + 1) as u64);
             let due = store.drain_due(t, interval);
             assert_eq!(due.len(), 1, "fire {} must still drain", i);
         }
