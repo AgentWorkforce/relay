@@ -74,9 +74,7 @@ export async function resolveFleetHint(
 
     const fleet = (agent.metadata as Record<string, unknown> | undefined)?.fleet;
     const nodeId =
-      typeof fleet === 'object' && fleet !== null
-        ? (fleet as Record<string, unknown>).nodeId
-        : undefined;
+      typeof fleet === 'object' && fleet !== null ? (fleet as Record<string, unknown>).nodeId : undefined;
     if (typeof nodeId !== 'string' || !nodeId) return null;
 
     // Resolve the node's human-readable name by looking it up in the roster.
