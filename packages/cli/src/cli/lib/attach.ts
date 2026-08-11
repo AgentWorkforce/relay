@@ -1223,14 +1223,19 @@ export interface BackpressureWritable {
 }
 
 /**
- * A backpressure-aware writer plus a teardown hook. Call the writer with each
- * chunk; call {@link BackpressureAwareWriter.dispose} on detach to drop any
- * still-queued chunks and unhook the pending `'drain'` listener so nothing
- * flushes to stdout after the session tears down.
+ * A backpressure-aware writer plus teardown hooks. Call the writer with each
+ * chunk. Interactive attaches call {@link BackpressureAwareWriter.dispose} on
+ * detach to drop any still-queued terminal bytes; machine-readable callers can
+ * call {@link BackpressureAwareWriter.flush} first to preserve their records.
  */
 export interface BackpressureAwareWriter {
   /** Write a chunk, respecting backpressure. No-op after {@link dispose}. */
   write: (chunk: string) => void;
+  /**
+   * Queue every locally buffered chunk to the underlying stream in FIFO order.
+   * The stream's own buffered writes are drained by the shared CLI exit path.
+   */
+  flush: () => void;
   /** Drop the pending queue and unhook the `'drain'` listener. Idempotent. */
   dispose: () => void;
 }
@@ -1309,7 +1314,22 @@ export function createBackpressureAwareWriter(
     off?.call(stdout, 'drain', flushQueue);
   };
 
-  return { write, dispose };
+  const flush = (): void => {
+    if (disposed || queue.length === 0) return;
+    const pending = queue;
+    queue = [];
+    queuedBytes = 0;
+    paused = false;
+    const off = stdout.off ?? stdout.removeListener;
+    off?.call(stdout, 'drain', flushQueue);
+    // `stdout.write` queues asynchronously on pipes. Preserving JSON records
+    // is more important than applying another local backpressure pause here;
+    // exitAfterFlush writes a final sentinel and waits (bounded) for that
+    // stream queue after command completion.
+    for (const chunk of pending) stdout.write(chunk);
+  };
+
+  return { write, flush, dispose };
 }
 
 /** Dependencies for `captureInitialSnapshot`. `captureAndRenderSnapshot`

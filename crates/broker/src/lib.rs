@@ -51,6 +51,7 @@ pub(crate) mod swarm;
 pub(crate) mod swarm_tui;
 #[allow(dead_code)]
 pub(crate) mod telemetry;
+pub(crate) mod terminal_control;
 #[allow(dead_code)]
 pub(crate) mod types;
 pub(crate) mod util;

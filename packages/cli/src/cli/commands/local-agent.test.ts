@@ -27,6 +27,7 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   };
   const attach = vi.fn(async () => 0);
   const attachRemote = vi.fn(async () => 0);
+  const attachNode = vi.fn(async () => 0);
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
@@ -34,6 +35,7 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
     connect: vi.fn(async () => client as never),
     attach,
     attachRemote,
+    attachNode,
     cwd: () => '/tmp/project',
     log,
     error,
@@ -44,7 +46,7 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   program.exitOverride();
   const group = program.command('local');
   registerLocalAgentCommands(group, deps);
-  return { program, client, attach, attachRemote, log, error, exit };
+  return { program, client, attach, attachRemote, attachNode, log, error, exit };
 }
 
 describe('local agent subtree', () => {
@@ -92,6 +94,58 @@ describe('local agent subtree', () => {
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--ssh-host', ''], { from: 'user' });
     expect(attach).not.toHaveBeenCalled();
     expect(attachRemote).toHaveBeenCalledWith('lead', 'view', '', expect.objectContaining({}));
+  });
+
+  it('attach --node opens the canonical authenticated terminal path without invoking SSH', async () => {
+    const { program, attach, attachRemote, attachNode } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'daytona-live', '--mode', 'passthrough', '--json'],
+      { from: 'user' }
+    );
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachRemote).not.toHaveBeenCalled();
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'passthrough',
+      'daytona-live',
+      expect.objectContaining({ json: true })
+    );
+  });
+
+  it('attach --node rejects the SSH fallback conflict', async () => {
+    const { program, attachNode, attachRemote, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn', '--ssh-host', 'finn'], {
+      from: 'user',
+    });
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(attachRemote).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--node cannot be combined with --ssh-host'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it.each([
+    ['--broker-url', 'http://127.0.0.1:7777'],
+    ['--api-key', 'do-not-forward'],
+    ['--state-dir', '/tmp/relay-state'],
+  ])('attach --node rejects local broker option %s', async (flag, value) => {
+    const { program, attachNode, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn', flag, value], {
+      from: 'user',
+    });
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--node cannot be combined'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('attach --node prefixes a terminal setup error once', async () => {
+    const attachNode = vi.fn(async () => {
+      throw new Error('terminal unavailable');
+    });
+    const { program, error, exit } = harness({ attachNode });
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'finn'], { from: 'user' });
+    expect(error).toHaveBeenCalledWith('Error: terminal unavailable');
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
   it.each([

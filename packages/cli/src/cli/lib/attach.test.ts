@@ -960,6 +960,33 @@ describe('createBackpressureAwareWriter', () => {
     expect(written).toEqual(['a', 'bb', 'c']);
   });
 
+  it('flushes buffered records in order before disposal', () => {
+    const written: string[] = [];
+    const accept = false;
+    let drain: (() => void) | null = null;
+    const stdout: BackpressureWritable = {
+      write: (chunk) => {
+        written.push(chunk);
+        return accept;
+      },
+      once: (_event, listener) => {
+        drain = listener;
+        return undefined;
+      },
+      off: (_event, listener) => {
+        if (listener === drain) drain = null;
+        return undefined;
+      },
+    };
+    const w = createBackpressureAwareWriter(stdout);
+    w.write('first');
+    w.write('second');
+    w.write('third');
+    w.flush();
+    w.dispose();
+    expect(written).toEqual(['first', 'second', 'third']);
+  });
+
   it('drops the pending queue and unhooks drain on dispose', () => {
     const written: string[] = [];
     let accept = true;

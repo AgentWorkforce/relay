@@ -1,6 +1,104 @@
-use super::fleet::{refresh_fleet_inventory_session_ref, verified_spawn_ready_result};
+use super::fleet::{
+    refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
+};
 use super::*;
+use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
 use crate::worker::AgentWorkState;
+
+const TERMINAL_PENDING_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
+
+fn publish_terminal_output(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    name: &WorkerName,
+    chunk: String,
+    offset: Option<u64>,
+) {
+    if terminal_sessions.is_empty() {
+        return;
+    }
+    let chunk_bytes = chunk.len();
+    let mut session_ids = Vec::new();
+    let mut saturated_sessions = Vec::new();
+    for (session_id, session) in terminal_sessions.iter_mut() {
+        if session.agent != *name {
+            continue;
+        }
+        if !session.ready {
+            if session.pending_output_bytes + chunk_bytes > TERMINAL_PENDING_OUTPUT_MAX_BYTES {
+                saturated_sessions.push(session_id.clone());
+            } else {
+                session.pending_output.push((chunk.clone(), offset));
+                session.pending_output_bytes += chunk_bytes;
+            }
+            continue;
+        }
+        session_ids.push(session_id.clone());
+    }
+    for session_id in saturated_sessions {
+        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal snapshot wait exceeded bounded output buffer; ending session");
+        end_terminal_session(
+            terminal_control_tx,
+            terminal_sessions,
+            terminal_snapshot_requests,
+            terminal_input_requests,
+            &session_id,
+            "output_backpressure",
+            "terminal snapshot wait exceeded bounded output buffer",
+        );
+    }
+    for session_id in session_ids {
+        if !try_send_terminal(
+            terminal_control_tx,
+            TerminalToCloud::Output {
+                session_id: session_id.clone(),
+                chunk: chunk.clone(),
+                offset,
+            },
+        ) {
+            tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal output queue full or closed; ending session");
+            end_terminal_session(
+                terminal_control_tx,
+                terminal_sessions,
+                terminal_snapshot_requests,
+                terminal_input_requests,
+                &session_id,
+                "output_backpressure",
+                "terminal output queue is full",
+            );
+        }
+    }
+}
+
+fn end_terminal_session(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    session_id: &str,
+    code: &str,
+    message: &str,
+) {
+    terminal_sessions.remove(session_id);
+    terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+    terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+    if !try_send_terminal(
+        terminal_control_tx,
+        TerminalToCloud::Closed {
+            session_id: session_id.into(),
+            code: Some(code.into()),
+            message: Some(message.into()),
+        },
+    ) {
+        tracing::warn!(
+            target = "relay_broker::terminal",
+            session_id,
+            "terminal close could not be queued after session failure"
+        );
+    }
+}
 
 fn enqueue_pty_event(
     states: &mut HashMap<WorkerName, PtyObservabilityState>,
@@ -428,6 +526,10 @@ impl BrokerRuntime {
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
         let delivery_states = &self.delivery_states;
+        let terminal_control_tx = &self.terminal_control_tx;
+        let terminal_sessions = &mut self.terminal_sessions;
+        let terminal_snapshot_requests = &mut self.terminal_snapshot_requests;
+        let terminal_input_requests = &mut self.terminal_input_requests;
 
         match worker_event {
             WorkerEvent::Message {
@@ -797,27 +899,195 @@ impl BrokerRuntime {
                         }
                         let _ = send_event(sdk_out_tx, agent_event).await;
                     } else if msg_type.ends_with("_response") {
-                        // Generic worker request/response dispatch.
-                        // Any frame whose `type` ends in
-                        // `_response` is routed by `request_id`
-                        // into the matching parked `oneshot` in
-                        // `pending_requests`. The pending entry
-                        // owns the format/error decoding logic
-                        // via `worker_request::fulfil_response_frame`.
-                        let routed =
-                            worker_request::fulfil_response_frame(pending_requests, &value);
-                        if !routed {
-                            let req_id = value
-                                .get("request_id")
-                                .and_then(Value::as_str)
-                                .unwrap_or("<missing>");
-                            tracing::debug!(
-                                target = "agent_relay::broker",
-                                worker = %name,
-                                msg_type = %msg_type,
-                                request_id = %req_id,
-                                "worker response with no pending caller — dropping"
-                            );
+                        let terminal_input_session_id = value
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .and_then(|request_id| terminal_input_requests.remove(request_id))
+                            .map(|request| request.session_id);
+                        let terminal_session_id = value
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .and_then(|request_id| terminal_snapshot_requests.remove(request_id))
+                            .map(|request| request.session_id);
+                        if let Some(session_id) = terminal_input_session_id {
+                            if !terminal_sessions.contains_key(&session_id) {
+                                return;
+                            }
+                            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            let message = if msg_type != "write_pty_response" {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "input_failed".into(),
+                                    message:
+                                        "terminal input returned an unexpected worker response"
+                                            .into(),
+                                }
+                            } else if let Some(error) = payload.get("error") {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: error
+                                        .get("code")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("input_failed")
+                                        .to_string(),
+                                    message: error
+                                        .get("message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("terminal input failed")
+                                        .to_string(),
+                                }
+                            } else if let Some(bytes_written) =
+                                payload.get("bytes_written").and_then(Value::as_u64)
+                            {
+                                TerminalToCloud::InputAck {
+                                    session_id: session_id.clone(),
+                                    bytes_written: usize::try_from(bytes_written)
+                                        .unwrap_or(usize::MAX),
+                                }
+                            } else {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "input_failed".into(),
+                                    message: "terminal input response was malformed".into(),
+                                }
+                            };
+                            if !try_send_terminal(terminal_control_tx, message) {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting PTY input result; ending session");
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    "output_backpressure",
+                                    "terminal output queue is full",
+                                );
+                            }
+                        } else if let Some(session_id) = terminal_session_id {
+                            if !terminal_sessions.contains_key(&session_id) {
+                                return;
+                            }
+                            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            let message = if msg_type != "snapshot_response" {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "snapshot_failed".into(),
+                                    message:
+                                        "terminal snapshot returned an unexpected worker response"
+                                            .into(),
+                                }
+                            } else if let Some(error) = payload.get("error") {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: error
+                                        .get("code")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("snapshot_failed")
+                                        .to_string(),
+                                    message: error
+                                        .get("message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("terminal snapshot failed")
+                                        .to_string(),
+                                }
+                            } else if let (Some(screen), Some(rows), Some(cols)) = (
+                                payload.get("screen").and_then(Value::as_str),
+                                payload
+                                    .get("rows")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|value| u16::try_from(value).ok()),
+                                payload
+                                    .get("cols")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|value| u16::try_from(value).ok()),
+                            ) {
+                                TerminalToCloud::Ready {
+                                    session_id: session_id.clone(),
+                                    screen: screen.to_string(),
+                                    rows,
+                                    cols,
+                                    offset: payload
+                                        .get("offset")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0),
+                                }
+                            } else {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "snapshot_failed".into(),
+                                    message: "terminal snapshot response was malformed".into(),
+                                }
+                            };
+                            let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
+                            let snapshot_failed = matches!(&message, TerminalToCloud::Error { .. });
+                            if !try_send_terminal(terminal_control_tx, message) {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while sending snapshot; ending session");
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    "output_backpressure",
+                                    "terminal output queue is full",
+                                );
+                            } else if snapshot_ready {
+                                let pending_output =
+                                    if let Some(session) = terminal_sessions.get_mut(&session_id) {
+                                        session.ready = true;
+                                        session.pending_output_bytes = 0;
+                                        std::mem::take(&mut session.pending_output)
+                                    } else {
+                                        Vec::new()
+                                    };
+                                for (chunk, offset) in pending_output {
+                                    if !try_send_terminal(
+                                        terminal_control_tx,
+                                        TerminalToCloud::Output {
+                                            session_id: session_id.clone(),
+                                            chunk,
+                                            offset,
+                                        },
+                                    ) {
+                                        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while flushing buffered output; ending session");
+                                        end_terminal_session(
+                                            terminal_control_tx,
+                                            terminal_sessions,
+                                            terminal_snapshot_requests,
+                                            terminal_input_requests,
+                                            &session_id,
+                                            "output_backpressure",
+                                            "terminal output queue is full",
+                                        );
+                                        break;
+                                    }
+                                }
+                            } else if snapshot_failed {
+                                terminal_sessions.remove(&session_id);
+                            }
+                        } else {
+                            // Generic worker request/response dispatch.
+                            // Any frame whose `type` ends in
+                            // `_response` is routed by `request_id`
+                            // into the matching parked `oneshot` in
+                            // `pending_requests`. The pending entry
+                            // owns the format/error decoding logic
+                            // via `worker_request::fulfil_response_frame`.
+                            let routed =
+                                worker_request::fulfil_response_frame(pending_requests, &value);
+                            if !routed {
+                                let req_id = value
+                                    .get("request_id")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("<missing>");
+                                tracing::debug!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    msg_type = %msg_type,
+                                    request_id = %req_id,
+                                    "worker response with no pending caller — dropping"
+                                );
+                            }
                         }
                     } else if msg_type == "worker_stream" {
                         let is_pty = workers
@@ -831,21 +1101,39 @@ impl BrokerRuntime {
                         if is_pty {
                             publish_pty_busy(pty_observability, hosted_agent_event_tx, &name);
                         }
+                        let payload = value.get("payload");
+                        let chunk = payload
+                            .and_then(|payload| payload.get("chunk"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let offset = payload
+                            .and_then(|payload| payload.get("offset"))
+                            .and_then(Value::as_u64);
                         let mut stream_event = json!({
                             "kind": "worker_stream",
                             "name": name,
-                            "stream": value.get("payload").and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
-                            "chunk": value.get("payload").and_then(|p| p.get("chunk")).cloned().unwrap_or(Value::String(String::new())),
+                            "stream": payload.and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
+                            "chunk": chunk.clone(),
                         });
                         // Forward the per-worker stream offset when present so
                         // attaching clients can correlate the live stream with
                         // a snapshot. Absent for headless workers (no grid).
-                        if let Some(offset) =
-                            value.get("payload").and_then(|p| p.get("offset")).cloned()
-                        {
+                        if let Some(offset) = offset {
                             if let Some(obj) = stream_event.as_object_mut() {
-                                obj.insert("offset".to_string(), offset);
+                                obj.insert("offset".to_string(), Value::from(offset));
                             }
+                        }
+                        if !chunk.is_empty() {
+                            publish_terminal_output(
+                                terminal_control_tx,
+                                terminal_sessions,
+                                terminal_snapshot_requests,
+                                terminal_input_requests,
+                                &name,
+                                chunk,
+                                offset,
+                            );
                         }
                         let _ = send_event(sdk_out_tx, stream_event).await;
                     } else if msg_type == "harness_started" {
