@@ -19,6 +19,11 @@ use crate::types::CommitAttestation;
 const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
 const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
 const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
+/// Optional: the ai-hist session UUID for the spawned agent's Claude Code or
+/// Codex session. Injected when `CommitAttestation::session_ref` is present.
+/// The hook stamps it as a `Session-Id:` git trailer so every commit carries
+/// an auditor-readable reference to the session that produced it.
+const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
 const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
 const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
@@ -33,6 +38,9 @@ if [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n 
     "$RELAY_ATTEST_AGENT_ID" \
     "$RELAY_ATTEST_SPONSOR_ID" \
     "$RELAY_ATTEST_JTI" >> "$message_file"
+  if [ -n "$RELAY_ATTEST_SESSION_ID" ]; then
+    printf 'Session-Id: %s\n' "$RELAY_ATTEST_SESSION_ID" >> "$message_file"
+  fi
 fi
 
 # Resolve hooks with the broker's temporary core.hooksPath setting removed.
@@ -96,6 +104,17 @@ pub fn with_commit_attestation_env(
             attestation.sponsor_id.clone(),
         ),
     ]);
+
+    // Inject session provenance when the dispatcher has a stable session
+    // reference for the child agent. Invalid values (empty / control chars)
+    // are silently skipped — the session reference is advisory for auditors
+    // and its absence never blocks a commit.
+    if let Some(session_ref) = attestation.session_ref.as_deref() {
+        if is_valid_attestation_value(session_ref) {
+            env_vars.push((RELAY_ATTEST_SESSION_ID.to_string(), session_ref.to_string()));
+        }
+    }
+
     env_vars
 }
 
@@ -490,7 +509,7 @@ mod tests {
         add_broker_hooks_path, attestation_env_present, git_config_count_with_inherited,
         spawn_env_vars, terminate_child, with_commit_attestation_env,
         write_prepare_commit_msg_hook, Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
-        RELAY_ATTEST_SPONSOR_ID,
+        RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     };
 
     fn git(repo: &Path, args: &[&str], env: &[(String, String)]) -> std::process::Output {
@@ -535,6 +554,16 @@ mod tests {
             jti: "jti-public-123".to_string(),
             agent_id: "agent_worker_42".to_string(),
             sponsor_id: "user_owner_7".to_string(),
+            session_ref: None,
+        }
+    }
+
+    fn attestation_with_session(session: &str) -> CommitAttestation {
+        CommitAttestation {
+            jti: "jti-public-123".to_string(),
+            agent_id: "agent_worker_42".to_string(),
+            sponsor_id: "user_owner_7".to_string(),
+            session_ref: Some(session.to_string()),
         }
     }
 
@@ -605,6 +634,27 @@ mod tests {
         assert!(message.contains("Agent-Id: agent_worker_42"));
         assert!(message.contains("Sponsor-Id: user_owner_7"));
         assert!(message.contains("Relay-Attestation: jti-public-123"));
+        // No session_ref in plain attestation — Session-Id trailer must be absent.
+        assert!(!message.contains("Session-Id:"));
+    }
+
+    #[test]
+    fn broker_hook_appends_session_id_trailer_when_session_ref_present() {
+        let repo = fixture_repository();
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let session = "ai-hist:claudecode-abc123";
+        let attest = attestation_with_session(session);
+        let env = broker_hook_env(&attest, hooks_dir.path());
+
+        let commit = git(repo.path(), &["commit", "-m", "with session"], &env);
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with session_ref in broker hook"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains("Relay-Attestation: jti-public-123"));
+        assert!(message.contains(&format!("Session-Id: {session}")));
     }
 
     #[test]
@@ -788,6 +838,42 @@ mod tests {
             RELAY_ATTEST_SPONSOR_ID.to_string(),
             "user_owner_7".to_string(),
         )));
+        // Without session_ref the session-id env var must be absent.
+        assert!(env.iter().all(|(k, _)| k != RELAY_ATTEST_SESSION_ID));
+    }
+
+    #[test]
+    fn session_ref_in_attestation_is_injected_as_relay_attest_session_id() {
+        let session = "ai-hist:claudecode-abc123";
+        let env = with_commit_attestation_env(Vec::new(), Some(&attestation_with_session(session)));
+        assert!(env.contains(&(RELAY_ATTEST_SESSION_ID.to_string(), session.to_string())));
+        // Core three vars must still be present.
+        assert!(env.contains(&(RELAY_ATTEST_JTI.to_string(), "jti-public-123".to_string())));
+    }
+
+    #[test]
+    fn absent_session_ref_does_not_inject_session_id_env_var() {
+        let env = with_commit_attestation_env(Vec::new(), Some(&attestation()));
+        assert!(env.iter().all(|(k, _)| k != RELAY_ATTEST_SESSION_ID));
+    }
+
+    #[test]
+    fn invalid_session_ref_is_silently_skipped() {
+        for invalid in ["", "   ", "session\ninjection", "session\0null"] {
+            let attest = CommitAttestation {
+                jti: "jti-public-123".to_string(),
+                agent_id: "agent_worker_42".to_string(),
+                sponsor_id: "user_owner_7".to_string(),
+                session_ref: Some(invalid.to_string()),
+            };
+            let env = with_commit_attestation_env(Vec::new(), Some(&attest));
+            assert!(
+                env.iter().all(|(k, _)| k != RELAY_ATTEST_SESSION_ID),
+                "invalid session_ref {invalid:?} must not set RELAY_ATTEST_SESSION_ID"
+            );
+            // Core three vars are still added — session_ref validity is checked separately.
+            assert!(env.contains(&(RELAY_ATTEST_JTI.to_string(), "jti-public-123".to_string())));
+        }
     }
 
     #[test]
@@ -807,6 +893,7 @@ mod tests {
                 jti: invalid_value.to_string(),
                 agent_id: "agent_worker_42".to_string(),
                 sponsor_id: "user_owner_7".to_string(),
+                session_ref: None,
             };
             assert_eq!(
                 with_commit_attestation_env(original.clone(), Some(&invalid)),

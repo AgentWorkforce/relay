@@ -140,16 +140,48 @@ fn action_invoked_object(value: &Value) -> Option<&Value> {
 ///
 /// Returns `None` for actions the broker does not own or whose input does not
 /// match the expected spawn/release shape.
+///
+/// # Session attribution bridging
+///
+/// Fleet dispatches (e.g. `fleet.spawn()` from `@agent-relay/fleet`) place
+/// `session_id` at the **top level** of the action input JSON alongside `name`
+/// and `cli`.  `SpawnParams.metadata.attestation` has no dedicated field for
+/// it, so serde would otherwise silently drop it.  When the deserialized spawn
+/// carries a commit-attestation and the top-level JSON contains `session_id`
+/// (or its camelCase alias `sessionId`), this function threads it into
+/// `attestation.session_ref` so the broker's `prepare-commit-msg` hook can
+/// stamp a `Session-Id:` trailer on every commit the spawned agent makes.
 pub fn broker_payload_from_action(
     action: &str,
     input: Option<serde_json::Map<String, Value>>,
 ) -> Option<BrokerCommandPayload> {
-    let params = Value::Object(input?);
+    let input = input?;
     if action == "spawn" || action.starts_with("spawn-") {
-        let spawn: SpawnParams = serde_json::from_value(params).ok()?;
+        // Extract session_id from the top-level map before consuming it.
+        // Fleet dispatches place it here; `SpawnParams` has no matching field
+        // so serde drops it unless we lift it manually.
+        let session_id = input
+            .get("session_id")
+            .or_else(|| input.get("sessionId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
+        let mut spawn: SpawnParams = serde_json::from_value(Value::Object(input)).ok()?;
+        // Thread session_id into attestation.session_ref when both are
+        // present.  Only an already-attested spawn gains a Session-Id trailer;
+        // an un-attested spawn has no hook installed so there is nothing to
+        // stamp.
+        if let (Some(ref mut attestation), Some(sid)) =
+            (&mut spawn.metadata.attestation, session_id)
+        {
+            if attestation.session_ref.is_none() {
+                attestation.session_ref = Some(sid);
+            }
+        }
         Some(BrokerCommandPayload::Spawn(spawn))
     } else if action == "release" || action.starts_with("release-") {
-        let release: ReleaseParams = serde_json::from_value(params).ok()?;
+        let release: ReleaseParams = serde_json::from_value(Value::Object(input)).ok()?;
         Some(BrokerCommandPayload::Release(release))
     } else {
         None
@@ -763,8 +795,144 @@ mod tests {
                 jti: "jti-public-123".into(),
                 agent_id: "agent_worker_42".into(),
                 sponsor_id: "user_owner_7".into(),
+                session_ref: None,
             })
         );
+    }
+
+    /// Fleet dispatches (`fleet.spawn()`) place `session_id` at the top level
+    /// of the action input, not inside `metadata.attestation`.  The bridge must
+    /// thread it into `attestation.session_ref` so the broker hook can stamp a
+    /// `Session-Id:` trailer.
+    #[test]
+    fn bridges_top_level_session_id_into_attestation_session_ref() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerWithSession",
+                "cli": "claude",
+                "session_id": "ai-hist:claudecode-abc123",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-public-456",
+                        "agentId": "agent_worker_99",
+                        "sponsorId": "user_owner_7"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with top-level session_id");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        assert_eq!(
+            params.metadata.attestation,
+            Some(crate::types::CommitAttestation {
+                jti: "jti-public-456".into(),
+                agent_id: "agent_worker_99".into(),
+                sponsor_id: "user_owner_7".into(),
+                session_ref: Some("ai-hist:claudecode-abc123".into()),
+            })
+        );
+    }
+
+    /// `sessionId` (camelCase) is the alternate key fleet dispatches may use.
+    #[test]
+    fn bridges_top_level_session_id_camel_case_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session_camel",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerCamel",
+                "cli": "claude",
+                "sessionId": "session-camel-xyz",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-camel",
+                        "agentId": "agent_camel",
+                        "sponsorId": "sponsor_camel"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with camelCase sessionId");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params.metadata.attestation.expect("attestation must be present");
+        assert_eq!(attestation.session_ref.as_deref(), Some("session-camel-xyz"));
+    }
+
+    /// When attestation is absent, top-level `session_id` is silently ignored
+    /// (no attestation = hook not installed = nothing to stamp).
+    #[test]
+    fn session_id_without_attestation_is_silently_ignored() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_no_attest",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerNoAttest",
+                "cli": "codex",
+                "session_id": "some-session-ref"
+            }),
+        )
+        .expect("should map spawn without attestation");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        // No attestation — hook is not installed, nothing to stamp.
+        assert_eq!(params.metadata.attestation, None);
+    }
+
+    /// An explicit `sessionRef` inside `metadata.attestation` must NOT be
+    /// overwritten by the top-level `session_id`.
+    #[test]
+    fn explicit_attestation_session_ref_wins_over_top_level_session_id() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_explicit_ref",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerExplicit",
+                "cli": "claude",
+                "session_id": "top-level-id",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-explicit",
+                        "agentId": "agent_explicit",
+                        "sponsorId": "sponsor_explicit",
+                        "sessionRef": "explicit-nested-ref"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with explicit sessionRef");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params.metadata.attestation.expect("attestation must be present");
+        // The nested sessionRef takes precedence; top-level session_id is not applied.
+        assert_eq!(attestation.session_ref.as_deref(), Some("explicit-nested-ref"));
     }
 
     #[test]

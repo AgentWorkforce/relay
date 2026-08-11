@@ -198,6 +198,16 @@ pub struct CommitAttestation {
     pub jti: String,
     pub agent_id: String,
     pub sponsor_id: String,
+    /// The ai-hist session UUID for the Claude Code / Codex session in which
+    /// the spawned agent is running. When set, the broker injects it as
+    /// `RELAY_ATTEST_SESSION_ID` so the embedded `prepare-commit-msg` hook
+    /// can stamp a `Session-Id:` git trailer on every commit.
+    ///
+    /// Populated by the dispatcher (factory) after it has a stable session
+    /// reference for the child agent. Absent for agents whose dispatcher does
+    /// not yet carry session provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
