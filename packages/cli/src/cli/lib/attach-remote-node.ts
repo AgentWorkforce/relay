@@ -48,7 +48,9 @@ function remoteStateSelection(
   node: string,
   override: string | undefined
 ): { setup: string[]; argument: string } {
-  if (override?.trim()) return { setup: [], argument: explicitRemoteStateDir(override) };
+  if (override !== undefined && override !== '') {
+    return { setup: [], argument: explicitRemoteStateDir(override) };
+  }
 
   const expected = defaultRemoteStateDir(node);
   const discoveryError = quoteRemoteArg(

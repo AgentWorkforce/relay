@@ -52,6 +52,13 @@ describe('buildRemoteNodeAttachCommand', () => {
     expect(target?.command).not.toContain('awk -v target=');
   });
 
+  it('preserves a whitespace-only explicit state directory like local attach', () => {
+    const target = buildRemoteNodeAttachCommand('lead', 'view', 'barry', { stateDir: '   ' });
+    expect(target?.command).toBe(
+      "exec agent-relay node agent attach --mode 'view' --state-dir '   ' -- 'lead'"
+    );
+  });
+
   it('rejects option-like or shell-bearing node names', () => {
     expect(buildRemoteNodeAttachCommand('lead', 'view', '-oProxyCommand=bad', {})).toBeNull();
     expect(buildRemoteNodeAttachCommand('lead', 'view', 'barry;touch /tmp/nope', {})).toBeNull();
