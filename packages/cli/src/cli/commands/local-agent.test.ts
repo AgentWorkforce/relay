@@ -94,12 +94,15 @@ describe('local agent subtree', () => {
     expect(attachRemote).toHaveBeenCalledWith('lead', 'view', '', expect.objectContaining({}));
   });
 
-  it('attach --ssh-host rejects raw broker credentials because they must stay on the target', async () => {
+  it.each([
+    ['--api-key', 'do-not-forward'],
+    ['--api-key', ''],
+    ['--broker-url', ''],
+  ])('attach --ssh-host rejects conflicting %s values even when empty', async (flag, value) => {
     const { program, attach, attachRemote, error, exit } = harness();
-    await program.parseAsync(
-      ['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', '--api-key', 'do-not-forward'],
-      { from: 'user' }
-    );
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', flag, value], {
+      from: 'user',
+    });
     expect(attach).not.toHaveBeenCalled();
     expect(attachRemote).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith(expect.stringContaining('--ssh-host cannot be combined'));

@@ -1,4 +1,5 @@
 import { spawn as spawnChildProcess, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 
 import type { NativeAttachOptions } from './attach-native.js';
 import type { AttachMode } from './attach-mode.js';
@@ -37,10 +38,9 @@ function defaultRemoteStateDir(node: string): string {
 }
 
 function explicitRemoteStateDir(override: string): string {
-  const trimmed = override.trim();
-  if (trimmed === '~') return '"$HOME"';
-  if (trimmed.startsWith('~/')) return `"$HOME"/${quoteRemoteArg(trimmed.slice(2))}`;
-  return quoteRemoteArg(trimmed);
+  if (override === '~') return '"$HOME"';
+  if (override.startsWith('~/')) return `"$HOME"/${quoteRemoteArg(override.slice(2))}`;
+  return quoteRemoteArg(override);
 }
 
 function remoteStateSelection(
@@ -48,30 +48,34 @@ function remoteStateSelection(
   node: string,
   override: string | undefined
 ): { setup: string[]; argument: string } {
-  const trimmed = override?.trim();
-  if (trimmed) return { setup: [], argument: explicitRemoteStateDir(trimmed) };
+  if (override?.trim()) return { setup: [], argument: explicitRemoteStateDir(override) };
 
   const expected = defaultRemoteStateDir(node);
   const discoveryError = quoteRemoteArg(
-    'Error: could not uniquely find the fleet broker state directory; pass --state-dir.'
+    'Error: could not uniquely find the remote broker state directory; pass --state-dir.'
   );
   return {
     setup: [
       `relay_state=${expected}`,
       `attach_agent=${quoteRemoteArg(agentName)}`,
       'if [ ! -f "$relay_state/connection.json" ]; then ' +
-        `broker_pid=$(ps axww -o ppid= -o command= 2>/dev/null | awk -v target="$attach_agent" '${
-          'BEGIN { marker = "agent-relay-broker pty --agent-name " target } ' +
+        `broker_pids=$(ps axww -o ppid= -o command= 2>/dev/null | ATTACH_AGENT="$attach_agent" awk '${
+          'BEGIN { marker = "agent-relay-broker pty --agent-name " ENVIRON["ATTACH_AGENT"] } ' +
           '{ pos = index($0, marker); if (pos > 0) { after = substr($0, pos + length(marker), 1); ' +
-          'if (after == "" || after == " ") { print $1; exit } } }'
+          'if (after == "" || after == " ") print $1 } }'
         }'); ` +
-        'broker_root=""; ' +
-        'if [ -n "$broker_pid" ] && [ -e "/proc/$broker_pid/cwd" ]; then ' +
+        'broker_state=""; broker_state_ambiguous=0; ' +
+        'for broker_pid in $broker_pids; do broker_root=""; ' +
+        'if [ -e "/proc/$broker_pid/cwd" ]; then ' +
         'broker_root=$(readlink "/proc/$broker_pid/cwd" 2>/dev/null || true); ' +
-        'elif [ -n "$broker_pid" ] && command -v lsof >/dev/null 2>&1; then ' +
+        'elif command -v lsof >/dev/null 2>&1; then ' +
         'broker_root=$(lsof -a -p "$broker_pid" -d cwd -Fn 2>/dev/null | sed -n "s/^n//p" | head -n 1); fi; ' +
-        'if [ -n "$broker_root" ] && [ -f "$broker_root/.agentworkforce/relay/connection.json" ]; then ' +
-        'relay_state="$broker_root/.agentworkforce/relay"; fi; fi',
+        'candidate="$broker_root/.agentworkforce/relay"; ' +
+        'if [ -n "$broker_root" ] && [ -f "$candidate/connection.json" ]; then ' +
+        'if [ -z "$broker_state" ]; then broker_state="$candidate"; ' +
+        'elif [ "$broker_state" != "$candidate" ]; then broker_state_ambiguous=1; fi; fi; done; ' +
+        `if [ "$broker_state_ambiguous" -ne 0 ]; then printf '%s\\n' ${discoveryError} >&2; exit 78; ` +
+        'elif [ -n "$broker_state" ]; then relay_state="$broker_state"; fi; fi',
       'if [ ! -f "$relay_state/connection.json" ]; then ' +
         'set -- "$HOME"/.agentworkforce/relay/*-node/state/connection.json; ' +
         'if [ "$#" -eq 1 ] && [ -f "$1" ]; then ' +
@@ -92,20 +96,14 @@ export function buildRemoteNodeAttachCommand(
   if (!host) return null;
   const state = remoteStateSelection(agentName, host, options.stateDir);
 
-  const args = [
-    'agent-relay',
-    'node',
-    'agent',
-    'attach',
-    quoteRemoteArg(agentName),
-    '--mode',
-    quoteRemoteArg(mode),
-    '--state-dir',
-    state.argument,
-  ];
+  const args = ['agent-relay', 'node', 'agent', 'attach', '--mode', quoteRemoteArg(mode)];
+  args.push('--state-dir', state.argument);
   if (options.json) args.push('--json');
   if (options.reasoning) args.push('--reasoning');
   if (options.diagnostics) args.push('--diagnostics');
+  // Keep option-like agent names as positional data without preventing the
+  // flags above from being parsed by Commander.
+  args.push('--', quoteRemoteArg(agentName));
   return { host, command: [...state.setup, `exec ${args.join(' ')}`].join('; ') };
 }
 
@@ -139,7 +137,10 @@ export async function attachRemoteNode(
     // stderr/stdout merging. Interactive modes require a forced TTY even when
     // this local CLI's stdin is itself attached indirectly.
     const ttyFlag = options.json ? '-T' : '-tt';
-    const child = deps.spawn('ssh', [ttyFlag, target.host, target.command], { stdio: 'inherit' });
+    const sshArgs = options.json
+      ? [ttyFlag, '-n', target.host, target.command]
+      : [ttyFlag, target.host, target.command];
+    const child = deps.spawn('ssh', sshArgs, { stdio: 'inherit' });
     child.once('error', (error) => {
       deps.error(`Error: could not start SSH attach to node '${target.host}': ${error.message}`);
       finish(1);
@@ -147,7 +148,8 @@ export async function attachRemoteNode(
     child.once('exit', (code, signal) => {
       if (signal) {
         deps.error(`Error: SSH attach to node '${target.host}' ended by signal ${signal}.`);
-        finish(1);
+        const signalNumber = osConstants.signals[signal];
+        finish(signalNumber === undefined ? 1 : 128 + signalNumber);
         return;
       }
       if (code === 255) {

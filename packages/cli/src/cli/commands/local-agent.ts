@@ -510,7 +510,7 @@ export function registerLocalAgentCommands(
       }
       const sshHost = options.sshHost as string | undefined;
       if (sshHost !== undefined) {
-        if (options.brokerUrl || options.apiKey) {
+        if (options.brokerUrl !== undefined || options.apiKey !== undefined) {
           deps.error('Error: --ssh-host cannot be combined with --broker-url or --api-key.');
           deps.exit(1);
           return;
