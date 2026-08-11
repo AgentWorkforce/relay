@@ -36,6 +36,14 @@ type FleetSessionResponse = {
 
 type TerminalFrame = Record<string, unknown> & { type?: string; session_id?: string };
 
+type TerminalReadiness = {
+  generation: number;
+  settled: boolean;
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
 export interface FleetNodeAttachOptions {
   agent: string;
   node: string;
@@ -151,17 +159,37 @@ export async function startFleetNodeAttachProxy(
     throw new FleetNodeAttachError(`Error: ${message}`, code);
   }
 
-  let resolveReady!: () => void;
-  let rejectReady!: (error: Error) => void;
-  let readySettled = false;
-  const ready = new Promise<void>((resolve, reject) => {
-    resolveReady = resolve;
-    rejectReady = reject;
-  });
-  // A connection failure can land before the first snapshot request attaches
-  // its waiter. Keep that rejection observable to the request while avoiding
-  // an unhandled-rejection process warning in the small intervening window.
-  void ready.catch(() => undefined);
+  let connectionGeneration = 0;
+  const createReadiness = (): TerminalReadiness => {
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    // A failure can land before a snapshot request attaches its waiter. Keep
+    // the rejection observable while avoiding an unhandled-rejection warning.
+    void promise.catch(() => undefined);
+    return { generation: ++connectionGeneration, settled: false, promise, resolve, reject };
+  };
+  let activeReadiness = createReadiness();
+  const resolveReadiness = (readiness: TerminalReadiness) => {
+    if (readiness.settled) return;
+    readiness.settled = true;
+    readiness.resolve();
+  };
+  const rejectReadiness = (readiness: TerminalReadiness, error: Error) => {
+    if (readiness.settled) return;
+    readiness.settled = true;
+    readiness.reject(error);
+  };
+  const waitForCurrentReadiness = async (): Promise<void> => {
+    for (;;) {
+      const readiness = activeReadiness;
+      await readiness.promise;
+      if (readiness === activeReadiness) return;
+    }
+  };
   const snapshot: { screen: string; rows: number; cols: number; offset: number } = {
     screen: '',
     rows: 24,
@@ -174,8 +202,10 @@ export async function startFleetNodeAttachProxy(
   let outputHistoryBytes = 0;
   let remote: WebSocket | undefined;
   let stopped = false;
+  let terminalEnded = false;
   let reconnecting = false;
   let reconnectAttempts = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   const loopbackApiKey = randomBytes(32).toString('base64url');
   const loopbackAuthorized = (headers: IncomingMessage['headers']) =>
     headers.authorization === `Bearer ${loopbackApiKey}` || headers['x-api-key'] === loopbackApiKey;
@@ -192,7 +222,7 @@ export async function startFleetNodeAttachProxy(
       try {
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('terminal snapshot timed out')), SNAPSHOT_WAIT_MS);
-          void ready.then(
+          void waitForCurrentReadiness().then(
             () => {
               clearTimeout(timer);
               resolve();
@@ -264,6 +294,29 @@ export async function startFleetNodeAttachProxy(
         });
         return;
       }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('terminal resize timed out')), SNAPSHOT_WAIT_MS);
+          void waitForCurrentReadiness().then(
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            (error: Error) => {
+              clearTimeout(timer);
+              reject(error);
+            }
+          );
+        });
+      } catch (error) {
+        json(response, 503, {
+          error: {
+            code: 'session_not_ready',
+            message: error instanceof Error ? error.message : 'terminal session is not ready',
+          },
+        });
+        return;
+      }
       if (!remote || remote.readyState !== WebSocket.OPEN || remote.bufferedAmount > MAX_BUFFERED_BYTES) {
         json(response, 503, {
           error: { code: 'node_unreachable', message: 'terminal transport is unavailable' },
@@ -285,8 +338,9 @@ export async function startFleetNodeAttachProxy(
       /* connection already gone */
     }
   };
-  const broadcast = (sockets: Set<WebSocket>, payload: unknown) => {
+  const broadcast = (sockets: Set<WebSocket>, payload: unknown): boolean => {
     const encoded = JSON.stringify(payload);
+    let accepted = false;
     for (const socket of sockets) {
       if (socket.readyState !== WebSocket.OPEN) continue;
       if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
@@ -294,8 +348,14 @@ export async function startFleetNodeAttachProxy(
         sockets.delete(socket);
         continue;
       }
-      socket.send(encoded);
+      try {
+        socket.send(encoded);
+        accepted = true;
+      } catch {
+        sockets.delete(socket);
+      }
     }
+    return accepted;
   };
   const workerStreamEvent = (chunk: string, offset?: number) => ({
     kind: 'worker_stream',
@@ -320,7 +380,11 @@ export async function startFleetNodeAttachProxy(
       let replayed = 0;
       for (const event of outputHistory) {
         if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) break;
-        socket.send(JSON.stringify(workerStreamEvent(event.chunk, event.offset)));
+        try {
+          socket.send(JSON.stringify(workerStreamEvent(event.chunk, event.offset)));
+        } catch {
+          break;
+        }
         replayed += 1;
       }
       if (replayed > 0) {
@@ -381,21 +445,37 @@ export async function startFleetNodeAttachProxy(
   resumeUrl.searchParams.delete('ticket');
   resumeUrl.searchParams.set('session_id', sessionId);
   resumeUrl.searchParams.set('resume', resumeToken);
-  const failRemote = (message: string) => {
-    const error = new FleetNodeAttachError(message, 'node_unreachable');
+  const endTerminal = (error: FleetNodeAttachError) => {
+    if (terminalEnded) return;
+    terminalEnded = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+    }
+    const activeRemote = remote;
     remote = undefined;
+    rejectReadiness(activeReadiness, error);
     broadcast(inputSockets, { type: 'pty_input_error', code: error.code, message: error.message });
     for (const socket of eventSockets) closeSocket(socket, 1011, error.message);
-    if (!readySettled) {
-      readySettled = true;
-      rejectReady(error);
+    if (activeRemote && activeRemote.readyState !== WebSocket.CLOSED) {
+      try {
+        activeRemote.terminate();
+      } catch {
+        // The socket may have closed between the state check and terminate.
+      }
     }
   };
-  const connect = (url: string) => {
-    if (stopped) return;
+  const failRemote = (message: string) => {
+    endTerminal(new FleetNodeAttachError(message, 'node_unreachable'));
+  };
+  const connect = (url: string, readiness: TerminalReadiness) => {
+    if (stopped || terminalEnded) return;
     const socket = new WebSocket(asWsUrl(url));
     remote = socket;
     socket.on('message', (data) => {
+      // A late frame from a transport superseded during reconnect must never
+      // overwrite the fresh snapshot or end the replacement session.
+      if (remote !== socket || stopped || terminalEnded) return;
       const frame = parseFrame(data);
       if (!frame || frame.session_id !== sessionId) return;
       if (frame.type === 'terminal.ready') {
@@ -404,22 +484,28 @@ export async function startFleetNodeAttachProxy(
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
         reconnectAttempts = 0;
-        if (!readySettled) {
-          readySettled = true;
-          resolveReady();
+        if (readiness === activeReadiness) {
+          resolveReadiness(readiness);
+          // A reconnect gets a fresh ANSI grid but existing local `/ws`
+          // consumers have already performed their initial HTTP snapshot.
+          // Re-emit this screen without an offset so they repaint instead of
+          // retaining a stale pre-reconnect terminal image.
+          if (readiness.generation > 1 && snapshot.screen) {
+            broadcast(eventSockets, workerStreamEvent(snapshot.screen));
+          }
         }
       } else if (frame.type === 'terminal.output' && typeof frame.chunk === 'string') {
         const offset = typeof frame.offset === 'number' ? frame.offset : undefined;
-        if (eventSockets.size === 0 && !retainOutput(frame.chunk, offset)) {
-          broadcast(inputSockets, {
-            type: 'pty_input_error',
-            code: 'output_backpressure',
-            message: 'terminal output exceeded the bounded loopback buffer',
-          });
-          if (remote?.readyState === WebSocket.OPEN) remote.close(1013, 'output backpressure');
-          return;
+        if (!broadcast(eventSockets, workerStreamEvent(frame.chunk, offset))) {
+          if (!retainOutput(frame.chunk, offset)) {
+            endTerminal(
+              new FleetNodeAttachError(
+                'terminal output exceeded the bounded loopback buffer',
+                'output_backpressure'
+              )
+            );
+          }
         }
-        broadcast(eventSockets, workerStreamEvent(frame.chunk, offset));
       } else if (frame.type === 'terminal.input_ack') {
         broadcast(inputSockets, {
           type: 'pty_input_ack',
@@ -429,22 +515,23 @@ export async function startFleetNodeAttachProxy(
       } else if (frame.type === 'terminal.error') {
         const message = typeof frame.message === 'string' ? frame.message : 'remote terminal failed';
         const code = typeof frame.code === 'string' ? frame.code : 'terminal_error';
-        broadcast(inputSockets, { type: 'pty_input_error', code, message });
-        if (!readySettled) {
-          readySettled = true;
-          rejectReady(new FleetNodeAttachError(message, code));
+        if (readiness === activeReadiness && !readiness.settled) {
+          endTerminal(new FleetNodeAttachError(message, code));
+        } else {
+          broadcast(inputSockets, { type: 'pty_input_error', code, message });
         }
       } else if (frame.type === 'terminal.closed') {
-        broadcast(inputSockets, {
-          type: 'pty_input_error',
-          code: 'terminal_closed',
-          message: 'remote terminal session closed',
-        });
+        endTerminal(new FleetNodeAttachError('remote terminal session closed', 'terminal_closed'));
       }
     });
     socket.on('error', () => undefined);
     socket.on('close', () => {
-      if (remote !== socket || stopped || reconnecting) return;
+      if (remote !== socket || stopped || terminalEnded || reconnecting) return;
+      // Any waiter that observed the prior connection must retry against the
+      // fresh generation instead of receiving its stale resolved snapshot.
+      resolveReadiness(readiness);
+      const nextReadiness = createReadiness();
+      activeReadiness = nextReadiness;
       if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
         failRemote('terminal transport could not reconnect to the fleet node');
         return;
@@ -452,13 +539,14 @@ export async function startFleetNodeAttachProxy(
       reconnecting = true;
       const delay = Math.min(INITIAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempts, MAX_RECONNECT_DELAY_MS);
       reconnectAttempts += 1;
-      setTimeout(() => {
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined;
         reconnecting = false;
-        connect(resumeUrl.toString());
+        connect(resumeUrl.toString(), nextReadiness);
       }, delay);
     });
   };
-  connect(terminalUrl);
+  connect(terminalUrl, activeReadiness);
 
   return {
     brokerUrl: `http://127.0.0.1:${address.port}`,
@@ -466,13 +554,27 @@ export async function startFleetNodeAttachProxy(
     async close() {
       if (stopped) return;
       stopped = true;
-      if (!readySettled) {
-        readySettled = true;
-        rejectReady(new FleetNodeAttachError('terminal attach closed', 'closed'));
+      terminalEnded = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
       }
-      if (remote && remote.readyState === WebSocket.OPEN) {
-        remote.send(JSON.stringify({ type: 'terminal.close', session_id: sessionId }));
-        remote.close();
+      rejectReadiness(activeReadiness, new FleetNodeAttachError('terminal attach closed', 'closed'));
+      const activeRemote = remote;
+      remote = undefined;
+      if (activeRemote && activeRemote.readyState === WebSocket.OPEN) {
+        try {
+          activeRemote.send(JSON.stringify({ type: 'terminal.close', session_id: sessionId }));
+        } catch {
+          // Best effort; terminate below still prevents a late reconnect.
+        }
+      }
+      if (activeRemote && activeRemote.readyState !== WebSocket.CLOSED) {
+        try {
+          activeRemote.terminate();
+        } catch {
+          // Socket is already gone.
+        }
       }
       for (const socket of [...eventSockets, ...inputSockets])
         closeSocket(socket, 1000, 'terminal attach closed');

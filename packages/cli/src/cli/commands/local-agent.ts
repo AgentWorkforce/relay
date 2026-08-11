@@ -14,6 +14,7 @@ import { attachPassthrough } from '../lib/attach-passthrough.js';
 import { attachRemoteNode, type RemoteNodeAttachOptions } from '../lib/attach-remote-node.js';
 import { startFleetNodeAttachProxy } from '../lib/attach-fleet-node.js';
 import { attachView } from '../lib/attach-view.js';
+import { createBackpressureAwareWriter } from '../lib/attach.js';
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
@@ -89,13 +90,14 @@ export async function attachFleetNode(
   options: NativeAttachOptions
 ): Promise<number> {
   const proxy = await startFleetNodeAttachProxy({ agent: name, node, mode });
+  const jsonWriter = options.json ? createBackpressureAwareWriter(process.stdout) : undefined;
   try {
     const connectionOptions = { brokerUrl: proxy.brokerUrl, apiKey: proxy.apiKey };
     // Fleet agents expose a PTY stream rather than native-harness envelopes.
     // In JSON mode retain the machine-readable contract by serializing every
     // rendered stream chunk as NDJSON, including the initial snapshot.
     const jsonOutput = (chunk: string) => {
-      process.stdout.write(`${JSON.stringify({ kind: 'worker_stream', name, stream: 'stdout', chunk })}\n`);
+      jsonWriter?.write(`${JSON.stringify({ kind: 'worker_stream', name, stream: 'stdout', chunk })}\n`);
     };
     if (options.reasoning || options.diagnostics) {
       process.stderr.write(
@@ -104,18 +106,40 @@ export async function attachFleetNode(
     }
     switch (mode) {
       case 'view':
-        return await attachView(name, connectionOptions, options.json ? { writeChunk: jsonOutput } : {});
+        return await attachView(
+          name,
+          connectionOptions,
+          options.json ? { writeChunk: jsonOutput, stdoutIsTty: false } : {}
+        );
       case 'passthrough':
         return await attachPassthrough(
           name,
           connectionOptions,
-          options.json ? { writeChunk: jsonOutput } : {}
+          options.json
+            ? {
+                writeChunk: jsonOutput,
+                // JSON mode is a non-terminal stream. Suppressing the local
+                // status line and reset controls keeps only worker bytes in
+                // the NDJSON records, matching SSH's no-TTY JSON behaviour.
+                terminal: { getSize: () => null, onResize: () => () => undefined },
+              }
+            : {}
         );
       case 'drive':
       default:
-        return await attachDrive(name, connectionOptions, options.json ? { writeChunk: jsonOutput } : {});
+        return await attachDrive(
+          name,
+          connectionOptions,
+          options.json
+            ? {
+                writeChunk: jsonOutput,
+                terminal: { getSize: () => null, onResize: () => () => undefined },
+              }
+            : {}
+        );
     }
   } finally {
+    jsonWriter?.dispose();
     await proxy.close();
   }
 }
