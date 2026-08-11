@@ -104,6 +104,19 @@ describe('attachRemoteNode', () => {
     );
   });
 
+  it.each(['drive', 'passthrough'] as const)('keeps stdin connected for JSON %s mode', async (mode) => {
+    const child = new EventEmitter();
+    const spawn = vi.fn(() => child as never);
+    const result = attachRemoteNode('lead', mode, 'barry', { json: true }, { spawn, error: vi.fn() });
+    child.emit('exit', 0, null);
+    await expect(result).resolves.toBe(0);
+    expect(spawn).toHaveBeenCalledWith(
+      'ssh',
+      ['-T', 'barry', expect.any(String)],
+      expect.objectContaining({ stdio: 'inherit' })
+    );
+  });
+
   it('maps child signals to conventional shell exit codes', async () => {
     const child = new EventEmitter();
     const spawn = vi.fn(() => child as never);

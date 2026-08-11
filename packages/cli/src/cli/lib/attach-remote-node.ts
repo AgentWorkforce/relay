@@ -138,11 +138,13 @@ export async function attachRemoteNode(
       resolve(code);
     };
     // JSON mode is a machine-readable stream: no remote PTY, login banner, or
-    // stderr/stdout merging. Interactive modes require a forced TTY even when
-    // this local CLI's stdin is itself attached indirectly.
+    // stderr/stdout merging. Only view mode can disconnect stdin; drive and
+    // passthrough still carry user input even when their output is JSON.
+    // Interactive modes require a forced TTY even when this local CLI's stdin
+    // is itself attached indirectly.
     const ttyFlag = options.json ? '-T' : '-tt';
     const sshArgs = options.json
-      ? [ttyFlag, '-n', target.host, target.command]
+      ? [ttyFlag, ...(mode === 'view' ? ['-n'] : []), target.host, target.command]
       : [ttyFlag, target.host, target.command];
     const child = deps.spawn('ssh', sshArgs, { stdio: 'inherit' });
     child.once('error', (error) => {
