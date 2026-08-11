@@ -584,25 +584,20 @@ impl BrokerRuntime {
                     )
                     .await;
                 }
-                // Register an obligation when the message body carries the obligation
-                // marker and the message will actually be surfaced.
-                if crate::obligation::is_obligating(&fields.body)
-                    && !matches!(
-                        queue_result.outcome,
-                        InboundQueueOutcome::RejectedFull
-                    )
-                {
-                    let interval =
-                        std::time::Duration::from_millis(crate::obligation::interval_ms());
-                    self.obligation_store.register(
-                        deliver.msg_id.to_string(),
-                        fields.from.clone(),
-                        deliver.agent.to_string(),
-                        interval,
-                    );
-                }
                 match queue_result.outcome {
                     InboundQueueOutcome::Queued => {
+                        // P2-3: register obligation only when the message is actually queued
+                        // (not on RejectedFull or WorkerMissing where delivery may not occur).
+                        if crate::obligation::is_obligating(&fields.body) {
+                            let interval =
+                                std::time::Duration::from_millis(crate::obligation::interval_ms());
+                            self.obligation_store.register(
+                                deliver.msg_id.to_string(),
+                                fields.from.clone(),
+                                deliver.agent.to_string(),
+                                interval,
+                            );
+                        }
                         tracing::info!(
                             target = "relay_broker::fleet",
                             agent = %deliver.agent,
@@ -632,6 +627,17 @@ impl BrokerRuntime {
                         Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush)
                     }
                     InboundQueueOutcome::DrainNow(to_drain) => {
+                        // P2-3: register obligation only when the message will actually drain.
+                        if crate::obligation::is_obligating(&fields.body) {
+                            let interval =
+                                std::time::Duration::from_millis(crate::obligation::interval_ms());
+                            self.obligation_store.register(
+                                deliver.msg_id.to_string(),
+                                fields.from.clone(),
+                                deliver.agent.to_string(),
+                                interval,
+                            );
+                        }
                         // Mirrors the HTTP send path: drain may surface older
                         // backlog alongside the message this specific `deliver`
                         // frame is for. Only a failure injecting THIS delivery's
