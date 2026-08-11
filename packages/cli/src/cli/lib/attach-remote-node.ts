@@ -1,8 +1,7 @@
 import { spawn as spawnChildProcess, type ChildProcess, type SpawnOptions } from 'node:child_process';
 
 import type { NativeAttachOptions } from './attach-native.js';
-
-export type RemoteAttachMode = 'drive' | 'view' | 'passthrough';
+import type { AttachMode } from './attach-mode.js';
 
 export type RemoteNodeAttachOptions = Pick<
   NativeAttachOptions,
@@ -85,7 +84,7 @@ function remoteStateSelection(
 
 export function buildRemoteNodeAttachCommand(
   agentName: string,
-  mode: RemoteAttachMode,
+  mode: AttachMode,
   node: string,
   options: RemoteNodeAttachOptions
 ): { host: string; command: string } | null {
@@ -117,7 +116,7 @@ export function buildRemoteNodeAttachCommand(
  */
 export async function attachRemoteNode(
   agentName: string,
-  mode: RemoteAttachMode,
+  mode: AttachMode,
   node: string,
   options: RemoteNodeAttachOptions,
   overrides: Partial<RemoteNodeAttachDependencies> = {}

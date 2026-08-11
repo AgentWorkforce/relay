@@ -8,6 +8,7 @@ import { stripAnsiFast } from '@agent-relay/utils';
 import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 import { createBrokerClient } from '../lib/attach-broker.js';
 import { attachDrive } from '../lib/attach-drive.js';
+import type { AttachMode } from '../lib/attach-mode.js';
 import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
 import { attachRemoteNode, type RemoteNodeAttachOptions } from '../lib/attach-remote-node.js';
@@ -56,7 +57,7 @@ function resolveAutoSpawn(
   };
 }
 
-export type AttachMode = 'drive' | 'view' | 'passthrough';
+export type { AttachMode } from '../lib/attach-mode.js';
 export type LocalAgentMessageBrokerOptions = BrokerConnectionOptions;
 
 /** Dispatch `local agent attach --mode` to the drive/view/passthrough session runners. */
