@@ -329,7 +329,7 @@ async function armC(ctx: ConformanceContext): Promise<ArmTranscript> {
   const { harness, author, recipient, escalationTarget, intervalMs } = ctx;
 
   harness.clearEvents();
-  const since = harness.getEvents().length;
+  let since = harness.getEvents().length;
   const sentAt = Date.now();
 
   const obligationId = await sendObligatingDm(author, recipient.name, QUESTION, DECLARATION);
@@ -343,6 +343,9 @@ async function armC(ctx: ConformanceContext): Promise<ArmTranscript> {
       since,
       timeoutMs: intervalMs * (index + 1),
     });
+    // Advance the cursor past this return so the next iteration waits for a
+    // distinct event rather than re-discovering the same one.
+    since = harness.getEvents().length;
     returns.push({
       index,
       bucket: Math.round((Date.now() - sentAt) / intervalMs),

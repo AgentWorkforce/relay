@@ -659,7 +659,9 @@ export async function recipientHasReadReceipt(
   const readers = (await clientFor(reader).readers(messageId)) as Array<Record<string, unknown>>;
   return readers.some(
     (entry) =>
-      entry.agent_id === recipientName || entry.agentId === recipientName || entry.name === recipientName
+      // readers() returns normalized receipts with agentName (the string name)
+      // and agentId (an opaque identifier). Compare by name only.
+      entry.agentName === recipientName
   );
 }
 
