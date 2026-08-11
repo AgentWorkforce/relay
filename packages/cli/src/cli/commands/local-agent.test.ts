@@ -26,12 +26,14 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
     setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
   };
   const attach = vi.fn(async () => 0);
+  const attachRemote = vi.fn(async () => 0);
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
   const deps: Partial<LocalAgentDependencies> = {
     connect: vi.fn(async () => client as never),
     attach,
+    attachRemote,
     cwd: () => '/tmp/project',
     log,
     error,
@@ -42,7 +44,7 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   program.exitOverride();
   const group = program.command('local');
   registerLocalAgentCommands(group, deps);
-  return { program, client, attach, log, error, exit };
+  return { program, client, attach, attachRemote, log, error, exit };
 }
 
 describe('local agent subtree', () => {
@@ -68,6 +70,43 @@ describe('local agent subtree', () => {
       'view',
       expect.objectContaining({ json: true, reasoning: true, diagnostics: true })
     );
+  });
+
+  it('attach --ssh-host runs the existing attach command on an SSH-reachable physical node', async () => {
+    const { program, attach, attachRemote } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', '--mode', 'drive', '--reasoning'],
+      { from: 'user' }
+    );
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachRemote).toHaveBeenCalledWith(
+      'lead',
+      'drive',
+      'barry',
+      expect.objectContaining({ reasoning: true })
+    );
+  });
+
+  it('attach --ssh-host delegates an empty value to remote host validation', async () => {
+    const { program, attach, attachRemote } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--ssh-host', ''], { from: 'user' });
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachRemote).toHaveBeenCalledWith('lead', 'view', '', expect.objectContaining({}));
+  });
+
+  it.each([
+    ['--api-key', 'do-not-forward'],
+    ['--api-key', ''],
+    ['--broker-url', ''],
+  ])('attach --ssh-host rejects conflicting %s values even when empty', async (flag, value) => {
+    const { program, attach, attachRemote, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', flag, value], {
+      from: 'user',
+    });
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachRemote).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--ssh-host cannot be combined'));
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
   it('attach rejects an unknown mode', async () => {

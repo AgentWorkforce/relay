@@ -8,8 +8,10 @@ import { stripAnsiFast } from '@agent-relay/utils';
 import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
 import { createBrokerClient } from '../lib/attach-broker.js';
 import { attachDrive } from '../lib/attach-drive.js';
+import type { AttachMode } from '../lib/attach-mode.js';
 import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
+import { attachRemoteNode, type RemoteNodeAttachOptions } from '../lib/attach-remote-node.js';
 import { attachView } from '../lib/attach-view.js';
 import {
   defaultStateDir,
@@ -55,7 +57,7 @@ function resolveAutoSpawn(
   };
 }
 
-export type AttachMode = 'drive' | 'view' | 'passthrough';
+export type { AttachMode } from '../lib/attach-mode.js';
 export type LocalAgentMessageBrokerOptions = BrokerConnectionOptions;
 
 /** Dispatch `local agent attach --mode` to the drive/view/passthrough session runners. */
@@ -80,6 +82,12 @@ export interface LocalAgentDependencies {
   connect: (cwd: string) => Promise<HarnessDriverClient>;
   connectLocal: (cwd: string, options: LocalAgentMessageBrokerOptions) => Promise<HarnessDriverClient>;
   attach: (name: string, mode: AttachMode, options: NativeAttachOptions) => Promise<number>;
+  attachRemote: (
+    name: string,
+    mode: AttachMode,
+    node: string,
+    options: RemoteNodeAttachOptions
+  ) => Promise<number>;
   cwd: () => string;
   readConnectionFile: (stateDir: string) => unknown;
   getDefaultStateDir: () => string;
@@ -100,6 +108,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     env: process.env,
     fetch: globalThis.fetch,
     attach: runAttach,
+    attachRemote: attachRemoteNode,
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -482,9 +491,13 @@ export function registerLocalAgentCommands(
     .description('Attach to a running agent interactively (drive | view | passthrough)')
     .argument('<name>', 'Agent name')
     .option('--mode <mode>', 'drive | view | passthrough', 'view')
+    .option('--ssh-host <host>', 'SSH host fallback for a physical fleet node')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
-    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agentworkforce/relay/)')
+    .option(
+      '--state-dir <dir>',
+      'Directory containing connection.json (with --ssh-host: path on target; auto-discovered when omitted)'
+    )
     .option('--json', 'Emit normalized agent events as NDJSON')
     .option('--reasoning', 'Include agent reasoning events')
     .option('--diagnostics', 'Include native harness diagnostics')
@@ -493,6 +506,22 @@ export function registerLocalAgentCommands(
       if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {
         deps.error(`Unknown attach mode "${mode}". Expected one of: drive, view, passthrough.`);
         deps.exit(1);
+        return;
+      }
+      const sshHost = options.sshHost as string | undefined;
+      if (sshHost !== undefined) {
+        if (options.brokerUrl !== undefined || options.apiKey !== undefined) {
+          deps.error('Error: --ssh-host cannot be combined with --broker-url or --api-key.');
+          deps.exit(1);
+          return;
+        }
+        const code = await deps.attachRemote(name, mode, sshHost, {
+          stateDir: options.stateDir as string | undefined,
+          json: options.json as boolean | undefined,
+          reasoning: options.reasoning as boolean | undefined,
+          diagnostics: options.diagnostics as boolean | undefined,
+        });
+        if (code !== 0) deps.exit(code);
         return;
       }
       const code = await deps.attach(name, mode, {
