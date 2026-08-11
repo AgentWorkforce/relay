@@ -962,7 +962,7 @@ describe('createBackpressureAwareWriter', () => {
 
   it('flushes buffered records in order before disposal', () => {
     const written: string[] = [];
-    let accept = false;
+    const accept = false;
     let drain: (() => void) | null = null;
     const stdout: BackpressureWritable = {
       write: (chunk) => {
