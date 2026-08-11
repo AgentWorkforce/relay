@@ -63,7 +63,13 @@ const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
 /// maintenance tick, which also drives delivery retries.
 const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
-const WORKER_COMMAND_TIMEOUT: Duration = Duration::from_millis(250);
+/// A full command queue means the worker is already backpressured. Do not
+/// retain another normal request indefinitely waiting for capacity.
+const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
+/// A PTY can transiently stop draining while it handles a large redraw or a
+/// slow provider response. The sole stdin writer must still eventually fault
+/// rather than wedge the worker lane, but should tolerate that short stall.
+const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
@@ -263,7 +269,7 @@ pub(crate) fn spawn_worker_writer(
 ) {
     tokio::spawn(async move {
         while let Some(mut command) = command_rx.recv().await {
-            let write_result = timeout(WORKER_COMMAND_TIMEOUT, async {
+            let write_result = timeout(WORKER_WRITE_TIMEOUT, async {
                 stdin
                     .write_all(&command.frame)
                     .await
@@ -278,7 +284,7 @@ pub(crate) fn spawn_worker_writer(
             .map_err(|_| {
                 anyhow::anyhow!(
                     "worker stdin write timed out after {} ms",
-                    WORKER_COMMAND_TIMEOUT.as_millis()
+                    WORKER_WRITE_TIMEOUT.as_millis()
                 )
             })
             .and_then(|result| result)
@@ -1189,7 +1195,7 @@ impl WorkerRegistry {
         let frame = encode_worker_frame(msg_type, request_id, payload)?;
         let (completion_tx, completion_rx) = oneshot::channel();
         timeout(
-            WORKER_COMMAND_TIMEOUT,
+            WORKER_COMMAND_QUEUE_TIMEOUT,
             command_tx.send(WorkerWriteCommand {
                 frame,
                 completion: Some(completion_tx),
@@ -1199,9 +1205,14 @@ impl WorkerRegistry {
         .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{name}'"))?
         .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))
         .with_context(|| format!("failed writing frame to worker '{name}'"))?;
-        timeout(WORKER_COMMAND_TIMEOUT, completion_rx)
+        // Once a command enters the writer queue, do not return a timeout
+        // before that sole writer resolves it. Reporting an accepted PTY
+        // write as failed while it can still be emitted would invite callers
+        // to retry and duplicate terminal input. The writer itself has the
+        // finite [`WORKER_WRITE_TIMEOUT`] and drains every queued completion
+        // with an error if it faults.
+        completion_rx
             .await
-            .map_err(|_| anyhow::anyhow!("worker command writer timed out for '{name}'"))?
             .map_err(|_| {
                 anyhow::anyhow!("worker command writer stopped before completing '{name}'")
             })
@@ -1224,7 +1235,7 @@ impl WorkerRegistry {
             .clone();
         let (completion_tx, completion_rx) = oneshot::channel();
         timeout(
-            WORKER_COMMAND_TIMEOUT,
+            WORKER_COMMAND_QUEUE_TIMEOUT,
             command_tx.send(WorkerWriteCommand {
                 frame,
                 completion: Some(completion_tx),
@@ -1233,9 +1244,8 @@ impl WorkerRegistry {
         .await
         .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{name}'"))?
         .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))?;
-        timeout(WORKER_COMMAND_TIMEOUT, completion_rx)
+        completion_rx
             .await
-            .map_err(|_| anyhow::anyhow!("worker command writer timed out for '{name}'"))?
             .map_err(|_| {
                 anyhow::anyhow!("worker command writer stopped before completing '{name}'")
             })?
@@ -1324,7 +1334,7 @@ impl WorkerRegistry {
         {
             // Cancelling this wait cannot cancel the worker-owned write; it
             // only bounds release before the normal process termination path.
-            let _ = timeout(WORKER_COMMAND_TIMEOUT, completion_rx).await;
+            let _ = timeout(WORKER_WRITE_TIMEOUT, completion_rx).await;
         }
 
         let result = terminate_child(&mut handle.child, release_grace).await;
