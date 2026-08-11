@@ -490,12 +490,12 @@ export function registerLocalAgentCommands(
     .description('Attach to a running agent interactively (drive | view | passthrough)')
     .argument('<name>', 'Agent name')
     .option('--mode <mode>', 'drive | view | passthrough', 'view')
-    .option('--node <node>', 'SSH-reachable physical fleet node name or host')
+    .option('--ssh-host <host>', 'SSH host fallback for a physical fleet node')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
     .option(
       '--state-dir <dir>',
-      'Directory containing connection.json (with --node: path on target; default: ~/.agentworkforce/relay/<node>-node/state)'
+      'Directory containing connection.json (with --ssh-host: path on target; auto-discovered when omitted)'
     )
     .option('--json', 'Emit normalized agent events as NDJSON')
     .option('--reasoning', 'Include agent reasoning events')
@@ -507,14 +507,14 @@ export function registerLocalAgentCommands(
         deps.exit(1);
         return;
       }
-      const node = options.node as string | undefined;
-      if (node) {
+      const sshHost = options.sshHost as string | undefined;
+      if (sshHost !== undefined) {
         if (options.brokerUrl || options.apiKey) {
-          deps.error('Error: --node cannot be combined with --broker-url or --api-key.');
+          deps.error('Error: --ssh-host cannot be combined with --broker-url or --api-key.');
           deps.exit(1);
           return;
         }
-        const code = await deps.attachRemote(name, mode, node, {
+        const code = await deps.attachRemote(name, mode, sshHost, {
           stateDir: options.stateDir as string | undefined,
           json: options.json as boolean | undefined,
           reasoning: options.reasoning as boolean | undefined,

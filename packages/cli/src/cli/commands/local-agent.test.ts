@@ -72,10 +72,10 @@ describe('local agent subtree', () => {
     );
   });
 
-  it('attach --node runs the existing attach command on an SSH-reachable physical node', async () => {
+  it('attach --ssh-host runs the existing attach command on an SSH-reachable physical node', async () => {
     const { program, attach, attachRemote } = harness();
     await program.parseAsync(
-      ['local', 'agent', 'attach', 'lead', '--node', 'barry', '--mode', 'drive', '--reasoning'],
+      ['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', '--mode', 'drive', '--reasoning'],
       { from: 'user' }
     );
     expect(attach).not.toHaveBeenCalled();
@@ -87,15 +87,22 @@ describe('local agent subtree', () => {
     );
   });
 
-  it('attach --node rejects raw broker credentials because they must stay on the target', async () => {
+  it('attach --ssh-host delegates an empty value to remote host validation', async () => {
+    const { program, attach, attachRemote } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--ssh-host', ''], { from: 'user' });
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachRemote).toHaveBeenCalledWith('lead', 'view', '', expect.objectContaining({}));
+  });
+
+  it('attach --ssh-host rejects raw broker credentials because they must stay on the target', async () => {
     const { program, attach, attachRemote, error, exit } = harness();
     await program.parseAsync(
-      ['local', 'agent', 'attach', 'lead', '--node', 'barry', '--api-key', 'do-not-forward'],
+      ['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', '--api-key', 'do-not-forward'],
       { from: 'user' }
     );
     expect(attach).not.toHaveBeenCalled();
     expect(attachRemote).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith(expect.stringContaining('--node cannot be combined'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--ssh-host cannot be combined'));
     expect(exit).toHaveBeenCalledWith(1);
   });
 

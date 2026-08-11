@@ -45,6 +45,7 @@ function explicitRemoteStateDir(override: string): string {
 }
 
 function remoteStateSelection(
+  agentName: string,
   node: string,
   override: string | undefined
 ): { setup: string[]; argument: string } {
@@ -58,6 +59,20 @@ function remoteStateSelection(
   return {
     setup: [
       `relay_state=${expected}`,
+      `attach_agent=${quoteRemoteArg(agentName)}`,
+      'if [ ! -f "$relay_state/connection.json" ]; then ' +
+        `broker_pid=$(ps axww -o ppid= -o command= 2>/dev/null | awk -v target="$attach_agent" '${
+          'BEGIN { marker = "agent-relay-broker pty --agent-name " target } ' +
+          '{ pos = index($0, marker); if (pos > 0) { after = substr($0, pos + length(marker), 1); ' +
+          'if (after == "" || after == " ") { print $1; exit } } }'
+        }'); ` +
+        'broker_root=""; ' +
+        'if [ -n "$broker_pid" ] && [ -e "/proc/$broker_pid/cwd" ]; then ' +
+        'broker_root=$(readlink "/proc/$broker_pid/cwd" 2>/dev/null || true); ' +
+        'elif [ -n "$broker_pid" ] && command -v lsof >/dev/null 2>&1; then ' +
+        'broker_root=$(lsof -a -p "$broker_pid" -d cwd -Fn 2>/dev/null | sed -n "s/^n//p" | head -n 1); fi; ' +
+        'if [ -n "$broker_root" ] && [ -f "$broker_root/.agentworkforce/relay/connection.json" ]; then ' +
+        'relay_state="$broker_root/.agentworkforce/relay"; fi; fi',
       'if [ ! -f "$relay_state/connection.json" ]; then ' +
         'set -- "$HOME"/.agentworkforce/relay/*-node/state/connection.json; ' +
         'if [ "$#" -eq 1 ] && [ -f "$1" ]; then ' +
@@ -76,7 +91,7 @@ export function buildRemoteNodeAttachCommand(
 ): { host: string; command: string } | null {
   const host = validateSshNode(node);
   if (!host) return null;
-  const state = remoteStateSelection(host, options.stateDir);
+  const state = remoteStateSelection(agentName, host, options.stateDir);
 
   const args = [
     'agent-relay',
