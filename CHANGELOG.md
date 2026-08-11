@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay integration subscribe` now sends Relayfile path filters using Relaycast's `path_glob` wire field, preventing scoped subscriptions from silently receiving broader event sets.
 - Broker bridge now treats a blank/whitespace-only nested `sessionRef` inside `metadata.attestation` as absent; a valid top-level `session_ref` correctly fills the field instead of being silently suppressed.
 
 ## [11.5.1] - 2026-08-10
