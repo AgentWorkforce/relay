@@ -888,7 +888,10 @@ mod tests {
         // Simulate a pre-existing RELAY_ATTEST_SESSION_ID from a parent agent.
         let stale_env = vec![
             ("RELAY_AGENT_NAME".to_string(), "worker".to_string()),
-            (RELAY_ATTEST_SESSION_ID.to_string(), "stale-parent-session".to_string()),
+            (
+                RELAY_ATTEST_SESSION_ID.to_string(),
+                "stale-parent-session".to_string(),
+            ),
         ];
         // Attestation without session_ref must strip the stale value.
         let env = with_commit_attestation_env(stale_env.clone(), Some(&attestation()));
@@ -904,7 +907,10 @@ mod tests {
     fn stale_session_id_is_stripped_when_attestation_has_invalid_session_ref() {
         let stale_env = vec![
             ("RELAY_AGENT_NAME".to_string(), "worker".to_string()),
-            (RELAY_ATTEST_SESSION_ID.to_string(), "stale-parent-session".to_string()),
+            (
+                RELAY_ATTEST_SESSION_ID.to_string(),
+                "stale-parent-session".to_string(),
+            ),
         ];
         let invalid_attest = CommitAttestation {
             jti: "jti-public-123".to_string(),
@@ -923,15 +929,27 @@ mod tests {
     fn valid_session_ref_overwrites_stale_session_id() {
         let stale_env = vec![
             ("RELAY_AGENT_NAME".to_string(), "worker".to_string()),
-            (RELAY_ATTEST_SESSION_ID.to_string(), "stale-parent-session".to_string()),
+            (
+                RELAY_ATTEST_SESSION_ID.to_string(),
+                "stale-parent-session".to_string(),
+            ),
         ];
         let new_session = "ai-hist:claudecode-fresh-xyz";
-        let env = with_commit_attestation_env(stale_env, Some(&attestation_with_session(new_session)));
-        let session_vals: Vec<_> = env.iter()
+        let env =
+            with_commit_attestation_env(stale_env, Some(&attestation_with_session(new_session)));
+        let session_vals: Vec<_> = env
+            .iter()
             .filter(|(k, _)| k == RELAY_ATTEST_SESSION_ID)
             .collect();
-        assert_eq!(session_vals.len(), 1, "exactly one RELAY_ATTEST_SESSION_ID must be set");
-        assert_eq!(session_vals[0].1, new_session, "stale value must be replaced by fresh session");
+        assert_eq!(
+            session_vals.len(),
+            1,
+            "exactly one RELAY_ATTEST_SESSION_ID must be set"
+        );
+        assert_eq!(
+            session_vals[0].1, new_session,
+            "stale value must be replaced by fresh session"
+        );
     }
 
     #[test]
