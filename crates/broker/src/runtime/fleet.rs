@@ -711,15 +711,14 @@ impl BrokerRuntime {
                     && emoji == crate::obligation::DONE_EMOJI
                     && !message_id.is_empty()
                     && !agent_name.is_empty()
+                    && self.obligation_store.try_discharge(message_id, agent_name)
                 {
-                    if self.obligation_store.try_discharge(message_id, agent_name) {
-                        tracing::info!(
-                            target = "relay_broker::obligation",
-                            message_id = %message_id,
-                            reactor = %agent_name,
-                            "obligation discharged via ✅ reaction"
-                        );
-                    }
+                    tracing::info!(
+                        target = "relay_broker::obligation",
+                        message_id = %message_id,
+                        reactor = %agent_name,
+                        "obligation discharged via ✅ reaction"
+                    );
                 }
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge)
             }
