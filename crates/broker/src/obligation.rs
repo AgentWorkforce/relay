@@ -163,8 +163,7 @@ impl ObligationStore {
     pub fn gc(&mut self, now: Instant) {
         const MAX_DISCHARGED_AGE: Duration = Duration::from_secs(3600);
         self.records.retain(|_, r| {
-            !r.discharged
-                || now.duration_since(r.registered_at) < MAX_DISCHARGED_AGE
+            !r.discharged || now.duration_since(r.registered_at) < MAX_DISCHARGED_AGE
         });
     }
 }
