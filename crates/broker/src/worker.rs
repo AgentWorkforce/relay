@@ -63,7 +63,7 @@ const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
 /// maintenance tick, which also drives delivery retries.
 const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
-const WORKER_SHUTDOWN_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+const WORKER_COMMAND_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
@@ -263,7 +263,7 @@ pub(crate) fn spawn_worker_writer(
 ) {
     tokio::spawn(async move {
         while let Some(mut command) = command_rx.recv().await {
-            let write_result = async {
+            let write_result = timeout(WORKER_COMMAND_TIMEOUT, async {
                 stdin
                     .write_all(&command.frame)
                     .await
@@ -273,8 +273,15 @@ pub(crate) fn spawn_worker_writer(
                     .await
                     .context("failed flushing worker stdin")?;
                 Ok::<(), anyhow::Error>(())
-            }
+            })
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "worker stdin write timed out after {} ms",
+                    WORKER_COMMAND_TIMEOUT.as_millis()
+                )
+            })
+            .and_then(|result| result)
             .map_err(|error| error.to_string());
 
             if let Some(completion) = command.completion.take() {
@@ -285,17 +292,10 @@ pub(crate) fn spawn_worker_writer(
                 continue;
             };
 
-            // A failed write may have consumed part of the frame. Do not let
-            // another command reuse this stream: notify the runtime so it can
-            // close the dependent terminal sessions and terminate the worker.
-            let _ = event_tx
-                .send(WorkerEvent::WriterFailed {
-                    name: name.clone(),
-                    generation,
-                    error: error.clone(),
-                })
-                .await;
-
+            // A failed or timed-out write may have consumed part of the frame.
+            // Do not let another command reuse this stream. Complete queued
+            // waiters before reporting the fault: a full worker-event queue
+            // must not leave those callers blocked behind this dead writer.
             while let Ok(mut queued) = command_rx.try_recv() {
                 if let Some(completion) = queued.completion.take() {
                     let _ = completion.send(Err(format!(
@@ -303,6 +303,15 @@ pub(crate) fn spawn_worker_writer(
                     )));
                 }
             }
+            // The runtime closes dependent terminal sessions and terminates
+            // this worker generation after the event is delivered.
+            let _ = event_tx
+                .send(WorkerEvent::WriterFailed {
+                    name: name.clone(),
+                    generation,
+                    error,
+                })
+                .await;
             break;
         }
     });
@@ -1179,16 +1188,20 @@ impl WorkerRegistry {
             .clone();
         let frame = encode_worker_frame(msg_type, request_id, payload)?;
         let (completion_tx, completion_rx) = oneshot::channel();
-        command_tx
-            .send(WorkerWriteCommand {
+        timeout(
+            WORKER_COMMAND_TIMEOUT,
+            command_tx.send(WorkerWriteCommand {
                 frame,
                 completion: Some(completion_tx),
-            })
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{name}'"))?
+        .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))
+        .with_context(|| format!("failed writing frame to worker '{name}'"))?;
+        timeout(WORKER_COMMAND_TIMEOUT, completion_rx)
             .await
-            .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))
-            .with_context(|| format!("failed writing frame to worker '{name}'"))?;
-        completion_rx
-            .await
+            .map_err(|_| anyhow::anyhow!("worker command writer timed out for '{name}'"))?
             .map_err(|_| {
                 anyhow::anyhow!("worker command writer stopped before completing '{name}'")
             })
@@ -1210,15 +1223,19 @@ impl WorkerRegistry {
             .command_tx
             .clone();
         let (completion_tx, completion_rx) = oneshot::channel();
-        command_tx
-            .send(WorkerWriteCommand {
+        timeout(
+            WORKER_COMMAND_TIMEOUT,
+            command_tx.send(WorkerWriteCommand {
                 frame,
                 completion: Some(completion_tx),
-            })
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{name}'"))?
+        .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))?;
+        timeout(WORKER_COMMAND_TIMEOUT, completion_rx)
             .await
-            .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))?;
-        completion_rx
-            .await
+            .map_err(|_| anyhow::anyhow!("worker command writer timed out for '{name}'"))?
             .map_err(|_| {
                 anyhow::anyhow!("worker command writer stopped before completing '{name}'")
             })?
@@ -1307,7 +1324,7 @@ impl WorkerRegistry {
         {
             // Cancelling this wait cannot cancel the worker-owned write; it
             // only bounds release before the normal process termination path.
-            let _ = timeout(WORKER_SHUTDOWN_WRITE_TIMEOUT, completion_rx).await;
+            let _ = timeout(WORKER_COMMAND_TIMEOUT, completion_rx).await;
         }
 
         let result = terminate_child(&mut handle.child, release_grace).await;
@@ -1318,6 +1335,25 @@ impl WorkerRegistry {
             }
         }
         result
+    }
+
+    /// Stop a worker whose sole stdin writer has failed, while leaving its
+    /// registry and supervisor entries intact. The normal reap path observes
+    /// the exit and applies the configured restart policy; unlike `release`,
+    /// this is an unexpected fault rather than an intentional teardown.
+    pub(crate) fn terminate_after_writer_failure(&mut self, name: &str) -> Result<()> {
+        let handle = self
+            .workers
+            .get_mut(name)
+            .with_context(|| format!("unknown worker '{name}'"))?;
+        handle.exit_reason = Some("worker_write_failed".into());
+        if handle.child.id().is_none() {
+            return Ok(());
+        }
+        handle
+            .child
+            .start_kill()
+            .with_context(|| format!("failed to terminate worker '{name}' after writer failure"))
     }
 
     pub(crate) async fn shutdown_all(&mut self) -> Result<()> {

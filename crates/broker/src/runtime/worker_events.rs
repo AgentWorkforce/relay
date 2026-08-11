@@ -572,12 +572,12 @@ impl BrokerRuntime {
                         format!("worker command writer failed: {error}"),
                     );
                 }
-                if let Err(release_error) = workers.release(name.as_str()).await {
+                if let Err(release_error) = workers.terminate_after_writer_failure(name.as_str()) {
                     tracing::warn!(
                         target = "relay_broker::terminal",
                         worker = %name,
                         error = %release_error,
-                        "failed to terminate worker after command writer failure"
+                        "failed to signal worker after command writer failure"
                     );
                 }
             }
@@ -1068,7 +1068,12 @@ impl BrokerRuntime {
                                 }
                             };
                             let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
-                            let snapshot_failed = matches!(&message, TerminalToCloud::Error { .. });
+                            let snapshot_failure = match &message {
+                                TerminalToCloud::Error { code, message, .. } => {
+                                    Some((code.clone(), message.clone()))
+                                }
+                                _ => None,
+                            };
                             if !try_send_terminal(terminal_control_tx, message) {
                                 tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while sending snapshot; ending session");
                                 end_terminal_session(
@@ -1111,8 +1116,16 @@ impl BrokerRuntime {
                                         break;
                                     }
                                 }
-                            } else if snapshot_failed {
-                                terminal_sessions.remove(&session_id);
+                            } else if let Some((code, message)) = snapshot_failure {
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    &code,
+                                    &message,
+                                );
                             }
                         } else {
                             // Generic worker request/response dispatch.
