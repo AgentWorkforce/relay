@@ -184,6 +184,18 @@ async function armA(ctx: ConformanceContext, options: { setReadState: boolean })
   //    waitForDelivery's error message says so explicitly.
   await waitForDelivery(harness, recipient.name, { since, timeoutMs: 60_000 });
 
+  // Capture the turn baseline NOW — after the initial delivery is confirmed but
+  // before the steps below (read/reply/signal) that could span several network
+  // roundtrips. On the native path, watchForTurn reads the high-water sequence
+  // from the agent event history. If the boomerang fires during steps 3-5
+  // (which is possible when RELAY_OBLIGATION_INTERVAL_MS is short), capturing
+  // the baseline late means the boomerang turn's turn.settled already has a
+  // sequence <= the baseline and assertRecipientTookTurn never finds it.
+  //
+  // Capturing here places the baseline after the initial delivery turn (so we
+  // don't mistake it for the boomerang turn) and before any boomerang stimulus.
+  const watch = await watchForTurn(harness, recipient.name, path);
+
   // 3. Read state. The point of the arm is that this must not matter.
   //
   //    On the PTY path the broker sets it automatically anyway: delivery is
@@ -220,7 +232,6 @@ async function armA(ctx: ConformanceContext, options: { setReadState: boolean })
   const returns: ArmTranscript['returns'] = [];
   const evidence: TurnEvidence[] = [];
 
-  const watch = await watchForTurn(harness, recipient.name, path);
   const observed = await waitForReturn(harness, recipient.name, obligationId, {
     since,
     timeoutMs: intervalMs * 3,

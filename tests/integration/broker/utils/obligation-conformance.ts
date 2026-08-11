@@ -308,8 +308,21 @@ export async function readReactions(
   messageId: string
 ): Promise<Array<Record<string, unknown>>> {
   const relay = new RelayCast({ apiKey });
-  const groups = (await relay.messages.reactions(messageId)) as unknown as Array<Record<string, unknown>>;
-  return groups;
+  // relay.messages.reactions() returns ReactionGroup[] — each group has
+  // { emoji: string, count: number, agents: string[] } where `agents` is a list
+  // of agent name strings. The substrate gap test needs per-actor records so it
+  // can (a) assert two distinct reactors are stored and (b) compare their key
+  // shapes. Flatten into one record per agent name, carrying the emoji from the
+  // group, so the shape assertion in the substrate gap test is meaningful rather
+  // than trivially true with a single group entry.
+  const groups = (await relay.messages.reactions(messageId)) as unknown as Array<{
+    emoji: string;
+    count: number;
+    agents: string[];
+  }>;
+  return groups.flatMap((group) =>
+    group.agents.map((agentName) => ({ emoji: group.emoji, agent_name: agentName }))
+  );
 }
 
 // ── Model-turn evidence ──────────────────────────────────────────────────────
@@ -548,9 +561,17 @@ export async function waitForDelivery(
   recipient: string,
   options: { since: number; timeoutMs: number }
 ): Promise<string> {
+  // `relay_inbound` and `delivery_queued` are pre-injection signals: they fire
+  // when the broker receives the message from Relaycast but before it has been
+  // injected into the recipient worker. Accepting them here would let the arm
+  // proceed to read/reply/signal steps before the message actually reached the
+  // recipient, which is the same substitution of a well-formed signal for an
+  // unverified fact that this whole issue is about.
+  //
+  // PTY path: delivery_injected (stdin written) -> delivery_ack -> ...
+  // Native path: delivery_ack (sidecar acked deliver_relay frame) only —
+  //   the sidecar never sends queued/injected/verified frames.
   const kinds = new Set([
-    'relay_inbound',
-    'delivery_queued',
     'delivery_injected',
     'delivery_ack',
     'message_delivery_confirmed',
