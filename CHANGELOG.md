@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Spawned agents now stamp a `Session-Id:` git trailer on commits when the dispatcher supplies a session reference, enabling auditors to trace each commit back to the session that produced it.
 
+### Fixed
+
+- Broker bridge now treats a blank/whitespace-only nested `sessionRef` inside `metadata.attestation` as absent; a valid top-level `session_ref` correctly fills the field instead of being silently suppressed.
+
 ## [11.5.1] - 2026-08-10
 
 ### Added
