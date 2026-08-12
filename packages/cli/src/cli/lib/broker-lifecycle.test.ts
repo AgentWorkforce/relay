@@ -7,12 +7,13 @@ import {
   classifyBrokerStartError,
   classifyBrokerStartStage,
   describeErrorWithCause,
+  getBrokerStatusWithRetry,
   isBundledBunExecutableEntrypoint,
   readNodeDeliveryStatus,
   resolveNodeIdentityFromSession,
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
-import type { CoreDependencies } from '../commands/core.js';
+import type { CoreDependencies, CoreRelay } from '../commands/core.js';
 
 describe('isBundledBunExecutableEntrypoint', () => {
   it.each(['/$bunfs/root/agent-relay', 'B:/~BUN/root/agent-relay.exe', 'B:\\~BUN\\root\\agent-relay.exe'])(
@@ -125,6 +126,63 @@ describe('classifyBrokerStartStage', () => {
 
   it('falls back to startup for everything else', () => {
     expect(classifyBrokerStartStage(new Error('???'), '???')).toBe('startup');
+  });
+});
+
+describe('getBrokerStatusWithRetry', () => {
+  function createDeps(sleep = vi.fn(async () => undefined)): CoreDependencies {
+    return { log: vi.fn(), sleep } as unknown as CoreDependencies;
+  }
+
+  it('returns the status on the first successful attempt without sleeping', async () => {
+    const candidate: Pick<CoreRelay, 'getStatus'> = {
+      getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
+    };
+    const deps = createDeps();
+
+    const result = await getBrokerStatusWithRetry(candidate, deps);
+
+    expect(result).toEqual({ agent_count: 0, pending_delivery_count: 0 });
+    expect(candidate.getStatus).toHaveBeenCalledTimes(1);
+    expect(deps.sleep).not.toHaveBeenCalled();
+  });
+
+  it('retries a transient connect failure and returns the status once the broker responds', async () => {
+    let attempt = 0;
+    const candidate: Pick<CoreRelay, 'getStatus'> = {
+      getStatus: vi.fn(async () => {
+        attempt += 1;
+        if (attempt < 3) {
+          throw new TypeError('Unable to connect. Is the computer able to access the url?');
+        }
+        return { agent_count: 0, pending_delivery_count: 0 };
+      }),
+    };
+    const deps = createDeps();
+
+    const result = await getBrokerStatusWithRetry(candidate, deps, true);
+
+    expect(result).toEqual({ agent_count: 0, pending_delivery_count: 0 });
+    expect(candidate.getStatus).toHaveBeenCalledTimes(3);
+    expect(deps.sleep).toHaveBeenCalledTimes(2);
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringContaining('Broker status check failed (attempt 1/4), retrying in 300ms...')
+    );
+  });
+
+  it('exhausts its retry budget and throws the last error when the broker never responds', async () => {
+    const err = new TypeError('Unable to connect. Is the computer able to access the url?');
+    const candidate: Pick<CoreRelay, 'getStatus'> = {
+      getStatus: vi.fn(async () => {
+        throw err;
+      }),
+    };
+    const deps = createDeps();
+
+    await expect(getBrokerStatusWithRetry(candidate, deps)).rejects.toBe(err);
+    // 4 total attempts: the initial try plus 3 retries.
+    expect(candidate.getStatus).toHaveBeenCalledTimes(4);
+    expect(deps.sleep).toHaveBeenCalledTimes(3);
   });
 });
 

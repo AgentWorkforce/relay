@@ -452,6 +452,54 @@ export function resolveBrokerBasePort(deps: Pick<CoreDependencies, 'env'>): numb
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_BROKER_BASE_PORT;
 }
 
+/** Bounded attempts for {@link getBrokerStatusWithRetry}'s post-handshake status check. */
+const STATUS_CHECK_MAX_ATTEMPTS = 4;
+/** Fixed delay between status-check retries, in ms. */
+const STATUS_CHECK_RETRY_DELAY_MS = 300;
+
+/**
+ * `candidate.getStatus()` is the first request made against a broker that
+ * just finished a successful handshake -- `HarnessDriverClient.spawn()`'s own
+ * `getSession()` poll already confirmed the broker was reachable moments
+ * earlier. Under load, the broker can be transiently preempted between that
+ * handshake and this immediate follow-up request, surfacing as a bare
+ * connect failure (Node's `TypeError: fetch failed` / Bun's "Unable to
+ * connect. Is the computer able to access the url?"), which previously had
+ * zero tolerance: one bad request and the whole `up` was reported failed
+ * even though the broker was (and remained) healthy.
+ *
+ * A handful of short, fixed-delay retries absorb that hiccup. This mirrors
+ * the *spirit* of the 503-retry loop `HarnessDriverClient.spawn()` runs
+ * during the handshake, not its duration -- that loop waits out a possibly
+ * slow cold start; this one is only smoothing a momentary preemption right
+ * after a broker we already know is up, so the total budget is much
+ * shorter (under 1s across all retries).
+ *
+ * Exported for testing.
+ */
+export async function getBrokerStatusWithRetry(
+  candidate: Pick<CoreRelay, 'getStatus'>,
+  deps: CoreDependencies,
+  verbose?: boolean
+): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= STATUS_CHECK_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await candidate.getStatus();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= STATUS_CHECK_MAX_ATTEMPTS) break;
+      vlog(
+        deps,
+        verbose,
+        `Broker status check failed (attempt ${attempt}/${STATUS_CHECK_MAX_ATTEMPTS}), retrying in ${STATUS_CHECK_RETRY_DELAY_MS}ms...`
+      );
+      await deps.sleep(STATUS_CHECK_RETRY_DELAY_MS);
+    }
+  }
+  throw lastError;
+}
+
 export async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
   basePort: number,
@@ -463,7 +511,7 @@ export async function startBrokerWithPortFallback(
     vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
     const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose);
     try {
-      await candidate.getStatus();
+      await getBrokerStatusWithRetry(candidate, deps, verbose);
       if (!candidate.apiPort) {
         throw new Error('Broker started without reporting its OS-assigned API port.');
       }
@@ -496,7 +544,7 @@ export async function startBrokerWithPortFallback(
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
   try {
-    await candidate.getStatus();
+    await getBrokerStatusWithRetry(candidate, deps, verbose);
   } catch (startupError) {
     try {
       await candidate.shutdown();
