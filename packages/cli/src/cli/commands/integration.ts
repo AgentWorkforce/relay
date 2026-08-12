@@ -464,7 +464,7 @@ async function createRelayfileInboundTarget(
     body: JSON.stringify({
       channel: input.channel,
       provider: input.provider,
-      pathGlob: input.pathGlob,
+      path_glob: input.pathGlob,
     }),
   });
   let body: unknown;

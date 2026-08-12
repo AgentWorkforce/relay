@@ -295,6 +295,25 @@ describe('integration subscribe', () => {
     );
   });
 
+  it('serializes the resolved path filter with the Relaycast wire key', async () => {
+    const resolved = '/github/repos/AgentWorkforce/relay/**';
+    const relayfile = createRelayfileMock([], {
+      resolveResourcePath: vi.fn(async () => ({ pathGlob: resolved })),
+    });
+    const { program } = harness({ relayfile });
+
+    await program.parseAsync(ARGS(), { from: 'user' });
+
+    const [, request] = vi.mocked(fetch).mock.calls[0]!;
+    const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+    expect(body).toEqual({
+      channel: 'general',
+      provider: 'slack',
+      path_glob: resolved,
+    });
+    expect(body).not.toHaveProperty('pathGlob');
+  });
+
   it('fails loudly before provisioning when no workspace key is available', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-workspace-'));
     vi.stubEnv('AGENT_RELAY_HOME', home);
