@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-darwin-x64",
-  "version": "11.5.4",
+  "version": "11.5.5",
   "engines": {
     "node": ">=22.0.0"
   },
