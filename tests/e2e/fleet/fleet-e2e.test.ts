@@ -710,15 +710,15 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
     const dm = await sendDm(engine, sender, 'ttl-recipient', 'will expire');
     expect(dm.status).toBeLessThan(300);
 
-    // Reading with ?status=dead_lettered triggers the TTL sweep (the route sweeps
-    // on every read), which dead-letters the row AND fans delivery.failed to the
-    // sender. Poll past the TTL.
+    // Expiry is scheduled maintenance rather than read-coupled work. The Node
+    // adapter sweeps every 15s, dead-lettering the row and fanning
+    // delivery.failed to the sender. Poll beyond one full maintenance interval.
     const dead = await waitFor(
       async () => {
         const all = await listDeliveries(engine, recipient, 'dead_lettered');
         return all.find((d) => d.status === 'dead_lettered') ?? null;
       },
-      { label: 'message dead-lettered', timeoutMs: 15_000, intervalMs: 400 }
+      { label: 'message dead-lettered', timeoutMs: 25_000, intervalMs: 400 }
     );
     expect(dead.status).toBe('dead_lettered');
 
@@ -729,7 +729,7 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
     });
     expect(failed).toMatchObject({ target_agent_name: 'ttl-recipient' });
     senderWs.close();
-  }, 25_000);
+  }, 35_000);
 
   // Overflow reject-new is enforced by `belowDepthCapSql` (counts queued+delivered
   // per agent) at delivery-write time, and the sender is notified via the realtime

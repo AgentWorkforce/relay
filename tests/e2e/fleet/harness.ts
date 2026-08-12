@@ -694,8 +694,8 @@ export async function sendDm(
   });
 }
 
-/** List an agent's own deliveries. Reading triggers the engine's TTL sweep, so
- * polling this is how the mailbox TTL dead-letter becomes observable. */
+/** List an agent's own deliveries. Polling makes a mailbox TTL transition
+ * observable after the engine's scheduled expiry maintenance runs. */
 export async function listDeliveries(
   engine: EngineHandle,
   agentToken: string,

@@ -58,18 +58,16 @@ jobs:
       - name: Checkout relay
         uses: actions/checkout@v4
 
-      # The relaycast engine lives in a separate repo. This E2E now drives the
-      # node-provider model (broker registers as the `broker` provider carrying a
-      # `provider` identity + capacity `kind`), so it REQUIRES the node-provider
-      # engine (relaycast#243/#244, released as 6.0.0) — a pre-provider engine
-      # rejects the `provider` field and no node comes online. Pinned to the
-      # v6.0.0 release tag's commit so CI runs the same engine the published
-      # packages came from (the roster-snapshot/Bearer-auth compat is included).
+      # The relaycast engine lives in a separate repo. This E2E drives the
+      # node-provider model and heartbeats whose load may be unreported for
+      # unbounded providers. Keep the pin on a released engine that supports the
+      # complete wire shape: older engines reject an omitted/null `load` and
+      # silently stop applying active-agent heartbeat updates (relaycast#307).
       - name: Checkout relaycast engine (node-provider model)
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: 58a93422a5a5dc568f2eaffc0ad55fe656a78288 # relaycast v6.0.1 (node-provider engine + self-host write gate, trigger/reschedule node-scoped fixes)
+          ref: eb7563ffcf0e54698c23363c5753060f99d37dd3 # relaycast v7.0.0 (node providers + unreported-load heartbeat compatibility)
           path: relaycast-engine
 
       - name: Setup Node.js
