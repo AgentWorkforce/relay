@@ -6,7 +6,13 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { MIN_RELAYFILE_VERSION, assertRelayfileVersion, defaultRelayfileBridge } from './integration.js';
+import {
+  MIN_RELAYFILE_VERSION,
+  assertRelayfileVersion,
+  defaultRelayfileBridge,
+  relayfileIntegrationClientOptions,
+  resetSharedRelayfileControlPlaneClientForTests,
+} from './integration.js';
 import { RelayfileControlPlaneClient } from '@relayfile/client';
 
 let socketSequence = 0;
@@ -219,6 +225,45 @@ describe('assertRelayfileVersion', () => {
   it('ships the API-v3 subscription-list method', () => {
     expect(typeof RelayfileControlPlaneClient.prototype.listWebhookSubscriptions).toBe('function');
   });
+});
+
+describe('default Relayfile integration bridge', () => {
+  it('constructs Relayfile clients with the exact 30-second request budget', () => {
+    expect(relayfileIntegrationClientOptions()).toEqual({ requestTimeoutMs: 30_000 });
+    expect(relayfileIntegrationClientOptions({ socketPath: '/tmp/relayfile-test.sock' })).toEqual({
+      requestTimeoutMs: 30_000,
+      socketPath: '/tmp/relayfile-test.sock',
+    });
+  });
+
+  it('allows a real provider-status request to clear the former 10-second boundary', async () => {
+    resetSharedRelayfileControlPlaneClientForTests();
+    await withControlPlaneServer(
+      (request, response) => {
+        if (request.method === 'GET' && request.url === '/v1/hello') {
+          writeJson(response, 200, {
+            daemonVersion: '0.10.27',
+            apiVersion: 3,
+            supportedApiVersions: [1, 2, 3],
+          });
+          return;
+        }
+        if (request.method === 'GET' && request.url?.startsWith('/v1/integrations/provider-status?')) {
+          setTimeout(() => writeJson(response, 200, { provider: 'github', status: 'ready' }), 10_100);
+          return;
+        }
+        writeJson(response, 404, { error: { code: 'NOT_FOUND', message: 'not found' } });
+      },
+      async (socketPath) => {
+        try {
+          const bridge = defaultRelayfileBridge({ socketPath, autoStart: false });
+          await expect(bridge.isConnected('github')).resolves.toBe(true);
+        } finally {
+          resetSharedRelayfileControlPlaneClientForTests();
+        }
+      }
+    );
+  }, 15_000);
 });
 
 describe('relayfile control-plane hello negotiation', () => {
