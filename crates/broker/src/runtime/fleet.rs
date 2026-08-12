@@ -38,6 +38,29 @@ pub(super) fn try_send_terminal(
         .is_ok()
 }
 
+/// Release a resize lease only when `session_id` is the terminal session that
+/// owns it. A terminal session may end because its client closes, its transport
+/// disconnects, or a terminal operation fails; all are equivalent to detach
+/// for single-resizer ownership.
+pub(super) fn release_terminal_resize_ownership(
+    resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
+    terminal_sessions: &HashMap<String, TerminalSession>,
+    session_id: &str,
+) {
+    let Some(agent) = terminal_sessions
+        .get(session_id)
+        .map(|session| session.agent.clone())
+    else {
+        return;
+    };
+    if resize_owners
+        .get(&agent)
+        .is_some_and(|owner| owner.session_id == session_id)
+    {
+        resize_owners.remove(&agent);
+    }
+}
+
 pub(super) fn fail_terminal_session(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     terminal_sessions: &mut HashMap<String, TerminalSession>,
@@ -150,6 +173,8 @@ impl BrokerRuntime {
                 // lane reconnects. Drop the old connection's state now so input
                 // and snapshot replies cannot be routed into a server-side
                 // session that was invalidated with the old websocket.
+                self.resize_owners
+                    .retain(|_, owner| !self.terminal_sessions.contains_key(&owner.session_id));
                 self.terminal_sessions.clear();
                 self.terminal_snapshot_requests.clear();
                 self.terminal_input_requests.clear();
@@ -332,16 +357,64 @@ impl BrokerRuntime {
                     });
                     return;
                 }
-                if let Err(error) = self.workers.try_send_to_worker(
-                    session.agent.as_str(),
-                    "resize_pty",
-                    None,
-                    json!({ "rows": rows, "cols": cols }),
+                // Remote drive sessions share the same PTY as local HTTP
+                // attach clients. Use the common lease planner so only one
+                // live session controls its size at a time.
+                match plan_resize(
+                    &mut self.resize_owners,
+                    &session.agent,
+                    rows,
+                    cols,
+                    Some(&session_id),
+                    Instant::now(),
                 ) {
-                    self.fail_terminal_session(session_id, "resize_failed", error.to_string());
+                    ResizeAction::Reject => {
+                        tracing::debug!(
+                            target = "relay_broker::terminal",
+                            session_id = %session_id,
+                            worker = %session.agent,
+                            "ignoring terminal resize from a non-owner session"
+                        );
+                    }
+                    ResizeAction::Refresh => {
+                        // `plan_resize` renewed this session's lease. The PTY
+                        // already has these dimensions, so do not repaint it.
+                    }
+                    ResizeAction::Apply => {
+                        if let Err(error) = self.workers.try_send_to_worker(
+                            session.agent.as_str(),
+                            "resize_pty",
+                            None,
+                            json!({ "rows": rows, "cols": cols }),
+                        ) {
+                            self.fail_terminal_session(
+                                session_id,
+                                "resize_failed",
+                                error.to_string(),
+                            );
+                        } else {
+                            // As with the HTTP path, do not claim the lease
+                            // until the resize was accepted by the worker
+                            // writer. This path deliberately remains
+                            // non-blocking for the runtime actor.
+                            commit_resize_ownership(
+                                &mut self.resize_owners,
+                                &session.agent,
+                                rows,
+                                cols,
+                                Some(session_id),
+                                Instant::now(),
+                            );
+                        }
+                    }
                 }
             }
             TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {
+                release_terminal_resize_ownership(
+                    &mut self.resize_owners,
+                    &self.terminal_sessions,
+                    &session_id,
+                );
                 self.terminal_sessions.remove(&session_id);
                 self.terminal_snapshot_requests
                     .retain(|_, pending| pending.session_id != session_id);
@@ -370,6 +443,11 @@ impl BrokerRuntime {
         let is_close = matches!(&message, TerminalToCloud::Closed { .. });
         if !try_send_terminal(&self.terminal_control_tx, message) {
             tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed; ending session");
+            release_terminal_resize_ownership(
+                &mut self.resize_owners,
+                &self.terminal_sessions,
+                &session_id,
+            );
             self.terminal_sessions.remove(&session_id);
             self.terminal_snapshot_requests
                 .retain(|_, pending| pending.session_id != session_id);
@@ -391,6 +469,11 @@ impl BrokerRuntime {
     }
 
     fn fail_terminal_session(&mut self, session_id: String, code: &str, message: String) {
+        release_terminal_resize_ownership(
+            &mut self.resize_owners,
+            &self.terminal_sessions,
+            &session_id,
+        );
         fail_terminal_session(
             &self.terminal_control_tx,
             &mut self.terminal_sessions,
@@ -1726,6 +1809,49 @@ mod tests {
                 && message == "worker command queue is full"
         ));
         assert!(rx.try_recv().is_err(), "failure must emit only one close");
+    }
+
+    #[test]
+    fn terminal_session_cleanup_releases_its_resize_lease_only() {
+        let agent = WorkerName::from("agent-a");
+        let other_agent = WorkerName::from("agent-b");
+        let mut terminal_sessions = HashMap::from([(
+            "session-a".to_string(),
+            TerminalSession {
+                agent: agent.clone(),
+                mode: TerminalMode::Drive,
+                ready: true,
+                pending_output: Vec::new(),
+                pending_output_bytes: 0,
+            },
+        )]);
+        let now = Instant::now();
+        let mut resize_owners = HashMap::from([
+            (
+                agent.clone(),
+                ResizeOwner {
+                    session_id: "session-a".into(),
+                    last_seen: now,
+                    rows: 24,
+                    cols: 80,
+                },
+            ),
+            (
+                other_agent.clone(),
+                ResizeOwner {
+                    session_id: "other-session".into(),
+                    last_seen: now,
+                    rows: 30,
+                    cols: 100,
+                },
+            ),
+        ]);
+
+        release_terminal_resize_ownership(&mut resize_owners, &terminal_sessions, "session-a");
+        terminal_sessions.remove("session-a");
+
+        assert!(!resize_owners.contains_key(&agent));
+        assert!(resize_owners.contains_key(&other_agent));
     }
 
     #[test]
