@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay node agent attach --node <node>` now opens an authenticated terminal session for physical and Daytona fleet nodes, preserving view, drive, and passthrough modes.
-- `agent-relay node agent attach --ssh-host <host>` now provides an explicit SSH fallback for physical fleet nodes without exporting the remote broker or its API key.
+- Default-enabled obligation/boomerang lifecycle: obligating DMs (containing `@@c2a-obligation@@`) trigger automatic re-injection to the recipient every 500 ms (up to 3 times) until the author reacts with ✅. Controlled via `RELAY_OBLIGATION_BOOMERANG=0` to disable and `RELAY_OBLIGATION_INTERVAL_MS=<ms>` to configure the return interval.
+- `agent-relay local agent attach <agent> --node <node>` now opens an authenticated terminal session for physical and Daytona fleet nodes, preserving view, drive, and passthrough modes.
+- `agent-relay local agent attach <agent> --ssh-host <host>` now provides an explicit SSH fallback for physical fleet nodes without exporting the remote broker or its API key.
 - Spawned agents now stamp a `Session-Id:` git trailer on commits when the dispatcher supplies a session reference, enabling auditors to trace each commit back to the session that produced it.
 - `agent-relay node agent attach` now distinguishes between "agent does not exist" and "agent is running on a different fleet node": when a 404 resolves to a workspace-registered agent with a fleet placement, the error names the node (`agent 'X' is registered on node 'finn-mini'; cross-node attach is not yet supported`) instead of the indistinguishable "no agent named 'X'".
 

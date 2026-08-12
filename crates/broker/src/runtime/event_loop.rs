@@ -260,6 +260,7 @@ pub(crate) struct BrokerRuntime {
     #[cfg(windows)]
     pub(super) sigterm: tokio::signal::windows::CtrlShutdown,
     pub(super) telemetry: TelemetryClient,
+    pub(super) obligation_store: crate::obligation::ObligationStore,
 }
 
 enum RuntimeEvent {

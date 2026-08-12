@@ -685,5 +685,61 @@ impl BrokerRuntime {
         // Pending deliveries are persisted by the event loop whenever the
         // map is mutated (see `BrokerRuntime::flush_pending_deliveries`),
         // so no tick-time snapshot is needed here.
+
+        // Obligation boomerang: GC is unconditional; drain only when feature is
+        // enabled.  The obligation store lives on BrokerRuntime and must be
+        // accessed through `self` here (the local-reference reborrow at the top
+        // of this function does not cover it).
+        self.obligation_store.gc(now);
+        if crate::obligation::boomerang_enabled() {
+            let interval = std::time::Duration::from_millis(crate::obligation::interval_ms());
+            let due = self.obligation_store.drain_due(now, interval);
+            for (msg_id, recipient) in due {
+                let boomerang_body = crate::obligation::build_return_body(&msg_id);
+                let delivery_id = DeliveryId::new(uuid::Uuid::new_v4().to_string());
+                let event_id = EventId::new(uuid::Uuid::new_v4().to_string());
+                let relay_delivery = crate::protocol::RelayDelivery {
+                    delivery_id,
+                    event_id: event_id.clone(),
+                    workspace_id: self.default_workspace_id.clone(),
+                    workspace_alias: self.default_workspace.workspace_alias.clone(),
+                    from: "broker".to_string(),
+                    target: crate::ids::MessageTarget::new(recipient.clone()),
+                    body: boomerang_body.clone(),
+                    thread_id: None,
+                    priority: Some(2),
+                    injection_mode: crate::protocol::MessageInjectionMode::Wait,
+                };
+                tracing::info!(
+                    target = "relay_broker::obligation",
+                    recipient = %recipient,
+                    obligation_msg_id = %msg_id,
+                    "injecting boomerang return to recipient"
+                );
+                if let Err(error) = self.workers.deliver(&recipient, relay_delivery).await {
+                    tracing::warn!(
+                        target = "relay_broker::obligation",
+                        recipient = %recipient,
+                        obligation_msg_id = %msg_id,
+                        error = %error,
+                        "failed to inject boomerang return"
+                    );
+                } else {
+                    // Emit a relay_inbound event so waitForReturn in the harness
+                    // driver can detect the boomerang injection.
+                    let _ = send_event(
+                        &self.sdk_out_tx,
+                        serde_json::json!({
+                            "kind": "relay_inbound",
+                            "target": recipient,
+                            "obligation_msg_id": msg_id,
+                            "event_id": event_id.as_str(),
+                            "body": boomerang_body,
+                        }),
+                    )
+                    .await;
+                }
+            }
+        }
     }
 }

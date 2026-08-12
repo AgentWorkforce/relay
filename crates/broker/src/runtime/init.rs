@@ -721,6 +721,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         lease_check,
         sigterm,
         telemetry,
+        obligation_store: crate::obligation::ObligationStore::default(),
     };
 
     runtime.run().await

@@ -585,6 +585,20 @@ impl BrokerRuntime {
                 }
                 match queue_result.outcome {
                     InboundQueueOutcome::Queued => {
+                        // P2-3: register obligation only when the message is actually queued
+                        // (not on RejectedFull or WorkerMissing where delivery may not occur).
+                        if crate::obligation::boomerang_enabled()
+                            && crate::obligation::is_obligating(&fields.body)
+                        {
+                            let interval =
+                                std::time::Duration::from_millis(crate::obligation::interval_ms());
+                            self.obligation_store.register(
+                                deliver.msg_id.to_string(),
+                                fields.from.clone(),
+                                deliver.agent.to_string(),
+                                interval,
+                            );
+                        }
                         tracing::info!(
                             target = "relay_broker::fleet",
                             agent = %deliver.agent,
@@ -614,6 +628,19 @@ impl BrokerRuntime {
                         Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush)
                     }
                     InboundQueueOutcome::DrainNow(to_drain) => {
+                        // P2-3: register obligation only when the message will actually drain.
+                        if crate::obligation::boomerang_enabled()
+                            && crate::obligation::is_obligating(&fields.body)
+                        {
+                            let interval =
+                                std::time::Duration::from_millis(crate::obligation::interval_ms());
+                            self.obligation_store.register(
+                                deliver.msg_id.to_string(),
+                                fields.from.clone(),
+                                deliver.agent.to_string(),
+                                interval,
+                            );
+                        }
                         // Mirrors the HTTP send path: drain may surface older
                         // backlog alongside the message this specific `deliver`
                         // frame is for. Only a failure injecting THIS delivery's
@@ -671,6 +698,31 @@ impl BrokerRuntime {
                     payload_type = %payload_type,
                     "acking node receipt/reaction delivery without PTY surfacing (deferred)"
                 );
+                // Check for ✅ reaction by author to discharge an obligation.
+                // Read from payload.data first (v5 envelope), then flat payload as fallback.
+                let data = deliver.payload.get("data");
+                let get_field = |field: &str| -> Option<&str> {
+                    data.and_then(|d| d.get(field))
+                        .or_else(|| deliver.payload.get(field))
+                        .and_then(|v| v.as_str())
+                };
+                let action = get_field("action").unwrap_or("");
+                let emoji = get_field("emoji").unwrap_or("");
+                let agent_name = get_field("agent_name").unwrap_or("");
+                let message_id = get_field("message_id").unwrap_or("");
+                if action == "added"
+                    && emoji == crate::obligation::DONE_EMOJI
+                    && !message_id.is_empty()
+                    && !agent_name.is_empty()
+                    && self.obligation_store.try_discharge(message_id, agent_name)
+                {
+                    tracing::info!(
+                        target = "relay_broker::obligation",
+                        message_id = %message_id,
+                        reactor = %agent_name,
+                        "obligation discharged via ✅ reaction"
+                    );
+                }
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge)
             }
             FleetDeliverySurfacing::AckUnknown => {
