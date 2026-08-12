@@ -354,6 +354,7 @@ pub(super) async fn spawn_worker_from_request(
     agent_spawn_count: &mut u32,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
+    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
     node_name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
@@ -488,6 +489,7 @@ pub(super) async fn spawn_worker_from_request(
     // injected as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP), so
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
+    let mut fleet_registration = None;
     let worker_relay_key = {
         if let Some(token) = relaycast_ws_spawn_token(ws_value)
             .filter(|_| !require_node_registration && !relaycast_spawn_verifies_ready(ws_value))
@@ -509,7 +511,9 @@ pub(super) async fn spawn_worker_from_request(
                         worker = %name,
                         "bound agent to node via agent.register for action.invoke spawn"
                     );
-                    Some(token.token)
+                    let relay_key = token.token.clone();
+                    fleet_registration = Some((token, invocation_id.clone(), session_ref.clone()));
+                    Some(relay_key)
                 }
                 Err(node_error) => {
                     if require_node_registration || relaycast_spawn_verifies_ready(ws_value) {
@@ -600,6 +604,16 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            if let Some((token, invocation_id, session_ref)) = fleet_registration.take() {
+                super::fleet::record_fleet_inventory_agent(
+                    fleet_control_tx,
+                    fleet_inventory,
+                    &token,
+                    invocation_id,
+                    session_ref,
+                )
+                .await;
+            }
             if let Some(prefix) = super::api::relay_skill_prefix(
                 effective_spec.cli.as_deref().unwrap_or(&cli),
                 effective_spec.model.as_deref(),

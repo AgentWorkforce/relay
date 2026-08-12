@@ -347,6 +347,7 @@ impl BrokerRuntime {
                 // the worker MCP never re-registers over HTTP. If node binding is
                 // unavailable, fall back to HTTP pre-registration so a tokenless
                 // node (e.g. mint failure) still spawns a working agent.
+                let mut fleet_registration = None;
                 let worker_relay_key = if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
                     Some(token)
@@ -362,7 +363,7 @@ impl BrokerRuntime {
                         fleet_delivery_book,
                         name.as_str(),
                         None,
-                        session_ref,
+                        session_ref.clone(),
                     )
                     .await
                     {
@@ -371,7 +372,9 @@ impl BrokerRuntime {
                                 worker = %name,
                                 "bound agent to node via agent.register for HTTP spawn"
                             );
-                            Some(token.token)
+                            let relay_key = token.token.clone();
+                            fleet_registration = Some((token, None, session_ref));
+                            Some(relay_key)
                         }
                         Err(node_error) => {
                             tracing::warn!(
@@ -578,6 +581,17 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        if let Some((token, invocation_id, session_ref)) = fleet_registration.take()
+                        {
+                            super::fleet::record_fleet_inventory_agent(
+                                fleet_control_tx,
+                                fleet_inventory,
+                                &token,
+                                invocation_id,
+                                session_ref,
+                            )
+                            .await;
+                        }
                         // Prepend relay skill text for small-tier models and CLI harnesses that
                         // need explicit tool guidance to reliably call add_agent / remove_agent.
                         // Skip when relay prompt injection is opted out — relay tools are absent.

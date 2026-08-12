@@ -947,6 +947,7 @@ impl BrokerRuntime {
             &mut self.agent_spawn_count,
             &self.fleet_control_tx,
             &mut self.fleet_delivery_book,
+            &mut self.fleet_inventory,
             &self.fleet_node_name,
             Some(invoke.invocation_id.clone()),
             session_ref,
@@ -1359,6 +1360,33 @@ pub(super) async fn publish_fleet_inventory_snapshot(
     )) {
         tracing::warn!(error = %error, "fleet inventory queue is unavailable; periodic heartbeat will retry");
     }
+}
+
+/// Add a successfully launched, node-registered worker to the authoritative
+/// reconnect inventory and publish the new snapshot immediately.
+///
+/// Relaycast marks every agent hosted by a provider offline when that
+/// provider's node-control socket disconnects. The reconnect path can restore
+/// those still-running workers only from `inventory.sync`; keeping the
+/// registration solely in [`FleetDeliveryBook`] is not enough because that
+/// book is delivery-local and is never sent to the engine.
+pub(super) async fn record_fleet_inventory_agent(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    token: &crate::node_control::AgentRegistrationToken,
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
+) {
+    fleet_inventory.insert(
+        WorkerName::from(token.name.as_str()),
+        InventoryAgent {
+            agent_id: token.agent_id.clone(),
+            name: token.name.clone(),
+            invocation_id,
+            session_ref,
+        },
+    );
+    publish_fleet_inventory_snapshot(fleet_control_tx, fleet_inventory).await;
 }
 
 pub(super) async fn refresh_fleet_inventory_session_ref(
@@ -2506,6 +2534,59 @@ mod tests {
             Some(FleetControlCommand::UpdateInventory(agents)) => {
                 assert_eq!(agents.len(), 1);
                 assert_eq!(agents[0].name, "agent-b");
+            }
+            other => panic!("expected inventory update, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_node_registration_is_added_to_reconnect_inventory() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(2);
+        let mut inventory = HashMap::from([(
+            WorkerName::from("already-running"),
+            InventoryAgent {
+                agent_id: "agent-existing-id".to_string(),
+                name: "already-running".to_string(),
+                invocation_id: Some("inv-existing".to_string()),
+                session_ref: None,
+            },
+        )]);
+        let token = crate::node_control::AgentRegistrationToken {
+            name: "new-worker".to_string(),
+            agent_id: "agent-new-id".to_string(),
+            token: "at_test".to_string(),
+            delivery_ack_seq: None,
+        };
+
+        record_fleet_inventory_agent(
+            &tx,
+            &mut inventory,
+            &token,
+            Some("inv-new".to_string()),
+            Some("session-new".to_string()),
+        )
+        .await;
+
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(
+            inventory.get(&WorkerName::from("new-worker")),
+            Some(&InventoryAgent {
+                agent_id: "agent-new-id".to_string(),
+                name: "new-worker".to_string(),
+                invocation_id: Some("inv-new".to_string()),
+                session_ref: Some("session-new".to_string()),
+            })
+        );
+        match rx.recv().await {
+            Some(FleetControlCommand::UpdateInventory(agents)) => {
+                assert_eq!(agents.len(), 2);
+                assert!(agents.iter().any(|agent| agent.name == "already-running"));
+                assert!(agents.iter().any(|agent| {
+                    agent.name == "new-worker"
+                        && agent.agent_id == "agent-new-id"
+                        && agent.invocation_id.as_deref() == Some("inv-new")
+                        && agent.session_ref.as_deref() == Some("session-new")
+                }));
             }
             other => panic!("expected inventory update, got {other:?}"),
         }
