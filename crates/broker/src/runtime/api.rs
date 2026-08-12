@@ -753,9 +753,11 @@ impl BrokerRuntime {
 
                 let model_command = format!("/model {}\n", model);
                 let set_model_timeout = set_model_write_timeout(timeout_ms);
-                // The worker-owned writer keeps the accepted command serialized
-                // if this wait expires, but the single runtime actor must not
-                // remain blocked behind a stalled worker stdin pipe.
+                // `send_raw_to_worker` completes only after the command enters
+                // the worker-owned writer queue. Tokio channel sends are
+                // cancellation-safe, so a timeout means the command was not
+                // admitted; once admitted, report it as pending rather than
+                // claiming it failed while the writer can still emit it.
                 let result = match timeout(
                     set_model_timeout,
                     workers.send_raw_to_worker(&name, model_command.into_bytes()),
@@ -775,6 +777,8 @@ impl BrokerRuntime {
                             "name": name,
                             "model": model,
                             "success": true,
+                            "accepted": true,
+                            "pending": true,
                         })));
                     }
                     Err(error) => {

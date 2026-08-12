@@ -47,8 +47,8 @@ impl BrokerRuntime {
             .collect();
         for (request_id, session_id) in expired_terminal_snapshots {
             terminal_snapshot_requests.remove(&request_id);
-            release_terminal_resize_ownership(resize_owners, terminal_sessions, &session_id);
-            if terminal_sessions.remove(&session_id).is_some() {
+            if let Some(session) = terminal_sessions.remove(&session_id) {
+                release_terminal_resize_ownership(resize_owners, &session.agent, &session_id);
                 terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
                 if !try_send_terminal(
                     terminal_control_tx,
@@ -82,8 +82,8 @@ impl BrokerRuntime {
             // A timed-out write may still reach the PTY after cancellation. End
             // the whole session before reporting it so a retry cannot duplicate
             // user keystrokes against that uncertain write.
-            release_terminal_resize_ownership(resize_owners, terminal_sessions, &session_id);
-            if terminal_sessions.remove(&session_id).is_some() {
+            if let Some(session) = terminal_sessions.remove(&session_id) {
+                release_terminal_resize_ownership(resize_owners, &session.agent, &session_id);
                 terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
                 terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
                 if !try_send_terminal(

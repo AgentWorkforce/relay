@@ -44,20 +44,14 @@ pub(super) fn try_send_terminal(
 /// for single-resizer ownership.
 pub(super) fn release_terminal_resize_ownership(
     resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
-    terminal_sessions: &HashMap<String, TerminalSession>,
+    agent: &WorkerName,
     session_id: &str,
 ) {
-    let Some(agent) = terminal_sessions
-        .get(session_id)
-        .map(|session| session.agent.clone())
-    else {
-        return;
-    };
     if resize_owners
-        .get(&agent)
+        .get(agent)
         .is_some_and(|owner| owner.session_id == session_id)
     {
-        resize_owners.remove(&agent);
+        resize_owners.remove(agent);
     }
 }
 
@@ -410,12 +404,13 @@ impl BrokerRuntime {
                 }
             }
             TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {
-                release_terminal_resize_ownership(
-                    &mut self.resize_owners,
-                    &self.terminal_sessions,
-                    &session_id,
-                );
-                self.terminal_sessions.remove(&session_id);
+                if let Some(session) = self.terminal_sessions.remove(&session_id) {
+                    release_terminal_resize_ownership(
+                        &mut self.resize_owners,
+                        &session.agent,
+                        &session_id,
+                    );
+                }
                 self.terminal_snapshot_requests
                     .retain(|_, pending| pending.session_id != session_id);
                 self.terminal_input_requests
@@ -443,12 +438,13 @@ impl BrokerRuntime {
         let is_close = matches!(&message, TerminalToCloud::Closed { .. });
         if !try_send_terminal(&self.terminal_control_tx, message) {
             tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed; ending session");
-            release_terminal_resize_ownership(
-                &mut self.resize_owners,
-                &self.terminal_sessions,
-                &session_id,
-            );
-            self.terminal_sessions.remove(&session_id);
+            if let Some(session) = self.terminal_sessions.remove(&session_id) {
+                release_terminal_resize_ownership(
+                    &mut self.resize_owners,
+                    &session.agent,
+                    &session_id,
+                );
+            }
             self.terminal_snapshot_requests
                 .retain(|_, pending| pending.session_id != session_id);
             self.terminal_input_requests
@@ -469,11 +465,9 @@ impl BrokerRuntime {
     }
 
     fn fail_terminal_session(&mut self, session_id: String, code: &str, message: String) {
-        release_terminal_resize_ownership(
-            &mut self.resize_owners,
-            &self.terminal_sessions,
-            &session_id,
-        );
+        if let Some(session) = self.terminal_sessions.get(&session_id) {
+            release_terminal_resize_ownership(&mut self.resize_owners, &session.agent, &session_id);
+        }
         fail_terminal_session(
             &self.terminal_control_tx,
             &mut self.terminal_sessions,
@@ -1847,8 +1841,10 @@ mod tests {
             ),
         ]);
 
-        release_terminal_resize_ownership(&mut resize_owners, &terminal_sessions, "session-a");
-        terminal_sessions.remove("session-a");
+        let session = terminal_sessions
+            .remove("session-a")
+            .expect("test session exists");
+        release_terminal_resize_ownership(&mut resize_owners, &session.agent, "session-a");
 
         assert!(!resize_owners.contains_key(&agent));
         assert!(resize_owners.contains_key(&other_agent));
