@@ -705,7 +705,7 @@ impl BrokerRuntime {
                     workspace_alias: self.default_workspace.workspace_alias.clone(),
                     from: "broker".to_string(),
                     target: crate::ids::MessageTarget::new(recipient.clone()),
-                    body: boomerang_body,
+                    body: boomerang_body.clone(),
                     thread_id: None,
                     priority: Some(2),
                     injection_mode: crate::protocol::MessageInjectionMode::Wait,
@@ -734,6 +734,7 @@ impl BrokerRuntime {
                             "target": recipient,
                             "obligation_msg_id": msg_id,
                             "event_id": event_id.as_str(),
+                            "body": boomerang_body,
                         }),
                     )
                     .await;
