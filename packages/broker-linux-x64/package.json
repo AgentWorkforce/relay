@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-linux-x64",
-  "version": "11.5.3",
+  "version": "11.5.4",
   "engines": {
     "node": ">=22.0.0"
   },
