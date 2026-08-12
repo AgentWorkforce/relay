@@ -416,7 +416,6 @@ impl BrokerRuntime {
         });
     }
 
-
     pub(super) async fn handle_fleet_control_event(&mut self, event: FleetControlEvent) {
         match event {
             FleetControlEvent::Connected => {

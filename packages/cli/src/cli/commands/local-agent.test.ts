@@ -148,7 +148,6 @@ describe('local agent subtree', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
-
   it.each([
     ['--api-key', 'do-not-forward'],
     ['--api-key', ''],

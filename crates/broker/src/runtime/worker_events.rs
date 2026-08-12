@@ -100,7 +100,6 @@ fn end_terminal_session(
     }
 }
 
-
 fn enqueue_pty_event(
     states: &mut HashMap<WorkerName, PtyObservabilityState>,
     tx: &mpsc::Sender<HostedAgentEvent>,

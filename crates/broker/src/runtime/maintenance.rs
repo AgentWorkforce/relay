@@ -107,7 +107,6 @@ impl BrokerRuntime {
             }
         }
 
-
         // Time out worker request/response calls whose worker never
         // responded. Common cause: worker crashed between us sending
         // the request frame and it parsing the frame. Without this
