@@ -18,6 +18,8 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, Message},
 };
 
+use crate::types::InboundDeliveryMode;
+
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const TOKEN_WAIT_DELAY: Duration = Duration::from_secs(1);
@@ -52,6 +54,19 @@ pub(crate) enum TerminalFromCloud {
     },
     #[serde(rename = "terminal.close")]
     Close { session_id: String },
+    /// Request the broker flip the inbound delivery mode for the session's
+    /// agent. The broker replies with `TerminalToCloud::DeliveryMode` on
+    /// success or `TerminalToCloud::Error` on failure.
+    #[serde(rename = "terminal.set_delivery_mode")]
+    SetDeliveryMode {
+        session_id: String,
+        mode: InboundDeliveryMode,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_mode: Option<InboundDeliveryMode>,
+        /// Broker revision as a decimal string (matches the existing HTTP wire format).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,6 +105,19 @@ pub(crate) enum TerminalToCloud {
         code: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+    },
+    /// Reply to `TerminalFromCloud::SetDeliveryMode`. `matched` is `true` when
+    /// the compare-and-set guard passed and the mode was applied; `false` means
+    /// a concurrent change was detected and the current broker state is reported
+    /// with no mutation. `revision` is a decimal-string u64 matching the HTTP
+    /// wire format.
+    #[serde(rename = "terminal.delivery_mode")]
+    DeliveryMode {
+        session_id: String,
+        mode: InboundDeliveryMode,
+        flushed: usize,
+        matched: bool,
+        revision: String,
     },
 }
 
@@ -324,5 +352,80 @@ mod tests {
         .unwrap();
         assert_eq!(closed_with_error["code"], "closed");
         assert_eq!(closed_with_error["message"], "done");
+    }
+
+    #[test]
+    fn delivery_mode_frames_round_trip() {
+        use super::{InboundDeliveryMode, TerminalFromCloud, TerminalToCloud};
+
+        // client→node: minimal (no optional fields)
+        let set_mode: TerminalFromCloud = serde_json::from_str(
+            r#"{"type":"terminal.set_delivery_mode","session_id":"s","mode":"auto_inject"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set_mode,
+            TerminalFromCloud::SetDeliveryMode {
+                session_id: "s".into(),
+                mode: InboundDeliveryMode::AutoInject,
+                expected_mode: None,
+                expected_revision: None,
+            }
+        );
+
+        // client→node: with compare-and-set guards
+        let set_mode_cas: TerminalFromCloud = serde_json::from_str(
+            r#"{"type":"terminal.set_delivery_mode","session_id":"s","mode":"manual_flush","expected_mode":"auto_inject","expected_revision":"7"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set_mode_cas,
+            TerminalFromCloud::SetDeliveryMode {
+                session_id: "s".into(),
+                mode: InboundDeliveryMode::ManualFlush,
+                expected_mode: Some(InboundDeliveryMode::AutoInject),
+                expected_revision: Some("7".into()),
+            }
+        );
+
+        // Serialising SetDeliveryMode omits None optional fields.
+        let set_mode_json = serde_json::to_value(TerminalFromCloud::SetDeliveryMode {
+            session_id: "s".into(),
+            mode: InboundDeliveryMode::AutoInject,
+            expected_mode: None,
+            expected_revision: None,
+        })
+        .unwrap();
+        assert_eq!(set_mode_json["type"], "terminal.set_delivery_mode");
+        assert_eq!(set_mode_json["mode"], "auto_inject");
+        assert!(set_mode_json.get("expected_mode").is_none());
+        assert!(set_mode_json.get("expected_revision").is_none());
+
+        // node→client: success response
+        let reply = serde_json::to_value(TerminalToCloud::DeliveryMode {
+            session_id: "s".into(),
+            mode: InboundDeliveryMode::AutoInject,
+            flushed: 3,
+            matched: true,
+            revision: "2".into(),
+        })
+        .unwrap();
+        assert_eq!(reply["type"], "terminal.delivery_mode");
+        assert_eq!(reply["mode"], "auto_inject");
+        assert_eq!(reply["flushed"], 3);
+        assert_eq!(reply["matched"], true);
+        assert_eq!(reply["revision"], "2");
+
+        // node→client: CAS miss (matched: false)
+        let cas_miss = serde_json::to_value(TerminalToCloud::DeliveryMode {
+            session_id: "s".into(),
+            mode: InboundDeliveryMode::ManualFlush,
+            flushed: 0,
+            matched: false,
+            revision: "1".into(),
+        })
+        .unwrap();
+        assert_eq!(cas_miss["matched"], false);
+        assert_eq!(cas_miss["mode"], "manual_flush");
     }
 }

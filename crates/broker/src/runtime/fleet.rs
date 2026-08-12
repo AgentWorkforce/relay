@@ -5,6 +5,7 @@ use crate::{
         AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode,
         RelaycastToBroker, FLEET_WIRE_VERSION,
     },
+    listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
     terminal_control::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
@@ -421,6 +422,71 @@ impl BrokerRuntime {
                     message: None,
                 });
             }
+            TerminalControlEvent::Message(TerminalFromCloud::SetDeliveryMode {
+                session_id,
+                mode,
+                expected_mode,
+                expected_revision,
+            }) => {
+                let Some(session) = self.terminal_sessions.get(&session_id).cloned() else {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_found".into(),
+                        message: "terminal session is not active".into(),
+                    });
+                    return;
+                };
+                if session.mode == TerminalMode::View {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "read_only".into(),
+                        message: "view sessions cannot change delivery mode".into(),
+                    });
+                    return;
+                }
+                let expected_revision_u64: Option<u64> = expected_revision
+                    .as_deref()
+                    .and_then(|s| s.parse().ok());
+                let (tx, rx) = tokio::sync::oneshot::channel::<Result<SetInboundDeliveryModeOk, DeliveryRouteError>>();
+                self.handle_api_request(ListenApiRequest::SetInboundDeliveryMode {
+                    name: session.agent.clone(),
+                    mode,
+                    expected_mode,
+                    expected_revision: expected_revision_u64,
+                    reply: tx,
+                })
+                .await;
+                match rx.await {
+                    Ok(Ok(ok)) => {
+                        self.send_terminal(TerminalToCloud::DeliveryMode {
+                            session_id,
+                            mode: ok.mode,
+                            flushed: ok.flushed,
+                            matched: ok.matched,
+                            revision: ok.revision.to_string(),
+                        });
+                    }
+                    Ok(Err(DeliveryRouteError::WorkerNotFound(name))) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "agent_not_found".into(),
+                            message: format!("no worker named '{name}'"),
+                        });
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            target = "relay_broker::terminal",
+                            session_id = %session_id,
+                            "delivery mode handler dropped reply channel"
+                        );
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "internal_error".into(),
+                            message: "delivery mode reply was not received".into(),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -433,7 +499,8 @@ impl BrokerRuntime {
             | TerminalToCloud::Output { session_id, .. }
             | TerminalToCloud::InputAck { session_id, .. }
             | TerminalToCloud::Error { session_id, .. }
-            | TerminalToCloud::Closed { session_id, .. } => session_id.clone(),
+            | TerminalToCloud::Closed { session_id, .. }
+            | TerminalToCloud::DeliveryMode { session_id, .. } => session_id.clone(),
         };
         let is_close = matches!(&message, TerminalToCloud::Closed { .. });
         if !try_send_terminal(&self.terminal_control_tx, message) {

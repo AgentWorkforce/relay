@@ -210,6 +210,17 @@ export async function startFleetNodeAttachProxy(
   let reconnecting = false;
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Locally-tracked delivery mode, kept in sync with each broker reply. */
+  let loopbackDeliveryMode: 'manual_flush' | 'auto_inject' =
+    options.mode === 'drive' ? 'manual_flush' : 'auto_inject';
+  type DeliveryModeResult = { mode: string; flushed: number; matched: boolean; revision: string };
+  /** At most one in-flight delivery-mode PUT at a time. */
+  let pendingDeliveryMode: {
+    resolve: (result: DeliveryModeResult) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  const DELIVERY_MODE_TIMEOUT_MS = 10_000;
   const loopbackApiKey = randomBytes(32).toString('base64url');
   const loopbackAuthorized = (headers: IncomingMessage['headers']) =>
     headers.authorization === `Bearer ${loopbackApiKey}` || headers['x-api-key'] === loopbackApiKey;
@@ -260,16 +271,69 @@ export async function startFleetNodeAttachProxy(
     const name = encodeURIComponent(options.agent);
     if (path === `/api/spawned/${name}/delivery-mode`) {
       if (request.method === 'GET') {
-        json(response, 200, { mode: options.mode === 'drive' ? 'manual_flush' : 'auto_inject' });
-      } else {
-        await readBody(request);
-        json(response, 200, {
-          mode: options.mode === 'drive' ? 'manual_flush' : 'auto_inject',
-          flushed: 0,
-          matched: true,
-          revision: '1',
-        });
+        json(response, 200, { mode: loopbackDeliveryMode });
+        return;
       }
+      // PUT — forward the request to the remote broker via the terminal WS and
+      // await the broker's real reply. This is the path that was previously a
+      // static stub returning manual_flush, causing drive attach to fail with
+      // "broker remained in manual_flush mode".
+      const body = await readBody(request);
+      const requestedMode =
+        body.mode === 'auto_inject' ? 'auto_inject' : body.mode === 'manual_flush' ? 'manual_flush' : null;
+      if (requestedMode === null) {
+        json(response, 400, {
+          error: { code: 'invalid_mode', message: `unsupported delivery mode '${String(body.mode)}'` },
+        });
+        return;
+      }
+      if (!remote || remote.readyState !== WebSocket.OPEN) {
+        json(response, 503, {
+          error: { code: 'node_unreachable', message: 'terminal transport is not connected' },
+        });
+        return;
+      }
+      if (pendingDeliveryMode) {
+        json(response, 503, {
+          error: { code: 'delivery_mode_conflict', message: 'a delivery mode request is already in flight' },
+        });
+        return;
+      }
+      const result = await new Promise<DeliveryModeResult | Error>((resolve) => {
+        const timer = setTimeout(() => {
+          pendingDeliveryMode = null;
+          resolve(new FleetNodeAttachError('delivery mode request timed out', 'delivery_mode_timeout'));
+        }, DELIVERY_MODE_TIMEOUT_MS);
+        pendingDeliveryMode = {
+          resolve: (r) => resolve(r),
+          reject: (e) => resolve(e),
+          timer,
+        };
+        const frame: Record<string, unknown> = {
+          type: 'terminal.set_delivery_mode',
+          session_id: sessionId,
+          mode: requestedMode,
+        };
+        if (typeof body.expected_mode === 'string') frame.expected_mode = body.expected_mode;
+        if (typeof body.expected_revision === 'string') frame.expected_revision = body.expected_revision;
+        remote!.send(JSON.stringify(frame));
+      });
+      if (result instanceof Error) {
+        json(response, 503, {
+          error: {
+            code: result instanceof FleetNodeAttachError ? (result.code ?? 'delivery_mode_failed') : 'delivery_mode_failed',
+            message: result.message,
+          },
+        });
+        return;
+      }
+      loopbackDeliveryMode = result.mode === 'manual_flush' ? 'manual_flush' : 'auto_inject';
+      json(response, 200, {
+        mode: result.mode,
+        flushed: result.flushed,
+        matched: result.matched,
+        revision: result.revision,
+      });
       return;
     }
     if (request.method === 'GET' && path === `/api/spawned/${name}/pending`) {
@@ -517,10 +581,30 @@ export async function startFleetNodeAttachProxy(
           name: options.agent,
           bytes_written: typeof frame.bytes_written === 'number' ? frame.bytes_written : 0,
         });
+      } else if (frame.type === 'terminal.delivery_mode') {
+        if (pendingDeliveryMode) {
+          const pending = pendingDeliveryMode;
+          pendingDeliveryMode = null;
+          clearTimeout(pending.timer);
+          pending.resolve({
+            mode: typeof frame.mode === 'string' ? frame.mode : 'auto_inject',
+            flushed: typeof frame.flushed === 'number' ? frame.flushed : 0,
+            matched: typeof frame.matched === 'boolean' ? frame.matched : true,
+            revision: typeof frame.revision === 'string' ? frame.revision : '1',
+          });
+        }
       } else if (frame.type === 'terminal.error') {
         const message = typeof frame.message === 'string' ? frame.message : 'remote terminal failed';
         const code = typeof frame.code === 'string' ? frame.code : 'terminal_error';
-        if (readiness === activeReadiness && !readiness.settled) {
+        // A terminal.error while a delivery-mode PUT is in flight is op-scoped
+        // (agent_not_found, invalid_mode, etc.) — reject the pending request
+        // without tearing down the terminal session.
+        if (pendingDeliveryMode) {
+          const pending = pendingDeliveryMode;
+          pendingDeliveryMode = null;
+          clearTimeout(pending.timer);
+          pending.reject(new FleetNodeAttachError(message, code));
+        } else if (readiness === activeReadiness && !readiness.settled) {
           endTerminal(new FleetNodeAttachError(message, code));
         } else {
           broadcast(inputSockets, { type: 'pty_input_error', code, message });
@@ -573,6 +657,12 @@ export async function startFleetNodeAttachProxy(
         reconnectTimer = undefined;
       }
       rejectReadiness(activeReadiness, new FleetNodeAttachError('terminal attach closed', 'closed'));
+      if (pendingDeliveryMode) {
+        const pending = pendingDeliveryMode;
+        pendingDeliveryMode = null;
+        clearTimeout(pending.timer);
+        pending.reject(new FleetNodeAttachError('terminal attach closed', 'closed'));
+      }
       const activeRemote = remote;
       remote = undefined;
       if (activeRemote && activeRemote.readyState === WebSocket.OPEN) {
