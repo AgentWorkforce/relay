@@ -1,5 +1,6 @@
 use super::fleet::{
-    refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
+    fail_terminal_session, refresh_fleet_inventory_session_ref, try_send_terminal,
+    verified_spawn_ready_result,
 };
 use super::*;
 use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
@@ -532,6 +533,54 @@ impl BrokerRuntime {
         let terminal_input_requests = &mut self.terminal_input_requests;
 
         match worker_event {
+            WorkerEvent::WriterFailed {
+                name,
+                generation,
+                error,
+            } => {
+                let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
+                if !worker_event_is_current(current_generation, generation) {
+                    tracing::debug!(
+                        target = "agent_relay::broker",
+                        worker = %name,
+                        event_generation = %generation,
+                        current_generation = ?current_generation,
+                        "ignoring writer failure from stale worker generation"
+                    );
+                    return;
+                }
+
+                tracing::warn!(
+                    target = "relay_broker::terminal",
+                    worker = %name,
+                    error = %error,
+                    "worker command writer failed; closing attached terminals and resetting worker"
+                );
+                let session_ids: Vec<String> = terminal_sessions
+                    .iter()
+                    .filter(|(_, session)| session.agent == name)
+                    .map(|(session_id, _)| session_id.clone())
+                    .collect();
+                for session_id in session_ids {
+                    fail_terminal_session(
+                        terminal_control_tx,
+                        terminal_sessions,
+                        terminal_snapshot_requests,
+                        terminal_input_requests,
+                        session_id,
+                        "worker_write_failed",
+                        format!("worker command writer failed: {error}"),
+                    );
+                }
+                if let Err(release_error) = workers.terminate_after_writer_failure(name.as_str()) {
+                    tracing::warn!(
+                        target = "relay_broker::terminal",
+                        worker = %name,
+                        error = %release_error,
+                        "failed to signal worker after command writer failure"
+                    );
+                }
+            }
             WorkerEvent::Message {
                 name,
                 generation,
@@ -1019,7 +1068,12 @@ impl BrokerRuntime {
                                 }
                             };
                             let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
-                            let snapshot_failed = matches!(&message, TerminalToCloud::Error { .. });
+                            let snapshot_failure = match &message {
+                                TerminalToCloud::Error { code, message, .. } => {
+                                    Some((code.clone(), message.clone()))
+                                }
+                                _ => None,
+                            };
                             if !try_send_terminal(terminal_control_tx, message) {
                                 tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while sending snapshot; ending session");
                                 end_terminal_session(
@@ -1062,8 +1116,16 @@ impl BrokerRuntime {
                                         break;
                                     }
                                 }
-                            } else if snapshot_failed {
-                                terminal_sessions.remove(&session_id);
+                            } else if let Some((code, message)) = snapshot_failure {
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    &code,
+                                    &message,
+                                );
                             }
                         } else {
                             // Generic worker request/response dispatch.

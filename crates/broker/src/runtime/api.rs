@@ -16,6 +16,16 @@ const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
 /// round-trip that resolves in well under a second on a healthy worker.
 const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// `/model` writes use the same worker-owned stdin writer as protocol frames.
+/// Never let the runtime actor wait on its completion without a deadline.
+const DEFAULT_SET_MODEL_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
+    timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_SET_MODEL_TIMEOUT)
+}
+
 /// Scopes granted to observer tokens minted via `/api/observer-token`: broad
 /// read access to workspace activity, deliberately excluding anything
 /// write/spawn-capable (unlike the raw `rk_live_...` workspace key this
@@ -736,35 +746,30 @@ impl BrokerRuntime {
                 timeout_ms,
                 reply,
             } => {
-                let Some(handle) = workers.workers.get_mut(&name) else {
+                if !workers.workers.contains_key(&name) {
                     let _ = reply.send(Err(format!("unknown worker '{}'", name)));
                     return;
-                };
+                }
 
                 let model_command = format!("/model {}\n", model);
-                let result = async {
-                    handle
-                        .stdin
-                        .write_all(model_command.as_bytes())
-                        .await
-                        .with_context(|| {
-                            format!("failed writing model command to worker '{}'", name)
-                        })?;
-                    handle
-                        .stdin
-                        .flush()
-                        .await
-                        .with_context(|| format!("failed flushing worker '{}' stdin", name))?;
-                    if let Some(timeout_ms) = timeout_ms {
-                        tracing::info!(
-                            name = %name,
-                            timeout_ms,
-                            "HTTP API set_model timeout_ms is currently advisory only"
-                        );
-                    }
-                    Ok::<(), anyhow::Error>(())
-                }
-                .await;
+                let set_model_timeout = set_model_write_timeout(timeout_ms);
+                // `send_raw_to_worker` completes only after the command enters
+                // the worker-owned writer queue. Tokio channel sends are
+                // cancellation-safe, so a timeout means the command was not
+                // admitted; once admitted, report it as pending rather than
+                // claiming it failed while the writer can still emit it.
+                let result = match timeout(
+                    set_model_timeout,
+                    workers.send_raw_to_worker(&name, model_command.into_bytes()),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(anyhow::anyhow!(
+                        "set_model timed out after {}ms for '{name}'",
+                        set_model_timeout.as_millis()
+                    )),
+                };
 
                 match result {
                     Ok(()) => {
@@ -772,6 +777,8 @@ impl BrokerRuntime {
                             "name": name,
                             "model": model,
                             "success": true,
+                            "accepted": true,
+                            "pending": true,
                         })));
                     }
                     Err(error) => {
@@ -2590,6 +2597,25 @@ mod skill_injection_tests {
         assert!(relay_skill_prefix("droid", None).is_none());
 
         assert!(relay_skill_prefix("codex", Some("gpt-5.5")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod set_model_timeout_tests {
+    use super::{set_model_write_timeout, DEFAULT_SET_MODEL_TIMEOUT};
+    use std::time::Duration;
+
+    #[test]
+    fn set_model_timeout_uses_the_requested_deadline_or_a_finite_default() {
+        assert_eq!(set_model_write_timeout(None), DEFAULT_SET_MODEL_TIMEOUT);
+        assert_eq!(
+            set_model_write_timeout(Some(250)),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            set_model_write_timeout(Some(10_000)),
+            Duration::from_millis(10_000)
+        );
     }
 }
 
