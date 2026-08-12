@@ -1355,10 +1355,13 @@ pub(super) async fn publish_fleet_inventory_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_inventory: &HashMap<WorkerName, InventoryAgent>,
 ) {
-    if let Err(error) = fleet_control_tx.try_send(FleetControlCommand::UpdateInventory(
-        fleet_inventory.values().cloned().collect(),
-    )) {
-        tracing::warn!(error = %error, "fleet inventory queue is unavailable; periodic heartbeat will retry");
+    if let Err(error) = fleet_control_tx
+        .send(FleetControlCommand::UpdateInventory(
+            fleet_inventory.values().cloned().collect(),
+        ))
+        .await
+    {
+        tracing::warn!(error = %error, "fleet inventory channel closed; reconnect inventory update was not delivered");
     }
 }
 
@@ -2634,6 +2637,45 @@ mod tests {
                 }));
             }
             other => panic!("expected inventory update, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_inventory_snapshot_waits_for_backpressure_instead_of_dropping() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(1);
+        tx.send(FleetControlCommand::HeartbeatNow)
+            .await
+            .expect("prefill fleet control queue");
+        let inventory = HashMap::from([(
+            WorkerName::from("worker-a"),
+            InventoryAgent {
+                agent_id: "agent-a-id".to_string(),
+                name: "worker-a".to_string(),
+                invocation_id: None,
+                session_ref: None,
+            },
+        )]);
+        let publish = tokio::spawn({
+            let tx = tx.clone();
+            async move { publish_fleet_inventory_snapshot(&tx, &inventory).await }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !publish.is_finished(),
+            "inventory publication must wait while the queue is full"
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(FleetControlCommand::HeartbeatNow)
+        ));
+        publish.await.expect("inventory publisher should complete");
+        match rx.recv().await {
+            Some(FleetControlCommand::UpdateInventory(agents)) => {
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].name, "worker-a");
+            }
+            other => panic!("expected reliable inventory update, got {other:?}"),
         }
     }
 
