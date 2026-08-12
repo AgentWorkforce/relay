@@ -1200,9 +1200,14 @@ describe('registerCoreCommands', () => {
     // signal arriving during startup is handled gracefully too), so
     // registration alone no longer implies `relay` is set. Wait for the
     // broker to actually be up before firing the signal.
-    for (let i = 0; i < 20 && !(deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
-      (call) => call[0] === 'Broker started.'
-    ); i += 1) {
+    for (
+      let i = 0;
+      i < 20 &&
+      !(deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
+        (call) => call[0] === 'Broker started.'
+      );
+      i += 1
+    ) {
       await Promise.resolve();
     }
 
