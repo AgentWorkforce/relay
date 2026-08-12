@@ -587,7 +587,9 @@ impl BrokerRuntime {
                     InboundQueueOutcome::Queued => {
                         // P2-3: register obligation only when the message is actually queued
                         // (not on RejectedFull or WorkerMissing where delivery may not occur).
-                        if crate::obligation::is_obligating(&fields.body) {
+                        if crate::obligation::boomerang_enabled()
+                            && crate::obligation::is_obligating(&fields.body)
+                        {
                             let interval =
                                 std::time::Duration::from_millis(crate::obligation::interval_ms());
                             self.obligation_store.register(
@@ -627,7 +629,9 @@ impl BrokerRuntime {
                     }
                     InboundQueueOutcome::DrainNow(to_drain) => {
                         // P2-3: register obligation only when the message will actually drain.
-                        if crate::obligation::is_obligating(&fields.body) {
+                        if crate::obligation::boomerang_enabled()
+                            && crate::obligation::is_obligating(&fields.body)
+                        {
                             let interval =
                                 std::time::Duration::from_millis(crate::obligation::interval_ms());
                             self.obligation_store.register(

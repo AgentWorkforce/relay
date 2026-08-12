@@ -106,7 +106,10 @@ function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
 }
 
 function asWsUrl(value: string): string {
-  return value.replace(/^http/i, 'ws');
+  const lower = value.toLowerCase();
+  if (lower.startsWith('https://')) return 'wss://' + value.slice(8);
+  if (lower.startsWith('http://')) return 'ws://' + value.slice(7);
+  return value;
 }
 
 function safeNodePath(node: string): string {

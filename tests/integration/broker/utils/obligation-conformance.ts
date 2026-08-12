@@ -31,8 +31,18 @@
  *   - A real model-turn signal, but only on the native (AI-SDK) runtime:
  *     `turn.settled` (packages/harnesses/src/ai-sdk/harness-host.ts), surfaced
  *     to a driver client through `getAgentEventHistory`.
+ *   - Boomerang (`crates/broker/src/obligation.rs`, `ObligationStore`): wired
+ *     into `crates/broker/src/runtime/maintenance.rs`. Obligating DMs
+ *     (containing OBLIGATION_MARKER) register an ObligationRecord; the 500 ms
+ *     maintenance tick drains due obligations and re-injects a knock carrying
+ *     RETURN_MARKER to the recipient (up to 3 times). A ✅ reaction from the
+ *     author discharges the obligation. Toggle: `RELAY_OBLIGATION_BOOMERANG=0`
+ *     disables all boomerang; `RELAY_OBLIGATION_INTERVAL_MS=<ms>` sets the
+ *     return interval. After successful injection the broker emits a
+ *     `relay_inbound` event carrying `obligation_msg_id`, which `waitForReturn`
+ *     observes on the native path.
  *
- * Does not exist:
+ * Does not exist (deferred):
  *   - Any `obligation` object on the wire. `send_dm` has no field for it, so
  *     this fixture carries it as a text envelope (see `OBLIGATION_MARKER`) and
  *     that is a stand-in, not the protocol shape.
@@ -41,15 +51,8 @@
  *   - Any organisational edge, so `dischargeDelegate` and the escalation ladder
  *     have no one to resolve to. Arm C therefore names its escalation target
  *     explicitly rather than resolving it.
- *
- * Now exists (as of obligation-lifecycle):
- *   - Boomerang: `crates/broker/src/obligation.rs` (ObligationStore) wired into
- *     `crates/broker/src/runtime/maintenance.rs`. Obligating DMs (containing
- *     OBLIGATION_MARKER) register an ObligationRecord; the 500 ms maintenance
- *     tick drains due obligations and re-injects a knock carrying RETURN_MARKER
- *     to the recipient (up to 3 times). A ✅ reaction from the author discharges
- *     the obligation. Toggle: RELAY_OBLIGATION_BOOMERANG=0 disables all
- *     boomerang; RELAY_OBLIGATION_INTERVAL_MS=<ms> sets the interval.
+ *   - Discharge by delegate: current implementation enforces author-only
+ *     discharge per the load-bearing clearing rule in obligation.rs.
  *
  * ── Prerequisite worth checking before reading any result ───────────────────
  *
