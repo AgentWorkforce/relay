@@ -234,6 +234,12 @@ describe('default Relayfile integration bridge', () => {
       requestTimeoutMs: 30_000,
       socketPath: '/tmp/relayfile-test.sock',
     });
+    expect(relayfileIntegrationClientOptions({ requestTimeoutMs: undefined })).toEqual({
+      requestTimeoutMs: 30_000,
+    });
+    expect(relayfileIntegrationClientOptions({ requestTimeoutMs: 45_000 })).toEqual({
+      requestTimeoutMs: 45_000,
+    });
   });
 
   it('allows a real provider-status request to clear the former 10-second boundary', async () => {
