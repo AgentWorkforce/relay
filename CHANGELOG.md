@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Increased the Relayfile integration control-plane request budget so subscription provisioning does not fail at the previous 10-second boundary when Cloud provider status is slow.
+- Increased the Relayfile integration control-plane request budget so subscription provisioning does not fail at the previous 10-second boundary when Cloud provider status is slow, including when callers forward an undefined optional timeout.
 
 ## [11.5.2] - 2026-08-11
 

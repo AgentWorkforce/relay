@@ -158,8 +158,8 @@ export function relayfileIntegrationClientOptions(
   options: RelayfileClientOptions = {}
 ): RelayfileClientOptions {
   return {
-    requestTimeoutMs: RELAYFILE_INTEGRATION_REQUEST_TIMEOUT_MS,
     ...options,
+    requestTimeoutMs: options.requestTimeoutMs ?? RELAYFILE_INTEGRATION_REQUEST_TIMEOUT_MS,
   };
 }
 
