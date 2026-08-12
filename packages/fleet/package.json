@@ -28,7 +28,7 @@
   "dependencies": {
     "@agent-relay/harness-driver": "11.5.2",
     "@agent-relay/harnesses": "11.5.2",
-    "@relaycast/sdk": "^6.0.0",
+    "@relaycast/sdk": "^8.0.0",
     "ws": "^8.18.3",
     "zod": "^4.4.3"
   },
