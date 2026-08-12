@@ -1196,11 +1196,13 @@ describe('registerCoreCommands', () => {
     });
     void runCommand(program, ['up']);
 
-    for (
-      let i = 0;
-      i < 10 && (deps.onSignal as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
-      i += 1
-    ) {
+    // SIGINT/SIGTERM are now registered before the broker starts (so a
+    // signal arriving during startup is handled gracefully too), so
+    // registration alone no longer implies `relay` is set. Wait for the
+    // broker to actually be up before firing the signal.
+    for (let i = 0; i < 20 && !(deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
+      (call) => call[0] === 'Broker started.'
+    ); i += 1) {
       await Promise.resolve();
     }
 
