@@ -347,8 +347,29 @@ impl BrokerRuntime {
                 // the worker MCP never re-registers over HTTP. If node binding is
                 // unavailable, fall back to HTTP pre-registration so a tokenless
                 // node (e.g. mint failure) still spawns a working agent.
+                let mut fleet_registration = None;
+                let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                 let worker_relay_key = if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
+                    match super::fleet::resolve_fleet_agent_token_identity(
+                        relaycast_http,
+                        fleet_delivery_book,
+                        &name,
+                        &token,
+                    )
+                    .await
+                    {
+                        Ok(registration) => {
+                            fleet_registration = Some((registration, None, session_ref.clone()));
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "could not resolve supplied agent token for reconnect inventory"
+                            );
+                        }
+                    }
                     Some(token)
                 } else {
                     // Derive the session ref from the resolved spec the same way
@@ -356,13 +377,12 @@ impl BrokerRuntime {
                     // `harnessConfig.session_id` registers as a resumable session
                     // rather than a fresh spawn. No invocation id exists on the
                     // HTTP path.
-                    let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                     match super::fleet::register_node_agent_token(
                         fleet_control_tx,
                         fleet_delivery_book,
                         name.as_str(),
                         None,
-                        session_ref,
+                        session_ref.clone(),
                     )
                     .await
                     {
@@ -371,7 +391,9 @@ impl BrokerRuntime {
                                 worker = %name,
                                 "bound agent to node via agent.register for HTTP spawn"
                             );
-                            Some(token.token)
+                            let relay_key = token.token.clone();
+                            fleet_registration = Some((token, None, session_ref));
+                            Some(relay_key)
                         }
                         Err(node_error) => {
                             tracing::warn!(
@@ -388,15 +410,35 @@ impl BrokerRuntime {
                                     // delivery. Bind it to this node so it is
                                     // deliverable, surfacing a loud warning if the
                                     // bind fails.
-                                    if let Some(warning) =
-                                        super::relaycast_events::bind_http_registered_agent_to_node(
+                                    let bind_warning = super::relaycast_events::bind_http_registered_agent_to_node(
+                                        relaycast_http,
+                                        fleet_node_name,
+                                        &name,
+                                    )
+                                    .await;
+                                    if let Some(warning) = bind_warning {
+                                        preregistration_warning = Some(warning);
+                                    } else {
+                                        match super::fleet::resolve_fleet_agent_token_identity(
                                             relaycast_http,
-                                            fleet_node_name,
+                                            fleet_delivery_book,
                                             &name,
+                                            &token,
                                         )
                                         .await
-                                    {
-                                        preregistration_warning = Some(warning);
+                                        {
+                                            Ok(registration) => {
+                                                fleet_registration =
+                                                    Some((registration, None, session_ref.clone()));
+                                            }
+                                            Err(error) => {
+                                                tracing::warn!(
+                                                    worker = %name,
+                                                    error = %error,
+                                                    "could not resolve HTTP-registered agent for reconnect inventory"
+                                                );
+                                            }
+                                        }
                                     }
                                     Some(token)
                                 }
@@ -578,6 +620,17 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        if let Some((token, invocation_id, session_ref)) = fleet_registration.take()
+                        {
+                            super::fleet::record_fleet_inventory_agent(
+                                fleet_control_tx,
+                                fleet_inventory,
+                                &token,
+                                invocation_id,
+                                session_ref,
+                            )
+                            .await;
+                        }
                         // Prepend relay skill text for small-tier models and CLI harnesses that
                         // need explicit tool guidance to reliably call add_agent / remove_agent.
                         // Skip when relay prompt injection is opted out — relay tools are absent.

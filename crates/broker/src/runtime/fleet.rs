@@ -947,6 +947,7 @@ impl BrokerRuntime {
             &mut self.agent_spawn_count,
             &self.fleet_control_tx,
             &mut self.fleet_delivery_book,
+            &mut self.fleet_inventory,
             &self.fleet_node_name,
             Some(invoke.invocation_id.clone()),
             session_ref,
@@ -1354,11 +1355,86 @@ pub(super) async fn publish_fleet_inventory_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_inventory: &HashMap<WorkerName, InventoryAgent>,
 ) {
-    if let Err(error) = fleet_control_tx.try_send(FleetControlCommand::UpdateInventory(
-        fleet_inventory.values().cloned().collect(),
-    )) {
-        tracing::warn!(error = %error, "fleet inventory queue is unavailable; periodic heartbeat will retry");
+    if let Err(error) = fleet_control_tx
+        .send(FleetControlCommand::UpdateInventory(
+            fleet_inventory.values().cloned().collect(),
+        ))
+        .await
+    {
+        tracing::warn!(error = %error, "fleet inventory channel closed; reconnect inventory update was not delivered");
     }
+}
+
+/// Add a successfully launched, node-registered worker to the authoritative
+/// reconnect inventory and publish the new snapshot immediately.
+///
+/// Relaycast marks every agent hosted by a provider offline when that
+/// provider's node-control socket disconnects. The reconnect path can restore
+/// those still-running workers only from `inventory.sync`; keeping the
+/// registration solely in [`FleetDeliveryBook`] is not enough because that
+/// book is delivery-local and is never sent to the engine.
+pub(super) async fn record_fleet_inventory_agent(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    token: &crate::node_control::AgentRegistrationToken,
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
+) {
+    fleet_inventory.insert(
+        WorkerName::from(token.name.as_str()),
+        InventoryAgent {
+            agent_id: token.agent_id.clone(),
+            name: token.name.clone(),
+            invocation_id,
+            session_ref,
+        },
+    );
+    publish_fleet_inventory_snapshot(fleet_control_tx, fleet_inventory).await;
+}
+
+/// Resolve an opaque agent token to the authoritative identity required by
+/// `inventory.sync` and delivery bookkeeping.
+///
+/// Some supported spawn callers pre-mint the worker token and pass only that
+/// credential to the broker. The token itself does not encode an agent id, so
+/// resolve it through Relaycast before launch rather than silently omitting the
+/// worker from reconnect inventory.
+pub(super) async fn resolve_fleet_agent_token_identity(
+    relaycast_http: &RelaycastHttpClient,
+    fleet_delivery_book: &mut FleetDeliveryBook,
+    expected_name: &WorkerName,
+    token: &str,
+) -> Result<crate::node_control::AgentRegistrationToken, String> {
+    let relay = relaycast_http
+        .relay_client()
+        .ok_or_else(|| "relaycast_client_unavailable".to_string())?;
+    let agent = relay
+        .get_current_agent(token.to_string())
+        .await
+        .map_err(|error| format!("agent_token_identity_lookup_failed: {error}"))?;
+    registration_token_for_resolved_agent(fleet_delivery_book, expected_name, token, agent)
+}
+
+fn registration_token_for_resolved_agent(
+    fleet_delivery_book: &mut FleetDeliveryBook,
+    expected_name: &WorkerName,
+    token: &str,
+    agent: relaycast::Agent,
+) -> Result<crate::node_control::AgentRegistrationToken, String> {
+    if agent.name != expected_name.as_str() {
+        return Err(format!(
+            "agent_token_identity_mismatch: expected '{}', resolved '{}'",
+            expected_name, agent.name
+        ));
+    }
+
+    fleet_delivery_book.bind_authoritative_identity(agent.name.clone(), agent.id.clone());
+    Ok(crate::node_control::AgentRegistrationToken {
+        name: agent.name,
+        agent_id: agent.id,
+        token: token.to_string(),
+        delivery_ack_seq: None,
+    })
 }
 
 pub(super) async fn refresh_fleet_inventory_session_ref(
@@ -2509,6 +2585,155 @@ mod tests {
             }
             other => panic!("expected inventory update, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn successful_node_registration_is_added_to_reconnect_inventory() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(2);
+        let mut inventory = HashMap::from([(
+            WorkerName::from("already-running"),
+            InventoryAgent {
+                agent_id: "agent-existing-id".to_string(),
+                name: "already-running".to_string(),
+                invocation_id: Some("inv-existing".to_string()),
+                session_ref: None,
+            },
+        )]);
+        let token = crate::node_control::AgentRegistrationToken {
+            name: "new-worker".to_string(),
+            agent_id: "agent-new-id".to_string(),
+            token: "at_test".to_string(),
+            delivery_ack_seq: None,
+        };
+
+        record_fleet_inventory_agent(
+            &tx,
+            &mut inventory,
+            &token,
+            Some("inv-new".to_string()),
+            Some("session-new".to_string()),
+        )
+        .await;
+
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(
+            inventory.get(&WorkerName::from("new-worker")),
+            Some(&InventoryAgent {
+                agent_id: "agent-new-id".to_string(),
+                name: "new-worker".to_string(),
+                invocation_id: Some("inv-new".to_string()),
+                session_ref: Some("session-new".to_string()),
+            })
+        );
+        match rx.recv().await {
+            Some(FleetControlCommand::UpdateInventory(agents)) => {
+                assert_eq!(agents.len(), 2);
+                assert!(agents.iter().any(|agent| agent.name == "already-running"));
+                assert!(agents.iter().any(|agent| {
+                    agent.name == "new-worker"
+                        && agent.agent_id == "agent-new-id"
+                        && agent.invocation_id.as_deref() == Some("inv-new")
+                        && agent.session_ref.as_deref() == Some("session-new")
+                }));
+            }
+            other => panic!("expected inventory update, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_inventory_snapshot_waits_for_backpressure_instead_of_dropping() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(1);
+        tx.send(FleetControlCommand::HeartbeatNow)
+            .await
+            .expect("prefill fleet control queue");
+        let inventory = HashMap::from([(
+            WorkerName::from("worker-a"),
+            InventoryAgent {
+                agent_id: "agent-a-id".to_string(),
+                name: "worker-a".to_string(),
+                invocation_id: None,
+                session_ref: None,
+            },
+        )]);
+        let publish = tokio::spawn({
+            let tx = tx.clone();
+            async move { publish_fleet_inventory_snapshot(&tx, &inventory).await }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !publish.is_finished(),
+            "inventory publication must wait while the queue is full"
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(FleetControlCommand::HeartbeatNow)
+        ));
+        publish.await.expect("inventory publisher should complete");
+        match rx.recv().await {
+            Some(FleetControlCommand::UpdateInventory(agents)) => {
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].name, "worker-a");
+            }
+            other => panic!("expected reliable inventory update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supplied_agent_token_resolves_to_authoritative_fleet_identity() {
+        let mut delivery_book = FleetDeliveryBook::default();
+        let token = registration_token_for_resolved_agent(
+            &mut delivery_book,
+            &WorkerName::from("worker-a"),
+            "at_test",
+            relaycast::Agent {
+                id: "agent-a-id".to_string(),
+                workspace_id: Some("workspace-a".to_string()),
+                name: "worker-a".to_string(),
+                agent_type: "agent".to_string(),
+                status: "active".to_string(),
+                persona: None,
+                metadata: serde_json::Map::new(),
+                created_at: None,
+                last_seen: None,
+                channels: Vec::new(),
+            },
+        )
+        .expect("matching supplied token identity should resolve");
+
+        assert_eq!(token.name, "worker-a");
+        assert_eq!(token.agent_id, "agent-a-id");
+        assert_eq!(token.token, "at_test");
+        assert_eq!(
+            delivery_book.active_agent_id("worker-a"),
+            Some("agent-a-id")
+        );
+    }
+
+    #[test]
+    fn supplied_agent_token_rejects_a_different_agent_identity() {
+        let mut delivery_book = FleetDeliveryBook::default();
+        let error = registration_token_for_resolved_agent(
+            &mut delivery_book,
+            &WorkerName::from("worker-a"),
+            "at_test",
+            relaycast::Agent {
+                id: "agent-b-id".to_string(),
+                workspace_id: Some("workspace-a".to_string()),
+                name: "worker-b".to_string(),
+                agent_type: "agent".to_string(),
+                status: "active".to_string(),
+                persona: None,
+                metadata: serde_json::Map::new(),
+                created_at: None,
+                last_seen: None,
+                channels: Vec::new(),
+            },
+        )
+        .expect_err("a supplied token for another agent must not enter inventory");
+
+        assert!(error.contains("agent_token_identity_mismatch"));
+        assert_eq!(delivery_book.active_agent_id("worker-a"), None);
     }
 
     #[tokio::test]
