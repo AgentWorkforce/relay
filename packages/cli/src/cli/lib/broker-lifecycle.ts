@@ -332,11 +332,91 @@ export function classifyBrokerStartError(err: unknown): string {
 /** Exported for testing. */
 export function classifyBrokerStartStage(_err: unknown, message: string): string {
   if (isBrokerAlreadyRunningError(message)) return 'already_running';
-  if (/fetch failed/i.test(message)) return 'connect';
+  // Node's native fetch() throws "fetch failed"; the CLI's Bun-compiled
+  // binaries throw Bun's own connect-failure text instead ("Unable to
+  // connect. Is the computer able to access the url?"). Recognize both so
+  // the shipped binary doesn't misclassify every connect failure as generic
+  // 'startup'.
+  if (/fetch failed/i.test(message) || /unable to connect/i.test(message)) return 'connect';
   if (/Broker did not report API port/i.test(message)) return 'spawn';
   if (/Broker process exited with code/i.test(message)) return 'spawn';
   if (/ENOENT/i.test(message) && /broker/i.test(message)) return 'resolve_binary';
   return 'startup';
+}
+
+/**
+ * Render the same "Failed to start broker" diagnostic + telemetry the
+ * `runUpCommand` catch block has always used. Extracted so the process-level
+ * crash guard (below) can report an unhandled rejection/exception the exact
+ * same way as an ordinary caught startup failure.
+ */
+function reportBrokerStartFailure(
+  err: unknown,
+  deps: CoreDependencies,
+  paths: CoreProjectPaths,
+  options: UpOptions
+): void {
+  const message = toErrorMessage(err);
+  const stage = classifyBrokerStartStage(err, message);
+  track('broker_start_failed', {
+    stage,
+    error_class: classifyBrokerStartError(err),
+  });
+  const detailedMessage = describeErrorWithCause(err);
+  recordBackgroundStartError(detailedMessage, paths.dataDir, options.backgroundChild === true, deps);
+  if (isBrokerAlreadyRunningError(message)) {
+    reportAlreadyRunningError(message, paths.dataDir, deps);
+  } else {
+    deps.error(`Failed to start broker: ${detailedMessage}`);
+  }
+}
+
+/**
+ * `runUpCommand`'s startup try/catch only sees rejections it actually
+ * `await`s. Anything that rejects off to the side — a fire-and-forget
+ * background task inside a capability provider, an addon's internal promise
+ * chain, etc. — crashes the process via Node's bare default
+ * uncaughtException/unhandledRejection handler instead, which prints no
+ * "Failed to start broker" line and never records `broker_start_failed`
+ * telemetry. Observed in the wild as a `node up` that printed "Broker
+ * started." and then died with nothing further logged.
+ *
+ * This guard is armed for the lifetime of the foreground startup + hold-open
+ * phase so that class of crash gets the same diagnostic + telemetry + cleanup
+ * treatment as an ordinary caught failure, instead of vanishing into Node's
+ * default handler. `dispose()` must be called (via `finally`) so the
+ * listeners don't outlive this command invocation.
+ */
+function installStartupCrashGuard(
+  deps: CoreDependencies,
+  paths: CoreProjectPaths,
+  options: UpOptions,
+  shutdownOnce: () => Promise<void>
+): { dispose: () => void; markHandled: () => void } {
+  let handled = false;
+  const handleCrash = (err: unknown): void => {
+    if (handled) return;
+    handled = true;
+    void (async () => {
+      await shutdownOnce().catch(() => undefined);
+      reportBrokerStartFailure(err, deps, paths, options);
+      deps.exit(1);
+    })();
+  };
+  process.on('uncaughtException', handleCrash);
+  process.on('unhandledRejection', handleCrash);
+  return {
+    dispose: () => {
+      process.off('uncaughtException', handleCrash);
+      process.off('unhandledRejection', handleCrash);
+    },
+    // Called from the normal catch block so a straggler process-level event
+    // for the same failure can't fire a second, duplicate report after this
+    // function has already handled it and moved on.
+    markHandled: () => {
+      handled = true;
+    },
+  };
 }
 
 async function resolveApiPortWithFallback(
@@ -1688,6 +1768,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
     await shutdownPromise;
   };
+  const crashGuard = installStartupCrashGuard(deps, paths, options, shutdownOnce);
   try {
     if (existingPid !== null) {
       if (isProcessRunning(existingPid, deps)) {
@@ -1849,21 +1930,14 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       await holdOpen;
     }
   } catch (err: unknown) {
+    // A straggler process-level crash event for this same failure must not
+    // also fire and duplicate the report below.
+    crashGuard.markHandled();
     await shutdownOnce();
-    const message = toErrorMessage(err);
-    const stage = classifyBrokerStartStage(err, message);
-    track('broker_start_failed', {
-      stage,
-      error_class: classifyBrokerStartError(err),
-    });
-    const detailedMessage = describeErrorWithCause(err);
-    recordBackgroundStartError(detailedMessage, paths.dataDir, options.backgroundChild === true, deps);
-    if (isBrokerAlreadyRunningError(message)) {
-      reportAlreadyRunningError(message, paths.dataDir, deps);
-    } else {
-      deps.error(`Failed to start broker: ${detailedMessage}`);
-    }
+    reportBrokerStartFailure(err, deps, paths, options);
     deps.exit(1);
+  } finally {
+    crashGuard.dispose();
   }
 }
 
