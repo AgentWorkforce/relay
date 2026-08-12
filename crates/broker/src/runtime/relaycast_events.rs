@@ -495,6 +495,26 @@ pub(super) async fn spawn_worker_from_request(
             .filter(|_| !require_node_registration && !relaycast_spawn_verifies_ready(ws_value))
         {
             seed_supplied_agent_token(workspace_http, &name, &token);
+            match super::fleet::resolve_fleet_agent_token_identity(
+                workspace_http,
+                fleet_delivery_book,
+                &name,
+                &token,
+            )
+            .await
+            {
+                Ok(registration) => {
+                    fleet_registration =
+                        Some((registration, invocation_id.clone(), session_ref.clone()));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        worker = %name,
+                        error = %error,
+                        "could not resolve supplied agent token for reconnect inventory"
+                    );
+                }
+            }
             Some(token)
         } else {
             match super::fleet::register_node_agent_token(
@@ -545,8 +565,37 @@ pub(super) async fn spawn_worker_from_request(
                             // node binding; in node-only delivery the engine only
                             // delivers to `via_node` agents. Bind it to this node
                             // so it becomes deliverable.
-                            bind_http_registered_agent_to_node(workspace_http, node_name, &name)
-                                .await;
+                            let bind_warning = bind_http_registered_agent_to_node(
+                                workspace_http,
+                                node_name,
+                                &name,
+                            )
+                            .await;
+                            if bind_warning.is_none() {
+                                match super::fleet::resolve_fleet_agent_token_identity(
+                                    workspace_http,
+                                    fleet_delivery_book,
+                                    &name,
+                                    &token,
+                                )
+                                .await
+                                {
+                                    Ok(registration) => {
+                                        fleet_registration = Some((
+                                            registration,
+                                            invocation_id.clone(),
+                                            session_ref.clone(),
+                                        ));
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "could not resolve HTTP-registered agent for reconnect inventory"
+                                        );
+                                    }
+                                }
+                            }
                             Some(token)
                         }
                         Ok(Err(error)) => {

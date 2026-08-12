@@ -348,8 +348,28 @@ impl BrokerRuntime {
                 // unavailable, fall back to HTTP pre-registration so a tokenless
                 // node (e.g. mint failure) still spawns a working agent.
                 let mut fleet_registration = None;
+                let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                 let worker_relay_key = if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
+                    match super::fleet::resolve_fleet_agent_token_identity(
+                        relaycast_http,
+                        fleet_delivery_book,
+                        &name,
+                        &token,
+                    )
+                    .await
+                    {
+                        Ok(registration) => {
+                            fleet_registration = Some((registration, None, session_ref.clone()));
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "could not resolve supplied agent token for reconnect inventory"
+                            );
+                        }
+                    }
                     Some(token)
                 } else {
                     // Derive the session ref from the resolved spec the same way
@@ -357,7 +377,6 @@ impl BrokerRuntime {
                     // `harnessConfig.session_id` registers as a resumable session
                     // rather than a fresh spawn. No invocation id exists on the
                     // HTTP path.
-                    let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                     match super::fleet::register_node_agent_token(
                         fleet_control_tx,
                         fleet_delivery_book,
@@ -391,15 +410,35 @@ impl BrokerRuntime {
                                     // delivery. Bind it to this node so it is
                                     // deliverable, surfacing a loud warning if the
                                     // bind fails.
-                                    if let Some(warning) =
-                                        super::relaycast_events::bind_http_registered_agent_to_node(
+                                    let bind_warning = super::relaycast_events::bind_http_registered_agent_to_node(
+                                        relaycast_http,
+                                        fleet_node_name,
+                                        &name,
+                                    )
+                                    .await;
+                                    if let Some(warning) = bind_warning {
+                                        preregistration_warning = Some(warning);
+                                    } else {
+                                        match super::fleet::resolve_fleet_agent_token_identity(
                                             relaycast_http,
-                                            fleet_node_name,
+                                            fleet_delivery_book,
                                             &name,
+                                            &token,
                                         )
                                         .await
-                                    {
-                                        preregistration_warning = Some(warning);
+                                        {
+                                            Ok(registration) => {
+                                                fleet_registration =
+                                                    Some((registration, None, session_ref.clone()));
+                                            }
+                                            Err(error) => {
+                                                tracing::warn!(
+                                                    worker = %name,
+                                                    error = %error,
+                                                    "could not resolve HTTP-registered agent for reconnect inventory"
+                                                );
+                                            }
+                                        }
                                     }
                                     Some(token)
                                 }

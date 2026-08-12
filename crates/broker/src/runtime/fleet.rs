@@ -1389,6 +1389,51 @@ pub(super) async fn record_fleet_inventory_agent(
     publish_fleet_inventory_snapshot(fleet_control_tx, fleet_inventory).await;
 }
 
+/// Resolve an opaque agent token to the authoritative identity required by
+/// `inventory.sync` and delivery bookkeeping.
+///
+/// Some supported spawn callers pre-mint the worker token and pass only that
+/// credential to the broker. The token itself does not encode an agent id, so
+/// resolve it through Relaycast before launch rather than silently omitting the
+/// worker from reconnect inventory.
+pub(super) async fn resolve_fleet_agent_token_identity(
+    relaycast_http: &RelaycastHttpClient,
+    fleet_delivery_book: &mut FleetDeliveryBook,
+    expected_name: &WorkerName,
+    token: &str,
+) -> Result<crate::node_control::AgentRegistrationToken, String> {
+    let relay = relaycast_http
+        .relay_client()
+        .ok_or_else(|| "relaycast_client_unavailable".to_string())?;
+    let agent = relay
+        .get_current_agent(token.to_string())
+        .await
+        .map_err(|error| format!("agent_token_identity_lookup_failed: {error}"))?;
+    registration_token_for_resolved_agent(fleet_delivery_book, expected_name, token, agent)
+}
+
+fn registration_token_for_resolved_agent(
+    fleet_delivery_book: &mut FleetDeliveryBook,
+    expected_name: &WorkerName,
+    token: &str,
+    agent: relaycast::Agent,
+) -> Result<crate::node_control::AgentRegistrationToken, String> {
+    if agent.name != expected_name.as_str() {
+        return Err(format!(
+            "agent_token_identity_mismatch: expected '{}', resolved '{}'",
+            expected_name, agent.name
+        ));
+    }
+
+    fleet_delivery_book.bind_authoritative_identity(agent.name.clone(), agent.id.clone());
+    Ok(crate::node_control::AgentRegistrationToken {
+        name: agent.name,
+        agent_id: agent.id,
+        token: token.to_string(),
+        delivery_ack_seq: None,
+    })
+}
+
 pub(super) async fn refresh_fleet_inventory_session_ref(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
@@ -2590,6 +2635,63 @@ mod tests {
             }
             other => panic!("expected inventory update, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn supplied_agent_token_resolves_to_authoritative_fleet_identity() {
+        let mut delivery_book = FleetDeliveryBook::default();
+        let token = registration_token_for_resolved_agent(
+            &mut delivery_book,
+            &WorkerName::from("worker-a"),
+            "at_test",
+            relaycast::Agent {
+                id: "agent-a-id".to_string(),
+                workspace_id: Some("workspace-a".to_string()),
+                name: "worker-a".to_string(),
+                agent_type: "agent".to_string(),
+                status: "active".to_string(),
+                persona: None,
+                metadata: serde_json::Map::new(),
+                created_at: None,
+                last_seen: None,
+                channels: Vec::new(),
+            },
+        )
+        .expect("matching supplied token identity should resolve");
+
+        assert_eq!(token.name, "worker-a");
+        assert_eq!(token.agent_id, "agent-a-id");
+        assert_eq!(token.token, "at_test");
+        assert_eq!(
+            delivery_book.active_agent_id("worker-a"),
+            Some("agent-a-id")
+        );
+    }
+
+    #[test]
+    fn supplied_agent_token_rejects_a_different_agent_identity() {
+        let mut delivery_book = FleetDeliveryBook::default();
+        let error = registration_token_for_resolved_agent(
+            &mut delivery_book,
+            &WorkerName::from("worker-a"),
+            "at_test",
+            relaycast::Agent {
+                id: "agent-b-id".to_string(),
+                workspace_id: Some("workspace-a".to_string()),
+                name: "worker-b".to_string(),
+                agent_type: "agent".to_string(),
+                status: "active".to_string(),
+                persona: None,
+                metadata: serde_json::Map::new(),
+                created_at: None,
+                last_seen: None,
+                channels: Vec::new(),
+            },
+        )
+        .expect_err("a supplied token for another agent must not enter inventory");
+
+        assert!(error.contains("agent_token_identity_mismatch"));
+        assert_eq!(delivery_book.active_agent_id("worker-a"), None);
     }
 
     #[tokio::test]
