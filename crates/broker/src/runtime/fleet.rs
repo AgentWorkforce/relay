@@ -444,10 +444,11 @@ impl BrokerRuntime {
                     });
                     return;
                 }
-                let expected_revision_u64: Option<u64> = expected_revision
-                    .as_deref()
-                    .and_then(|s| s.parse().ok());
-                let (tx, rx) = tokio::sync::oneshot::channel::<Result<SetInboundDeliveryModeOk, DeliveryRouteError>>();
+                let expected_revision_u64: Option<u64> =
+                    expected_revision.as_deref().and_then(|s| s.parse().ok());
+                let (tx, rx) = tokio::sync::oneshot::channel::<
+                    Result<SetInboundDeliveryModeOk, DeliveryRouteError>,
+                >();
                 self.handle_api_request(ListenApiRequest::SetInboundDeliveryMode {
                     name: session.agent.clone(),
                     mode,
