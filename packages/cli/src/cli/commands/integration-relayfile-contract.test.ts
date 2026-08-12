@@ -6,7 +6,13 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { MIN_RELAYFILE_VERSION, assertRelayfileVersion, defaultRelayfileBridge } from './integration.js';
+import {
+  MIN_RELAYFILE_VERSION,
+  assertRelayfileVersion,
+  defaultRelayfileBridge,
+  relayfileIntegrationClientOptions,
+  resetSharedRelayfileControlPlaneClientForTests,
+} from './integration.js';
 import { RelayfileControlPlaneClient } from '@relayfile/client';
 
 let socketSequence = 0;
@@ -222,7 +228,16 @@ describe('assertRelayfileVersion', () => {
 });
 
 describe('default Relayfile integration bridge', () => {
+  it('constructs Relayfile clients with the exact 30-second request budget', () => {
+    expect(relayfileIntegrationClientOptions()).toEqual({ requestTimeoutMs: 30_000 });
+    expect(relayfileIntegrationClientOptions({ socketPath: '/tmp/relayfile-test.sock' })).toEqual({
+      requestTimeoutMs: 30_000,
+      socketPath: '/tmp/relayfile-test.sock',
+    });
+  });
+
   it('allows a real provider-status request to clear the former 10-second boundary', async () => {
+    resetSharedRelayfileControlPlaneClientForTests();
     await withControlPlaneServer(
       (request, response) => {
         if (request.method === 'GET' && request.url === '/v1/hello') {
@@ -240,13 +255,11 @@ describe('default Relayfile integration bridge', () => {
         writeJson(response, 404, { error: { code: 'NOT_FOUND', message: 'not found' } });
       },
       async (socketPath) => {
-        const previousSocket = process.env.RELAYFILE_SOCK;
-        process.env.RELAYFILE_SOCK = socketPath;
         try {
-          await expect(defaultRelayfileBridge().isConnected('github')).resolves.toBe(true);
+          const bridge = defaultRelayfileBridge({ socketPath, autoStart: false });
+          await expect(bridge.isConnected('github')).resolves.toBe(true);
         } finally {
-          if (previousSocket === undefined) delete process.env.RELAYFILE_SOCK;
-          else process.env.RELAYFILE_SOCK = previousSocket;
+          resetSharedRelayfileControlPlaneClientForTests();
         }
       }
     );
