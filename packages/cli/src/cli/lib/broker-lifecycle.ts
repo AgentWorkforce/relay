@@ -1769,6 +1769,34 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     await shutdownPromise;
   };
   const crashGuard = installStartupCrashGuard(deps, paths, options, shutdownOnce);
+  // Registered before any async startup work (broker spawn, capability
+  // providers, Reflex capture, node delivery wait) so a signal arriving
+  // during that window gets the same graceful, logged shutdown as one that
+  // arrives later during hold-open. Previously these were registered just
+  // before hold-open — a SIGTERM in that earlier window hit Node's bare
+  // default disposition (silent immediate termination) instead, which is
+  // indistinguishable from a genuine crash when observed from outside.
+  deps.onSignal('SIGINT', async () => {
+    sigintCount += 1;
+    if (shuttingDown) {
+      if (sigintCount >= 2) {
+        deps.warn('Force exiting...');
+        deps.exit(130);
+      }
+      return;
+    }
+    deps.log('\nStopping...');
+    await shutdownOnce();
+    deps.exit(0);
+  });
+  deps.onSignal('SIGTERM', async () => {
+    if (shuttingDown) {
+      return;
+    }
+    deps.log('\nStopping (SIGTERM)...');
+    await shutdownOnce();
+    deps.exit(0);
+  });
   try {
     if (existingPid !== null) {
       if (isProcessRunning(existingPid, deps)) {
@@ -1901,27 +1929,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     } else if (options.spawn === true && !teamsConfig) {
       deps.warn('Warning: --spawn specified but no teams.json found');
     }
-
-    deps.onSignal('SIGINT', async () => {
-      sigintCount += 1;
-      if (shuttingDown) {
-        if (sigintCount >= 2) {
-          deps.warn('Force exiting...');
-          deps.exit(130);
-        }
-        return;
-      }
-      deps.log('\nStopping...');
-      await shutdownOnce();
-      deps.exit(0);
-    });
-    deps.onSignal('SIGTERM', async () => {
-      if (shuttingDown) {
-        return;
-      }
-      await shutdownOnce();
-      deps.exit(0);
-    });
 
     const holdOpen = deps.holdOpen();
     if (nodeProviders?.done) {
