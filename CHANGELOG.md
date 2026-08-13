@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Swift terminal sessions reject further input after an acknowledgement becomes uncertain, preventing duplicate keystrokes after timeout or reconnect.
 
+### Added
+
+- `agent-relay-broker reclaim-legacy-identity`: an explicit, operator-invoked
+  recovery command for an agent name registered before the identity-reclaim
+  gate (5c2ad8ee3) shipped. Such a record has no `identity_key` stamped on
+  it, so no restart of its own broker can ever reclaim it through the
+  ordinary reconnect path — this command backfills the identity for one
+  named agent after confirming the record has no identity already stamped
+  and isn't currently reporting `online`, so the gate's protection stays
+  intact once claimed.
+
 ## [11.5.6] - 2026-08-13
 
 ### Fixed

@@ -36,10 +36,10 @@ use crate::{
         ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
-        agent_identity_key, format_worker_preregistration_error, registration_retry_after_secs,
-        retry_agent_registration, stable_node_identity_key, AuthClient, MultiWorkspaceSession,
-        RegRetryOutcome, RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary,
-        WsControl,
+        agent_identity_key, format_worker_preregistration_error, reclaim_legacy_identity,
+        registration_retry_after_secs, retry_agent_registration, stable_node_identity_key,
+        AuthClient, MultiWorkspaceSession, RegRetryOutcome, RelaycastHttpClient,
+        WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
@@ -52,6 +52,7 @@ use crate::{
 
 use crate::cli::{
     DumpPtyCommand, DumpPtyFormat, HeadlessAppServerCommand, HeadlessCommand, InitCommand,
+    ReclaimLegacyIdentityCommand,
 };
 use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{broker, listen_api, worker_request};
@@ -75,6 +76,7 @@ mod delivery;
 mod event_loop;
 mod fleet;
 mod headless;
+mod identity_recovery;
 mod init;
 mod io;
 mod maintenance;
@@ -101,6 +103,7 @@ pub(crate) use dead_letter::*;
 pub(crate) use delivery::*;
 pub(crate) use event_loop::*;
 pub(crate) use headless::*;
+pub(crate) use identity_recovery::*;
 pub(crate) use init::*;
 pub(crate) use io::*;
 pub(crate) use messages::*;
