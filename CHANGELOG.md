@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Workspace-key agent registration and token rotation now require Chief's SSO-authenticated RelayAuth sponsor ID and signed sponsor proof, bind the agent metadata to that human, and reject workspace-key-only identity claims.
+
 ## [11.5.6] - 2026-08-13
 
 ### Fixed
