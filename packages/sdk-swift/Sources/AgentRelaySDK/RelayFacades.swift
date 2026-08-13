@@ -187,6 +187,10 @@ public struct RelayNodes: Sendable {
         try await core.nodeGet(name: name)
     }
 
+    public func agents(_ name: String) async throws -> [RelayNodeAgentBinding] {
+        try await core.nodeAgents(name: name)
+    }
+
     public func bind(_ name: String, agent: String) async throws {
         try await core.nodeBind(name: name, agent: agent)
     }
@@ -568,6 +572,69 @@ extension HostedParticipantCore {
         return try await run {
             let node = try await relay.nodes.get(name)
             return RelayNode(node)
+        }
+    }
+
+    func nodeAgents(name: String) async throws -> [RelayNodeAgentBinding] {
+        let relay = try relayCast()
+        return try await run {
+            let bindings = try await relay.nodes.listAgents(name)
+            return bindings.map { RelayNodeAgentBinding($0) }
+        }
+    }
+
+    func terminalTarget(agent name: String) async throws -> RelayTerminalTarget {
+        let cleanName = Self.normalizeTerminalAgent(name)
+        guard !cleanName.isEmpty else {
+            throw RelayError.protocolError(
+                code: "invalid_terminal_target",
+                message: "Terminal agent name cannot be empty",
+                retryable: false
+            )
+        }
+
+        let relay = try relayCast()
+        return try await run {
+            let liveNodes = try await relay.nodes.list(Relaycast.NodeListQuery())
+                .filter(\.live)
+                .sorted { $0.name < $1.name }
+            let nodes = relay.nodes
+            var remaining = liveNodes.makeIterator()
+            var candidates: [Relaycast.NodeAgentBinding] = []
+            try await withThrowingTaskGroup(of: [Relaycast.NodeAgentBinding].self) { group in
+                for _ in 0..<min(4, liveNodes.count) {
+                    guard let node = remaining.next() else { break }
+                    let nodeName = node.name
+                    group.addTask { try await nodes.listAgents(nodeName) }
+                }
+                while let bindings = try await group.next() {
+                    candidates.append(contentsOf: bindings.filter {
+                        $0.agentName.caseInsensitiveCompare(cleanName) == .orderedSame
+                            && $0.status == "active"
+                    })
+                    if let node = remaining.next() {
+                        let nodeName = node.name
+                        group.addTask { try await nodes.listAgents(nodeName) }
+                    }
+                }
+            }
+            guard let binding = candidates.sorted(by: {
+                if $0.priority != $1.priority { return $0.priority > $1.priority }
+                return $0.nodeName < $1.nodeName
+            }).first else {
+                throw RelayError.protocolError(
+                    code: "terminal_target_unavailable",
+                    message: "No live fleet node is hosting agent '\(cleanName)'",
+                    retryable: true
+                )
+            }
+            return RelayTerminalTarget(
+                nodeId: binding.nodeId,
+                nodeName: binding.nodeName,
+                agentId: binding.agentId,
+                agentName: binding.agentName,
+                sessionRef: binding.sessionRef
+            )
         }
     }
 

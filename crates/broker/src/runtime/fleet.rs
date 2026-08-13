@@ -235,6 +235,7 @@ impl BrokerRuntime {
                             request_id.clone(),
                             TerminalSnapshotRequest {
                                 session_id: session_id.clone(),
+                                client_request_id: None,
                                 deadline: Instant::now() + TERMINAL_SNAPSHOT_TIMEOUT,
                             },
                         );
@@ -433,6 +434,65 @@ impl BrokerRuntime {
                     }
                 }
             }
+            TerminalControlEvent::Message(TerminalFromCloud::Snapshot {
+                session_id,
+                request_id: client_request_id,
+            }) => {
+                let Some(session) = self.terminal_sessions.get(&session_id).cloned() else {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_found".into(),
+                        message: "terminal session is not active".into(),
+                        request_id: Some(client_request_id),
+                    });
+                    return;
+                };
+                if !session.ready {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_ready".into(),
+                        message: "terminal snapshot is not ready".into(),
+                        request_id: Some(client_request_id),
+                    });
+                    return;
+                }
+                if self
+                    .terminal_snapshot_requests
+                    .values()
+                    .any(|pending| pending.session_id == session_id)
+                {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "snapshot_in_flight".into(),
+                        message: "a terminal snapshot is already in flight".into(),
+                        request_id: Some(client_request_id),
+                    });
+                    return;
+                }
+                let worker_request_id = format!("terminal_snapshot_{}", Uuid::new_v4().simple());
+                self.terminal_snapshot_requests.insert(
+                    worker_request_id.clone(),
+                    TerminalSnapshotRequest {
+                        session_id: session_id.clone(),
+                        client_request_id: Some(client_request_id.clone()),
+                        deadline: Instant::now() + TERMINAL_SNAPSHOT_TIMEOUT,
+                    },
+                );
+                if let Err(error) = self.workers.try_send_to_worker(
+                    session.agent.as_str(),
+                    "snapshot_pty",
+                    Some(RequestId::new(worker_request_id.clone())),
+                    json!({ "format": "ansi" }),
+                ) {
+                    self.terminal_snapshot_requests.remove(&worker_request_id);
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "snapshot_failed".into(),
+                        message: error.to_string(),
+                        request_id: Some(client_request_id),
+                    });
+                }
+            }
             TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {
                 if let Some(session) = self.terminal_sessions.remove(&session_id) {
                     release_terminal_resize_ownership(
@@ -569,6 +629,7 @@ impl BrokerRuntime {
     pub(super) fn send_terminal(&mut self, message: TerminalToCloud) {
         let session_id = match &message {
             TerminalToCloud::Ready { session_id, .. }
+            | TerminalToCloud::Snapshot { session_id, .. }
             | TerminalToCloud::Output { session_id, .. }
             | TerminalToCloud::InputAck { session_id, .. }
             | TerminalToCloud::Error { session_id, .. }

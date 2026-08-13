@@ -52,6 +52,14 @@ pub(crate) enum TerminalFromCloud {
         rows: u16,
         cols: u16,
     },
+    /// Request a fresh authoritative ANSI snapshot for an existing session.
+    /// The request id is echoed in the reply so clients can coalesce repaint
+    /// repairs without confusing a late response for a newer capture.
+    #[serde(rename = "terminal.snapshot")]
+    Snapshot {
+        session_id: String,
+        request_id: String,
+    },
     #[serde(rename = "terminal.close")]
     Close { session_id: String },
     /// Request the broker flip the inbound delivery mode for the session's
@@ -90,6 +98,19 @@ pub(crate) enum TerminalToCloud {
         /// time (older broker or headless worker).
         #[serde(skip_serializing_if = "Option::is_none")]
         delivery_mode: Option<InboundDeliveryMode>,
+        /// Monotonic broker revision paired with `delivery_mode` for
+        /// compare-and-set restoration during structured close.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        delivery_revision: Option<String>,
+    },
+    #[serde(rename = "terminal.snapshot")]
+    Snapshot {
+        session_id: String,
+        request_id: String,
+        screen: String,
+        rows: u16,
+        cols: u16,
+        offset: u64,
     },
     #[serde(rename = "terminal.output")]
     Output {
@@ -338,6 +359,7 @@ mod tests {
             cols: 80,
             offset: 3,
             delivery_mode: None,
+            delivery_revision: None,
         })
         .unwrap();
         assert_eq!(ready["type"], "terminal.ready");
@@ -350,9 +372,23 @@ mod tests {
             cols: 80,
             offset: 3,
             delivery_mode: Some(InboundDeliveryMode::ManualFlush),
+            delivery_revision: Some("7".into()),
         })
         .unwrap();
         assert_eq!(ready_with_mode["delivery_mode"], "manual_flush");
+        assert_eq!(ready_with_mode["delivery_revision"], "7");
+        let snapshot = serde_json::to_value(TerminalToCloud::Snapshot {
+            session_id: "s".into(),
+            request_id: "snapshot-1".into(),
+            screen: "screen".into(),
+            rows: 24,
+            cols: 80,
+            offset: 4,
+        })
+        .unwrap();
+        assert_eq!(snapshot["type"], "terminal.snapshot");
+        assert_eq!(snapshot["request_id"], "snapshot-1");
+        assert_eq!(snapshot["offset"], 4);
         let ack = serde_json::to_value(TerminalToCloud::InputAck {
             session_id: "s".into(),
             bytes_written: 1,
