@@ -43,6 +43,11 @@ incumbent `RELAY_AGENT_TOKEN` supplied explicitly; they fail closed rather than
 falling back to a workspace-key-only reclaim. Do not enable hosted enforcement
 before the client pre-stage is complete.
 
+Every accepted Relaycast base URL is an authority boundary. Operators must
+upgrade, cut over, or decommission legacy gateways separately; protecting the
+canonical hosted worker does not make an older gateway safe. Keep direct
+credential-issuance tests against every public hostname in the deployment gate.
+
 Agent Relay moves messages, credentials, and tool invocations between
 autonomous agents. A defect here can expose a workspace to agents — or people —
 that should never have reached it, so we treat security reports as a priority
