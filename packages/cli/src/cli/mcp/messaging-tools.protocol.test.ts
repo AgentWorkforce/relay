@@ -39,6 +39,27 @@ describe('messaging delivery receipts over MCP', () => {
         },
       });
 
+      const unresolved = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'missing-agent', text: 'still enqueue this' },
+      });
+      expect(unresolved.isError).not.toBe(true);
+      expect(unresolved.structuredContent).toMatchObject({
+        id: 'msg_1',
+        delivery: {
+          status: 'recipient_unresolved',
+          requestedRecipient: 'missing-agent',
+          resolvedRecipient: null,
+          recipientMatched: null,
+          readConfirmed: false,
+        },
+      });
+      expect(unresolved.structuredContent).not.toHaveProperty('target');
+      expect(dm).toHaveBeenLastCalledWith('missing-agent', 'still enqueue this', {
+        mode: undefined,
+        attachments: undefined,
+      });
+
       const unread = await client.callTool({
         name: 'get_message_readers',
         arguments: { message_id: 'msg_1' },

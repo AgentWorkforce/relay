@@ -20,17 +20,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /** Resolve only a full, exact agent name; never fall back to a prefix. */
-export function resolveExactAgentName(agents: readonly unknown[], requestedRecipient: string): string {
-  const resolvedRecipient = agents
+export function resolveExactAgentName(
+  agents: readonly unknown[],
+  requestedRecipient: string
+): string | undefined {
+  return agents
     .map((agent) => {
       const name = asRecord(agent).name;
       return typeof name === 'string' ? name : undefined;
     })
     .find((name) => name === requestedRecipient);
-  if (!resolvedRecipient) {
-    throw new Error(`Recipient "${requestedRecipient}" was not found by exact agent-name match.`);
-  }
-  return resolvedRecipient;
 }
 
 /**

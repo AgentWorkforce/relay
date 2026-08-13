@@ -153,6 +153,17 @@ describe('SDK-backed CLI groups', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": "lead"'));
   });
 
+  it('message dm send still enqueues when exact recipient resolution is unavailable', async () => {
+    const { program, relay, log } = harness(registerMessageCommands);
+    relay.agents.list.mockResolvedValueOnce([]);
+
+    await program.parseAsync(['message', 'dm', 'send', 'missing-agent', 'hi'], { from: 'user' });
+
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'missing-agent', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
+  });
+
   it('message dm send exposes immediate Relay delivery', async () => {
     const { program, relay, log } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'wake up', '--mode', 'steer'], {

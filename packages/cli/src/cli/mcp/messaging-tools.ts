@@ -56,7 +56,7 @@ function resolveEmoji(input: string): string {
 export function registerMessagingTools(
   server: McpServer,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
-  listAgentsForRecipientResolution?: () => Promise<unknown[]>
+  listAgentsForRecipientResolution?: () => Promise<unknown[] | undefined>
 ): void {
   server.registerTool(
     'create_channel',

@@ -17,10 +17,8 @@ describe('exact agent-name resolution', () => {
     expect(resolveExactAgentName([{ name: 'chief' }, { name: 'chief-khaliq' }], 'chief')).toBe('chief');
   });
 
-  it('fails visibly when there is no exact match', () => {
-    expect(() => resolveExactAgentName([{ name: 'chief' }], 'chief-missing')).toThrow(
-      'Recipient "chief-missing" was not found by exact agent-name match.'
-    );
+  it('leaves the recipient unresolved when there is no exact match', () => {
+    expect(resolveExactAgentName([{ name: 'chief' }], 'chief-missing')).toBeUndefined();
   });
 });
 
