@@ -150,6 +150,22 @@ fn plan_fleet_delivery(decision: DeliveryDecision) -> FleetDeliveryPlan {
     }
 }
 
+/// Parse the WS `terminal.set_delivery_mode` frame's optional `expected_mode`
+/// exactly like the HTTP delivery-mode route does — via
+/// [`InboundDeliveryMode::parse`], which trims whitespace and matches
+/// case-insensitively. `Ok(None)` means no CAS guard was requested; `Err`
+/// carries the raw unparseable string back to the caller for the error
+/// message.
+fn parse_expected_mode(expected_mode: Option<&str>) -> Result<Option<InboundDeliveryMode>, &str> {
+    match expected_mode {
+        None => Ok(None),
+        Some(raw) => match InboundDeliveryMode::parse(raw) {
+            Some(parsed) => Ok(Some(parsed)),
+            None => Err(raw),
+        },
+    }
+}
+
 impl BrokerRuntime {
     pub(super) async fn handle_terminal_control_event(&mut self, event: TerminalControlEvent) {
         match event {
@@ -463,21 +479,21 @@ impl BrokerRuntime {
                 // Validate expected_mode: an unrecognised string must return an error
                 // rather than silently dropping the CAS guard (which serde would do if
                 // expected_mode were typed as Option<InboundDeliveryMode> directly).
-                let expected_mode_parsed: Option<InboundDeliveryMode> =
-                    match expected_mode.as_deref() {
-                        None => None,
-                        Some("auto_inject") => Some(InboundDeliveryMode::AutoInject),
-                        Some("manual_flush") => Some(InboundDeliveryMode::ManualFlush),
-                        Some(raw) => {
-                            self.send_terminal(TerminalToCloud::Error {
-                                session_id,
-                                code: "invalid_mode".into(),
-                                message: format!("unknown expected_mode '{raw}'"),
-                                request_id,
-                            });
-                            return;
-                        }
-                    };
+                // parse_expected_mode goes through InboundDeliveryMode::parse (trims
+                // whitespace, matches case-insensitively) so this WS path accepts
+                // exactly what the HTTP delivery-mode route accepts.
+                let expected_mode_parsed = match parse_expected_mode(expected_mode.as_deref()) {
+                    Ok(parsed) => parsed,
+                    Err(raw) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "invalid_mode".into(),
+                            message: format!("unknown expected_mode '{raw}'"),
+                            request_id,
+                        });
+                        return;
+                    }
+                };
                 // Reject an unparseable expected_revision rather than silently
                 // converting it to None (which would drop the CAS guard and allow an
                 // unconditional delivery-mode change — the HTTP route rejects the same
@@ -1966,6 +1982,45 @@ mod tests {
             channels: Vec::new(),
             restart_policy: None,
         }
+    }
+
+    #[test]
+    fn parse_expected_mode_accepts_the_canonical_wire_forms() {
+        assert_eq!(
+            parse_expected_mode(Some("auto_inject")),
+            Ok(Some(InboundDeliveryMode::AutoInject))
+        );
+        assert_eq!(
+            parse_expected_mode(Some("manual_flush")),
+            Ok(Some(InboundDeliveryMode::ManualFlush))
+        );
+    }
+
+    #[test]
+    fn parse_expected_mode_matches_http_semantics_for_casing_and_whitespace() {
+        // The WS terminal.set_delivery_mode handler must accept exactly what
+        // the HTTP delivery-mode route accepts (both go through
+        // InboundDeliveryMode::parse) rather than rejecting a syntactically
+        // valid mode as invalid_mode just because of casing or padding.
+        assert_eq!(
+            parse_expected_mode(Some("MANUAL_FLUSH")),
+            Ok(Some(InboundDeliveryMode::ManualFlush))
+        );
+        assert_eq!(
+            parse_expected_mode(Some(" manual_flush ")),
+            Ok(Some(InboundDeliveryMode::ManualFlush))
+        );
+        assert_eq!(
+            parse_expected_mode(Some("Auto_Inject")),
+            Ok(Some(InboundDeliveryMode::AutoInject))
+        );
+    }
+
+    #[test]
+    fn parse_expected_mode_passes_through_absence_and_rejects_garbage() {
+        assert_eq!(parse_expected_mode(None), Ok(None));
+        assert_eq!(parse_expected_mode(Some("drive")), Err("drive"));
+        assert_eq!(parse_expected_mode(Some("")), Err(""));
     }
 
     #[test]

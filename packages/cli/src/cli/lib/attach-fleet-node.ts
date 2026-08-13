@@ -521,6 +521,14 @@ export async function startFleetNodeAttachProxy(
   resumeUrl.searchParams.delete('ticket');
   resumeUrl.searchParams.set('session_id', sessionId);
   resumeUrl.searchParams.set('resume', resumeToken);
+  /** Reject and clear any in-flight delivery-mode PUT, if one is pending. */
+  const rejectPendingDeliveryMode = (error: FleetNodeAttachError) => {
+    if (!pendingDeliveryMode) return;
+    const pending = pendingDeliveryMode;
+    pendingDeliveryMode = null;
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  };
   const endTerminal = (error: FleetNodeAttachError) => {
     if (terminalEnded) return;
     terminalEnded = true;
@@ -528,12 +536,7 @@ export async function startFleetNodeAttachProxy(
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
     }
-    if (pendingDeliveryMode) {
-      const pending = pendingDeliveryMode;
-      pendingDeliveryMode = null;
-      clearTimeout(pending.timer);
-      pending.reject(error);
-    }
+    rejectPendingDeliveryMode(error);
     const activeRemote = remote;
     remote = undefined;
     rejectReadiness(activeReadiness, error);
@@ -647,6 +650,17 @@ export async function startFleetNodeAttachProxy(
     });
     socket.on('close', () => {
       if (remote !== socket || stopped || terminalEnded || reconnecting) return;
+      // Relaycast drops the old lane's terminal session state on disconnect,
+      // so a set_delivery_mode frame already sent on this dying socket is
+      // lost and will never get a reply on the replacement socket — even
+      // once reconnect succeeds. Fail the pending PUT fast with a retryable
+      // error instead of leaving it to hang out the full timeout.
+      rejectPendingDeliveryMode(
+        new FleetNodeAttachError(
+          'terminal transport disconnected while the delivery-mode change was in flight',
+          'delivery_mode_disconnected'
+        )
+      );
       // Any waiter that observed the prior connection must retry against the
       // fresh generation instead of receiving its stale resolved snapshot.
       resolveReadiness(readiness);
@@ -680,12 +694,7 @@ export async function startFleetNodeAttachProxy(
         reconnectTimer = undefined;
       }
       rejectReadiness(activeReadiness, new FleetNodeAttachError('terminal attach closed', 'closed'));
-      if (pendingDeliveryMode) {
-        const pending = pendingDeliveryMode;
-        pendingDeliveryMode = null;
-        clearTimeout(pending.timer);
-        pending.reject(new FleetNodeAttachError('terminal attach closed', 'closed'));
-      }
+      rejectPendingDeliveryMode(new FleetNodeAttachError('terminal attach closed', 'closed'));
       const activeRemote = remote;
       remote = undefined;
       if (activeRemote && activeRemote.readyState === WebSocket.OPEN) {
