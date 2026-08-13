@@ -9,7 +9,8 @@ pub(crate) use crate::snippets::{
     configure_agent_relay_mcp_with_result, configure_agent_relay_mcp_with_token,
 };
 pub(crate) use auth::{
-    agent_identity_key, reclaim_legacy_identity, stable_node_identity_key, AuthClient,
+    agent_identity_key, identity_key_fingerprint, reclaim_legacy_identity,
+    stable_node_identity_key, AuthClient,
 };
 // `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`,
 // `is_agent_token_invalid_code`, and `AGENT_TOKEN_INVALID_CODE` are declared

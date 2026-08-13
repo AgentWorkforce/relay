@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError, UpdateAgentRequest};
+use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -935,6 +935,15 @@ fn hash_identity_key(raw: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Non-secret diagnostic handle for an identity proof.
+///
+/// The raw proof is replayable and must never be printed. The stored verifier
+/// is already a SHA-256 hash, so a short prefix of that verifier is sufficient
+/// to correlate operator logs without disclosing credential material.
+pub(crate) fn identity_key_fingerprint(raw: &str) -> String {
+    hash_identity_key(raw).chars().take(12).collect()
+}
+
 /// Single spawn-admission decision shared by every registration path
 /// (formerly split between a strict branch that always reclaimed a
 /// name-collision via `register_or_get_agent` — handing the caller the
@@ -1045,6 +1054,26 @@ pub(crate) struct LegacyIdentityClaim {
     pub(crate) agent_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct LegacyIdentityClaimData {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyIdentityClaimError {
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyIdentityClaimEnvelope {
+    data: Option<LegacyIdentityClaimData>,
+    error: Option<LegacyIdentityClaimError>,
+}
+
+const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
+
 /// Operator-invoked recovery for an agent record created before 5c2ad8ee3
 /// ("reclaim a node's own registration across restart, hash the identity
 /// proof") shipped. That commit's fail-closed match — `(Some(ours),
@@ -1069,17 +1098,17 @@ pub(crate) struct LegacyIdentityClaim {
 /// - the record already has a stamped `identity_key` — this path only
 ///   applies to a record that predates the gate; it must never be usable to
 ///   overwrite (and thereby silently reassign) an already-protected record.
-/// - the record's `status` currently reads `"online"` — best-effort defense
-///   against stamping an identity onto a record that may still be a live,
-///   connected session (status can lag reality, so this is a speed bump, not
-///   a proof, but it's free to check and costs a legitimate caller nothing).
+/// - the record's `status` is anything other than `"offline"` — a fail-closed
+///   defense against stamping an identity onto a record that may still be a
+///   live, connected session or carries a future status unknown to this
+///   broker.
 ///
-/// On success, stamps `hash_identity_key(our_identity_key)` onto the
-/// record's metadata (preserving any other metadata keys) and logs a
-/// distinct, greppable audit line — every use of this path is meant to be
-/// visible to whoever's watching broker logs, since it is the one place a
-/// caller can single-handedly assign an identity to a name without proving
-/// prior ownership.
+/// On success, asks Relaycast's dedicated legacy-identity endpoint to stamp
+/// `hash_identity_key(our_identity_key)`. The endpoint performs the
+/// identity-absent check, offline-status check, and metadata mutation in one
+/// atomic database UPDATE. There is deliberately no fallback to the generic
+/// agent PATCH: older servers fail closed instead of reintroducing a
+/// read-then-write race. Every success logs a distinct, greppable audit line.
 pub(crate) async fn reclaim_legacy_identity(
     base_url: Option<&str>,
     workspace_key: &str,
@@ -1089,11 +1118,7 @@ pub(crate) async fn reclaim_legacy_identity(
     let relay = build_relay_client(workspace_key, base_url)?;
     let existing = relay.get_agent(name).await.map_err(relay_error_to_anyhow)?;
 
-    let existing_identity = existing
-        .metadata
-        .get(IDENTITY_METADATA_KEY)
-        .and_then(Value::as_str);
-    if existing_identity.is_some() {
+    if existing.metadata.contains_key(IDENTITY_METADATA_KEY) {
         anyhow::bail!(
             "agent '{name}' already has a stamped identity_key; this legacy-recovery path only \
              applies to a record that predates the identity-reclaim gate and must never \
@@ -1103,31 +1128,66 @@ pub(crate) async fn reclaim_legacy_identity(
         );
     }
 
-    if existing.status.eq_ignore_ascii_case("online") {
+    if !existing.status.eq_ignore_ascii_case("offline") {
         anyhow::bail!(
-            "agent '{name}' currently reports status 'online'; refusing to stamp an identity \
+            "agent '{name}' does not report status 'offline' (reports '{}'); refusing to stamp \
+             an identity \
              onto a record that may still be a live, connected session. Confirm it is actually \
-             offline (or wait for it to go offline) before backfilling its identity."
+             offline (or wait for it to go offline) before backfilling its identity.",
+            existing.status
         );
     }
 
-    let mut metadata = existing.metadata.clone();
-    metadata.insert(
-        IDENTITY_METADATA_KEY.to_string(),
-        Value::String(hash_identity_key(our_identity_key)),
+    let identity_key_hash = hash_identity_key(our_identity_key);
+    let claim_url = format!(
+        "{}/v1/agents/{}/legacy-identity",
+        base_url
+            .unwrap_or(DEFAULT_RELAYCAST_BASE_URL)
+            .trim_end_matches('/'),
+        urlencoding::encode(name)
     );
-
-    let updated = relay
-        .update_agent(
-            name,
-            UpdateAgentRequest {
-                status: None,
-                persona: None,
-                metadata: Some(metadata),
-            },
+    let response = reqwest::Client::new()
+        .patch(&claim_url)
+        .bearer_auth(workspace_key)
+        .header(
+            "X-Relaycast-Origin-Actor",
+            crate::telemetry::BROKER_ORIGIN_ACTOR,
         )
+        .json(&serde_json::json!({ "identity_key_hash": identity_key_hash }))
+        .send()
         .await
-        .map_err(relay_error_to_anyhow)?;
+        .context("failed to call Relaycast's atomic legacy identity endpoint")?;
+    let status = response.status();
+    let response_body = response
+        .text()
+        .await
+        .context("failed to read Relaycast's atomic legacy identity response")?;
+    let envelope = serde_json::from_str::<LegacyIdentityClaimEnvelope>(&response_body).ok();
+    if !status.is_success() {
+        let server_error = envelope.and_then(|body| body.error);
+        let message = if status == StatusCode::NOT_FOUND {
+            format!(
+                "Relaycast did not accept the atomic legacy identity endpoint for agent \
+                 '{name}'; refusing an unsafe generic PATCH fallback (deploy a Relaycast \
+                 version with PATCH /v1/agents/:name/legacy-identity first)"
+            )
+        } else {
+            server_error
+                .as_ref()
+                .map(|error| error.message.clone())
+                .unwrap_or_else(|| {
+                    format!("atomic legacy identity claim failed with HTTP {status}")
+                })
+        };
+        return Err(anyhow::Error::new(AuthHttpError {
+            status,
+            message,
+            code: server_error.map(|error| error.code),
+        }));
+    }
+    let updated = envelope
+        .and_then(|body| body.data)
+        .context("Relaycast atomic legacy identity response did not include agent data")?;
 
     tracing::warn!(
         agent_name = %updated.name,
@@ -1169,7 +1229,7 @@ mod tests {
 
     use httpmock::Method::{GET, PATCH, POST};
     use httpmock::MockServer;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
@@ -1814,9 +1874,8 @@ mod tests {
         // 5c2ad8ee3 has no `identity_key` in its metadata at all, so the
         // ordinary `admit_agent_registration` collision path can never
         // reclaim it (`existing_identity` reads `None` forever). This
-        // operator-invoked path backfills the identity directly via
-        // `update_agent`, which is a plain metadata PATCH, not a
-        // registration collision.
+        // operator-invoked path uses Relaycast's atomic legacy-identity
+        // mutation, not a registration collision or generic metadata PATCH.
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
         let get_existing = server.mock(|when, then| {
@@ -1830,9 +1889,9 @@ mod tests {
         let expected_hash = hash_identity_key("node-legacy-identity");
         let patch = server.mock(|when, then| {
             when.method(PATCH)
-                .path("/v1/agents/daytona-fleet-proof-0811")
+                .path("/v1/agents/daytona-fleet-proof-0811/legacy-identity")
                 .header("authorization", "Bearer rk_live_shared")
-                .json_body(json!({ "metadata": { "identity_key": expected_hash } }));
+                .json_body(json!({ "identity_key_hash": expected_hash }));
             then.status(200)
                 .header("content-type", "application/json")
                 .body(format!(
@@ -1857,8 +1916,8 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_identity_reclaim_preserves_other_metadata_keys() {
-        // A read-modify-write: backfilling identity_key must not clobber
-        // whatever else was already stamped on the record's metadata.
+        // Relaycast's atomic json_set must not clobber whatever else was
+        // already stamped on the record's metadata.
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
         let get_existing = server.mock(|when, then| {
@@ -1872,9 +1931,9 @@ mod tests {
         let expected_hash = hash_identity_key("node-legacy-identity");
         let patch = server.mock(|when, then| {
             when.method(PATCH)
-                .path("/v1/agents/lead")
+                .path("/v1/agents/lead/legacy-identity")
                 .header("authorization", "Bearer rk_live_shared")
-                .json_body(json!({ "metadata": { "role": "lead-eng", "identity_key": expected_hash } }));
+                .json_body(json!({ "identity_key_hash": expected_hash }));
             then.status(200)
                 .header("content-type", "application/json")
                 .body(format!(
@@ -1893,6 +1952,170 @@ mod tests {
 
         get_existing.assert_hits(1);
         patch.assert_hits(1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_legacy_identity_reclaims_cannot_both_succeed() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State,
+            http::StatusCode as AxumStatusCode,
+            routing::{get, patch},
+            Json, Router,
+        };
+        use tokio::sync::Barrier;
+
+        #[derive(Clone)]
+        struct ClaimServerState {
+            initial_reads: Arc<Barrier>,
+            claim_attempts: Arc<AtomicUsize>,
+            winning_hash: Arc<Mutex<Option<String>>>,
+        }
+
+        async fn get_legacy_agent(State(state): State<ClaimServerState>) -> Json<Value> {
+            // Force both callers to observe the same eligible pre-claim row;
+            // only the endpoint's atomic mutation may choose the winner.
+            state.initial_reads.wait().await;
+            Json(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_legacy",
+                    "name": "lead",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2025-01-01T00:00:00Z",
+                    "channels": []
+                }
+            }))
+        }
+
+        async fn claim_legacy_agent(
+            State(state): State<ClaimServerState>,
+            Json(body): Json<Value>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            let attempt = state.claim_attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                let hash = body["identity_key_hash"]
+                    .as_str()
+                    .expect("client must send a hash, never a raw proof")
+                    .to_string();
+                *state.winning_hash.lock().unwrap() = Some(hash.clone());
+                (
+                    AxumStatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "data": {
+                            "id": "a_legacy",
+                            "name": "lead",
+                            "metadata": { "identity_key": hash }
+                        }
+                    })),
+                )
+            } else {
+                (
+                    AxumStatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "agent_identity_already_claimed",
+                            "message": "identity was claimed by the concurrent winner"
+                        }
+                    })),
+                )
+            }
+        }
+
+        let _env_guard = clear_relay_env();
+        let state = ClaimServerState {
+            initial_reads: Arc::new(Barrier::new(2)),
+            claim_attempts: Arc::new(AtomicUsize::new(0)),
+            winning_hash: Arc::new(Mutex::new(None)),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents/lead", get(get_legacy_agent))
+                    .route("/v1/agents/lead/legacy-identity", patch(claim_legacy_agent))
+                    .with_state(server_state),
+            )
+            .await
+        });
+        let base_url = format!("http://{address}");
+
+        let (first, second) = tokio::join!(
+            reclaim_legacy_identity(
+                Some(&base_url),
+                "rk_live_shared",
+                "lead",
+                "first-operator-proof"
+            ),
+            reclaim_legacy_identity(
+                Some(&base_url),
+                "rk_live_shared",
+                "lead",
+                "second-operator-proof"
+            )
+        );
+
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        assert_eq!(
+            usize::from(first.is_err()) + usize::from(second.is_err()),
+            1
+        );
+        assert_eq!(state.claim_attempts.load(Ordering::SeqCst), 2);
+        let winning_hash = state.winning_hash.lock().unwrap().clone().unwrap();
+        assert!([
+            hash_identity_key("first-operator-proof"),
+            hash_identity_key("second-operator-proof")
+        ]
+        .contains(&winning_hash));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn legacy_identity_reclaim_never_falls_back_to_generic_patch() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_legacy","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let generic_patch = server.mock(|when, then| {
+            when.method(PATCH).path("/v1/agents/lead");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_legacy","name":"lead"}}"#);
+        });
+
+        let error = reclaim_legacy_identity(
+            Some(&server.base_url()),
+            "rk_live_shared",
+            "lead",
+            "operator-proof",
+        )
+        .await
+        .expect_err("a server without atomic claims must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("refusing an unsafe generic PATCH"));
+        get_existing.assert_hits(1);
+        generic_patch.assert_hits(0);
     }
 
     #[tokio::test]
@@ -1916,7 +2139,8 @@ mod tests {
                 ));
         });
         let patch = server.mock(|when, then| {
-            when.method(PATCH).path("/v1/agents/lead");
+            when.method(PATCH)
+                .path("/v1/agents/lead/legacy-identity");
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
@@ -1942,6 +2166,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_identity_reclaim_refuses_a_non_string_identity_key_value() {
+        // Presence is the legacy boundary, not JSON type. A malformed or
+        // partially migrated identity_key must fail closed instead of being
+        // treated as proof that the record predates the gate.
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{"identity_key":null},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/lead/legacy-identity");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+
+        let error = reclaim_legacy_identity(
+            Some(&server.base_url()),
+            "rk_live_shared",
+            "lead",
+            "attacker-supplied-identity",
+        )
+        .await
+        .expect_err("any present identity_key value must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("already has a stamped identity_key"),
+            "expected a malformed-identity rejection, got: {error:#}"
+        );
+        get_existing.assert_hits(1);
+        patch.assert_hits(0);
+    }
+
+    #[tokio::test]
     async fn legacy_identity_reclaim_refuses_a_record_reporting_online() {
         // Best-effort defense against stamping an identity onto a record
         // that may still be a live, connected session — status can lag
@@ -1958,7 +2224,8 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"online","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
         let patch = server.mock(|when, then| {
-            when.method(PATCH).path("/v1/agents/lead");
+            when.method(PATCH)
+                .path("/v1/agents/lead/legacy-identity");
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"online","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
@@ -1976,7 +2243,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("currently reports status 'online'"),
+                .contains("does not report status 'offline'"),
             "expected an online-record rejection, got: {error:#}"
         );
         get_existing.assert_hits(1);
@@ -2007,8 +2274,9 @@ mod tests {
         });
         let mut patch = server.mock(|when, then| {
             when.method(PATCH)
-                .path("/v1/agents/lead")
-                .header("authorization", "Bearer rk_live_shared");
+                .path("/v1/agents/lead/legacy-identity")
+                .header("authorization", "Bearer rk_live_shared")
+                .json_body(json!({ "identity_key_hash": true_owner_hash }));
             then.status(200)
                 .header("content-type", "application/json")
                 .body(format!(

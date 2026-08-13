@@ -61,6 +61,7 @@ enum Commands {
     /// identity so future restarts reclaim normally. Deliberately explicit
     /// and operator-invoked rather than automatic — see
     /// `reclaim_legacy_identity`'s doc comment for why.
+    #[command(hide = true)]
     ReclaimLegacyIdentity(ReclaimLegacyIdentityCommand),
 }
 
@@ -199,19 +200,12 @@ pub(crate) struct ReclaimLegacyIdentityCommand {
     #[arg(long)]
     pub(crate) base_url: Option<String>,
 
-    /// The identity to stamp onto the record. Falls back to
-    /// RELAY_AGENT_IDENTITY_KEY, then a value derived from --state-dir the
-    /// same way a live broker derives its own stable identity at startup.
-    /// Prefer running this command in place on the node's own machine with
-    /// --state-dir rather than copying a raw identity value around.
-    #[arg(long)]
-    pub(crate) identity_key: Option<String>,
-
     /// The node's own `.agentworkforce/relay` state directory, used to
     /// derive the same stable identity `connect_relay` would compute for
-    /// this node at startup (hash of `<state-dir>/state.json`). Only
-    /// consulted when --identity-key and RELAY_AGENT_IDENTITY_KEY are both
-    /// unset.
+    /// this named node at startup. Only consulted when
+    /// RELAY_AGENT_IDENTITY_KEY is unset. The identity proof is deliberately
+    /// accepted only through that environment variable or this derived path,
+    /// never as an argv value visible in process listings and shell history.
     #[arg(long)]
     pub(crate) state_dir: Option<PathBuf>,
 }
@@ -354,6 +348,7 @@ impl InitCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, Parser};
     use std::sync::Mutex;
 
     static BROKER_NAME_ENV_MUTEX: Mutex<()> = Mutex::new(());
@@ -385,6 +380,29 @@ mod tests {
             persist: false,
             state_dir: None,
         }
+    }
+
+    #[test]
+    fn legacy_identity_reclaim_is_hidden_from_help() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(!help.contains("reclaim-legacy-identity"));
+    }
+
+    #[test]
+    fn legacy_identity_reclaim_rejects_identity_proofs_on_argv_without_echoing_them() {
+        let secret = "raw-ownership-proof-must-not-appear";
+        let error = Cli::try_parse_from([
+            "agent-relay-broker",
+            "reclaim-legacy-identity",
+            "legacy-node",
+            "--identity-key",
+            secret,
+        ])
+        .expect_err("--identity-key must not accept a secret argv value")
+        .to_string();
+
+        assert!(error.contains("--identity-key"));
+        assert!(!error.contains(secret));
     }
 
     #[test]

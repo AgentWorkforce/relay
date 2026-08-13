@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay node agent attach --node` now accepts `--workspace-key`, so commands copied from the Cloud dashboard resolve the intended workspace regardless of the working directory.
 - Passing `--workspace-key` to the local or `--ssh-host` attach path is rejected because those paths authenticate with the broker instead.
+- `agent-relay-broker reclaim-legacy-identity`: restore restart reclaim for one
+  offline agent registered before identity proofs were stamped.
 
 ## [11.6.1] - 2026-08-13
 
@@ -33,17 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet terminal readiness reports the broker's delivery-mode revision so native drive clients preserve concurrent changes across reconnect and close.
 
 - Swift terminal sessions reject further input after an acknowledgement becomes uncertain, preventing duplicate keystrokes after timeout or reconnect.
-
-### Added
-
-- `agent-relay-broker reclaim-legacy-identity`: an explicit, operator-invoked
-  recovery command for an agent name registered before the identity-reclaim
-  gate (5c2ad8ee3) shipped. Such a record has no `identity_key` stamped on
-  it, so no restart of its own broker can ever reclaim it through the
-  ordinary reconnect path — this command backfills the identity for one
-  named agent after confirming the record has no identity already stamped
-  and isn't currently reporting `online`, so the gate's protection stays
-  intact once claimed.
 
 ## [11.5.6] - 2026-08-13
 

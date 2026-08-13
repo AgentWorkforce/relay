@@ -6,9 +6,9 @@ use super::*;
 /// shipped. See `crate::relaycast::reclaim_legacy_identity` for the full
 /// rationale and the safety checks it enforces; this is just the CLI
 /// plumbing: resolve the workspace key, base URL, and the identity to stamp
-/// (explicit flag, else `RELAY_AGENT_IDENTITY_KEY`, else derived from
-/// `--state-dir`'s `state.json` the same way a live broker would), then call
-/// it and report the outcome.
+/// (`RELAY_AGENT_IDENTITY_KEY`, else derived from the named broker's state
+/// path under `--state-dir` the same way a live broker would), then call it
+/// and report the outcome. The raw proof is never accepted on argv or printed.
 ///
 /// Deliberately NOT part of the automatic startup/reconnect path — see the
 /// doc comment on `reclaim_legacy_identity` for why an automatic grandfather
@@ -35,29 +35,18 @@ pub(crate) async fn run_reclaim_legacy_identity(cmd: ReclaimLegacyIdentityComman
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let our_identity_key = if let Some(explicit) = cmd
-        .identity_key
-        .clone()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        explicit
-    } else if let Some(env_key) = agent_identity_key() {
+    let our_identity_key = if let Some(env_key) = agent_identity_key() {
         env_key
     } else {
         let state_dir = cmd.state_dir.clone().context(
-            "no identity to stamp: pass --identity-key, set RELAY_AGENT_IDENTITY_KEY, or pass \
-             --state-dir pointing at the node's own .agentworkforce/relay directory so the \
-             same derivation the broker uses at startup can be reproduced here",
+            "no identity to stamp: set RELAY_AGENT_IDENTITY_KEY or pass --state-dir pointing at \
+             the node's own .agentworkforce/relay directory so the same derivation the broker \
+             uses at startup can be reproduced here",
         )?;
-        stable_node_identity_key(&state_dir.join("state.json"))
+        stable_node_identity_key(&persistent_broker_state_path(&state_dir, &cmd.name))
     };
 
-    eprintln!(
-        "reclaiming legacy identity for agent '{}' (derived identity: {}...)",
-        cmd.name,
-        &our_identity_key[..our_identity_key.len().min(12)]
-    );
+    eprintln!("{}", reclaim_start_message(&cmd.name, &our_identity_key));
 
     let claim = reclaim_legacy_identity(
         base_url.as_deref(),
@@ -75,4 +64,46 @@ pub(crate) async fn run_reclaim_legacy_identity(cmd: ReclaimLegacyIdentityComman
     );
 
     Ok(())
+}
+
+fn reclaim_start_message(name: &str, identity_key: &str) -> String {
+    format!(
+        "reclaiming legacy identity for agent '{name}' (identity fingerprint: {})",
+        identity_key_fingerprint(identity_key)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reclaim_diagnostic_uses_only_a_hash_fingerprint_for_short_proofs() {
+        let secret = "short-proof";
+        let message = reclaim_start_message("legacy-node", secret);
+
+        assert!(message.contains(&identity_key_fingerprint(secret)));
+        assert!(!message.contains(secret));
+    }
+
+    #[test]
+    fn reclaim_diagnostic_does_not_slice_unicode_proofs() {
+        let secret = "12345678901é-replayable";
+        let message = reclaim_start_message("legacy-node", secret);
+
+        assert!(message.contains(&identity_key_fingerprint(secret)));
+        assert!(!message.contains(secret));
+    }
+
+    #[test]
+    fn state_dir_identity_uses_the_named_persistent_broker_state_path() {
+        let state_dir = Path::new("/srv/node/.agentworkforce/relay");
+        let state_path = persistent_broker_state_path(state_dir, "node/a");
+
+        assert_eq!(
+            state_path,
+            state_dir.join("state-node-a.json"),
+            "recovery and normal startup must hash the same name-specific path"
+        );
+    }
 }
