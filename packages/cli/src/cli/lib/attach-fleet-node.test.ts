@@ -224,4 +224,45 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     },
     10_000
   );
+
+  it(
+    'rejects a pending delivery-mode PUT promptly when close() tears the proxy down cleanly',
+    async () => {
+      const remote = await startFakeRemote();
+      cleanup.push(remote.close);
+      const proxy = await startFleetNodeAttachProxy({
+        agent: 'agent-d',
+        node: 'node-d',
+        mode: 'drive',
+        baseUrl: 'https://fake.example',
+        workspaceKey: 'wk',
+        fetch: fakeTicketFetch(remote.url),
+      });
+
+      const socket = await remote.nextConnection();
+      sendReady(socket, 'auto_inject');
+      let sawSetDeliveryMode: () => void;
+      const gotFrame = new Promise<void>((resolve) => {
+        sawSetDeliveryMode = resolve;
+      });
+      socket.on('message', (data) => {
+        const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+        // Deliberately never reply — close() must cancel the pending PUT on
+        // its own rather than relying on a remote reply that will never come.
+        if (frame.type === 'terminal.set_delivery_mode') sawSetDeliveryMode();
+      });
+
+      const started = Date.now();
+      const putPromise = putDeliveryMode(proxy, 'agent-d', 'manual_flush');
+      await gotFrame;
+      await proxy.close();
+      const result = await putPromise;
+      const elapsedMs = Date.now() - started;
+
+      expect(result.status).toBe(503);
+      expect(result.body).toMatchObject({ error: { code: 'closed' } });
+      expect(elapsedMs).toBeLessThan(5_000);
+    },
+    10_000
+  );
 });
