@@ -74,6 +74,7 @@ interface SessionState {
 
 const SESSION_CLIS = new Set<SessionCli>(['claude', 'codex', 'opencode', 'grok', 'cursor']);
 const TURN_ROLES = new Set<TurnRole>(['user', 'assistant', 'system']);
+const TURN_ACTOR_ROLES = new Set<TurnActorRole>(['owner', 'steerer']);
 const STEERING_ACTIONS = new Set<SteeringEvent['action']>(['session_started', 'took_control']);
 const SLASH_CHAR_CODE = '/'.charCodeAt(0);
 /** Default bound on a single Relayhistory HTTP round trip. */
@@ -95,19 +96,31 @@ export class SessionClient {
   readonly #queues = new Map<string, Promise<void>>();
 
   constructor(options: SessionClientOptions = {}) {
-    this.#baseUrl = normalizeBaseUrl(options.baseUrl ?? process.env.RELAYHISTORY_URL);
+    // Blank strings are not absent: `SessionClientOptions.baseUrl: ''` (a
+    // common shape for an unset CLI flag) must not shadow a real
+    // RELAYHISTORY_URL, and a blank token/node must not silently disable
+    // auth or persist an invalid nodeId. `??` alone only catches
+    // null/undefined, so every option and env fallback here goes through
+    // trimOrUndefined first.
+    this.#baseUrl = normalizeBaseUrl(
+      trimOrUndefined(options.baseUrl) ?? trimOrUndefined(process.env.RELAYHISTORY_URL)
+    );
     this.#token =
-      options.token ??
-      process.env.RELAYHISTORY_TOKEN ??
-      process.env.RELAYHISTORY_ACCESS_TOKEN ??
-      process.env.RELAY_AGENT_TOKEN;
-    this.#cli = options.cli ?? sessionCli(process.env.RELAY_SESSION_CLI);
-    this.#node = options.node ?? process.env.RELAY_ORIGIN_NODE ?? process.env.HOSTNAME ?? undefined;
+      trimOrUndefined(options.token) ??
+      trimOrUndefined(process.env.RELAYHISTORY_TOKEN) ??
+      trimOrUndefined(process.env.RELAYHISTORY_ACCESS_TOKEN) ??
+      trimOrUndefined(process.env.RELAY_AGENT_TOKEN);
+    this.#cli =
+      sessionCli(trimOrUndefined(options.cli)) ?? sessionCli(trimOrUndefined(process.env.RELAY_SESSION_CLI));
+    this.#node =
+      trimOrUndefined(options.node) ??
+      trimOrUndefined(process.env.RELAY_ORIGIN_NODE) ??
+      trimOrUndefined(process.env.HOSTNAME);
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#now = options.now ?? (() => new Date());
     this.#randomUUID = options.randomUUID ?? randomUUID;
     this.#onWriteError = options.onWriteError;
-    this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#timeoutMs = normalizeTimeoutMs(options.timeoutMs);
   }
 
   async createSession(input: CreateSessionInput): Promise<RelaySession> {
@@ -260,6 +273,13 @@ export class SessionClient {
     if (wireTurns.length === 0) {
       throw new Error(`Relayhistory session ${sessionId} has no turns`);
     }
+    for (let index = 1; index < wireTurns.length; index += 1) {
+      if (wireTurns[index]!.turnIndex === wireTurns[index - 1]!.turnIndex) {
+        throw new Error(
+          `Relayhistory session ${sessionId} has duplicate turnIndex ${wireTurns[index]!.turnIndex}`
+        );
+      }
+    }
 
     const session = sessionFromTurns(sessionId, wireTurns);
     const turns = wireTurns.map((turn) => publicTurn(turn, session));
@@ -387,6 +407,23 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   return baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
 }
 
+/** A blank or whitespace-only string is treated as absent, not as a value. */
+function trimOrUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Clamp an untrusted `timeoutMs` option to a value `AbortSignal.timeout`
+ * accepts. A fractional, negative, non-finite, or oversized number would
+ * otherwise throw synchronously (negative/NaN) or exceed Node's timer range
+ * (`setTimeout`'s ~2^31-1 ms ceiling) inside every `#request` call.
+ */
+function normalizeTimeoutMs(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return DEFAULT_TIMEOUT_MS;
+  return Math.min(2_147_483_647, Math.floor(value));
+}
+
 /**
  * Trim trailing `/` characters without a regex. A quantified trailing-slash
  * pattern on library-supplied input trips static ReDoS scanners even though
@@ -413,7 +450,19 @@ function sessionMetadata(session: RelaySession): Record<string, unknown> {
 
 function sessionFromTurns(sessionId: string, turns: readonly RelayhistoryTurn[]): RelaySession {
   let session: RelaySession | undefined;
+  let canonicalOwner: SessionActor | undefined;
   let nativeResumeId: string | undefined;
+
+  // Oldest-first: the earliest valid snapshot's owner is canonical.
+  // RelaySession.owner is documented as immutable — a later turn's
+  // `relaySession.owner` differing (corruption, or a forged/foreign write)
+  // must not be able to silently move who git trailers and
+  // owner-vs-steerer attribution point at.
+  for (const turn of turns) {
+    if (canonicalOwner) break;
+    const parsed = parseSession(record(turn.metadata)?.relaySession);
+    if (parsed && parsed.sessionId === sessionId) canonicalOwner = parsed.owner;
+  }
 
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const metadata = record(turns[index]?.metadata);
@@ -421,11 +470,12 @@ function sessionFromTurns(sessionId: string, turns: readonly RelayhistoryTurn[])
     if (!session) session = parseSession(metadata?.relaySession);
   }
 
-  if (!session || session.sessionId !== sessionId) {
+  if (!session || session.sessionId !== sessionId || !canonicalOwner) {
     throw new Error(`Relayhistory session ${sessionId} is missing Relay identity metadata`);
   }
   return cloneSession({
     ...session,
+    owner: canonicalOwner,
     ...(nativeResumeId ? { nativeResumeId } : {}),
   });
 }
@@ -492,11 +542,13 @@ function parseWireTurn(value: unknown): RelayhistoryTurn {
   if (
     !input ||
     !Number.isInteger(input.turnIndex) ||
+    (input.turnIndex as number) < 0 ||
     typeof input.role !== 'string' ||
     !TURN_ROLES.has(input.role as TurnRole) ||
     typeof input.content !== 'string' ||
     typeof input.actorName !== 'string' ||
     typeof input.actorRole !== 'string' ||
+    !TURN_ACTOR_ROLES.has(input.actorRole as TurnActorRole) ||
     !nonEmptyString(input.ts)
   ) {
     throw new Error('Relayhistory returned an invalid session turn');

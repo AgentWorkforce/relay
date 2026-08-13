@@ -378,6 +378,93 @@ describe('SessionClient', () => {
     const indexes = stored.map((turn) => turn.turnIndex).sort((a, b) => a - b);
     expect(new Set(indexes).size).toBe(3);
   });
+
+  it('treats a blank baseUrl/token option as absent and falls back to the env vars', async () => {
+    const fetch = vi.fn(async () => json({ sessionId: 'x', turns: [] }));
+    const prevUrl = process.env.RELAYHISTORY_URL;
+    const prevToken = process.env.RELAYHISTORY_TOKEN;
+    process.env.RELAYHISTORY_URL = 'https://env.example';
+    process.env.RELAYHISTORY_TOKEN = 'rth_env_token';
+    try {
+      const client = new SessionClient({
+        baseUrl: '   ',
+        token: '',
+        fetch: fetch as unknown as typeof globalThis.fetch,
+        randomUUID: () => '11111111-1111-4111-8111-111111111111',
+        now: () => new Date('2026-08-13T08:00:00.000Z'),
+      });
+      await client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER }).catch(() => undefined);
+
+      const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+      expect(url.startsWith('https://env.example')).toBe(true);
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer rth_env_token');
+    } finally {
+      if (prevUrl === undefined) delete process.env.RELAYHISTORY_URL;
+      else process.env.RELAYHISTORY_URL = prevUrl;
+      if (prevToken === undefined) delete process.env.RELAYHISTORY_TOKEN;
+      else process.env.RELAYHISTORY_TOKEN = prevToken;
+    }
+  });
+
+  it('clamps an invalid timeoutMs to the default instead of throwing inside every request', async () => {
+    for (const timeoutMs of [-1, 0, NaN, Infinity]) {
+      const backend = relayhistoryBackend();
+      const client = testClient(backend.fetch, { timeoutMs });
+      await expect(
+        client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER })
+      ).resolves.toBeTruthy();
+    }
+  });
+
+  it('rejects a negative turnIndex, an unknown actorRole, and duplicate indexes from Relayhistory', async () => {
+    const malformed = [
+      {
+        turns: [{ turnIndex: -1, role: 'system', content: 'x', actorName: 'a', actorRole: 'owner', ts: 't' }],
+      },
+      {
+        turns: [{ turnIndex: 0, role: 'system', content: 'x', actorName: 'a', actorRole: 'admin', ts: 't' }],
+      },
+      {
+        turns: [
+          { turnIndex: 0, role: 'system', content: 'x', actorName: 'a', actorRole: 'owner', ts: 't' },
+          { turnIndex: 0, role: 'user', content: 'y', actorName: 'b', actorRole: 'steerer', ts: 't2' },
+        ],
+      },
+    ];
+
+    for (const payload of malformed) {
+      const fetch = vi.fn(async () => json({ sessionId: 'sess', ...payload }));
+      const client = testClient(fetch as unknown as typeof globalThis.fetch);
+      await expect(client.resumeSession('sess')).rejects.toThrow();
+    }
+  });
+
+  it('pins the owner to the creation snapshot even if a later turn claims a different owner', async () => {
+    const backend = relayhistoryBackend();
+    const client = testClient(backend.fetch);
+    const created = await client.createSession({ cli: 'claude', node: 'danny-mac', owner: OWNER });
+
+    // Simulate a later turn (buggy write, or a foreign/forged one) whose
+    // embedded session snapshot claims a different owner than the session
+    // was created with.
+    const stored = backend.turns.get(created.sessionId)!;
+    stored.push(
+      structuredClone({
+        ...stored[0],
+        turnIndex: 1,
+        metadata: {
+          ...stored[0].metadata,
+          relaySession: { ...stored[0].metadata.relaySession, owner: STEERER },
+        },
+      })
+    );
+
+    const resumed = await client.resumeSession(created.sessionId);
+    expect(resumed.session.owner).toEqual(OWNER);
+    await expect(client.getGitTrailers(created.sessionId)).resolves.toEqual(
+      expect.arrayContaining(['Relay-Session-Owner-Id: usr_danny'])
+    );
+  });
 });
 
 interface StoredTurn {
