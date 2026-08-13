@@ -26,6 +26,7 @@ const workspacePackages = [
   'policy',
   'runtime',
   'sdk',
+  'session',
   'slack-primitive',
   'telemetry',
   'trajectory',
