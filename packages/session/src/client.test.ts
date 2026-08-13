@@ -273,6 +273,111 @@ describe('SessionClient', () => {
     // Exactly one real closing fence — the one this function emits itself.
     expect(prompt.match(/<\/relayhistory-journal-json>/gu)).toHaveLength(1);
   });
+
+  it('buildContextPrompt bounds journal length, keeping the most recent turns and noting the omission', () => {
+    const session = {
+      sessionId: 'sess-1',
+      owner: OWNER,
+      activeActor: OWNER,
+      steeringLog: [],
+      originCli: 'claude' as const,
+      originNode: 'danny-mac',
+      createdAt: '2026-08-13T08:00:00.000Z',
+    };
+    const turns: Turn[] = Array.from({ length: 50 }, (_, index) => ({
+      turnIndex: index,
+      role: 'user',
+      content: `turn-${index}-` + 'x'.repeat(500),
+      actor: OWNER,
+      actorRole: 'owner',
+      timestamp: `2026-08-13T08:00:${String(index).padStart(2, '0')}.000Z`,
+    }));
+
+    const bounded = buildContextPrompt(session, turns, { maxJournalChars: 4_000 });
+    expect(bounded).toContain('turns omitted below to bound prompt length');
+    expect(bounded).toContain('turn-49-'); // most recent turn always kept
+    expect(bounded).not.toContain('"index": 0,'); // oldest turn dropped first
+
+    const unbounded = buildContextPrompt(session, turns);
+    expect(unbounded).not.toContain('omitted below to bound prompt length');
+    expect(unbounded).toContain('turn-0-');
+    expect(unbounded).toContain('turn-49-');
+  });
+
+  it('recovers a turn-index collision between two concurrent SessionClient instances without losing either write', async () => {
+    // Two independent clients (simulating two machines/processes) racing on
+    // the same session. `#serialize` cannot help here — it's per-instance —
+    // so this exercises #postTurnAtNextIndex's read-back-and-retry path.
+    // A barrier holds the first two `#fetchState` GETs open until both
+    // clients have issued one, guaranteeing they observe the identical
+    // starting turn list and therefore compute the same nextTurnIndex,
+    // forcing a genuine collision on whichever POST lands second.
+    const turns = new Map<string, StoredTurn[]>();
+    let releaseCount = 0;
+    let released: Array<() => void> = [];
+
+    const fetch = vi.fn((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = new URL(typeof input === 'string' ? input : input.url);
+      const match = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/turns$/u);
+      const sessionId = match ? decodeURIComponent(match[1]!) : '';
+      const respondGet = () => json({ sessionId, turns: structuredClone(turns.get(sessionId) ?? []) });
+
+      if (init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as {
+          sessionOwner: string;
+          turns: Array<Omit<StoredTurn, 'sessionOwner'>>;
+        };
+        const stored = turns.get(sessionId) ?? [];
+        for (const turn of body.turns) {
+          const next = structuredClone({ ...turn, sessionOwner: body.sessionOwner });
+          const existing = stored.findIndex((candidate) => candidate.turnIndex === next.turnIndex);
+          if (existing >= 0) stored[existing] = next;
+          else stored.push(next);
+        }
+        turns.set(sessionId, stored);
+        return Promise.resolve(json({ sessionId, accepted: body.turns.length }));
+      }
+
+      if (releaseCount < 2) {
+        releaseCount += 1;
+        return new Promise<Response>((resolve) => {
+          released.push(() => resolve(respondGet()));
+          if (releaseCount === 2) {
+            const toRelease = released;
+            released = [];
+            queueMicrotask(() => toRelease.forEach((fn) => fn()));
+          }
+        });
+      }
+      return Promise.resolve(respondGet());
+    });
+
+    const clientA = testClient(fetch as unknown as typeof globalThis.fetch, { randomUUID: () => 'a' });
+    const clientB = testClient(fetch as unknown as typeof globalThis.fetch, { randomUUID: () => 'b' });
+    const created = await clientA.createSession({ cli: 'claude', node: 'node-a', owner: OWNER });
+
+    await Promise.all([
+      clientA.writeTurn({
+        sessionId: created.sessionId,
+        role: 'user',
+        content: 'from-client-a',
+        actor: OWNER,
+      }),
+      clientB.writeTurn({
+        sessionId: created.sessionId,
+        role: 'user',
+        content: 'from-client-b',
+        actor: STEERER,
+      }),
+    ]);
+
+    const stored = turns.get(created.sessionId)!;
+    const contents = stored.map((turn) => turn.content).sort();
+    expect(contents).toEqual(['[Relay session started by Danny]', 'from-client-a', 'from-client-b']);
+    // Both racing writes landed at distinct indices — neither was silently dropped.
+    const indexes = stored.map((turn) => turn.turnIndex).sort((a, b) => a - b);
+    expect(new Set(indexes).size).toBe(3);
+  });
 });
 
 interface StoredTurn {

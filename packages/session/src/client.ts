@@ -78,6 +78,8 @@ const STEERING_ACTIONS = new Set<SteeringEvent['action']>(['session_started', 't
 const SLASH_CHAR_CODE = '/'.charCodeAt(0);
 /** Default bound on a single Relayhistory HTTP round trip. */
 const DEFAULT_TIMEOUT_MS = 15_000;
+/** Retries for a turn-index write that a concurrent writer clobbered. See `#postTurnAtNextIndex`. */
+const MAX_WRITE_CONFLICT_RETRIES = 3;
 
 /** Relayhistory-backed client for portable session identity, turns, and attribution. */
 export class SessionClient {
@@ -155,20 +157,24 @@ export class SessionClient {
   async writeTurn(input: WriteTurnInput): Promise<void> {
     assertActor(input.actor, 'actor');
     try {
-      await this.#serialize(input.sessionId, async () => {
-        const state = await this.#fetchState(input.sessionId);
-        const actorRole: TurnActorRole =
-          input.actor.userId === state.session.owner.userId ? 'owner' : 'steerer';
-        await this.#postTurn(state.session, {
-          turnIndex: state.nextTurnIndex,
-          role: input.role,
-          content: input.content,
-          actor: input.actor,
-          actorRole,
-          timestamp: this.#now().toISOString(),
-          metadata: sessionMetadata(state.session),
-        });
-      });
+      await this.#serialize(input.sessionId, () =>
+        this.#postTurnAtNextIndex(input.sessionId, (state) => {
+          const actorRole: TurnActorRole =
+            input.actor.userId === state.session.owner.userId ? 'owner' : 'steerer';
+          return {
+            session: state.session,
+            turn: {
+              turnIndex: state.nextTurnIndex,
+              role: input.role,
+              content: input.content,
+              actor: input.actor,
+              actorRole,
+              timestamp: this.#now().toISOString(),
+              metadata: sessionMetadata(state.session),
+            },
+          };
+        })
+      );
     } catch (error) {
       // Isolate the observer: a throwing onWriteError must not make this
       // best-effort write reject anyway, which would defeat its own contract.
@@ -197,32 +203,36 @@ export class SessionClient {
     assertActor(input.actor, 'actor');
     assertSafeValue(input.relayMessageId, 'relayMessageId');
 
-    await this.#serialize(input.sessionId, async () => {
-      const state = await this.#fetchState(input.sessionId);
-      const timestamp = this.#now().toISOString();
-      const event: SteeringEvent = {
-        actorId: input.actor.userId,
-        action: 'took_control',
-        relayMessageId: input.relayMessageId,
-        timestamp,
-        nodeId: this.#node ?? state.session.originNode,
-      };
-      const session: RelaySession = {
-        ...cloneSession(state.session),
-        activeActor: cloneActor(input.actor),
-        steeringLog: [...state.session.steeringLog, event],
-      };
+    await this.#serialize(input.sessionId, () =>
+      this.#postTurnAtNextIndex(input.sessionId, (state) => {
+        const timestamp = this.#now().toISOString();
+        const event: SteeringEvent = {
+          actorId: input.actor.userId,
+          action: 'took_control',
+          relayMessageId: input.relayMessageId,
+          timestamp,
+          nodeId: this.#node ?? state.session.originNode,
+        };
+        const session: RelaySession = {
+          ...cloneSession(state.session),
+          activeActor: cloneActor(input.actor),
+          steeringLog: [...state.session.steeringLog, event],
+        };
 
-      await this.#postTurn(session, {
-        turnIndex: state.nextTurnIndex,
-        role: 'system',
-        content: `[Relay control taken by ${input.actor.displayName}]`,
-        actor: input.actor,
-        actorRole: input.actor.userId === session.owner.userId ? 'owner' : 'steerer',
-        timestamp,
-        metadata: sessionMetadata(session),
-      });
-    });
+        return {
+          session,
+          turn: {
+            turnIndex: state.nextTurnIndex,
+            role: 'system',
+            content: `[Relay control taken by ${input.actor.displayName}]`,
+            actor: input.actor,
+            actorRole: input.actor.userId === session.owner.userId ? 'owner' : 'steerer',
+            timestamp,
+            metadata: sessionMetadata(session),
+          },
+        };
+      })
+    );
   }
 
   async getGitTrailers(sessionId: string): Promise<string[]> {
@@ -258,6 +268,53 @@ export class SessionClient {
       turns,
       nextTurnIndex: Math.max(...wireTurns.map((turn) => turn.turnIndex)) + 1,
     };
+  }
+
+  /**
+   * Fetch state, build a turn at the resulting `nextTurnIndex`, and post it —
+   * then verify the post actually landed instead of trusting the request
+   * succeeded.
+   *
+   * `#serialize` only orders writes made through *this* instance. Two
+   * `SessionClient`s on different machines/processes (the package's core
+   * cross-machine scenario) can each fetch the same `nextTurnIndex` and
+   * both POST it; the backend replaces-by-index, so whichever POST lands
+   * second silently destroys the first turn with no error from either
+   * caller. There is no way to prevent that outright without a
+   * conditional-write or server-assigned-index contract from Relayhistory,
+   * which this client doesn't control — but a client alone *can* detect
+   * that its own write didn't survive (by reading it back) and retry into
+   * a fresh index instead of returning success for a turn that's already
+   * gone.
+   *
+   * This closes the gap for the common case — two writers racing once —
+   * and is bounded so it can't retry forever under sustained contention.
+   * It's a mitigation, not a guarantee: a write that lands *after* our
+   * verification read still wins silently, same as any optimistic-retry
+   * scheme without a real compare-and-swap primitive underneath it.
+   */
+  async #postTurnAtNextIndex(
+    sessionId: string,
+    build: (state: SessionState) => { session: RelaySession; turn: Turn },
+    attempt = 0
+  ): Promise<void> {
+    const state = await this.#fetchState(sessionId);
+    const { session, turn } = build(state);
+    await this.#postTurn(session, turn);
+
+    const verify = await this.#fetchState(sessionId);
+    const stored = verify.turns.find((candidate) => candidate.turnIndex === turn.turnIndex);
+    const survived = !!stored && stored.content === turn.content && stored.actor.userId === turn.actor.userId;
+
+    if (!survived) {
+      if (attempt >= MAX_WRITE_CONFLICT_RETRIES) {
+        throw new Error(
+          `Relayhistory turn ${turn.turnIndex} for session ${sessionId} was overwritten by a ` +
+            `concurrent writer after ${MAX_WRITE_CONFLICT_RETRIES + 1} attempts`
+        );
+      }
+      return this.#postTurnAtNextIndex(sessionId, build, attempt + 1);
+    }
   }
 
   async #postTurn(session: RelaySession, turn: Turn): Promise<void> {

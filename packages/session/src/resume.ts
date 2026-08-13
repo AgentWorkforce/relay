@@ -8,6 +8,23 @@ export interface DetermineResumeModeInput {
 }
 
 /**
+ * Character budget for the serialized turn journal inside the injected
+ * prompt. Generous enough to leave ordinary sessions untouched, but bounded
+ * so a long-lived session can't grow the prompt without limit and blow the
+ * receiving harness's context window. This only bounds what's *injected*
+ * here — the complete journal is always retained in Relayhistory and
+ * remains reachable through resumeSession regardless of this cutoff.
+ */
+const DEFAULT_MAX_JOURNAL_CHARS = 200_000;
+
+interface TranscriptEntry {
+  index: number;
+  role: Turn['role'];
+  actor: { userId: string; displayName: string };
+  content: string;
+}
+
+/**
  * Select the only safe native continuation path. Claude can reuse its native
  * session id when Claude is also the receiving CLI; every other handoff uses
  * the portable Relayhistory journal.
@@ -25,16 +42,15 @@ export function determineResumeMode(input: DetermineResumeModeInput): ResumeMode
 }
 
 /** Build a single portable prompt from the ordered, attributed turn journal. */
-export function buildContextPrompt(session: RelaySession, turns: readonly Turn[]): string {
-  const transcript = turns.map((turn) => ({
-    index: turn.turnIndex,
-    role: turn.role,
-    actor: {
-      userId: turn.actor.userId,
-      displayName: turn.actor.displayName,
-    },
-    content: turn.content,
-  }));
+export function buildContextPrompt(
+  session: RelaySession,
+  turns: readonly Turn[],
+  options: { maxJournalChars?: number } = {}
+): string {
+  const { transcript, omittedCount } = boundTranscript(
+    turns,
+    options.maxJournalChars ?? DEFAULT_MAX_JOURNAL_CHARS
+  );
 
   // JSON.stringify escapes quotes, backslashes, and control characters, but
   // not `<`. Any turn's content — including one written by a steerer who is
@@ -51,9 +67,47 @@ export function buildContextPrompt(session: RelaySession, turns: readonly Turn[]
     `Session ID: ${session.sessionId}`,
     `Owner: ${session.owner.displayName} (${session.owner.userId})`,
     `Active actor: ${session.activeActor ? `${session.activeActor.displayName} (${session.activeActor.userId})` : 'none'}`,
+    ...(omittedCount > 0
+      ? [
+          `(${omittedCount} earliest turn${omittedCount === 1 ? '' : 's'} omitted below to bound prompt length. The complete journal remains in Relayhistory.)`,
+        ]
+      : []),
     '<relayhistory-journal-json>',
     journal,
     '</relayhistory-journal-json>',
     'Continue from the latest turn while preserving ownership and attribution.',
   ].join('\n\n');
+}
+
+/**
+ * Keep the most recent turns that fit within `maxChars` of serialized JSON,
+ * dropping the oldest first. Always keeps at least the single latest turn,
+ * even if it alone exceeds the budget, so a resumed session is never handed
+ * zero context.
+ */
+function boundTranscript(
+  turns: readonly Turn[],
+  maxChars: number
+): { transcript: TranscriptEntry[]; omittedCount: number } {
+  const all: TranscriptEntry[] = turns.map((turn) => ({
+    index: turn.turnIndex,
+    role: turn.role,
+    actor: { userId: turn.actor.userId, displayName: turn.actor.displayName },
+    content: turn.content,
+  }));
+
+  if (JSON.stringify(all).length <= maxChars) {
+    return { transcript: all, omittedCount: 0 };
+  }
+
+  const kept: TranscriptEntry[] = [];
+  let size = 2; // '[' + ']'
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    const entry = all[index]!;
+    const entrySize = JSON.stringify(entry).length + 1; // +1 for the separating comma
+    if (kept.length > 0 && size + entrySize > maxChars) break;
+    kept.unshift(entry);
+    size += entrySize;
+  }
+  return { transcript: kept, omittedCount: all.length - kept.length };
 }
