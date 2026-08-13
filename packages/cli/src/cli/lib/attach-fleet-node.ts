@@ -216,6 +216,7 @@ export async function startFleetNodeAttachProxy(
   type DeliveryModeResult = { mode: string; flushed: number; matched: boolean; revision: string };
   /** At most one in-flight delivery-mode PUT at a time. */
   let pendingDeliveryMode: {
+    requestId: string;
     resolve: (result: DeliveryModeResult) => void;
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
@@ -299,12 +300,14 @@ export async function startFleetNodeAttachProxy(
         });
         return;
       }
+      const requestId = randomBytes(8).toString('hex');
       const result = await new Promise<DeliveryModeResult | Error>((resolve) => {
         const timer = setTimeout(() => {
           pendingDeliveryMode = null;
           resolve(new FleetNodeAttachError('delivery mode request timed out', 'delivery_mode_timeout'));
         }, DELIVERY_MODE_TIMEOUT_MS);
         pendingDeliveryMode = {
+          requestId,
           resolve: (r) => resolve(r),
           reject: (e) => resolve(e),
           timer,
@@ -313,20 +316,22 @@ export async function startFleetNodeAttachProxy(
           type: 'terminal.set_delivery_mode',
           session_id: sessionId,
           mode: requestedMode,
+          request_id: requestId,
         };
         if (typeof body.expected_mode === 'string') frame.expected_mode = body.expected_mode;
         if (typeof body.expected_revision === 'string') frame.expected_revision = body.expected_revision;
         remote!.send(JSON.stringify(frame));
       });
       if (result instanceof Error) {
-        json(response, 503, {
-          error: {
-            code:
-              result instanceof FleetNodeAttachError
-                ? (result.code ?? 'delivery_mode_failed')
-                : 'delivery_mode_failed',
-            message: result.message,
-          },
+        const errCode =
+          result instanceof FleetNodeAttachError
+            ? (result.code ?? 'delivery_mode_failed')
+            : 'delivery_mode_failed';
+        // Return HTTP 404 for agent_not_found so the attach preflight can
+        // produce the correct no-agent or cross-node placement error.
+        const status = errCode === 'agent_not_found' ? 404 : 503;
+        json(response, status, {
+          error: { code: errCode, message: result.message },
         });
         return;
       }
@@ -523,6 +528,12 @@ export async function startFleetNodeAttachProxy(
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
     }
+    if (pendingDeliveryMode) {
+      const pending = pendingDeliveryMode;
+      pendingDeliveryMode = null;
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
     const activeRemote = remote;
     remote = undefined;
     rejectReadiness(activeReadiness, error);
@@ -554,6 +565,12 @@ export async function startFleetNodeAttachProxy(
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
+        // Seed loopbackDeliveryMode from the broker's actual state so that
+        // detach restores the correct mode even when the worker started in a
+        // different mode than our local inference at line 214.
+        if (frame.delivery_mode === 'manual_flush' || frame.delivery_mode === 'auto_inject') {
+          loopbackDeliveryMode = frame.delivery_mode;
+        }
         terminalEverReady = true;
         reconnectAttempts = 0;
         if (readiness === activeReadiness) {
@@ -585,7 +602,8 @@ export async function startFleetNodeAttachProxy(
           bytes_written: typeof frame.bytes_written === 'number' ? frame.bytes_written : 0,
         });
       } else if (frame.type === 'terminal.delivery_mode') {
-        if (pendingDeliveryMode) {
+        const frameRid = typeof frame.request_id === 'string' ? frame.request_id : undefined;
+        if (pendingDeliveryMode && (frameRid === undefined || frameRid === pendingDeliveryMode.requestId)) {
           const pending = pendingDeliveryMode;
           pendingDeliveryMode = null;
           clearTimeout(pending.timer);
@@ -599,17 +617,19 @@ export async function startFleetNodeAttachProxy(
       } else if (frame.type === 'terminal.error') {
         const message = typeof frame.message === 'string' ? frame.message : 'remote terminal failed';
         const code = typeof frame.code === 'string' ? frame.code : 'terminal_error';
-        // A terminal.error while a delivery-mode PUT is in flight is op-scoped
-        // (agent_not_found, invalid_mode, etc.) — reject the pending request
-        // without tearing down the terminal session.
-        if (pendingDeliveryMode) {
+        const frameRid = typeof frame.request_id === 'string' ? frame.request_id : undefined;
+        // Route the error to the pending delivery-mode request only when the
+        // request_id matches (or the broker sent no request_id at all — older
+        // broker compat). An unrelated session-level error must not cancel a
+        // live delivery-mode PUT and vice-versa.
+        if (pendingDeliveryMode && (frameRid === undefined || frameRid === pendingDeliveryMode.requestId)) {
           const pending = pendingDeliveryMode;
           pendingDeliveryMode = null;
           clearTimeout(pending.timer);
           pending.reject(new FleetNodeAttachError(message, code));
-        } else if (readiness === activeReadiness && !readiness.settled) {
+        } else if (!frameRid && readiness === activeReadiness && !readiness.settled) {
           endTerminal(new FleetNodeAttachError(message, code));
-        } else {
+        } else if (!frameRid) {
           broadcast(inputSockets, { type: 'pty_input_error', code, message });
         }
       } else if (frame.type === 'terminal.closed') {

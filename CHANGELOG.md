@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay drive --node` no longer fails with "broker remained in manual_flush mode"; delivery-mode changes are now forwarded to the remote broker via the Relaycast terminal WebSocket instead of returning a static stub response.
+- Remote `agent-relay drive --node` sessions now apply delivery-mode changes instead of remaining in `manual_flush`.
 
 ## [11.5.5] - 2026-08-12
 

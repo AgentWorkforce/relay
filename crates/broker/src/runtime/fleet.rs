@@ -80,6 +80,7 @@ pub(super) fn fail_terminal_session(
             session_id: session_id.clone(),
             code: code.into(),
             message: message.clone(),
+            request_id: None,
         },
     );
     if !try_send_terminal(
@@ -190,11 +191,13 @@ impl BrokerRuntime {
                         session_id,
                         code: "agent_not_found".to_string(),
                         message: format!("no worker named '{agent}'"),
+                        request_id: None,
                     }),
                     Some(AgentRuntime::Headless) => self.send_terminal(TerminalToCloud::Error {
                         session_id,
                         code: "unsupported_runtime".to_string(),
                         message: format!("worker '{agent}' is headless and has no PTY"),
+                        request_id: None,
                     }),
                     Some(AgentRuntime::Pty) => {
                         self.terminal_sessions.insert(
@@ -243,6 +246,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "session_not_found".into(),
                         message: "terminal session is not active".into(),
+                        request_id: None,
                     });
                     return;
                 };
@@ -251,6 +255,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "read_only".into(),
                         message: "view sessions do not accept input".into(),
+                        request_id: None,
                     });
                     return;
                 }
@@ -259,6 +264,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "session_not_ready".into(),
                         message: "terminal snapshot is not ready".into(),
+                        request_id: None,
                     });
                     return;
                 }
@@ -267,6 +273,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "invalid_input".into(),
                         message: "terminal input must be bounded base64 UTF-8".into(),
+                        request_id: None,
                     });
                     return;
                 }
@@ -277,6 +284,7 @@ impl BrokerRuntime {
                             session_id,
                             code: "invalid_input".into(),
                             message: "terminal input must be bounded base64 UTF-8".into(),
+                            request_id: None,
                         });
                         return;
                     }
@@ -288,6 +296,7 @@ impl BrokerRuntime {
                             session_id,
                             code: "invalid_input".into(),
                             message: "terminal input must be UTF-8".into(),
+                            request_id: None,
                         });
                         return;
                     }
@@ -303,6 +312,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "input_backpressure".into(),
                         message: "terminal input acknowledgement backlog is full".into(),
+                        request_id: None,
                     });
                     return;
                 }
@@ -333,6 +343,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "session_not_found".into(),
                         message: "terminal session is not active".into(),
+                        request_id: None,
                     });
                     return;
                 };
@@ -341,6 +352,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "read_only".into(),
                         message: "view sessions do not resize the PTY".into(),
+                        request_id: None,
                     });
                     return;
                 }
@@ -349,6 +361,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "session_not_ready".into(),
                         message: "terminal snapshot is not ready".into(),
+                        request_id: None,
                     });
                     return;
                 }
@@ -425,6 +438,7 @@ impl BrokerRuntime {
             TerminalControlEvent::Message(TerminalFromCloud::SetDeliveryMode {
                 session_id,
                 mode,
+                request_id,
                 expected_mode,
                 expected_revision,
             }) => {
@@ -433,6 +447,7 @@ impl BrokerRuntime {
                         session_id,
                         code: "session_not_found".into(),
                         message: "terminal session is not active".into(),
+                        request_id,
                     });
                     return;
                 };
@@ -441,18 +456,56 @@ impl BrokerRuntime {
                         session_id,
                         code: "read_only".into(),
                         message: "view sessions cannot change delivery mode".into(),
+                        request_id,
                     });
                     return;
                 }
-                let expected_revision_u64: Option<u64> =
-                    expected_revision.as_deref().and_then(|s| s.parse().ok());
+                // Validate expected_mode: an unrecognised string must return an error
+                // rather than silently dropping the CAS guard (which serde would do if
+                // expected_mode were typed as Option<InboundDeliveryMode> directly).
+                let expected_mode_parsed: Option<InboundDeliveryMode> =
+                    match expected_mode.as_deref() {
+                        None => None,
+                        Some("auto_inject") => Some(InboundDeliveryMode::AutoInject),
+                        Some("manual_flush") => Some(InboundDeliveryMode::ManualFlush),
+                        Some(raw) => {
+                            self.send_terminal(TerminalToCloud::Error {
+                                session_id,
+                                code: "invalid_mode".into(),
+                                message: format!("unknown expected_mode '{raw}'"),
+                                request_id,
+                            });
+                            return;
+                        }
+                    };
+                // Reject an unparseable expected_revision rather than silently
+                // converting it to None (which would drop the CAS guard and allow an
+                // unconditional delivery-mode change — the HTTP route rejects the same
+                // input with invalid_revision).
+                let expected_revision_u64: Option<u64> = match expected_revision.as_deref() {
+                    None => None,
+                    Some(raw) => match raw.parse::<u64>() {
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            self.send_terminal(TerminalToCloud::Error {
+                                session_id,
+                                code: "invalid_revision".into(),
+                                message: format!(
+                                    "expected_revision '{raw}' is not a valid non-negative integer"
+                                ),
+                                request_id,
+                            });
+                            return;
+                        }
+                    },
+                };
                 let (tx, rx) = tokio::sync::oneshot::channel::<
                     Result<SetInboundDeliveryModeOk, DeliveryRouteError>,
                 >();
                 self.handle_api_request(ListenApiRequest::SetInboundDeliveryMode {
                     name: session.agent.clone(),
                     mode,
-                    expected_mode,
+                    expected_mode: expected_mode_parsed,
                     expected_revision: expected_revision_u64,
                     reply: tx,
                 })
@@ -461,6 +514,7 @@ impl BrokerRuntime {
                     Ok(Ok(ok)) => {
                         self.send_terminal(TerminalToCloud::DeliveryMode {
                             session_id,
+                            request_id,
                             mode: ok.mode,
                             flushed: ok.flushed,
                             matched: ok.matched,
@@ -472,6 +526,7 @@ impl BrokerRuntime {
                             session_id,
                             code: "agent_not_found".into(),
                             message: format!("no worker named '{name}'"),
+                            request_id,
                         });
                     }
                     Err(_) => {
@@ -484,6 +539,7 @@ impl BrokerRuntime {
                             session_id,
                             code: "internal_error".into(),
                             message: "delivery mode reply was not received".into(),
+                            request_id,
                         });
                     }
                 }

@@ -56,6 +56,7 @@ impl BrokerRuntime {
                         session_id: session_id.clone(),
                         code: "snapshot_timeout".into(),
                         message: "terminal snapshot timed out".into(),
+                        request_id: None,
                     },
                 ) {
                     tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting snapshot timeout");
@@ -92,6 +93,7 @@ impl BrokerRuntime {
                         session_id: session_id.clone(),
                         code: "input_timeout".into(),
                         message: "terminal input acknowledgement timed out".into(),
+                        request_id: None,
                     },
                 ) {
                     tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting input timeout");

@@ -970,6 +970,7 @@ impl BrokerRuntime {
                                     message:
                                         "terminal input returned an unexpected worker response"
                                             .into(),
+                                    request_id: None,
                                 }
                             } else if let Some(error) = payload.get("error") {
                                 TerminalToCloud::Error {
@@ -984,6 +985,7 @@ impl BrokerRuntime {
                                         .and_then(Value::as_str)
                                         .unwrap_or("terminal input failed")
                                         .to_string(),
+                                    request_id: None,
                                 }
                             } else if let Some(bytes_written) =
                                 payload.get("bytes_written").and_then(Value::as_u64)
@@ -998,6 +1000,7 @@ impl BrokerRuntime {
                                     session_id: session_id.clone(),
                                     code: "input_failed".into(),
                                     message: "terminal input response was malformed".into(),
+                                    request_id: None,
                                 }
                             };
                             if !try_send_terminal(terminal_control_tx, message) {
@@ -1017,6 +1020,14 @@ impl BrokerRuntime {
                                 return;
                             }
                             let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            // Look up the session's agent so we can include its
+                            // current delivery mode in the Ready frame, giving
+                            // the client an authoritative initial mode rather
+                            // than an inferred guess.
+                            let session_delivery_mode = terminal_sessions
+                                .get(&session_id)
+                                .and_then(|s| delivery_states.get(&s.agent))
+                                .map(|ds| ds.mode);
                             let message = if msg_type != "snapshot_response" {
                                 TerminalToCloud::Error {
                                     session_id: session_id.clone(),
@@ -1024,6 +1035,7 @@ impl BrokerRuntime {
                                     message:
                                         "terminal snapshot returned an unexpected worker response"
                                             .into(),
+                                    request_id: None,
                                 }
                             } else if let Some(error) = payload.get("error") {
                                 TerminalToCloud::Error {
@@ -1038,6 +1050,7 @@ impl BrokerRuntime {
                                         .and_then(Value::as_str)
                                         .unwrap_or("terminal snapshot failed")
                                         .to_string(),
+                                    request_id: None,
                                 }
                             } else if let (Some(screen), Some(rows), Some(cols)) = (
                                 payload.get("screen").and_then(Value::as_str),
@@ -1059,12 +1072,14 @@ impl BrokerRuntime {
                                         .get("offset")
                                         .and_then(Value::as_u64)
                                         .unwrap_or(0),
+                                    delivery_mode: session_delivery_mode,
                                 }
                             } else {
                                 TerminalToCloud::Error {
                                     session_id: session_id.clone(),
                                     code: "snapshot_failed".into(),
                                     message: "terminal snapshot response was malformed".into(),
+                                    request_id: None,
                                 }
                             };
                             let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
