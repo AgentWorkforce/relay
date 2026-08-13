@@ -411,8 +411,12 @@ private actor RelayTerminalCore {
         do {
             ready = try await openSocket(url: try websocketURL(ticket.terminalUrl))
         } catch let failure as RelayTerminalFailure {
+            socket?.cancel(with: .goingAway, reason: nil)
+            socket = nil
             throw failure
         } catch let error as RelayError {
+            socket?.cancel(with: .goingAway, reason: nil)
+            socket = nil
             throw error
         } catch {
             socket?.cancel(with: .goingAway, reason: nil)
