@@ -842,6 +842,7 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
 }
 
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
+const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn resolve_relaycast_base_url(base_url: Option<&str>) -> &str {
     base_url.unwrap_or(DEFAULT_RELAYCAST_BASE_URL)
@@ -1148,7 +1149,10 @@ pub(crate) async fn reclaim_legacy_identity(
         relaycast_base_url.trim_end_matches('/'),
         urlencoding::encode(name)
     );
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(RELAYCAST_HTTP_TIMEOUT)
+        .build()
+        .context("failed to build Relaycast legacy identity client")?
         .patch(&claim_url)
         .bearer_auth(workspace_key)
         .header(

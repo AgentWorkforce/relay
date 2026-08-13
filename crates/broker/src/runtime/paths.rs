@@ -97,17 +97,8 @@ pub(crate) fn ensure_runtime_paths(
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
-    // Sanitise name for use in filenames — keep only alphanumeric and hyphens
-    let safe_name: String = broker_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    // Single filename transform shared with the recovery identity path.
+    let safe_name = safe_broker_name(broker_name);
 
     // Lock and PID files are per-broker-name so concurrent workflows can coexist.
     let lock_path = root.join(format!("broker-{safe_name}.lock"));
