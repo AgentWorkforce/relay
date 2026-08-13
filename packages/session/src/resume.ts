@@ -59,7 +59,7 @@ export function buildContextPrompt(
   // the rest of the turn read as top-level instructions instead of quoted
   // history. Escaping `<` keeps the fence tag name stable while making a
   // breakout syntactically impossible.
-  const journal = JSON.stringify(transcript, null, 2).replaceAll('<', '\\u003c');
+  const journal = serializeTranscript(transcript);
 
   return [
     'Continue the Relay session described below.',
@@ -80,10 +80,10 @@ export function buildContextPrompt(
 }
 
 /**
- * Keep the most recent turns that fit within `maxChars` of serialized JSON,
- * dropping the oldest first. Always keeps at least the single latest turn,
- * even if it alone exceeds the budget, so a resumed session is never handed
- * zero context.
+ * Keep the most recent turns that fit within `maxChars` of the exact escaped,
+ * pretty-printed JSON injected into the prompt, dropping the oldest first.
+ * Always keeps at least the single latest turn, even if it alone exceeds the
+ * budget, so a resumed session is never handed zero context.
  */
 function boundTranscript(
   turns: readonly Turn[],
@@ -96,7 +96,9 @@ function boundTranscript(
     content: turn.content,
   }));
 
-  if (JSON.stringify(all).length <= maxChars) {
+  const serializedEntryLengths = all.map(serializedTranscriptEntryLength);
+  const allSize = 2 + serializedEntryLengths.reduce((total, size) => total + size + 2, 0);
+  if (allSize <= maxChars) {
     return { transcript: all, omittedCount: 0 };
   }
 
@@ -104,10 +106,19 @@ function boundTranscript(
   let size = 2; // '[' + ']'
   for (let index = all.length - 1; index >= 0; index -= 1) {
     const entry = all[index]!;
-    const entrySize = JSON.stringify(entry).length + 1; // +1 for the separating comma
+    const entrySize = serializedEntryLengths[index]! + 2; // separator/newline plus closing bracket
     if (kept.length > 0 && size + entrySize > maxChars) break;
     kept.unshift(entry);
     size += entrySize;
   }
   return { transcript: kept, omittedCount: all.length - kept.length };
+}
+
+function serializeTranscript(transcript: readonly TranscriptEntry[]): string {
+  return JSON.stringify(transcript, null, 2).replaceAll('<', '\\u003c');
+}
+
+/** Length of one entry exactly as indented and escaped inside the journal array. */
+function serializedTranscriptEntryLength(entry: TranscriptEntry): number {
+  return `  ${JSON.stringify(entry, null, 2)}`.replaceAll('\n', '\n  ').replaceAll('<', '\\u003c').length;
 }

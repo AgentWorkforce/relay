@@ -324,7 +324,15 @@ export class SessionClient {
 
     const verify = await this.#fetchState(sessionId);
     const stored = verify.turns.find((candidate) => candidate.turnIndex === turn.turnIndex);
-    const survived = !!stored && stored.content === turn.content && stored.actor.userId === turn.actor.userId;
+    const survived =
+      !!stored &&
+      stored.role === turn.role &&
+      stored.content === turn.content &&
+      stored.actorRole === turn.actorRole &&
+      stored.actor.userId === turn.actor.userId &&
+      stored.actor.email === turn.actor.email &&
+      stored.actor.displayName === turn.actor.displayName &&
+      stored.timestamp === turn.timestamp;
 
     if (!survived) {
       if (attempt >= MAX_WRITE_CONFLICT_RETRIES) {
@@ -421,7 +429,7 @@ function trimOrUndefined(value: string | undefined): string | undefined {
  */
 function normalizeTimeoutMs(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return DEFAULT_TIMEOUT_MS;
-  return Math.min(2_147_483_647, Math.floor(value));
+  return Math.max(1, Math.min(2_147_483_647, Math.floor(value)));
 }
 
 /**
@@ -467,10 +475,13 @@ function sessionFromTurns(sessionId: string, turns: readonly RelayhistoryTurn[])
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const metadata = record(turns[index]?.metadata);
     nativeResumeId ??= stringValue(metadata?.nativeResumeId);
-    if (!session) session = parseSession(metadata?.relaySession);
+    if (!session) {
+      const parsed = parseSession(metadata?.relaySession);
+      if (parsed?.sessionId === sessionId) session = parsed;
+    }
   }
 
-  if (!session || session.sessionId !== sessionId || !canonicalOwner) {
+  if (!session || !canonicalOwner) {
     throw new Error(`Relayhistory session ${sessionId} is missing Relay identity metadata`);
   }
   return cloneSession({

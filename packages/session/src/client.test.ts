@@ -304,7 +304,38 @@ describe('SessionClient', () => {
     expect(unbounded).toContain('turn-49-');
   });
 
-  it('recovers a turn-index collision between two concurrent SessionClient instances without losing either write', async () => {
+  it('measures the escaped pretty-printed journal when enforcing the injection budget', () => {
+    const session = {
+      sessionId: 'sess-1',
+      owner: OWNER,
+      activeActor: OWNER,
+      steeringLog: [],
+      originCli: 'claude' as const,
+      originNode: 'danny-mac',
+      createdAt: '2026-08-13T08:00:00.000Z',
+    };
+    const turns: Turn[] = ['old', 'latest'].map((label, index) => ({
+      turnIndex: index,
+      role: 'user',
+      content: `${label}-${'<'.repeat(40)}`,
+      actor: OWNER,
+      actorRole: 'owner',
+      timestamp: `2026-08-13T08:00:0${index}.000Z`,
+    }));
+
+    const maxJournalChars = 600;
+    const prompt = buildContextPrompt(session, turns, { maxJournalChars });
+    const journal = prompt.match(
+      /<relayhistory-journal-json>\n\n([\s\S]*?)\n\n<\/relayhistory-journal-json>/u
+    )?.[1];
+
+    expect(journal).toBeDefined();
+    expect(journal!.length).toBeLessThanOrEqual(maxJournalChars);
+    expect(journal).toContain('latest-');
+    expect(journal).not.toContain('old-');
+  });
+
+  it('recovers a turn-index collision when concurrent writes differ only by role', async () => {
     // Two independent clients (simulating two machines/processes) racing on
     // the same session. `#serialize` cannot help here — it's per-instance —
     // so this exercises #postTurnAtNextIndex's read-back-and-retry path.
@@ -360,20 +391,20 @@ describe('SessionClient', () => {
       clientA.writeTurn({
         sessionId: created.sessionId,
         role: 'user',
-        content: 'from-client-a',
+        content: 'same-content',
         actor: OWNER,
       }),
       clientB.writeTurn({
         sessionId: created.sessionId,
-        role: 'user',
-        content: 'from-client-b',
-        actor: STEERER,
+        role: 'assistant',
+        content: 'same-content',
+        actor: OWNER,
       }),
     ]);
 
     const stored = turns.get(created.sessionId)!;
-    const contents = stored.map((turn) => turn.content).sort();
-    expect(contents).toEqual(['[Relay session started by Danny]', 'from-client-a', 'from-client-b']);
+    const collidingWrites = stored.filter((turn) => turn.content === 'same-content');
+    expect(collidingWrites.map((turn) => turn.role).sort()).toEqual(['assistant', 'user']);
     // Both racing writes landed at distinct indices — neither was silently dropped.
     const indexes = stored.map((turn) => turn.turnIndex).sort((a, b) => a - b);
     expect(new Set(indexes).size).toBe(3);
@@ -415,6 +446,19 @@ describe('SessionClient', () => {
       await expect(
         client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER })
       ).resolves.toBeTruthy();
+    }
+  });
+
+  it('clamps a positive fractional timeoutMs to at least one millisecond', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const backend = relayhistoryBackend();
+    const client = testClient(backend.fetch, { timeoutMs: 0.5 });
+
+    try {
+      await client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER });
+      expect(timeout).toHaveBeenCalledWith(1);
+    } finally {
+      timeout.mockRestore();
     }
   });
 
@@ -465,6 +509,34 @@ describe('SessionClient', () => {
     expect(resumed.session.owner).toEqual(OWNER);
     await expect(client.getGitTrailers(created.sessionId)).resolves.toEqual(
       expect.arrayContaining(['Relay-Session-Owner-Id: usr_danny'])
+    );
+  });
+
+  it('skips a newest session snapshot whose sessionId belongs to a different session', async () => {
+    const backend = relayhistoryBackend();
+    const client = testClient(backend.fetch);
+    const created = await client.createSession({ cli: 'claude', node: 'danny-mac', owner: OWNER });
+    const stored = backend.turns.get(created.sessionId)!;
+    stored.push(
+      structuredClone({
+        ...stored[0],
+        turnIndex: 1,
+        metadata: {
+          ...stored[0].metadata,
+          relaySession: {
+            ...stored[0].metadata.relaySession,
+            sessionId: 'different-session',
+            activeActor: STEERER,
+          },
+        },
+      })
+    );
+
+    await expect(client.resumeSession(created.sessionId)).resolves.toMatchObject({
+      session: { sessionId: created.sessionId, activeActor: OWNER },
+    });
+    await expect(client.getGitTrailers(created.sessionId)).resolves.toEqual(
+      expect.arrayContaining([`Relay-Session-Id: ${created.sessionId}`])
     );
   });
 });
