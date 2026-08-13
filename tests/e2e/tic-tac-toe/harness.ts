@@ -227,8 +227,8 @@ export async function startBroker(
     HOME: home,
     RELAYCAST_BASE_URL: engineBaseUrl,
     BROKER_BINARY_PATH: resolveBrokerBinary() ?? '',
-    // Point spawned agents at the freshly built MCP server rather than
-    // `npx -y agent-relay mcp`, which would fetch the published package.
+    // Point spawned agents at the freshly built MCP server rather than the
+    // installed Relay binary, which would execute code outside this checkout.
     AGENT_RELAY_MCP_COMMAND: `node ${path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'agent-relay-mcp.js')}`,
   });
 

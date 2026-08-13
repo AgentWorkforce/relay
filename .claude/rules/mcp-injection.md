@@ -32,6 +32,26 @@ spawn_wrap_with_token() (spawner.rs)
 5. `<cwd>/.claude/settings.local.json` — project local
 6. `agent-relay` server entry — always added last (highest precedence)
 
+## MCP Executable Resolution
+
+Spawned MCP servers must use an already-installed Relay executable. Never add
+`npx -y agent-relay mcp` back as a default: a cold package resolution can exceed
+the client connection timeout and leave a live worker with no Relay tools.
+
+The broker resolves the command in this order:
+
+1. An explicit `AGENT_RELAY_MCP_COMMAND` whose executable is usable
+2. `$AGENT_RELAY_INSTALL_DIR/bin/agent-relay`
+3. `~/.agentworkforce/relay/bin/agent-relay`
+4. `agent-relay` resolved on `PATH`
+5. `$AGENT_RELAY_BIN_DIR/agent-relay`, or `~/.local/bin/agent-relay`
+
+The standalone Bun CLI re-enters its own installed executable as
+`agent-relay mcp`; npm/Node installs continue to use their adjacent bundled MCP
+script. If no usable command can be resolved, MCP configuration returns an
+actionable error before the worker is spawned, so the dispatcher cannot mistake
+process liveness for Relay readiness.
+
 ## Important: CLI Name in Spawner
 
 In `spawner.rs`, always pass the **original CLI name** (e.g. `"claude"`, `"cursor"`) to `configure_agent_relay_mcp_with_token()`, not `resolved_cli`. `parse_cli_command()` resolves aliases (e.g. `"cursor"` → `"agent"`), which would bypass CLI-specific config logic.
@@ -105,6 +125,12 @@ After an agent is running, incoming relay messages are injected into the PTY wit
 - Channel messages → hint to use `mcp__agent-relay__post_message`
 - Includes channel context `[#channel-name]` when applicable
 - Prevents double-wrapping of system-reminder tags
+
+Claude decorates the canonical `agent-relay` server key literally, including
+the hyphen: `mcp__agent-relay__send_dm`, `mcp__agent-relay__post_message`, and
+`mcp__agent-relay__check_inbox`. The `relaycast` server key is a legacy alias
+used only to detect and migrate older configuration; do not use
+`mcp__relaycast__*` in new allowlists or guidance.
 
 ## CLIs Without MCP Support
 

@@ -366,12 +366,15 @@ mod tests {
             .expect("compute mcp args");
 
         assert!(output.args.contains(&"--config".to_string()));
+        let command = output
+            .args
+            .iter()
+            .find(|arg| arg.starts_with("mcp_servers.agent-relay.command="))
+            .expect("agent-relay MCP command config");
+        assert_ne!(command, "mcp_servers.agent-relay.command=\"npx\"");
         assert!(output
             .args
-            .contains(&"mcp_servers.agent-relay.command=\"npx\"".to_string()));
-        assert!(output.args.contains(
-            &"mcp_servers.agent-relay.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string()
-        ));
+            .contains(&"mcp_servers.agent-relay.args=[\"mcp\"]".to_string()));
         assert!(output.side_effect_files.is_empty());
     }
 

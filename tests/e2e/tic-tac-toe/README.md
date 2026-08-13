@@ -100,8 +100,8 @@ next person doesn't rediscover them.
   growth.
 
 - **`AGENT_RELAY_MCP_COMMAND` must point at the local build.** The broker
-  otherwise configures spawned agents with `npx -y agent-relay mcp`, which
-  fetches the published package instead of the code under test.
+  otherwise configures spawned agents with the installed Relay executable,
+  which runs packaged code instead of the code under test.
 
 - **PTYs come from `pty-run.py`.** `stdout.isTTY` gates the status line, the
   terminal reset on detach, and the input-report filter; driving the clients

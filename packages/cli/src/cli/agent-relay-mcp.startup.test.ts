@@ -446,6 +446,8 @@ describe('createAgentRelayMcpServer', () => {
     expect(server.tools.get('list_agents')).toBeDefined();
     expect(server.tools.get('query_nodes')).toBeDefined();
     expect(server.tools.get('post_message')).toBeDefined();
+    expect(server.tools.get('send_dm')).toBeDefined();
+    expect(server.tools.get('check_inbox')).toBeDefined();
     expect(server.tools.get('add_agent')).toBeDefined();
     expect(server.tools.get('spawn')).toBeDefined();
     expect([...server.tools.keys()].filter((name) => name.includes('.'))).toEqual([]);
@@ -503,6 +505,24 @@ describe('createAgentRelayMcpServer', () => {
     expect(registerResult.structuredContent).toMatchObject({
       token: 'at_live_WorkerA',
       registered_name: 'WorkerA',
+    });
+
+    const postResult = await server.tools.get('post_message')?.handler({
+      channel: 'general',
+      text: 'MCP startup check',
+    });
+    expect(postResult.structuredContent).toMatchObject({ id: 'msg_1', channel: 'general' });
+    const dmResult = await server.tools.get('send_dm')?.handler({
+      to: 'Broker',
+      text: 'MCP startup check',
+    });
+    expect(dmResult.structuredContent).toMatchObject({ id: 'dm_1', to: 'Broker' });
+    const inboxResult = await server.tools.get('check_inbox')?.handler({});
+    expect(inboxResult.structuredContent).toEqual({
+      unreadChannels: [],
+      mentions: [],
+      unreadDms: [],
+      recentReactions: [],
     });
 
     const queryNodesResult = await server.tools.get('query_nodes')?.handler({ capability: 'spawn:codex' });

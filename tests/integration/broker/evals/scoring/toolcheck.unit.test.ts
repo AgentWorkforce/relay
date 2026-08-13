@@ -26,7 +26,11 @@ describe('checkToolNames', () => {
   const registered = ['send_dm', 'post_message', 'check_inbox'];
 
   it('passes when every reference maps to a registered tool', () => {
-    const r = checkToolNames(registered, ['mcp__agent-relay__send_dm', 'mcp__agent-relay__post_message']);
+    const r = checkToolNames(registered, [
+      'mcp__agent-relay__send_dm',
+      'mcp__agent-relay__post_message',
+      'mcp__agent-relay__check_inbox',
+    ]);
     expect(r.ok).toBe(true);
     expect(r.mismatches).toHaveLength(0);
   });
