@@ -927,6 +927,7 @@ jobs:
           - brand
           - harness-driver
           - integration-prompts
+          - session
 
     steps:
       - name: Checkout code

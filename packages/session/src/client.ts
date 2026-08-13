@@ -26,12 +26,21 @@ export interface SessionClientOptions {
   randomUUID?: () => string;
   /** Observes best-effort writeTurn failures. */
   onWriteError?: (error: Error) => void;
+  /** Bound on a single Relayhistory HTTP round trip, in milliseconds. Defaults to 15000. */
+  timeoutMs?: number;
 }
 
 export interface CreateSessionInput {
   cli: SessionCli;
   node: string;
   owner: SessionActor;
+  /**
+   * Harness-native session id (e.g. Claude's own session id) to persist at
+   * creation time. Required for `determineResumeMode` to ever choose the
+   * native Claude-to-Claude continuation path instead of journal injection —
+   * there is no way to attach it after the fact.
+   */
+  nativeResumeId?: string;
 }
 
 export interface WriteTurnInput {
@@ -65,11 +74,10 @@ interface SessionState {
 
 const SESSION_CLIS = new Set<SessionCli>(['claude', 'codex', 'opencode', 'grok', 'cursor']);
 const TURN_ROLES = new Set<TurnRole>(['user', 'assistant', 'system']);
-const STEERING_ACTIONS = new Set<SteeringEvent['action']>([
-  'session_started',
-  'took_control',
-  'released_control',
-]);
+const STEERING_ACTIONS = new Set<SteeringEvent['action']>(['session_started', 'took_control']);
+const SLASH_CHAR_CODE = '/'.charCodeAt(0);
+/** Default bound on a single Relayhistory HTTP round trip. */
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 /** Relayhistory-backed client for portable session identity, turns, and attribution. */
 export class SessionClient {
@@ -81,6 +89,7 @@ export class SessionClient {
   readonly #now: () => Date;
   readonly #randomUUID: () => string;
   readonly #onWriteError: ((error: Error) => void) | undefined;
+  readonly #timeoutMs: number;
   readonly #queues = new Map<string, Promise<void>>();
 
   constructor(options: SessionClientOptions = {}) {
@@ -96,11 +105,13 @@ export class SessionClient {
     this.#now = options.now ?? (() => new Date());
     this.#randomUUID = options.randomUUID ?? randomUUID;
     this.#onWriteError = options.onWriteError;
+    this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async createSession(input: CreateSessionInput): Promise<RelaySession> {
     assertActor(input.owner, 'owner');
     assertSafeValue(input.node, 'node');
+    if (input.nativeResumeId !== undefined) assertSafeValue(input.nativeResumeId, 'nativeResumeId');
 
     const sessionId = this.#randomUUID();
     const timestamp = this.#now().toISOString();
@@ -119,6 +130,7 @@ export class SessionClient {
       ],
       originCli: input.cli,
       originNode: input.node,
+      ...(input.nativeResumeId ? { nativeResumeId: input.nativeResumeId } : {}),
       createdAt: timestamp,
     };
 
@@ -158,7 +170,13 @@ export class SessionClient {
         });
       });
     } catch (error) {
-      this.#onWriteError?.(asError(error));
+      // Isolate the observer: a throwing onWriteError must not make this
+      // best-effort write reject anyway, which would defeat its own contract.
+      try {
+        this.#onWriteError?.(asError(error));
+      } catch {
+        // Swallowed by design — see above.
+      }
     }
   }
 
@@ -273,6 +291,10 @@ export class SessionClient {
 
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       ...init,
+      // Bound every round trip so a stalled connection can't hang the
+      // harness awaiting createSession/resumeSession/recordSteering/etc
+      // indefinitely. Callers can still supply their own signal.
+      signal: init.signal ?? AbortSignal.timeout(this.#timeoutMs),
       headers: {
         Accept: 'application/json',
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
@@ -303,9 +325,22 @@ export class SessionClient {
 }
 
 function normalizeBaseUrl(value: string | undefined): string | undefined {
-  const baseUrl = value?.trim().replace(/\/+$/, '');
+  const baseUrl = stripTrailingSlashes(value?.trim());
   if (!baseUrl) return undefined;
   return baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
+}
+
+/**
+ * Trim trailing `/` characters without a regex. A quantified trailing-slash
+ * pattern on library-supplied input trips static ReDoS scanners even though
+ * `\/+$` has no backtracking ambiguity; a manual scan sidesteps the question
+ * entirely and stays linear by construction.
+ */
+function stripTrailingSlashes(value: string | undefined): string | undefined {
+  if (!value) return value;
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === SLASH_CHAR_CODE) end -= 1;
+  return value.slice(0, end);
 }
 
 function sessionMetadata(session: RelaySession): Record<string, unknown> {
@@ -448,6 +483,12 @@ function parseActor(value: unknown): SessionActor | undefined {
     !input ||
     !nonEmptyString(input.userId) ||
     typeof input.email !== 'string' ||
+    // email may legitimately be '' (see publicTurn's steerer fallback above),
+    // so this can't use nonEmptyString — but it still must reject embedded
+    // CR/LF: getGitTrailers interpolates it into a `Co-authored-by:` line,
+    // and this value round-trips through Relayhistory rather than being
+    // produced locally, so a newline here forges extra git trailers.
+    /[\r\n]/u.test(input.email) ||
     !nonEmptyString(input.displayName)
   ) {
     return undefined;

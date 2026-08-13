@@ -8,10 +8,18 @@ export interface SessionActor {
   displayName: string;
 }
 
-/** One immutable entry in a session's control-transfer audit trail. */
+/**
+ * One immutable entry in a session's control-transfer audit trail.
+ *
+ * `action` covers only states the SDK actually produces today. There is no
+ * release-of-control flow yet: `recordSteering` always logs `took_control`,
+ * and `activeActor` has no "released" representation for a consumer to key
+ * off. Add `released_control` back (with a matching `activeActor: null` path
+ * through `recordSteering`) if that flow is implemented.
+ */
 export interface SteeringEvent {
   actorId: string;
-  action: 'session_started' | 'took_control' | 'released_control';
+  action: 'session_started' | 'took_control';
   relayMessageId: string;
   timestamp: string;
   nodeId: string;
