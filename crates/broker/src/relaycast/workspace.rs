@@ -48,6 +48,7 @@ impl MultiWorkspaceSession {
         read_mcp_identity: bool,
         runtime_cwd: &std::path::Path,
         _events: EventEmitter,
+        registration_work_unit_root: String,
     ) -> Self {
         let (merged_tx, inbound_rx) = mpsc::channel(1024);
         let mut handles = Vec::with_capacity(sessions.memberships.len());
@@ -95,7 +96,8 @@ impl MultiWorkspaceSession {
                 relay_workspace_key.clone(),
                 self_name.clone(),
                 "claude",
-            );
+            )
+            .with_registration_work_unit_root(registration_work_unit_root.clone());
             http_client.seed_agent_token(&self_name, &self_token);
 
             // Node-only delivery (v5.0.1): messages flow over /v1/node/ws and are

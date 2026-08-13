@@ -3233,6 +3233,7 @@ mod tests {
                     invocation_id: Some("inv-1".to_string()),
                     session_ref: Some("session-1".to_string()),
                     resumable: Some(true),
+                    registration_authority: None,
                 },
                 reply: reply_tx,
             })
@@ -3459,6 +3460,7 @@ mod tests {
                     invocation_id: Some("inv-1".to_string()),
                     session_ref: None,
                     resumable: None,
+                    registration_authority: None,
                 },
                 reply: reply_tx,
             })

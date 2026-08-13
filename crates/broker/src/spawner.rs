@@ -15,6 +15,7 @@ use tokio::{
 
 use crate::cli::command_parse::parse_cli_command;
 use crate::types::CommitAttestation;
+use crate::util::child_env::scrub_registration_authority;
 
 const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
 const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
@@ -262,6 +263,9 @@ impl Spawner {
         if self.children.contains_key(child_name) {
             anyhow::bail!("child {child_name} already exists");
         }
+        let agent_token = agent_token.context(
+            "delegated spawn requires sponsor-bound pre-registration; refusing tokenless wrapper",
+        )?;
 
         let exe = std::env::current_exe().unwrap_or_else(|_| "agent-relay-broker".into());
         let mut cmd = Command::new(exe);
@@ -301,7 +305,7 @@ impl Spawner {
             base_url,
             &combined_args,
             &cwd,
-            agent_token,
+            Some(agent_token),
             workspaces_json,
             default_workspace,
         )
@@ -328,14 +332,17 @@ impl Spawner {
         }
         // Inject pre-registered agent token when available so the MCP server
         // starts already authenticated (same as main.rs WorkerRegistry::spawn).
-        if let Some(token) = agent_token {
-            cmd.env("RELAY_AGENT_TOKEN", token);
-        }
+        cmd.env("RELAY_AGENT_TOKEN", agent_token);
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
         cmd.env("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
         // Disable Claude Code auto-updater — it fails in sandboxes and can crash the process.
         cmd.env("DISABLE_AUTOUPDATER", "1");
+
+        // Delegated spawn admission is fail closed, so the wrapper always has
+        // this one-agent bootstrap credential and never needs the broader
+        // sponsor/reclaim capability.
+        scrub_registration_authority(&mut cmd);
 
         #[cfg(unix)]
         unsafe {
@@ -1080,7 +1087,7 @@ mod tests {
                 &["30".to_string()],
                 &env_vars,
                 Some("Parent"),
-                None,
+                Some("at_live_test_child"),
             )
             .await
             .unwrap();
@@ -1094,15 +1101,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_wrap_rejects_tokenless_delegated_spawn() {
+        let mut spawner = Spawner::new();
+        let error = spawner
+            .spawn_wrap_with_token("NoToken", "sleep", &[], &[], None, None)
+            .await
+            .expect_err("delegated spawn must fail closed before launching a wrapper");
+        assert!(error.to_string().contains("refusing tokenless wrapper"));
+        assert!(spawner.children.is_empty());
+    }
+
+    #[tokio::test]
     async fn spawn_wrap_rejects_duplicate_name() {
         let mut spawner = Spawner::new();
         let env_vars = vec![("RELAY_AGENT_NAME".to_string(), "Dup".to_string())];
         spawner
-            .spawn_wrap_with_token("Dup", "sleep", &["30".to_string()], &env_vars, None, None)
+            .spawn_wrap_with_token(
+                "Dup",
+                "sleep",
+                &["30".to_string()],
+                &env_vars,
+                None,
+                Some("at_live_test_child"),
+            )
             .await
             .unwrap();
         let result = spawner
-            .spawn_wrap_with_token("Dup", "sleep", &["30".to_string()], &env_vars, None, None)
+            .spawn_wrap_with_token(
+                "Dup",
+                "sleep",
+                &["30".to_string()],
+                &env_vars,
+                None,
+                Some("at_live_test_child"),
+            )
             .await;
         assert!(result.is_err());
         spawner.shutdown_all(Duration::from_millis(200)).await;
@@ -1120,7 +1152,7 @@ mod tests {
                 &["30".to_string()],
                 &env_vars,
                 None,
-                None,
+                Some("at_live_test_child"),
             )
             .await
             .unwrap();

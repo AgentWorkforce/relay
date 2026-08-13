@@ -1,3 +1,4 @@
+pub(crate) mod child_env;
 pub(crate) mod fs;
 pub(crate) mod version;
 

@@ -1154,6 +1154,7 @@ impl BrokerRuntime {
             session_ref,
             &self.hosted_agent_event_tx,
             &mut self.pty_observability,
+            &self.registration_work_unit_root,
         )
         .await;
 
@@ -1463,6 +1464,7 @@ pub(super) async fn register_node_agent_token(
     name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
+    registration_authority: relaycast::AgentRegistrationAuthority,
 ) -> Result<crate::node_control::AgentRegistrationToken, String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     fleet_control_tx
@@ -1474,6 +1476,7 @@ pub(super) async fn register_node_agent_token(
                 invocation_id,
                 session_ref: session_ref.clone(),
                 resumable: session_ref.as_ref().map(|_| true),
+                registration_authority: Some(registration_authority),
             },
             reply: reply_tx,
         })
@@ -2016,6 +2019,13 @@ mod tests {
     use super::*;
     use crate::protocol::PtyHarnessConfig;
 
+    fn test_registration_authority() -> relaycast::AgentRegistrationAuthority {
+        relaycast::AgentRegistrationAuthority {
+            sponsor_proof: "header.payload.signature".to_string(),
+            work_unit_key: "test-work-unit-key-000000000000000000000001".to_string(),
+        }
+    }
+
     fn test_agent_spec(session_id: Option<&str>, harness_session_id: Option<&str>) -> AgentSpec {
         AgentSpec {
             name: WorkerName::from("agent-a"),
@@ -2512,6 +2522,7 @@ mod tests {
                 "agent-a",
                 Some("inv-42".to_string()),
                 session_ref,
+                test_registration_authority(),
             )
             .await?;
             Ok::<_, String>((token, delivery_book))
@@ -2559,7 +2570,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
         let register_handle = tokio::spawn(async move {
             let mut delivery_book = FleetDeliveryBook::default();
-            register_node_agent_token(&tx, &mut delivery_book, "agent-a", None, None).await?;
+            register_node_agent_token(
+                &tx,
+                &mut delivery_book,
+                "agent-a",
+                None,
+                None,
+                test_registration_authority(),
+            )
+            .await?;
             Ok::<_, String>(delivery_book)
         });
 

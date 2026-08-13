@@ -40,6 +40,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Setup sponsor-enforced local Relaycast
+        uses: ./.github/actions/setup-relaycast-ci
+
       # Restore node_modules — skip npm ci entirely if unchanged. Split
       # restore/save (instead of actions/cache@v4) so the cache is saved
       # right after `npm ci` produces a clean tree; otherwise the implicit
@@ -254,6 +257,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Setup sponsor-enforced local Relaycast
+        uses: ./.github/actions/setup-relaycast-ci
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

@@ -35,6 +35,7 @@ use crate::runtime::{
 use crate::spawner::{spawn_env_vars, with_commit_attestation_env, Spawner};
 use crate::util::{
     ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
+    child_env::REGISTRATION_AUTHORITY_ENV_KEYS,
     terminal::{
         detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
         detect_codex_trust_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
@@ -1011,11 +1012,12 @@ pub(crate) async fn run_wrap(
     let mut spawner = Spawner::new();
 
     // --- Spawn CLI in PTY ---
-    let (pty, mut pty_rx) = PtySession::spawn(
+    let (pty, mut pty_rx) = PtySession::spawn_with_env_removals(
         &resolved_cli,
         &effective_cli_args,
         terminal_rows().unwrap_or(24),
         terminal_cols().unwrap_or(80),
+        REGISTRATION_AUTHORITY_ENV_KEYS,
     )?;
     // Query responses (DSR/DA1/DA2/CPR) are answered by alacritty's
     // `RelayEventListener` inside `PtySession`.
@@ -1444,27 +1446,34 @@ pub(crate) async fn run_wrap(
                                     // starts with a valid token (avoiding "Not registered"
                                     // errors when non-claude CLIs like codex try to use
                                     // relay tools before calling register() themselves).
+                                    'spawn_admission: {
                                     let child_token = match retry_agent_registration(
                                         &workspace_child_http,
                                         &params.name,
                                         Some(&params.cli),
                                     ).await {
-                                        Ok(token) => Some(token),
+                                        Ok(token) => token,
                                         Err(RegRetryOutcome::RetryableExhausted(e)) => {
-                                            tracing::warn!(
+                                            tracing::error!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration failed after retries, spawning without token"
+                                                "rejecting delegated spawn after sponsor-bound pre-registration retries"
                                             );
-                                            None
+                                            completion_error = Some(format!(
+                                                "sponsor-bound pre-registration failed: {e}"
+                                            ));
+                                            break 'spawn_admission;
                                         }
                                         Err(RegRetryOutcome::Fatal(e)) => {
-                                            tracing::warn!(
+                                            tracing::error!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration fatal error, spawning without token"
+                                                "rejecting delegated spawn after sponsor-bound pre-registration failure"
                                             );
-                                            None
+                                            completion_error = Some(format!(
+                                                "sponsor-bound pre-registration failed: {e}"
+                                            ));
+                                            break 'spawn_admission;
                                         }
                                     };
                                     match spawner
@@ -1474,7 +1483,7 @@ pub(crate) async fn run_wrap(
                                             &params.args,
                                             &env_vars,
                                             Some(&action_ref.invoked_by),
-                                            child_token.as_deref(),
+                                            Some(&child_token),
                                         )
                                         .await
                                     {
@@ -1517,6 +1526,7 @@ pub(crate) async fn run_wrap(
                                                 params.name
                                             ));
                                         }
+                                    }
                                     }
                                 }
                             }

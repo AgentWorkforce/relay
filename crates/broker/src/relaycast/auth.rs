@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
-use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
+use relaycast::{
+    AgentRegistrationAuthority, CreateAgentRequest, RelayCast, RelayCastOptions, RelayError,
+    WorkspaceRegistrationAuthority,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,6 +62,10 @@ struct WorkspaceSource {
     #[serde(default, alias = "workspaceAlias")]
     workspace_alias: Option<String>,
     api_key: String,
+    #[serde(default)]
+    agent_name: Option<String>,
+    #[serde(default)]
+    agent_token: Option<String>,
 }
 
 struct EnvWorkspaceKey {
@@ -97,8 +104,8 @@ impl CredentialSet {
                     workspace_alias: source.workspace_alias,
                     agent_id: String::new(),
                     api_key: source.api_key,
-                    agent_name: None,
-                    agent_token: None,
+                    agent_name: source.agent_name,
+                    agent_token: source.agent_token,
                     updated_at: Utc::now(),
                 }],
                 None,
@@ -365,6 +372,14 @@ impl AuthClient {
         agent_type: Option<&str>,
         identity_key: Option<&str>,
     ) -> Result<AuthSessionSet> {
+        let incumbent_agent_token = env_agent_token();
+        if self.sponsor.is_none() {
+            if let Some(agent_token) = incumbent_agent_token.as_deref() {
+                return self
+                    .startup_session_set_from_agent_token(requested_name, agent_token)
+                    .await;
+            }
+        }
         if let Some((sources, default_hint)) = self.load_workspace_sources_from_env()? {
             let preferred_name = requested_name;
             let mut memberships = Vec::with_capacity(sources.len());
@@ -381,6 +396,7 @@ impl AuthClient {
                         strict_name,
                         agent_type,
                         identity_key,
+                        source.agent_token.as_deref(),
                     )
                     .await
                 {
@@ -432,8 +448,58 @@ impl AuthClient {
             strict_name,
             agent_type,
             identity_key,
+            incumbent_agent_token.as_deref(),
         )
         .await
+    }
+
+    /// Bootstrap an already pre-registered worker without exercising the
+    /// workspace-key registration authority at all. Parent brokers use this
+    /// path for transport wrappers: the scoped agent token proves exactly one
+    /// identity and therefore does not require exposing a sponsor grant or the
+    /// broker's root work-unit secret to the child process.
+    async fn startup_session_set_from_agent_token(
+        &self,
+        requested_name: Option<&str>,
+        agent_token: &str,
+    ) -> Result<AuthSessionSet> {
+        let agent = relaycast::AgentClient::new(agent_token, self.base_url.clone())
+            .context("invalid pre-registered RELAY_AGENT_TOKEN client")?
+            .me()
+            .await
+            .map_err(relay_error_to_anyhow)
+            .context("pre-registered RELAY_AGENT_TOKEN was rejected")?;
+        if let Some(requested_name) = requested_name {
+            if !requested_name.trim().eq_ignore_ascii_case(&agent.name) {
+                anyhow::bail!(
+                    "pre-registered RELAY_AGENT_TOKEN belongs to '{}' rather than requested agent '{}'",
+                    agent.name,
+                    requested_name
+                );
+            }
+        }
+        let workspace_id = agent
+            .workspace_id
+            .context("pre-registered agent response omitted workspace_id")?;
+        let workspace_key = workspace_key_for_id_from_env(&workspace_id)?.context(
+            "pre-registered agent workspace is missing from the configured workspace keys",
+        )?;
+        let session = AuthSession {
+            credentials: WorkspaceCredential {
+                workspace_id: workspace_id.clone(),
+                workspace_alias: None,
+                agent_id: agent.id,
+                api_key: workspace_key,
+                agent_name: Some(agent.name),
+                agent_token: Some(agent_token.to_string()),
+                updated_at: Utc::now(),
+            },
+            token: agent_token.to_string(),
+        };
+        Ok(AuthSessionSet {
+            memberships: vec![session],
+            default_workspace_id: Some(workspace_id),
+        })
     }
 
     /// Rotate the token for an existing agent without re-registering.
@@ -463,6 +529,7 @@ impl AuthClient {
                         false,
                         None,
                         agent_identity_key().as_deref(),
+                        cached.agent_token.as_deref(),
                     )
                     .await
                     .context("failed to re-register after rotate-token 404")?;
@@ -485,30 +552,28 @@ impl AuthClient {
         let sponsor = self.require_authenticated_sponsor()?;
 
         let relay = build_relay_client(&api_key, self.base_url.as_deref())?;
-        let existing = relay
-            .get_agent(agent_name)
+        let identity_key =
+            agent_identity_key().context("cannot rotate token without RELAY_AGENT_IDENTITY_KEY")?;
+        let authority = registration_authority(sponsor, Some(&identity_key))?;
+        let token = match relay
+            .rotate_agent_token_with_authority(agent_name, authority.clone())
             .await
-            .map_err(relay_error_to_anyhow)?;
-        let existing_sponsor = existing
-            .metadata
-            .get(SPONSOR_ID_METADATA_KEY)
-            .and_then(Value::as_str);
-        let existing_binding = existing
-            .metadata
-            .get(SPONSOR_BINDING_METADATA_KEY)
-            .and_then(Value::as_str);
-        if existing_sponsor != Some(sponsor.sponsor_id.as_str()) || existing_binding != Some("oidc")
         {
-            anyhow::bail!(
-                "refusing to rotate agent token because the existing identity is not bound to the authenticated SSO sponsor"
-            );
-        }
-        let result = relay
-            .rotate_agent_token(agent_name)
-            .await
-            .map_err(relay_error_to_anyhow)?;
-        let token = result.token;
-
+            Ok(result) => result.token,
+            Err(RelayError::Api {
+                code, status: 409, ..
+            }) if code == "agent_sponsor_migration_required" => {
+                let incumbent_token = cached.agent_token.as_deref().context(
+                    "legacy agent sponsor migration requires its cached incumbent agent token; refusing workspace-key-only reclaim",
+                )?;
+                relay
+                    .bind_agent_credential_authority(incumbent_token, authority.clone())
+                    .await
+                    .map_err(relay_error_to_anyhow)?;
+                incumbent_token.to_string()
+            }
+            Err(error) => return Err(relay_error_to_anyhow(error)),
+        };
         let creds = CredentialCache {
             workspace_id: cached.workspace_id.clone(),
             workspace_alias: cached.workspace_alias.clone(),
@@ -531,6 +596,7 @@ impl AuthClient {
         strict_name: bool,
         agent_type: Option<&str>,
         identity_key: Option<&str>,
+        incumbent_agent_token: Option<&str>,
     ) -> Result<AuthSessionSet> {
         let env_workspace_key = env_workspace_key()?;
 
@@ -573,6 +639,7 @@ impl AuthClient {
                     strict_name,
                     agent_type,
                     identity_key,
+                    incumbent_agent_token,
                 )
                 .await
             {
@@ -631,6 +698,7 @@ impl AuthClient {
                     strict_name,
                     agent_type,
                     identity_key,
+                    None,
                 )
                 .await
             {
@@ -699,6 +767,8 @@ impl AuthClient {
                     workspace_id: Some(credential.workspace_id),
                     workspace_alias: credential.workspace_alias,
                     api_key: credential.api_key,
+                    agent_name: credential.agent_name,
+                    agent_token: credential.agent_token,
                 });
                 continue;
             }
@@ -740,7 +810,17 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
-        match RelayCast::create_workspace(name, self.base_url.as_deref()).await {
+        let sponsor = self.require_authenticated_sponsor()?;
+        let authority = Some(WorkspaceRegistrationAuthority {
+            sponsor_proof: sponsor.sponsor_proof.clone(),
+        });
+        match RelayCast::create_workspace_with_authority(
+            name,
+            self.base_url.as_deref(),
+            authority.clone(),
+        )
+        .await
+        {
             Ok(result) => Ok((result.workspace_id, result.api_key)),
             Err(error) if is_workspace_name_conflict(&error) => {
                 let suffix = Uuid::new_v4().simple().to_string();
@@ -750,9 +830,13 @@ impl AuthClient {
                     fallback_name = %fallback_name,
                     "workspace already exists; retrying with a fresh fallback name"
                 );
-                let result = RelayCast::create_workspace(&fallback_name, self.base_url.as_deref())
-                    .await
-                    .map_err(relay_error_to_anyhow)?;
+                let result = RelayCast::create_workspace_with_authority(
+                    &fallback_name,
+                    self.base_url.as_deref(),
+                    authority,
+                )
+                .await
+                .map_err(relay_error_to_anyhow)?;
                 Ok((result.workspace_id, result.api_key))
             }
             Err(error) => Err(relay_error_to_anyhow(error)),
@@ -773,6 +857,7 @@ impl AuthClient {
         _strict_name: bool,
         agent_type: Option<&str>,
         identity_key: Option<&str>,
+        incumbent_agent_token: Option<&str>,
     ) -> Result<(String, String, String, Option<String>)> {
         let sponsor = self.require_authenticated_sponsor()?;
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
@@ -780,7 +865,15 @@ impl AuthClient {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(&relay, &name, agent_type, identity_key, sponsor).await
+        admit_agent_registration(
+            &relay,
+            &name,
+            agent_type,
+            identity_key,
+            incumbent_agent_token,
+            sponsor,
+        )
+        .await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -864,6 +957,45 @@ fn env_workspace_key() -> Result<Option<EnvWorkspaceKey>> {
         }))
 }
 
+fn env_agent_token() -> Option<String> {
+    std::env::var("RELAY_AGENT_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn workspace_key_for_id_from_env(workspace_id: &str) -> Result<Option<String>> {
+    if let Ok(raw) = std::env::var("RELAY_WORKSPACES_JSON") {
+        let value: Value =
+            serde_json::from_str(raw.trim()).context("RELAY_WORKSPACES_JSON must be valid JSON")?;
+        let memberships = if let Some(values) = value.as_array() {
+            values.clone()
+        } else if let Some(values) = value.get("memberships").and_then(Value::as_array) {
+            values.clone()
+        } else {
+            vec![value]
+        };
+        for membership in memberships {
+            let id = membership
+                .get("workspace_id")
+                .or_else(|| membership.get("workspaceId"))
+                .and_then(Value::as_str);
+            let key = membership.get("api_key").and_then(Value::as_str);
+            if id == Some(workspace_id) {
+                return Ok(key.and_then(normalize_workspace_key));
+            }
+        }
+
+        // A token proves membership in exactly one server-reported workspace.
+        // If an explicit membership set was supplied but does not contain that
+        // workspace, do not silently pair the token with an unrelated fallback
+        // key from RELAY_WORKSPACE_KEY.
+        return Ok(None);
+    }
+
+    env_workspace_key().map(|source| source.map(|source| source.key))
+}
+
 fn is_auth_rejection(err: &anyhow::Error) -> bool {
     auth_http_status(err)
         .is_some_and(|status| status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
@@ -932,12 +1064,6 @@ fn is_conflict_code(code: &str) -> bool {
     )
 }
 
-/// Metadata key an agent's identity proof is stamped under at registration,
-/// so a later collision can check it back. See `admit_agent_registration`.
-const IDENTITY_METADATA_KEY: &str = "identity_key";
-const SPONSOR_ID_METADATA_KEY: &str = "relayauth_sponsor_id";
-const SPONSOR_BINDING_METADATA_KEY: &str = "relayauth_sponsor_binding";
-const SPONSOR_PROOF_HASH_METADATA_KEY: &str = "relayauth_sponsor_proof_sha256";
 const RELAYAUTH_SPONSOR_ID_ENV: &str = "RELAYAUTH_SPONSOR_ID";
 const RELAYAUTH_SPONSOR_PROOF_ENV: &str = "RELAYAUTH_SPONSOR_PROOF";
 const RELAYAUTH_SPONSOR_ORG_ENV: &str = "RELAYAUTH_SPONSOR_ORG_ID";
@@ -969,7 +1095,7 @@ struct SponsorOidcClaims {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AuthenticatedSponsor {
     sponsor_id: String,
-    proof_hash: String,
+    sponsor_proof: String,
     expires_at: i64,
 }
 
@@ -990,7 +1116,7 @@ impl AuthenticatedSponsor {
             verify_sponsor_proof(&sponsor_proof, &public_key, &issuer, &org_id, &sponsor_id)?;
         Some(Self {
             sponsor_id,
-            proof_hash: hash_identity_key(&sponsor_proof),
+            sponsor_proof,
             expires_at,
         })
     }
@@ -999,7 +1125,7 @@ impl AuthenticatedSponsor {
     fn fixture() -> Self {
         Self {
             sponsor_id: "user_test_owner".to_string(),
-            proof_hash: hash_identity_key("header.payload.signature"),
+            sponsor_proof: "header.payload.signature".to_string(),
             expires_at: i64::MAX,
         }
     }
@@ -1069,10 +1195,11 @@ fn is_compact_jws(value: &str) -> bool {
 ///
 /// A crashed (or resumed) work unit that needs to re-register under its
 /// prior name sets this to a value stable across that work unit's restarts.
-/// It gets stamped onto the agent's metadata at creation; a later collision
-/// under the same name is only treated as a reclaim of that SAME work unit
-/// if the value presented then matches what's stored — never by the name
-/// string alone. Absent, registration cannot reclaim on collision.
+/// Relaycast hashes this into its immutable, server-controlled credential
+/// binding at creation. A later collision under the same name is only treated
+/// as a reclaim of that SAME work unit if the presented value matches the
+/// server binding — never by the name string or caller-editable metadata.
+/// Absent, registration cannot reclaim on collision.
 pub(crate) fn agent_identity_key() -> Option<String> {
     std::env::var("RELAY_AGENT_IDENTITY_KEY")
         .ok()
@@ -1080,33 +1207,152 @@ pub(crate) fn agent_identity_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Stable per-node identity proof derived from the broker's own persisted
-/// state directory, for the ONE caller (the broker's own startup
-/// registration) that needs restart-reclaim without an operator having to
-/// set `RELAY_AGENT_IDENTITY_KEY` by hand. The same project/state directory
-/// always hashes to the same value across a kill + restart, while a
-/// different project (or a different, unrelated agent) hashes to something
-/// else — so it participates in the same fail-closed identity check as any
-/// other identity key, never bypassing it.
-pub(crate) fn stable_node_identity_key(state_path: &std::path::Path) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(state_path.to_string_lossy().as_bytes());
-    format!("node-{:x}", hasher.finalize())
+/// Read or atomically create the broker's local work-unit secret.
+///
+/// The previous implementation hashed the state path, which any workspace-key
+/// holder could predict and replay. Credential ownership requires possession
+/// of an actual secret, so the broker persists 32 random bytes beside its state
+/// file with owner-only permissions and reuses them across restarts.
+pub(crate) fn stable_node_identity_key(state_path: &std::path::Path) -> Result<String> {
+    use rand::RngCore;
+    use std::fs::OpenOptions;
+    use std::io::{Read, Write};
+
+    let parent = state_path
+        .parent()
+        .context("broker state path has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create broker state directory {}",
+            parent.display()
+        )
+    })?;
+    let key_path = parent.join(format!(
+        "{}.work-unit-key",
+        state_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state")
+    ));
+
+    loop {
+        let mut read_options = OpenOptions::new();
+        read_options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            read_options.custom_flags(nix::libc::O_NOFOLLOW);
+        }
+        match read_options.open(&key_path) {
+            Ok(mut file) => {
+                let metadata = file.metadata().with_context(|| {
+                    format!("failed to inspect work-unit key {}", key_path.display())
+                })?;
+                if !metadata.is_file() {
+                    anyhow::bail!(
+                        "persisted work-unit key is not a regular file: {}",
+                        key_path.display()
+                    );
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if metadata.permissions().mode() & 0o077 != 0 {
+                        anyhow::bail!(
+                            "persisted work-unit key must not be accessible by group or other users: {}",
+                            key_path.display()
+                        );
+                    }
+                }
+                let mut key = String::new();
+                file.read_to_string(&mut key).with_context(|| {
+                    format!("failed to read work-unit key {}", key_path.display())
+                })?;
+                let key = key.trim();
+                if key.len() < 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    anyhow::bail!("invalid persisted work-unit key at {}", key_path.display());
+                }
+                return Ok(key.to_string());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to open work-unit key {}", key_path.display())
+                });
+            }
+        }
+
+        let mut bytes = [0_u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        let key = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
+        }
+        match options.open(&key_path) {
+            Ok(mut file) => {
+                file.write_all(key.as_bytes()).with_context(|| {
+                    format!("failed to persist work-unit key {}", key_path.display())
+                })?;
+                file.sync_all().with_context(|| {
+                    format!("failed to sync work-unit key {}", key_path.display())
+                })?;
+                #[cfg(unix)]
+                std::fs::File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .with_context(|| {
+                        format!(
+                            "failed to durably sync work-unit key directory {}",
+                            parent.display()
+                        )
+                    })?;
+                return Ok(key);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to create work-unit key {}", key_path.display())
+                });
+            }
+        }
+    }
 }
 
-/// One-way verifier stored in place of a caller's raw identity key.
-///
-/// `admit_agent_registration` stamps this (never the raw key) onto the
-/// agent's metadata. Metadata is readable by any caller holding the same
-/// workspace key (`get_agent` returns it), so storing the raw key there
-/// would let any workspace member replay it verbatim to reclaim another
-/// work unit's credentials — the identity check would authenticate nothing.
-/// Hashing keeps the credential-bearing capability confined to whoever
-/// starts with the original key.
-fn hash_identity_key(raw: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(raw.as_bytes());
-    format!("{:x}", hasher.finalize())
+fn registration_authority(
+    sponsor: &AuthenticatedSponsor,
+    identity_key: Option<&str>,
+) -> Result<AgentRegistrationAuthority> {
+    let work_unit_key = identity_key
+        .map(str::trim)
+        .filter(|value| value.len() >= 32)
+        .context(
+            "agent registration requires a stable secret work-unit key of at least 32 bytes; set RELAY_AGENT_IDENTITY_KEY or use the broker's persisted node identity",
+        )?;
+    Ok(AgentRegistrationAuthority {
+        sponsor_proof: sponsor.sponsor_proof.clone(),
+        work_unit_key: work_unit_key.to_string(),
+    })
+}
+
+pub(crate) fn registration_authority_from_env(
+    work_unit_key: &str,
+) -> Result<AgentRegistrationAuthority> {
+    #[cfg(test)]
+    if std::env::var_os("RELAYAUTH_TEST_SPONSOR_FIXTURE").is_some() {
+        return registration_authority(&AuthenticatedSponsor::fixture(), Some(work_unit_key));
+    }
+    let sponsor = AuthenticatedSponsor::from_env()
+        .context("agent registration requires Chief's valid RelayAuth sponsor proof environment")?;
+    if sponsor.expires_at <= Utc::now().timestamp() {
+        anyhow::bail!("agent registration requires a current RELAYAUTH_SPONSOR_PROOF");
+    }
+    registration_authority(&sponsor, Some(work_unit_key))
 }
 
 /// Single spawn-admission decision shared by every registration path
@@ -1122,99 +1368,54 @@ fn hash_identity_key(raw: &str) -> String {
 /// an acceptable alternative to rejection either.
 ///
 /// Reclaim (return the existing agent's identity with a freshly rotated
-/// token, so a crashed broker's resume path keeps working) is permitted
-/// ONLY when the registration request proves it is the same work unit: the
-/// caller-supplied `identity_key` (see `agent_identity_key` and
-/// `stable_node_identity_key`) must match the identity key stamped on the
-/// existing agent's metadata at its own creation — compared by hash
-/// (`hash_identity_key`), never by raw value, since metadata is readable by
-/// any caller with the workspace key. Absent or mismatched identity on a
-/// collision is rejected.
+/// token, so a crashed broker's resume path keeps working) is decided by
+/// Relaycast's immutable sponsor/work-unit binding. Legacy agents without a
+/// binding may be migrated only by presenting their incumbent agent token;
+/// a workspace key plus sponsor grant is deliberately insufficient.
 async fn admit_agent_registration(
     relay: &RelayCast,
     name: &str,
     agent_type: Option<&str>,
     identity_key: Option<&str>,
+    incumbent_agent_token: Option<&str>,
     sponsor: &AuthenticatedSponsor,
 ) -> Result<(String, String, String, Option<String>)> {
-    let metadata = {
-        let mut map = serde_json::Map::new();
-        if let Some(key) = identity_key {
-            map.insert(
-                IDENTITY_METADATA_KEY.to_string(),
-                Value::String(hash_identity_key(key)),
-            );
-        }
-        map.insert(
-            SPONSOR_ID_METADATA_KEY.to_string(),
-            Value::String(sponsor.sponsor_id.clone()),
-        );
-        map.insert(
-            SPONSOR_BINDING_METADATA_KEY.to_string(),
-            Value::String("oidc".to_string()),
-        );
-        map.insert(
-            SPONSOR_PROOF_HASH_METADATA_KEY.to_string(),
-            Value::String(sponsor.proof_hash.clone()),
-        );
-        Some(map)
-    };
+    let authority = registration_authority(sponsor, identity_key)?;
 
     let request = CreateAgentRequest {
         name: name.to_string(),
         agent_type: Some(agent_type.unwrap_or("agent").to_string()),
         persona: None,
-        metadata,
+        metadata: None,
     };
 
-    match relay.register_agent(request).await {
+    match relay
+        .register_agent_with_authority(request, authority.clone())
+        .await
+    {
         Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
         Err(RelayError::Api { code, status, .. }) if is_conflict_code(&code) || status == 409 => {
             let existing = relay.get_agent(name).await.map_err(relay_error_to_anyhow)?;
-            let existing_identity = existing
-                .metadata
-                .get(IDENTITY_METADATA_KEY)
-                .and_then(Value::as_str);
-
-            let reclaims_same_work_unit = matches!(
-                (identity_key, existing_identity),
-                (Some(ours), Some(theirs)) if hash_identity_key(ours) == theirs
-            );
-            let existing_sponsor = existing
-                .metadata
-                .get(SPONSOR_ID_METADATA_KEY)
-                .and_then(Value::as_str);
-            let existing_binding = existing
-                .metadata
-                .get(SPONSOR_BINDING_METADATA_KEY)
-                .and_then(Value::as_str);
-            let reclaims_same_sponsor = existing_sponsor == Some(sponsor.sponsor_id.as_str())
-                && existing_binding == Some("oidc");
-
-            if !reclaims_same_work_unit || !reclaims_same_sponsor {
-                return Err(relay_error_to_anyhow(RelayError::Api {
-                    code: "agent_identity_mismatch".to_string(),
-                    status: 409,
-                    message: format!(
-                        "agent name '{name}' is already registered and this registration did \
-                         not prove ownership of that identity and its SSO-bound human sponsor; \
-                         refusing to hand over its \
-                         credentials (set RELAY_AGENT_IDENTITY_KEY to the original work unit's \
-                         identity to reclaim it after a crash)"
-                    ),
-                }));
-            }
-
-            let token_response = relay
-                .rotate_agent_token(&existing.name)
+            let token = match relay
+                .rotate_agent_token_with_authority(&existing.name, authority.clone())
                 .await
-                .map_err(relay_error_to_anyhow)?;
-            Ok((
-                existing.id,
-                existing.name,
-                token_response.token,
-                existing.workspace_id,
-            ))
+            {
+                Ok(response) => response.token,
+                Err(RelayError::Api {
+                    code, status: 409, ..
+                }) if code == "agent_sponsor_migration_required" => {
+                    let incumbent_token = incumbent_agent_token.context(
+                        "legacy agent sponsor migration requires its incumbent RELAY_AGENT_TOKEN (or agent_token in RELAY_WORKSPACES_JSON); refusing workspace-key-only reclaim",
+                    )?;
+                    relay
+                        .bind_agent_credential_authority(incumbent_token, authority.clone())
+                        .await
+                        .map_err(relay_error_to_anyhow)?;
+                    incumbent_token.to_string()
+                }
+                Err(error) => return Err(relay_error_to_anyhow(error)),
+            };
+            Ok((existing.id, existing.name, token, existing.workspace_id))
         }
         Err(RelayError::Api {
             code,
@@ -1265,30 +1466,30 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
-        is_agent_token_invalid_code, relay_error_to_anyhow, stable_node_identity_key, AuthClient,
-        CredentialCache, AGENT_TOKEN_INVALID_CODE,
+        is_agent_token_invalid, is_agent_token_invalid_anyhow, is_agent_token_invalid_code,
+        relay_error_to_anyhow, stable_node_identity_key, AuthClient, CredentialCache,
+        AGENT_TOKEN_INVALID_CODE,
     };
     use relaycast::RelayError;
 
     static RELAY_ENV_MUTEX: Mutex<()> = Mutex::new(());
+    const TEST_WORK_UNIT_KEY: &str =
+        "test-work-unit-key-000000000000000000000000000000000000000000000001";
 
-    fn test_sponsor_metadata(identity_hash: Option<&str>) -> serde_json::Value {
+    fn test_registration_body(
+        name: &str,
+        agent_type: &str,
+        work_unit_key: &str,
+    ) -> serde_json::Value {
         let sponsor = super::AuthenticatedSponsor::fixture();
-        let mut metadata = serde_json::Map::new();
-        if let Some(identity_hash) = identity_hash {
-            metadata.insert("identity_key".to_string(), json!(identity_hash));
-        }
-        metadata.insert(
-            "relayauth_sponsor_id".to_string(),
-            json!(sponsor.sponsor_id),
-        );
-        metadata.insert("relayauth_sponsor_binding".to_string(), json!("oidc"));
-        metadata.insert(
-            "relayauth_sponsor_proof_sha256".to_string(),
-            json!(sponsor.proof_hash),
-        );
-        serde_json::Value::Object(metadata)
+        json!({
+            "name": name,
+            "type": agent_type,
+            "registration_authority": {
+                "sponsor_proof": sponsor.sponsor_proof,
+                "work_unit_key": work_unit_key,
+            }
+        })
     }
 
     #[test]
@@ -1375,6 +1576,7 @@ mod tests {
                 true,
                 Some("agent"),
                 Some("forged-work-unit"),
+                None,
             )
             .await
             .expect_err("a workspace key without Chief's SSO sponsor proof must fail closed");
@@ -1399,6 +1601,7 @@ mod tests {
                 true,
                 Some("agent"),
                 Some("expired-sponsor-work-unit"),
+                None,
             )
             .await
             .expect_err("an expired SSO sponsor proof must fail before registration");
@@ -1407,11 +1610,69 @@ mod tests {
             .contains("expired RELAYAUTH_SPONSOR_PROOF"));
     }
 
+    #[tokio::test]
+    async fn missing_sponsor_proof_fails_before_workspace_creation() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"ok":true,"data":{"workspace_id":"ws_orphan","api_key":"rk_live_orphan"}}"#,
+                );
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let error = client
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("missing sponsor authority must fail before any startup write");
+
+        assert!(error
+            .to_string()
+            .contains("SSO-authenticated human sponsor"));
+        workspace.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn expired_sponsor_proof_fails_before_workspace_creation() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"ok":true,"data":{"workspace_id":"ws_orphan","api_key":"rk_live_orphan"}}"#,
+                );
+        });
+        let client = AuthClient {
+            base_url: Some(server.base_url()),
+            sponsor: Some(super::AuthenticatedSponsor {
+                expires_at: chrono::Utc::now().timestamp() - 1,
+                ..super::AuthenticatedSponsor::fixture()
+            }),
+        };
+
+        let error = client
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("expired sponsor authority must fail before any startup write");
+
+        assert!(error
+            .to_string()
+            .contains("expired RELAYAUTH_SPONSOR_PROOF"));
+        workspace.assert_hits(0);
+    }
+
     /// Remove RELAY_API_KEY from the environment so it doesn't interfere with
     /// mock-server tests. Tests use httpmock and only set up specific auth
     /// headers — the real env key causes 404s against the mock.
     fn clear_relay_env() -> MutexGuard<'static, ()> {
-        let guard = RELAY_ENV_MUTEX.lock().unwrap();
+        let guard = RELAY_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // SAFETY: test-only; Rust warns about remove_var in multi-threaded
         // contexts but we accept the risk in test code.
         unsafe {
@@ -1420,9 +1681,31 @@ mod tests {
             std::env::remove_var("RELAY_API_KEY");
             std::env::remove_var("RELAY_WORKSPACES_JSON");
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
-            std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
+            std::env::remove_var("RELAY_AGENT_TOKEN");
+            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", TEST_WORK_UNIT_KEY);
         }
         guard
+    }
+
+    #[test]
+    fn pre_registered_token_does_not_pair_with_an_unrelated_fallback_workspace_key() {
+        let _env_guard = clear_relay_env();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws_other","api_key":"rk_live_other"}]"#,
+            );
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_fallback");
+        }
+
+        let key = super::workspace_key_for_id_from_env("ws_token")
+            .expect("membership configuration should parse");
+        assert_eq!(key, None);
+
+        unsafe {
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
     }
 
     #[tokio::test]
@@ -1487,6 +1770,63 @@ mod tests {
         unsafe {
             std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
         }
+    }
+
+    #[tokio::test]
+    async fn pre_registered_agent_token_bootstraps_without_sponsor_or_registration() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
+            std::env::set_var("RELAY_AGENT_TOKEN", "at_live_existing");
+        }
+        let me = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_existing");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_existing","workspace_id":"ws_env","name":"lead","type":"agent","status":"online","persona":null,"metadata":{}}}"#);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(500);
+        });
+
+        // Deliberately no sponsor fixture: the incumbent token is the only
+        // authority this bootstrap path may exercise.
+        let client = AuthClient::new(Some(server.base_url()));
+        let session = client.startup_session(Some("lead")).await.unwrap();
+
+        assert_eq!(session.token, "at_live_existing");
+        assert_eq!(session.credentials.workspace_id, "ws_env");
+        assert_eq!(session.credentials.api_key, "rk_live_env");
+        assert_eq!(session.credentials.agent_id, "a_existing");
+        me.assert_hits(1);
+        register.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn pre_registered_agent_token_cannot_claim_a_different_name() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
+            std::env::set_var("RELAY_AGENT_TOKEN", "at_live_existing");
+        }
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agent");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_existing","workspace_id":"ws_env","name":"incumbent","type":"agent","status":"online","persona":null,"metadata":{}}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let error = client
+            .startup_session(Some("attacker-selected-name"))
+            .await
+            .expect_err("an agent token must remain bound to its server identity");
+        assert!(error.to_string().contains("belongs to 'incumbent'"));
     }
 
     #[tokio::test]
@@ -1651,11 +1991,7 @@ mod tests {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_shared")
-                .json_body(json!({
-                    "name": "lead",
-                    "type": "agent",
-                    "metadata": test_sponsor_metadata(None)
-                }));
+                .json_body(test_registration_body("lead", "agent", TEST_WORK_UNIT_KEY));
             then.status(409)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
@@ -1672,9 +2008,9 @@ mod tests {
             when.method(POST)
                 .path("/v1/agents/lead/rotate-token")
                 .header("authorization", "Bearer rk_live_shared");
-            then.status(200)
+            then.status(409)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
+                .body(r#"{"ok":false,"error":{"code":"agent_sponsor_migration_required","message":"legacy agent requires incumbent-token migration"}}"#);
         });
 
         let client = AuthClient::new_for_test(Some(server.base_url()));
@@ -1693,7 +2029,7 @@ mod tests {
         );
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
-        rotate.assert_hits(0);
+        rotate.assert_hits(1);
 
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
@@ -1710,21 +2046,16 @@ mod tests {
         let server = MockServer::start();
         unsafe {
             std::env::set_var("RELAY_API_KEY", "rk_live_shared");
-            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", "work-unit-42");
         }
-        // The identity proof is stored (and matched) as a one-way hash, never
-        // the raw value: metadata is readable by any caller with the same
-        // workspace key, so a raw value there would let a co-tenant replay it.
-        let identity_hash = hash_identity_key("work-unit-42");
+        let work_unit_key = "work-unit-42-000000000000000000000000000000000000";
+        unsafe {
+            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", work_unit_key);
+        }
         let conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_shared")
-                .json_body(json!({
-                    "name": "lead",
-                    "type": "agent",
-                    "metadata": test_sponsor_metadata(Some(&identity_hash))
-                }));
+                .json_body(test_registration_body("lead", "agent", work_unit_key));
             then.status(409)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
@@ -1735,9 +2066,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(format!(
-                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}","relayauth_sponsor_id":"user_test_owner","relayauth_sponsor_binding":"oidc"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
-                ));
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
         let rotate = server.mock(|when, then| {
             when.method(POST)
@@ -1766,22 +2095,115 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn legacy_agent_migration_requires_and_uses_incumbent_agent_token() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            std::env::set_var("RELAY_AGENT_TOKEN", "at_live_incumbent");
+        }
+
+        let conflict = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_shared")
+                .json_body(test_registration_body("lead", "agent", TEST_WORK_UNIT_KEY));
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_legacy","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_sponsor_migration_required","message":"legacy agent requires incumbent-token migration"}}"#);
+        });
+        let bind = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agent/credential-authority")
+                .header("authorization", "Bearer at_live_incumbent")
+                .json_body(json!({
+                    "registration_authority": {
+                        "sponsor_proof": "header.payload.signature",
+                        "work_unit_key": TEST_WORK_UNIT_KEY,
+                    }
+                }));
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"bound":true}}"#);
+        });
+
+        let client = AuthClient::new_for_test(Some(server.base_url()));
+        let session = client
+            .startup_session(Some("lead"))
+            .await
+            .expect("the incumbent token should authorize the one-time legacy binding");
+
+        assert_eq!(session.credentials.agent_id, "a_legacy");
+        assert_eq!(session.token, "at_live_incumbent");
+        conflict.assert_hits(1);
+        get_existing.assert_hits(1);
+        rotate.assert_hits(1);
+        bind.assert_hits(1);
+    }
+
     #[test]
     fn stable_node_identity_key_is_stable_per_state_path() {
-        use std::path::Path;
+        let node_a = tempfile::tempdir().unwrap();
+        let node_b = tempfile::tempdir().unwrap();
         // Same project/state directory (the "same work unit" across a kill +
         // restart, per the fleet node harness) must hash identically every
         // time, or the broker could never reclaim its own name after a crash.
-        let a = stable_node_identity_key(Path::new("/tmp/node-a/.agentworkforce/relay/state.json"));
-        let a_again =
-            stable_node_identity_key(Path::new("/tmp/node-a/.agentworkforce/relay/state.json"));
+        let a_path = node_a.path().join("state.json");
+        let a = stable_node_identity_key(&a_path).unwrap();
+        let a_again = stable_node_identity_key(&a_path).unwrap();
         assert_eq!(a, a_again);
 
         // A different project/state directory (a genuinely different node)
         // must hash to something else, or two unrelated nodes could reclaim
         // each other's registrations.
-        let b = stable_node_identity_key(Path::new("/tmp/node-b/.agentworkforce/relay/state.json"));
+        let b = stable_node_identity_key(&node_b.path().join("state.json")).unwrap();
         assert_ne!(a, b);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_node_identity_key_rejects_insecure_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let node = tempfile::tempdir().unwrap();
+        let state_path = node.path().join("state.json");
+        stable_node_identity_key(&state_path).unwrap();
+        let key_path = node.path().join("state.json.work-unit-key");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let error = stable_node_identity_key(&state_path)
+            .expect_err("a group/world-readable ownership root must fail closed");
+        assert!(error.to_string().contains("group or other users"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_node_identity_key_refuses_symlinks() {
+        let node = tempfile::tempdir().unwrap();
+        let target = node.path().join("attacker-controlled");
+        std::fs::write(&target, "0".repeat(64)).unwrap();
+        let key_path = node.path().join("state.json.work-unit-key");
+        std::os::unix::fs::symlink(&target, &key_path).unwrap();
+
+        stable_node_identity_key(&node.path().join("state.json"))
+            .expect_err("the ownership root path must never follow a symlink");
     }
 
     #[tokio::test]
@@ -1803,17 +2225,13 @@ mod tests {
         }
         let stable_identity = stable_node_identity_key(std::path::Path::new(
             "/tmp/node-a/.agentworkforce/relay/state.json",
-        ));
-        let identity_hash = hash_identity_key(&stable_identity);
+        ))
+        .unwrap();
         let conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_shared")
-                .json_body(json!({
-                    "name": "node-a",
-                    "type": "agent",
-                    "metadata": test_sponsor_metadata(Some(&identity_hash))
-                }));
+                .json_body(test_registration_body("node-a", "agent", &stable_identity));
             then.status(409)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
@@ -1824,9 +2242,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(format!(
-                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}","relayauth_sponsor_id":"user_test_owner","relayauth_sponsor_binding":"oidc"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
-                ));
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
         let rotate = server.mock(|when, then| {
             when.method(POST)
@@ -1871,10 +2287,8 @@ mod tests {
         }
         let our_identity = stable_node_identity_key(std::path::Path::new(
             "/tmp/node-a/.agentworkforce/relay/state.json",
-        ));
-        let their_identity_hash = hash_identity_key(&stable_node_identity_key(
-            std::path::Path::new("/tmp/node-a-impostor/.agentworkforce/relay/state.json"),
-        ));
+        ))
+        .unwrap();
         let conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
@@ -1889,9 +2303,15 @@ mod tests {
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(format!(
-                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{their_identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
-                ));
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/node-a/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_credential_binding_mismatch","message":"work unit does not own credential"}}"#);
         });
 
         let client = AuthClient::new_for_test(Some(server.base_url()));
@@ -1905,11 +2325,12 @@ mod tests {
         assert!(
             error
                 .chain()
-                .any(|layer| layer.to_string().contains("did not prove ownership")),
+                .any(|layer| layer.to_string().contains("does not own credential")),
             "expected an ownership-mismatch rejection, got: {error:#}"
         );
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
+        rotate.assert_hits(1);
 
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
@@ -1936,11 +2357,7 @@ mod tests {
             when.method(POST)
                 .path("/v1/agents")
                 .header("authorization", "Bearer rk_live_cached")
-                .json_body(json!({
-                    "name": "lead",
-                    "type": "agent",
-                    "metadata": test_sponsor_metadata(None)
-                }));
+                .json_body(test_registration_body("lead", "agent", TEST_WORK_UNIT_KEY));
             then.status(409)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
@@ -1953,6 +2370,14 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_sponsor_migration_required","message":"legacy agent requires incumbent-token migration"}}"#);
+        });
 
         let client = AuthClient::new_for_test(Some(server.base_url()));
         let result = client.startup_session(Some("lead")).await;
@@ -1964,6 +2389,7 @@ mod tests {
         workspace.assert_hits(1);
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
+        rotate.assert_hits(1);
     }
 
     // `strict_name_conflict_reclaims_via_sdk_register_or_get_agent` (issue
@@ -1984,7 +2410,12 @@ mod tests {
         let first_conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/workspaces")
-                .json_body(json!({ "name": workspace_name }));
+                .json_body(json!({
+                    "name": workspace_name,
+                    "registration_authority": {
+                        "sponsor_proof": "header.payload.signature"
+                    }
+                }));
             then.status(409)
                 .header("content-type", "application/json")
                 .body(
@@ -2057,7 +2488,7 @@ mod tests {
         assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         assert_eq!(session.credentials.agent_id, "a_old");
         assert_eq!(session.credentials.workspace_id, "ws_cached");
-        existing.assert_hits(1);
+        existing.assert_hits(0);
         rotate.assert_hits(1);
     }
 
@@ -2105,7 +2536,7 @@ mod tests {
         let session = client.rotate_token(&cached).await.unwrap();
         assert_eq!(session.token, "at_live_reregistered");
         assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
-        existing.assert_hits(1);
+        existing.assert_hits(0);
         rotate_404.assert_hits(1);
         register.assert_hits(1);
     }

@@ -360,6 +360,7 @@ pub(super) async fn spawn_worker_from_request(
     session_ref: Option<String>,
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
+    registration_work_unit_root: &str,
 ) {
     let workspace_http = &workspace_state.http_client;
     eprintln!(
@@ -517,12 +518,27 @@ pub(super) async fn spawn_worker_from_request(
             }
             Some(token)
         } else {
+            let authority = match registration_authority_from_env(&derive_worker_work_unit_key(
+                registration_work_unit_root,
+                &name,
+            )) {
+                Ok(authority) => authority,
+                Err(error) => {
+                    tracing::warn!(
+                        worker = %name,
+                        error = %error,
+                        "rejecting spawn because sponsor-bound registration is unavailable"
+                    );
+                    return;
+                }
+            };
             match super::fleet::register_node_agent_token(
                 fleet_control_tx,
                 fleet_delivery_book,
                 name.as_str(),
                 invocation_id.clone(),
                 session_ref.clone(),
+                authority,
             )
             .await
             {
@@ -599,19 +615,19 @@ pub(super) async fn spawn_worker_from_request(
                             Some(token)
                         }
                         Ok(Err(error)) => {
-                            tracing::warn!(
+                            tracing::error!(
                                 worker = %name,
                                 error = %error,
-                                "WS spawn pre-registration failed; agent will self-register"
+                                "rejecting WS spawn because sponsor-bound pre-registration failed"
                             );
-                            None
+                            return;
                         }
                         Err(_) => {
-                            tracing::warn!(
+                            tracing::error!(
                                 worker = %name,
-                                "WS spawn pre-registration timed out (3s); agent will self-register"
+                                "rejecting WS spawn because sponsor-bound pre-registration timed out"
                             );
-                            None
+                            return;
                         }
                     }
                 }

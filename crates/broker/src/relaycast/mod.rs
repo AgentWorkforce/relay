@@ -8,7 +8,9 @@ pub(crate) mod ws;
 pub(crate) use crate::snippets::{
     configure_agent_relay_mcp_with_result, configure_agent_relay_mcp_with_token,
 };
-pub(crate) use auth::{agent_identity_key, stable_node_identity_key, AuthClient};
+pub(crate) use auth::{
+    agent_identity_key, registration_authority_from_env, stable_node_identity_key, AuthClient,
+};
 // `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`,
 // `is_agent_token_invalid_code`, and `AGENT_TOKEN_INVALID_CODE` are declared
 // `pub` on `auth` so future callers (bridge, ws, listen_api) can reach them

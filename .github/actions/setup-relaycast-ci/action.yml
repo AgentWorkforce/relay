@@ -1,0 +1,57 @@
+name: Setup sponsor-enforced Relaycast
+description: Build a pinned local Relaycast and mint an ephemeral CI sponsor grant it trusts
+
+inputs:
+  engine-ref:
+    description: Immutable Relaycast commit containing server-side credential authority
+    required: false
+    default: 0b29cc36a3df6ef2c715d6f5e097155da35cedd5
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout sponsor-enforced Relaycast
+      uses: actions/checkout@v4
+      with:
+        repository: AgentWorkforce/relaycast
+        ref: ${{ inputs.engine-ref }}
+        path: .ci/relaycast-engine
+
+    - name: Build local Relaycast engine
+      shell: bash
+      working-directory: .ci/relaycast-engine
+      run: |
+        npm ci
+        npm run build --workspace @relaycast/types
+        npm run build --workspace @relaycast/a2a
+        npm run build --workspace @relaycast/engine
+
+    - name: Mint ephemeral sponsor grant
+      shell: bash
+      run: node scripts/mint-ci-sponsor-grant.mjs
+
+    - name: Start sponsor-enforced local engine
+      shell: bash
+      run: |
+        ENGINE_PORT="$((42000 + RANDOM % 10000))"
+        ENGINE_LOG="$RUNNER_TEMP/relaycast-ci-engine.log"
+        node .ci/relaycast-engine/packages/engine/dist/bin/serve.js \
+          --port "$ENGINE_PORT" \
+          --db "$RUNNER_TEMP/relaycast-ci-engine.db" \
+          --env test >"$ENGINE_LOG" 2>&1 &
+        ENGINE_PID=$!
+        for attempt in $(seq 1 60); do
+          if curl --silent --fail "http://127.0.0.1:${ENGINE_PORT}/health" >/dev/null; then
+            echo "RELAY_BASE_URL=http://127.0.0.1:${ENGINE_PORT}" >> "$GITHUB_ENV"
+            echo "RELAYCAST_BASE_URL=http://127.0.0.1:${ENGINE_PORT}" >> "$GITHUB_ENV"
+            echo "RELAYCAST_CI_ENGINE_PID=${ENGINE_PID}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if ! kill -0 "$ENGINE_PID" 2>/dev/null; then
+            cat "$ENGINE_LOG" >&2
+            exit 1
+          fi
+          sleep 0.25
+        done
+        cat "$ENGINE_LOG" >&2
+        exit 1

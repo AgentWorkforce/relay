@@ -36,10 +36,10 @@ use crate::{
         ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
-        agent_identity_key, format_worker_preregistration_error, registration_retry_after_secs,
-        retry_agent_registration, stable_node_identity_key, AuthClient, MultiWorkspaceSession,
-        RegRetryOutcome, RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary,
-        WsControl,
+        agent_identity_key, format_worker_preregistration_error, registration_authority_from_env,
+        registration_retry_after_secs, retry_agent_registration, stable_node_identity_key,
+        AuthClient, MultiWorkspaceSession, RegRetryOutcome, RelaycastHttpClient,
+        WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
@@ -66,6 +66,15 @@ const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
 static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+
+fn derive_worker_work_unit_key(root: &str, name: &WorkerName) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(root.as_bytes());
+    hasher.update([0]);
+    hasher.update(name.as_str().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
 mod api;
 mod app_server;

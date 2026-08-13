@@ -287,8 +287,11 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     // reaped would collide on its own name and be fail-closed rejected —
     // the spawn-admission gate can't tell "myself, restarting" from "a
     // stranger" unless something proves it.
-    let derived_identity_key =
-        agent_identity_key().unwrap_or_else(|| stable_node_identity_key(&opts.paths.state));
+    let derived_identity_key = match agent_identity_key() {
+        Some(key) => key,
+        None => stable_node_identity_key(&opts.paths.state)
+            .context("failed to load the broker work-unit secret")?,
+    };
     let sessions = {
         let mut attempt: u32 = 0;
         loop {
@@ -407,6 +410,7 @@ timestamp='{}'
         opts.read_mcp_identity,
         opts.runtime_cwd,
         crate::events::EventEmitter::new(false),
+        derived_identity_key,
     );
     log_startup_phase(
         startup_debug,

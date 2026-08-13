@@ -190,6 +190,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) self_names: HashSet<String>,
     pub(super) ws_control_tx: mpsc::Sender<WsControl>,
     pub(super) relaycast_http: RelaycastHttpClient,
+    pub(super) registration_work_unit_root: String,
     pub(super) hosted_agent_event_tx: mpsc::Sender<HostedAgentEvent>,
     pub(super) pty_observability: HashMap<WorkerName, PtyObservabilityState>,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,

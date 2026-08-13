@@ -515,6 +515,20 @@ impl PtySession {
         rows: u16,
         cols: u16,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+        Self::spawn_with_env_removals(command, args, rows, cols, &[])
+    }
+
+    /// Spawn a PTY child while explicitly removing selected inherited
+    /// environment variables. This keeps process-boundary policy with the
+    /// caller while giving PTY-backed harnesses the same final `env_remove`
+    /// semantics as `std::process::Command`/`tokio::process::Command`.
+    pub fn spawn_with_env_removals(
+        command: &str,
+        args: &[String],
+        rows: u16,
+        cols: u16,
+        env_removals: &[&str],
+    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -530,6 +544,9 @@ impl PtySession {
         cmd.cwd(std::env::current_dir().context("failed to get current directory")?);
         if needs_sane_term_override() {
             cmd.env("TERM", "xterm-256color");
+        }
+        for key in env_removals {
+            cmd.env_remove(key);
         }
         for arg in args {
             cmd.arg(arg);
@@ -1249,6 +1266,39 @@ mod tests {
         }
         assert!(String::from_utf8_lossy(&collected).contains("hello"));
         let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn spawn_with_env_removals_does_not_expose_inherited_value() {
+        let key = "AGENT_RELAY_TEST_PTY_CHILD_SECRET";
+        unsafe {
+            env::set_var(key, "must-not-be-visible");
+        }
+
+        let (pty, mut rx) = PtySession::spawn_with_env_removals(
+            "sh",
+            &["-c".into(), format!("printf '%s' \"${{{key}:-missing}}\"")],
+            24,
+            80,
+            &[key],
+        )
+        .unwrap();
+
+        let mut collected = Vec::new();
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            collected.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&collected).contains("missing") {
+                break;
+            }
+        }
+
+        let _ = pty.shutdown();
+        unsafe {
+            env::remove_var(key);
+        }
+        let output = String::from_utf8_lossy(&collected);
+        assert!(output.contains("missing"));
+        assert!(!output.contains("must-not-be-visible"));
     }
 
     #[tokio::test]

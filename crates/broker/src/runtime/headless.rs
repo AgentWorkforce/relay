@@ -243,6 +243,10 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                         r#"{"*":"allow","external_directory":{"*":"allow"}}"#,
                     );
                 }
+                // Defense in depth: the outer worker wrapper already removes
+                // these values, but never let a directly-invoked headless
+                // worker pass broker registration authority to its provider.
+                crate::util::child_env::scrub_registration_authority(&mut child_cmd);
 
                 let mut child = match child_cmd.spawn() {
                     Ok(child) => child,

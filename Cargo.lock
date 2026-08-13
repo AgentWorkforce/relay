@@ -2064,8 +2064,7 @@ dependencies = [
 [[package]]
 name = "relaycast"
 version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b78f728d34cfb36d07d78b1d28d70784810bf4d1dcffc896906d92eac27b1669"
+source = "git+https://github.com/AgentWorkforce/relaycast.git?rev=0b29cc36a3df6ef2c715d6f5e097155da35cedd5#0b29cc36a3df6ef2c715d6f5e097155da35cedd5"
 dependencies = [
  "futures-util",
  "reqwest",

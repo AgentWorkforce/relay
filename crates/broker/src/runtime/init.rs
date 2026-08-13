@@ -218,6 +218,17 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
+    // Keep child-agent ownership under the same root that `connect_relay`
+    // used for the broker itself. An explicit RELAY_AGENT_IDENTITY_KEY is a
+    // deliberate work-unit override (fleet nodes use it to preserve identity
+    // across an isolated state rebuild); replacing it here with the persisted
+    // fallback would register the broker and its children under unrelated
+    // ownership roots, making a legitimate release/resume impossible.
+    let registration_work_unit_root = match agent_identity_key() {
+        Some(key) => key,
+        None => stable_node_identity_key(&paths.state)
+            .context("failed to reload the broker work-unit secret")?,
+    };
     let (hosted_agent_event_tx, hosted_agent_event_rx) = mpsc::channel::<HostedAgentEvent>(10_000);
     let hosted_event_client = relaycast_http.clone();
     let hosted_event_clients = workspaces
@@ -671,6 +682,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         self_names,
         ws_control_tx,
         relaycast_http,
+        registration_work_unit_root,
         hosted_agent_event_tx,
         pty_observability: HashMap::new(),
         api_rx,

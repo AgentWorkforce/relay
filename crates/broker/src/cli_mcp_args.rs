@@ -148,7 +148,10 @@ async fn register_agent_token_for_mcp_args(
         api_key.clone(),
         agent_name.to_string(),
         cli_lower.clone(),
-    );
+    )
+    .with_registration_work_unit_root(crate::relaycast::agent_identity_key().ok_or_else(|| {
+        anyhow!("--register requires RELAY_AGENT_IDENTITY_KEY for sponsor-bound ownership")
+    })?);
 
     let agent_token = match tokio::time::timeout(
         Duration::from_secs(10),
@@ -272,6 +275,8 @@ mod tests {
         "RELAY_API_KEY",
         "RELAY_BASE_URL",
         "RELAY_AGENT_TOKEN",
+        "RELAY_AGENT_IDENTITY_KEY",
+        "RELAYAUTH_TEST_SPONSOR_FIXTURE",
         "RELAY_WORKSPACES_JSON",
         "RELAY_DEFAULT_WORKSPACE",
     ];
@@ -521,6 +526,14 @@ mod tests {
         std::env::remove_var("RELAY_API_KEY");
         std::env::remove_var("RELAY_BASE_URL");
         std::env::remove_var("RELAY_AGENT_TOKEN");
+        std::env::set_var(
+            "RELAY_AGENT_IDENTITY_KEY",
+            "mcp-args-test-work-unit-key-00000000000000000001",
+        );
+        // Compiled only under cfg(test): production still requires a validly
+        // signed RelayAuth proof. This mock-server test is about mcp-args token
+        // propagation; signature verification is covered in auth and live CI.
+        std::env::set_var("RELAYAUTH_TEST_SPONSOR_FIXTURE", "1");
 
         let server = MockServer::start();
         let register_mock = server.mock(|when, then| {

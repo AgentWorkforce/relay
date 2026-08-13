@@ -37,6 +37,7 @@ use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
+use crate::util::child_env::REGISTRATION_AUTHORITY_ENV_KEYS;
 use crate::util::terminal::detect_codex_trust_prompt;
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
@@ -497,8 +498,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     effective_args.extend(cmd.args.clone());
 
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
-    let (pty, mut pty_rx) =
-        PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
+    let (pty, mut pty_rx) = PtySession::spawn_with_env_removals(
+        &resolved_cli,
+        &effective_args,
+        init_rows,
+        init_cols,
+        REGISTRATION_AUTHORITY_ENV_KEYS,
+    )?;
     // Query responses (DSR/DA1/DA2/CPR) are answered by alacritty's
     // `RelayEventListener` inside `PtySession` — no parser needed here.
 

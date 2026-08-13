@@ -3,11 +3,11 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use relaycast::{
     agent::DmOptions, format_registration_error,
-    retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
-    AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    CompleteInvocationRequest, CreateObserverTokenRequest, EmitSessionEventRequest,
-    MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast, RelayCastOptions,
-    RelayError, ReleaseAgentRequest,
+    retry_agent_registration_with_authority as sdk_retry_agent_registration_with_authority,
+    ActionDefinition, ActionInvocation, AgentClient, AgentRegistrationClient,
+    AgentRegistrationError, AgentRegistrationRetryOutcome, CompleteInvocationRequest,
+    CreateObserverTokenRequest, EmitSessionEventRequest, MessageListQuery, ObserverToken,
+    RegisterActionRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
 };
 use serde_json::Value;
 
@@ -36,6 +36,7 @@ pub struct RelaycastHttpClient {
     registration: Arc<Option<AgentRegistrationClient>>,
     pub agent_name: String,
     pub default_cli: String,
+    registration_work_unit_root: Option<String>,
 }
 
 pub type RelaycastRegistrationError = AgentRegistrationError;
@@ -67,7 +68,39 @@ impl RelaycastHttpClient {
             registration,
             agent_name: agent_name.into(),
             default_cli,
+            registration_work_unit_root: None,
         }
+    }
+
+    pub fn with_registration_work_unit_root(mut self, root: impl Into<String>) -> Self {
+        self.registration_work_unit_root = Some(root.into());
+        self
+    }
+
+    fn registration_authority(
+        &self,
+        agent_name: &str,
+    ) -> anyhow::Result<relaycast::AgentRegistrationAuthority> {
+        let work_unit_key = self.registration_work_unit_key(agent_name)?;
+        super::auth::registration_authority_from_env(&work_unit_key)
+    }
+
+    fn registration_work_unit_key(&self, agent_name: &str) -> anyhow::Result<String> {
+        use sha2::{Digest, Sha256};
+
+        let root = self.registration_work_unit_root.as_deref().context(
+            "registration authority is unavailable because this client has no work-unit secret",
+        )?;
+        let work_unit_key = if agent_name == self.agent_name {
+            root.to_string()
+        } else {
+            let mut hasher = Sha256::new();
+            hasher.update(root.as_bytes());
+            hasher.update([0]);
+            hasher.update(agent_name.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        Ok(work_unit_key)
     }
 
     /// Pre-populate the SDK token cache so registered-agent client creation
@@ -138,8 +171,14 @@ impl RelaycastHttpClient {
                 detail: "SDK relay client not initialized".to_string(),
             }
         })?;
+        let authority = self.registration_authority(trimmed_name).map_err(|error| {
+            RelaycastRegistrationError::Transport {
+                agent_name: trimmed_name.to_string(),
+                detail: error.to_string(),
+            }
+        })?;
         registration
-            .register_agent_token(trimmed_name, cli_hint)
+            .register_agent_token_with_authority(trimmed_name, cli_hint, authority)
             .await
     }
 
@@ -150,7 +189,14 @@ impl RelaycastHttpClient {
             .as_ref()
             .context("SDK relay client not initialized")?;
         registration
-            .registered_agent_client(&self.agent_name, Some(&self.default_cli))
+            .registered_agent_client_with_authority(
+                &self.agent_name,
+                Some(&self.default_cli),
+                || {
+                    self.registration_authority(&self.agent_name)
+                        .map_err(|error| error.to_string())
+                },
+            )
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
@@ -179,7 +225,14 @@ impl RelaycastHttpClient {
             .as_ref()
             .context("SDK relay client not initialized")?;
         registration
-            .registered_agent_client(agent_name, cli_hint.or(Some(self.default_cli.as_str())))
+            .registered_agent_client_with_authority(
+                agent_name,
+                cli_hint.or(Some(self.default_cli.as_str())),
+                || {
+                    self.registration_authority(agent_name)
+                        .map_err(|error| error.to_string())
+                },
+            )
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
@@ -809,7 +862,13 @@ pub async fn retry_agent_registration(
             detail: "SDK relay client not initialized".to_string(),
         })
     })?;
-    sdk_retry_agent_registration(registration, name, cli).await
+    let authority = http.registration_authority(name).map_err(|error| {
+        RegRetryOutcome::Fatal(RelaycastRegistrationError::Transport {
+            agent_name: name.to_string(),
+            detail: error.to_string(),
+        })
+    })?;
+    sdk_retry_agent_registration_with_authority(registration, name, cli, authority).await
 }
 
 #[cfg(test)]
@@ -856,6 +915,23 @@ mod tests {
         let message = format_worker_preregistration_error("worker-a", &error);
         assert!(message.contains("worker-a"));
         assert!(message.contains("pre-register"));
+    }
+
+    #[test]
+    fn broker_reuses_root_but_workers_receive_derived_work_unit_keys() {
+        let client = RelaycastHttpClient::new(None, "rk_live_test", "broker", "codex")
+            .with_registration_work_unit_root(
+                "broker-root-000000000000000000000000000000000000000001",
+            );
+
+        assert_eq!(
+            client.registration_work_unit_key("broker").unwrap(),
+            "broker-root-000000000000000000000000000000000000000001"
+        );
+        assert_ne!(
+            client.registration_work_unit_key("worker-a").unwrap(),
+            client.registration_work_unit_key("worker-b").unwrap()
+        );
     }
 
     #[tokio::test]

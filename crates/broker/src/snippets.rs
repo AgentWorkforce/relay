@@ -10,6 +10,7 @@ use serde_json::{json, Map, Value};
 use tokio::process::Command;
 
 use crate::types::AgentResultMcpConfig;
+use crate::util::child_env::scrub_registration_authority;
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
 const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
@@ -1274,6 +1275,7 @@ async fn remove_grok_mcp_servers(exe: &str) {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        scrub_registration_authority(&mut cmd);
         if let Ok(mut child) = cmd.spawn() {
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
@@ -1310,6 +1312,7 @@ async fn configure_grok_mcp(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    scrub_registration_authority(&mut mcp_cmd);
 
     match mcp_cmd.spawn() {
         Ok(mut child) => match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
@@ -1388,6 +1391,7 @@ async fn remove_gemini_droid_mcp_servers(exe: &str) {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        scrub_registration_authority(&mut cmd);
         if let Ok(child) = cmd.spawn() {
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await;
         }
@@ -1456,6 +1460,7 @@ async fn spawn_mcp_add(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    scrub_registration_authority(&mut mcp_cmd);
 
     match mcp_cmd.spawn() {
         Ok(child) => {

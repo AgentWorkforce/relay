@@ -249,6 +249,7 @@ impl BrokerRuntime {
         let default_workspace_id = &self.default_workspace_id;
         let self_names = &self.self_names;
         let relaycast_http = &self.relaycast_http;
+        let registration_work_unit_root = &self.registration_work_unit_root;
         let hosted_agent_event_tx = &self.hosted_agent_event_tx;
         let pty_observability = &mut self.pty_observability;
         let ws_control_tx = &self.ws_control_tx;
@@ -377,12 +378,24 @@ impl BrokerRuntime {
                     // `harnessConfig.session_id` registers as a resumable session
                     // rather than a fresh spawn. No invocation id exists on the
                     // HTTP path.
+                    let authority = match registration_authority_from_env(
+                        &derive_worker_work_unit_key(registration_work_unit_root, &name),
+                    ) {
+                        Ok(authority) => authority,
+                        Err(error) => {
+                            let _ = reply.send(Err(format!(
+                                "sponsor-bound agent registration unavailable: {error}"
+                            )));
+                            return;
+                        }
+                    };
                     match super::fleet::register_node_agent_token(
                         fleet_control_tx,
                         fleet_delivery_book,
                         name.as_str(),
                         None,
                         session_ref.clone(),
+                        authority,
                     )
                     .await
                     {
@@ -443,15 +456,10 @@ impl BrokerRuntime {
                                     Some(token)
                                 }
                                 Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                                    let message =
-                                        format_worker_preregistration_error(&name, &error);
-                                    tracing::warn!(
-                                        worker = %name,
-                                        error = %error,
-                                        "continuing spawn without pre-registration after retries exhausted"
-                                    );
-                                    preregistration_warning = Some(message);
-                                    None
+                                    let _ = reply.send(Err(format_worker_preregistration_error(
+                                        &name, &error,
+                                    )));
+                                    return;
                                 }
                                 Err(RegRetryOutcome::Fatal(error)) => {
                                     let _ = reply.send(Err(format_worker_preregistration_error(

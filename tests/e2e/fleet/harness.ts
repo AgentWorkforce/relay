@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash, createSign, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import {
@@ -30,6 +31,91 @@ export const NODE_B_FILE = path.join(HERE, 'nodes', 'node-b.ts');
 export const CLOUD_ENROLLED_NODE_FILE = path.join(HERE, 'nodes', 'cloud-enrolled.ts');
 
 const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
+
+const FLEET_SPONSOR_ISSUER = 'https://auth.fleet-e2e.agentrelay.test';
+const FLEET_SPONSOR_AUDIENCE = 'relayauth:sponsor-binding';
+const FLEET_SPONSOR_ID = 'user_fleet_e2e';
+const FLEET_SPONSOR_ORG = 'org_fleet_e2e';
+const FLEET_SPONSOR_KEYS = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const FLEET_SPONSOR_PUBLIC_KEY_PEM = FLEET_SPONSOR_KEYS.publicKey
+  .export({ format: 'pem', type: 'spki' })
+  .toString();
+const FLEET_SPONSOR_JWK = FLEET_SPONSOR_KEYS.publicKey.export({ format: 'jwk' });
+const FLEET_SPONSOR_KID = createHash('sha256')
+  .update(
+    JSON.stringify({
+      e: FLEET_SPONSOR_JWK.e,
+      kty: FLEET_SPONSOR_JWK.kty,
+      n: FLEET_SPONSOR_JWK.n,
+    })
+  )
+  .digest('base64url');
+
+function mintFleetSponsorProof(): string {
+  const now = Math.floor(Date.now() / 1000);
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const header = encode({ alg: 'RS256', typ: 'JWT', kid: FLEET_SPONSOR_KID });
+  const payload = encode({
+    iss: FLEET_SPONSOR_ISSUER,
+    aud: FLEET_SPONSOR_AUDIENCE,
+    sub: FLEET_SPONSOR_ID,
+    org: FLEET_SPONSOR_ORG,
+    iat: now,
+    exp: now + 60 * 30,
+    jti: `spg_fleet_${randomUUID().replaceAll('-', '')}`,
+    intent: 'identity.create',
+    token_type: 'sponsor_grant',
+    oidc: {
+      issuer: 'https://idp.fleet-e2e.agentrelay.test',
+      subject: 'oidc_fleet_e2e',
+      iat: now,
+    },
+  });
+  const signingInput = `${header}.${payload}`;
+  const signature = createSign('RSA-SHA256')
+    .update(signingInput)
+    .end()
+    .sign(FLEET_SPONSOR_KEYS.privateKey, 'base64url');
+  return `${signingInput}.${signature}`;
+}
+
+const FLEET_SPONSOR_PROOF = mintFleetSponsorProof();
+const FLEET_BROKER_SPONSOR_ENV = {
+  RELAYAUTH_SPONSOR_ID: FLEET_SPONSOR_ID,
+  RELAYAUTH_SPONSOR_ORG_ID: FLEET_SPONSOR_ORG,
+  RELAYAUTH_ISSUER: FLEET_SPONSOR_ISSUER,
+  RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: FLEET_SPONSOR_PUBLIC_KEY_PEM,
+  RELAYAUTH_SPONSOR_PROOF: FLEET_SPONSOR_PROOF,
+};
+
+function fleetAgentAuthority(name: string): {
+  sponsor_proof: string;
+  work_unit_key: string;
+} {
+  return {
+    sponsor_proof: FLEET_SPONSOR_PROOF,
+    work_unit_key: `fleet-e2e-agent-${name}-00000000000000000000000000000001`,
+  };
+}
+
+function fleetNodeWorkUnitRoot(nodeId: string): string {
+  return `fleet-e2e-node-root-${nodeId}-00000000000000000000000000000001`;
+}
+
+function fleetNodeAgentAuthority(
+  nodeId: string,
+  agentName: string
+): {
+  sponsor_proof: string;
+  work_unit_key: string;
+} {
+  const workUnitKey = createHash('sha256')
+    .update(fleetNodeWorkUnitRoot(nodeId))
+    .update(Buffer.from([0]))
+    .update(agentName)
+    .digest('hex');
+  return { sponsor_proof: FLEET_SPONSOR_PROOF, work_unit_key: workUnitKey };
+}
 
 /**
  * Locate a built relaycast engine `serve` bin. CI sets RELAYCAST_ENGINE_DIR to a
@@ -160,6 +246,12 @@ export interface EngineHandle {
   fetchJson(pathname: string, init?: RequestInit): Promise<{ status: number; body: any }>;
 }
 
+function engineStartupFailure(child: ChildProcess, stderr: string): Error | null {
+  if (child.exitCode === null && child.signalCode === null) return null;
+  const detail = stderr.trim() || `exit=${String(child.exitCode)} signal=${String(child.signalCode)}`;
+  return new Error(`relaycast engine exited before becoming ready: ${detail}`);
+}
+
 export async function startEngine(
   serveBin: string,
   tmpRoot: string,
@@ -171,29 +263,50 @@ export async function startEngine(
     process.execPath,
     [serveBin, '--port', String(port), '--db', path.join(tmpRoot, 'relaycast.db'), '--env', 'test'],
     {
-      env: cleanEnv({ HOME: tmpRoot, ...extraEnv }),
+      env: cleanEnv({
+        HOME: tmpRoot,
+        RELAYCAST_AGENT_CREDENTIAL_AUTHORITY_PUBLIC_KEY_PEM: FLEET_SPONSOR_PUBLIC_KEY_PEM,
+        RELAYCAST_AGENT_CREDENTIAL_AUTHORITY_ISSUER: FLEET_SPONSOR_ISSUER,
+        RELAYCAST_AGENT_CREDENTIAL_AUTHORITY_AUDIENCE: FLEET_SPONSOR_AUDIENCE,
+        ...extraEnv,
+      }),
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
+  let startupStderr = '';
   child.stdout?.on('data', () => {});
-  child.stderr?.on('data', () => {});
+  child.stderr?.on('data', (chunk: Buffer) => {
+    startupStderr = `${startupStderr}${chunk.toString()}`.slice(-16_384);
+  });
 
   const fetchJson = async (pathname: string, init: RequestInit = {}) => {
     const res = await fetch(`${baseUrl}${pathname}`, init);
     return { status: res.status, body: await res.json().catch(() => ({})) };
   };
 
-  await waitFor(
-    async () => {
-      try {
-        const res = await fetch(`${baseUrl}/`);
-        return res.status > 0;
-      } catch {
-        return false;
-      }
-    },
-    { timeoutMs: 20_000, label: 'engine ready' }
-  );
+  const exitBeforeReady = new Promise<never>((_resolve, reject) => {
+    const rejectWithFailure = () =>
+      reject(
+        engineStartupFailure(child, startupStderr) ??
+          new Error('relaycast engine exited before becoming ready')
+      );
+    if (child.exitCode !== null || child.signalCode !== null) rejectWithFailure();
+    else child.once('exit', rejectWithFailure);
+  });
+  await Promise.race([
+    waitFor(
+      async () => {
+        try {
+          const res = await fetch(`${baseUrl}/health`);
+          return res.status > 0;
+        } catch {
+          return false;
+        }
+      },
+      { timeoutMs: 20_000, label: 'engine ready' }
+    ),
+    exitBeforeReady,
+  ]);
 
   return {
     baseUrl,
@@ -209,7 +322,10 @@ export async function createWorkspace(engine: EngineHandle, name: string): Promi
   const { status, body } = await engine.fetchJson('/v1/workspaces', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({
+      name,
+      registration_authority: { sponsor_proof: FLEET_SPONSOR_PROOF },
+    }),
   });
   if (status >= 300) throw new Error(`createWorkspace ${status}`);
   return body.data.api_key as string;
@@ -485,6 +601,8 @@ export class FleetNode {
         BROKER_BINARY_PATH: o.brokerBinary,
         RELAYCAST_BASE_URL: o.engineBaseUrl,
         RELAY_BASE_URL: o.engineBaseUrl,
+        ...FLEET_BROKER_SPONSOR_ENV,
+        RELAY_AGENT_IDENTITY_KEY: fleetNodeWorkUnitRoot(o.nodeId),
         ...(o.usePersistedEnrollment
           ? {
               AGENT_RELAY_HOME: this.enrollmentHome,
@@ -565,7 +683,7 @@ export async function registerAgent(
   const { status, body } = await engine.fetchJson('/v1/agents', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${workspaceKey}` },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, registration_authority: fleetAgentAuthority(name) }),
   });
   if (status >= 300) throw new Error(`registerAgent ${status}: ${JSON.stringify(body)}`);
   return (body.data.token ?? body.data.agent_token) as string;
@@ -674,11 +792,17 @@ export async function releaseAgent(
   workspaceKey: string,
   name: string
 ): Promise<number> {
-  const { status } = await engine.fetchJson(`/v1/agents/${name}`, {
-    method: 'DELETE',
-    headers: { authorization: `Bearer ${workspaceKey}` },
-  });
-  return status;
+  let lastStatus = 409;
+  for (const nodeId of ['node_a', 'node_b']) {
+    const { status } = await engine.fetchJson(`/v1/agents/${name}`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${workspaceKey}` },
+      body: JSON.stringify({ registration_authority: fleetNodeAgentAuthority(nodeId, name) }),
+    });
+    lastStatus = status;
+    if (status < 300) return status;
+  }
+  return lastStatus;
 }
 
 export async function sendDm(

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use relaycast::AgentRegistrationAuthority;
 use serde::{
     de::{self, Deserializer},
     ser, Deserialize, Serialize, Serializer,
@@ -233,6 +234,12 @@ pub struct AgentRegister {
         skip_serializing_if = "Option::is_none"
     )]
     pub resumable: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub registration_authority: Option<AgentRegistrationAuthority>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -678,6 +685,7 @@ mod tests {
             invocation_id: None,
             session_ref: None,
             resumable: None,
+            registration_authority: None,
         });
 
         let value = serde_json::to_value(msg).unwrap();

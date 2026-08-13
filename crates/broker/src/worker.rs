@@ -32,6 +32,7 @@ use crate::{
     cli::command_parse::{normalize_cli_name, parse_cli_command},
     runtime::headless_provider_cli_name,
     spawner::terminate_child,
+    util::child_env::scrub_registration_authority,
 };
 
 const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
@@ -1054,13 +1055,18 @@ impl WorkerRegistry {
             direct_native_harness_sidecar,
             skip_relay_prompt,
         ) {
-            if let Some(relay_key) = worker_relay_api_key {
+            if let Some(relay_key) = worker_relay_api_key.as_deref() {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }
             command.env("RELAY_AGENT_NAME", &spec.name);
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
+        // Spawn admission is fail closed before reaching this point, so every
+        // Relay participant receives an already-issued agent token. Sponsor and
+        // reclaim authority is parent-broker state and never crosses into the
+        // worker transport (or a direct native harness).
+        scrub_registration_authority(&mut command);
         // Remove CLAUDECODE from child env to prevent nested Claude Code instances
         // from interfering with the parent's session management
         command.env_remove("CLAUDECODE");
@@ -2124,12 +2130,10 @@ async fn codex_debug_models_output(resolved_cli: &str) -> std::io::Result<std::p
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        match Command::new(resolved_cli)
-            .arg("debug")
-            .arg("models")
-            .output()
-            .await
-        {
+        let mut command = Command::new(resolved_cli);
+        command.arg("debug").arg("models");
+        scrub_registration_authority(&mut command);
+        match command.output().await {
             Err(err)
                 if err.kind() == std::io::ErrorKind::ExecutableFileBusy
                     && attempt < MAX_ATTEMPTS =>
