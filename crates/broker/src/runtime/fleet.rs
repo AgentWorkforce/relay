@@ -474,17 +474,23 @@ impl BrokerRuntime {
                     worker_request_id.clone(),
                     TerminalSnapshotRequest {
                         session_id: session_id.clone(),
-                        client_request_id: Some(client_request_id),
+                        client_request_id: Some(client_request_id.clone()),
                         deadline: Instant::now() + TERMINAL_SNAPSHOT_TIMEOUT,
                     },
                 );
                 if let Err(error) = self.workers.try_send_to_worker(
                     session.agent.as_str(),
                     "snapshot_pty",
-                    Some(RequestId::new(worker_request_id)),
+                    Some(RequestId::new(worker_request_id.clone())),
                     json!({ "format": "ansi" }),
                 ) {
-                    self.fail_terminal_session(session_id, "snapshot_failed", error.to_string());
+                    self.terminal_snapshot_requests.remove(&worker_request_id);
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "snapshot_failed".into(),
+                        message: error.to_string(),
+                        request_id: Some(client_request_id),
+                    });
                 }
             }
             TerminalControlEvent::Message(TerminalFromCloud::Close { session_id }) => {

@@ -120,7 +120,7 @@ public struct RelayTerminals: Sendable {
         mode: RelayTerminalMode
     ) async throws -> RelayTerminalSession {
         let cleanNode = node.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanAgent = agent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanAgent = HostedParticipantCore.normalizeTerminalAgent(agent)
         guard !cleanNode.isEmpty, !cleanAgent.isEmpty else {
             throw RelayError.protocolError(
                 code: "invalid_terminal_target",
@@ -252,11 +252,10 @@ private struct RelayTerminalWireFrame: Decodable {
     let mode: RelayTerminalDeliveryMode?
     let deliveryRevision: String?
     let revision: String?
-    let flushed: Int?
     let matched: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case type, screen, chunk, rows, offset, code, message, mode, revision, flushed, matched
+        case type, screen, chunk, rows, offset, code, message, mode, revision, matched
         case sessionId = "session_id"
         case requestId = "request_id"
         case columns = "cols"
@@ -408,7 +407,21 @@ private actor RelayTerminalCore {
     func events() -> AsyncThrowingStream<RelayTerminalEvent, Error> { stream }
 
     func connect() async throws -> RelayTerminalReady {
-        let ready = try await openSocket(url: try websocketURL(ticket.terminalUrl))
+        let ready: RelayTerminalReady
+        do {
+            ready = try await openSocket(url: try websocketURL(ticket.terminalUrl))
+        } catch let failure as RelayTerminalFailure {
+            throw failure
+        } catch let error as RelayError {
+            throw error
+        } catch {
+            socket?.cancel(with: .goingAway, reason: nil)
+            socket = nil
+            throw RelayTerminalFailure(
+                code: "node_unreachable",
+                message: "Terminal transport could not connect to the fleet node"
+            )
+        }
         yield(.ready(
             snapshot: ready.snapshot,
             deliveryMode: ready.deliveryMode,
@@ -633,7 +646,7 @@ private actor RelayTerminalCore {
             } catch {
                 guard !closed else { return }
                 if inputContinuation != nil {
-                    markInputUncertain(Self.failure(error))
+                    markInputUncertain(Self.failure(error), closeSession: false)
                 }
                 failPending(Self.failure(error))
                 guard reconnectAttempt < 5 else {
@@ -648,19 +661,49 @@ private actor RelayTerminalCore {
                 do {
                     try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                     let ready = try await openSocket(url: try resumeURL())
-                    yield(.ready(
-                        snapshot: ready.snapshot,
-                        deliveryMode: ready.deliveryMode,
-                        deliveryRevision: ready.deliveryRevision
-                    ))
+                    try refreshDriveAssertion(after: ready)
+                    if inputUncertainty != nil {
+                        Task { [weak self] in
+                            _ = await self?.close()
+                        }
+                    } else {
+                        yield(.ready(
+                            snapshot: ready.snapshot,
+                            deliveryMode: ready.deliveryMode,
+                            deliveryRevision: ready.deliveryRevision
+                        ))
+                    }
                     reconnectAttempt = 0
                 } catch is CancellationError {
+                    return
+                } catch let failure as RelayTerminalFailure where failure.code == "delivery_mode_conflict" {
+                    finish(throwing: failure)
                     return
                 } catch {
                     continue
                 }
             }
         }
+    }
+
+    /// A resumed lane reports the broker's current delivery-mode revision in
+    /// its fresh Ready frame. Accept a drive resume only while the asserted
+    /// mode remains in force, then advance the CAS revision used at close.
+    /// If an operator changed the mode during the disconnect, ending this
+    /// session preserves that concurrent change instead of overwriting it.
+    private func refreshDriveAssertion(after ready: RelayTerminalReady) throws {
+        guard mode != .view else { return }
+        guard ready.deliveryMode == .autoInject,
+              let revision = ready.deliveryRevision else {
+            assertedDeliveryMode = nil
+            assertedDeliveryRevision = nil
+            throw RelayTerminalFailure(
+                code: "delivery_mode_conflict",
+                message: "The terminal delivery mode changed while the drive session was reconnecting"
+            )
+        }
+        assertedDeliveryMode = .autoInject
+        assertedDeliveryRevision = revision
     }
 
     private func openSocket(url: URL) async throws -> RelayTerminalReady {
@@ -812,16 +855,22 @@ private actor RelayTerminalCore {
         return pending != nil
     }
 
-    private func markInputUncertain(_ error: Error) {
+    private func markInputUncertain(_ error: Error, closeSession: Bool = true) {
         guard inputUncertainty == nil else { return }
-        guard failInput(error) else { return }
+        guard inputContinuation != nil else { return }
         let source = Self.failure(error)
         let failure = RelayTerminalFailure(
             code: "input_result_uncertain",
-            message: "Terminal input result became uncertain (\(source.message)). Close this session before sending more input."
+            message: "Terminal input result became uncertain (\(source.message)); the SDK is closing this session to prevent duplicate keystrokes."
         )
         inputUncertainty = failure
+        _ = failInput(failure)
         yield(.failure(failure))
+        if closeSession {
+            Task { [weak self] in
+                _ = await self?.close()
+            }
+        }
     }
 
     private func failSnapshot(requestID: String, error: Error) {

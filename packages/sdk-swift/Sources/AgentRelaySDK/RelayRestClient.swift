@@ -305,9 +305,10 @@ struct RelayRestClient: Sendable {
         agent: String,
         mode: RelayTerminalMode
     ) async throws -> RelayTerminalTicket {
-        try await post(
+        let cleanAgent = HostedParticipantCore.normalizeTerminalAgent(agent)
+        return try await post(
             "/v1/nodes/\(Self.encodePathSegment(node))/terminal/sessions",
-            body: TerminalSessionRequestBody(agent: agent, mode: mode)
+            body: TerminalSessionRequestBody(agent: cleanAgent, mode: mode)
         )
     }
 

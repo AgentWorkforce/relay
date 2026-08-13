@@ -96,7 +96,7 @@ final class RelayRestTests: XCTestCase {
 
         let ticket = try await client.createTerminalSession(
             node: "sf mini/primary",
-            agent: "chief",
+            agent: "  @chief  ",
             mode: .drive
         )
 

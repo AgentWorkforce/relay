@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet terminal snapshots can be refreshed with request correlation, and initial terminal readiness reports the broker's delivery-mode revision so native drive clients do not guess or overwrite concurrent state.
+- Fleet terminal snapshot refresh failures stay scoped to their correlated request instead of closing a healthy streaming session.
+
+- Fleet terminal readiness reports the broker's delivery-mode revision so native drive clients preserve concurrent changes across reconnect and close.
+
+- Swift terminal sessions reject further input after an acknowledgement becomes uncertain, preventing duplicate keystrokes after timeout or reconnect.
 
 ## [11.5.6] - 2026-08-13
 

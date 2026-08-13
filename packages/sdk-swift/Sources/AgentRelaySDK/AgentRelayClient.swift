@@ -1189,6 +1189,11 @@ actor HostedParticipantCore {
         return value
     }
 
+    static func normalizeTerminalAgent(_ value: String) -> String {
+        stripSigil(value.trimmingCharacters(in: .whitespacesAndNewlines))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func normalizeChannel(_ value: String) -> String {
         stripSigil(value).trimmingCharacters(in: .whitespacesAndNewlines)
     }

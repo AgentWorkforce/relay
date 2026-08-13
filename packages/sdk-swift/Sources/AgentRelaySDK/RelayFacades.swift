@@ -584,7 +584,7 @@ extension HostedParticipantCore {
     }
 
     func terminalTarget(agent name: String) async throws -> RelayTerminalTarget {
-        let cleanName = Self.stripSigil(name).trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanName = Self.normalizeTerminalAgent(name)
         guard !cleanName.isEmpty else {
             throw RelayError.protocolError(
                 code: "invalid_terminal_target",
@@ -598,12 +598,25 @@ extension HostedParticipantCore {
             let liveNodes = try await relay.nodes.list(Relaycast.NodeListQuery())
                 .filter(\.live)
                 .sorted { $0.name < $1.name }
+            let nodes = relay.nodes
+            var remaining = liveNodes.makeIterator()
             var candidates: [Relaycast.NodeAgentBinding] = []
-            for node in liveNodes {
-                let bindings = try await relay.nodes.listAgents(node.name)
-                candidates.append(contentsOf: bindings.filter {
-                    $0.agentName == cleanName && $0.status == "active"
-                })
+            try await withThrowingTaskGroup(of: [Relaycast.NodeAgentBinding].self) { group in
+                for _ in 0..<min(4, liveNodes.count) {
+                    guard let node = remaining.next() else { break }
+                    let nodeName = node.name
+                    group.addTask { try await nodes.listAgents(nodeName) }
+                }
+                while let bindings = try await group.next() {
+                    candidates.append(contentsOf: bindings.filter {
+                        $0.agentName.caseInsensitiveCompare(cleanName) == .orderedSame
+                            && $0.status == "active"
+                    })
+                    if let node = remaining.next() {
+                        let nodeName = node.name
+                        group.addTask { try await nodes.listAgents(nodeName) }
+                    }
+                }
             }
             guard let binding = candidates.sorted(by: {
                 if $0.priority != $1.priority { return $0.priority > $1.priority }
