@@ -84,10 +84,7 @@ export function runAttach(name: string, mode: AttachMode, options: NativeAttachO
  * local broker, so `--broker-url` / `--api-key` / `--state-dir` are rejected
  * rather than accepted and ignored.
  */
-export type FleetNodeAttachCliOptions = Pick<
-  NativeAttachOptions,
-  'json' | 'reasoning' | 'diagnostics'
-> & {
+export type FleetNodeAttachCliOptions = Pick<NativeAttachOptions, 'json' | 'reasoning' | 'diagnostics'> & {
   workspaceKey?: string;
 };
 
