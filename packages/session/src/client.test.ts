@@ -396,7 +396,9 @@ describe('SessionClient', () => {
       await client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER }).catch(() => undefined);
 
       const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
-      expect(url.startsWith('https://env.example')).toBe(true);
+      // Exact origin check, not a substring match: `startsWith` would also
+      // accept a lookalike host like https://env.example.attacker.com.
+      expect(new URL(url).origin).toBe('https://env.example');
       expect((init.headers as Record<string, string>).Authorization).toBe('Bearer rth_env_token');
     } finally {
       if (prevUrl === undefined) delete process.env.RELAYHISTORY_URL;
