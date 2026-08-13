@@ -603,7 +603,8 @@ impl AuthClient {
     /// Broker-only startup variant that can prove possession of a credential
     /// cached before server-side sponsor enforcement was enabled. Cached
     /// tokens are considered solely for the exact workspace-key fingerprint
-    /// and requested agent name; they never activate token-only bootstrap.
+    /// and requested agent name; they never activate token-only bootstrap or
+    /// authorize a different identity merely because both share a workspace.
     pub(crate) async fn startup_session_set_with_identity_and_incumbents(
         &self,
         requested_name: Option<&str>,
