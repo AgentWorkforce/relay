@@ -841,16 +841,21 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
         })
 }
 
+const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
+
+fn resolve_relaycast_base_url(base_url: Option<&str>) -> &str {
+    base_url.unwrap_or(DEFAULT_RELAYCAST_BASE_URL)
+}
+
 /// Build a `RelayCast` workspace client from an API key and optional base URL.
-/// When `base_url` is `None`, the SDK applies its own default.
+/// Resolve the hosted default here so broker-owned HTTP calls can share the
+/// exact same destination instead of duplicating the SDK's implicit choice.
 fn build_relay_client(api_key: &str, base_url: Option<&str>) -> Result<RelayCast> {
-    let mut opts =
-        RelayCastOptions::new(api_key).with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+    let mut opts = RelayCastOptions::new(api_key)
+        .with_base_url(resolve_relaycast_base_url(base_url))
+        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
     if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
         opts = opts.with_agent_relay_distinct_id(distinct_id);
-    }
-    if let Some(base_url) = base_url {
-        opts = opts.with_base_url(base_url);
     }
     RelayCast::new(opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
@@ -1072,8 +1077,6 @@ struct LegacyIdentityClaimEnvelope {
     error: Option<LegacyIdentityClaimError>,
 }
 
-const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
-
 /// Operator-invoked recovery for an agent record created before 5c2ad8ee3
 /// ("reclaim a node's own registration across restart, hash the identity
 /// proof") shipped. That commit's fail-closed match — `(Some(ours),
@@ -1115,7 +1118,8 @@ pub(crate) async fn reclaim_legacy_identity(
     name: &str,
     our_identity_key: &str,
 ) -> Result<LegacyIdentityClaim> {
-    let relay = build_relay_client(workspace_key, base_url)?;
+    let relaycast_base_url = resolve_relaycast_base_url(base_url);
+    let relay = build_relay_client(workspace_key, Some(relaycast_base_url))?;
     let existing = relay.get_agent(name).await.map_err(relay_error_to_anyhow)?;
 
     if existing.metadata.contains_key(IDENTITY_METADATA_KEY) {
@@ -1141,9 +1145,7 @@ pub(crate) async fn reclaim_legacy_identity(
     let identity_key_hash = hash_identity_key(our_identity_key);
     let claim_url = format!(
         "{}/v1/agents/{}/legacy-identity",
-        base_url
-            .unwrap_or(DEFAULT_RELAYCAST_BASE_URL)
-            .trim_end_matches('/'),
+        relaycast_base_url.trim_end_matches('/'),
         urlencoding::encode(name)
     );
     let response = reqwest::Client::new()
@@ -1234,11 +1236,21 @@ mod tests {
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
         is_agent_token_invalid_code, reclaim_legacy_identity, relay_error_to_anyhow,
-        stable_node_identity_key, AuthClient, CredentialCache, AGENT_TOKEN_INVALID_CODE,
+        resolve_relaycast_base_url, stable_node_identity_key, AuthClient, CredentialCache,
+        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
     static RELAY_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn relaycast_base_url_resolver_preserves_overrides_and_owns_one_default() {
+        assert_eq!(resolve_relaycast_base_url(None), DEFAULT_RELAYCAST_BASE_URL);
+        assert_eq!(
+            resolve_relaycast_base_url(Some("http://127.0.0.1:8787")),
+            "http://127.0.0.1:8787"
+        );
+    }
 
     #[test]
     fn agent_token_invalid_code_matches_canonical_string_case_insensitively() {
