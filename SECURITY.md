@@ -8,16 +8,39 @@ proof from RelayAuth for the currently SSO-authenticated human and passes the
 returned values to the broker as `RELAYAUTH_SPONSOR_ID` and
 `RELAYAUTH_SPONSOR_PROOF`, together with the pinned
 `RELAYAUTH_SIGNING_KEY_PEM_PUBLIC`, `RELAYAUTH_ISSUER`, and
-`RELAYAUTH_SPONSOR_ORG_ID`. The broker verifies the RS256 signature, issuer,
-organization, audience, expiry, `identity.create` intent, and OIDC subject. It
-refuses registration and rotation when any input is absent or invalid.
+`RELAYAUTH_SPONSOR_ORG_ID`. The broker validates those claims before startup,
+then sends the signed proof and a secret work-unit key to Relaycast's
+registration authority. Relaycast independently verifies the RS256 signature,
+pinned key ID, issuer, organization, audience, expiry, `identity.create` intent,
+token type, and OIDC subject before it creates a workspace, registers an agent,
+or rotates an agent credential. This server-side check is the security
+boundary: a workspace key holder calling the REST API, node-control socket, or
+A2A endpoint directly cannot bypass it.
 
-Relay sends the verified `user_...` sponsor ID, `oidc` binding mode, and a
-SHA-256 digest of the proof in agent metadata. It never stores or publishes the
-replayable proof. Crash recovery additionally requires the original work-unit
-identity key, and reclaim/rotation checks that the existing agent is bound to
-the same human sponsor. RelayAuth remains the authority that verifies and binds
-the signed sponsor proof; a workspace key never establishes sponsor identity.
+Relaycast stores the sponsor and work-unit binding in immutable database
+columns and a durable name claim, never in caller-editable agent metadata. It
+stores only a digest of the replayable proof. Crash recovery must present the
+same sponsor and secret work-unit key. A legacy agent with no immutable binding
+can be bound once only by presenting its incumbent agent bearer token; a
+workspace key is deliberately insufficient.
+
+### Sponsor-enforcement rollout order
+
+Existing persistent brokers need a staged rollout because older versions did
+not retain their incumbent agent token. Deploy the client update first and
+restart every persistent broker while the old registration authority is still
+active. A successful startup writes an owner-only, atomically replaced
+`state-<broker>.json.agent-credentials.json` cache beside broker state. The file
+contains the scoped agent token and only a SHA-256 fingerprint of the workspace
+key.
+
+After that pre-stage is verified across the fleet, migrate the Relaycast
+database and enable its sponsor-verification configuration. On the next broker
+restart, the cached token authenticates the exact incumbent agent and performs
+the one-time immutable binding. Hosts that skipped the pre-stage need their
+incumbent `RELAY_AGENT_TOKEN` supplied explicitly; they fail closed rather than
+falling back to a workspace-key-only reclaim. Do not enable hosted enforcement
+before the client pre-stage is complete.
 
 Agent Relay moves messages, credentials, and tool invocations between
 autonomous agents. A defect here can expose a workspace to agents — or people —

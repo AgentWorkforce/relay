@@ -36,7 +36,8 @@ use crate::{
         ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
-        agent_identity_key, format_worker_preregistration_error, registration_authority_from_env,
+        agent_identity_key, format_worker_preregistration_error, load_incumbent_credential_cache,
+        persist_incumbent_credential_cache, registration_authority_from_env,
         registration_retry_after_secs, retry_agent_registration, stable_node_identity_key,
         AuthClient, MultiWorkspaceSession, RegRetryOutcome, RelaycastHttpClient,
         WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,

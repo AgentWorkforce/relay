@@ -292,17 +292,20 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         None => stable_node_identity_key(&opts.paths.state)
             .context("failed to load the broker work-unit secret")?,
     };
+    let incumbent_credentials = load_incumbent_credential_cache(&opts.paths.state)
+        .context("failed to load the broker incumbent credential cache")?;
     let sessions = {
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
             match timeout(
                 attempt_timeout,
-                auth.startup_session_set_with_identity(
+                auth.startup_session_set_with_identity_and_incumbents(
                     Some(opts.requested_name),
                     opts.strict_name,
                     opts.agent_type,
                     Some(derived_identity_key.as_str()),
+                    &incumbent_credentials,
                 ),
             )
             .await
@@ -349,6 +352,9 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
             sessions.memberships.len()
         ),
     );
+
+    persist_incumbent_credential_cache(&opts.paths.state, &sessions.credential_set())
+        .context("failed to persist the broker incumbent credential cache")?;
 
     let default_session = sessions
         .default_session()

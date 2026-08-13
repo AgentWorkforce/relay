@@ -11,6 +11,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+const INCUMBENT_CREDENTIAL_CACHE_VERSION: u8 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceCredential {
     pub workspace_id: String,
@@ -41,6 +43,29 @@ pub struct CredentialSet {
         skip_serializing_if = "Option::is_none"
     )]
     pub default_workspace_id: Option<String>,
+}
+
+/// Owner-only local proof that this broker possessed an agent credential
+/// before sponsor enforcement was enabled on the registration authority.
+///
+/// The workspace key itself is intentionally not duplicated here. A digest is
+/// sufficient to select the incumbent token for the exact configured
+/// workspace, while the agent name prevents a token cached for one identity
+/// from being offered while reclaiming another.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct IncumbentCredentialCache {
+    version: u8,
+    #[serde(default)]
+    memberships: Vec<IncumbentCredential>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IncumbentCredential {
+    workspace_key_sha256: String,
+    workspace_id: String,
+    agent_id: String,
+    agent_name: String,
+    agent_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +195,107 @@ impl CredentialSet {
         }
         set
     }
+}
+
+impl IncumbentCredentialCache {
+    fn empty() -> Self {
+        Self {
+            version: INCUMBENT_CREDENTIAL_CACHE_VERSION,
+            memberships: Vec::new(),
+        }
+    }
+
+    fn from_credential_set(credentials: &CredentialSet) -> Result<Self> {
+        let memberships = credentials
+            .memberships
+            .iter()
+            .map(|credential| {
+                let workspace_key = normalize_workspace_key(&credential.api_key)
+                    .context("cannot cache an invalid workspace key fingerprint")?;
+                let agent_name = credential
+                    .agent_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .context("cannot cache an incumbent credential without an agent name")?;
+                let agent_token = credential
+                    .agent_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .context("cannot cache an incumbent credential without an agent token")?;
+                Ok(IncumbentCredential {
+                    workspace_key_sha256: workspace_key_fingerprint(&workspace_key),
+                    workspace_id: credential.workspace_id.clone(),
+                    agent_id: credential.agent_id.clone(),
+                    agent_name: agent_name.to_string(),
+                    agent_token: agent_token.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            version: INCUMBENT_CREDENTIAL_CACHE_VERSION,
+            memberships,
+        })
+    }
+
+    fn merge_credential_set(&mut self, credentials: &CredentialSet) -> Result<()> {
+        let updates = Self::from_credential_set(credentials)?;
+        for update in updates.memberships {
+            if let Some(existing) = self.memberships.iter_mut().find(|existing| {
+                existing.workspace_key_sha256 == update.workspace_key_sha256
+                    && existing.agent_name.eq_ignore_ascii_case(&update.agent_name)
+            }) {
+                *existing = update;
+            } else {
+                self.memberships.push(update);
+            }
+        }
+        Ok(())
+    }
+
+    fn incumbent_token_for(&self, workspace_key: &str, agent_name: Option<&str>) -> Option<&str> {
+        let agent_name = agent_name?.trim();
+        if agent_name.is_empty() {
+            return None;
+        }
+        let fingerprint = workspace_key_fingerprint(workspace_key);
+        self.memberships
+            .iter()
+            .find(|credential| {
+                credential.workspace_key_sha256 == fingerprint
+                    && credential.agent_name.eq_ignore_ascii_case(agent_name)
+            })
+            .map(|credential| credential.agent_token.as_str())
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.version != INCUMBENT_CREDENTIAL_CACHE_VERSION {
+            anyhow::bail!(
+                "unsupported incumbent credential cache version {}",
+                self.version
+            );
+        }
+        for credential in &self.memberships {
+            if credential.workspace_key_sha256.len() != 64
+                || !credential
+                    .workspace_key_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || credential.workspace_id.trim().is_empty()
+                || credential.agent_id.trim().is_empty()
+                || credential.agent_name.trim().is_empty()
+                || credential.agent_token.trim().is_empty()
+            {
+                anyhow::bail!("incumbent credential cache contains an invalid membership");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn workspace_key_fingerprint(workspace_key: &str) -> String {
+    format!("{:x}", Sha256::digest(workspace_key.as_bytes()))
 }
 
 impl AuthSessionSet {
@@ -372,6 +498,28 @@ impl AuthClient {
         agent_type: Option<&str>,
         identity_key: Option<&str>,
     ) -> Result<AuthSessionSet> {
+        self.startup_session_set_with_identity_and_incumbents(
+            requested_name,
+            strict_name,
+            agent_type,
+            identity_key,
+            &IncumbentCredentialCache::empty(),
+        )
+        .await
+    }
+
+    /// Broker-only startup variant that can prove possession of a credential
+    /// cached before server-side sponsor enforcement was enabled. Cached
+    /// tokens are considered solely for the exact workspace-key fingerprint
+    /// and requested agent name; they never activate token-only bootstrap.
+    pub(crate) async fn startup_session_set_with_identity_and_incumbents(
+        &self,
+        requested_name: Option<&str>,
+        strict_name: bool,
+        agent_type: Option<&str>,
+        identity_key: Option<&str>,
+        incumbent_cache: &IncumbentCredentialCache,
+    ) -> Result<AuthSessionSet> {
         let incumbent_agent_token = env_agent_token();
         if self.sponsor.is_none() {
             if let Some(agent_token) = incumbent_agent_token.as_deref() {
@@ -389,6 +537,25 @@ impl AuthClient {
                 let Some(api_key) = normalize_workspace_key(&source.api_key) else {
                     anyhow::bail!("RELAY_WORKSPACES_JSON contained an invalid workspace key");
                 };
+                let cached_incumbent_token =
+                    incumbent_cache.incumbent_token_for(&api_key, preferred_name);
+                if let Some(incumbent_token) = cached_incumbent_token {
+                    if let Some(mut session) = self
+                        .try_startup_session_from_incumbent(
+                            &api_key,
+                            source.workspace_id.as_deref(),
+                            preferred_name,
+                            incumbent_token,
+                            identity_key,
+                        )
+                        .await?
+                    {
+                        session.credentials.workspace_alias = source.workspace_alias.clone();
+                        memberships.push(session);
+                        continue;
+                    }
+                }
+                let incumbent_token = source.agent_token.as_deref().or(cached_incumbent_token);
                 match self
                     .register_agent_with_workspace_key(
                         &api_key,
@@ -396,7 +563,7 @@ impl AuthClient {
                         strict_name,
                         agent_type,
                         identity_key,
-                        source.agent_token.as_deref(),
+                        incumbent_token,
                     )
                     .await
                 {
@@ -449,6 +616,7 @@ impl AuthClient {
             agent_type,
             identity_key,
             incumbent_agent_token.as_deref(),
+            incumbent_cache,
         )
         .await
     }
@@ -500,6 +668,83 @@ impl AuthClient {
             memberships: vec![session],
             default_workspace_id: Some(workspace_id),
         })
+    }
+
+    /// Pre-stage or perform a legacy authority binding without rotating the
+    /// only known incumbent token. Old servers return 404 for the binding
+    /// endpoint; in that case a successful `/me` proves the cached token is
+    /// still current and lets the client retain it until enforcement ships.
+    /// New servers bind it idempotently before the session starts.
+    async fn try_startup_session_from_incumbent(
+        &self,
+        workspace_key: &str,
+        workspace_id_hint: Option<&str>,
+        requested_name: Option<&str>,
+        incumbent_token: &str,
+        identity_key: Option<&str>,
+    ) -> Result<Option<AuthSession>> {
+        // Validate the sponsor before even making the token-authenticated
+        // identity lookup. In particular, an absent or expired proof must
+        // stop startup before any Relaycast request is sent.
+        let sponsor = self.require_authenticated_sponsor()?;
+        let authority = registration_authority(sponsor, identity_key)?;
+        let agent = match relaycast::AgentClient::new(incumbent_token, self.base_url.clone())
+            .context("invalid cached incumbent agent token client")?
+            .me()
+            .await
+        {
+            Ok(agent) => agent,
+            Err(error) if is_agent_token_invalid(&error) => return Ok(None),
+            Err(error) => {
+                return Err(relay_error_to_anyhow(error))
+                    .context("cached incumbent agent token was rejected");
+            }
+        };
+        if let Some(requested_name) = requested_name {
+            if !requested_name.trim().eq_ignore_ascii_case(&agent.name) {
+                anyhow::bail!(
+                    "cached incumbent agent token belongs to '{}' rather than requested agent '{}'",
+                    agent.name,
+                    requested_name
+                );
+            }
+        }
+        let workspace_id = agent
+            .workspace_id
+            .context("cached incumbent agent response omitted workspace_id")?;
+        if let Some(expected_workspace_id) = workspace_id_hint {
+            if expected_workspace_id != workspace_id {
+                anyhow::bail!(
+                    "cached incumbent agent token belongs to workspace '{}' rather than configured workspace '{}'",
+                    workspace_id,
+                    expected_workspace_id
+                );
+            }
+        }
+        let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
+        match relay
+            .bind_agent_credential_authority(incumbent_token, authority)
+            .await
+        {
+            Ok(_) | Err(RelayError::Api { status: 404, .. }) => {}
+            Err(error) if is_agent_token_invalid(&error) => return Ok(None),
+            Err(error) => {
+                return Err(relay_error_to_anyhow(error))
+                    .context("incumbent agent credential authority was rejected");
+            }
+        }
+        Ok(Some(AuthSession {
+            credentials: WorkspaceCredential {
+                workspace_id,
+                workspace_alias: None,
+                agent_id: agent.id,
+                api_key: workspace_key.to_string(),
+                agent_name: Some(agent.name),
+                agent_token: Some(incumbent_token.to_string()),
+                updated_at: Utc::now(),
+            },
+            token: incumbent_token.to_string(),
+        }))
     }
 
     /// Rotate the token for an existing agent without re-registering.
@@ -597,6 +842,7 @@ impl AuthClient {
         agent_type: Option<&str>,
         identity_key: Option<&str>,
         incumbent_agent_token: Option<&str>,
+        incumbent_cache: &IncumbentCredentialCache,
     ) -> Result<AuthSessionSet> {
         let env_workspace_key = env_workspace_key()?;
 
@@ -624,6 +870,26 @@ impl AuthClient {
         let mut auth_rejections = Vec::new();
 
         for candidate in &candidates {
+            let cached_incumbent_token =
+                incumbent_cache.incumbent_token_for(&candidate.key, preferred_name);
+            if let Some(incumbent_token) = cached_incumbent_token {
+                if let Some(session) = self
+                    .try_startup_session_from_incumbent(
+                        &candidate.key,
+                        workspace_id_hint.as_deref(),
+                        preferred_name,
+                        incumbent_token,
+                        identity_key,
+                    )
+                    .await?
+                {
+                    return Ok(AuthSessionSet {
+                        default_workspace_id: Some(session.credentials.workspace_id.clone()),
+                        memberships: vec![session],
+                    });
+                }
+            }
+            let incumbent_token = incumbent_agent_token.or(cached_incumbent_token);
             tracing::info!(
                 target = "relay_broker::auth",
                 source = %candidate.source,
@@ -639,7 +905,7 @@ impl AuthClient {
                     strict_name,
                     agent_type,
                     identity_key,
-                    incumbent_agent_token,
+                    incumbent_token,
                 )
                 .await
             {
@@ -1324,6 +1590,159 @@ pub(crate) fn stable_node_identity_key(state_path: &std::path::Path) -> Result<S
     }
 }
 
+fn incumbent_credential_cache_path(state_path: &std::path::Path) -> Result<std::path::PathBuf> {
+    let parent = state_path
+        .parent()
+        .context("broker state path has no parent directory")?;
+    let state_name = state_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state");
+    Ok(parent.join(format!("{state_name}.agent-credentials.json")))
+}
+
+/// Load incumbent agent credentials without following a caller-controlled
+/// symlink or accepting a file readable by another local user. Missing is a
+/// valid pre-staging state; malformed or insecure existing state fails closed.
+pub(crate) fn load_incumbent_credential_cache(
+    state_path: &std::path::Path,
+) -> Result<IncumbentCredentialCache> {
+    use std::fs::OpenOptions;
+    use std::io::Read;
+
+    let path = incumbent_credential_cache_path(state_path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::libc::O_NOFOLLOW);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(IncumbentCredentialCache::empty());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to open incumbent credential cache {}",
+                    path.display()
+                )
+            });
+        }
+    };
+    let metadata = file.metadata().with_context(|| {
+        format!(
+            "failed to inspect incumbent credential cache {}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "incumbent credential cache is not a regular file: {}",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            anyhow::bail!(
+                "incumbent credential cache must not be accessible by group or other users: {}",
+                path.display()
+            );
+        }
+    }
+    let mut body = Vec::new();
+    file.read_to_end(&mut body).with_context(|| {
+        format!(
+            "failed to read incumbent credential cache {}",
+            path.display()
+        )
+    })?;
+    let cache: IncumbentCredentialCache = serde_json::from_slice(&body).with_context(|| {
+        format!(
+            "failed to parse incumbent credential cache {}",
+            path.display()
+        )
+    })?;
+    cache.validate()?;
+    Ok(cache)
+}
+
+/// Atomically replace the incumbent credential cache after a successful
+/// registration. Startup fails if this durability step fails: proceeding
+/// without retaining the only migration proof could strand the identity once
+/// hosted sponsor enforcement is enabled.
+pub(crate) fn persist_incumbent_credential_cache(
+    state_path: &std::path::Path,
+    credentials: &CredentialSet,
+) -> Result<()> {
+    use std::io::Write;
+
+    let path = incumbent_credential_cache_path(state_path)?;
+    let parent = path
+        .parent()
+        .context("incumbent credential cache path has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create incumbent credential cache directory {}",
+            parent.display()
+        )
+    })?;
+    // Multi-workspace startup intentionally tolerates an unavailable
+    // membership when at least one other membership succeeds. Preserve its
+    // last known incumbent token instead of replacing the entire cache and
+    // accidentally destroying the proof needed on its next healthy restart.
+    let mut cache = load_incumbent_credential_cache(state_path)?;
+    cache.merge_credential_set(credentials)?;
+    let body = serde_json::to_vec_pretty(&cache)
+        .context("failed to serialize incumbent credential cache")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "failed to create temporary incumbent credential cache in {}",
+            parent.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| {
+                format!(
+                    "failed to restrict temporary incumbent credential cache in {}",
+                    parent.display()
+                )
+            })?;
+    }
+    temporary
+        .write_all(&body)
+        .context("failed to write incumbent credential cache")?;
+    temporary
+        .as_file()
+        .sync_all()
+        .context("failed to sync incumbent credential cache")?;
+    temporary.persist(&path).with_context(|| {
+        format!(
+            "failed to atomically persist incumbent credential cache {}",
+            path.display()
+        )
+    })?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| {
+            format!(
+                "failed to durably sync incumbent credential cache directory {}",
+                parent.display()
+            )
+        })?;
+    Ok(())
+}
+
 fn registration_authority(
     sponsor: &AuthenticatedSponsor,
     identity_key: Option<&str>,
@@ -1467,8 +1886,9 @@ mod tests {
 
     use super::{
         is_agent_token_invalid, is_agent_token_invalid_anyhow, is_agent_token_invalid_code,
-        relay_error_to_anyhow, stable_node_identity_key, AuthClient, CredentialCache,
-        AGENT_TOKEN_INVALID_CODE,
+        load_incumbent_credential_cache, persist_incumbent_credential_cache, relay_error_to_anyhow,
+        stable_node_identity_key, AuthClient, CredentialCache, CredentialSet,
+        AGENT_TOKEN_INVALID_CODE, INCUMBENT_CREDENTIAL_CACHE_VERSION,
     };
     use relaycast::RelayError;
 
@@ -2156,6 +2576,228 @@ mod tests {
         get_existing.assert_hits(1);
         rotate.assert_hits(1);
         bind.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn staged_restart_migrates_legacy_agent_with_persisted_incumbent_token() {
+        let _env_guard = clear_relay_env();
+        let state_dir = tempfile::tempdir().unwrap();
+        let state_path = state_dir.path().join("state.json");
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+        }
+
+        // Stage 1: deploy this client while the old authority still allows the
+        // legacy rotation. The resulting scoped token is persisted before the
+        // server-side enforcement rollout.
+        let old_server = MockServer::start();
+        let old_conflict = old_server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        let old_get = old_server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/lead");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_legacy","workspace_id":"ws_legacy","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let old_rotate = old_server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/lead/rotate-token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_incumbent"}}"#);
+        });
+        let staged = AuthClient::new_for_test(Some(old_server.base_url()))
+            .startup_session_set_with_identity(Some("lead"), true, None, Some(TEST_WORK_UNIT_KEY))
+            .await
+            .expect("the client-first stage should capture the incumbent token");
+        persist_incumbent_credential_cache(&state_path, &staged.credential_set()).unwrap();
+        old_conflict.assert_hits(1);
+        old_get.assert_hits(1);
+        old_rotate.assert_hits(1);
+
+        // Stage 2: after enforcement, the next restart proves possession with
+        // that exact agent token and binds the immutable sponsor/work-unit
+        // authority. It never asks the workspace-key endpoint to rotate.
+        let enforced_server = MockServer::start();
+        let me = enforced_server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_incumbent");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_legacy","workspace_id":"ws_legacy","name":"lead","type":"agent","status":"online","persona":null,"metadata":{}}}"#);
+        });
+        let bind = enforced_server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agent/credential-authority")
+                .header("authorization", "Bearer at_live_incumbent")
+                .json_body(json!({
+                    "registration_authority": {
+                        "sponsor_proof": "header.payload.signature",
+                        "work_unit_key": TEST_WORK_UNIT_KEY,
+                    }
+                }));
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"bound":true}}"#);
+        });
+        let workspace_key_registration = enforced_server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(500);
+        });
+        let cache = load_incumbent_credential_cache(&state_path).unwrap();
+        let migrated = AuthClient::new_for_test(Some(enforced_server.base_url()))
+            .startup_session_set_with_identity_and_incumbents(
+                Some("lead"),
+                true,
+                None,
+                Some(TEST_WORK_UNIT_KEY),
+                &cache,
+            )
+            .await
+            .expect("the staged token should authorize the one-time migration");
+
+        assert_eq!(
+            migrated.default_session().unwrap().token,
+            "at_live_incumbent"
+        );
+        me.assert_hits(1);
+        bind.assert_hits(1);
+        workspace_key_registration.assert_hits(0);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[test]
+    fn incumbent_cache_is_name_and_workspace_bound_without_storing_workspace_key() {
+        let cache =
+            super::IncumbentCredentialCache::from_credential_set(&CredentialSet::from_memberships(
+                vec![CredentialCache {
+                    workspace_id: "ws_1".into(),
+                    workspace_alias: None,
+                    agent_id: "a_1".into(),
+                    api_key: "rk_live_secret_workspace_key".into(),
+                    agent_name: Some("lead".into()),
+                    agent_token: Some("at_live_incumbent".into()),
+                    updated_at: chrono::Utc::now(),
+                }],
+                None,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            cache.incumbent_token_for("rk_live_secret_workspace_key", Some("LEAD")),
+            Some("at_live_incumbent")
+        );
+        assert_eq!(
+            cache.incumbent_token_for("rk_live_other_workspace_key", Some("lead")),
+            None
+        );
+        assert_eq!(
+            cache.incumbent_token_for("rk_live_secret_workspace_key", Some("victim")),
+            None
+        );
+        let serialized = serde_json::to_string(&cache).unwrap();
+        assert!(!serialized.contains("rk_live_secret_workspace_key"));
+        assert_eq!(cache.version, INCUMBENT_CREDENTIAL_CACHE_VERSION);
+    }
+
+    #[test]
+    fn incumbent_cache_persistence_preserves_an_unavailable_workspace_membership() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        let membership = |workspace_id: &str,
+                          agent_id: &str,
+                          workspace_key: &str,
+                          agent_name: &str,
+                          agent_token: &str| CredentialCache {
+            workspace_id: workspace_id.into(),
+            workspace_alias: None,
+            agent_id: agent_id.into(),
+            api_key: workspace_key.into(),
+            agent_name: Some(agent_name.into()),
+            agent_token: Some(agent_token.into()),
+            updated_at: chrono::Utc::now(),
+        };
+        persist_incumbent_credential_cache(
+            &state_path,
+            &CredentialSet::from_memberships(
+                vec![
+                    membership("ws_1", "a_1", "rk_live_one", "lead", "at_live_old_one"),
+                    membership("ws_2", "a_2", "rk_live_two", "lead", "at_live_old_two"),
+                ],
+                None,
+            ),
+        )
+        .unwrap();
+        persist_incumbent_credential_cache(
+            &state_path,
+            &CredentialSet::from_memberships(
+                vec![membership(
+                    "ws_1",
+                    "a_1",
+                    "rk_live_one",
+                    "lead",
+                    "at_live_new_one",
+                )],
+                None,
+            ),
+        )
+        .unwrap();
+
+        let cache = load_incumbent_credential_cache(&state_path).unwrap();
+        assert_eq!(
+            cache.incumbent_token_for("rk_live_one", Some("lead")),
+            Some("at_live_new_one")
+        );
+        assert_eq!(
+            cache.incumbent_token_for("rk_live_two", Some("lead")),
+            Some("at_live_old_two")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incumbent_cache_is_owner_only_and_rejects_insecure_existing_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        let credentials = CredentialSet::from_memberships(
+            vec![CredentialCache {
+                workspace_id: "ws_1".into(),
+                workspace_alias: None,
+                agent_id: "a_1".into(),
+                api_key: "rk_live_workspace".into(),
+                agent_name: Some("lead".into()),
+                agent_token: Some("at_live_incumbent".into()),
+                updated_at: chrono::Utc::now(),
+            }],
+            None,
+        );
+        persist_incumbent_credential_cache(&state_path, &credentials).unwrap();
+        let path = super::incumbent_credential_cache_path(&state_path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+            0
+        );
+        assert_eq!(
+            load_incumbent_credential_cache(&state_path)
+                .unwrap()
+                .memberships
+                .len(),
+            1
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = load_incumbent_credential_cache(&state_path)
+            .expect_err("a group/world-readable token cache must fail closed");
+        assert!(error.to_string().contains("group or other users"));
     }
 
     #[test]
