@@ -18,6 +18,8 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, Message},
 };
 
+use crate::types::InboundDeliveryMode;
+
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const TOKEN_WAIT_DELAY: Duration = Duration::from_secs(1);
@@ -52,6 +54,25 @@ pub(crate) enum TerminalFromCloud {
     },
     #[serde(rename = "terminal.close")]
     Close { session_id: String },
+    /// Request the broker flip the inbound delivery mode for the session's
+    /// agent. The broker replies with `TerminalToCloud::DeliveryMode` on
+    /// success or `TerminalToCloud::Error` on failure.
+    #[serde(rename = "terminal.set_delivery_mode")]
+    SetDeliveryMode {
+        session_id: String,
+        mode: InboundDeliveryMode,
+        /// Caller-assigned correlation token echoed in the reply so that a
+        /// delayed response cannot be mis-applied to a subsequent request.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        /// Deserialized as a raw string so an unknown value returns
+        /// `terminal.error` rather than silently dropping the whole frame.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_mode: Option<String>,
+        /// Broker revision as a decimal string (matches the existing HTTP wire format).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,6 +85,11 @@ pub(crate) enum TerminalToCloud {
         rows: u16,
         cols: u16,
         offset: u64,
+        /// The worker's actual inbound delivery mode at the moment the session
+        /// was ready. Absent when the broker did not track mode at snapshot
+        /// time (older broker or headless worker).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        delivery_mode: Option<InboundDeliveryMode>,
     },
     #[serde(rename = "terminal.output")]
     Output {
@@ -82,6 +108,11 @@ pub(crate) enum TerminalToCloud {
         session_id: String,
         code: String,
         message: String,
+        /// Echo of the caller-supplied `request_id` from `SetDeliveryMode`.
+        /// Present only for operation-scoped errors; absent for session-level
+        /// errors so the client can distinguish the two without ambiguity.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     #[serde(rename = "terminal.closed")]
     Closed {
@@ -90,6 +121,23 @@ pub(crate) enum TerminalToCloud {
         code: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+    },
+    /// Reply to `TerminalFromCloud::SetDeliveryMode`. `matched` is `true` when
+    /// the compare-and-set guard passed and the mode was applied; `false` means
+    /// a concurrent change was detected and the current broker state is reported
+    /// with no mutation. `revision` is a decimal-string u64 matching the HTTP
+    /// wire format.
+    #[serde(rename = "terminal.delivery_mode")]
+    DeliveryMode {
+        session_id: String,
+        /// Echo of the caller-supplied `request_id` so that a delayed reply
+        /// cannot satisfy a later in-flight PUT.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        mode: InboundDeliveryMode,
+        flushed: usize,
+        matched: bool,
+        revision: String,
     },
 }
 
@@ -221,7 +269,7 @@ pub(crate) async fn run_terminal_control_client(
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalFromCloud, TerminalMode, TerminalToCloud};
+    use super::{InboundDeliveryMode, TerminalFromCloud, TerminalMode, TerminalToCloud};
 
     #[test]
     fn terminal_wire_round_trips_without_control_frames() {
@@ -289,10 +337,22 @@ mod tests {
             rows: 24,
             cols: 80,
             offset: 3,
+            delivery_mode: None,
         })
         .unwrap();
         assert_eq!(ready["type"], "terminal.ready");
         assert_eq!(ready["offset"], 3);
+        assert!(ready.get("delivery_mode").is_none());
+        let ready_with_mode = serde_json::to_value(TerminalToCloud::Ready {
+            session_id: "s".into(),
+            screen: "screen".into(),
+            rows: 24,
+            cols: 80,
+            offset: 3,
+            delivery_mode: Some(InboundDeliveryMode::ManualFlush),
+        })
+        .unwrap();
+        assert_eq!(ready_with_mode["delivery_mode"], "manual_flush");
         let ack = serde_json::to_value(TerminalToCloud::InputAck {
             session_id: "s".into(),
             bytes_written: 1,
@@ -303,10 +363,12 @@ mod tests {
             session_id: "s".into(),
             code: "bad".into(),
             message: "nope".into(),
+            request_id: None,
         })
         .unwrap();
         assert_eq!(error["type"], "terminal.error");
         assert_eq!(error["code"], "bad");
+        assert!(error.get("request_id").is_none());
         let closed = serde_json::to_value(TerminalToCloud::Closed {
             session_id: "s".into(),
             code: None,
@@ -324,5 +386,136 @@ mod tests {
         .unwrap();
         assert_eq!(closed_with_error["code"], "closed");
         assert_eq!(closed_with_error["message"], "done");
+    }
+
+    #[test]
+    fn delivery_mode_frames_round_trip() {
+        use super::{InboundDeliveryMode, TerminalFromCloud, TerminalToCloud};
+
+        // client→node: minimal (no optional fields)
+        let set_mode: TerminalFromCloud = serde_json::from_str(
+            r#"{"type":"terminal.set_delivery_mode","session_id":"s","mode":"auto_inject"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set_mode,
+            TerminalFromCloud::SetDeliveryMode {
+                session_id: "s".into(),
+                mode: InboundDeliveryMode::AutoInject,
+                request_id: None,
+                expected_mode: None,
+                expected_revision: None,
+            }
+        );
+
+        // client→node: with compare-and-set guards and request_id
+        let set_mode_cas: TerminalFromCloud = serde_json::from_str(
+            r#"{"type":"terminal.set_delivery_mode","session_id":"s","mode":"manual_flush","request_id":"rid1","expected_mode":"auto_inject","expected_revision":"7"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set_mode_cas,
+            TerminalFromCloud::SetDeliveryMode {
+                session_id: "s".into(),
+                mode: InboundDeliveryMode::ManualFlush,
+                request_id: Some("rid1".into()),
+                expected_mode: Some("auto_inject".into()),
+                expected_revision: Some("7".into()),
+            }
+        );
+
+        // An unknown expected_mode is accepted as a raw string (validated in fleet.rs,
+        // not discarded by serde so the broker can reply with terminal.error).
+        let set_mode_bad_guard: TerminalFromCloud = serde_json::from_str(
+            r#"{"type":"terminal.set_delivery_mode","session_id":"s","mode":"auto_inject","expected_mode":"turbo"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set_mode_bad_guard,
+            TerminalFromCloud::SetDeliveryMode {
+                session_id: "s".into(),
+                mode: InboundDeliveryMode::AutoInject,
+                request_id: None,
+                expected_mode: Some("turbo".into()),
+                expected_revision: None,
+            }
+        );
+
+        // Serialising SetDeliveryMode omits None optional fields.
+        let set_mode_json = serde_json::to_value(TerminalFromCloud::SetDeliveryMode {
+            session_id: "s".into(),
+            mode: InboundDeliveryMode::AutoInject,
+            request_id: None,
+            expected_mode: None,
+            expected_revision: None,
+        })
+        .unwrap();
+        assert_eq!(set_mode_json["type"], "terminal.set_delivery_mode");
+        assert_eq!(set_mode_json["mode"], "auto_inject");
+        assert!(set_mode_json.get("request_id").is_none());
+        assert!(set_mode_json.get("expected_mode").is_none());
+        assert!(set_mode_json.get("expected_revision").is_none());
+
+        // node→client: success response (with echoed request_id)
+        let reply = serde_json::to_value(TerminalToCloud::DeliveryMode {
+            session_id: "s".into(),
+            request_id: Some("rid1".into()),
+            mode: InboundDeliveryMode::AutoInject,
+            flushed: 3,
+            matched: true,
+            revision: "2".into(),
+        })
+        .unwrap();
+        assert_eq!(reply["type"], "terminal.delivery_mode");
+        assert_eq!(reply["request_id"], "rid1");
+        assert_eq!(reply["mode"], "auto_inject");
+        assert_eq!(reply["flushed"], 3);
+        assert_eq!(reply["matched"], true);
+        assert_eq!(reply["revision"], "2");
+
+        // node→client: reply without request_id omits the field
+        let reply_no_rid = serde_json::to_value(TerminalToCloud::DeliveryMode {
+            session_id: "s".into(),
+            request_id: None,
+            mode: InboundDeliveryMode::AutoInject,
+            flushed: 0,
+            matched: true,
+            revision: "1".into(),
+        })
+        .unwrap();
+        assert!(reply_no_rid.get("request_id").is_none());
+
+        // node→client: CAS miss (matched: false)
+        let cas_miss = serde_json::to_value(TerminalToCloud::DeliveryMode {
+            session_id: "s".into(),
+            request_id: None,
+            mode: InboundDeliveryMode::ManualFlush,
+            flushed: 0,
+            matched: false,
+            revision: "1".into(),
+        })
+        .unwrap();
+        assert_eq!(cas_miss["matched"], false);
+        assert_eq!(cas_miss["mode"], "manual_flush");
+
+        // node→client: op-scoped error echoes request_id
+        let op_error = serde_json::to_value(TerminalToCloud::Error {
+            session_id: "s".into(),
+            code: "invalid_revision".into(),
+            message: "bad revision".into(),
+            request_id: Some("rid1".into()),
+        })
+        .unwrap();
+        assert_eq!(op_error["request_id"], "rid1");
+
+        // node→client: session-level error omits request_id
+        let sess_error = serde_json::to_value(TerminalToCloud::Error {
+            session_id: "s".into(),
+            code: "session_not_found".into(),
+            message: "not found".into(),
+            request_id: None,
+        })
+        .unwrap();
+        assert!(sess_error.get("request_id").is_none());
     }
 }

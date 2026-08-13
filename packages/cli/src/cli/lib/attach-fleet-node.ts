@@ -210,6 +210,18 @@ export async function startFleetNodeAttachProxy(
   let reconnecting = false;
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Locally-tracked delivery mode, kept in sync with each broker reply. */
+  let loopbackDeliveryMode: 'manual_flush' | 'auto_inject' =
+    options.mode === 'drive' ? 'manual_flush' : 'auto_inject';
+  type DeliveryModeResult = { mode: string; flushed: number; matched: boolean; revision: string };
+  /** At most one in-flight delivery-mode PUT at a time. */
+  let pendingDeliveryMode: {
+    requestId: string;
+    resolve: (result: DeliveryModeResult) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  const DELIVERY_MODE_TIMEOUT_MS = 10_000;
   const loopbackApiKey = randomBytes(32).toString('base64url');
   const loopbackAuthorized = (headers: IncomingMessage['headers']) =>
     headers.authorization === `Bearer ${loopbackApiKey}` || headers['x-api-key'] === loopbackApiKey;
@@ -260,16 +272,76 @@ export async function startFleetNodeAttachProxy(
     const name = encodeURIComponent(options.agent);
     if (path === `/api/spawned/${name}/delivery-mode`) {
       if (request.method === 'GET') {
-        json(response, 200, { mode: options.mode === 'drive' ? 'manual_flush' : 'auto_inject' });
-      } else {
-        await readBody(request);
-        json(response, 200, {
-          mode: options.mode === 'drive' ? 'manual_flush' : 'auto_inject',
-          flushed: 0,
-          matched: true,
-          revision: '1',
-        });
+        json(response, 200, { mode: loopbackDeliveryMode });
+        return;
       }
+      // PUT — forward the request to the remote broker via the terminal WS and
+      // await the broker's real reply. This is the path that was previously a
+      // static stub returning manual_flush, causing drive attach to fail with
+      // "broker remained in manual_flush mode".
+      const body = await readBody(request);
+      const requestedMode =
+        body.mode === 'auto_inject' ? 'auto_inject' : body.mode === 'manual_flush' ? 'manual_flush' : null;
+      if (requestedMode === null) {
+        json(response, 400, {
+          error: { code: 'invalid_mode', message: `unsupported delivery mode '${String(body.mode)}'` },
+        });
+        return;
+      }
+      if (!remote || remote.readyState !== WebSocket.OPEN) {
+        json(response, 503, {
+          error: { code: 'node_unreachable', message: 'terminal transport is not connected' },
+        });
+        return;
+      }
+      if (pendingDeliveryMode) {
+        json(response, 503, {
+          error: { code: 'delivery_mode_conflict', message: 'a delivery mode request is already in flight' },
+        });
+        return;
+      }
+      const requestId = randomBytes(8).toString('hex');
+      const result = await new Promise<DeliveryModeResult | Error>((resolve) => {
+        const timer = setTimeout(() => {
+          pendingDeliveryMode = null;
+          resolve(new FleetNodeAttachError('delivery mode request timed out', 'delivery_mode_timeout'));
+        }, DELIVERY_MODE_TIMEOUT_MS);
+        pendingDeliveryMode = {
+          requestId,
+          resolve: (r) => resolve(r),
+          reject: (e) => resolve(e),
+          timer,
+        };
+        const frame: Record<string, unknown> = {
+          type: 'terminal.set_delivery_mode',
+          session_id: sessionId,
+          mode: requestedMode,
+          request_id: requestId,
+        };
+        if (typeof body.expected_mode === 'string') frame.expected_mode = body.expected_mode;
+        if (typeof body.expected_revision === 'string') frame.expected_revision = body.expected_revision;
+        remote!.send(JSON.stringify(frame));
+      });
+      if (result instanceof Error) {
+        const errCode =
+          result instanceof FleetNodeAttachError
+            ? (result.code ?? 'delivery_mode_failed')
+            : 'delivery_mode_failed';
+        // Return HTTP 404 for agent_not_found so the attach preflight can
+        // produce the correct no-agent or cross-node placement error.
+        const status = errCode === 'agent_not_found' ? 404 : 503;
+        json(response, status, {
+          error: { code: errCode, message: result.message },
+        });
+        return;
+      }
+      loopbackDeliveryMode = result.mode === 'manual_flush' ? 'manual_flush' : 'auto_inject';
+      json(response, 200, {
+        mode: result.mode,
+        flushed: result.flushed,
+        matched: result.matched,
+        revision: result.revision,
+      });
       return;
     }
     if (request.method === 'GET' && path === `/api/spawned/${name}/pending`) {
@@ -449,6 +521,14 @@ export async function startFleetNodeAttachProxy(
   resumeUrl.searchParams.delete('ticket');
   resumeUrl.searchParams.set('session_id', sessionId);
   resumeUrl.searchParams.set('resume', resumeToken);
+  /** Reject and clear any in-flight delivery-mode PUT, if one is pending. */
+  const rejectPendingDeliveryMode = (error: FleetNodeAttachError) => {
+    if (!pendingDeliveryMode) return;
+    const pending = pendingDeliveryMode;
+    pendingDeliveryMode = null;
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  };
   const endTerminal = (error: FleetNodeAttachError) => {
     if (terminalEnded) return;
     terminalEnded = true;
@@ -456,6 +536,7 @@ export async function startFleetNodeAttachProxy(
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
     }
+    rejectPendingDeliveryMode(error);
     const activeRemote = remote;
     remote = undefined;
     rejectReadiness(activeReadiness, error);
@@ -487,6 +568,12 @@ export async function startFleetNodeAttachProxy(
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
+        // Seed loopbackDeliveryMode from the broker's actual state so that
+        // detach restores the correct mode even when the worker started in a
+        // different mode than our local inference at line 214.
+        if (frame.delivery_mode === 'manual_flush' || frame.delivery_mode === 'auto_inject') {
+          loopbackDeliveryMode = frame.delivery_mode;
+        }
         terminalEverReady = true;
         reconnectAttempts = 0;
         if (readiness === activeReadiness) {
@@ -517,12 +604,35 @@ export async function startFleetNodeAttachProxy(
           name: options.agent,
           bytes_written: typeof frame.bytes_written === 'number' ? frame.bytes_written : 0,
         });
+      } else if (frame.type === 'terminal.delivery_mode') {
+        const frameRid = typeof frame.request_id === 'string' ? frame.request_id : undefined;
+        if (pendingDeliveryMode && (frameRid === undefined || frameRid === pendingDeliveryMode.requestId)) {
+          const pending = pendingDeliveryMode;
+          pendingDeliveryMode = null;
+          clearTimeout(pending.timer);
+          pending.resolve({
+            mode: typeof frame.mode === 'string' ? frame.mode : 'auto_inject',
+            flushed: typeof frame.flushed === 'number' ? frame.flushed : 0,
+            matched: typeof frame.matched === 'boolean' ? frame.matched : true,
+            revision: typeof frame.revision === 'string' ? frame.revision : '1',
+          });
+        }
       } else if (frame.type === 'terminal.error') {
         const message = typeof frame.message === 'string' ? frame.message : 'remote terminal failed';
         const code = typeof frame.code === 'string' ? frame.code : 'terminal_error';
-        if (readiness === activeReadiness && !readiness.settled) {
+        const frameRid = typeof frame.request_id === 'string' ? frame.request_id : undefined;
+        // Route the error to the pending delivery-mode request only when the
+        // request_id matches (or the broker sent no request_id at all — older
+        // broker compat). An unrelated session-level error must not cancel a
+        // live delivery-mode PUT and vice-versa.
+        if (pendingDeliveryMode && (frameRid === undefined || frameRid === pendingDeliveryMode.requestId)) {
+          const pending = pendingDeliveryMode;
+          pendingDeliveryMode = null;
+          clearTimeout(pending.timer);
+          pending.reject(new FleetNodeAttachError(message, code));
+        } else if (!frameRid && readiness === activeReadiness && !readiness.settled) {
           endTerminal(new FleetNodeAttachError(message, code));
-        } else {
+        } else if (!frameRid) {
           broadcast(inputSockets, { type: 'pty_input_error', code, message });
         }
       } else if (frame.type === 'terminal.closed') {
@@ -540,6 +650,17 @@ export async function startFleetNodeAttachProxy(
     });
     socket.on('close', () => {
       if (remote !== socket || stopped || terminalEnded || reconnecting) return;
+      // Relaycast drops the old lane's terminal session state on disconnect,
+      // so a set_delivery_mode frame already sent on this dying socket is
+      // lost and will never get a reply on the replacement socket — even
+      // once reconnect succeeds. Fail the pending PUT fast with a retryable
+      // error instead of leaving it to hang out the full timeout.
+      rejectPendingDeliveryMode(
+        new FleetNodeAttachError(
+          'terminal transport disconnected while the delivery-mode change was in flight',
+          'delivery_mode_disconnected'
+        )
+      );
       // Any waiter that observed the prior connection must retry against the
       // fresh generation instead of receiving its stale resolved snapshot.
       resolveReadiness(readiness);
@@ -573,6 +694,7 @@ export async function startFleetNodeAttachProxy(
         reconnectTimer = undefined;
       }
       rejectReadiness(activeReadiness, new FleetNodeAttachError('terminal attach closed', 'closed'));
+      rejectPendingDeliveryMode(new FleetNodeAttachError('terminal attach closed', 'closed'));
       const activeRemote = remote;
       remote = undefined;
       if (activeRemote && activeRemote.readyState === WebSocket.OPEN) {

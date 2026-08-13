@@ -8,8 +8,9 @@
       "id": "801"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-07-15T19:48:09.268Z",
+  "completedAt": "2026-08-12T21:48:57.141Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-07-15T19:56:40.369Z",
+      "endedAt": "2026-08-12T21:48:57.141Z",
       "events": [
         {
           "ts": 1784145400371,
@@ -94,6 +96,12 @@
             "alternatives": [],
             "reasoning": "Fleet dispatch puts session_id at JSON top level; SpawnParams.metadata.attestation.session_ref needs explicit bridging; session_ref is optional so hook fires without it (backward-compatible)"
           },
+          "significance": "high"
+        },
+        {
+          "ts": 1786571337142,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory from 28 days ago, unrelated to current work",
           "significance": "high"
         }
       ]

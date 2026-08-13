@@ -8,6 +8,24 @@ use crate::worker::AgentWorkState;
 
 const TERMINAL_PENDING_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 
+/// Resolve the delivery mode to advertise in a `terminal.ready` frame for
+/// `session_id`. A fresh PTY has no prior entry in `delivery_states` — that
+/// must not be sent to the client as "no mode" (the attach client would then
+/// keep its own inferred default, which can be wrong, e.g. `manual_flush` for
+/// `--node drive`). The broker's logical default for a worker with no state
+/// entry is [`InboundDeliveryMode::AutoInject`], so fall back to it explicitly.
+fn resolve_ready_delivery_mode(
+    terminal_sessions: &HashMap<String, TerminalSession>,
+    delivery_states: &HashMap<WorkerName, InboundDeliveryState>,
+    session_id: &str,
+) -> Option<InboundDeliveryMode> {
+    terminal_sessions
+        .get(session_id)
+        .and_then(|session| delivery_states.get(&session.agent))
+        .map(|state| state.mode)
+        .or(Some(InboundDeliveryMode::AutoInject))
+}
+
 fn publish_terminal_output(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     terminal_sessions: &mut HashMap<String, TerminalSession>,
@@ -159,6 +177,71 @@ fn record_started_harness_pid(
 
 fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
     current_generation == Some(event_generation)
+}
+
+#[cfg(test)]
+mod terminal_ready_delivery_mode_tests {
+    use super::*;
+
+    fn terminal_session(agent: &WorkerName) -> TerminalSession {
+        TerminalSession {
+            agent: agent.clone(),
+            mode: TerminalMode::Drive,
+            ready: false,
+            pending_output: Vec::new(),
+            pending_output_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn falls_back_to_auto_inject_when_the_worker_has_no_delivery_state_entry() {
+        let agent = WorkerName::new("fresh-worker");
+        let mut terminal_sessions = HashMap::new();
+        terminal_sessions.insert("session-a".to_string(), terminal_session(&agent));
+        let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
+
+        let resolved =
+            resolve_ready_delivery_mode(&terminal_sessions, &delivery_states, "session-a");
+
+        assert_eq!(
+            resolved,
+            Some(InboundDeliveryMode::AutoInject),
+            "a fresh PTY with no delivery_states entry must still advertise the broker's \
+             logical default instead of omitting the mode"
+        );
+    }
+
+    #[test]
+    fn reports_the_worker_s_actual_mode_when_a_delivery_state_entry_exists() {
+        let agent = WorkerName::new("manual-worker");
+        let mut terminal_sessions = HashMap::new();
+        terminal_sessions.insert("session-b".to_string(), terminal_session(&agent));
+        let mut delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
+        delivery_states.insert(
+            agent,
+            InboundDeliveryState {
+                mode: InboundDeliveryMode::ManualFlush,
+                revision: 3,
+                pending: Default::default(),
+            },
+        );
+
+        let resolved =
+            resolve_ready_delivery_mode(&terminal_sessions, &delivery_states, "session-b");
+
+        assert_eq!(resolved, Some(InboundDeliveryMode::ManualFlush));
+    }
+
+    #[test]
+    fn returns_auto_inject_for_an_unknown_session_id() {
+        let terminal_sessions: HashMap<String, TerminalSession> = HashMap::new();
+        let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
+
+        let resolved =
+            resolve_ready_delivery_mode(&terminal_sessions, &delivery_states, "no-such-session");
+
+        assert_eq!(resolved, Some(InboundDeliveryMode::AutoInject));
+    }
 }
 
 #[cfg(test)]
@@ -970,6 +1053,7 @@ impl BrokerRuntime {
                                     message:
                                         "terminal input returned an unexpected worker response"
                                             .into(),
+                                    request_id: None,
                                 }
                             } else if let Some(error) = payload.get("error") {
                                 TerminalToCloud::Error {
@@ -984,6 +1068,7 @@ impl BrokerRuntime {
                                         .and_then(Value::as_str)
                                         .unwrap_or("terminal input failed")
                                         .to_string(),
+                                    request_id: None,
                                 }
                             } else if let Some(bytes_written) =
                                 payload.get("bytes_written").and_then(Value::as_u64)
@@ -998,6 +1083,7 @@ impl BrokerRuntime {
                                     session_id: session_id.clone(),
                                     code: "input_failed".into(),
                                     message: "terminal input response was malformed".into(),
+                                    request_id: None,
                                 }
                             };
                             if !try_send_terminal(terminal_control_tx, message) {
@@ -1017,6 +1103,15 @@ impl BrokerRuntime {
                                 return;
                             }
                             let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            // Look up the session's agent so we can include its
+                            // current delivery mode in the Ready frame, giving
+                            // the client an authoritative initial mode rather
+                            // than an inferred guess.
+                            let session_delivery_mode = resolve_ready_delivery_mode(
+                                terminal_sessions,
+                                delivery_states,
+                                &session_id,
+                            );
                             let message = if msg_type != "snapshot_response" {
                                 TerminalToCloud::Error {
                                     session_id: session_id.clone(),
@@ -1024,6 +1119,7 @@ impl BrokerRuntime {
                                     message:
                                         "terminal snapshot returned an unexpected worker response"
                                             .into(),
+                                    request_id: None,
                                 }
                             } else if let Some(error) = payload.get("error") {
                                 TerminalToCloud::Error {
@@ -1038,6 +1134,7 @@ impl BrokerRuntime {
                                         .and_then(Value::as_str)
                                         .unwrap_or("terminal snapshot failed")
                                         .to_string(),
+                                    request_id: None,
                                 }
                             } else if let (Some(screen), Some(rows), Some(cols)) = (
                                 payload.get("screen").and_then(Value::as_str),
@@ -1059,12 +1156,14 @@ impl BrokerRuntime {
                                         .get("offset")
                                         .and_then(Value::as_u64)
                                         .unwrap_or(0),
+                                    delivery_mode: session_delivery_mode,
                                 }
                             } else {
                                 TerminalToCloud::Error {
                                     session_id: session_id.clone(),
                                     code: "snapshot_failed".into(),
                                     message: "terminal snapshot response was malformed".into(),
+                                    request_id: None,
                                 }
                             };
                             let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
