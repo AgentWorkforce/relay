@@ -133,10 +133,7 @@ async function getInvocationBeforeDeadline(
 
 function isInvocationAuthorizationError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return (
-    isInvalidAgentTokenError(error) ||
-    /invalid.?agent.?token|unauthori[sz]ed|forbidden/i.test(message)
-  );
+  return isInvalidAgentTokenError(error) || /invalid.?agent.?token|unauthori[sz]ed|forbidden/i.test(message);
 }
 
 async function pollInvocation(
