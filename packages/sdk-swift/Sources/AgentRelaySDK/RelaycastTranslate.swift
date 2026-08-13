@@ -246,6 +246,23 @@ extension RelayNode {
     }
 }
 
+extension RelayNodeAgentBinding {
+    init(_ binding: Relaycast.NodeAgentBinding) {
+        self.init(
+            id: binding.id,
+            agentId: binding.agentId,
+            agentName: binding.agentName,
+            nodeId: binding.nodeId,
+            nodeName: binding.nodeName,
+            nodeKind: binding.nodeKind,
+            nodeRole: binding.nodeRole,
+            status: binding.status,
+            sessionRef: binding.sessionRef,
+            priority: binding.priority
+        )
+    }
+}
+
 extension RelayTrigger {
     init(_ trigger: Relaycast.Trigger) {
         self.init(

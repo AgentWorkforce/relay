@@ -293,6 +293,8 @@ pub(super) struct TerminalSession {
 
 pub(super) struct TerminalSnapshotRequest {
     pub(super) session_id: String,
+    /// Present for an explicit refresh; `None` means initial session readiness.
+    pub(super) client_request_id: Option<String>,
     pub(super) deadline: Instant,
 }
 

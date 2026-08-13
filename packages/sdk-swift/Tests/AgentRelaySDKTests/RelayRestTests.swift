@@ -84,6 +84,33 @@ final class RelayRestTests: XCTestCase {
         }
     }
 
+    func testTerminalTicketUsesScopedParticipantCredentialAndTypedBody() async throws {
+        StubURLProtocol.store.enqueue(StubResponse(statusCode: 201, json: """
+        {"ok":true,"data":{
+          "session_id":"term_1",
+          "terminal_url":"https://stub.test/v1/nodes/sf-mini/terminal/connect?ticket=tt_live_redacted",
+          "resume_token":"tr_live_redacted",
+          "expires_at":"2026-08-13T14:00:00Z"
+        }}
+        """))
+
+        let ticket = try await client.createTerminalSession(
+            node: "sf mini/primary",
+            agent: "chief",
+            mode: .drive
+        )
+
+        XCTAssertEqual(ticket.sessionId, "term_1")
+        XCTAssertEqual(ticket.resumeToken, "tr_live_redacted")
+        let request = try XCTUnwrap(StubURLProtocol.store.recordedRequests().first)
+        XCTAssertEqual(request.url?.path, "/v1/nodes/sf mini/primary/terminal/sessions")
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.headers["Authorization"], "Bearer at_test_token")
+        let body = try XCTUnwrap(request.body)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+        XCTAssertEqual(object, ["agent": "chief", "mode": "drive"])
+    }
+
     func testRetries429ThenSucceedsWithSecondRequest() async throws {
         // First attempt is rate limited (Retry-After: 0 keeps the test fast);
         // the retry succeeds and the caller only observes the success.

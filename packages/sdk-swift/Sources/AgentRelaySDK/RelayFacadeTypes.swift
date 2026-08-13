@@ -263,6 +263,19 @@ public struct RelayNode: Sendable, Equatable {
     public let lastHeartbeatAt: String?
 }
 
+public struct RelayNodeAgentBinding: Sendable, Equatable {
+    public let id: String
+    public let agentId: String
+    public let agentName: String
+    public let nodeId: String
+    public let nodeName: String
+    public let nodeKind: String
+    public let nodeRole: String
+    public let status: String
+    public let sessionRef: String?
+    public let priority: Int
+}
+
 public struct RelayListNodesOptions: Sendable, Equatable {
     public let capability: String?
     public let name: String?

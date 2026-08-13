@@ -351,6 +351,10 @@ public final class AgentClient: @unchecked Sendable {
     /// Fleet nodes: list/get/bind/unbind.
     public var nodes: RelayNodes { RelayNodes(core: core) }
 
+    /// Broker-backed fleet terminal sessions over the authenticated hosted
+    /// transport. No workspace key or broker credential is exposed.
+    public var terminals: RelayTerminals { RelayTerminals(core: core, rest: rest) }
+
     /// Message triggers: list/create/update/delete.
     public var triggers: RelayTriggers { RelayTriggers(core: core) }
 

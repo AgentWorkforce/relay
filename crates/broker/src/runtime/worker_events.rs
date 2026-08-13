@@ -14,16 +14,24 @@ const TERMINAL_PENDING_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 /// keep its own inferred default, which can be wrong, e.g. `manual_flush` for
 /// `--node drive`). The broker's logical default for a worker with no state
 /// entry is [`InboundDeliveryMode::AutoInject`], so fall back to it explicitly.
-fn resolve_ready_delivery_mode(
+fn resolve_ready_delivery_state(
     terminal_sessions: &HashMap<String, TerminalSession>,
     delivery_states: &HashMap<WorkerName, InboundDeliveryState>,
     session_id: &str,
-) -> Option<InboundDeliveryMode> {
-    terminal_sessions
-        .get(session_id)
-        .and_then(|session| delivery_states.get(&session.agent))
-        .map(|state| state.mode)
-        .or(Some(InboundDeliveryMode::AutoInject))
+) -> (Option<InboundDeliveryMode>, Option<String>) {
+    let Some(session) = terminal_sessions.get(session_id) else {
+        return (None, None);
+    };
+    let state = delivery_states.get(&session.agent);
+    (
+        Some(state.map(|value| value.mode).unwrap_or_default()),
+        Some(
+            state
+                .map(|value| value.revision)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+    )
 }
 
 fn publish_terminal_output(
@@ -201,11 +209,11 @@ mod terminal_ready_delivery_mode_tests {
         let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
 
         let resolved =
-            resolve_ready_delivery_mode(&terminal_sessions, &delivery_states, "session-a");
+            resolve_ready_delivery_state(&terminal_sessions, &delivery_states, "session-a");
 
         assert_eq!(
             resolved,
-            Some(InboundDeliveryMode::AutoInject),
+            (Some(InboundDeliveryMode::AutoInject), Some("0".into())),
             "a fresh PTY with no delivery_states entry must still advertise the broker's \
              logical default instead of omitting the mode"
         );
@@ -227,20 +235,23 @@ mod terminal_ready_delivery_mode_tests {
         );
 
         let resolved =
-            resolve_ready_delivery_mode(&terminal_sessions, &delivery_states, "session-b");
+            resolve_ready_delivery_state(&terminal_sessions, &delivery_states, "session-b");
 
-        assert_eq!(resolved, Some(InboundDeliveryMode::ManualFlush));
+        assert_eq!(
+            resolved,
+            (Some(InboundDeliveryMode::ManualFlush), Some("3".into()))
+        );
     }
 
     #[test]
-    fn returns_auto_inject_for_an_unknown_session_id() {
+    fn returns_no_delivery_state_for_an_unknown_session_id() {
         let terminal_sessions: HashMap<String, TerminalSession> = HashMap::new();
         let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
 
         let resolved =
-            resolve_ready_delivery_mode(&terminal_sessions, &delivery_states, "no-such-session");
+            resolve_ready_delivery_state(&terminal_sessions, &delivery_states, "no-such-session");
 
-        assert_eq!(resolved, Some(InboundDeliveryMode::AutoInject));
+        assert_eq!(resolved, (None, None));
     }
 }
 
@@ -1036,11 +1047,11 @@ impl BrokerRuntime {
                             .and_then(Value::as_str)
                             .and_then(|request_id| terminal_input_requests.remove(request_id))
                             .map(|request| request.session_id);
-                        let terminal_session_id = value
+                        let terminal_snapshot_request = value
                             .get("request_id")
                             .and_then(Value::as_str)
                             .and_then(|request_id| terminal_snapshot_requests.remove(request_id))
-                            .map(|request| request.session_id);
+                            .map(|request| (request.session_id, request.client_request_id));
                         if let Some(session_id) = terminal_input_session_id {
                             if !terminal_sessions.contains_key(&session_id) {
                                 return;
@@ -1098,7 +1109,9 @@ impl BrokerRuntime {
                                     "terminal output queue is full",
                                 );
                             }
-                        } else if let Some(session_id) = terminal_session_id {
+                        } else if let Some((session_id, client_request_id)) =
+                            terminal_snapshot_request
+                        {
                             if !terminal_sessions.contains_key(&session_id) {
                                 return;
                             }
@@ -1107,11 +1120,12 @@ impl BrokerRuntime {
                             // current delivery mode in the Ready frame, giving
                             // the client an authoritative initial mode rather
                             // than an inferred guess.
-                            let session_delivery_mode = resolve_ready_delivery_mode(
-                                terminal_sessions,
-                                delivery_states,
-                                &session_id,
-                            );
+                            let (session_delivery_mode, session_delivery_revision) =
+                                resolve_ready_delivery_state(
+                                    terminal_sessions,
+                                    delivery_states,
+                                    &session_id,
+                                );
                             let message = if msg_type != "snapshot_response" {
                                 TerminalToCloud::Error {
                                     session_id: session_id.clone(),
@@ -1119,7 +1133,7 @@ impl BrokerRuntime {
                                     message:
                                         "terminal snapshot returned an unexpected worker response"
                                             .into(),
-                                    request_id: None,
+                                    request_id: client_request_id.clone(),
                                 }
                             } else if let Some(error) = payload.get("error") {
                                 TerminalToCloud::Error {
@@ -1134,7 +1148,7 @@ impl BrokerRuntime {
                                         .and_then(Value::as_str)
                                         .unwrap_or("terminal snapshot failed")
                                         .to_string(),
-                                    request_id: None,
+                                    request_id: client_request_id.clone(),
                                 }
                             } else if let (Some(screen), Some(rows), Some(cols)) = (
                                 payload.get("screen").and_then(Value::as_str),
@@ -1147,23 +1161,38 @@ impl BrokerRuntime {
                                     .and_then(Value::as_u64)
                                     .and_then(|value| u16::try_from(value).ok()),
                             ) {
-                                TerminalToCloud::Ready {
-                                    session_id: session_id.clone(),
-                                    screen: screen.to_string(),
-                                    rows,
-                                    cols,
-                                    offset: payload
-                                        .get("offset")
-                                        .and_then(Value::as_u64)
-                                        .unwrap_or(0),
-                                    delivery_mode: session_delivery_mode,
+                                if let Some(request_id) = client_request_id.clone() {
+                                    TerminalToCloud::Snapshot {
+                                        session_id: session_id.clone(),
+                                        request_id,
+                                        screen: screen.to_string(),
+                                        rows,
+                                        cols,
+                                        offset: payload
+                                            .get("offset")
+                                            .and_then(Value::as_u64)
+                                            .unwrap_or(0),
+                                    }
+                                } else {
+                                    TerminalToCloud::Ready {
+                                        session_id: session_id.clone(),
+                                        screen: screen.to_string(),
+                                        rows,
+                                        cols,
+                                        offset: payload
+                                            .get("offset")
+                                            .and_then(Value::as_u64)
+                                            .unwrap_or(0),
+                                        delivery_mode: session_delivery_mode,
+                                        delivery_revision: session_delivery_revision,
+                                    }
                                 }
                             } else {
                                 TerminalToCloud::Error {
                                     session_id: session_id.clone(),
                                     code: "snapshot_failed".into(),
                                     message: "terminal snapshot response was malformed".into(),
-                                    request_id: None,
+                                    request_id: client_request_id.clone(),
                                 }
                             };
                             let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
