@@ -1009,11 +1009,38 @@ async fn admit_agent_registration(
                 .rotate_agent_token(&existing.name)
                 .await
                 .map_err(relay_error_to_anyhow)?;
+            let token = token_response.token;
+            // Older/live-compatible GET /agents/:name payloads may omit
+            // workspace_id. Resolve the freshly rotated token in that case so
+            // restart-reclaim cannot silently degrade the broker session to
+            // ws_unknown. The token lookup is authoritative for both the
+            // identity and workspace that the rotated credential belongs to.
+            let workspace_id = match existing.workspace_id.clone() {
+                Some(workspace_id) => Some(workspace_id),
+                None => {
+                    let resolved = relay
+                        .get_current_agent(token.clone())
+                        .await
+                        .map_err(relay_error_to_anyhow)?;
+                    if resolved.id != existing.id || resolved.name != existing.name {
+                        anyhow::bail!(
+                            "rotated agent token resolved to a different identity: expected '{}' ({}) but got '{}' ({})",
+                            existing.name,
+                            existing.id,
+                            resolved.name,
+                            resolved.id
+                        );
+                    }
+                    Some(resolved.workspace_id.context(
+                        "reclaimed agent token identity did not include a workspace_id",
+                    )?)
+                }
+            };
             Ok((
                 existing.id,
                 existing.name,
-                token_response.token,
-                existing.workspace_id,
+                token,
+                workspace_id,
             ))
         }
         Err(RelayError::Api {
@@ -1158,6 +1185,8 @@ mod tests {
             std::env::remove_var("RELAY_WORKSPACES_JSON");
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
             std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
+            std::env::remove_var("RELAY_NODE_ID");
+            std::env::remove_var("RELAY_NODE_TOKEN");
         }
         guard
     }
@@ -1536,6 +1565,11 @@ mod tests {
         let server = MockServer::start();
         unsafe {
             std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            // Fleet enrollment is orthogonal to the broker's workspace-key
+            // registration. Keep it present to mirror `agent-relay node up`
+            // and prove it cannot perturb restart workspace resolution.
+            std::env::set_var("RELAY_NODE_ID", "node_enrolled");
+            std::env::set_var("RELAY_NODE_TOKEN", "nt_live_enrolled");
         }
         let stable_identity = stable_node_identity_key(std::path::Path::new(
             "/tmp/node-a/.agentworkforce/relay/state.json",
@@ -1572,6 +1606,14 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"name":"node-a","token":"at_live_rotated"}}"#);
         });
+        let resolve_rotated_identity = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/me")
+                .header("authorization", "Bearer at_live_rotated");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_existing","workspace_id":"ws_shared","name":"node-a","type":"agent","status":"online","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
 
         let client = AuthClient::new(Some(server.base_url()));
         let session = client
@@ -1584,12 +1626,16 @@ mod tests {
 
         assert_eq!(session.token, "at_live_rotated");
         assert_eq!(session.credentials.agent_id, "a_existing");
+        assert_eq!(session.credentials.workspace_id, "ws_shared");
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
         rotate.assert_hits(1);
+        resolve_rotated_identity.assert_hits(1);
 
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
+            std::env::remove_var("RELAY_NODE_ID");
+            std::env::remove_var("RELAY_NODE_TOKEN");
         }
     }
 
