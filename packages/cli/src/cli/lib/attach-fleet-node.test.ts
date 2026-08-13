@@ -262,3 +262,74 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     expect(elapsedMs).toBeLessThan(5_000);
   }, 10_000);
 });
+
+describe('startFleetNodeAttachProxy workspace-key precedence', () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      const fn = cleanup.pop()!;
+      await fn().catch(() => undefined);
+    }
+  });
+
+  /** Ticket fetch that records the Authorization header it was called with. */
+  function capturingTicketFetch(remoteUrl: string): {
+    fetch: typeof globalThis.fetch;
+    authorization: () => string | undefined;
+  } {
+    let seen: string | undefined;
+    const fetchFn = (async (_url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      seen = headers.Authorization;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            session_id: SESSION_ID,
+            terminal_url: `${remoteUrl}?ticket=abc`,
+            resume_token: RESUME_TOKEN,
+          },
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof globalThis.fetch;
+    return { fetch: fetchFn, authorization: () => seen };
+  }
+
+  it('presents an explicit workspace key ahead of the ambient environment', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-e',
+      node: 'node-e',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'rk_live_explicit',
+      env: { RELAY_WORKSPACE_KEY: 'rk_live_ambient' },
+      fetch: ticket.fetch,
+    });
+    cleanup.push(proxy.close);
+
+    expect(ticket.authorization()).toBe('Bearer rk_live_explicit');
+  });
+
+  it('falls back to the environment when no explicit key is supplied', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-f',
+      node: 'node-f',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      env: { RELAY_WORKSPACE_KEY: 'rk_live_ambient' },
+      fetch: ticket.fetch,
+    });
+    cleanup.push(proxy.close);
+
+    expect(ticket.authorization()).toBe('Bearer rk_live_ambient');
+  });
+});

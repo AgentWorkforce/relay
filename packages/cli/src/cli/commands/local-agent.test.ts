@@ -137,6 +137,56 @@ describe('local agent subtree', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
+  it('attach --node forwards --workspace-key so a copy-pasted command is cwd-independent', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'sf-mini', '--workspace-key', 'rk_live_explicit'],
+      { from: 'user' }
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'sf-mini',
+      expect.objectContaining({ workspaceKey: 'rk_live_explicit' })
+    );
+  });
+
+  it('attach --node without --workspace-key leaves the precedence ladder to resolve it', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'sf-mini'], { from: 'user' });
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'sf-mini',
+      expect.objectContaining({ workspaceKey: undefined })
+    );
+  });
+
+  it('attach --node treats a blank --workspace-key as unset rather than a literal credential', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'sf-mini', '--workspace-key', '   '],
+      { from: 'user' }
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'sf-mini',
+      expect.objectContaining({ workspaceKey: undefined })
+    );
+  });
+
+  it('attach rejects --workspace-key without --node instead of silently ignoring it', async () => {
+    const { program, attach, attachNode, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--workspace-key', 'rk_live_explicit'], {
+      from: 'user',
+    });
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--workspace-key requires --node'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('attach --node prefixes a terminal setup error once', async () => {
     const attachNode = vi.fn(async () => {
       throw new Error('terminal unavailable');
