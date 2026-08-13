@@ -844,6 +844,17 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
 const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+async fn relay_request_with_timeout<T>(
+    timeout_window: std::time::Duration,
+    operation: &str,
+    request: impl std::future::Future<Output = std::result::Result<T, RelayError>>,
+) -> Result<T> {
+    tokio::time::timeout(timeout_window, request)
+        .await
+        .with_context(|| format!("{operation} timed out after {timeout_window:?}"))?
+        .map_err(relay_error_to_anyhow)
+}
+
 fn resolve_relaycast_base_url(base_url: Option<&str>) -> &str {
     base_url.unwrap_or(DEFAULT_RELAYCAST_BASE_URL)
 }
@@ -1121,7 +1132,12 @@ pub(crate) async fn reclaim_legacy_identity(
 ) -> Result<LegacyIdentityClaim> {
     let relaycast_base_url = resolve_relaycast_base_url(base_url);
     let relay = build_relay_client(workspace_key, Some(relaycast_base_url))?;
-    let existing = relay.get_agent(name).await.map_err(relay_error_to_anyhow)?;
+    let existing = relay_request_with_timeout(
+        RELAYCAST_HTTP_TIMEOUT,
+        &format!("fetching legacy agent '{name}' before identity recovery"),
+        relay.get_agent(name),
+    )
+    .await?;
 
     if existing.metadata.contains_key(IDENTITY_METADATA_KEY) {
         anyhow::bail!(
@@ -1240,8 +1256,8 @@ mod tests {
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
         is_agent_token_invalid_code, reclaim_legacy_identity, relay_error_to_anyhow,
-        resolve_relaycast_base_url, stable_node_identity_key, AuthClient, CredentialCache,
-        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        relay_request_with_timeout, resolve_relaycast_base_url, stable_node_identity_key,
+        AuthClient, CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
@@ -1253,6 +1269,23 @@ mod tests {
         assert_eq!(
             resolve_relaycast_base_url(Some("http://127.0.0.1:8787")),
             "http://127.0.0.1:8787"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_request_timeout_bounds_stalled_sdk_calls() {
+        let error = relay_request_with_timeout(
+            std::time::Duration::from_millis(1),
+            "fetching a test agent",
+            std::future::pending::<std::result::Result<(), RelayError>>(),
+        )
+        .await
+        .expect_err("a request that never completes must time out");
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("fetching a test agent timed out"),
+            "{message}"
         );
     }
 
