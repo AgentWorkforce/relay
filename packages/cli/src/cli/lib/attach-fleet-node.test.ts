@@ -238,6 +238,11 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
         workspaceKey: 'wk',
         fetch: fakeTicketFetch(remote.url),
       });
+      // close() is idempotent (guarded by the `stopped` flag), so register it
+      // as a safety net like every sibling test — if an assertion above this
+      // point ever threw before the explicit close() call below, this still
+      // tears the loopback server down instead of leaking it into later tests.
+      cleanup.push(proxy.close);
 
       const socket = await remote.nextConnection();
       sendReady(socket, 'auto_inject');
