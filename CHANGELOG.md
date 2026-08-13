@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet brokers now periodically renew live worker inventory so quiet agents remain active in Relaycast instead of aging offline while their node is healthy.
+- Fleet brokers now periodically renew authoritative worker inventory, including empty snapshots that clear stale server entries, so quiet agents remain active in Relaycast instead of aging offline while their node is healthy.
 
 ## [11.6.0] - 2026-08-13
 

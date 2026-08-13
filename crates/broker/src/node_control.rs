@@ -1598,18 +1598,7 @@ async fn run_connected_once(
     {
         return ControlRunResult::Disconnected;
     }
-    if !inventory.is_empty()
-        && send_wire(
-            &mut sink,
-            &BrokerToRelaycast::InventorySync(InventorySync {
-                v: FLEET_WIRE_VERSION,
-                id: None,
-                agents: inventory.clone(),
-            }),
-        )
-        .await
-        .is_err()
-    {
+    if !send_inventory_sync(&mut sink, inventory, &mut pending_agent_registrations).await {
         return ControlRunResult::Disconnected;
     }
     if send_wire(
@@ -1648,21 +1637,13 @@ async fn run_connected_once(
                     }
                     Some(FleetControlCommand::UpdateInventory(next)) => {
                         *inventory = next;
-                        if send_wire(
+                        if !send_inventory_sync(
                             &mut sink,
-                            &BrokerToRelaycast::InventorySync(InventorySync {
-                                v: FLEET_WIRE_VERSION,
-                                id: None,
-                                agents: inventory.clone(),
-                            }),
+                            inventory,
+                            &mut pending_agent_registrations,
                         )
                         .await
-                        .is_err()
                         {
-                            drain_agent_registrations(
-                                &mut pending_agent_registrations,
-                                "node_control_disconnected",
-                            );
                             return ControlRunResult::Disconnected;
                         }
                     }
@@ -1711,22 +1692,13 @@ async fn run_connected_once(
                 }
             }
             _ = inventory_refresh.tick() => {
-                if !inventory.is_empty()
-                    && send_wire(
-                        &mut sink,
-                        &BrokerToRelaycast::InventorySync(InventorySync {
-                            v: FLEET_WIRE_VERSION,
-                            id: None,
-                            agents: inventory.clone(),
-                        }),
-                    )
-                    .await
-                    .is_err()
+                if !send_inventory_sync(
+                    &mut sink,
+                    inventory,
+                    &mut pending_agent_registrations,
+                )
+                .await
                 {
-                    drain_agent_registrations(
-                        &mut pending_agent_registrations,
-                        "node_control_disconnected",
-                    );
                     return ControlRunResult::Disconnected;
                 }
             }
@@ -1750,6 +1722,33 @@ async fn run_connected_once(
             }
         }
     }
+}
+
+async fn send_inventory_sync<S>(
+    sink: &mut S,
+    inventory: &[InventoryAgent],
+    pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+) -> bool
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    if send_wire(
+        sink,
+        &BrokerToRelaycast::InventorySync(InventorySync {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            agents: inventory.to_vec(),
+        }),
+    )
+    .await
+    .is_err()
+    {
+        drain_agent_registrations(pending_agent_registrations, "node_control_disconnected");
+        return false;
+    }
+
+    true
 }
 
 async fn handle_server_message<S>(
@@ -3042,6 +3041,10 @@ mod tests {
 
             let register = next_node_to_server(&mut ws).await;
             assert!(matches!(register, BrokerToRelaycast::NodeRegister(_)));
+            match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::InventorySync(sync) => assert!(sync.agents.is_empty()),
+                other => panic!("expected initial empty inventory.sync, got {other:?}"),
+            }
             let heartbeat = next_node_to_server(&mut ws).await;
             match heartbeat {
                 BrokerToRelaycast::NodeHeartbeat(heartbeat) => {
@@ -3164,6 +3167,10 @@ mod tests {
                 next_node_to_server(&mut ws).await,
                 BrokerToRelaycast::NodeRegister(_)
             ));
+            match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::InventorySync(sync) => assert!(sync.agents.is_empty()),
+                other => panic!("expected initial empty inventory.sync, got {other:?}"),
+            }
             assert!(matches!(
                 next_node_to_server(&mut ws).await,
                 BrokerToRelaycast::NodeHeartbeat(_)
@@ -3388,6 +3395,10 @@ mod tests {
                 next_node_to_server(&mut ws).await,
                 BrokerToRelaycast::NodeRegister(_)
             ));
+            match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::InventorySync(sync) => assert!(sync.agents.is_empty()),
+                other => panic!("expected initial empty inventory.sync, got {other:?}"),
+            }
             assert!(matches!(
                 next_node_to_server(&mut ws).await,
                 BrokerToRelaycast::NodeHeartbeat(_)
@@ -3552,6 +3563,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_node_replays_empty_inventory_to_clear_stale_presence() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (_command_tx, mut command_rx) = mpsc::channel(4);
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+        };
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::InventorySync(sync) => assert!(sync.agents.is_empty()),
+                other => panic!("expected initial empty inventory.sync, got {other:?}"),
+            }
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeHeartbeat(_)
+            ));
+
+            let refreshed = tokio::time::timeout(
+                Duration::from_millis(500),
+                next_non_heartbeat_node_to_server(&mut ws),
+            )
+            .await
+            .expect("an empty authoritative inventory must be periodically replayed");
+            match refreshed {
+                BrokerToRelaycast::InventorySync(sync) => assert!(sync.agents.is_empty()),
+                other => panic!("expected periodic empty inventory.sync, got {other:?}"),
+            }
+            ws.close(None).await.unwrap();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_connected_once(
+                &FleetControlConfig {
+                    ws_url,
+                    node_token: Some("nt_test".to_string()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_minter: None,
+                    session_token: None,
+                },
+                &mut command_rx,
+                &event_tx,
+                &mut registration,
+                &mut inventory,
+                &mut load,
+                Duration::from_millis(25),
+            ),
+        )
+        .await
+        .expect("mock node-control session should finish");
+
+        assert_eq!(result, ControlRunResult::Disconnected);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn node_control_reconnect_sends_inventory_sync() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
@@ -3579,10 +3666,21 @@ mod tests {
                 next_node_to_server(&mut ws).await,
                 BrokerToRelaycast::NodeRegister(_)
             ));
+            match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::InventorySync(sync) => assert!(sync.agents.is_empty()),
+                other => panic!("expected initial empty inventory.sync, got {other:?}"),
+            }
             assert!(matches!(
                 next_node_to_server(&mut ws).await,
                 BrokerToRelaycast::NodeHeartbeat(_)
             ));
+            match next_non_heartbeat_node_to_server(&mut ws).await {
+                BrokerToRelaycast::InventorySync(sync) => {
+                    assert_eq!(sync.agents.len(), 1);
+                    assert_eq!(sync.agents[0].name, "agent-a");
+                }
+                other => panic!("expected inventory update before reconnect, got {other:?}"),
+            }
             ws.close(None).await.unwrap();
 
             let (stream, _) = listener.accept().await.unwrap();
