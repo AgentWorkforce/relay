@@ -321,7 +321,10 @@ export async function startFleetNodeAttachProxy(
       if (result instanceof Error) {
         json(response, 503, {
           error: {
-            code: result instanceof FleetNodeAttachError ? (result.code ?? 'delivery_mode_failed') : 'delivery_mode_failed',
+            code:
+              result instanceof FleetNodeAttachError
+                ? (result.code ?? 'delivery_mode_failed')
+                : 'delivery_mode_failed',
             message: result.message,
           },
         });
