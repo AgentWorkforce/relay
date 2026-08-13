@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/utils",
-  "version": "11.5.6",
+  "version": "11.6.0",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -109,7 +109,7 @@
     "vitest": "^4.1.0"
   },
   "dependencies": {
-    "@agent-relay/config": "11.5.6",
+    "@agent-relay/config": "11.6.0",
     "compare-versions": "^6.1.1"
   },
   "publishConfig": {
