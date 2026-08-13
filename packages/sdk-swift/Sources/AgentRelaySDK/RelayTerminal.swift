@@ -362,6 +362,7 @@ private actor RelayTerminalCore {
     private var closeReported = false
     private var inputContinuation: CheckedContinuation<Void, Error>?
     private var inputTimeoutTask: Task<Void, Never>?
+    private var inputUncertainty: RelayTerminalFailure?
     private var snapshotContinuations: [String: CheckedContinuation<RelayTerminalSnapshot, Error>] = [:]
     private var snapshotTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var deliveryContinuations: [String: CheckedContinuation<RelayTerminalDeliveryModeResult, Error>] = [:]
@@ -451,6 +452,7 @@ private actor RelayTerminalCore {
 
     func sendInput(_ data: Data) async throws {
         try requireOpen()
+        if let inputUncertainty { throw inputUncertainty }
         guard inputContinuation == nil else {
             throw RelayTerminalFailure(
                 code: "input_backpressure",
@@ -464,14 +466,14 @@ private actor RelayTerminalCore {
         try await withCheckedThrowingContinuation { continuation in
             inputContinuation = continuation
             inputTimeoutTask = operationTimeoutTask { [weak self] in
-                await self?.failInput(RelayTerminalFailure(
+                await self?.markInputUncertain(RelayTerminalFailure(
                     code: "input_timeout",
                     message: "Terminal input acknowledgement timed out"
                 ))
             }
             sendRequest(frame) { [weak self] error in
                 guard let error else { return }
-                Task { await self?.failInput(error) }
+                Task { await self?.markInputUncertain(error) }
             }
         }
     }
@@ -630,6 +632,9 @@ private actor RelayTerminalCore {
                 return
             } catch {
                 guard !closed else { return }
+                if inputContinuation != nil {
+                    markInputUncertain(Self.failure(error))
+                }
                 failPending(Self.failure(error))
                 guard reconnectAttempt < 5 else {
                     finish(throwing: RelayTerminalFailure(
@@ -798,12 +803,25 @@ private actor RelayTerminalCore {
         }
     }
 
-    private func failInput(_ error: Error) {
+    private func failInput(_ error: Error) -> Bool {
         let pending = inputContinuation
         inputContinuation = nil
         inputTimeoutTask?.cancel()
         inputTimeoutTask = nil
         pending?.resume(throwing: error)
+        return pending != nil
+    }
+
+    private func markInputUncertain(_ error: Error) {
+        guard inputUncertainty == nil else { return }
+        guard failInput(error) else { return }
+        let source = Self.failure(error)
+        let failure = RelayTerminalFailure(
+            code: "input_result_uncertain",
+            message: "Terminal input result became uncertain (\(source.message)). Close this session before sending more input."
+        )
+        inputUncertainty = failure
+        yield(.failure(failure))
     }
 
     private func failSnapshot(requestID: String, error: Error) {
@@ -817,7 +835,7 @@ private actor RelayTerminalCore {
     }
 
     private func failPending(_ error: Error) {
-        failInput(error)
+        _ = failInput(error)
         let snapshots = snapshotContinuations.values
         snapshotContinuations.removeAll()
         snapshotTimeoutTasks.values.forEach { $0.cancel() }

@@ -11,8 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `@agent-relay/session` provides Relayhistory-backed cross-harness session continuity with immutable ownership, steering attribution, native Claude resume, and portable journal injection for other handoffs.
 
-### Added
-
 - The Swift SDK now provides broker-backed fleet terminal sessions through `AgentClient.terminals`, including live node discovery, view/drive modes, authoritative snapshots, bounded reconnect, input acknowledgements, compare-and-set delivery-mode restoration, and structured close outcomes.
 
 ### Fixed

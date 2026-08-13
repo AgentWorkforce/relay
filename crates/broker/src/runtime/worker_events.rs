@@ -1244,16 +1244,18 @@ impl BrokerRuntime {
                                         break;
                                     }
                                 }
-                            } else if let Some((code, message)) = snapshot_failure {
-                                end_terminal_session(
-                                    terminal_control_tx,
-                                    terminal_sessions,
-                                    terminal_snapshot_requests,
-                                    terminal_input_requests,
-                                    &session_id,
-                                    &code,
-                                    &message,
-                                );
+                            } else if client_request_id.is_none() {
+                                if let Some((code, message)) = snapshot_failure {
+                                    end_terminal_session(
+                                        terminal_control_tx,
+                                        terminal_sessions,
+                                        terminal_snapshot_requests,
+                                        terminal_input_requests,
+                                        &session_id,
+                                        &code,
+                                        &message,
+                                    );
+                                }
                             }
                         } else {
                             // Generic worker request/response dispatch.

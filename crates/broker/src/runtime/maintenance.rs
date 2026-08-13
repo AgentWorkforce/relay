@@ -40,13 +40,36 @@ impl BrokerRuntime {
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
         // terminal-only RPCs so their sessions cannot remain live forever.
-        let expired_terminal_snapshots: Vec<(String, String)> = terminal_snapshot_requests
-            .iter()
-            .filter(|(_, pending)| pending.deadline <= now)
-            .map(|(request_id, pending)| (request_id.clone(), pending.session_id.clone()))
-            .collect();
-        for (request_id, session_id) in expired_terminal_snapshots {
+        let expired_terminal_snapshots: Vec<(String, String, Option<String>)> =
+            terminal_snapshot_requests
+                .iter()
+                .filter(|(_, pending)| pending.deadline <= now)
+                .map(|(request_id, pending)| {
+                    (
+                        request_id.clone(),
+                        pending.session_id.clone(),
+                        pending.client_request_id.clone(),
+                    )
+                })
+                .collect();
+        for (request_id, session_id, client_request_id) in expired_terminal_snapshots {
             terminal_snapshot_requests.remove(&request_id);
+            if let Some(client_request_id) = client_request_id {
+                if terminal_sessions.contains_key(&session_id)
+                    && !try_send_terminal(
+                        terminal_control_tx,
+                        TerminalToCloud::Error {
+                            session_id: session_id.clone(),
+                            code: "snapshot_timeout".into(),
+                            message: "terminal snapshot timed out".into(),
+                            request_id: Some(client_request_id),
+                        },
+                    )
+                {
+                    tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting refresh snapshot timeout");
+                }
+                continue;
+            }
             if let Some(session) = terminal_sessions.remove(&session_id) {
                 release_terminal_resize_ownership(resize_owners, &session.agent, &session_id);
                 terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
