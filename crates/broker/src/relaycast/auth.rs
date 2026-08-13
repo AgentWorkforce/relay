@@ -298,6 +298,98 @@ fn workspace_key_fingerprint(workspace_key: &str) -> String {
     format!("{:x}", Sha256::digest(workspace_key.as_bytes()))
 }
 
+#[cfg(not(windows))]
+fn protect_local_secret(body: Vec<u8>) -> Result<Vec<u8>> {
+    Ok(body)
+}
+
+#[cfg(not(windows))]
+fn unprotect_local_secret(body: Vec<u8>) -> Result<Vec<u8>> {
+    Ok(body)
+}
+
+/// Windows has no POSIX owner-only mode bit. Protect broker-local secrets with
+/// DPAPI's current-user scope so copying a file to another local account does
+/// not disclose an incumbent agent token or work-unit ownership key.
+#[cfg(windows)]
+fn protect_local_secret(mut body: Vec<u8>) -> Result<Vec<u8>> {
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Cryptography::{CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB},
+    };
+
+    let body_len = u32::try_from(body.len()).context("incumbent credential cache is too large")?;
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: body_len,
+        pbData: body.as_mut_ptr(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    // SAFETY: `input` borrows `body` for the duration of the call; Windows
+    // allocates `output.pbData`, which we copy before releasing via LocalFree.
+    if unsafe {
+        CryptProtectData(
+            &input,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to protect incumbent credential cache with Windows DPAPI");
+    }
+    // SAFETY: CryptProtectData returned a valid allocation of `cbData` bytes.
+    let protected =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    // SAFETY: DPAPI documents that callers release this allocation with
+    // LocalFree. The copied `protected` bytes no longer borrow it.
+    unsafe { LocalFree(output.pbData.cast()) };
+    Ok(protected)
+}
+
+#[cfg(windows)]
+fn unprotect_local_secret(mut body: Vec<u8>) -> Result<Vec<u8>> {
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Cryptography::{
+            CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        },
+    };
+
+    let body_len = u32::try_from(body.len()).context("incumbent credential cache is too large")?;
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: body_len,
+        pbData: body.as_mut_ptr(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    // SAFETY: same lifetime/allocation contract as `protect_incumbent_cache`.
+    if unsafe {
+        CryptUnprotectData(
+            &input,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to unprotect incumbent credential cache with Windows DPAPI");
+    }
+    // SAFETY: CryptUnprotectData returned a valid allocation of `cbData`
+    // bytes, copied before LocalFree.
+    let plaintext =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    // SAFETY: release the Windows-owned output after copying it.
+    unsafe { LocalFree(output.pbData.cast()) };
+    Ok(plaintext)
+}
+
 impl AuthSessionSet {
     pub fn credential_set(&self) -> CredentialSet {
         CredentialSet::from_memberships(
@@ -1530,10 +1622,12 @@ pub(crate) fn stable_node_identity_key(state_path: &std::path::Path) -> Result<S
                         );
                     }
                 }
-                let mut key = String::new();
-                file.read_to_string(&mut key).with_context(|| {
+                let mut stored = Vec::new();
+                file.read_to_end(&mut stored).with_context(|| {
                     format!("failed to read work-unit key {}", key_path.display())
                 })?;
+                let key = String::from_utf8(unprotect_local_secret(stored)?)
+                    .context("persisted work-unit key is not UTF-8")?;
                 let key = key.trim();
                 if key.len() < 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                     anyhow::bail!("invalid persisted work-unit key at {}", key_path.display());
@@ -1563,7 +1657,8 @@ pub(crate) fn stable_node_identity_key(state_path: &std::path::Path) -> Result<S
         }
         match options.open(&key_path) {
             Ok(mut file) => {
-                file.write_all(key.as_bytes()).with_context(|| {
+                let stored = protect_local_secret(key.as_bytes().to_vec())?;
+                file.write_all(&stored).with_context(|| {
                     format!("failed to persist work-unit key {}", key_path.display())
                 })?;
                 file.sync_all().with_context(|| {
@@ -1661,6 +1756,7 @@ pub(crate) fn load_incumbent_credential_cache(
             path.display()
         )
     })?;
+    let body = unprotect_local_secret(body)?;
     let cache: IncumbentCredentialCache = serde_json::from_slice(&body).with_context(|| {
         format!(
             "failed to parse incumbent credential cache {}",
@@ -1697,8 +1793,10 @@ pub(crate) fn persist_incumbent_credential_cache(
     // accidentally destroying the proof needed on its next healthy restart.
     let mut cache = load_incumbent_credential_cache(state_path)?;
     cache.merge_credential_set(credentials)?;
-    let body = serde_json::to_vec_pretty(&cache)
-        .context("failed to serialize incumbent credential cache")?;
+    let body = protect_local_secret(
+        serde_json::to_vec_pretty(&cache)
+            .context("failed to serialize incumbent credential cache")?,
+    )?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
         format!(
             "failed to create temporary incumbent credential cache in {}",

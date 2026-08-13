@@ -47,6 +47,9 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 nix = { version = "0.30", features = ["signal", "process", "term", "fs"] }
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
 [dev-dependencies]
 httpmock = "0.7"
 tempfile = "3.19"

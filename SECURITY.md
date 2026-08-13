@@ -29,10 +29,11 @@ workspace key is deliberately insufficient.
 Existing persistent brokers need a staged rollout because older versions did
 not retain their incumbent agent token. Deploy the client update first and
 restart every persistent broker while the old registration authority is still
-active. A successful startup writes an owner-only, atomically replaced
+active. A successful startup writes an atomically replaced
 `state-<broker>.json.agent-credentials.json` cache beside broker state. The file
-contains the scoped agent token and only a SHA-256 fingerprint of the workspace
-key.
+and the adjacent work-unit ownership key are owner-only on Unix and encrypted
+to the current Windows user with DPAPI. The credential cache contains the
+scoped agent token and only a SHA-256 fingerprint of the workspace key.
 
 After that pre-stage is verified across the fleet, migrate the Relaycast
 database and enable its sponsor-verification configuration. On the next broker
