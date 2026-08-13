@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay node agent attach --node` now accepts `--workspace-key`, so commands copied from the Cloud dashboard resolve the intended workspace regardless of the working directory.
 - Passing `--workspace-key` to the local or `--ssh-host` attach path is rejected because those paths authenticate with the broker instead.
 
+### Security
+
+- Workspace-key agent registration and token rotation now require Chief's SSO-authenticated RelayAuth sponsor ID and signed sponsor proof, bind the agent metadata to that human, and reject workspace-key-only identity claims.
+
 ## [11.6.1] - 2026-08-13
 
 ### Fixed

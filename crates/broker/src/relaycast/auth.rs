@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -272,11 +273,35 @@ fn deterministic_workspace_name() -> String {
 #[derive(Clone)]
 pub struct AuthClient {
     base_url: Option<String>,
+    sponsor: Option<AuthenticatedSponsor>,
 }
 
 impl AuthClient {
     pub fn new(base_url: Option<String>) -> Self {
-        Self { base_url }
+        Self {
+            base_url,
+            sponsor: AuthenticatedSponsor::from_env(),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test(base_url: Option<String>) -> Self {
+        Self {
+            base_url,
+            sponsor: Some(AuthenticatedSponsor::fixture()),
+        }
+    }
+
+    fn require_authenticated_sponsor(&self) -> Result<&AuthenticatedSponsor> {
+        let sponsor = self.sponsor.as_ref().context(
+            "agent registration requires an SSO-authenticated human sponsor; Chief must provide RELAYAUTH_SPONSOR_ID and RELAYAUTH_SPONSOR_PROOF, and a workspace key alone is insufficient",
+        )?;
+        if sponsor.expires_at <= Utc::now().timestamp() {
+            anyhow::bail!(
+                "agent registration requires a current SSO sponsor proof; Chief must refresh the expired RELAYAUTH_SPONSOR_PROOF"
+            );
+        }
+        Ok(sponsor)
     }
 
     pub async fn startup_session(&self, requested_name: Option<&str>) -> Result<AuthSession> {
@@ -457,8 +482,27 @@ impl AuthClient {
             .context("cannot rotate token without agent name")?;
         let api_key = normalize_workspace_key(&cached.api_key)
             .context("cached api_key is not a valid workspace key")?;
+        let sponsor = self.require_authenticated_sponsor()?;
 
         let relay = build_relay_client(&api_key, self.base_url.as_deref())?;
+        let existing = relay
+            .get_agent(agent_name)
+            .await
+            .map_err(relay_error_to_anyhow)?;
+        let existing_sponsor = existing
+            .metadata
+            .get(SPONSOR_ID_METADATA_KEY)
+            .and_then(Value::as_str);
+        let existing_binding = existing
+            .metadata
+            .get(SPONSOR_BINDING_METADATA_KEY)
+            .and_then(Value::as_str);
+        if existing_sponsor != Some(sponsor.sponsor_id.as_str()) || existing_binding != Some("oidc")
+        {
+            anyhow::bail!(
+                "refusing to rotate agent token because the existing identity is not bound to the authenticated SSO sponsor"
+            );
+        }
         let result = relay
             .rotate_agent_token(agent_name)
             .await
@@ -730,12 +774,13 @@ impl AuthClient {
         agent_type: Option<&str>,
         identity_key: Option<&str>,
     ) -> Result<(String, String, String, Option<String>)> {
+        let sponsor = self.require_authenticated_sponsor()?;
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
         let name = requested_name
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(&relay, &name, agent_type, identity_key).await
+        admit_agent_registration(&relay, &name, agent_type, identity_key, sponsor).await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -890,6 +935,135 @@ fn is_conflict_code(code: &str) -> bool {
 /// Metadata key an agent's identity proof is stamped under at registration,
 /// so a later collision can check it back. See `admit_agent_registration`.
 const IDENTITY_METADATA_KEY: &str = "identity_key";
+const SPONSOR_ID_METADATA_KEY: &str = "relayauth_sponsor_id";
+const SPONSOR_BINDING_METADATA_KEY: &str = "relayauth_sponsor_binding";
+const SPONSOR_PROOF_HASH_METADATA_KEY: &str = "relayauth_sponsor_proof_sha256";
+const RELAYAUTH_SPONSOR_ID_ENV: &str = "RELAYAUTH_SPONSOR_ID";
+const RELAYAUTH_SPONSOR_PROOF_ENV: &str = "RELAYAUTH_SPONSOR_PROOF";
+const RELAYAUTH_SPONSOR_ORG_ENV: &str = "RELAYAUTH_SPONSOR_ORG_ID";
+const RELAYAUTH_ISSUER_ENV: &str = "RELAYAUTH_ISSUER";
+const RELAYAUTH_PUBLIC_KEY_ENV: &str = "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC";
+const SPONSOR_GRANT_AUDIENCE: &str = "relayauth:sponsor-binding";
+const SPONSOR_GRANT_INTENT: &str = "identity.create";
+const SPONSOR_GRANT_TOKEN_TYPE: &str = "sponsor_grant";
+
+#[derive(Debug, Deserialize)]
+struct SponsorGrantClaims {
+    iss: String,
+    sub: String,
+    org: String,
+    iat: i64,
+    exp: i64,
+    intent: String,
+    token_type: String,
+    oidc: SponsorOidcClaims,
+}
+
+#[derive(Debug, Deserialize)]
+struct SponsorOidcClaims {
+    issuer: String,
+    subject: String,
+    iat: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AuthenticatedSponsor {
+    sponsor_id: String,
+    proof_hash: String,
+    expires_at: i64,
+}
+
+impl AuthenticatedSponsor {
+    fn from_env() -> Option<Self> {
+        let sponsor_id = std::env::var(RELAYAUTH_SPONSOR_ID_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| is_human_sponsor_id(value))?;
+        let sponsor_proof = std::env::var(RELAYAUTH_SPONSOR_PROOF_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| is_compact_jws(value))?;
+        let org_id = required_env(RELAYAUTH_SPONSOR_ORG_ENV)?;
+        let issuer = required_env(RELAYAUTH_ISSUER_ENV)?;
+        let public_key = required_env(RELAYAUTH_PUBLIC_KEY_ENV)?;
+        let expires_at =
+            verify_sponsor_proof(&sponsor_proof, &public_key, &issuer, &org_id, &sponsor_id)?;
+        Some(Self {
+            sponsor_id,
+            proof_hash: hash_identity_key(&sponsor_proof),
+            expires_at,
+        })
+    }
+
+    #[cfg(test)]
+    fn fixture() -> Self {
+        Self {
+            sponsor_id: "user_test_owner".to_string(),
+            proof_hash: hash_identity_key("header.payload.signature"),
+            expires_at: i64::MAX,
+        }
+    }
+}
+
+fn required_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn verify_sponsor_proof(
+    proof: &str,
+    public_key_pem: &str,
+    expected_issuer: &str,
+    expected_org: &str,
+    expected_sponsor_id: &str,
+) -> Option<i64> {
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[SPONSOR_GRANT_AUDIENCE]);
+    validation.set_issuer(&[expected_issuer]);
+    validation.set_required_spec_claims(&["exp", "iat", "iss", "aud", "sub"]);
+    validation.leeway = 60;
+    let token = decode::<SponsorGrantClaims>(
+        proof,
+        &DecodingKey::from_rsa_pem(public_key_pem.as_bytes()).ok()?,
+        &validation,
+    )
+    .ok()?;
+    let claims = token.claims;
+    let now = Utc::now().timestamp();
+    (claims.iss == expected_issuer
+        && claims.sub == expected_sponsor_id
+        && claims.org == expected_org
+        && claims.intent == SPONSOR_GRANT_INTENT
+        && claims.token_type == SPONSOR_GRANT_TOKEN_TYPE
+        && claims.iat <= now + 60
+        && !claims.oidc.issuer.trim().is_empty()
+        && !claims.oidc.subject.trim().is_empty()
+        && claims.oidc.iat > 0)
+        .then_some(claims.exp)
+}
+
+fn is_human_sponsor_id(value: &str) -> bool {
+    value.strip_prefix("user_").is_some_and(|suffix| {
+        !suffix.is_empty()
+            && value.len() <= 256
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    })
+}
+
+fn is_compact_jws(value: &str) -> bool {
+    value.len() <= 16 * 1024
+        && value.split('.').count() == 3
+        && value.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
+}
 
 /// Caller-supplied proof of work-unit identity for spawn-admission reclaim.
 ///
@@ -961,15 +1135,30 @@ async fn admit_agent_registration(
     name: &str,
     agent_type: Option<&str>,
     identity_key: Option<&str>,
+    sponsor: &AuthenticatedSponsor,
 ) -> Result<(String, String, String, Option<String>)> {
-    let metadata = identity_key.map(|key| {
+    let metadata = {
         let mut map = serde_json::Map::new();
+        if let Some(key) = identity_key {
+            map.insert(
+                IDENTITY_METADATA_KEY.to_string(),
+                Value::String(hash_identity_key(key)),
+            );
+        }
         map.insert(
-            IDENTITY_METADATA_KEY.to_string(),
-            Value::String(hash_identity_key(key)),
+            SPONSOR_ID_METADATA_KEY.to_string(),
+            Value::String(sponsor.sponsor_id.clone()),
         );
-        map
-    });
+        map.insert(
+            SPONSOR_BINDING_METADATA_KEY.to_string(),
+            Value::String("oidc".to_string()),
+        );
+        map.insert(
+            SPONSOR_PROOF_HASH_METADATA_KEY.to_string(),
+            Value::String(sponsor.proof_hash.clone()),
+        );
+        Some(map)
+    };
 
     let request = CreateAgentRequest {
         name: name.to_string(),
@@ -991,14 +1180,25 @@ async fn admit_agent_registration(
                 (identity_key, existing_identity),
                 (Some(ours), Some(theirs)) if hash_identity_key(ours) == theirs
             );
+            let existing_sponsor = existing
+                .metadata
+                .get(SPONSOR_ID_METADATA_KEY)
+                .and_then(Value::as_str);
+            let existing_binding = existing
+                .metadata
+                .get(SPONSOR_BINDING_METADATA_KEY)
+                .and_then(Value::as_str);
+            let reclaims_same_sponsor = existing_sponsor == Some(sponsor.sponsor_id.as_str())
+                && existing_binding == Some("oidc");
 
-            if !reclaims_same_work_unit {
+            if !reclaims_same_work_unit || !reclaims_same_sponsor {
                 return Err(relay_error_to_anyhow(RelayError::Api {
                     code: "agent_identity_mismatch".to_string(),
                     status: 409,
                     message: format!(
                         "agent name '{name}' is already registered and this registration did \
-                         not prove ownership of that identity; refusing to hand over its \
+                         not prove ownership of that identity and its SSO-bound human sponsor; \
+                         refusing to hand over its \
                          credentials (set RELAY_AGENT_IDENTITY_KEY to the original work unit's \
                          identity to reclaim it after a crash)"
                     ),
@@ -1073,6 +1273,24 @@ mod tests {
 
     static RELAY_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    fn test_sponsor_metadata(identity_hash: Option<&str>) -> serde_json::Value {
+        let sponsor = super::AuthenticatedSponsor::fixture();
+        let mut metadata = serde_json::Map::new();
+        if let Some(identity_hash) = identity_hash {
+            metadata.insert("identity_key".to_string(), json!(identity_hash));
+        }
+        metadata.insert(
+            "relayauth_sponsor_id".to_string(),
+            json!(sponsor.sponsor_id),
+        );
+        metadata.insert("relayauth_sponsor_binding".to_string(), json!("oidc"));
+        metadata.insert(
+            "relayauth_sponsor_proof_sha256".to_string(),
+            json!(sponsor.proof_hash),
+        );
+        serde_json::Value::Object(metadata)
+    }
+
     #[test]
     fn agent_token_invalid_code_matches_canonical_string_case_insensitively() {
         assert!(is_agent_token_invalid_code(AGENT_TOKEN_INVALID_CODE));
@@ -1144,6 +1362,51 @@ mod tests {
         assert!(!is_agent_token_invalid_anyhow(&unrelated));
     }
 
+    #[tokio::test]
+    async fn workspace_key_alone_cannot_register_an_agent() {
+        let client = AuthClient {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            sponsor: None,
+        };
+        let error = client
+            .register_agent_with_workspace_key(
+                "rk_live_shared",
+                Some("forged-agent"),
+                true,
+                Some("agent"),
+                Some("forged-work-unit"),
+            )
+            .await
+            .expect_err("a workspace key without Chief's SSO sponsor proof must fail closed");
+        assert!(error
+            .to_string()
+            .contains("SSO-authenticated human sponsor"));
+    }
+
+    #[tokio::test]
+    async fn expired_sponsor_proof_cannot_register_an_agent() {
+        let client = AuthClient {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            sponsor: Some(super::AuthenticatedSponsor {
+                expires_at: chrono::Utc::now().timestamp() - 1,
+                ..super::AuthenticatedSponsor::fixture()
+            }),
+        };
+        let error = client
+            .register_agent_with_workspace_key(
+                "rk_live_shared",
+                Some("expired-sponsor-agent"),
+                true,
+                Some("agent"),
+                Some("expired-sponsor-work-unit"),
+            )
+            .await
+            .expect_err("an expired SSO sponsor proof must fail before registration");
+        assert!(error
+            .to_string()
+            .contains("expired RELAYAUTH_SPONSOR_PROOF"));
+    }
+
     /// Remove RELAY_API_KEY from the environment so it doesn't interfere with
     /// mock-server tests. Tests use httpmock and only set up specific auth
     /// headers — the real env key causes 404s against the mock.
@@ -1181,7 +1444,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a1","name":"lead","token":"at_live_1","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
 
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.token, "at_live_1");
@@ -1213,7 +1476,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a2","workspace_id":"ws_env","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
 
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.token, "at_live_2");
@@ -1248,7 +1511,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_new","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let error = client.startup_session(Some("lead")).await.unwrap_err();
         assert!(
             error
@@ -1289,7 +1552,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a3","name":"lead","token":"at_live_3","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.credentials.api_key, "rk_live_canonical");
         canonical_register.assert_hits(1);
@@ -1317,7 +1580,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a2","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
 
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.credentials.api_key, "rk_live_legacy");
@@ -1359,7 +1622,7 @@ mod tests {
             std::env::set_var("RELAY_API_KEY", "rk_live_stale");
         }
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let session = client.startup_session(Some("lead")).await.unwrap();
         assert_eq!(session.token, "at_live_9");
         assert_eq!(session.credentials.api_key, "rk_live_new");
@@ -1390,7 +1653,8 @@ mod tests {
                 .header("authorization", "Bearer rk_live_shared")
                 .json_body(json!({
                     "name": "lead",
-                    "type": "agent"
+                    "type": "agent",
+                    "metadata": test_sponsor_metadata(None)
                 }));
             then.status(409)
                 .header("content-type", "application/json")
@@ -1413,7 +1677,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let result = client
             .startup_session_with_options(Some("lead"), true, None)
             .await;
@@ -1459,7 +1723,7 @@ mod tests {
                 .json_body(json!({
                     "name": "lead",
                     "type": "agent",
-                    "metadata": { "identity_key": identity_hash }
+                    "metadata": test_sponsor_metadata(Some(&identity_hash))
                 }));
             then.status(409)
                 .header("content-type", "application/json")
@@ -1472,7 +1736,7 @@ mod tests {
             then.status(200)
                 .header("content-type", "application/json")
                 .body(format!(
-                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}","relayauth_sponsor_id":"user_test_owner","relayauth_sponsor_binding":"oidc"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
                 ));
         });
         let rotate = server.mock(|when, then| {
@@ -1484,7 +1748,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let session = client
             .startup_session_with_options(Some("lead"), true, None)
             .await
@@ -1548,7 +1812,7 @@ mod tests {
                 .json_body(json!({
                     "name": "node-a",
                     "type": "agent",
-                    "metadata": { "identity_key": identity_hash }
+                    "metadata": test_sponsor_metadata(Some(&identity_hash))
                 }));
             then.status(409)
                 .header("content-type", "application/json")
@@ -1561,7 +1825,7 @@ mod tests {
             then.status(200)
                 .header("content-type", "application/json")
                 .body(format!(
-                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}","relayauth_sponsor_id":"user_test_owner","relayauth_sponsor_binding":"oidc"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
                 ));
         });
         let rotate = server.mock(|when, then| {
@@ -1573,7 +1837,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"name":"node-a","token":"at_live_rotated"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let session = client
             .startup_session_set_with_identity(Some("node-a"), true, None, Some(&stable_identity))
             .await
@@ -1630,7 +1894,7 @@ mod tests {
                 ));
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let error = client
             .startup_session_set_with_identity(Some("node-a"), true, None, Some(&our_identity))
             .await
@@ -1674,7 +1938,8 @@ mod tests {
                 .header("authorization", "Bearer rk_live_cached")
                 .json_body(json!({
                     "name": "lead",
-                    "type": "agent"
+                    "type": "agent",
+                    "metadata": test_sponsor_metadata(None)
                 }));
             then.status(409)
                 .header("content-type", "application/json")
@@ -1689,7 +1954,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let result = client.startup_session(Some("lead")).await;
 
         assert!(
@@ -1743,7 +2008,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a_fallback","name":"lead","token":"at_live_fallback","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let session = client.startup_session(Some("lead")).await.unwrap();
 
         assert_eq!(session.token, "at_live_fallback");
@@ -1758,6 +2023,14 @@ mod tests {
     async fn rotate_token_calls_rotate_endpoint_and_preserves_name() {
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
+        let existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_old","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{"relayauth_sponsor_id":"user_test_owner","relayauth_sponsor_binding":"oidc"},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
         let rotate = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents/lead/rotate-token")
@@ -1767,7 +2040,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"token":"at_live_rotated","name":"lead"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
 
         let cached = CredentialCache {
             workspace_id: "ws_cached".into(),
@@ -1784,6 +2057,7 @@ mod tests {
         assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         assert_eq!(session.credentials.agent_id, "a_old");
         assert_eq!(session.credentials.workspace_id, "ws_cached");
+        existing.assert_hits(1);
         rotate.assert_hits(1);
     }
 
@@ -1791,6 +2065,14 @@ mod tests {
     async fn rotate_token_falls_back_to_reregister_on_404() {
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
+        let existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_cached");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"id":"a_old","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{"relayauth_sponsor_id":"user_test_owner","relayauth_sponsor_binding":"oidc"},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
         let rotate_404 = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents/lead/rotate-token")
@@ -1808,7 +2090,7 @@ mod tests {
                 .body(r#"{"ok":true,"data":{"id":"a_new","name":"lead","token":"at_live_reregistered","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#);
         });
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
 
         let cached = CredentialCache {
             workspace_id: "ws_cached".into(),
@@ -1823,6 +2105,7 @@ mod tests {
         let session = client.rotate_token(&cached).await.unwrap();
         assert_eq!(session.token, "at_live_reregistered");
         assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        existing.assert_hits(1);
         rotate_404.assert_hits(1);
         register.assert_hits(1);
     }
@@ -1839,7 +2122,7 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":[]}"#);
         });
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
 
         let live = client
             .workspace_key_is_live("rk_live_cached")
@@ -1861,7 +2144,7 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
         });
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
 
         let live = client
             .workspace_key_is_live("rk_live_cached")
@@ -1922,7 +2205,7 @@ mod tests {
             std::env::set_var("RELAY_API_KEY", "rk_live_forbidden");
         }
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let session = client.startup_session(Some("broker")).await.unwrap();
 
         // Must return the FRESH workspace key, not the forbidden env key.
@@ -1973,7 +2256,7 @@ mod tests {
             std::env::set_var("RELAY_API_KEY", stale_key);
         }
 
-        let client = AuthClient::new(Some(server.base_url()));
+        let client = AuthClient::new_for_test(Some(server.base_url()));
         let session = client.startup_session(Some("broker")).await.unwrap();
 
         // The stale env key must NEVER appear in the returned session.

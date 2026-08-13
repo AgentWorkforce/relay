@@ -1,5 +1,24 @@
 # Security Policy
 
+## Human sponsor binding
+
+Agent registration is a delegated identity issuance action, not a capability of
+the shared workspace key by itself. Chief obtains an `identity.create` sponsor
+proof from RelayAuth for the currently SSO-authenticated human and passes the
+returned values to the broker as `RELAYAUTH_SPONSOR_ID` and
+`RELAYAUTH_SPONSOR_PROOF`, together with the pinned
+`RELAYAUTH_SIGNING_KEY_PEM_PUBLIC`, `RELAYAUTH_ISSUER`, and
+`RELAYAUTH_SPONSOR_ORG_ID`. The broker verifies the RS256 signature, issuer,
+organization, audience, expiry, `identity.create` intent, and OIDC subject. It
+refuses registration and rotation when any input is absent or invalid.
+
+Relay sends the verified `user_...` sponsor ID, `oidc` binding mode, and a
+SHA-256 digest of the proof in agent metadata. It never stores or publishes the
+replayable proof. Crash recovery additionally requires the original work-unit
+identity key, and reclaim/rotation checks that the existing agent is bound to
+the same human sponsor. RelayAuth remains the authority that verifies and binds
+the signed sponsor proof; a workspace key never establishes sponsor identity.
+
 Agent Relay moves messages, credentials, and tool invocations between
 autonomous agents. A defect here can expose a workspace to agents — or people —
 that should never have reached it, so we treat security reports as a priority
