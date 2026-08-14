@@ -3776,6 +3776,98 @@ mod tests {
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 
+    /// The must-not-fire control arm for the blackhole test above, under the
+    /// SAME clock. The negative test proves the detector CAN fire; on its own
+    /// that is also what a detector that disconnects unconditionally after
+    /// the window would do. This proves it does not fire when the peer is
+    /// merely idle at the application layer but still servicing the socket
+    /// (so pings get answered) — the actual claim this mechanism makes.
+    #[tokio::test]
+    async fn node_control_stays_connected_when_peer_is_idle_but_polling() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, _event_rx) = mpsc::channel(32);
+
+        tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_test".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: None,
+                session_token: None,
+                // Same window as the blackhole test, so this is a genuine
+                // control arm under identical time pressure rather than a
+                // separate, looser test.
+                read_idle_timeout: Some(Duration::from_millis(400)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            // Stay live: keep polling the socket so tungstenite answers every
+            // ping with a pong, the only traffic an idle-but-healthy engine
+            // is guaranteed to produce. This is the opposite of the blackhole
+            // test's `hold` task, which never polls again.
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let drain = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        msg = ws.next() => {
+                            if msg.is_none() {
+                                break;
+                            }
+                        }
+                        _ = &mut stop_rx => break,
+                    }
+                }
+            });
+
+            // Comfortably longer than the 400ms window — several heartbeat
+            // intervals' worth of silence at the application layer, serviced
+            // only by ping/pong.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            let _ = stop_tx.send(());
+            drain.abort();
+
+            // If the client had disconnected and reconnected, a second
+            // connection attempt would already be waiting here. None should
+            // exist: the accept must still be empty.
+            let second_connection = tokio::time::timeout(
+                Duration::from_millis(200),
+                listener.accept(),
+            )
+            .await;
+            assert!(
+                second_connection.is_err(),
+                "client reconnected even though the peer stayed live and kept polling"
+            );
+        });
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server task did not complete")
+            .unwrap();
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
     #[tokio::test]
     async fn node_control_reconnect_sends_inventory_sync() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
