@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use relaycast::ORIGIN_ACTOR_HEADER;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -33,6 +33,30 @@ const TOKEN_WAIT_DELAY: Duration = Duration::from_secs(1);
 // commands, neither of which a blackholed socket will ever produce.
 const PING_INTERVAL: Duration = Duration::from_secs(12);
 const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(48);
+// Floor for the derived ping-tick period (`PING_INTERVAL.min(read_idle_timeout
+// / 4)`). `read_idle_timeout` is caller-configurable (tests shrink it well
+// below production's 48s); `tokio::time::interval` panics on a zero period,
+// and integer division of a sub-4ns value would truncate to zero. No caller
+// gets remotely close to that today, but the floor makes the config robust
+// rather than relying on every future caller staying away from the edge.
+const MIN_PING_INTERVAL: Duration = Duration::from_millis(50);
+// A blackholed peer's full TCP send buffer must not be able to wedge this
+// module's read/ping watchdog: `run_terminal_writer` is a dedicated task that
+// owns the socket's write half, so a stalled `Sink::send` can only ever block
+// that task, never the `run_terminal_control_client` select loop that has to
+// keep observing `last_inbound` on schedule regardless of what the write side
+// is doing. This is deliberately well under READ_IDLE_TIMEOUT so a wedged
+// write is treated as dead before the read-idle window would have caught it
+// anyway.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+// Bounded so a stuck writer can't let this module accumulate unbounded
+// queued frames; a full or closed queue is treated the same by every
+// `try_send` call site below — both mean "the writer cannot be trusted right
+// now," which is exactly the state that should force a reconnect.
+const WRITER_QUEUE_CAPACITY: usize = 64;
+// Small: this queue only ever holds a ping or a shutdown close frame, never
+// bulk terminal output (see `run_terminal_writer`'s priority read).
+const PRIORITY_QUEUE_CAPACITY: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -265,11 +289,30 @@ pub(crate) async fn run_terminal_control_client(
         };
         reconnect_delay = INITIAL_RECONNECT_DELAY;
         let _ = event_tx.send(TerminalControlEvent::Connected).await;
-        let (mut sink, mut stream) = socket.split();
+        let (sink, mut stream) = socket.split();
+        let (writer_tx, writer_rx) = mpsc::channel::<Message>(WRITER_QUEUE_CAPACITY);
+        // Pings (and the shutdown close frame) get their own small queue,
+        // checked ahead of `writer_rx` on every write. Without this, a large
+        // legitimate output burst can bury a ping behind everything already
+        // queued in the shared channel — the liveness probe then arrives too
+        // late for `read_idle_timeout` to see it as "the peer is still
+        // there," and a peer that is genuinely draining data gets disconnected
+        // anyway. A ping is O(bytes) cheap and time-sensitive; bulk output is
+        // not, so it must never be able to make a ping wait behind it.
+        let (priority_tx, priority_rx) = mpsc::channel::<Message>(PRIORITY_QUEUE_CAPACITY);
+        // Give the writer exclusive ownership of the write half so a
+        // blackholed peer's full send buffer can only ever stall this task —
+        // never the select loop below, which must keep observing
+        // `last_inbound` on schedule regardless of what the write side is
+        // doing.
+        let writer = tokio::spawn(run_terminal_writer(sink, writer_rx, priority_rx));
         let mut connected = true;
         let mut last_inbound = Instant::now();
         let read_idle_timeout = config.read_idle_timeout.unwrap_or(READ_IDLE_TIMEOUT);
-        let mut ping_interval = tokio::time::interval(PING_INTERVAL.min(read_idle_timeout / 4));
+        let ping_period = PING_INTERVAL
+            .min(read_idle_timeout / 4)
+            .max(MIN_PING_INTERVAL);
+        let mut ping_interval = tokio::time::interval(ping_period);
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while connected {
             tokio::select! {
@@ -277,7 +320,7 @@ pub(crate) async fn run_terminal_control_client(
                     Some(TerminalControlCommand::Send(message)) => {
                         match serde_json::to_string(&message) {
                             Ok(encoded) => {
-                                if sink.send(Message::Text(encoded)).await.is_err() {
+                                if writer_tx.try_send(Message::Text(encoded)).is_err() {
                                     connected = false;
                                 }
                             }
@@ -285,15 +328,28 @@ pub(crate) async fn run_terminal_control_client(
                         }
                     }
                     Some(TerminalControlCommand::Shutdown) | None => {
-                        let _ = sink.send(Message::Close(None)).await;
+                        // Priority queue: jumps ahead of anything still
+                        // queued in `writer_tx`, so shutdown stays prompt
+                        // even mid-burst.
+                        let _ = priority_tx.try_send(Message::Close(None));
+                        drop(priority_tx);
+                        drop(writer_tx);
+                        // Bounded by WRITE_TIMEOUT inside the writer itself,
+                        // so this can't hang shutdown indefinitely even if
+                        // the peer never reads the close frame.
+                        let _ = writer.await;
                         return;
                     }
                 },
                 _ = ping_interval.tick() => {
-                    // Checked before the write, because the write is exactly
-                    // what cannot be trusted here: it keeps succeeding on a
-                    // blackholed socket. Silence past the window is the only
-                    // local evidence that the cloud side stopped hearing us.
+                    // Checked before enqueueing the ping, because a queued
+                    // send is exactly what cannot be trusted here: the
+                    // writer task keeps accepting frames into its queue on a
+                    // blackholed socket right up until its own write timeout
+                    // fires. Silence past the window is the only local
+                    // evidence that the cloud side stopped hearing us — and
+                    // this check never awaits IO, so a wedged writer can
+                    // never stop it from running on schedule.
                     let idle = last_inbound.elapsed();
                     if idle >= read_idle_timeout {
                         tracing::warn!(
@@ -302,7 +358,10 @@ pub(crate) async fn run_terminal_control_client(
                             "no inbound fleet terminal frame within the read-idle window; reconnecting"
                         );
                         connected = false;
-                    } else if sink.send(Message::Ping(Vec::new())).await.is_err() {
+                    } else if priority_tx.try_send(Message::Ping(Vec::new())).is_err() {
+                        // A full or closed priority queue means the writer is
+                        // stuck or has already given up — treat it the same
+                        // as a failed send.
                         connected = false;
                     }
                 }
@@ -326,9 +385,63 @@ pub(crate) async fn run_terminal_control_client(
                 },
             }
         }
+        // Don't await the writer here: it may be the very thing that is
+        // stuck (a wedged write mid-timeout). Aborting is instant and safe —
+        // the writer holds no state that needs a clean unwind.
+        writer.abort();
         let _ = event_tx.send(TerminalControlEvent::Disconnected).await;
         tokio::time::sleep(reconnect_delay).await;
         reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+    }
+}
+
+/// Owns a terminal websocket's write half exclusively, so a peer that stops
+/// reading can only ever stall this task — never the read/ping watchdog in
+/// [`run_terminal_control_client`]. Every write is bounded by
+/// [`WRITE_TIMEOUT`]: a wedged send (full TCP buffer because the blackholed
+/// peer never drains it) is treated as connection death rather than left to
+/// block forever, and this task simply exits, which closes both queues and
+/// makes the next `try_send` from the select loop fail immediately.
+///
+/// `priority_rx` (pings, the shutdown close frame) is always read ahead of
+/// `data_rx` (bulk terminal output): a large legitimate output burst must
+/// never be able to bury a time-sensitive liveness ping behind everything
+/// already queued for send, or a peer that is genuinely still draining data
+/// would look silent to `read_idle_timeout` and get disconnected anyway.
+async fn run_terminal_writer<S>(
+    mut sink: S,
+    mut data_rx: mpsc::Receiver<Message>,
+    mut priority_rx: mpsc::Receiver<Message>,
+) where
+    S: Sink<Message> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    loop {
+        let message = tokio::select! {
+            biased;
+            message = priority_rx.recv() => message,
+            message = data_rx.recv() => message,
+        };
+        let Some(message) = message else { return };
+        let is_close = matches!(message, Message::Close(_));
+        match tokio::time::timeout(WRITE_TIMEOUT, sink.send(message)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(target = "relay_broker::terminal", error = %error, "fleet terminal websocket write failed");
+                return;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target = "relay_broker::terminal",
+                    timeout_secs = WRITE_TIMEOUT.as_secs(),
+                    "fleet terminal websocket write timed out; treating connection as dead"
+                );
+                return;
+            }
+        }
+        if is_close {
+            return;
+        }
     }
 }
 
@@ -341,6 +454,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
     use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message;
 
     use super::{
         run_terminal_control_client, InboundDeliveryMode, TerminalControlCommand,
@@ -761,6 +875,189 @@ mod tests {
         });
 
         tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server task did not complete")
+            .unwrap();
+        let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
+    }
+
+    const WEDGE_CHUNK_BYTES: usize = 100;
+    const WEDGE_CHUNK_COUNT: usize = 128; // DEBUG TEMP small bytes, same count
+
+    /// The P1 case: a peer that accepts the connection and then stops
+    /// reading, with terminal output queued against it, must not be able to
+    /// wedge the read/ping watchdog. Before `run_terminal_writer` was split
+    /// into its own task, `TerminalControlCommand::Send`'s `sink.send(...)
+    /// .await` ran directly inside this module's `select!` — once the
+    /// client's real TCP send buffer filled (a receiver that never reads
+    /// never grows its advertised window), that await would block
+    /// indefinitely and `ping_interval.tick()` would never fire again,
+    /// so `read_idle_timeout` was never checked either. A watchdog the
+    /// thing it watches can starve is not a watchdog. This test fails
+    /// (times out) against that shape and passes once writes are moved off
+    /// the watchdog's loop.
+    #[tokio::test]
+    async fn terminal_control_watchdog_survives_a_wedged_writer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(WEDGE_CHUNK_COUNT + 16);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+
+        tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_millis(500)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = accept_async(stream).await.unwrap();
+            // Accept, then never read again — not even the handshake's
+            // follow-on frames. This is what lets the client's kernel send
+            // buffer actually fill instead of merely queuing in userspace.
+            let hold = tokio::spawn(async move {
+                let _ws = ws;
+                std::future::pending::<()>().await;
+            });
+
+            // The watchdog must still give up on this connection and dial
+            // again, despite the queued output below.
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ws2 = accept_async(stream).await.unwrap();
+            hold.abort();
+        });
+
+        let chunk = "x".repeat(WEDGE_CHUNK_BYTES);
+        for _ in 0..WEDGE_CHUNK_COUNT {
+            command_tx
+                .send(TerminalControlCommand::Send(TerminalToCloud::Output {
+                    session_id: "s".into(),
+                    chunk: chunk.clone(),
+                    offset: None,
+                }))
+                .await
+                .unwrap();
+        }
+
+        // Comfortably above the 500ms read-idle window plus reconnect
+        // backoff. Without an independent watchdog, the wedged write hangs
+        // this forever, so this bound is what turns the hang into a
+        // failure.
+        tokio::time::timeout(Duration::from_secs(20), server)
+            .await
+            .expect("watchdog never reconnected despite a wedged write")
+            .unwrap();
+
+        let mut connected_events = 0;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(50), event_rx.recv()).await
+        {
+            if matches!(event, TerminalControlEvent::Connected) {
+                connected_events += 1;
+            }
+        }
+        assert!(
+            connected_events >= 2,
+            "expected at least 2 Connected events (initial + reconnect), got {connected_events}"
+        );
+
+        let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
+    }
+
+    /// The must-not-fire control arm for the wedged-writer test above, under
+    /// the same payload and the same read-idle window. A peer that actually
+    /// drains a large but legitimate output burst must not be disconnected —
+    /// proving the watchdog reacts to a stalled write, not merely to a large
+    /// one.
+    #[tokio::test]
+    async fn terminal_control_large_output_does_not_disconnect_a_draining_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(WEDGE_CHUNK_COUNT + 16);
+        let (event_tx, _event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+
+        tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                // Same window as the wedged-writer test, so this is a
+                // genuine control arm under identical time pressure rather
+                // than a separate, looser test.
+                read_idle_timeout: Some(Duration::from_millis(500)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let expected_bytes = WEDGE_CHUNK_BYTES * WEDGE_CHUNK_COUNT;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let drain = tokio::spawn(async move {
+                let mut received = 0usize;
+                loop {
+                    match ws.next().await {
+                        Some(Ok(Message::Text(text))) => {
+                            received += text.len();
+                            if received >= expected_bytes {
+                                break;
+                            }
+                        }
+                        Some(Ok(other)) => {
+                            eprintln!("DEBUG drain non-text: {other:?}");
+                        }
+                        Some(Err(error)) => {
+                            eprintln!("DEBUG drain error: {error}");
+                            break;
+                        }
+                        None => {
+                            eprintln!("DEBUG drain: stream ended, received={received}");
+                            break;
+                        }
+                    }
+                }
+                received
+            });
+            let received = tokio::time::timeout(Duration::from_secs(15), drain)
+                .await
+                .expect("server never finished draining the client's output")
+                .unwrap();
+            assert!(
+                received >= expected_bytes,
+                "did not receive the full payload: {received} < {expected_bytes}"
+            );
+
+            // If the client had disconnected and reconnected, a second
+            // connection attempt would already be waiting here. None
+            // should exist: draining a large legitimate burst must not
+            // spuriously trip the watchdog.
+            let second_connection =
+                tokio::time::timeout(Duration::from_millis(700), listener.accept()).await;
+            assert!(
+                second_connection.is_err(),
+                "client reconnected even though the peer kept draining a large but legitimate output burst"
+            );
+        });
+
+        let chunk = "x".repeat(WEDGE_CHUNK_BYTES);
+        for _ in 0..WEDGE_CHUNK_COUNT {
+            command_tx
+                .send(TerminalControlCommand::Send(TerminalToCloud::Output {
+                    session_id: "s".into(),
+                    chunk: chunk.clone(),
+                    offset: None,
+                }))
+                .await
+                .unwrap();
+        }
+
+        tokio::time::timeout(Duration::from_secs(20), server)
             .await
             .expect("server task did not complete")
             .unwrap();
