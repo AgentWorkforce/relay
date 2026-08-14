@@ -120,7 +120,7 @@ function harness(register: (p: Command, o: Partial<SdkCommandDeps>) => void) {
   const program = new Command();
   program.exitOverride();
   register(program, deps);
-  return { program, relay, log, error };
+  return { program, relay, log, error, exit };
 }
 
 describe('SDK-backed CLI groups', () => {
@@ -160,6 +160,27 @@ describe('SDK-backed CLI groups', () => {
     await program.parseAsync(['message', 'dm', 'send', 'missing-agent', 'hi'], { from: 'user' });
 
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'missing-agent', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
+  });
+
+  // Regression for the workspace-key-required DM outage: an agent-scoped
+  // credential can send a DM (messages.direct only needs requireAgentClient)
+  // but is not authorized to read the workspace-wide roster
+  // (agents.list — see packages/sdk/src/messaging/relaycast.ts). Before the
+  // fix, that rejection propagated out of the action and aborted the send
+  // entirely instead of just degrading the receipt's recipient resolution.
+  it('message dm send still enqueues when agents.list itself is rejected (agent-scoped credential)', async () => {
+    const { program, relay, log, error, exit } = harness(registerMessageCommands);
+    relay.agents.list.mockRejectedValueOnce(
+      new Error('Workspace key required (rk_live_...) for this operation')
+    );
+
+    await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
+
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
+    expect(exit).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
   });
