@@ -626,7 +626,7 @@ export function registerLocalAgentCommands(
         deps.error(
           sshHost !== undefined
             ? 'Error: --workspace-key requires --node. The --ssh-host attach path reads the target broker connection.json — locate it with --state-dir instead.'
-            : 'Error: --workspace-key requires --node. The local attach path authenticates with --broker-url / --api-key instead.'
+            : 'Error: --workspace-key requires --node. The local attach path uses --broker-url / --api-key or reads connection.json from --state-dir instead.'
         );
         deps.exit(1);
         return;

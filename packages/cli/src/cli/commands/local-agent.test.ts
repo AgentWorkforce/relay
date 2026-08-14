@@ -216,7 +216,7 @@ describe('local agent subtree', () => {
   // The two rejected paths do not take the same credentials: --ssh-host itself
   // rejects --broker-url / --api-key, so naming them there sends the caller
   // into a second, contradictory error.
-  it('attach points a rejected local-broker caller at --broker-url / --api-key', async () => {
+  it('attach points a rejected local-broker caller at its supported connection options', async () => {
     const { program, error } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--workspace-key', 'rk_live_explicit'], {
       from: 'user',
@@ -224,7 +224,7 @@ describe('local agent subtree', () => {
     const message = error.mock.calls.at(0)?.[0] as string;
     expect(message).toContain('--broker-url');
     expect(message).toContain('--api-key');
-    expect(message).not.toContain('--state-dir');
+    expect(message).toContain('--state-dir');
     // Guidance for a path the caller is not on is guidance they cannot follow.
     expect(message).not.toContain('--ssh-host');
   });
