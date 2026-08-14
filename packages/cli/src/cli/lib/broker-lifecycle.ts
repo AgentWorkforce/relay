@@ -10,6 +10,7 @@ import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } fr
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
+import { runSignalHandler } from './exit.js';
 import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-sidecar.js';
 import {
   discoverNodeConfigPath,
@@ -332,11 +333,98 @@ export function classifyBrokerStartError(err: unknown): string {
 /** Exported for testing. */
 export function classifyBrokerStartStage(_err: unknown, message: string): string {
   if (isBrokerAlreadyRunningError(message)) return 'already_running';
-  if (/fetch failed/i.test(message)) return 'connect';
+  // Node's native fetch() throws "fetch failed"; the CLI's Bun-compiled
+  // binaries throw Bun's own connect-failure text instead ("Unable to
+  // connect. Is the computer able to access the url?"). Recognize both so
+  // the shipped binary doesn't misclassify every connect failure as generic
+  // 'startup'.
+  if (/fetch failed/i.test(message) || /unable to connect/i.test(message)) return 'connect';
   if (/Broker did not report API port/i.test(message)) return 'spawn';
   if (/Broker process exited with code/i.test(message)) return 'spawn';
   if (/ENOENT/i.test(message) && /broker/i.test(message)) return 'resolve_binary';
   return 'startup';
+}
+
+/**
+ * Render the same "Failed to start broker" diagnostic + telemetry the
+ * `runUpCommand` catch block has always used. Extracted so the process-level
+ * crash guard (below) can report an unhandled rejection/exception the exact
+ * same way as an ordinary caught startup failure.
+ */
+function reportBrokerStartFailure(
+  err: unknown,
+  deps: CoreDependencies,
+  paths: CoreProjectPaths,
+  options: UpOptions
+): void {
+  const message = toErrorMessage(err);
+  const stage = classifyBrokerStartStage(err, message);
+  track('broker_start_failed', {
+    stage,
+    error_class: classifyBrokerStartError(err),
+  });
+  const detailedMessage = describeErrorWithCause(err);
+  recordBackgroundStartError(detailedMessage, paths.dataDir, options.backgroundChild === true, deps);
+  if (isBrokerAlreadyRunningError(message)) {
+    reportAlreadyRunningError(message, paths.dataDir, deps);
+  } else {
+    deps.error(`Failed to start broker: ${detailedMessage}`);
+  }
+}
+
+/**
+ * `runUpCommand`'s startup try/catch only sees rejections it actually
+ * `await`s. Anything that rejects off to the side — a fire-and-forget
+ * background task inside a capability provider, an addon's internal promise
+ * chain, etc. — crashes the process via Node's bare default
+ * uncaughtException/unhandledRejection handler instead, which prints no
+ * "Failed to start broker" line and never records `broker_start_failed`
+ * telemetry. Observed in the wild as a `node up` that printed "Broker
+ * started." and then died with nothing further logged.
+ *
+ * This guard is armed for the lifetime of the foreground startup + hold-open
+ * phase so that class of crash gets the same diagnostic + telemetry + cleanup
+ * treatment as an ordinary caught failure, instead of vanishing into Node's
+ * default handler. `dispose()` must be called (via `finally`) so the
+ * listeners don't outlive this command invocation.
+ */
+function installStartupCrashGuard(
+  deps: CoreDependencies,
+  paths: CoreProjectPaths,
+  options: UpOptions,
+  shutdownOnce: () => Promise<void>
+): { dispose: () => void; markHandled: () => void } {
+  let handled = false;
+  const handleCrash = (err: unknown): void => {
+    if (handled) return;
+    handled = true;
+    // `deps.exit(1)` throws `CliExit` (see `defaultExit`) rather than really
+    // exiting. Run this body through `runSignalHandler` -- the same wrapper
+    // `deps.onSignal` uses -- so that throw becomes a real, telemetry-flushed
+    // `process.exit`. Without it, the throw rejects this detached body with
+    // no awaiter; the `unhandledRejection` it produces hits `handleCrash`
+    // again, sees `handled` already true, and is silently dropped, leaving
+    // `runUpCommand` stuck in `holdOpen` instead of exiting.
+    runSignalHandler(async () => {
+      await shutdownOnce().catch(() => undefined);
+      reportBrokerStartFailure(err, deps, paths, options);
+      deps.exit(1);
+    });
+  };
+  process.on('uncaughtException', handleCrash);
+  process.on('unhandledRejection', handleCrash);
+  return {
+    dispose: () => {
+      process.off('uncaughtException', handleCrash);
+      process.off('unhandledRejection', handleCrash);
+    },
+    // Called from the normal catch block so a straggler process-level event
+    // for the same failure can't fire a second, duplicate report after this
+    // function has already handled it and moved on.
+    markHandled: () => {
+      handled = true;
+    },
+  };
 }
 
 async function resolveApiPortWithFallback(
@@ -372,18 +460,77 @@ export function resolveBrokerBasePort(deps: Pick<CoreDependencies, 'env'>): numb
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_BROKER_BASE_PORT;
 }
 
+/** Bounded attempts for {@link getBrokerStatusWithRetry}'s post-handshake status check. */
+const STATUS_CHECK_MAX_ATTEMPTS = 4;
+/** Fixed delay between status-check retries, in ms. */
+const STATUS_CHECK_RETRY_DELAY_MS = 300;
+
+/**
+ * `candidate.getStatus()` is the first request made against a broker that
+ * just finished a successful handshake -- `HarnessDriverClient.spawn()`'s own
+ * `getSession()` poll already confirmed the broker was reachable moments
+ * earlier. Under load, the broker can be transiently preempted between that
+ * handshake and this immediate follow-up request, surfacing as a bare
+ * connect failure (Node's `TypeError: fetch failed` / Bun's "Unable to
+ * connect. Is the computer able to access the url?"), which previously had
+ * zero tolerance: one bad request and the whole `up` was reported failed
+ * even though the broker was (and remained) healthy.
+ *
+ * A handful of short, fixed-delay retries absorb that hiccup. This mirrors
+ * the *spirit* of the 503-retry loop `HarnessDriverClient.spawn()` runs
+ * during the handshake, not its duration -- that loop waits out a possibly
+ * slow cold start; this one is only smoothing a momentary preemption right
+ * after a broker we already know is up, so the total budget is much
+ * shorter (under 1s across all retries).
+ *
+ * Exported for testing.
+ */
+export async function getBrokerStatusWithRetry(
+  candidate: Pick<CoreRelay, 'getStatus'>,
+  deps: CoreDependencies,
+  verbose?: boolean
+): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= STATUS_CHECK_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await candidate.getStatus();
+    } catch (err) {
+      lastError = err;
+      const isConnectFailure = classifyBrokerStartStage(err, toErrorMessage(err)) === 'connect';
+      if (!isConnectFailure || attempt >= STATUS_CHECK_MAX_ATTEMPTS) break;
+      vlog(
+        deps,
+        verbose,
+        `Broker status check failed (attempt ${attempt}/${STATUS_CHECK_MAX_ATTEMPTS}), retrying in ${STATUS_CHECK_RETRY_DELAY_MS}ms...`
+      );
+      await deps.sleep(STATUS_CHECK_RETRY_DELAY_MS);
+    }
+  }
+  throw lastError;
+}
+
 export async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
   basePort: number,
   deps: CoreDependencies,
   brokerName?: string,
-  verbose?: boolean
+  verbose?: boolean,
+  /**
+   * Invoked as soon as the broker child process has been spawned and its
+   * client handle exists, well before the handshake/status-check retries
+   * below resolve. Lets the caller wire up cleanup (e.g. a SIGTERM handler)
+   * against the real process immediately, instead of only after this whole
+   * function returns -- a signal arriving during the status check would
+   * otherwise find no handle to shut down and leak the broker child.
+   */
+  onCandidateReady?: (candidate: CoreRelay) => void
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   if (basePort === 0) {
     vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
     const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose);
+    onCandidateReady?.(candidate);
     try {
-      await candidate.getStatus();
+      await getBrokerStatusWithRetry(candidate, deps, verbose);
       if (!candidate.apiPort) {
         throw new Error('Broker started without reporting its OS-assigned API port.');
       }
@@ -413,10 +560,11 @@ export async function startBrokerWithPortFallback(
 
   vlog(deps, verbose, 'Creating broker client (spawns broker process, waits for handshake)...');
   const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
+  onCandidateReady?.(candidate);
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
   try {
-    await candidate.getStatus();
+    await getBrokerStatusWithRetry(candidate, deps, verbose);
   } catch (startupError) {
     try {
       await candidate.shutdown();
@@ -1688,6 +1836,35 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
     await shutdownPromise;
   };
+  const crashGuard = installStartupCrashGuard(deps, paths, options, shutdownOnce);
+  // Registered before any async startup work (broker spawn, capability
+  // providers, Reflex capture, node delivery wait) so a signal arriving
+  // during that window gets the same graceful, logged shutdown as one that
+  // arrives later during hold-open. Previously these were registered just
+  // before hold-open — a SIGTERM in that earlier window hit Node's bare
+  // default disposition (silent immediate termination) instead, which is
+  // indistinguishable from a genuine crash when observed from outside.
+  deps.onSignal('SIGINT', async () => {
+    sigintCount += 1;
+    if (shuttingDown) {
+      if (sigintCount >= 2) {
+        deps.warn('Force exiting...');
+        deps.exit(130);
+      }
+      return;
+    }
+    deps.log('\nStopping...');
+    await shutdownOnce();
+    deps.exit(0);
+  });
+  deps.onSignal('SIGTERM', async () => {
+    if (shuttingDown) {
+      return;
+    }
+    deps.log('\nStopping (SIGTERM)...');
+    await shutdownOnce();
+    deps.exit(0);
+  });
   try {
     if (existingPid !== null) {
       if (isProcessRunning(existingPid, deps)) {
@@ -1729,8 +1906,23 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       basePort,
       deps,
       options.brokerName,
-      options.verbose
-    );
+      options.verbose,
+      // Assign `relay` as soon as the broker child process exists, not only
+      // once the handshake/status-check retries above also succeed. A
+      // SIGTERM/SIGINT arriving during that check window otherwise finds
+      // `relay` still null, so `shutdownOnce()` no-ops and leaks the broker
+      // child instead of shutting it down.
+      (candidate) => {
+        relay = candidate;
+      }
+    ).catch((err: unknown) => {
+      // On failure, `startBrokerWithPortFallback` has already shut down any
+      // candidate it created before rethrowing. Clear the early handle too
+      // so the outer catch's `shutdownOnce()` does not call `shutdown()` a
+      // second time on it.
+      relay = null;
+      throw err;
+    });
     relay = started.relay;
 
     try {
@@ -1821,27 +2013,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.warn('Warning: --spawn specified but no teams.json found');
     }
 
-    deps.onSignal('SIGINT', async () => {
-      sigintCount += 1;
-      if (shuttingDown) {
-        if (sigintCount >= 2) {
-          deps.warn('Force exiting...');
-          deps.exit(130);
-        }
-        return;
-      }
-      deps.log('\nStopping...');
-      await shutdownOnce();
-      deps.exit(0);
-    });
-    deps.onSignal('SIGTERM', async () => {
-      if (shuttingDown) {
-        return;
-      }
-      await shutdownOnce();
-      deps.exit(0);
-    });
-
     const holdOpen = deps.holdOpen();
     if (nodeProviders?.done) {
       await Promise.race([holdOpen, nodeProviders.done]);
@@ -1849,21 +2020,24 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       await holdOpen;
     }
   } catch (err: unknown) {
-    await shutdownOnce();
-    const message = toErrorMessage(err);
-    const stage = classifyBrokerStartStage(err, message);
-    track('broker_start_failed', {
-      stage,
-      error_class: classifyBrokerStartError(err),
-    });
-    const detailedMessage = describeErrorWithCause(err);
-    recordBackgroundStartError(detailedMessage, paths.dataDir, options.backgroundChild === true, deps);
-    if (isBrokerAlreadyRunningError(message)) {
-      reportAlreadyRunningError(message, paths.dataDir, deps);
-    } else {
-      deps.error(`Failed to start broker: ${detailedMessage}`);
+    // A rejection from cleanup must not swallow the original startup
+    // failure -- without this, `deps.exit(1)` below would never run and the
+    // startup error would go unreported.
+    try {
+      await shutdownOnce();
+    } catch (cleanupError) {
+      deps.warn(`Failed to clean up after broker startup failure: ${describeErrorWithCause(cleanupError)}`);
     }
+    // A straggler process-level crash event for this same failure must not
+    // also fire and duplicate the report below. Marked here -- after
+    // cleanup, right before reporting -- rather than at catch-entry, so an
+    // unrelated crash during the shutdownOnce() cleanup above is not
+    // silently swallowed by this guard too.
+    crashGuard.markHandled();
+    reportBrokerStartFailure(err, deps, paths, options);
     deps.exit(1);
+  } finally {
+    crashGuard.dispose();
   }
 }
 

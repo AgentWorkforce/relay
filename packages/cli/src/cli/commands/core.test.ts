@@ -1196,9 +1196,16 @@ describe('registerCoreCommands', () => {
     });
     void runCommand(program, ['up']);
 
+    // SIGINT/SIGTERM are now registered before the broker starts (so a
+    // signal arriving during startup is handled gracefully too), so
+    // registration alone no longer implies `relay` is set. Wait for the
+    // broker to actually be up before firing the signal.
     for (
       let i = 0;
-      i < 10 && (deps.onSignal as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
+      i < 20 &&
+      !(deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
+        (call) => call[0] === 'Broker started.'
+      );
       i += 1
     ) {
       await Promise.resolve();
@@ -1221,6 +1228,47 @@ describe('registerCoreCommands', () => {
 
     const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(logCalls.filter((call) => call[0] === '\nStopping...')).toHaveLength(1);
+  });
+
+  it('up shuts down the in-flight broker candidate when SIGTERM arrives before the status check resolves', async () => {
+    let resolveStatus: (() => void) | undefined;
+    const relay = createRelayMock({
+      getStatus: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveStatus = () => resolve({ agent_count: 0, pending_delivery_count: 0 });
+          })
+      ),
+    });
+    const { program, deps } = createHarness({ relay });
+    void runCommand(program, ['up']);
+
+    // Wait until the status check has actually started. By this point
+    // `startBrokerWithPortFallback`'s `onCandidateReady` callback has
+    // already assigned the outer `relay` -- well before the check itself
+    // resolves. This is exactly the window where `relay` used to still be
+    // null and a signal would leak the broker child instead of shutting it
+    // down.
+    for (
+      let i = 0;
+      i < 20 && (relay.getStatus as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
+      i += 1
+    ) {
+      await Promise.resolve();
+    }
+    expect(relay.getStatus).toHaveBeenCalled();
+    expect(relay.shutdown).not.toHaveBeenCalled();
+
+    const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
+    const sigtermHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGTERM')?.[1] as
+      | (() => Promise<void>)
+      | undefined;
+    expect(sigtermHandler).toBeDefined();
+
+    await expect((sigtermHandler as () => Promise<void>)()).rejects.toMatchObject({ code: 0 });
+
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    resolveStatus?.();
   });
 
   it('down stops broker and cleans stale files', async () => {
