@@ -184,6 +184,20 @@ describe('getBrokerStatusWithRetry', () => {
     expect(candidate.getStatus).toHaveBeenCalledTimes(4);
     expect(deps.sleep).toHaveBeenCalledTimes(3);
   });
+
+  it('does not retry a non-connect failure -- fails after a single attempt', async () => {
+    const err = new Error('unauthorized');
+    const candidate: Pick<CoreRelay, 'getStatus'> = {
+      getStatus: vi.fn(async () => {
+        throw err;
+      }),
+    };
+    const deps = createDeps();
+
+    await expect(getBrokerStatusWithRetry(candidate, deps)).rejects.toBe(err);
+    expect(candidate.getStatus).toHaveBeenCalledTimes(1);
+    expect(deps.sleep).not.toHaveBeenCalled();
+  });
 });
 
 describe('readNodeDeliveryStatus', () => {
