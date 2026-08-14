@@ -617,6 +617,35 @@ describe('createAgentRelayMcpServer', () => {
     expect(promptResult.messages[0].content.text).not.toContain('workspace.create');
   });
 
+  it('sends an unresolved DM from an agent-token-only session', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+
+    mod.createAgentRelayMcpServer({
+      agentToken: 'at_live_token_only',
+      agentName: 'TokenWorker',
+    });
+    const server = mocks.serverInstances[0];
+    const result = await server.tools.get('send_dm')?.handler({
+      to: 'chief',
+      text: 'token-scoped send',
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      id: 'dm_1',
+      delivery: {
+        status: 'recipient_unresolved',
+        requestedRecipient: 'chief',
+        resolvedRecipient: null,
+        recipientMatched: null,
+      },
+    });
+    expect(result.structuredContent).not.toHaveProperty('target');
+    const agentRelay = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'at_live_token_only'
+    );
+    expect(agentRelay?.as).toHaveBeenCalledWith('at_live_token_only', { autoHeartbeatMs: false });
+  });
+
   it('returns a created workspace key when local session persistence fails', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mocks.persistWorkspaceSession.mockImplementationOnce(() => {
@@ -699,6 +728,43 @@ describe('createAgentRelayMcpServer', () => {
     });
     expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenNthCalledWith(1, 'spawn', 'inv_outer');
     expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenNthCalledWith(2, 'spawn', 'inv_nested');
+  });
+
+  it('times out when a persona spawn invocation lookup never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const { mod, mocks } = await loadAgentRelayMcpModule();
+      mocks.agentRelayMessagingCommands.getInvocation.mockImplementation(
+        async () => new Promise<never>(() => undefined)
+      );
+
+      mod.createAgentRelayMcpServer({
+        agentToken: 'at_live_fleet',
+        agentName: 'orchestrator',
+      });
+      const server = mocks.serverInstances[0];
+      const spawn = server.tools.get('spawn')?.handler({
+        name: 'PersonaWorker',
+        persona: 'reviewer',
+      });
+      const outcome = Promise.race([
+        spawn?.then(
+          () => 'resolved unexpectedly',
+          (error: unknown) => (error instanceof Error ? error.message : String(error))
+        ),
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve('still pending after the persona spawn deadline'), 130_001)
+        ),
+      ]);
+
+      await vi.advanceTimersByTimeAsync(130_001);
+
+      await expect(outcome).resolves.toBe(
+        'Persona spawn timed out before broker registration and harness readiness.'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('surfaces a nested verified spawn failure from the workforce persona result', async () => {

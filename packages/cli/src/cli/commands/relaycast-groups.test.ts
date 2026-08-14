@@ -58,6 +58,7 @@ function createRelayMock() {
     messages: {
       send: vi.fn(async (i: unknown) => ({ id: 'm1', ...(i as object) })),
       direct: vi.fn(async (i: unknown) => ({ id: 'd1', ...(i as object) })),
+      readers: vi.fn(async () => []),
       react: vi.fn(async () => ({ emoji: 'eyes', count: 1, agents: [] })),
     },
     integrations: {
@@ -145,13 +146,26 @@ describe('SDK-backed CLI groups', () => {
   });
 
   it('message dm send routes to messages.direct', async () => {
-    const { program, relay } = harness(registerMessageCommands);
+    const { program, relay, log } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_unconfirmed"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": "lead"'));
+  });
+
+  it('message dm send still enqueues when exact recipient resolution is unavailable', async () => {
+    const { program, relay, log } = harness(registerMessageCommands);
+    relay.agents.list.mockResolvedValueOnce([]);
+
+    await program.parseAsync(['message', 'dm', 'send', 'missing-agent', 'hi'], { from: 'user' });
+
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'missing-agent', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
   });
 
   it('message dm send exposes immediate Relay delivery', async () => {
-    const { program, relay } = harness(registerMessageCommands);
+    const { program, relay, log } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'wake up', '--mode', 'steer'], {
       from: 'user',
     });
@@ -160,6 +174,16 @@ describe('SDK-backed CLI groups', () => {
       text: 'wake up',
       mode: 'steer',
     });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"mode": "steer"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('immediate injection'));
+  });
+
+  it('message inbox get_readers signals that an empty reader list is still queued or unread', async () => {
+    const { program, relay, log } = harness(registerMessageCommands);
+    await program.parseAsync(['message', 'inbox', 'get_readers', 'd1'], { from: 'user' });
+    expect(relay.messages.readers).toHaveBeenCalledWith('d1');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_or_unread"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"readConfirmed": false'));
   });
 
   it('integration webhook create routes to integrations.webhooks.create', async () => {

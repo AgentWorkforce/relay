@@ -8,6 +8,11 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+import {
+  directMessageReceipt,
+  messageReadersReceipt,
+  resolveExactAgentName,
+} from '../lib/message-delivery-receipts.js';
 
 export type MessageCommandDependencies = SdkCommandDeps;
 
@@ -119,16 +124,28 @@ export function registerMessageCommands(
       .description('Send a direct message to an agent')
       .argument('<agent>', 'Recipient agent')
       .argument('<text>', 'Message text')
-      .option('--mode <mode>', 'Delivery mode: wait or steer', parseMessageMode)
+      .option(
+        '--mode <mode>',
+        'wait (default): inject on idle; steer: inject immediately and may interrupt active work',
+        parseMessageMode
+      )
   ).action(async (agent: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
+      const mode = o.mode as 'wait' | 'steer' | undefined;
+      const relay = deps.createAgentRelay(opts(o));
+      const resolvedRecipient = resolveExactAgentName(await relay.agents.list(), agent);
       printJson(
         deps,
-        await deps.createAgentRelay(opts(o)).messages.direct({
-          to: agent,
-          text,
-          ...(o.mode ? { mode: o.mode as 'wait' | 'steer' } : {}),
-        })
+        directMessageReceipt(
+          await relay.messages.direct({
+            to: agent,
+            text,
+            ...(mode ? { mode } : {}),
+          }),
+          agent,
+          mode,
+          resolvedRecipient
+        )
       );
     });
   });
@@ -228,7 +245,10 @@ export function registerMessageCommands(
       .argument('<messageId>', 'Message id')
   ).action(async (messageId: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      printJson(deps, await deps.createAgentRelay(opts(o)).messages.readers(messageId));
+      printJson(
+        deps,
+        messageReadersReceipt(await deps.createAgentRelay(opts(o)).messages.readers(messageId))
+      );
     });
   });
 
