@@ -6,7 +6,7 @@
 
 use std::{
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -23,6 +23,16 @@ use crate::types::InboundDeliveryMode;
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const TOKEN_WAIT_DELAY: Duration = Duration::from_secs(1);
+// Mirrors node_control's heartbeat/read-idle pair (12s / 48s): a Cloudflare
+// Durable Object hibernatable WebSocket (or any intermediate proxy) can drop
+// an idle connection without ever delivering a close frame to this client, so
+// a terminal lane with no active session can sit "connected" forever while
+// actually dead. Without a periodic ping and an idle-read cutoff, nothing
+// here would ever notice — `connect_async` only runs once per (re)connect,
+// and this loop otherwise reacts only to genuine inbound frames or local
+// commands, neither of which a blackholed socket will ever produce.
+const PING_INTERVAL: Duration = Duration::from_secs(12);
+const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(48);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -182,6 +192,10 @@ pub(crate) struct TerminalControlConfig {
     /// credential. This transport never mints itself, avoiding duplicate
     /// credential flows while still reconnecting with a fresh token.
     pub(crate) session_token: Arc<RwLock<Option<String>>>,
+    /// Overrides [`READ_IDLE_TIMEOUT`]. `None` (production) uses the default;
+    /// tests shrink this so a blackholed-peer reconnect is covered in well
+    /// under a second instead of 48s.
+    pub(crate) read_idle_timeout: Option<Duration>,
 }
 
 pub(crate) async fn run_terminal_control_client(
@@ -253,6 +267,10 @@ pub(crate) async fn run_terminal_control_client(
         let _ = event_tx.send(TerminalControlEvent::Connected).await;
         let (mut sink, mut stream) = socket.split();
         let mut connected = true;
+        let mut last_inbound = Instant::now();
+        let read_idle_timeout = config.read_idle_timeout.unwrap_or(READ_IDLE_TIMEOUT);
+        let mut ping_interval = tokio::time::interval(PING_INTERVAL.min(read_idle_timeout / 4));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while connected {
             tokio::select! {
                 command = command_rx.recv() => match command {
@@ -271,14 +289,40 @@ pub(crate) async fn run_terminal_control_client(
                         return;
                     }
                 },
+                _ = ping_interval.tick() => {
+                    // Checked before the write, because the write is exactly
+                    // what cannot be trusted here: it keeps succeeding on a
+                    // blackholed socket. Silence past the window is the only
+                    // local evidence that the cloud side stopped hearing us.
+                    let idle = last_inbound.elapsed();
+                    if idle >= read_idle_timeout {
+                        tracing::warn!(
+                            target = "relay_broker::terminal",
+                            idle_secs = idle.as_secs(),
+                            "no inbound fleet terminal frame within the read-idle window; reconnecting"
+                        );
+                        connected = false;
+                    } else if sink.send(Message::Ping(Vec::new())).await.is_err() {
+                        connected = false;
+                    }
+                }
                 inbound = stream.next() => match inbound {
-                    Some(Ok(Message::Text(text))) => match serde_json::from_str::<TerminalFromCloud>(&text) {
-                        Ok(message) => { if event_tx.send(TerminalControlEvent::Message(message)).await.is_err() { return; } }
-                        Err(error) => tracing::warn!(target = "relay_broker::terminal", error = %error, "invalid fleet terminal frame"),
-                    },
-                    Some(Ok(Message::Ping(_))) => {}
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => connected = false,
-                    Some(Ok(_)) => {},
+                    Some(Ok(message)) => {
+                        // Any frame proves the peer is still there — including
+                        // the pong answering our ping, which is the only
+                        // traffic a healthy but session-idle cloud side is
+                        // guaranteed to send.
+                        last_inbound = Instant::now();
+                        match message {
+                            Message::Text(text) => match serde_json::from_str::<TerminalFromCloud>(&text) {
+                                Ok(message) => { if event_tx.send(TerminalControlEvent::Message(message)).await.is_err() { return; } }
+                                Err(error) => tracing::warn!(target = "relay_broker::terminal", error = %error, "invalid fleet terminal frame"),
+                            },
+                            Message::Close(_) => connected = false,
+                            _ => {}
+                        }
+                    }
+                    Some(Err(_)) | None => connected = false,
                 },
             }
         }
@@ -290,7 +334,19 @@ pub(crate) async fn run_terminal_control_client(
 
 #[cfg(test)]
 mod tests {
-    use super::{InboundDeliveryMode, TerminalFromCloud, TerminalMode, TerminalToCloud};
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::accept_async;
+
+    use super::{
+        run_terminal_control_client, InboundDeliveryMode, TerminalControlCommand,
+        TerminalControlConfig, TerminalControlEvent, TerminalFromCloud, TerminalMode,
+        TerminalToCloud,
+    };
 
     #[test]
     fn terminal_wire_round_trips_without_control_frames() {
@@ -553,5 +609,155 @@ mod tests {
         })
         .unwrap();
         assert!(sess_error.get("request_id").is_none());
+    }
+
+    /// A blackholed `/v1/node/terminal/ws` — the socket sits open with
+    /// nothing on the other end reading or writing — must be detected and
+    /// reconnected. This is the fleet terminal-attach outage: node_control
+    /// got this exact fix (ping + read-idle timeout) after the 2026-08-07
+    /// finn-mini control-lane outage, but terminal_control never did. A
+    /// long-lived node's terminal socket can die at the network level (a
+    /// Cloudflare Durable Object's hibernatable WebSocket dropped without a
+    /// close frame reaching the client, an idle proxy timeout, etc.) while
+    /// this client's `select!` never leaves the connected state — so
+    /// `agent-relay node agent attach` fails with "has no terminal
+    /// transport" even though the broker itself believes it is still
+    /// connected. Without [`READ_IDLE_TIMEOUT`] the second `accept()` below
+    /// never happens and this test fails on the outer timeout.
+    #[tokio::test]
+    async fn terminal_control_reconnects_when_peer_goes_silent() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+
+        tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                // Short window so the blackhole is covered in well under a
+                // second; production uses READ_IDLE_TIMEOUT (48s).
+                read_idle_timeout: Some(Duration::from_millis(400)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = accept_async(stream).await.unwrap();
+            // Go silent: hold the socket open but never poll it again. Not
+            // draining is the point — an unpolled socket still looks open to
+            // the client, which is the blackhole this guards against.
+            let hold = tokio::spawn(async move {
+                let _ws = ws;
+                std::future::pending::<()>().await;
+            });
+
+            // The client must give up on the silent connection and dial again.
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ws2 = accept_async(stream).await.unwrap();
+            hold.abort();
+        });
+
+        // Comfortably above the 400ms window plus reconnect backoff. Without
+        // the read-idle check the reconnect never comes at all, so this
+        // bound is what turns the hang into a failure.
+        tokio::time::timeout(Duration::from_secs(20), server)
+            .await
+            .expect("client never reconnected after the peer went silent")
+            .unwrap();
+
+        // Both connect attempts must surface as `Connected` events — that is
+        // what flips the cloud-side `terminal_connected` flag an attach
+        // depends on.
+        let mut connected_events = 0;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(50), event_rx.recv()).await
+        {
+            if matches!(event, TerminalControlEvent::Connected) {
+                connected_events += 1;
+            }
+        }
+        assert!(
+            connected_events >= 2,
+            "expected at least 2 Connected events (initial + reconnect), got {connected_events}"
+        );
+
+        let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
+    }
+
+    /// The must-not-fire control arm for the blackhole test above, under the
+    /// SAME clock. The negative test proves the detector CAN fire; on its own
+    /// that is also what a detector that disconnects unconditionally after
+    /// the window would do. This proves it does not fire when the peer is
+    /// merely idle at the application layer but still servicing the socket
+    /// (so pings get answered) — the actual claim this mechanism makes.
+    #[tokio::test]
+    async fn terminal_control_stays_connected_when_peer_is_idle_but_polling() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, _event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+
+        tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                // Same window as the blackhole test, so this is a genuine
+                // control arm under identical time pressure rather than a
+                // separate, looser test.
+                read_idle_timeout: Some(Duration::from_millis(400)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            // Stay live: keep polling the socket so tungstenite answers every
+            // ping with a pong, the only traffic an idle-but-healthy cloud
+            // side is guaranteed to produce. This is the opposite of the
+            // blackhole test's `hold` task, which never polls again.
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let drain = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        msg = ws.next() => {
+                            if msg.is_none() {
+                                break;
+                            }
+                        }
+                        _ = &mut stop_rx => break,
+                    }
+                }
+            });
+
+            // Comfortably longer than the 400ms window — several ping
+            // intervals' worth of silence at the application layer, serviced
+            // only by ping/pong.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            let _ = stop_tx.send(());
+            drain.abort();
+
+            // If the client had disconnected and reconnected, a second
+            // connection attempt would already be waiting here. None should
+            // exist: the accept must still be empty.
+            let second_connection =
+                tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+            assert!(
+                second_connection.is_err(),
+                "client reconnected even though the peer stayed live and kept polling"
+            );
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server task did not complete")
+            .unwrap();
+        let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
     }
 }

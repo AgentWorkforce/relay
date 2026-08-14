@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Fleet terminal attach (`agent-relay node agent attach --node`) could silently and permanently stop working on a long-lived node: the terminal websocket had no ping or read-idle timeout, so a connection dropped by the network without a close frame looked "connected" forever and was never retried. It now pings on the same cadence as node-control and reconnects if the cloud side goes silent.
 
 ## [11.6.3] - 2026-08-14
 
