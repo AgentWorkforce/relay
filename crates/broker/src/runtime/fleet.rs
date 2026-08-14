@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     fleet_wire::{
         ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
-        AgentDeregister, AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode,
-        RelaycastToBroker, FLEET_WIRE_VERSION,
+        AgentDeregister, AgentRegister, AgentRegistrationMetadata, BrokerToRelaycast, Deliver,
+        DeliveryMode, RelaycastToBroker, FLEET_WIRE_VERSION,
     },
     listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
@@ -1448,6 +1448,46 @@ pub(super) async fn flush_pending_relay_messages(
     }
 
     result
+}
+
+/// Publish a spawn's declared workforce metadata onto the freshly registered
+/// agent, on its own task.
+///
+/// Detached on purpose. Both callers run inside the runtime event loop's
+/// `handle_api_request`/spawn await, and anything awaited there stops the loop
+/// answering API requests or observing SIGTERM for the duration. Registration
+/// already carries that cost; a metadata field must not add to it.
+///
+/// Best-effort by design: the agent is registered and running whether or not
+/// this lands, so a failure here must never fail the spawn. It is not silent
+/// either — a failure is logged at error level with the agent name and the
+/// underlying error, and it is not retried, because the honest signal is worth
+/// more than a hidden retry loop on a non-critical publish.
+pub(super) fn spawn_declared_metadata_publish(
+    relaycast_http: &RelaycastHttpClient,
+    name: &str,
+    declared: AgentRegistrationMetadata,
+) {
+    if declared.is_empty() {
+        return;
+    }
+    let http = relaycast_http.clone();
+    let agent = name.to_string();
+    tokio::spawn(async move {
+        match http.publish_declared_metadata(&agent, &declared).await {
+            Ok(()) => tracing::debug!(
+                worker = %agent,
+                "published declared workforce metadata for spawned agent"
+            ),
+            Err(error) => tracing::error!(
+                worker = %agent,
+                error = %error,
+                "failed to publish declared workforce metadata; the agent is registered and \
+                 running but its declared organization/project/workstream/role/objective are \
+                 not visible to the engine"
+            ),
+        }
+    });
 }
 
 /// Bind an agent to this node by sending node-control `agent.register` and

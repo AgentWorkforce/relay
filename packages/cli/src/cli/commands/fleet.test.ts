@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { Command } from 'commander';
+import { defineNode, invokeNodeHandler, spawn as fleetSpawn } from '@agent-relay/fleet';
 import { describe, expect, it, vi } from 'vitest';
 
 // `fleet status` fetches the broker session (which carries the node token and
@@ -11,7 +12,11 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../lib/broker-lifecycle.js', () => ({
   readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
 }));
-vi.mock('@agent-relay/harness-driver', () => ({
+// Only the driver client is stubbed. The rest of the module stays real so the
+// fleet spawn handler can resolve a static harness config through the same code
+// path a node runs.
+vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@agent-relay/harness-driver')>()),
   HarnessDriverClient: class {
     async getSession() {
       return {
@@ -419,6 +424,14 @@ describe('fleet command support', () => {
         'general',
         '--model',
         'gpt-5',
+        '--organization',
+        'Agent Workforce',
+        '--project',
+        'Relay',
+        '--workstream',
+        'fleet-metadata',
+        '--role',
+        'implementation',
         '--session-ref',
         'session-1',
         '--workspace-key',
@@ -444,9 +457,43 @@ describe('fleet command support', () => {
         task: 'ACK and wait',
         channels: ['general'],
         model: 'gpt-5',
+        organization: 'Agent Workforce',
+        project: 'Relay',
+        workstream: 'fleet-metadata',
+        role: 'implementation',
+        objective: 'ACK and wait',
         session_ref: 'session-1',
       },
     });
+    // Exercise the actual two-package boundary: the CLI's targeted-placement
+    // input must be readable by the Fleet DSL spawn handler, which forwards it
+    // to the broker's registration path.
+    const fleetNode = defineNode({
+      name: 'sf-mini',
+      capabilities: {
+        'spawn:codex': fleetSpawn({ runtime: 'pty', command: 'codex' }),
+      },
+    });
+    const spawnAgent = vi.fn(async () => undefined);
+    // `mock.calls` is an array of argument lists, so the request object is the
+    // first argument of the first call — not the first call itself.
+    const [[{ input: handlerInput }]] = placement.spawn.mock.calls;
+    await invokeNodeHandler(fleetNode, 'spawn:codex', handlerInput, {
+      node: { name: fleetNode.name, capabilities: Object.keys(fleetNode.capabilities) },
+      relay: { sendMessage: vi.fn() },
+      spawnAgent,
+    });
+    expect(spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        registrationMetadata: {
+          organization: 'Agent Workforce',
+          project: 'Relay',
+          workstream: 'fleet-metadata',
+          role: 'implementation',
+          objective: 'ACK and wait',
+        },
+      })
+    );
     expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
     expect(JSON.parse(logs[0]!)).toMatchObject({
       invocation: { invocationId: 'inv_targeted' },
@@ -489,6 +536,16 @@ describe('fleet command support', () => {
         'Reviewer',
         '--model',
         'gpt-5',
+        '--organization',
+        'Agent Workforce',
+        '--project',
+        'Relay',
+        '--workstream',
+        'fleet-metadata',
+        '--role',
+        'reviewer',
+        '--objective',
+        'Review the fleet change',
         '--workspace-key',
         'rk_live_test',
       ],
@@ -506,7 +563,14 @@ describe('fleet command support', () => {
       task: 'Review the diff',
       channel: 'general',
       persona: 'Reviewer',
-      metadata: { model: 'gpt-5' },
+      metadata: {
+        model: 'gpt-5',
+        organization: 'Agent Workforce',
+        project: 'Relay',
+        workstream: 'fleet-metadata',
+        role: 'reviewer',
+        objective: 'Review the fleet change',
+      },
     });
     expect(JSON.parse(logs[0]!)).toEqual({
       invocation: { invocation_id: 'inv_auto', status: 'accepted' },

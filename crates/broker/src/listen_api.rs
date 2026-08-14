@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    fleet_wire::AgentRegistrationMetadata,
     ids::{
         ChannelName, DeliveryId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
     },
@@ -45,6 +46,7 @@ pub enum ListenApiRequest {
         model: Option<String>,
         args: Vec<String>,
         task: Option<String>,
+        registration_metadata: AgentRegistrationMetadata,
         channels: Vec<ChannelName>,
         cwd: Option<String>,
         team: Option<String>,
@@ -1000,6 +1002,7 @@ async fn listen_api_spawn(
         })
         .unwrap_or_default();
     let task = body.get("task").and_then(Value::as_str).map(String::from);
+    let registration_metadata = AgentRegistrationMetadata::from_spawn_input(&body, task.as_deref());
     let channels: Vec<String> = body
         .get("channels")
         .and_then(Value::as_array)
@@ -1112,6 +1115,7 @@ async fn listen_api_spawn(
             model,
             args,
             task,
+            registration_metadata,
             channels: channels.into_iter().map(ChannelName::from).collect(),
             cwd,
             team,
@@ -3699,8 +3703,8 @@ mod auth_tests {
     use tower::ServiceExt;
 
     use super::{
-        listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
-        PtyInputFrame, SetInboundDeliveryModeOk,
+        listen_api_router_with_auth, AgentRegistrationMetadata, DeliveryRouteError,
+        ListenApiConfig, ListenApiRequest, PtyInputFrame, SetInboundDeliveryModeOk,
     };
     use crate::ids::{EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
     use crate::protocol::MessageInjectionMode;
@@ -3868,6 +3872,7 @@ mod auth_tests {
                     model,
                     args,
                     task,
+                    registration_metadata,
                     channels,
                     cwd,
                     team,
@@ -3890,6 +3895,16 @@ mod auth_tests {
                     assert_eq!(model.as_deref(), Some("o3"));
                     assert_eq!(args, vec!["--fast".to_string()]);
                     assert_eq!(task.as_deref(), Some("Ship it"));
+                    assert_eq!(
+                        registration_metadata,
+                        AgentRegistrationMetadata {
+                            organization: Some("Agent Workforce".to_string()),
+                            project: Some("Relay".to_string()),
+                            workstream: Some("fleet-metadata".to_string()),
+                            role: Some("implementation".to_string()),
+                            objective: Some("Publish registration metadata".to_string()),
+                        }
+                    );
                     assert_eq!(
                         channels,
                         vec!["general".to_string(), "engineering".to_string()]
@@ -3929,6 +3944,13 @@ mod auth_tests {
                             "model": "o3",
                             "args": ["--fast"],
                             "task": "Ship it",
+                            "metadata": {
+                                "organization": "Agent Workforce",
+                                "project": "Relay",
+                                "workstream": "fleet-metadata",
+                                "role": "implementation",
+                                "objective": "Publish registration metadata"
+                            },
                             "channels": ["general", "engineering"],
                             "cwd": "/tmp/project",
                             "team": "core",

@@ -570,6 +570,10 @@ describe('createAgentRelayMcpServer', () => {
       task: 'Implement a fix',
       channel: 'general',
       target_node: 'node-a',
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'implementer',
     });
     expect(spawnResult.structuredContent.invocation).toEqual({
       invocationId: 'inv_1',
@@ -580,6 +584,11 @@ describe('createAgentRelayMcpServer', () => {
         task: 'Implement a fix',
         target_node: 'node-a',
         channels: ['general'],
+        organization: 'Agent Workforce',
+        project: 'Relay',
+        workstream: 'fleet-metadata',
+        role: 'implementer',
+        objective: 'Implement a fix',
       },
     });
 
@@ -589,6 +598,10 @@ describe('createAgentRelayMcpServer', () => {
       task: 'Fix the sync',
       cwd: '/workspace/project',
       target_node: 'node-a',
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'integration specialist',
     });
     expect(personaSpawnResult.structuredContent.invocation).toEqual({
       invocationId: 'inv_1',
@@ -603,6 +616,11 @@ describe('createAgentRelayMcpServer', () => {
       task: 'Fix the sync',
       cwd: '/workspace/project',
       target_node: 'node-a',
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'integration specialist',
+      objective: 'Fix the sync',
     });
     const toolsList = await server.listToolsHandler?.({}, {});
     // Assert protocol-level tool discovery: the wrapped tools/list response

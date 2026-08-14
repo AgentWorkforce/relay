@@ -57,7 +57,16 @@ describe('@agent-relay/fleet', () => {
     await invokeNodeHandler(
       node,
       'spawn:codex',
-      { name: 'worker-a', model: 'gpt-5', session_ref: 'thread-1', task: 'ship it' },
+      {
+        name: 'worker-a',
+        model: 'gpt-5',
+        session_ref: 'thread-1',
+        task: 'ship it',
+        organization: 'AgentWorkforce',
+        project: 'relay',
+        workstream: 'fleet-metadata',
+        role: 'implementer',
+      },
       ctx
     );
 
@@ -71,9 +80,67 @@ describe('@agent-relay/fleet', () => {
         channels: ['general'],
       }),
       initialTask: 'ship it',
+      registrationMetadata: {
+        organization: 'AgentWorkforce',
+        project: 'relay',
+        workstream: 'fleet-metadata',
+        role: 'implementer',
+        objective: 'ship it',
+      },
       skipRelayPrompt: false,
       invocationId: undefined,
     });
+  });
+
+  // Blank declared values are dropped rather than forwarded as empty strings —
+  // the broker merges these over metadata the engine already holds, so an empty
+  // value would overwrite an engine-owned field. Matches the CLI's
+  // `declaredWorkforceMetadata` and the broker's `declared_metadata_map`.
+  it('trims declared metadata and omits blank values', async () => {
+    const node = defineNode({
+      name: 'builder',
+      capabilities: {
+        'spawn:codex': spawn({ runtime: 'pty', command: 'codex' }),
+      },
+    });
+    const ctx = stubContext(node.name, Object.keys(node.capabilities));
+
+    await invokeNodeHandler(
+      node,
+      'spawn:codex',
+      {
+        name: 'worker-a',
+        task: 'ship it',
+        // `''` cannot reach here — the spawn input schema already rejects it
+        // with `min(1)`. Whitespace-only is the value that gets through, so
+        // that is what this asserts on.
+        organization: '  AgentWorkforce  ',
+        workstream: '   ',
+        role: ' ',
+      },
+      ctx
+    );
+
+    expect(ctx.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        registrationMetadata: { organization: 'AgentWorkforce', objective: 'ship it' },
+      })
+    );
+  });
+
+  it('omits registration metadata entirely when nothing is declared', async () => {
+    const node = defineNode({
+      name: 'builder',
+      capabilities: {
+        'spawn:codex': spawn({ runtime: 'pty', command: 'codex' }),
+      },
+    });
+    const ctx = stubContext(node.name, Object.keys(node.capabilities));
+
+    await invokeNodeHandler(node, 'spawn:codex', { name: 'worker-a', role: '   ' }, ctx);
+
+    const [request] = (ctx.spawnAgent as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    expect(request).not.toHaveProperty('registrationMetadata');
   });
 
   it('threads invocation ids through concurrent spawn handlers', async () => {

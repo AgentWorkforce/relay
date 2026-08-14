@@ -31,9 +31,26 @@ export interface FleetScopedRelayClient {
   sendMessage(input: FleetRelaySendMessageInput): Promise<unknown>;
 }
 
+/**
+ * Declared organizational identity for a spawned worker.
+ *
+ * These are intentionally explicit rather than derived from the agent name:
+ * names are an implementation label, whereas this data is the caller's
+ * statement of where the work belongs. `objective` is normally supplied by a
+ * spawn's initial task when callers do not provide a narrower declaration.
+ */
+export interface FleetAgentRegistrationMetadata {
+  organization?: string;
+  project?: string;
+  workstream?: string;
+  role?: string;
+  objective?: string;
+}
+
 export interface FleetSpawnAgentInput {
   agent: AgentSpec;
   initialTask?: string;
+  registrationMetadata?: FleetAgentRegistrationMetadata;
   skipRelayPrompt?: boolean;
   invocationId?: string;
 }
@@ -132,6 +149,11 @@ const spawnInputSchema = z
     cwd: z.string().min(1).optional(),
     args: z.array(z.string()).optional(),
     team: z.string().min(1).optional(),
+    organization: z.string().min(1).optional(),
+    project: z.string().min(1).optional(),
+    workstream: z.string().min(1).optional(),
+    role: z.string().min(1).optional(),
+    objective: z.string().min(1).optional(),
     skip_relay_prompt: z.boolean().optional(),
   })
   .refine((input) => Boolean(input.name ?? input.agent), {
@@ -237,6 +259,7 @@ export function spawn(
     const cwd = input.cwd ?? options.cwd ?? definition.cwd;
     const channels = input.channels ?? options.channels;
     const task = input.task;
+    const metadata = registrationMetadata(input, task);
     const harnessConfig = resolveStaticHarnessConfig({
       name,
       cli: definition.command,
@@ -267,6 +290,7 @@ export function spawn(
     return ctx.spawnAgent({
       agent,
       ...(task !== undefined ? { initialTask: task } : {}),
+      ...(metadata ? { registrationMetadata: metadata } : {}),
       skipRelayPrompt: input.skip_relay_prompt ?? options.skipRelayPrompt ?? false,
       invocationId: ctx.invocationId,
     });
@@ -285,6 +309,30 @@ export function spawn(
       ...(options.metadata ?? {}),
     },
   };
+}
+
+function registrationMetadata(
+  input: Pick<SpawnInput, 'organization' | 'project' | 'workstream' | 'role' | 'objective'>,
+  task: string | undefined
+): FleetAgentRegistrationMetadata | undefined {
+  // Trim and omit blanks, matching the CLI's `declaredWorkforceMetadata` and
+  // the broker's `declared_metadata_map`. A whitespace-only value is a declared
+  // nothing, and the broker merges these over metadata the engine already
+  // holds, so emitting one would overwrite an engine-owned field with an empty
+  // string.
+  const declared: Array<[keyof FleetAgentRegistrationMetadata, string | undefined]> = [
+    ['organization', input.organization],
+    ['project', input.project],
+    ['workstream', input.workstream],
+    ['role', input.role],
+    ['objective', input.objective ?? task],
+  ];
+  const metadata: FleetAgentRegistrationMetadata = {};
+  for (const [key, value] of declared) {
+    const trimmed = value?.trim();
+    if (trimmed) metadata[key] = trimmed;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
 export function onMessage(input: OnMessageTriggerInput, actionName: string): FleetTriggerDescriptor {

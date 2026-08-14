@@ -18,6 +18,16 @@ describe('Agent Relay MCP initialization', () => {
         'Existing Relay participants are not local or built-in subagents'
       );
       expect(client.getInstructions()).toContain('"send_dm"');
+
+      const tools = await client.listTools();
+      const spawn = tools.tools.find((tool) => tool.name === 'spawn');
+      expect(spawn?.inputSchema.properties).toMatchObject({
+        organization: { type: 'string' },
+        project: { type: 'string' },
+        workstream: { type: 'string' },
+        role: { type: 'string' },
+        objective: { type: 'string' },
+      });
     } finally {
       await client.close();
       await server.close();

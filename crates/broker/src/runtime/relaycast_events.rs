@@ -490,6 +490,8 @@ pub(super) async fn spawn_worker_from_request(
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
     let mut fleet_registration = None;
+    let registration_metadata =
+        crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref());
     let worker_relay_key = {
         if let Some(token) = relaycast_ws_spawn_token(ws_value)
             .filter(|_| !require_node_registration && !relaycast_spawn_verifies_ready(ws_value))
@@ -531,6 +533,11 @@ pub(super) async fn spawn_worker_from_request(
                         worker = %name,
                         "bound agent to node via agent.register for action.invoke spawn"
                     );
+                    super::fleet::spawn_declared_metadata_publish(
+                        workspace_http,
+                        name.as_str(),
+                        registration_metadata,
+                    );
                     let relay_key = token.token.clone();
                     fleet_registration = Some((token, invocation_id.clone(), session_ref.clone()));
                     Some(relay_key)
@@ -557,6 +564,14 @@ pub(super) async fn spawn_worker_from_request(
                     .await
                     {
                         Ok(Ok(token)) => {
+                            // Declared metadata is published over the agent API
+                            // exactly as on the node path; registration itself
+                            // stays on the cache- and rate-limit-aware call.
+                            super::fleet::spawn_declared_metadata_publish(
+                                workspace_http,
+                                name.as_str(),
+                                registration_metadata,
+                            );
                             tracing::info!(
                                 worker = %name,
                                 "pre-registered agent via broker for WS spawn"
