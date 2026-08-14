@@ -1251,8 +1251,7 @@ describe('registerCoreCommands', () => {
     // down.
     for (
       let i = 0;
-      i < 20 &&
-      (relay.getStatus as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
+      i < 20 && (relay.getStatus as unknown as { mock: { calls: unknown[][] } }).mock.calls.length === 0;
       i += 1
     ) {
       await Promise.resolve();
