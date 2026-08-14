@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: d1fd18a817466debdf4b3a8460ee071e4b321ac4 # sponsor authority + claim race/lifetime guards
+          ref: 717ca65a1cb7d4726babef4d8a6de45a1fe3d34b # complete sponsor authority + destructive SDK surface
           path: relaycast-engine
 
       - name: Setup Node.js
