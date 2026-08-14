@@ -2065,7 +2065,7 @@ dependencies = [
 [[package]]
 name = "relaycast"
 version = "6.0.0"
-source = "git+https://github.com/AgentWorkforce/relaycast.git?rev=3be0995680e1baa3d2509bd64504aba18b254ce5#3be0995680e1baa3d2509bd64504aba18b254ce5"
+source = "git+https://github.com/AgentWorkforce/relaycast.git?rev=8ef4dfac0d7d0a952a00a48d7884a9ff1cfaa349#8ef4dfac0d7d0a952a00a48d7884a9ff1cfaa349"
 dependencies = [
  "futures-util",
  "reqwest",

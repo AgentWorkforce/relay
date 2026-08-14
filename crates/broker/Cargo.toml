@@ -29,7 +29,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 shlex = "1.3"
 thiserror = "2.0"
-relaycast = { git = "https://github.com/AgentWorkforce/relaycast.git", rev = "3be0995680e1baa3d2509bd64504aba18b254ce5" }
+relaycast = { git = "https://github.com/AgentWorkforce/relaycast.git", rev = "8ef4dfac0d7d0a952a00a48d7884a9ff1cfaa349" }
 tokio = { version = "1.44", features = ["full"] }
 tracing = "0.1"
 tracing-appender = "0.2"
