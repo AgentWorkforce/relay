@@ -833,7 +833,14 @@ mod tests {
                 "harnessConfig": {
                     "runtime": "native",
                     "command": "sh",
-                    "args": ["-c", "sleep 0.05; exit 23"],
+                    // Exit immediately rather than after a fixed sleep: the
+                    // assertion only needs the child to exit somewhere inside
+                    // WORKER_SPAWN_STABILITY_WINDOW, and a fixed 50ms sleep left
+                    // only ~200ms of margin against that 250ms window on a
+                    // loaded shared CI runner (relay#1516). An immediate exit
+                    // keeps the full window as margin without touching the
+                    // production constant.
+                    "args": ["-c", "exit 23"],
                     "sessionId": "native-failed-1430"
                 }
             }
