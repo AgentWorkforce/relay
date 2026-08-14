@@ -5,7 +5,9 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased]
+
+## [11.6.2] - 2026-08-14
 
 ### Added
 
@@ -21,9 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `register_agent` now writes supplied `metadata` or `persona` instead of silently discarding it when returning a cached token, and its new `verify_metadata` option reports whether the write actually persisted.
 - Spawned agents now launch Agent Relay MCP through an installed local `agent-relay` executable instead of cold `npx` resolution.
 - Spawn now fails before start with an actionable error when no usable Agent Relay MCP executable is available.
 - Fleet `spawn:<harness>` actions resolve from the spawn's own verified result instead of bare worker-registry presence, so a node that registers a worker whose process dies during startup now returns `spawn_failed: <detail>` with the startup exit status and worker log path rather than `spawned: true`.
+- A fleet node whose connection to the engine goes dead now reconnects on its own instead of disappearing from `agent-relay fleet nodes` until the broker is restarted.
 
 ## [11.6.1] - 2026-08-13
 

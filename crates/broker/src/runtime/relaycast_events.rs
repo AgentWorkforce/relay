@@ -877,14 +877,21 @@ mod tests {
         .await
         .expect_err("a sidecar that exits during the stability window must fail the spawn");
 
+        // Two rejection paths race here: the stability-window check
+        // ("process exited during startup") if the child is still alive when
+        // `send_to_worker("init_worker")` writes to it, or an EPIPE from that
+        // write ("failed writing frame to worker") if the child has already
+        // exited by then (see the comment on that error branch above, and the
+        // identical pattern in tests/integration/broker/cli-spawn.test.ts).
+        // Both are the correct rejection for a sidecar that dies on startup,
+        // so assert on whichever wins rather than pinning to one. Exit status
+        // and log-path detail are asserted deterministically at the requester
+        // level in fleet-spawn-confirmation.test.ts, which uses a fixture
+        // instead of a real process and cannot race.
         let message = error.to_string();
         assert!(
-            message.contains("process exited during startup"),
-            "{message}"
-        );
-        assert!(message.contains("exit status: 23"), "{message}");
-        assert!(
-            message.contains("failed-native-worker-1430.log"),
+            message.contains("process exited during startup")
+                || message.contains("failed writing frame to worker"),
             "{message}"
         );
         assert!(!workers.has_worker(&name));
