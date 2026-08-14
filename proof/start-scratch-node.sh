@@ -95,16 +95,26 @@ env \
 echo "start-scratch-node: node up returned; sleeping 3s so registration completes"
 sleep 3
 
-# Positive assertion: the running broker process's exe path resolves to
-# BINARY_ABS. Matches the "check the binary, not your intention" rule —
-# we're not comparing two possibly-empty values, we're asserting a
-# specific path is present in the process listing.
-BROKER_PATH="$(ps -o pid=,command= -ax | awk -v pat="$BINARY_ABS" -v name="$NAME" '
-  $0 ~ pat && $0 ~ name { print $2; exit }
-')"
-if [[ -z "$BROKER_PATH" ]]; then
-  echo "start-scratch-node: WARNING — broker process at $BINARY_ABS with name $NAME not found in ps" >&2
+# Positive assertion: at least one running process has argv[0] equal to
+# BINARY_ABS AND has --broker-name $NAME on its command line. Uses `pgrep
+# -a` (prints pid + full argv) filtered on the binary path — this way we
+# assert a specific literal string is present rather than compare two
+# possibly-empty values.
+BROKER_PIDS="$(pgrep -a -f "$BINARY_ABS.*--broker-name $NAME" 2>/dev/null | awk '{ print $1 }' || true)"
+if [[ -z "$BROKER_PIDS" ]]; then
+  echo "start-scratch-node: WARNING — no process found matching $BINARY_ABS with --broker-name $NAME" >&2
   ps -ax | grep -E "agent-relay-broker|node up" | grep -v grep || true
   exit 5
 fi
-echo "start-scratch-node: confirmed live broker binary at $BROKER_PATH"
+for pid in $BROKER_PIDS; do
+  # Confirm the process is actually running our BINARY_ABS, not some other
+  # binary whose argv happens to contain the same string. `ps -o comm=` on
+  # macOS prints the argv[0] which for a rust binary IS the exe path.
+  COMM="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+  if [[ "$COMM" == "$BINARY_ABS" ]]; then
+    echo "start-scratch-node: confirmed pid=$pid exe=$COMM"
+  else
+    echo "start-scratch-node: WARNING pid=$pid has exe=$COMM (expected $BINARY_ABS)" >&2
+    exit 6
+  fi
+done
