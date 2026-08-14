@@ -338,7 +338,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_output_contains_mcp_config_json() {
+    async fn claude_output_contains_resolved_mcp_config_json() {
+        // The broker must render the same local executable it preflights, rather
+        // than handing Claude `npx -y agent-relay mcp`. The latter silently
+        // selected a separate cache/package version and let Claude start without
+        // the coordination tools advertised in the injected reminder.
+        let _env = EnvGuard::all();
+        std::env::remove_var("AGENT_RELAY_MCP_COMMAND");
+        std::env::remove_var("AGENT_RELAY_INSTALL_DIR");
+        std::env::remove_var("AGENT_RELAY_BIN_DIR");
+
         let temp = tempdir().expect("tempdir");
         let output = compute_mcp_args_output(command("claude", temp.path()))
             .await
@@ -358,6 +367,20 @@ mod tests {
         assert!(config
             .pointer("/mcpServers/agent-relay")
             .is_some_and(Value::is_object));
+        let server = &config["mcpServers"]["agent-relay"];
+        assert_ne!(
+            server["command"].as_str(),
+            Some("npx"),
+            "Claude's rendered MCP config must use the resolved local agent-relay executable"
+        );
+        assert_eq!(
+            server["args"]
+                .as_array()
+                .and_then(|args| args.last())
+                .and_then(Value::as_str),
+            Some("mcp"),
+            "the rendered command must invoke the MCP subcommand"
+        );
         assert!(output.side_effect_files.is_empty());
     }
 
