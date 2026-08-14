@@ -2090,6 +2090,47 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}
         assert!(!error.to_string().contains("could not initialize"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mcp_preflight_fails_when_server_dies_after_initialize_but_before_tools_list() {
+        let temp = tempdir().expect("tempdir");
+        let relay = temp.path().join("agent-relay");
+        // Answers `initialize` (a genuine, valid id=1 response) and then exits
+        // without reading stdin again and without ever producing an id=2
+        // response. This is the discriminating case for BrokenPipe tolerance:
+        // the server truly answered something, then died mid-handshake. Our
+        // second write (notifications/initialized + tools/list) may race a
+        // closed pipe on this exited process, so BrokenPipe tolerance alone
+        // must not be mistaken for a completed tool-discovery response.
+        fs::write(
+            &relay,
+            r#"#!/bin/sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
+exit 0
+"#,
+        )
+        .expect("write fake MCP executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make MCP executable");
+        let command = super::AgentRelayMcpCommand {
+            command: relay.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+
+        let error = super::probe_agent_relay_mcp_command_with_timeout(
+            &command,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect_err(
+            "a server that dies after initialize but before tools/list must not pass preflight",
+        );
+
+        // Whether or not the second write actually hit BrokenPipe, the probe
+        // must fail on the missing tools/list response, not report success.
+        assert!(error.to_string().contains("tool list"));
+    }
+
     #[test]
     fn codex_mcp_command_config_args_use_custom_command() {
         let command = super::parse_agent_relay_mcp_command(Some("node /tmp/agent-relay-mcp.js"))
