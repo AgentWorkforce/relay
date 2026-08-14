@@ -5,7 +5,7 @@ inputs:
   engine-ref:
     description: Immutable Relaycast commit containing server-side credential authority
     required: false
-    default: 717ca65a1cb7d4726babef4d8a6de45a1fe3d34b
+    default: a87e6e7fbbca4d1da453f9ab681f0e2ae86f70c2
 
 runs:
   using: composite
