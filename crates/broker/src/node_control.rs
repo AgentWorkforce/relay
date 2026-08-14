@@ -3842,11 +3842,8 @@ mod tests {
             // If the client had disconnected and reconnected, a second
             // connection attempt would already be waiting here. None should
             // exist: the accept must still be empty.
-            let second_connection = tokio::time::timeout(
-                Duration::from_millis(200),
-                listener.accept(),
-            )
-            .await;
+            let second_connection =
+                tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
             assert!(
                 second_connection.is_err(),
                 "client reconnected even though the peer stayed live and kept polling"
