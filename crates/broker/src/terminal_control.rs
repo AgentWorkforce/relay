@@ -627,7 +627,10 @@ mod tests {
     #[tokio::test]
     async fn terminal_control_reconnects_when_peer_goes_silent() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
         let (command_tx, command_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
@@ -697,7 +700,10 @@ mod tests {
     #[tokio::test]
     async fn terminal_control_stays_connected_when_peer_is_idle_but_polling() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
         let (command_tx, command_rx) = mpsc::channel(32);
         let (event_tx, _event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
