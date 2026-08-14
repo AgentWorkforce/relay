@@ -61,7 +61,7 @@ function mintFleetSponsorProof(): string {
     sub: FLEET_SPONSOR_ID,
     org: FLEET_SPONSOR_ORG,
     iat: now,
-    exp: now + 60 * 30,
+    exp: now + 15 * 60,
     jti: `spg_fleet_${randomUUID().replaceAll('-', '')}`,
     intent: 'identity.create',
     token_type: 'sponsor_grant',

@@ -1431,6 +1431,7 @@ const RELAYAUTH_PUBLIC_KEY_ENV: &str = "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC";
 const SPONSOR_GRANT_AUDIENCE: &str = "relayauth:sponsor-binding";
 const SPONSOR_GRANT_INTENT: &str = "identity.create";
 const SPONSOR_GRANT_TOKEN_TYPE: &str = "sponsor_grant";
+const SPONSOR_GRANT_MAX_TTL_SECONDS: i64 = 15 * 60;
 
 #[derive(Debug, Deserialize)]
 struct SponsorGrantClaims {
@@ -1523,6 +1524,8 @@ fn verify_sponsor_proof(
         && claims.intent == SPONSOR_GRANT_INTENT
         && claims.token_type == SPONSOR_GRANT_TOKEN_TYPE
         && claims.iat <= now + 60
+        && claims.exp > claims.iat
+        && claims.exp - claims.iat <= SPONSOR_GRANT_MAX_TTL_SECONDS
         && !claims.oidc.issuer.trim().is_empty()
         && !claims.oidc.subject.trim().is_empty()
         && claims.oidc.iat > 0)

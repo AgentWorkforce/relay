@@ -23,9 +23,9 @@ const payload = encode({
   sub: sponsorId,
   org: orgId,
   iat: now,
-  // The test authority intentionally grants two hours: macOS release builds
-  // can exceed 30 minutes before the broker smoke step reaches registration.
-  exp: now + 60 * 60 * 2,
+  // Match RelayAuth's production maximum grant lifetime. Each CI job mints the
+  // proof immediately before its own build/test sequence.
+  exp: now + 15 * 60,
   jti: `spg_ci_${randomUUID().replaceAll('-', '')}`,
   intent: 'identity.create',
   token_type: 'sponsor_grant',
