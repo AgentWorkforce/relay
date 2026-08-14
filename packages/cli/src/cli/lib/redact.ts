@@ -12,7 +12,7 @@
 const SECRET_KEY = /token|secret|password|api[_-]?key|workspace[_-]?key|authorization/i;
 
 /** Known live-credential prefixes, kept visible so a masked value still identifies its kind. */
-const SECRET_PREFIX = /^(rk_live_|at_live_|nt_live_|ot_live_|br_|rth_at_|cld_at_|ocl_node_enr_)/;
+const SECRET_PREFIX = /^(rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|br_|rth_at_|cld_at_|ocl_node_enr_)/;
 
 /**
  * Mask a credential for display: the known prefix (if any) and the last four

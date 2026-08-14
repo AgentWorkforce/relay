@@ -12,6 +12,8 @@ export interface WorkspaceSessionOptions {
 
 export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions {
   workspaceKey: string;
+  /** Canonical Relaycast workspace id, when the credential issuer supplies it. */
+  workspaceId?: string;
   /** Named sessions are also stored and selected in the machine-global workspace store. */
   name?: string;
 }
@@ -99,6 +101,7 @@ export function persistWorkspaceSession(
   const enrolledNodeId = keepsWorkspace ? existing?.enrolledNodeId : undefined;
   writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
     ...(enrolledNodeId ? { enrolledNodeId } : {}),
+    ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
   });
 
   if (name) {

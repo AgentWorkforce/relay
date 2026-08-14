@@ -28,6 +28,11 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const attach = vi.fn(async () => 0);
   const attachRemote = vi.fn(async () => 0);
   const attachNode = vi.fn(async () => 0);
+  const redeemJoinTicket = vi.fn(async () => ({
+    workspaceKey: 'rk_live_redeemed',
+    workspaceId: 'rw_redeemed',
+  }));
+  const persistWorkspaceSession = vi.fn(() => ({}));
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
@@ -36,6 +41,8 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
     attach,
     attachRemote,
     attachNode,
+    redeemJoinTicket,
+    persistWorkspaceSession,
     cwd: () => '/tmp/project',
     log,
     error,
@@ -46,7 +53,18 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   program.exitOverride();
   const group = program.command('local');
   registerLocalAgentCommands(group, deps);
-  return { program, client, attach, attachRemote, attachNode, log, error, exit };
+  return {
+    program,
+    client,
+    attach,
+    attachRemote,
+    attachNode,
+    redeemJoinTicket,
+    persistWorkspaceSession,
+    log,
+    error,
+    exit,
+  };
 }
 
 describe('local agent subtree', () => {
@@ -174,6 +192,112 @@ describe('local agent subtree', () => {
       'sf-mini',
       expect.objectContaining({ workspaceKey: undefined })
     );
+  });
+
+  it('attach --node redeems and persists a join ticket, then attaches with the redeemed credential', async () => {
+    const env = { RELAY_WORKSPACE_KEY: 'rk_live_wrong_ambient' };
+    const { program, attachNode, redeemJoinTicket, persistWorkspaceSession, log, error } = harness({ env });
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'sf-mini', '--join-ticket', 'rjt_live_one_time'],
+      { from: 'user' }
+    );
+
+    expect(redeemJoinTicket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticket: 'rjt_live_one_time',
+        node: 'sf-mini',
+        agent: 'lead',
+        mode: 'view',
+        env,
+      })
+    );
+    expect(persistWorkspaceSession).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_redeemed',
+      workspaceId: 'rw_redeemed',
+      projectRoot: '/tmp/project',
+    });
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'sf-mini',
+      expect.objectContaining({ workspaceKey: 'rk_live_redeemed' })
+    );
+    expect(JSON.stringify(persistWorkspaceSession.mock.calls)).not.toContain('rjt_live_one_time');
+    expect(JSON.stringify([...log.mock.calls, ...error.mock.calls])).not.toContain('rjt_live_one_time');
+  });
+
+  it.each(['expired', 'invalid'])(
+    'attach --node reports a clear %s join-ticket error instead of falling through to workspace resolution',
+    async (reason) => {
+      const redeemJoinTicket = vi.fn(async () => {
+        throw new Error(`Error: Join ticket is ${reason}. Request a new attach command.`);
+      });
+      const { program, attachNode, persistWorkspaceSession, error, exit } = harness({
+        redeemJoinTicket,
+      });
+      await program.parseAsync(
+        ['local', 'agent', 'attach', 'lead', '--node', 'sf-mini', '--join-ticket', 'rjt_live_dead'],
+        { from: 'user' }
+      );
+
+      expect(attachNode).not.toHaveBeenCalled();
+      expect(persistWorkspaceSession).not.toHaveBeenCalled();
+      const message = String(error.mock.calls.at(0)?.[0]);
+      expect(message).toContain(`Join ticket is ${reason}`);
+      expect(message).not.toContain('No workspace key found');
+      expect(message).not.toContain('rjt_live_dead');
+      expect(exit).toHaveBeenCalledWith(1);
+    }
+  );
+
+  it('attach --node rejects an empty join ticket instead of using the existing credential ladder', async () => {
+    const { program, attachNode, redeemJoinTicket, error, exit } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'sf-mini', '--join-ticket', '   '],
+      { from: 'user' }
+    );
+
+    expect(redeemJoinTicket).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Error: --join-ticket requires a non-empty ticket.');
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('attach --node rejects conflicting join-ticket and workspace-key credentials', async () => {
+    const { program, attachNode, redeemJoinTicket, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'attach',
+        'lead',
+        '--node',
+        'sf-mini',
+        '--join-ticket',
+        'rjt_live_one_time',
+        '--workspace-key',
+        'rk_live_explicit',
+      ],
+      { from: 'user' }
+    );
+
+    expect(redeemJoinTicket).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Error: --join-ticket cannot be combined with --workspace-key.');
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('attach rejects --join-ticket without --node instead of silently using a local broker', async () => {
+    const { program, attach, attachNode, redeemJoinTicket, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--join-ticket', 'rjt_live_one_time'], {
+      from: 'user',
+    });
+
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(redeemJoinTicket).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--join-ticket requires --node'));
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
   it('attach rejects --workspace-key without --node instead of silently ignoring it', async () => {
