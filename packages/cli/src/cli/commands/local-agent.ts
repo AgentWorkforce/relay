@@ -79,6 +79,16 @@ export function runAttach(name: string, mode: AttachMode, options: NativeAttachO
 }
 
 /**
+ * Options for the `--node` fleet path. Deliberately not `NativeAttachOptions`:
+ * a fleet attach authenticates with the Relaycast workspace key and has no
+ * local broker, so `--broker-url` / `--api-key` / `--state-dir` are rejected
+ * rather than accepted and ignored.
+ */
+export type FleetNodeAttachCliOptions = Pick<NativeAttachOptions, 'json' | 'reasoning' | 'diagnostics'> & {
+  workspaceKey?: string;
+};
+
+/**
  * Run an existing attach mode against the short-lived loopback adapter for a
  * remote fleet node. Deliberately bypasses native-harness detection: the proxy
  * represents a PTY byte stream, while native mode is an event protocol.
@@ -87,9 +97,14 @@ export async function attachFleetNode(
   name: string,
   mode: AttachMode,
   node: string,
-  options: NativeAttachOptions
+  options: FleetNodeAttachCliOptions
 ): Promise<number> {
-  const proxy = await startFleetNodeAttachProxy({ agent: name, node, mode });
+  const proxy = await startFleetNodeAttachProxy({
+    agent: name,
+    node,
+    mode,
+    ...(options.workspaceKey === undefined ? {} : { workspaceKey: options.workspaceKey }),
+  });
   const jsonWriter = options.json ? createBackpressureAwareWriter(process.stdout) : undefined;
   try {
     const connectionOptions = { brokerUrl: proxy.brokerUrl, apiKey: proxy.apiKey };
@@ -160,7 +175,12 @@ export interface LocalAgentDependencies {
     node: string,
     options: RemoteNodeAttachOptions
   ) => Promise<number>;
-  attachNode: (name: string, mode: AttachMode, node: string, options: NativeAttachOptions) => Promise<number>;
+  attachNode: (
+    name: string,
+    mode: AttachMode,
+    node: string,
+    options: FleetNodeAttachCliOptions
+  ) => Promise<number>;
   cwd: () => string;
   readConnectionFile: (stateDir: string) => unknown;
   getDefaultStateDir: () => string;
@@ -573,6 +593,10 @@ export function registerLocalAgentCommands(
       '--state-dir <dir>',
       'Directory containing connection.json (with --ssh-host: path on target; auto-discovered when omitted)'
     )
+    .option(
+      '--workspace-key <key>',
+      'Relaycast workspace key for --node (overrides RELAY_WORKSPACE_KEY, the project pin, and the machine-global active workspace)'
+    )
     .option('--json', 'Emit normalized agent events as NDJSON')
     .option('--reasoning', 'Include agent reasoning events')
     .option('--diagnostics', 'Include native harness diagnostics')
@@ -585,6 +609,28 @@ export function registerLocalAgentCommands(
       }
       const sshHost = options.sshHost as string | undefined;
       const node = options.node as string | undefined;
+      // An all-whitespace flag must fall through to the normal precedence
+      // ladder rather than being sent as a literal credential.
+      const rawWorkspaceKey = options.workspaceKey as string | undefined;
+      const workspaceKey = rawWorkspaceKey?.trim() ? rawWorkspaceKey.trim() : undefined;
+      // Only the fleet path authenticates with a workspace key. The local and
+      // SSH paths speak the broker contract, so accepting the flag there would
+      // silently ignore it and send the caller to the wrong workspace. Gate on
+      // the raw option rather than the normalized one: `--workspace-key "$KEY"`
+      // with an unset variable is still a caller asking for a workspace, and
+      // must be told so instead of being routed to a broker.
+      if (rawWorkspaceKey !== undefined && node === undefined) {
+        // The two rejected paths take different credentials, so name the ones
+        // the caller's path actually accepts — --ssh-host rejects
+        // --broker-url / --api-key and reads connection.json on the target.
+        deps.error(
+          sshHost !== undefined
+            ? 'Error: --workspace-key requires --node. The --ssh-host attach path reads the target broker connection.json — locate it with --state-dir instead.'
+            : 'Error: --workspace-key requires --node. The local attach path uses --broker-url / --api-key or reads connection.json from --state-dir instead.'
+        );
+        deps.exit(1);
+        return;
+      }
       if (node !== undefined && sshHost !== undefined) {
         deps.error(
           'Error: --node cannot be combined with --ssh-host. Use --ssh-host only as the explicit SSH fallback.'
@@ -606,6 +652,7 @@ export function registerLocalAgentCommands(
         }
         try {
           const code = await deps.attachNode(name, mode, node, {
+            workspaceKey,
             json: options.json as boolean | undefined,
             reasoning: options.reasoning as boolean | undefined,
             diagnostics: options.diagnostics as boolean | undefined,

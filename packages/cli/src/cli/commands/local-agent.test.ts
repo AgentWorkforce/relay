@@ -137,6 +137,110 @@ describe('local agent subtree', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
+  it('attach --node forwards --workspace-key so a copy-pasted command is cwd-independent', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'sf-mini', '--workspace-key', 'rk_live_explicit'],
+      { from: 'user' }
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'sf-mini',
+      expect.objectContaining({ workspaceKey: 'rk_live_explicit' })
+    );
+  });
+
+  it('attach --node without --workspace-key leaves the precedence ladder to resolve it', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'sf-mini'], { from: 'user' });
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'sf-mini',
+      expect.objectContaining({ workspaceKey: undefined })
+    );
+  });
+
+  it('attach --node treats a blank --workspace-key as unset rather than a literal credential', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--node', 'sf-mini', '--workspace-key', '   '],
+      { from: 'user' }
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'sf-mini',
+      expect.objectContaining({ workspaceKey: undefined })
+    );
+  });
+
+  it('attach rejects --workspace-key without --node instead of silently ignoring it', async () => {
+    const { program, attach, attachNode, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--workspace-key', 'rk_live_explicit'], {
+      from: 'user',
+    });
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--workspace-key requires --node'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  // `--workspace-key "$KEY"` with an unset variable reaches the parser as a
+  // blank string. Normalizing it away before the path check would hand the
+  // caller a silent local attach against whatever broker happened to be there.
+  it('attach rejects a blank --workspace-key without --node rather than falling through to the local broker', async () => {
+    const { program, attach, attachNode, error, exit } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--workspace-key', '   '], {
+      from: 'user',
+    });
+    expect(attach).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--workspace-key requires --node'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('attach rejects a blank --workspace-key on the --ssh-host path rather than silently attaching', async () => {
+    const { program, attachRemote, attachNode, error, exit } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', '--workspace-key', ''],
+      { from: 'user' }
+    );
+    expect(attachRemote).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--workspace-key requires --node'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  // The two rejected paths do not take the same credentials: --ssh-host itself
+  // rejects --broker-url / --api-key, so naming them there sends the caller
+  // into a second, contradictory error.
+  it('attach points a rejected local-broker caller at its supported connection options', async () => {
+    const { program, error } = harness();
+    await program.parseAsync(['local', 'agent', 'attach', 'lead', '--workspace-key', 'rk_live_explicit'], {
+      from: 'user',
+    });
+    const message = error.mock.calls.at(0)?.[0] as string;
+    expect(message).toContain('--broker-url');
+    expect(message).toContain('--api-key');
+    expect(message).toContain('--state-dir');
+    // Guidance for a path the caller is not on is guidance they cannot follow.
+    expect(message).not.toContain('--ssh-host');
+  });
+
+  it('attach points a rejected --ssh-host caller at --state-dir, not the flags that path forbids', async () => {
+    const { program, error } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'attach', 'lead', '--ssh-host', 'barry', '--workspace-key', 'rk_live_explicit'],
+      { from: 'user' }
+    );
+    const message = error.mock.calls.at(0)?.[0] as string;
+    expect(message).toContain('--state-dir');
+    expect(message).not.toContain('--broker-url');
+    expect(message).not.toContain('--api-key');
+  });
+
   it('attach --node prefixes a terminal setup error once', async () => {
     const attachNode = vi.fn(async () => {
       throw new Error('terminal unavailable');

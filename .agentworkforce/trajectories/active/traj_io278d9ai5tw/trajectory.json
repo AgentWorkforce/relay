@@ -31,6 +31,18 @@
             "reasoning": "handle_api_request is a method on BrokerRuntime that takes &mut self. Calling it from handle_terminal_control_event (also &mut self) is valid sequential Rust. The oneshot channel is used only for data handoff — tx.send() happens synchronously inside handle_api_request, rx.await() resolves immediately after. This reuses the exact HTTP code path including side effects: interactive-hold frame, sdk_out event emission, queue flush on transition."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1786688147387,
+          "type": "decision",
+          "content": "Address every live PR #1502 review thread in one follow-up: raw option presence, path-specific guidance, regression coverage, and changelog: Address every live PR #1502 review thread in one follow-up: raw option presence, path-specific guidance, regression coverage, and changelog",
+          "raw": {
+            "question": "Address every live PR #1502 review thread in one follow-up: raw option presence, path-specific guidance, regression coverage, and changelog",
+            "chosen": "Address every live PR #1502 review thread in one follow-up: raw option presence, path-specific guidance, regression coverage, and changelog",
+            "alternatives": [],
+            "reasoning": "All five findings are valid or required by AGENTS.md; resolving the complete set avoids leaving the PR knowingly incomplete"
+          },
+          "significance": "high"
         }
       ]
     }
