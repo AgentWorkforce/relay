@@ -144,7 +144,7 @@ impl RelaycastHttpClient {
     }
 
     /// Publish caller-declared workforce metadata onto an already-registered
-    /// agent, merging it over whatever the engine already holds.
+    /// agent. The engine merges it over whatever it already holds.
     ///
     /// This is how declared metadata reaches the engine on the node
     /// registration path. It deliberately does NOT ride the `agent.register`
@@ -175,20 +175,23 @@ impl RelaycastHttpClient {
                 agent_name: name.to_string(),
                 detail: "SDK relay client not initialized".to_string(),
             })?;
-        // Read-merge-write rather than a bare overwrite: the engine owns other
-        // keys on this record (the `fleet` placement record among them) and a
-        // replacing update would drop them.
-        let existing = relay
-            .get_agent(name)
-            .await
-            .map_err(|error| registration_metadata_error(name, error))?;
-        let mut merged = existing.metadata;
-        merged.extend(declared_metadata);
+        // Send ONLY the declared keys. `PATCH /v1/agents/:name` merges them over
+        // the record's existing metadata server-side — verified in the engine at
+        // both the ref fleet-e2e pins (v7.0.0, eb7563ff) and relaycast `main`
+        // (`packages/engine/src/routes/agent.ts`:
+        // `nextMetadata = { ...existing.metadata, ...body.metadata }`) — so the
+        // engine-owned keys, the `fleet` placement record among them, are
+        // preserved without us resending them.
+        //
+        // Reading the record first and writing the merge back from here would be
+        // worse than redundant: this call is detached from the spawn, so a write
+        // that lands between our read and our write (the node bind, the engine's
+        // own placement record) would be clobbered by our stale snapshot.
         relay
             .update_agent(
                 name,
                 UpdateAgentRequest {
-                    metadata: Some(merged),
+                    metadata: Some(declared_metadata),
                     ..Default::default()
                 },
             )
@@ -965,34 +968,23 @@ mod tests {
         assert!(message.contains("pre-register"));
     }
 
-    /// The node path's replacement for putting metadata on `agent.register`:
-    /// read the agent, merge the declared fields over what the engine already
-    /// holds, write it back. The PATCH body is matched exactly, so dropping an
-    /// engine-owned key would fail here.
+    /// A single PATCH carrying ONLY the declared keys. The engine merges them
+    /// over the record's existing metadata, so resending engine-owned keys from
+    /// here would be redundant and would risk clobbering a concurrent write with
+    /// a stale snapshot. The body is matched exactly, so a stray key — or a
+    /// re-introduced read-merge-write — fails here.
     #[tokio::test]
-    async fn publish_declared_metadata_merges_over_engine_owned_fields() {
+    async fn publish_declared_metadata_sends_only_the_declared_keys() {
         let server = MockServer::start();
-        let existing = server.mock(|when, then| {
+        let read = server.mock(|when, then| {
             when.method(GET).path("/v1/agents/worker-a");
-            then.status(200).json_body(json!({
-                "ok": true,
-                "data": {
-                    "id": "agent_worker_a",
-                    "name": "worker-a",
-                    "type": "agent",
-                    "status": "online",
-                    "persona": null,
-                    "metadata": { "cli": "codex", "fleet": { "node": "sf-mini" } }
-                }
-            }));
+            then.status(500);
         });
         let update = server.mock(|when, then| {
             when.method(PATCH)
                 .path("/v1/agents/worker-a")
                 .json_body(json!({
                     "metadata": {
-                        "cli": "codex",
-                        "fleet": { "node": "sf-mini" },
                         "organization": "Agent Workforce",
                         "project": "Relay",
                         "objective": "Publish registration metadata"
@@ -1026,7 +1018,8 @@ mod tests {
             .await
             .expect("publishing declared metadata should succeed");
 
-        existing.assert_hits(1);
+        // No read at all: the merge is the engine's job.
+        read.assert_hits(0);
         update.assert_hits(1);
     }
 

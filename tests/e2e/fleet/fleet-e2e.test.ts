@@ -699,6 +699,11 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     );
     expect(settled.status).toBe('completed');
 
+    // Snapshot whatever the engine already owns on this record, so the merge
+    // assertion below is against real engine-owned keys rather than a guess at
+    // which ones exist.
+    const before = (await getAgent(engine, workspaceKey, agent))?.metadata ?? {};
+
     // Poll rather than read once: the publish is intentionally detached from the
     // spawn so it cannot extend the broker's inline registration await.
     const metadata = await waitFor(
@@ -708,6 +713,14 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       },
       { label: 'declared metadata published to the engine', timeoutMs: 20_000 }
     );
+
+    // The publish sends ONLY the declared keys and relies on the engine to merge
+    // them over what it already holds. Assert that reliance against the real
+    // engine: nothing it owned before the publish may be lost.
+    for (const [key, value] of Object.entries(before)) {
+      expect(metadata).toHaveProperty(key);
+      expect(metadata![key]).toEqual(value);
+    }
 
     expect(metadata).toMatchObject({
       organization: 'Agent Workforce',
