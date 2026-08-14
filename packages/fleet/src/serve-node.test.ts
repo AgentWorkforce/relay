@@ -231,7 +231,14 @@ describe('serveNode', () => {
       type: 'action.invoke',
       invocation_id: 'inv_3',
       action: 'spawn:codex',
-      input: { name: 'worker-a' },
+      input: {
+        name: 'worker-a',
+        task: 'Implement fleet metadata',
+        organization: 'AgentWorkforce',
+        project: 'relay',
+        workstream: 'fleet-metadata',
+        role: 'implementer',
+      },
     });
     await flush();
 
@@ -239,7 +246,18 @@ describe('serveNode', () => {
     expect(nodeSpawn).toBeTruthy();
     // The delegation carries `capability: 'codex'` (from the shadow name) so the
     // engine keys node capacity on `spawn:codex`, plus the executable `cli`.
-    expect(nodeSpawn.input).toMatchObject({ name: 'worker-a', cli: 'codex', capability: 'codex' });
+    expect(nodeSpawn.input).toMatchObject({
+      name: 'worker-a',
+      cli: 'codex',
+      capability: 'codex',
+      metadata: {
+        organization: 'AgentWorkforce',
+        project: 'relay',
+        workstream: 'fleet-metadata',
+        role: 'implementer',
+        objective: 'Implement fleet metadata',
+      },
+    });
     // Reply so the delegating handler resolves and the invocation completes.
     sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'worker-a' } });
     await flush();

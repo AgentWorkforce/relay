@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Passing `--workspace-key` to the local or `--ssh-host` attach path is rejected because those paths authenticate with the broker instead.
 - `agent-relay-broker reclaim-legacy-identity`: restore restart reclaim for one
   offline agent registered before identity proofs were stamped.
+- Fleet spawn callers can now declare an agent's organization, project, workstream,
+  role, and objective through the CLI, the MCP `spawn` tool, or the Fleet DSL. Relay
+  publishes those fields onto the agent's Relaycast record after registration; when
+  `objective` is omitted the spawn task is used, and hierarchy is never inferred from
+  the agent's name.
 
 ### Fixed
 

@@ -233,6 +233,89 @@ pub struct AgentRegister {
         skip_serializing_if = "Option::is_none"
     )]
     pub resumable: Option<bool>,
+    // NOTE: declared registration metadata is deliberately NOT a field here.
+    // The engine parses this frame with a `.strict()` schema
+    // (relaycast packages/types/src/fleet-wire.ts, FleetAgentRegisterMessageSchema)
+    // that rejects unknown keys, and its rejection carries a freshly generated
+    // id, so the broker's id-keyed correlation never matches and the waiter
+    // stalls for the full `FLEET_AGENT_REGISTER_TIMEOUT`. Declared metadata is
+    // published over the HTTP agent API after registration instead — see
+    // `RelaycastHttpClient::publish_declared_metadata`.
+}
+
+/// Explicit organizational identity declared by a fleet spawn and published to
+/// the engine as agent metadata after registration. These fields intentionally
+/// never infer hierarchy from the agent name; `objective` is the original task
+/// when a narrower value was not explicitly supplied.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRegistrationMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workstream: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+}
+
+impl AgentRegistrationMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.organization.is_none()
+            && self.project.is_none()
+            && self.workstream.is_none()
+            && self.role.is_none()
+            && self.objective.is_none()
+    }
+
+    /// Read declared hierarchy from either a flattened spawn action or its
+    /// `metadata` bag. `objective` falls back only to the supplied task — the
+    /// caller's own brief — and never to a name-derived convention.
+    pub fn from_spawn_input(input: &Value, task: Option<&str>) -> Self {
+        let objective = Self::declared_string(input, "objective")
+            .or_else(|| task.and_then(non_empty_string).map(ToOwned::to_owned));
+        Self {
+            organization: Self::declared_string(input, "organization"),
+            project: Self::declared_string(input, "project"),
+            workstream: Self::declared_string(input, "workstream"),
+            role: Self::declared_string(input, "role"),
+            objective,
+        }
+    }
+
+    fn declared_string(input: &Value, key: &str) -> Option<String> {
+        let nested_agent = input.get("agent").and_then(Value::as_object);
+        for record in std::iter::once(input.as_object()).chain(std::iter::once(nested_agent)) {
+            let Some(record) = record else {
+                continue;
+            };
+            if let Some(value) = record
+                .get(key)
+                .and_then(Value::as_str)
+                .and_then(non_empty_string)
+            {
+                return Some(value.to_string());
+            }
+            if let Some(value) = record
+                .get("metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| metadata.get(key))
+                .and_then(Value::as_str)
+                .and_then(non_empty_string)
+            {
+                return Some(value.to_string());
+            }
+        }
+        None
+    }
+}
+
+fn non_empty_string(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -664,9 +747,9 @@ mod tests {
 
     use super::{
         validate_agent_register_reply_data, validate_finite_nonnegative_f64, ActionResult,
-        ActionResultError, ActionResultPayload, AgentRegister, BrokerToRelaycast, Deliver,
-        DeliveryMode, Error, FleetCapability, NodeHeartbeat, RelaycastToBroker, Reply,
-        FLEET_WIRE_VERSION,
+        ActionResultError, ActionResultPayload, AgentRegister, AgentRegistrationMetadata,
+        BrokerToRelaycast, Deliver, DeliveryMode, Error, FleetCapability, NodeHeartbeat,
+        RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -688,6 +771,75 @@ mod tests {
                 "v": 1,
                 "name": "codex-1"
             })
+        );
+    }
+
+    /// Regression guard for the whole reason declared metadata is published over
+    /// HTTP rather than on this frame. The engine parses `agent.register` with a
+    /// `.strict()` schema whose only keys are v/id/name/invocation_id/
+    /// session_ref/resumable; ANY additional key makes it reject the frame with
+    /// a freshly generated id, which the broker's id-keyed correlation cannot
+    /// match, so the registration waiter stalls for the full 30s
+    /// `FLEET_AGENT_REGISTER_TIMEOUT`. Assert the serialized key set exactly, so
+    /// re-adding a field here fails loudly instead of surfacing as a timeout.
+    #[test]
+    fn agent_register_carries_no_keys_the_engine_schema_rejects() {
+        let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
+            v: FLEET_WIRE_VERSION,
+            id: Some("register-1".to_string()),
+            name: "fleet-worker".to_string(),
+            invocation_id: Some("inv-1".to_string()),
+            session_ref: Some("sess-1".to_string()),
+            resumable: Some(true),
+        });
+
+        let value = serde_json::to_value(msg).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("agent.register serializes to an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "id",
+                "invocation_id",
+                "name",
+                "resumable",
+                "session_ref",
+                "type",
+                "v",
+            ]
+        );
+    }
+
+    #[test]
+    fn spawn_metadata_preserves_explicit_objective_and_falls_back_to_task() {
+        let declared = AgentRegistrationMetadata::from_spawn_input(
+            &json!({
+                "metadata": {
+                    "organization": "Agent Workforce",
+                    "project": "relay",
+                    "workstream": "fleet",
+                    "role": "implementation",
+                    "objective": "Ship fleet metadata"
+                }
+            }),
+            Some("The wider initial brief"),
+        );
+        assert_eq!(declared.objective.as_deref(), Some("Ship fleet metadata"));
+        assert_eq!(declared.organization.as_deref(), Some("Agent Workforce"));
+
+        let fallback = AgentRegistrationMetadata::from_spawn_input(
+            &json!({"agent": {"metadata": {"project": "relay"}}}),
+            Some("  Publish declared registration metadata  "),
+        );
+        assert_eq!(fallback.project.as_deref(), Some("relay"));
+        assert_eq!(
+            fallback.objective.as_deref(),
+            Some("Publish declared registration metadata")
         );
     }
 

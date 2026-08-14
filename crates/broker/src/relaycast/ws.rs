@@ -7,11 +7,11 @@ use relaycast::{
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
     CompleteInvocationRequest, CreateObserverTokenRequest, EmitSessionEventRequest,
     MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast, RelayCastOptions,
-    RelayError, ReleaseAgentRequest,
+    RelayError, ReleaseAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
 
-use crate::protocol::MessageInjectionMode;
+use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMode};
 
 #[derive(Debug, Clone)]
 pub enum WsControl {
@@ -141,6 +141,60 @@ impl RelaycastHttpClient {
         registration
             .register_agent_token(trimmed_name, cli_hint)
             .await
+    }
+
+    /// Publish caller-declared workforce metadata onto an already-registered
+    /// agent, merging it over whatever the engine already holds.
+    ///
+    /// This is how declared metadata reaches the engine on the node
+    /// registration path. It deliberately does NOT ride the `agent.register`
+    /// frame: that frame is parsed by a `.strict()` schema which rejects unknown
+    /// keys, and the rejection stalls the registration waiter for 30s (see the
+    /// note on `fleet_wire::AgentRegister`). The REST agent API has no such
+    /// restriction and already accepts a metadata bag, so the observable
+    /// outcome is the same over a transport every engine accepts.
+    ///
+    /// Callers treat this as best-effort: the agent is registered and running
+    /// either way, so a failure here must be logged, not fatal.
+    pub async fn publish_declared_metadata(
+        &self,
+        agent_name: &str,
+        declared: &AgentRegistrationMetadata,
+    ) -> std::result::Result<(), RelaycastRegistrationError> {
+        let name = agent_name.trim();
+        if name.is_empty() {
+            return Err(RelaycastRegistrationError::InvalidAgentName);
+        }
+        let declared_metadata = declared_metadata_map(declared);
+        if declared_metadata.is_empty() {
+            return Ok(());
+        }
+        let relay = self
+            .relay_client()
+            .ok_or_else(|| RelaycastRegistrationError::Transport {
+                agent_name: name.to_string(),
+                detail: "SDK relay client not initialized".to_string(),
+            })?;
+        // Read-merge-write rather than a bare overwrite: the engine owns other
+        // keys on this record (the `fleet` placement record among them) and a
+        // replacing update would drop them.
+        let existing = relay
+            .get_agent(name)
+            .await
+            .map_err(|error| registration_metadata_error(name, error))?;
+        let mut merged = existing.metadata;
+        merged.extend(declared_metadata);
+        relay
+            .update_agent(
+                name,
+                UpdateAgentRequest {
+                    metadata: Some(merged),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| registration_metadata_error(name, error))?;
+        Ok(())
     }
 
     async fn registered_agent_client(&self) -> Result<AgentClient> {
@@ -812,13 +866,66 @@ pub async fn retry_agent_registration(
     sdk_retry_agent_registration(registration, name, cli).await
 }
 
+/// The declared fields alone, trimmed, with blanks omitted.
+///
+/// Omitting rather than sending `""` matters because both callers merge this
+/// over metadata the engine already holds: an empty value would overwrite an
+/// engine-owned field with nothing.
+fn declared_metadata_map(declared: &AgentRegistrationMetadata) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    let declared_fields = [
+        ("organization", declared.organization.as_deref()),
+        ("project", declared.project.as_deref()),
+        ("workstream", declared.workstream.as_deref()),
+        ("role", declared.role.as_deref()),
+        ("objective", declared.objective.as_deref()),
+    ];
+    for (key, value) in declared_fields {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        metadata.insert(key.to_string(), Value::String(value.to_string()));
+    }
+    metadata
+}
+
+fn registration_metadata_error(agent_name: &str, error: RelayError) -> RelaycastRegistrationError {
+    match error {
+        RelayError::Api {
+            status: 429,
+            message,
+            code,
+        } => RelaycastRegistrationError::RateLimited {
+            agent_name: agent_name.to_string(),
+            retry_after_secs: 60,
+            detail: format!("{message} (code: {code})"),
+        },
+        RelayError::Api {
+            status,
+            message,
+            code,
+        } => RelaycastRegistrationError::Api {
+            agent_name: agent_name.to_string(),
+            status,
+            detail: format!("{message} (code: {code})"),
+        },
+        error => RelaycastRegistrationError::Transport {
+            agent_name: agent_name.to_string(),
+            detail: error.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use httpmock::{Method::POST, MockServer};
+    use httpmock::{
+        Method::{GET, PATCH, POST},
+        MockServer,
+    };
     use relaycast::AgentRegistrationError;
     use serde_json::json;
 
-    use crate::ids::ChannelName;
+    use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
 
     use super::{
         format_worker_preregistration_error, registration_is_retryable,
@@ -856,6 +963,103 @@ mod tests {
         let message = format_worker_preregistration_error("worker-a", &error);
         assert!(message.contains("worker-a"));
         assert!(message.contains("pre-register"));
+    }
+
+    /// The node path's replacement for putting metadata on `agent.register`:
+    /// read the agent, merge the declared fields over what the engine already
+    /// holds, write it back. The PATCH body is matched exactly, so dropping an
+    /// engine-owned key would fail here.
+    #[tokio::test]
+    async fn publish_declared_metadata_merges_over_engine_owned_fields() {
+        let server = MockServer::start();
+        let existing = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": { "cli": "codex", "fleet": { "node": "sf-mini" } }
+                }
+            }));
+        });
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({
+                    "metadata": {
+                        "cli": "codex",
+                        "fleet": { "node": "sf-mini" },
+                        "organization": "Agent Workforce",
+                        "project": "Relay",
+                        "objective": "Publish registration metadata"
+                    }
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_declared_metadata(
+                "worker-a",
+                &AgentRegistrationMetadata {
+                    organization: Some("Agent Workforce".to_string()),
+                    project: Some("  Relay  ".to_string()),
+                    workstream: Some("   ".to_string()),
+                    role: None,
+                    objective: Some("Publish registration metadata".to_string()),
+                },
+            )
+            .await
+            .expect("publishing declared metadata should succeed");
+
+        existing.assert_hits(1);
+        update.assert_hits(1);
+    }
+
+    /// Must-not-fire: nothing declared means no request at all. A spawn that
+    /// declares nothing should not pay for a read-modify-write, and must not
+    /// rewrite the agent's metadata with what it happens to already hold.
+    #[tokio::test]
+    async fn publish_declared_metadata_makes_no_request_when_nothing_is_declared() {
+        let server = MockServer::start();
+        let any_read = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(500);
+        });
+        let any_write = server.mock(|when, then| {
+            when.method(PATCH).path("/v1/agents/worker-a");
+            then.status(500);
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_declared_metadata(
+                "worker-a",
+                &AgentRegistrationMetadata {
+                    organization: Some(String::new()),
+                    project: Some("   ".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("an empty declaration is a no-op, not an error");
+
+        any_read.assert_hits(0);
+        any_write.assert_hits(0);
     }
 
     #[tokio::test]

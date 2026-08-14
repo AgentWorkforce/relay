@@ -10,6 +10,7 @@ import {
   delay,
   enrollNode,
   FleetNode,
+  getAgent,
   getFreePort,
   getInvocation,
   getNodes,
@@ -669,6 +670,93 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
 
     await rx.disconnect();
   }, 30_000);
+
+  // The feature this PR exists for, asserted against a live engine rather than
+  // a mock. It is deliberately an e2e: the declared fields do NOT ride the
+  // `agent.register` frame (the engine parses that one with a strict schema that
+  // rejects unknown keys), they are published over the HTTP agent API on a
+  // separate task once registration succeeds. Only a real engine proves that the
+  // chosen transport is one the engine actually accepts.
+  it('declared workforce metadata reaches the engine as agent metadata', async () => {
+    const agent = 'worker-declared-metadata';
+    const spawn = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'codex',
+      name: agent,
+      target_node: 'node-b',
+      task: 'ack and wait',
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'implementer',
+    });
+    expect(spawn.status).toBe(201);
+    const settled = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+        return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
+      },
+      { label: 'declared-metadata spawn settled', timeoutMs: 35_000 }
+    );
+    expect(settled.status).toBe('completed');
+
+    // Poll rather than read once: the publish is intentionally detached from the
+    // spawn so it cannot extend the broker's inline registration await.
+    const metadata = await waitFor(
+      async () => {
+        const record = await getAgent(engine, workspaceKey, agent);
+        return record?.metadata?.organization ? record.metadata : null;
+      },
+      { label: 'declared metadata published to the engine', timeoutMs: 20_000 }
+    );
+
+    expect(metadata).toMatchObject({
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'implementer',
+      // No explicit objective was declared, so it falls back to the task.
+      objective: 'ack and wait',
+    });
+  }, 70_000);
+
+  // Control for the test above: a spawn that declares nothing must not acquire
+  // declared fields from anywhere — no name-derived hierarchy, no leakage from
+  // the previous spawn's publish.
+  it('a spawn that declares nothing gets no declared metadata', async () => {
+    const agent = 'worker-undeclared-metadata';
+    const spawn = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'codex',
+      name: agent,
+      target_node: 'node-b',
+    });
+    expect(spawn.status).toBe(201);
+    const settled = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
+        return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
+      },
+      { label: 'undeclared spawn settled', timeoutMs: 35_000 }
+    );
+    // A control arm that accepts a FAILED spawn proves nothing: no agent was
+    // stamped because none was started.
+    expect(settled.status).toBe('completed');
+
+    const initial = await waitFor(async () => await getAgent(engine, workspaceKey, agent), {
+      label: 'undeclared agent visible',
+      timeoutMs: 20_000,
+    });
+    // Give any (incorrect) publish the same window the positive test relies on.
+    await delay(3_000);
+    const final = await getAgent(engine, workspaceKey, agent);
+    // Assert against the FINAL read, and require it to exist — falling back to
+    // the earlier snapshot would let a broken final read pass this test on
+    // stale data.
+    expect(final).not.toBeNull();
+    for (const key of ['organization', 'project', 'workstream', 'role', 'objective']) {
+      expect(initial.metadata ?? {}).not.toHaveProperty(key);
+      expect(final!.metadata ?? {}).not.toHaveProperty(key);
+    }
+  }, 70_000);
 });
 
 /**

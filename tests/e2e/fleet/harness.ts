@@ -667,6 +667,26 @@ export async function listMessages(
   return items as Array<{ text: string }>;
 }
 
+/** Read one agent's engine record, including the metadata bag.
+ *
+ * Returns null ONLY for 404 — "the agent does not exist yet", which callers
+ * poll on. Every other failure throws: mapping auth, server, and not-found
+ * errors all to null makes a broken read indistinguishable from a legitimately
+ * absent agent, and a `waitFor` polling on null would then time out (or an
+ * assertion would pass) for entirely the wrong reason. */
+export async function getAgent(
+  engine: EngineHandle,
+  workspaceKey: string,
+  name: string
+): Promise<{ name: string; metadata?: Record<string, unknown> } | null> {
+  const { status, body } = await engine.fetchJson(`/v1/agents/${name}`, {
+    headers: { authorization: `Bearer ${workspaceKey}` },
+  });
+  if (status === 404) return null;
+  if (status >= 300) throw new Error(`getAgent(${name}) ${status}: ${JSON.stringify(body)}`);
+  return body.data ?? null;
+}
+
 /** Release (delete) an agent, freeing its location — used to model a resumable
  * agent being released before a resume re-spawn. */
 export async function releaseAgent(

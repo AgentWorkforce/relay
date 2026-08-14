@@ -4,6 +4,7 @@ import { createWorkspaceClient, type RelayWorkspaceThinClient } from '@agent-rel
 
 import { withDefaults, type CoreDependencies } from './core.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
+import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import {
   resolveAgentToken,
@@ -119,6 +120,11 @@ export function registerFleetCommands(
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
       .option('--model <model>', 'Model powering the worker')
+      .option('--organization <organization>', 'Declared organization for workforce reporting')
+      .option('--project <project>', 'Declared project for workforce reporting')
+      .option('--workstream <workstream>', 'Declared workstream for workforce reporting')
+      .option('--role <role>', 'Declared role for workforce reporting')
+      .option('--objective <objective>', 'Declared objective (defaults to --task when omitted)')
       .option('--session-ref <reference>', 'Session reference for a resumable targeted spawn')
   ).action(async (cli: string, options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
@@ -130,7 +136,16 @@ export function registerFleetCommands(
         optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const channel = optionalText(options.channel, 'Channel');
       const model = optionalText(options.model, 'Model');
+      const organization = optionalText(options.organization, 'Organization');
+      const project = optionalText(options.project, 'Project');
+      const workstream = optionalText(options.workstream, 'Workstream');
+      const role = optionalText(options.role, 'Role');
+      const objective = optionalText(options.objective, 'Objective');
       const sessionRef = optionalText(options.sessionRef, 'Session reference');
+      const registrationMetadata = declaredWorkforceMetadata(
+        { organization, project, workstream, role, objective },
+        task
+      );
 
       if (targetNode) {
         if (!resolveAgentToken(clientOptions)) {
@@ -149,6 +164,7 @@ export function registerFleetCommands(
             task,
             ...(channel ? { channels: [channel] } : {}),
             ...(model ? { model } : {}),
+            ...registrationMetadata,
             ...(sessionRef ? { session_ref: sessionRef } : {}),
           },
         });
@@ -167,7 +183,9 @@ export function registerFleetCommands(
         task,
         ...(channel ? { channel } : {}),
         ...(persona ? { persona } : {}),
-        ...(model ? { metadata: { model } } : {}),
+        ...(model || Object.keys(registrationMetadata).length > 0
+          ? { metadata: { ...(model ? { model } : {}), ...registrationMetadata } }
+          : {}),
       });
       printJson(deps.sdk, { invocation });
     });

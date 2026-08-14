@@ -1,5 +1,6 @@
 use super::fleet::try_send_terminal;
 use super::*;
+use crate::relaycast::retry_agent_registration;
 use crate::terminal_control::TerminalToCloud;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
@@ -293,6 +294,7 @@ impl BrokerRuntime {
                 model,
                 args,
                 task,
+                registration_metadata,
                 channels,
                 cwd,
                 team,
@@ -391,6 +393,11 @@ impl BrokerRuntime {
                                 worker = %name,
                                 "bound agent to node via agent.register for HTTP spawn"
                             );
+                            super::fleet::spawn_declared_metadata_publish(
+                                relaycast_http,
+                                name.as_str(),
+                                registration_metadata,
+                            );
                             let relay_key = token.token.clone();
                             fleet_registration = Some((token, None, session_ref));
                             Some(relay_key)
@@ -401,9 +408,20 @@ impl BrokerRuntime {
                                 error = %node_error,
                                 "node agent.register unavailable; falling back to HTTP pre-registration"
                             );
+                            // The ordinary cache-aware registration: it honours
+                            // the SDK's cached token and rate-limit block, so a
+                            // name already seeded by preflight or an earlier
+                            // spawn is reused rather than re-created. Declared
+                            // metadata is published separately, exactly as on
+                            // the node path.
                             match retry_agent_registration(relaycast_http, &name, Some(&cli)).await
                             {
                                 Ok(token) => {
+                                    super::fleet::spawn_declared_metadata_publish(
+                                        relaycast_http,
+                                        name.as_str(),
+                                        registration_metadata,
+                                    );
                                     // HTTP registration alone leaves the agent
                                     // without a node binding; the engine only
                                     // delivers to `via_node` agents in node-only

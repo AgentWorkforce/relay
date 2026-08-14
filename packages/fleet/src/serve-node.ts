@@ -342,7 +342,8 @@ function makeContext(
 /**
  * Shape a fleet spawn request as the engine `node.spawn` input. Spawn fields are
  * flattened to the top level so the broker's spawn executor reads `name`/`cli`/
- * `task`. The engine's capacity placement keys on `capability` — the harness a
+ * `task`; declared registration metadata remains under `metadata` for the
+ * subsequent `agent.register`. The engine's capacity placement keys on `capability` — the harness a
  * `spawn:<harness>` shadow delegates to — which is distinct from the executable
  * `cli` when the shadow's harness command isn't itself the harness name.
  */
@@ -357,6 +358,7 @@ function buildSpawnInput(
   return {
     ...spawn.agent,
     ...(spawn.initialTask !== undefined ? { task: spawn.initialTask } : {}),
+    ...(spawn.registrationMetadata ? { metadata: spawn.registrationMetadata } : {}),
     skip_relay_prompt: spawn.skipRelayPrompt ?? false,
     ...(invocationId ? { invocation_id: invocationId } : {}),
     ...(shadowedHarness ? { capability: shadowedHarness } : {}),

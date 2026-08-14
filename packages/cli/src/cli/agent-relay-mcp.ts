@@ -20,6 +20,7 @@ import {
   isInvalidAgentTokenError,
 } from '@agent-relay/sdk';
 import { z } from 'zod';
+import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinitions } from './mcp/resources.js';
 import { jsonContent, jsonResult, textContent } from './mcp/tool-results.js';
@@ -533,6 +534,11 @@ type SpawnToolRequest = {
   channel?: string;
   channels?: string[];
   model?: string;
+  organization?: string;
+  project?: string;
+  workstream?: string;
+  role?: string;
+  objective?: string;
   sessionRef?: string;
   targetNode?: string;
 };
@@ -565,6 +571,11 @@ function buildSpawnActionInput({
   channel,
   channels,
   model,
+  organization,
+  project,
+  workstream,
+  role,
+  objective,
   sessionRef,
   targetNode,
 }: SpawnToolRequest): Record<string, unknown> {
@@ -575,6 +586,7 @@ function buildSpawnActionInput({
     ...(task ? { task } : {}),
     ...(persona && cwd ? { cwd } : {}),
     ...(model ? { model } : {}),
+    ...declaredWorkforceMetadata({ organization, project, workstream, role, objective }, task),
     ...(sessionRef ? { session_ref: sessionRef } : {}),
     ...(targetNode ? { target_node: targetNode } : {}),
     ...(selectedChannels ? { channels: selectedChannels } : {}),
@@ -921,6 +933,11 @@ function registerAgentRelayTools(
         channel: z.string().optional().describe('Channel to join'),
         channels: z.array(z.string()).optional().describe('Channels to join'),
         model: z.string().optional().describe('Model powering the worker'),
+        organization: z.string().optional().describe('Declared organization for workforce reporting'),
+        project: z.string().optional().describe('Declared project for workforce reporting'),
+        workstream: z.string().optional().describe('Declared workstream for workforce reporting'),
+        role: z.string().optional().describe('Declared role for workforce reporting'),
+        objective: z.string().optional().describe('Declared objective; defaults to task when omitted'),
         session_ref: z.string().optional().describe('Session reference for resumable spawns'),
         target_node: z.string().optional().describe('Optional target fleet node name'),
         ...identityOverrideInputShape,
@@ -933,7 +950,24 @@ function registerAgentRelayTools(
         openWorldHint: true,
       },
     },
-    async ({ name, cli, persona, task, cwd, channel, channels, model, session_ref, target_node, as }) => {
+    async ({
+      name,
+      cli,
+      persona,
+      task,
+      cwd,
+      channel,
+      channels,
+      model,
+      organization,
+      project,
+      workstream,
+      role,
+      objective,
+      session_ref,
+      target_node,
+      as,
+    }) => {
       const actions = requireSpawnActions(getAgentClient(as));
       const request = {
         name,
@@ -944,6 +978,11 @@ function registerAgentRelayTools(
         channel,
         channels,
         model,
+        organization,
+        project,
+        workstream,
+        role,
+        objective,
         sessionRef: session_ref,
         targetNode: target_node,
       };
