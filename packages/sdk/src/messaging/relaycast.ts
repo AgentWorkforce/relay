@@ -646,6 +646,20 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               ttlMs,
             });
             const ack = await this.commands.invoke(actionName, actionInput);
+            // The ack proves only that the engine accepted the dispatch. Unless
+            // the caller asks for confirmation, a node that accepted the
+            // invocation and launched nothing resolves identically to a real
+            // spawn — see `confirm` on RelaySpawnPlacementInput.
+            const confirmation = input.confirm
+              ? await this.confirmPlacementInvocation(actionName, ack, {
+                  capability,
+                  node: decision.node.name,
+                  repo,
+                  attempts,
+                  timeoutMs: input.confirmTimeoutMs ?? 120_000,
+                  pollIntervalMs: input.confirmPollIntervalMs ?? 500,
+                })
+              : undefined;
             return {
               ...ack,
               node: decision.node,
@@ -655,7 +669,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
                 ...(repo ? { repo } : {}),
                 attempts,
                 queued,
+                confirmed: Boolean(confirmation),
               },
+              ...(confirmation ? { confirmation } : {}),
             };
           }
 
@@ -736,6 +752,75 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       }
     },
   };
+
+  /**
+   * Poll a dispatched invocation until the node reports a terminal result.
+   *
+   * Confirmation has to be observable from the requester, because the failure
+   * this guards against is a node that cannot report honestly: an obsolete
+   * broker advertises `spawn:<harness>` capacity, acks the invocation, and
+   * never launches or reports anything. Silence is therefore a failure, not a
+   * pending success — it times out as `spawn_unconfirmed`.
+   */
+  private async confirmPlacementInvocation(
+    actionName: string,
+    ack: RelayActionInvocationAck,
+    context: {
+      capability: string;
+      node: string;
+      repo?: string;
+      attempts: number;
+      timeoutMs: number;
+      pollIntervalMs: number;
+    }
+  ): Promise<RelayActionInvocation> {
+    const { timeoutMs, pollIntervalMs, ...errorContext } = context;
+    const invocationId = ack.invocationId;
+    if (!invocationId) {
+      throw new RelayPlacementError(
+        'spawn_unconfirmed',
+        `node '${context.node}' accepted ${actionName} without returning an invocation id, so the dispatch cannot be confirmed`,
+        errorContext
+      );
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let lastReadError: string | undefined;
+    for (;;) {
+      let invocation: RelayActionInvocation | undefined;
+      try {
+        invocation = await this.commands.getInvocation(actionName, invocationId);
+      } catch (error) {
+        // A read failure is not evidence either way; keep polling until the
+        // deadline and report the last reason if we never get an answer.
+        lastReadError = error instanceof Error ? error.message : String(error);
+      }
+
+      const status = invocation?.status?.toLowerCase();
+      if (status === 'completed' || status === 'succeeded' || status === 'success') {
+        return invocation as RelayActionInvocation;
+      }
+      if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') {
+        throw new RelayPlacementError(
+          'spawn_failed',
+          invocation?.error?.trim() || `node '${context.node}' reported ${status} for ${actionName}`,
+          errorContext
+        );
+      }
+
+      if (Date.now() >= deadline) {
+        throw new RelayPlacementError(
+          'spawn_unconfirmed',
+          `node '${context.node}' accepted ${actionName} (invocation ${invocationId}) but never reported a result within ${timeoutMs}ms. ` +
+            `The node advertised capacity and acknowledged the dispatch; nothing confirmed that it launched. ` +
+            `Check that node's broker version, or re-run without confirmation to accept an unconfirmed dispatch.` +
+            (lastReadError ? ` Last read error: ${lastReadError}` : ''),
+          errorContext
+        );
+      }
+      await delay(Math.max(25, Math.min(pollIntervalMs, deadline - Date.now())));
+    }
+  }
 
   readonly triggers = {
     list: async (): Promise<RelayTrigger[]> => (await this.requireTriggers().list()).map(toRelayTrigger),

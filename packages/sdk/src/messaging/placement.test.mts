@@ -13,10 +13,14 @@ type RawNode = {
 
 function createClient(
   nodes: RawNode[],
-  options: {
+  {
+    getInvocation: getInvocationOverride,
+    ...options
+  }: {
     placementLog?: (message: string) => void;
     selfNodeName?: string;
     maxQueuedPlacements?: number;
+    getInvocation?: (name: string, invocationId: string) => Promise<unknown>;
   } = {}
 ) {
   const invoke = vi.fn(async (name: string, input?: Record<string, unknown>) => ({
@@ -50,10 +54,11 @@ function createClient(
       get: vi.fn(async (name: string) => nodes.find((node) => node.name === name) ?? null),
     },
   };
+  const getInvocation = vi.fn(getInvocationOverride ?? (async () => undefined));
   const agentClient = {
     actions: {
       invoke,
-      getInvocation: vi.fn(),
+      getInvocation,
       completeInvocation: vi.fn(),
     },
   };
@@ -63,8 +68,17 @@ function createClient(
     placementTtlMs: 60,
     ...options,
   });
-  return { client, invoke, nodes };
+  return { client, invoke, getInvocation, nodes };
 }
+
+const LIVE_NODE_A = {
+  id: 'node_a',
+  name: 'node-a',
+  status: 'online',
+  live: true,
+  capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+  repo_keys: ['relay'],
+};
 
 describe('RelaycastMessagingClient placement', () => {
   it('places a targeted spawn on the named live eligible node', async () => {
@@ -519,5 +533,135 @@ describe('RelaycastMessagingClient placement', () => {
 
     expect(invoke).not.toHaveBeenCalled();
     expect(logs.join('\n')).toContain('placement TTL expired');
+  });
+
+  // Issue #1430: a node running an obsolete broker advertises `spawn:<harness>`
+  // capacity, accepts the invocation, and launches nothing. Placement acceptance
+  // is therefore not evidence of a spawn, and the requester cannot assume the
+  // node is current enough to report its own failure.
+  describe('spawn confirmation (#1430)', () => {
+    it('does not confirm by default, so acceptance alone still resolves', async () => {
+      const { client, getInvocation } = createClient([LIVE_NODE_A]);
+
+      const ack = await client.placement.spawn({
+        capability: 'spawn:claude',
+        node: 'node-a',
+        repo: 'relay',
+        input: { name: 'worker-unconfirmed' },
+      });
+
+      // Control arm for the tests below: without `confirm` the invocation is
+      // never read back, and the ack says so rather than implying a launch.
+      expect(getInvocation).not.toHaveBeenCalled();
+      expect(ack.placement.confirmed).toBe(false);
+      expect(ack.confirmation).toBeUndefined();
+    });
+
+    it('resolves when the node confirms the spawn completed', async () => {
+      const { client, getInvocation } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'completed',
+          output: { spawned: true, name: 'worker-confirmed' },
+        }),
+      });
+
+      const ack = await client.placement.spawn({
+        capability: 'spawn:claude',
+        node: 'node-a',
+        repo: 'relay',
+        confirm: true,
+        input: { name: 'worker-confirmed' },
+      });
+
+      expect(getInvocation).toHaveBeenCalled();
+      expect(ack.placement.confirmed).toBe(true);
+      expect(ack.confirmation?.status).toBe('completed');
+    });
+
+    // The sf-mini reproduction: capacity advertised, invocation accepted, no
+    // process, and no result ever reported. This must fail, not succeed.
+    it('fails with spawn_unconfirmed when the node accepts but never reports a result', async () => {
+      const { client } = createClient([LIVE_NODE_A], {
+        // An obsolete broker leaves the invocation non-terminal forever.
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'invoked',
+        }),
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 60,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-silent' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).node).toBe('node-a');
+      expect((error as Error).message).toContain('never reported a result');
+    });
+
+    it('surfaces the node-reported failure detail as spawn_failed', async () => {
+      const { client } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'failed',
+          error:
+            "spawn_failed: agent 'worker-dead' process exited during startup (exit status: 19); see worker log /tmp/worker-dead.log",
+        }),
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 1_000,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-dead' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      // The broker's detail (exit status + log path) must survive to the caller.
+      expect((error as Error).message).toContain('exit status: 19');
+      expect((error as Error).message).toContain('/tmp/worker-dead.log');
+    });
+
+    it('times out as spawn_unconfirmed when the invocation cannot be read at all', async () => {
+      const { client } = createClient([LIVE_NODE_A], {
+        getInvocation: async () => {
+          throw new Error('getInvocation is not supported by this engine');
+        },
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 60,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-unreadable' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as Error).message).toContain('getInvocation is not supported');
+    });
   });
 });

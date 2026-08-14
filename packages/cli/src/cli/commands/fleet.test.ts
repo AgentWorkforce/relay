@@ -451,6 +451,10 @@ describe('fleet command support', () => {
       capability: 'spawn:codex',
       node: 'sf-mini',
       failFast: true,
+      // #1430: acceptance by the node is not evidence of a launch, so a
+      // targeted spawn asks the node to confirm unless told not to.
+      confirm: true,
+      confirmTimeoutMs: 120_000,
       input: {
         name: 'api-worker',
         cli: 'codex',
@@ -498,6 +502,111 @@ describe('fleet command support', () => {
     expect(JSON.parse(logs[0]!)).toMatchObject({
       invocation: { invocationId: 'inv_targeted' },
     });
+  });
+
+  it('fleet spawn --no-confirm accepts an unconfirmed targeted dispatch', async () => {
+    const placement = {
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_unconfirmed',
+        actionName: 'spawn',
+        node: { name: 'sf-mini' },
+        placement: {
+          capability: 'spawn:codex',
+          node: 'sf-mini',
+          attempts: 1,
+          queued: false,
+          confirmed: false,
+        },
+      })),
+    };
+    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: () => undefined,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--name',
+        'api-worker',
+        '--task',
+        'ACK and wait',
+        '--node',
+        'sf-mini',
+        '--no-confirm',
+        '--workspace-key',
+        'rk_live_test',
+        '--token',
+        'at_live_lead',
+      ],
+      { from: 'user' }
+    );
+
+    // The escape hatch must actually disable confirmation, and must not smuggle
+    // a timeout through that would imply the caller is still waiting.
+    const call = placement.spawn.mock.calls[0]![0] as Record<string, unknown>;
+    expect(call.confirm).toBe(false);
+    expect(call).not.toHaveProperty('confirmTimeoutMs');
+  });
+
+  it('fleet spawn rejects a non-numeric --confirm-timeout', async () => {
+    const placement = { spawn: vi.fn() };
+    const program = new Command();
+    program.exitOverride();
+    const errors: unknown[] = [];
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: () => undefined,
+        error: (message: unknown) => errors.push(message),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--name',
+        'api-worker',
+        '--task',
+        'ACK and wait',
+        '--node',
+        'sf-mini',
+        '--confirm-timeout',
+        'soon',
+        '--workspace-key',
+        'rk_live_test',
+        '--token',
+        'at_live_lead',
+      ],
+      { from: 'user' }
+    );
+
+    expect(placement.spawn).not.toHaveBeenCalled();
+    expect(String(errors.join('\n'))).toContain('--confirm-timeout');
   });
 
   it('fleet spawn uses workspace-scoped automatic placement when no node is named', async () => {
