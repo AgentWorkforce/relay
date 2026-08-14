@@ -15,6 +15,27 @@ pub(crate) struct RuntimePaths {
     pub(super) _lock: Option<std::fs::File>,
 }
 
+fn safe_broker_name(broker_name: &str) -> String {
+    broker_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Return the persistent state file used by a named broker under `root`.
+///
+/// Recovery must derive its identity from this exact path because normal
+/// startup hashes `RuntimePaths::state`, not a shared `state.json` file.
+pub(crate) fn persistent_broker_state_path(root: &Path, broker_name: &str) -> PathBuf {
+    root.join(format!("state-{}.json", safe_broker_name(broker_name)))
+}
+
 /// Returns the continuity directory path derived from the state file path.
 /// State path is always `{cwd}/.agentworkforce/relay/state.json`, so parent is `{cwd}/.agentworkforce/relay/`.
 pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
@@ -40,16 +61,7 @@ pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
 /// Single-instance enforcement is unnecessary here because each SDK client
 /// manages its own child process.
 pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
-    let safe_name: String = broker_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    let safe_name = safe_broker_name(broker_name);
     let safe_name = if safe_name.is_empty() {
         "broker".to_string()
     } else {
@@ -85,17 +97,8 @@ pub(crate) fn ensure_runtime_paths(
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
-    // Sanitise name for use in filenames — keep only alphanumeric and hyphens
-    let safe_name: String = broker_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    // Single filename transform shared with the recovery identity path.
+    let safe_name = safe_broker_name(broker_name);
 
     // Lock and PID files are per-broker-name so concurrent workflows can coexist.
     let lock_path = root.join(format!("broker-{safe_name}.lock"));
@@ -144,7 +147,7 @@ pub(crate) fn ensure_runtime_paths(
                     // Successfully recovered — PID is written via connection.json at API start
                     return Ok(RuntimePaths {
                         persist: true,
-                        state: root.join(format!("state-{safe_name}.json")),
+                        state: persistent_broker_state_path(&root, broker_name),
                         pending: root.join(format!("pending-{safe_name}.json")),
                         dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
                         dedup: root.join(format!("dedup-{safe_name}.json")),
@@ -182,7 +185,7 @@ pub(crate) fn ensure_runtime_paths(
             }
             return Ok(RuntimePaths {
                 persist: true,
-                state: root.join(format!("state-{safe_name}.json")),
+                state: persistent_broker_state_path(&root, broker_name),
                 pending: root.join(format!("pending-{safe_name}.json")),
                 dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
                 dedup: root.join(format!("dedup-{safe_name}.json")),
@@ -195,7 +198,7 @@ pub(crate) fn ensure_runtime_paths(
 
     Ok(RuntimePaths {
         persist: true,
-        state: root.join(format!("state-{safe_name}.json")),
+        state: persistent_broker_state_path(&root, broker_name),
         pending: root.join(format!("pending-{safe_name}.json")),
         dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
         dedup: root.join(format!("dedup-{safe_name}.json")),

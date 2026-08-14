@@ -1497,7 +1497,7 @@ mod tests {
 
     fn assert_is_agent_relay_mcp_args(args: Option<&Vec<Value>>) {
         let args = args.expect("expected agent-relay mcp args");
-        assert_eq!(args.get(0).and_then(Value::as_str), Some("-y"));
+        assert_eq!(args.first().and_then(Value::as_str), Some("-y"));
         assert_eq!(args.get(1).and_then(Value::as_str), Some("agent-relay"));
         assert_eq!(args.get(2).and_then(Value::as_str), Some("mcp"));
     }

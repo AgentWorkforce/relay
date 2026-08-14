@@ -52,6 +52,17 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Operator recovery for a single agent name whose registration predates
+    /// the identity-reclaim gate (5c2ad8ee3) and therefore has no
+    /// `identity_key` stamped on its record: its own broker restarts are
+    /// permanently rejected by the ordinary reconnect path, with no value of
+    /// RELAY_AGENT_IDENTITY_KEY able to satisfy a check against a record
+    /// that never had an identity stamped in the first place. Backfills the
+    /// identity so future restarts reclaim normally. Deliberately explicit
+    /// and operator-invoked rather than automatic — see
+    /// `reclaim_legacy_identity`'s doc comment for why.
+    #[command(hide = true)]
+    ReclaimLegacyIdentity(ReclaimLegacyIdentityCommand),
 }
 
 impl Commands {
@@ -66,6 +77,7 @@ impl Commands {
             Commands::DumpPty(_) => "dump_pty",
             Commands::JournalLock(_) => "journal_lock",
             Commands::Wrap { .. } => "wrap",
+            Commands::ReclaimLegacyIdentity(_) => "reclaim_legacy_identity",
         }
     }
 
@@ -103,6 +115,9 @@ impl Commands {
             Commands::DumpPty(cmd) => format!("dump_pty-{}-{}", cmd.name, pid),
             Commands::JournalLock(_) => format!("journal_lock-{pid}"),
             Commands::Swarm(_) => format!("swarm-{pid}"),
+            Commands::ReclaimLegacyIdentity(cmd) => {
+                format!("reclaim_legacy_identity-{}-{}", cmd.name, pid)
+            }
         }
     }
 }
@@ -138,6 +153,7 @@ pub(crate) async fn run() -> Result<()> {
         Commands::DumpPty(cmd) => runtime::run_dump_pty(cmd).await,
         Commands::JournalLock(cmd) => journal_lock::run_journal_lock(cmd),
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
+        Commands::ReclaimLegacyIdentity(cmd) => runtime::run_reclaim_legacy_identity(cmd).await,
     }
 }
 
@@ -164,6 +180,32 @@ pub(crate) struct DumpPtyCommand {
 
     /// Override the directory containing `.agentworkforce/relay/connection.json` when
     /// auto-discovering the broker.
+    #[arg(long)]
+    pub(crate) state_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct ReclaimLegacyIdentityCommand {
+    /// The agent name whose registration predates the identity-reclaim gate
+    /// and needs its identity backfilled.
+    pub(crate) name: String,
+
+    /// Workspace API key. Falls back to RELAY_API_KEY, then
+    /// AGENT_RELAY_WORKSPACE_KEY, then RELAY_WORKSPACE_KEY.
+    #[arg(long)]
+    pub(crate) workspace_key: Option<String>,
+
+    /// Relaycast base URL. Falls back to RELAYCAST_BASE_URL, then
+    /// RELAY_BASE_URL.
+    #[arg(long)]
+    pub(crate) base_url: Option<String>,
+
+    /// The node's own `.agentworkforce/relay` state directory, used to
+    /// derive the same stable identity `connect_relay` would compute for
+    /// this named node at startup. Only consulted when
+    /// RELAY_AGENT_IDENTITY_KEY is unset. The identity proof is deliberately
+    /// accepted only through that environment variable or this derived path,
+    /// never as an argv value visible in process listings and shell history.
     #[arg(long)]
     pub(crate) state_dir: Option<PathBuf>,
 }
@@ -306,6 +348,7 @@ impl InitCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, Parser};
     use std::sync::Mutex;
 
     static BROKER_NAME_ENV_MUTEX: Mutex<()> = Mutex::new(());
@@ -337,6 +380,29 @@ mod tests {
             persist: false,
             state_dir: None,
         }
+    }
+
+    #[test]
+    fn legacy_identity_reclaim_is_hidden_from_help() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(!help.contains("reclaim-legacy-identity"));
+    }
+
+    #[test]
+    fn legacy_identity_reclaim_rejects_identity_proofs_on_argv_without_echoing_them() {
+        let secret = "raw-ownership-proof-must-not-appear";
+        let error = Cli::try_parse_from([
+            "agent-relay-broker",
+            "reclaim-legacy-identity",
+            "legacy-node",
+            "--identity-key",
+            secret,
+        ])
+        .expect_err("--identity-key must not accept a secret argv value")
+        .to_string();
+
+        assert!(error.contains("--identity-key"));
+        assert!(!error.contains(secret));
     }
 
     #[test]

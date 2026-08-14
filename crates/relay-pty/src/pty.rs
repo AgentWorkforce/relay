@@ -2077,7 +2077,7 @@ mod tests {
         let flag = "--dangerously-bypass-approvals-and-sandbox".to_string();
         let (pty, mut rx) = PtySession::spawn(
             shim.to_str().expect("shim path utf8"),
-            &[flag.clone()],
+            std::slice::from_ref(&flag),
             24,
             80,
         )

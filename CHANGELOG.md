@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay node agent attach --node` now accepts `--workspace-key`, so commands copied from the Cloud dashboard resolve the intended workspace regardless of the working directory.
 - Passing `--workspace-key` to the local or `--ssh-host` attach path is rejected because those paths authenticate with the broker instead.
+- `agent-relay-broker reclaim-legacy-identity`: restore restart reclaim for one
+  offline agent registered before identity proofs were stamped.
 
 ## [11.6.1] - 2026-08-13
 
