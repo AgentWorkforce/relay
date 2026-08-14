@@ -329,6 +329,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             broker_version,
             token_minter,
             session_token: Some(session_node_token.clone()),
+            read_idle_timeout: None,
         },
         fleet_control_rx,
         fleet_event_tx,

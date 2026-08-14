@@ -32,6 +32,20 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
 // authoritative live-worker inventory well inside that window even when every
 // worker is otherwise idle.
 const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+/// How long `/v1/node/ws` may go without a single inbound frame before the
+/// connection is treated as dead.
+///
+/// Every other disconnect path in this module keys off `send_wire(...)`
+/// failing, which only detects a socket the kernel has already torn down. On a
+/// blackholed connection the kernel keeps accepting these small frames into the
+/// send buffer, so the writes "succeed" indefinitely, no frame ever arrives,
+/// and the node silently drops out of the fleet while `/health` still reports
+/// `nodeConnected: true`. Each heartbeat tick also sends a WS ping, so a live
+/// peer always produces inbound traffic (a pong) even when the engine has
+/// nothing to say — making silence past this window unambiguous. Sized at four
+/// heartbeat intervals so three consecutive lost pings are tolerated before a
+/// reconnect.
+const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(48);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
@@ -66,6 +80,10 @@ pub(crate) struct FleetControlConfig {
     /// providers reading it after a re-mint get the fresh token, not the startup
     /// snapshot. Absent in tests.
     pub(crate) session_token: Option<std::sync::Arc<std::sync::RwLock<Option<String>>>>,
+    /// How long the connection may go without an inbound frame before it is
+    /// treated as dead. `None` uses [`READ_IDLE_TIMEOUT`]; tests override it so
+    /// the blackhole case can be covered without a 48-second wait.
+    pub(crate) read_idle_timeout: Option<Duration>,
 }
 
 /// Mints node tokens via `POST /v1/nodes` and maintains the workspace-scoped
@@ -1611,7 +1629,10 @@ async fn run_connected_once(
         return ControlRunResult::Disconnected;
     }
 
-    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    // The idle check runs on the heartbeat tick, so the tick must be shorter
+    // than the window it polices; an overridden (test) window keeps that ratio.
+    let read_idle_timeout_value = config.read_idle_timeout.unwrap_or(READ_IDLE_TIMEOUT);
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL.min(read_idle_timeout_value / 4));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut inventory_refresh = tokio::time::interval(inventory_refresh_interval);
     inventory_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1619,6 +1640,8 @@ async fn run_connected_once(
     // already renewed the lease, so schedule the first refresh one full period
     // from now instead of duplicating it on connection setup.
     inventory_refresh.tick().await;
+    let read_idle_timeout = read_idle_timeout_value;
+    let mut last_inbound = Instant::now();
 
     loop {
         tokio::select! {
@@ -1686,7 +1709,32 @@ async fn run_connected_once(
             }
             _ = heartbeat.tick() => {
                 expire_agent_registrations(&mut pending_agent_registrations, Instant::now());
+                // Checked before the write, because the write is exactly what
+                // cannot be trusted here: it keeps succeeding on a blackholed
+                // socket. Silence past the window is the only local evidence
+                // that the engine stopped hearing us.
+                // `>=`, not `>`: the check runs at the top of each tick, so on a
+                // blackholed connection `idle` lands exactly on the window at
+                // the fourth tick. A strict `>` would miss that boundary and
+                // disconnect a whole interval late (60s, five intervals), which
+                // is not the four-interval budget documented above.
+                let idle = last_inbound.elapsed();
+                if idle >= read_idle_timeout {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        idle_secs = idle.as_secs(),
+                        "no inbound node-control frame within the read-idle window; reconnecting"
+                    );
+                    drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
+                    return ControlRunResult::Disconnected;
+                }
                 if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
+                    drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
+                    return ControlRunResult::Disconnected;
+                }
+                // Guarantees the peer owes us a frame every interval, so an idle
+                // engine is distinguishable from a dead connection.
+                if sink.send(Message::Ping(Vec::new())).await.is_err() {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
                 }
@@ -1715,6 +1763,10 @@ async fn run_connected_once(
                         return ControlRunResult::Disconnected;
                     }
                 };
+                // Any frame proves the peer is still there — including the pong
+                // answering our ping, which is the only traffic a healthy but
+                // idle engine is guaranteed to send.
+                last_inbound = Instant::now();
                 if !handle_server_message(message, event_tx, &mut pending_agent_registrations, &mut sink).await {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
@@ -3030,6 +3082,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
                 session_token: None,
+                read_idle_timeout: None,
             },
             command_rx,
             event_tx,
@@ -3154,6 +3207,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
                 session_token: None,
+                read_idle_timeout: None,
             },
             command_rx,
             event_tx,
@@ -3320,6 +3374,7 @@ mod tests {
                     token_path: None,
                 }),
                 session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
             },
             command_rx,
             event_tx,
@@ -3382,6 +3437,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
                 session_token: None,
+                read_idle_timeout: None,
             },
             command_rx,
             event_tx,
@@ -3546,6 +3602,7 @@ mod tests {
                     broker_version: "broker/test".to_string(),
                     token_minter: None,
                     session_token: None,
+                    read_idle_timeout: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -3622,6 +3679,7 @@ mod tests {
                     broker_version: "broker/test".to_string(),
                     token_minter: None,
                     session_token: None,
+                    read_idle_timeout: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -3636,6 +3694,175 @@ mod tests {
 
         assert_eq!(result, ControlRunResult::Disconnected);
         server.await.unwrap();
+    }
+
+    /// A blackholed `/v1/node/ws` — the socket still accepts writes, but the
+    /// engine never sends another frame — must be detected and reconnected.
+    ///
+    /// This is the 2026-08-07 `finn-mini` outage: the node stopped heartbeating
+    /// engine-side at 11:52:35Z and stayed `offline` for 80 minutes while the
+    /// broker's own `/health` still reported `nodeConnected: true`, because
+    /// every disconnect path keyed off `send_wire` failing and the writes kept
+    /// succeeding into the send buffer. Without [`READ_IDLE_TIMEOUT`] the
+    /// client never leaves its `select!`, so the second `accept()` below never
+    /// happens and this test fails on the outer timeout.
+    #[tokio::test]
+    async fn node_control_reconnects_when_peer_goes_silent_but_writes_still_succeed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, _event_rx) = mpsc::channel(32);
+
+        tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_test".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: None,
+                session_token: None,
+                // Short window so the blackhole is covered in well under a
+                // second; production uses READ_IDLE_TIMEOUT (48s).
+                read_idle_timeout: Some(Duration::from_millis(400)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            // Go silent: hold the socket open but never poll it again. Not
+            // draining is the point — tungstenite answers pings automatically
+            // while a connection is being read, so a server that keeps calling
+            // `next()` still looks alive. An unpolled socket keeps the broker's
+            // writes succeeding into the send buffer while nothing ever comes
+            // back, which is the blackhole this guards against.
+            let hold = tokio::spawn(async move {
+                let _ws = ws;
+                std::future::pending::<()>().await;
+            });
+
+            // The client must give up on the silent connection and dial again.
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws2 = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws2).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            hold.abort();
+        });
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        // Comfortably above the 400ms window plus reconnect backoff. Without
+        // the read-idle check the reconnect never comes at all, so this bound
+        // is what turns the hang into a failure.
+        tokio::time::timeout(Duration::from_secs(20), server)
+            .await
+            .expect("client never reconnected after the peer went silent")
+            .unwrap();
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    /// The must-not-fire control arm for the blackhole test above, under the
+    /// SAME clock. The negative test proves the detector CAN fire; on its own
+    /// that is also what a detector that disconnects unconditionally after
+    /// the window would do. This proves it does not fire when the peer is
+    /// merely idle at the application layer but still servicing the socket
+    /// (so pings get answered) — the actual claim this mechanism makes.
+    #[tokio::test]
+    async fn node_control_stays_connected_when_peer_is_idle_but_polling() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, _event_rx) = mpsc::channel(32);
+
+        tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_test".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: None,
+                session_token: None,
+                // Same window as the blackhole test, so this is a genuine
+                // control arm under identical time pressure rather than a
+                // separate, looser test.
+                read_idle_timeout: Some(Duration::from_millis(400)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            // Stay live: keep polling the socket so tungstenite answers every
+            // ping with a pong, the only traffic an idle-but-healthy engine
+            // is guaranteed to produce. This is the opposite of the blackhole
+            // test's `hold` task, which never polls again.
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let drain = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        msg = ws.next() => {
+                            if msg.is_none() {
+                                break;
+                            }
+                        }
+                        _ = &mut stop_rx => break,
+                    }
+                }
+            });
+
+            // Comfortably longer than the 400ms window — several heartbeat
+            // intervals' worth of silence at the application layer, serviced
+            // only by ping/pong.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            let _ = stop_tx.send(());
+            drain.abort();
+
+            // If the client had disconnected and reconnected, a second
+            // connection attempt would already be waiting here. None should
+            // exist: the accept must still be empty.
+            let second_connection =
+                tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+            assert!(
+                second_connection.is_err(),
+                "client reconnected even though the peer stayed live and kept polling"
+            );
+        });
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server task did not complete")
+            .unwrap();
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 
     #[tokio::test]
@@ -3654,6 +3881,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: None,
                 session_token: None,
+                read_idle_timeout: None,
             },
             command_rx,
             event_tx,
