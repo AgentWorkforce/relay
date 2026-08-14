@@ -12,6 +12,19 @@ type RelayBehavior = {
   registerImpl: (input: { name: string; type?: string }) => Promise<{ name?: string; token: string }>;
 };
 
+function assertToolsListDiscoversAndStripsMetadata(
+  toolsList: { tools?: Array<Record<string, unknown>> } | undefined
+) {
+  expect(toolsList?.tools?.map((tool) => tool.name)).toEqual(
+    expect.arrayContaining(['post_message', 'send_dm', 'check_inbox'])
+  );
+  for (const tool of toolsList?.tools ?? []) {
+    expect(tool).not.toHaveProperty('execution');
+    expect(tool).not.toHaveProperty('outputSchema');
+    expect(tool).not.toHaveProperty('_meta');
+  }
+}
+
 async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   vi.resetModules();
 
@@ -88,17 +101,27 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
         _requestHandlers: new Map([
           [
             'tools/list',
+            // Derived from `this.tools` (populated by registerTool calls
+            // made after this constructor runs, but before this handler is
+            // invoked) so the response reflects every registered tool, not
+            // just one hardcoded name. Each entry carries the same
+            // execution/outputSchema/_meta fields the real MCP SDK exposes,
+            // so tests can assert the production wrapper strips them.
             vi.fn(async () => ({
-              tools: [
-                {
-                  name: 'post_message',
-                  title: 'Post Message',
+              tools: [...this.tools.entries()].map(([name, { config }]) => {
+                const { title, description } = (config ?? {}) as {
+                  title?: string;
+                  description?: string;
+                };
+                return {
+                  name,
+                  title: title ?? name,
+                  description: description ?? `Tool ${name}`,
                   execution: { hidden: true },
                   outputSchema: { type: 'object' },
                   _meta: { hidden: true },
-                  description: 'Send a channel message',
-                },
-              ],
+                };
+              }),
             })),
           ],
         ]),
@@ -446,6 +469,8 @@ describe('createAgentRelayMcpServer', () => {
     expect(server.tools.get('list_agents')).toBeDefined();
     expect(server.tools.get('query_nodes')).toBeDefined();
     expect(server.tools.get('post_message')).toBeDefined();
+    expect(server.tools.get('send_dm')).toBeDefined();
+    expect(server.tools.get('check_inbox')).toBeDefined();
     expect(server.tools.get('add_agent')).toBeDefined();
     expect(server.tools.get('spawn')).toBeDefined();
     expect([...server.tools.keys()].filter((name) => name.includes('.'))).toEqual([]);
@@ -505,6 +530,31 @@ describe('createAgentRelayMcpServer', () => {
       registered_name: 'WorkerA',
     });
 
+    const postResult = await server.tools.get('post_message')?.handler({
+      channel: 'general',
+      text: 'MCP startup check',
+    });
+    expect(postResult.structuredContent).toMatchObject({ id: 'msg_1', channel: 'general' });
+    const dmResult = await server.tools.get('send_dm')?.handler({
+      to: 'Broker',
+      text: 'MCP startup check',
+    });
+    // Don't assert `to` here: the mock's `dm` echoes back whatever recipient
+    // it's given, but a correct handler resolves the recipient independently
+    // (and reports `recipient_unresolved` when it can't). Asserting `to`
+    // would encode that passthrough as expected behavior.
+    expect(dmResult.structuredContent).toMatchObject({
+      id: 'dm_1',
+      text: 'MCP startup check',
+    });
+    const inboxResult = await server.tools.get('check_inbox')?.handler({});
+    expect(inboxResult.structuredContent).toEqual({
+      unreadChannels: [],
+      mentions: [],
+      unreadDms: [],
+      recentReactions: [],
+    });
+
     const queryNodesResult = await server.tools.get('query_nodes')?.handler({ capability: 'spawn:codex' });
     expect(queryNodesResult.structuredContent.nodes).toEqual([
       {
@@ -555,13 +605,10 @@ describe('createAgentRelayMcpServer', () => {
       target_node: 'node-a',
     });
     const toolsList = await server.listToolsHandler?.({}, {});
-    expect(toolsList?.tools).toEqual([
-      {
-        name: 'post_message',
-        title: 'Post Message',
-        description: 'Send a channel message',
-      },
-    ]);
+    // Assert protocol-level tool discovery: the wrapped tools/list response
+    // must surface every registered tool (not just post_message) with
+    // execution/outputSchema/_meta stripped.
+    assertToolsListDiscoversAndStripsMetadata(toolsList);
 
     const promptResult = await server.prompts.get('system')?.handler();
     expect(promptResult.messages[0].content.text).toContain('create_workspace');

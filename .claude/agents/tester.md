@@ -118,20 +118,20 @@ it('works correctly');
 
 **Acknowledge tasks:**
 
-```
-mcp__relaycast__message_dm_send(to: "Sender", text: "ACK: Writing tests for [component/feature]")
+```text
+mcp__agent-relay__send_dm(to: "Sender", text: "ACK: Writing tests for [component/feature]")
 ```
 
 **Report completion:**
 
-```
-mcp__relaycast__message_dm_send(to: "Sender", text: "DONE: Created X unit tests, Y integration tests\nCoverage: [summary]\nFiles: [list]")
+```text
+mcp__agent-relay__send_dm(to: "Sender", text: "DONE: Created X unit tests, Y integration tests\nCoverage: [summary]\nFiles: [list]")
 ```
 
 **Ask for clarification:**
 
-```
-mcp__relaycast__message_dm_send(to: "Sender", text: "QUESTION: Should I prioritize coverage for [A] or [B]?")
+```text
+mcp__agent-relay__send_dm(to: "Sender", text: "QUESTION: Should I prioritize coverage for [A] or [B]?")
 ```
 
 ## Anti-Patterns to Avoid

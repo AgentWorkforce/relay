@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-broker reclaim-legacy-identity`: restore restart reclaim for one
   offline agent registered before identity proofs were stamped.
 
+### Fixed
+
+- Spawned agents now launch Agent Relay MCP through an installed local `agent-relay` executable instead of cold `npx` resolution.
+- Spawn now fails before start with an actionable error when no usable Agent Relay MCP executable is available.
+
 ## [11.6.1] - 2026-08-13
 
 ### Fixed

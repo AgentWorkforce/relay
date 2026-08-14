@@ -1878,6 +1878,40 @@ describe('registerCoreCommands', () => {
     expect(env.AGENT_RELAY_MCP_COMMAND).toBe('/usr/bin/node /tmp/agent-relay-mcp.js');
   });
 
+  it('up re-enters the installed Bun executable for Agent Relay MCP', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock();
+    const { program } = createHarness({
+      relay,
+      env,
+      argv: ['bun', '/$bunfs/root/agent-relay', 'up'],
+      execPath: '/opt/agent-relay/bin/agent-relay',
+      cliScript: '/$bunfs/root/agent-relay',
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.AGENT_RELAY_MCP_COMMAND).toBe('/opt/agent-relay/bin/agent-relay mcp');
+  });
+
+  it('up quotes an installed Bun executable path containing spaces', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    const relay = createRelayMock();
+    const { program } = createHarness({
+      relay,
+      env,
+      argv: ['bun', '/$bunfs/root/agent-relay', 'up'],
+      execPath: '/Applications/Agent Relay/agent-relay',
+      cliScript: '/$bunfs/root/agent-relay',
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(env.AGENT_RELAY_MCP_COMMAND).toBe('"/Applications/Agent Relay/agent-relay" mcp');
+  });
+
   it('up preserves an explicit AGENT_RELAY_MCP_COMMAND override', async () => {
     const env: NodeJS.ProcessEnv = { AGENT_RELAY_MCP_COMMAND: 'node /custom/agent-relay-mcp.js' };
     const fs = createFsMock({ '/tmp/agent-relay-mcp.js': '' });

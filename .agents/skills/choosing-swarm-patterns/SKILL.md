@@ -309,18 +309,18 @@ verification:
 
 The old category-expanded names are wrong. Current Agent Relay MCP tools are
 flat names. In a client that decorates MCP tools, the prefix comes from the
-configured server key; workflow prompts commonly show `mcp__relaycast__send_dm`,
-while an `agent-relay` server key may expose `mcp__agent_relay__send_dm`.
+configured server key. Claude preserves the canonical `agent-relay` key,
+including its hyphen; `mcp__relaycast__*` belongs only to legacy configurations.
 
-| Purpose                  | Canonical tool    | Common workflow-prefixed form     |
-| ------------------------ | ----------------- | --------------------------------- |
-| Send DM to another agent | `send_dm`         | `mcp__relaycast__send_dm`         |
-| Check inbox              | `check_inbox`     | `mcp__relaycast__check_inbox`     |
-| List agents              | `list_agents`     | `mcp__relaycast__list_agents`     |
-| Post to a channel        | `post_message`    | `mcp__relaycast__post_message`    |
-| Reply in a thread        | `reply_to_thread` | `mcp__relaycast__reply_to_thread` |
-| Spawn sub-agent          | `add_agent`       | `mcp__relaycast__add_agent`       |
-| Remove sub-agent         | `remove_agent`    | `mcp__relaycast__remove_agent`    |
+| Purpose                  | Canonical tool    | Claude-prefixed form                |
+| ------------------------ | ----------------- | ----------------------------------- |
+| Send DM to another agent | `send_dm`         | `mcp__agent-relay__send_dm`         |
+| Check inbox              | `check_inbox`     | `mcp__agent-relay__check_inbox`     |
+| List agents              | `list_agents`     | `mcp__agent-relay__list_agents`     |
+| Post to a channel        | `post_message`    | `mcp__agent-relay__post_message`    |
+| Reply in a thread        | `reply_to_thread` | `mcp__agent-relay__reply_to_thread` |
+| Spawn sub-agent          | `add_agent`       | `mcp__agent-relay__add_agent`       |
+| Remove sub-agent         | `remove_agent`    | `mcp__agent-relay__remove_agent`    |
 
 > `interactive: false` agents run as non-interactive subprocesses with no relay connection. They must not call Relay MCP tools.
 
@@ -338,18 +338,18 @@ trajectories:
 
 ### Common Mistakes
 
-| Mistake                                      | Why It Fails                                                                  | Fix                                                                                           |
-| -------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Using mesh/debate for everything             | Full-mesh blows up message volume past ~5 agents                              | Use hub-spoke or dag for most tasks                                                           |
-| Pipeline for independent work                | Sequential bottleneck                                                         | Use fan-out or dag                                                                            |
-| Hub-spoke for 2 agents                       | Hub is unnecessary overhead                                                   | Use pipeline or fan-out                                                                       |
-| Expecting `consensusStrategy` to tally votes | Runner has no vote-tally logic; field only affects coordinator auto-selection | Aggregate votes in a judge/lead step that reads `{{steps.*.output}}`                          |
-| Handoff with "routing = skip other branches" | Skipping only fires on upstream **failure**, not routing decisions            | Emit a routing token in triage output; downstream prompts self-no-op if token doesn't match   |
-| Cascade expecting skip-on-success            | Runner has no cascade skip logic; failed upstream skips downstream            | Chain downstream prompts to pass-through or redo based on `{{steps.previous.output}}`         |
-| Relying on `reflectOnBarriers`               | Config flag exists but runner never calls it                                  | Use `reflectOnConverge` for convergence reflection; use `reflection` pattern for critic loops |
-| `interactive: false` agent calling MCP       | Non-interactive subprocess has no relay                                       | Use `interactive: true` (default) or emit output on stdout                                    |
-| Relying on multi-level `hierarchical`        | Topology is single-level hub in current impl                                  | Use pattern for naming; model levels via `dependsOn` graph                                    |
-| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `post_message` / `mcp__relaycast__post_message` or `send_dm` / `mcp__relaycast__send_dm`  |
+| Mistake                                      | Why It Fails                                                                  | Fix                                                                                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Using mesh/debate for everything             | Full-mesh blows up message volume past ~5 agents                              | Use hub-spoke or dag for most tasks                                                              |
+| Pipeline for independent work                | Sequential bottleneck                                                         | Use fan-out or dag                                                                               |
+| Hub-spoke for 2 agents                       | Hub is unnecessary overhead                                                   | Use pipeline or fan-out                                                                          |
+| Expecting `consensusStrategy` to tally votes | Runner has no vote-tally logic; field only affects coordinator auto-selection | Aggregate votes in a judge/lead step that reads `{{steps.*.output}}`                             |
+| Handoff with "routing = skip other branches" | Skipping only fires on upstream **failure**, not routing decisions            | Emit a routing token in triage output; downstream prompts self-no-op if token doesn't match      |
+| Cascade expecting skip-on-success            | Runner has no cascade skip logic; failed upstream skips downstream            | Chain downstream prompts to pass-through or redo based on `{{steps.previous.output}}`            |
+| Relying on `reflectOnBarriers`               | Config flag exists but runner never calls it                                  | Use `reflectOnConverge` for convergence reflection; use `reflection` pattern for critic loops    |
+| `interactive: false` agent calling MCP       | Non-interactive subprocess has no relay                                       | Use `interactive: true` (default) or emit output on stdout                                       |
+| Relying on multi-level `hierarchical`        | Topology is single-level hub in current impl                                  | Use pattern for naming; model levels via `dependsOn` graph                                       |
+| Writing `mcp__relaycast__send(...)`          | Wrong server prefix and tool name                                             | Use `post_message` / `mcp__agent-relay__post_message` or `send_dm` / `mcp__agent-relay__send_dm` |
 
 ### Resume & Re-run
 

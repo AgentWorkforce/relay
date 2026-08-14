@@ -40,10 +40,10 @@ The current Agent Relay MCP server registers flat tool names. Use the final
 tool name exactly as listed here.
 
 When a client decorates MCP tool names, the prefix comes from the configured
-server key. Workflow prompts commonly show forms like
-`mcp__relaycast__send_dm`; a server configured as `agent-relay` may expose
-`mcp__agent_relay__send_dm`. In every case, the canonical tool name is the flat
-suffix, such as `send_dm`.
+server key. Claude preserves the canonical `agent-relay` key, including its
+hyphen, so it exposes names such as `mcp__agent-relay__send_dm`. The old
+`mcp__relaycast__*` prefix belongs only to legacy configurations. In every case,
+the canonical tool name is the flat suffix, such as `send_dm`.
 
 Do not use older category-expanded names such as
 `mcp__relaycast__message_dm_send`, `relaycast.message.dm.send`, or

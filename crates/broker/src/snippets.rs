@@ -1,4 +1,6 @@
 use std::{
+    env,
+    ffi::OsStr,
     fs, io,
     path::{Path, PathBuf},
     process::Stdio,
@@ -7,12 +9,16 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
-use tokio::process::Command;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+};
 
 use crate::types::AgentResultMcpConfig;
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
 const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
+const REQUIRED_AGENT_RELAY_MCP_TOOLS: [&str; 3] = ["send_dm", "post_message", "check_inbox"];
 
 const MCP_FILE: &str = ".mcp.json";
 const AGENT_RELAY_MCP_SERVER: &str = "agent-relay";
@@ -28,35 +34,366 @@ struct AgentRelayMcpCommand {
     args: Vec<String>,
 }
 
-fn parse_agent_relay_mcp_command(custom_cmd: Option<&str>) -> AgentRelayMcpCommand {
+fn parse_agent_relay_mcp_command(custom_cmd: Option<&str>) -> Option<AgentRelayMcpCommand> {
     if let Some(custom_cmd) = custom_cmd {
-        let parts: Vec<String> = custom_cmd
-            .split_whitespace()
-            .map(ToString::to_string)
-            .collect();
+        let parts = shlex::split(custom_cmd)?;
         if let Some((command, args)) = parts.split_first() {
-            return AgentRelayMcpCommand {
+            return Some(AgentRelayMcpCommand {
                 command: command.clone(),
                 args: args.to_vec(),
-            };
+            });
         }
+        return None;
     }
 
-    AgentRelayMcpCommand {
-        command: "npx".to_string(),
-        args: vec![
-            "-y".to_string(),
-            AGENT_RELAY_MCP_PACKAGE.to_string(),
-            AGENT_RELAY_MCP_SUBCOMMAND.to_string(),
-        ],
+    Some(AgentRelayMcpCommand {
+        command: AGENT_RELAY_MCP_PACKAGE.to_string(),
+        args: vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+    })
+}
+
+fn executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
+fn executable_on_path(command: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 {
+        return executable_file(command_path).then(|| command_path.to_path_buf());
+    }
+
+    let path = path?;
+    for directory in env::split_paths(path) {
+        let candidate = directory.join(command);
+        if executable_file(&candidate) {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        if candidate.extension().is_none() {
+            for extension in ["exe", "cmd", "bat", "com"] {
+                let candidate = candidate.with_extension(extension);
+                if executable_file(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Builds the MCP command for a resolved executable path. Downstream MCP
+/// clients (e.g. Cursor, Codex) may spawn the generated command without a
+/// shell, so a resolved `.cmd`/`.bat` shim is wrapped through `cmd.exe /C`;
+/// other resolved executables (including `.exe`) launch directly.
+fn command_for_resolved_executable(executable: &Path, args: Vec<String>) -> AgentRelayMcpCommand {
+    #[cfg(windows)]
+    {
+        let is_batch_shim =
+            executable
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+                });
+        if is_batch_shim {
+            let mut wrapped_args =
+                vec!["/C".to_string(), executable.to_string_lossy().into_owned()];
+            wrapped_args.extend(args);
+            return AgentRelayMcpCommand {
+                command: "cmd.exe".to_string(),
+                args: wrapped_args,
+            };
+        }
+    }
+    AgentRelayMcpCommand {
+        command: executable.to_string_lossy().into_owned(),
+        args,
+    }
+}
+
+fn resolve_agent_relay_mcp_command(
+    custom_cmd: Option<&str>,
+    path: Option<&OsStr>,
+    home: Option<&Path>,
+    install_dir: Option<&Path>,
+    bin_dir: Option<&Path>,
+) -> Option<AgentRelayMcpCommand> {
+    if custom_cmd.is_some_and(|command| !command.trim().is_empty()) {
+        let command = parse_agent_relay_mcp_command(custom_cmd)?;
+        return executable_on_path(&command.command, path).map(|_| command);
+    }
+
+    let executable_name = if cfg!(windows) {
+        "agent-relay.exe"
+    } else {
+        AGENT_RELAY_MCP_PACKAGE
+    };
+    let mut candidates = Vec::new();
+    if let Some(install_dir) = install_dir {
+        candidates.push(install_dir.join("bin").join(executable_name));
+    }
+    if let Some(home) = home {
+        candidates.push(
+            home.join(".agentworkforce")
+                .join("relay")
+                .join("bin")
+                .join(executable_name),
+        );
+        // Legacy install directory from before the `.agentworkforce/relay`
+        // migration (see broker-path.ts's getInstalledBinaryPaths).
+        candidates.push(home.join(".agent-relay").join("bin").join(executable_name));
+    }
+    if let Some(candidate) = candidates.into_iter().find(|path| executable_file(path)) {
+        return Some(command_for_resolved_executable(
+            &candidate,
+            vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+        ));
+    }
+
+    if let Some(candidate) = executable_on_path(AGENT_RELAY_MCP_PACKAGE, path) {
+        return Some(command_for_resolved_executable(
+            &candidate,
+            vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+        ));
+    }
+
+    let fallback_bin_dir = bin_dir
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(".local").join("bin")));
+    fallback_bin_dir
+        .map(|directory| directory.join(executable_name))
+        .filter(|path| executable_file(path))
+        .map(|candidate| {
+            command_for_resolved_executable(
+                &candidate,
+                vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+            )
+        })
+}
+
 fn agent_relay_mcp_command() -> AgentRelayMcpCommand {
-    // Allow overriding the Agent Relay MCP command for local development/testing.
-    // e.g. AGENT_RELAY_MCP_COMMAND="node /path/to/agent-relay/dist/cli/agent-relay-mcp.js"
     let custom_cmd = std::env::var("AGENT_RELAY_MCP_COMMAND").ok();
-    parse_agent_relay_mcp_command(custom_cmd.as_deref())
+    let install_dir = std::env::var_os("AGENT_RELAY_INSTALL_DIR").map(PathBuf::from);
+    let bin_dir = std::env::var_os("AGENT_RELAY_BIN_DIR").map(PathBuf::from);
+    resolve_agent_relay_mcp_command(
+        custom_cmd.as_deref(),
+        std::env::var_os("PATH").as_deref(),
+        dirs::home_dir().as_deref(),
+        install_dir.as_deref(),
+        bin_dir.as_deref(),
+    )
+    .unwrap_or_else(|| {
+        tracing::warn!(
+            custom_cmd = custom_cmd.as_deref().unwrap_or(""),
+            "Agent Relay MCP command could not be resolved to an executable; falling back to the unresolved default command, which will fail to spawn"
+        );
+        parse_agent_relay_mcp_command(None).expect("default MCP command")
+    })
+}
+
+#[cfg(not(test))]
+fn required_agent_relay_mcp_command() -> io::Result<AgentRelayMcpCommand> {
+    let custom_cmd = std::env::var("AGENT_RELAY_MCP_COMMAND").ok();
+    let install_dir = std::env::var_os("AGENT_RELAY_INSTALL_DIR").map(PathBuf::from);
+    let bin_dir = std::env::var_os("AGENT_RELAY_BIN_DIR").map(PathBuf::from);
+    resolve_agent_relay_mcp_command(
+        custom_cmd.as_deref(),
+        std::env::var_os("PATH").as_deref(),
+        dirs::home_dir().as_deref(),
+        install_dir.as_deref(),
+        bin_dir.as_deref(),
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Agent Relay MCP executable not found; refusing to spawn an agent without coordination tools. Install agent-relay, or set AGENT_RELAY_MCP_COMMAND to an executable local command",
+        )
+    })
+}
+
+/// Writes a preflight JSON-RPC request to the child's stdin. A `BrokenPipe`
+/// is not fatal here: the server may have already answered and exited,
+/// closing its end of stdin before we finished writing. The read phase
+/// decides whether that response is usable.
+async fn write_preflight_request(
+    stdin: &mut tokio::process::ChildStdin,
+    request: &str,
+) -> io::Result<()> {
+    match stdin.write_all(request.as_bytes()).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("could not initialize the Agent Relay MCP executable: {error}"),
+        )),
+    }
+}
+
+async fn probe_agent_relay_mcp_command_with_timeout(
+    command: &AgentRelayMcpCommand,
+    timeout: Duration,
+) -> io::Result<()> {
+    let mut child = Command::new(&command.command)
+        .args(&command.args)
+        // Tool discovery is local and must not rotate an agent identity or
+        // print credentials while diagnosing a broken MCP executable.
+        .env("RELAY_SKIP_BOOTSTRAP", "1")
+        .env_remove("RELAY_API_KEY")
+        .env_remove("RELAY_WORKSPACE_KEY")
+        .env_remove("AGENT_RELAY_WORKSPACE_KEY")
+        .env_remove("RELAY_AGENT_TOKEN")
+        .env_remove("RELAY_WORKSPACES_JSON")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("could not start the Agent Relay MCP executable: {error}"),
+            )
+        })?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("Agent Relay MCP preflight stdin was unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("Agent Relay MCP preflight stdout was unavailable"))?;
+
+    let result = tokio::time::timeout(timeout, async {
+        let mut lines = BufReader::new(stdout).lines();
+
+        // Send `initialize` and wait for its response before sending
+        // `notifications/initialized` and `tools/list`: strict MCP servers
+        // can reject requests that arrive ahead of the initialize response.
+        let initialize_request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"agent-relay-broker-preflight\",\"version\":\"1.0\"}}}\n";
+        write_preflight_request(&mut stdin, initialize_request).await?;
+
+        loop {
+            let Some(line) = lines.next_line().await? else {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Agent Relay MCP exited before completing the MCP initialize handshake",
+                ));
+            };
+            // Wrappers and servers sometimes log to stdout. Only JSON-RPC
+            // lines are protocol data; ignore everything else.
+            let Ok(response) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if response.get("id").and_then(Value::as_u64) != Some(1) {
+                continue;
+            }
+            if let Some(error) = response.get("error") {
+                return Err(io::Error::other(format!(
+                    "Agent Relay MCP rejected initialize: {error}"
+                )));
+            }
+            break;
+        }
+
+        let followup_request = concat!(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n"
+        );
+        write_preflight_request(&mut stdin, followup_request).await?;
+
+        while let Some(line) = lines.next_line().await? {
+            let Ok(response) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if response.get("id").and_then(Value::as_u64) != Some(2) {
+                continue;
+            }
+            if let Some(error) = response.get("error") {
+                return Err(io::Error::other(format!(
+                    "Agent Relay MCP rejected tool discovery: {error}"
+                )));
+            }
+            let tools = response
+                .pointer("/result/tools")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Agent Relay MCP tool discovery returned no tool list",
+                    )
+                })?;
+            let names = tools
+                .iter()
+                .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+                .collect::<std::collections::HashSet<_>>();
+            let missing = REQUIRED_AGENT_RELAY_MCP_TOOLS
+                .iter()
+                .copied()
+                .filter(|name| !names.contains(name))
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            return Err(io::Error::other(format!(
+                "Agent Relay MCP is missing required coordination tools: {}",
+                missing.join(", ")
+            )));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Agent Relay MCP exited before returning its tool list",
+        ))
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "Agent Relay MCP did not expose required coordination tools within {} seconds",
+                timeout.as_secs()
+            ),
+        ))
+    });
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    result
+}
+
+#[cfg(not(test))]
+async fn validate_agent_relay_mcp_command() -> io::Result<()> {
+    static PREFLIGHT_COMPLETE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+    let command = required_agent_relay_mcp_command()?;
+    PREFLIGHT_COMPLETE
+        .get_or_try_init(|| async {
+            probe_agent_relay_mcp_command_with_timeout(&command, Duration::from_secs(10))
+                .await
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "Agent Relay MCP preflight failed; refusing to spawn an agent without coordination tools: {error}. Reinstall agent-relay or set AGENT_RELAY_MCP_COMMAND to a working local MCP command"
+                        ),
+                    )
+                })
+        })
+        .await
+        .map(|_| ())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -473,16 +810,17 @@ pub fn ensure_opencode_config_with_result(
     let path = root.join(OPENCODE_CONFIG);
 
     // Build the Agent Relay MCP entry in opencode format.
+    let mcp_command = agent_relay_mcp_command();
     let mut mcp_server = Map::new();
     mcp_server.insert("type".into(), Value::String("local".into()));
     mcp_server.insert(
         "command".into(),
-        Value::Array(vec![
-            Value::String("npx".into()),
-            Value::String("-y".into()),
-            Value::String(AGENT_RELAY_MCP_PACKAGE.into()),
-            Value::String(AGENT_RELAY_MCP_SUBCOMMAND.into()),
-        ]),
+        Value::Array(
+            std::iter::once(mcp_command.command)
+                .chain(mcp_command.args)
+                .map(Value::String)
+                .collect(),
+        ),
     );
     let mut env = Map::new();
     if let Some(v) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
@@ -819,6 +1157,26 @@ pub async fn configure_agent_relay_mcp_with_result(
     let is_grok = cli_lower == "grok";
     let is_cursor = cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"; // "agent" is cursor-agent's binary name
 
+    let injects_agent_relay_mcp = (is_claude
+        && !existing_args
+            .iter()
+            .any(|a| a == "--mcp-config" || a.starts_with("--mcp-config=")))
+        || (is_codex
+            && !existing_args.iter().any(|a| {
+                a.contains("mcp_servers.agent-relay") || a.contains("mcp_servers.relaycast")
+            }))
+        || is_gemini
+        || is_droid
+        || is_grok
+        || (is_opencode && !existing_args.iter().any(|a| a == "--agent"))
+        || is_cursor;
+    #[cfg(not(test))]
+    if injects_agent_relay_mcp {
+        validate_agent_relay_mcp_command().await?;
+    }
+    #[cfg(test)]
+    let _ = injects_agent_relay_mcp;
+
     let api_key = api_key.map(str::trim).filter(|s| !s.is_empty());
     let base_url = base_url.map(str::trim).filter(|s| !s.is_empty());
 
@@ -871,7 +1229,7 @@ pub async fn configure_agent_relay_mcp_with_result(
     {
         let mcp_command = agent_relay_mcp_command();
         // NOTE: All values passed via codex `--config` are parsed as TOML.
-        // String values MUST be quoted (e.g. `"npx"` not `npx`) to avoid parse
+        // String values MUST be quoted (e.g. `"agent-relay"` not `agent-relay`) to avoid parse
         // errors or type mismatches.  Bare `1` is an integer; bare `at_live_xxx`
         // is a TOML parse error; only quoted values are reliably treated as strings.
         push_codex_mcp_command_config_args(&mut args, &mcp_command);
@@ -1163,7 +1521,7 @@ fn gemini_droid_mcp_add_args_with_result(
     }
     args.push(AGENT_RELAY_MCP_SERVER.to_string());
     // Droid's CLI parser continues parsing options after positional args.
-    // Insert `--` so `-y` is treated as an argument to `npx`.
+    // Insert `--` so any flag-shaped MCP command arguments stay positional.
     if !is_gemini {
         args.push("--".to_string());
     }
@@ -1226,8 +1584,8 @@ fn grok_mcp_add_args(
     // by embedding flag-shaped args directly into the `--command` string so
     // that only plain positional args are passed via `--args`.
     //
-    // e.g. `["npx", ["-y", "agent-relay", "mcp"]]`
-    //   → `--command "npx -y"  --args agent-relay  --args mcp`
+    // e.g. `["custom-runner", ["--fast", "mcp"]]`
+    //   → `--command "custom-runner --fast"  --args mcp`
     let (flag_args, positional_args): (Vec<_>, Vec<_>) = mcp_command
         .args
         .into_iter()
@@ -1488,18 +1846,26 @@ fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{env, ffi::OsString, fs};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use serde_json::{json, Map, Value};
     use tempfile::tempdir;
 
     use super::ensure_agent_relay_mcp_config;
 
-    fn assert_is_agent_relay_mcp_args(args: Option<&Vec<Value>>) {
-        let args = args.expect("expected agent-relay mcp args");
-        assert_eq!(args.first().and_then(Value::as_str), Some("-y"));
-        assert_eq!(args.get(1).and_then(Value::as_str), Some("agent-relay"));
-        assert_eq!(args.get(2).and_then(Value::as_str), Some("mcp"));
+    fn assert_is_agent_relay_mcp_config(server: &Value) {
+        let expected = super::agent_relay_mcp_command();
+        assert_eq!(server["command"].as_str(), Some(expected.command.as_str()));
+        let args = server["args"]
+            .as_array()
+            .expect("expected agent-relay mcp args");
+        assert_eq!(
+            args.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+            expected.args.iter().map(String::as_str).collect::<Vec<_>>()
+        );
     }
 
     fn test_agent_result_config() -> crate::types::AgentResultMcpConfig {
@@ -1511,24 +1877,264 @@ mod tests {
     }
 
     #[test]
-    fn agent_relay_mcp_command_defaults_to_npx_agent_relay() {
-        let command = super::parse_agent_relay_mcp_command(None);
+    fn agent_relay_mcp_command_defaults_to_installed_agent_relay() {
+        let command = super::parse_agent_relay_mcp_command(None).expect("default command");
 
-        assert_eq!(command.command, "npx");
-        assert_eq!(command.args, vec!["-y", "agent-relay", "mcp"]);
+        assert_eq!(command.command, "agent-relay");
+        assert_eq!(command.args, vec!["mcp"]);
     }
 
     #[test]
     fn agent_relay_mcp_command_parses_custom_override() {
-        let command = super::parse_agent_relay_mcp_command(Some("node /tmp/agent-relay-mcp.js"));
+        let command = super::parse_agent_relay_mcp_command(Some("node /tmp/agent-relay-mcp.js"))
+            .expect("custom command");
 
         assert_eq!(command.command, "node");
         assert_eq!(command.args, vec!["/tmp/agent-relay-mcp.js"]);
     }
 
     #[test]
+    fn agent_relay_mcp_command_preserves_quoted_override_paths() {
+        let command = super::parse_agent_relay_mcp_command(Some(
+            r#"node "/tmp/Agent Relay/agent-relay-mcp.js""#,
+        ))
+        .expect("quoted command");
+
+        assert_eq!(command.command, "node");
+        assert_eq!(command.args, vec!["/tmp/Agent Relay/agent-relay-mcp.js"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_agent_relay_wins_even_when_npx_on_path_is_slow() {
+        let temp = tempdir().expect("tempdir");
+        let bin = temp.path().join("bin");
+        fs::create_dir(&bin).expect("create bin");
+        let relay = bin.join("agent-relay");
+        fs::write(&relay, "#!/bin/sh\nexit 0\n").expect("write relay executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make relay executable");
+        let npx = bin.join("npx");
+        fs::write(&npx, "#!/bin/sh\nsleep 31\n").expect("write slow npx");
+        fs::set_permissions(&npx, fs::Permissions::from_mode(0o755)).expect("make npx executable");
+        let path = env::join_paths([&bin]).expect("join PATH");
+
+        let command =
+            super::resolve_agent_relay_mcp_command(None, Some(path.as_os_str()), None, None, None)
+                .expect("resolve installed relay");
+
+        assert_eq!(command.command, relay.to_string_lossy());
+        assert_eq!(command.args, vec!["mcp"]);
+        assert_ne!(command.command, npx.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_legacy_agent_relay_install_dir() {
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path();
+        let bin = home.join(".agent-relay").join("bin");
+        fs::create_dir_all(&bin).expect("create legacy bin dir");
+        let relay = bin.join("agent-relay");
+        fs::write(&relay, "#!/bin/sh\nexit 0\n").expect("write relay executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make relay executable");
+        let empty_path = OsString::new();
+
+        let command = super::resolve_agent_relay_mcp_command(
+            None,
+            Some(empty_path.as_os_str()),
+            Some(home),
+            None,
+            None,
+        )
+        .expect("resolve legacy install");
+
+        assert_eq!(command.command, relay.to_string_lossy());
+        assert_eq!(command.args, vec!["mcp"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wraps_batch_shim_through_cmd_exe() {
+        let shim = Path::new(r"C:\Users\test\AppData\Roaming\npm\agent-relay.cmd");
+        let command = super::command_for_resolved_executable(shim, vec!["mcp".to_string()]);
+
+        assert_eq!(command.command, "cmd.exe");
+        assert_eq!(
+            command.args,
+            vec![
+                "/C".to_string(),
+                shim.to_string_lossy().into_owned(),
+                "mcp".to_string()
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn does_not_wrap_exe_candidates() {
+        let exe = Path::new(r"C:\Users\test\.agentworkforce\relay\bin\agent-relay.exe");
+        let command = super::command_for_resolved_executable(exe, vec!["mcp".to_string()]);
+
+        assert_eq!(command.command, exe.to_string_lossy());
+        assert_eq!(command.args, vec!["mcp".to_string()]);
+    }
+
+    #[test]
+    fn missing_explicit_mcp_command_is_rejected() {
+        let empty_path = OsString::new();
+        assert!(super::resolve_agent_relay_mcp_command(
+            Some("missing-agent-relay-mcp mcp"),
+            Some(empty_path.as_os_str()),
+            None,
+            None,
+            None,
+        )
+        .is_none());
+        assert!(super::resolve_agent_relay_mcp_command(
+            Some("node \"unterminated"),
+            Some(empty_path.as_os_str()),
+            None,
+            None,
+            None,
+        )
+        .is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mcp_preflight_requires_core_coordination_tools() {
+        let temp = tempdir().expect("tempdir");
+        let relay = temp.path().join("agent-relay");
+        fs::write(
+            &relay,
+            r#"#!/bin/sh
+cat >/dev/null &
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"name":"post_message"},{"name":"check_inbox"}]}}'
+"#,
+        )
+        .expect("write fake MCP executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make MCP executable");
+        let command = super::AgentRelayMcpCommand {
+            command: relay.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+
+        super::probe_agent_relay_mcp_command_with_timeout(
+            &command,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("MCP preflight");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mcp_preflight_rejects_incomplete_tool_registration() {
+        let temp = tempdir().expect("tempdir");
+        let relay = temp.path().join("agent-relay");
+        fs::write(
+            &relay,
+            r#"#!/bin/sh
+cat >/dev/null &
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}]}}'
+"#,
+        )
+        .expect("write fake MCP executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make MCP executable");
+        let command = super::AgentRelayMcpCommand {
+            command: relay.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+
+        let error = super::probe_agent_relay_mcp_command_with_timeout(
+            &command,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect_err("incomplete MCP tool list must fail");
+
+        assert!(error.to_string().contains("send_dm, post_message"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mcp_preflight_tolerates_broken_pipe_on_write() {
+        let temp = tempdir().expect("tempdir");
+        let relay = temp.path().join("agent-relay");
+        // Exits immediately without reading stdin, so our write to its stdin
+        // can race a closed pipe (BrokenPipe) instead of a clean read.
+        fs::write(&relay, "#!/bin/sh\nexit 0\n").expect("write fake MCP executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make MCP executable");
+        let command = super::AgentRelayMcpCommand {
+            command: relay.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+
+        let error = super::probe_agent_relay_mcp_command_with_timeout(
+            &command,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect_err("preflight against a silent exiting process must fail");
+
+        // A BrokenPipe on write must not surface as the fatal error; the
+        // read-phase EOF is the real, actionable failure.
+        assert!(error.to_string().contains("handshake") || error.to_string().contains("tool list"));
+        assert!(!error.to_string().contains("could not initialize"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mcp_preflight_fails_when_server_dies_after_initialize_but_before_tools_list() {
+        let temp = tempdir().expect("tempdir");
+        let relay = temp.path().join("agent-relay");
+        // Answers `initialize` (a genuine, valid id=1 response) and then exits
+        // without reading stdin again and without ever producing an id=2
+        // response. This is the discriminating case for BrokenPipe tolerance:
+        // the server truly answered something, then died mid-handshake. Our
+        // second write (notifications/initialized + tools/list) may race a
+        // closed pipe on this exited process, so BrokenPipe tolerance alone
+        // must not be mistaken for a completed tool-discovery response.
+        fs::write(
+            &relay,
+            r#"#!/bin/sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
+exit 0
+"#,
+        )
+        .expect("write fake MCP executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make MCP executable");
+        let command = super::AgentRelayMcpCommand {
+            command: relay.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+
+        let error = super::probe_agent_relay_mcp_command_with_timeout(
+            &command,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect_err(
+            "a server that dies after initialize but before tools/list must not pass preflight",
+        );
+
+        // Whether or not the second write actually hit BrokenPipe, the probe
+        // must fail on the missing tools/list response, not report success.
+        assert!(error.to_string().contains("tool list"));
+    }
+
+    #[test]
     fn codex_mcp_command_config_args_use_custom_command() {
-        let command = super::parse_agent_relay_mcp_command(Some("node /tmp/agent-relay-mcp.js"));
+        let command = super::parse_agent_relay_mcp_command(Some("node /tmp/agent-relay-mcp.js"))
+            .expect("custom command");
         let mut args = Vec::new();
 
         super::push_codex_mcp_command_config_args(&mut args, &command);
@@ -1563,11 +2169,7 @@ mod tests {
 
         let contents = fs::read_to_string(root.join(".mcp.json")).expect("read mcp file");
         let json: Value = serde_json::from_str(&contents).expect("parse mcp file");
-        assert_eq!(
-            json["mcpServers"]["agent-relay"]["command"].as_str(),
-            Some("npx")
-        );
-        assert_is_agent_relay_mcp_args(json["mcpServers"]["agent-relay"]["args"].as_array());
+        assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
     }
 
     #[test]
@@ -1590,10 +2192,7 @@ mod tests {
         let contents = fs::read_to_string(root.join(".mcp.json")).expect("read mcp file");
         let json: Value = serde_json::from_str(&contents).expect("parse mcp file");
         assert!(json["mcpServers"]["other"].is_object());
-        assert_eq!(
-            json["mcpServers"]["agent-relay"]["command"].as_str(),
-            Some("npx")
-        );
+        assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
     }
 
     #[test]
@@ -1616,10 +2215,7 @@ mod tests {
         let contents = fs::read_to_string(root.join(".mcp.json")).expect("read mcp file");
         let json: Value = serde_json::from_str(&contents).expect("parse mcp file");
         assert!(json["mcpServers"][legacy].is_null());
-        assert_eq!(
-            json["mcpServers"]["agent-relay"]["command"].as_str(),
-            Some("npx")
-        );
+        assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
         // RELAY_API_KEY is intentionally omitted from .mcp.json — injected via process env by the broker
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
@@ -1696,16 +2292,7 @@ mod tests {
         );
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
-        assert_eq!(
-            json["mcpServers"]["agent-relay"]["command"].as_str(),
-            Some("npx")
-        );
-        let mcp_args = json["mcpServers"]["agent-relay"]["args"]
-            .as_array()
-            .expect("args array");
-        assert_eq!(mcp_args[0].as_str(), Some("-y"));
-        assert_eq!(mcp_args[1].as_str(), Some("agent-relay"));
-        assert_eq!(mcp_args[2].as_str(), Some("mcp"));
+        assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
     }
 
     #[tokio::test]
@@ -1891,17 +2478,14 @@ mod tests {
         assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
         assert!(args.contains(&"RELAY_AGENT_NAME=GrokWorker".to_string()));
         assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_grok_123".to_string()));
-        // Flag-shaped args (-y) are embedded into the --command value to avoid
-        // grok's CLI parser treating them as unknown options.
         let command_idx = args
             .iter()
             .position(|arg| arg == "--command")
             .expect("--command arg");
-        assert_eq!(args[command_idx + 1], "npx -y");
+        let expected = super::agent_relay_mcp_command();
+        assert_eq!(args[command_idx + 1], expected.command);
         assert_eq!(args[command_idx + 2], "--args");
-        assert_eq!(args[command_idx + 3], "agent-relay");
-        assert_eq!(args[command_idx + 4], "--args");
-        assert_eq!(args[command_idx + 5], "mcp");
+        assert_eq!(args[command_idx + 3], "mcp");
     }
 
     #[test]
@@ -1920,11 +2504,10 @@ mod tests {
             .iter()
             .position(|arg| arg == "agent-relay")
             .expect("agent-relay arg");
+        let expected = super::agent_relay_mcp_command();
         assert_eq!(args[agent_relay_idx + 1], "--");
-        assert_eq!(args[agent_relay_idx + 2], "npx");
-        assert_eq!(args[agent_relay_idx + 3], "-y");
-        assert_eq!(args[agent_relay_idx + 4], "agent-relay");
-        assert_eq!(args[agent_relay_idx + 5], "mcp");
+        assert_eq!(args[agent_relay_idx + 2], expected.command);
+        assert_eq!(args[agent_relay_idx + 3], "mcp");
     }
 
     #[test]
@@ -1951,7 +2534,9 @@ mod tests {
             .iter()
             .position(|arg| arg == "agent-relay")
             .expect("agent-relay arg");
-        assert_eq!(args[agent_relay_idx + 1], "npx");
+        let expected = super::agent_relay_mcp_command();
+        assert_eq!(args[agent_relay_idx + 1], expected.command);
+        assert_eq!(args[agent_relay_idx + 2], "mcp");
         assert!(
             !args.iter().any(|arg| arg == "--"),
             "Gemini command should not include `--` argument separator"
@@ -1961,11 +2546,12 @@ mod tests {
     #[test]
     fn droid_manual_mcp_add_command_uses_option_separator() {
         let droid_cmd = super::gemini_droid_manual_mcp_add_cmd("droid", false);
-        assert!(droid_cmd.contains("agent-relay -- npx -y agent-relay mcp"));
+        assert!(droid_cmd.contains("agent-relay -- "));
+        assert!(droid_cmd.ends_with(" mcp"));
 
         let gemini_cmd = super::gemini_droid_manual_mcp_add_cmd("gemini", true);
-        assert!(!gemini_cmd.contains("agent-relay -- npx -y agent-relay mcp"));
-        assert!(gemini_cmd.contains("agent-relay npx -y agent-relay mcp"));
+        assert!(!gemini_cmd.contains("agent-relay -- "));
+        assert!(gemini_cmd.ends_with(" mcp"));
     }
 
     #[test]
@@ -2032,7 +2618,11 @@ mod tests {
         assert!(args.iter().step_by(2).all(|a| a == "--config"));
 
         // Verify key config values
-        assert!(args.contains(&"mcp_servers.agent-relay.command=\"npx\"".to_string()));
+        let expected = super::agent_relay_mcp_command();
+        assert!(args.contains(&format!(
+            "mcp_servers.agent-relay.command=\"{}\"",
+            super::escape_toml_basic_string(&expected.command)
+        )));
         assert!(args
             .iter()
             .any(|a| a.contains("mcp_servers.agent-relay.args=")));
@@ -2228,10 +2818,14 @@ mod tests {
         let mcp = &json["mcp"]["agent-relay"];
         assert_eq!(mcp["type"].as_str(), Some("local"));
         let cmd = mcp["command"].as_array().expect("command array");
-        assert_eq!(cmd[0].as_str(), Some("npx"));
-        assert_eq!(cmd[1].as_str(), Some("-y"));
-        assert_eq!(cmd[2].as_str(), Some("agent-relay"));
-        assert_eq!(cmd[3].as_str(), Some("mcp"));
+        let expected = super::agent_relay_mcp_command();
+        let expected_command = std::iter::once(expected.command.as_str())
+            .chain(expected.args.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cmd.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+            expected_command
+        );
 
         // Environment (note: opencode uses "environment" not "env")
         let oc_env = &mcp["environment"];
@@ -2372,10 +2966,7 @@ mod tests {
         let contents = fs::read_to_string(path).expect("read cursor mcp config");
         let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
 
-        assert_eq!(
-            json["mcpServers"]["agent-relay"]["command"].as_str(),
-            Some("npx")
-        );
+        assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
             Some("rk_live_cursor")
@@ -2511,10 +3102,7 @@ mod tests {
         assert!(json["mcpServers"]["agent-relay"].is_object());
 
         // Command
-        assert_eq!(
-            json["mcpServers"]["agent-relay"]["command"].as_str(),
-            Some("npx")
-        );
+        assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
 
         // API key intentionally omitted
         assert!(
