@@ -29,7 +29,20 @@ export type PlacementSelection =
     };
 
 export class RelayPlacementError extends Error {
-  readonly code: 'capability_mismatch' | 'placement_queue_full' | 'placement_ttl_expired' | 'unmapped_repo';
+  readonly code:
+    | 'capability_mismatch'
+    | 'placement_queue_full'
+    | 'placement_ttl_expired'
+    | 'unmapped_repo'
+    /** The node ran the action and reported a failure. */
+    | 'spawn_failed'
+    /**
+     * The node accepted the invocation but never reported a terminal result.
+     * A node running an obsolete broker advertises `spawn:<harness>` capacity
+     * and acknowledges the dispatch without launching anything, which is
+     * otherwise indistinguishable from success at the requester.
+     */
+    | 'spawn_unconfirmed';
   readonly capability: string;
   readonly node?: string;
   readonly repo?: string;

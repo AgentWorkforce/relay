@@ -605,6 +605,24 @@ export interface RelaySpawnPlacementInput {
   pollIntervalMs?: number;
   /** Fail immediately instead of queueing when no currently eligible node exists. */
   failFast?: boolean;
+  /**
+   * Wait for the target node's terminal action result before resolving.
+   *
+   * Placement only proves the engine accepted the dispatch. A node running an
+   * obsolete broker advertises `spawn:<harness>` capacity, acknowledges the
+   * invocation, and launches nothing — without this the ack is identical to a
+   * real spawn. Defaults to `false` so plain dispatch keeps its semantics for
+   * non-spawn capabilities; agent-spawning callers should set it.
+   */
+  confirm?: boolean;
+  /**
+   * How long to wait for that terminal result. Must exceed the node's own
+   * readiness window (the broker's `verify_ready` mode holds the action open
+   * for up to 90s). Defaults to 120000.
+   */
+  confirmTimeoutMs?: number;
+  /** Poll cadence while awaiting confirmation. Defaults to 500. */
+  confirmPollIntervalMs?: number;
   /** Placement log sink. Defaults to the client placement logger. */
   log?: (message: string) => void;
   /** Reconcile hook for queue/fail visibility, e.g. Slack surfacing by callers. */
@@ -619,7 +637,15 @@ export interface RelaySpawnPlacementAck extends RelayActionInvocationAck {
     repo?: string;
     attempts: number;
     queued: boolean;
+    /**
+     * `true` only when the node reported a terminal success for this
+     * invocation. `false` means the dispatch was accepted but not confirmed —
+     * it was not observed to have launched anything.
+     */
+    confirmed: boolean;
   };
+  /** The node's terminal action result, present only when `confirm` was set. */
+  confirmation?: RelayActionInvocation;
 }
 
 // ── Workspace ───────────────────────────────────────────────────────────────

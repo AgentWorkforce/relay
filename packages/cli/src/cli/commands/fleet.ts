@@ -126,6 +126,15 @@ export function registerFleetCommands(
       .option('--role <role>', 'Declared role for workforce reporting')
       .option('--objective <objective>', 'Declared objective (defaults to --task when omitted)')
       .option('--session-ref <reference>', 'Session reference for a resumable targeted spawn')
+      .option(
+        '--no-confirm',
+        'Report a targeted spawn as soon as the node accepts it, without waiting for the node to confirm the agent actually launched'
+      )
+      .option(
+        '--confirm-timeout <ms>',
+        'How long a targeted spawn waits for the node to confirm the launch',
+        '120000'
+      )
   ).action(async (cli: string, options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
       warnIfInferredFromProjectSession(options, deps.warn);
@@ -146,6 +155,11 @@ export function registerFleetCommands(
         { organization, project, workstream, role, objective },
         task
       );
+      const confirmTimeoutText = optionalText(options.confirmTimeout, 'Confirm timeout') ?? '120000';
+      const confirmTimeoutMs = Number(confirmTimeoutText);
+      if (!Number.isFinite(confirmTimeoutMs) || confirmTimeoutMs <= 0) {
+        throw new Error('--confirm-timeout must be a positive number of milliseconds.');
+      }
 
       if (targetNode) {
         if (!resolveAgentToken(clientOptions)) {
@@ -154,10 +168,17 @@ export function registerFleetCommands(
           );
         }
         const relay = deps.sdk.createAgentRelay(clientOptions);
+        // Placement alone only proves the node accepted the dispatch. A node
+        // running an obsolete broker advertises `spawn:<cli>` capacity, acks
+        // the invocation and launches nothing, which is indistinguishable from
+        // success here — so wait for the node to confirm unless asked not to.
+        const confirm = options.confirm !== false;
         const invocation = await relay.messaging.placement.spawn({
           capability: `spawn:${cli}`,
           node: targetNode,
           failFast: true,
+          confirm,
+          ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
           input: {
             name,
             cli,
