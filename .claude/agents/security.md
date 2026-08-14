@@ -148,19 +148,19 @@ You are a security specialist focused on identifying vulnerabilities, assessing 
 
 **Acknowledge audit request:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Sender", text: "ACK: Beginning security audit of [scope]")
 ```
 
 **Report findings:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Sender", text: "SECURITY AUDIT COMPLETE:\n- Critical: X findings\n- High: Y findings\n- Medium: Z findings\nFull report in [location]")
 ```
 
 **Escalate critical issues:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Lead", text: "CRITICAL SECURITY ISSUE: [brief description]\nRequires immediate attention")
 ```
 

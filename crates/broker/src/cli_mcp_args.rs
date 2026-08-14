@@ -274,6 +274,9 @@ mod tests {
         "RELAY_AGENT_TOKEN",
         "RELAY_WORKSPACES_JSON",
         "RELAY_DEFAULT_WORKSPACE",
+        "AGENT_RELAY_MCP_COMMAND",
+        "AGENT_RELAY_INSTALL_DIR",
+        "AGENT_RELAY_BIN_DIR",
     ];
 
     /// RAII guard that (1) holds the env mutex so parallel tests don't race,
@@ -360,6 +363,14 @@ mod tests {
 
     #[tokio::test]
     async fn codex_output_contains_agent_relay_config_args() {
+        // Clear the MCP resolution env vars so the expected command/args
+        // below match the default resolution path regardless of what the
+        // ambient test environment (e.g. a harness-provided override) sets.
+        let _env = EnvGuard::all();
+        std::env::remove_var("AGENT_RELAY_MCP_COMMAND");
+        std::env::remove_var("AGENT_RELAY_INSTALL_DIR");
+        std::env::remove_var("AGENT_RELAY_BIN_DIR");
+
         let temp = tempdir().expect("tempdir");
         let output = compute_mcp_args_output(command("codex", temp.path()))
             .await

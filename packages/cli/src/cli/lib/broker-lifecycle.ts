@@ -8,7 +8,7 @@ import { redactCredentialValues } from '@agent-relay/cloud/redact';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
-import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
+import { buildBundledAgentRelayMcpCommand, isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-sidecar.js';
 import {
@@ -1166,12 +1166,7 @@ function isCliScriptEntrypoint(deps: CoreDependencies): boolean {
 }
 
 export function isBundledBunExecutableEntrypoint(deps: CoreDependencies): boolean {
-  // Bun --compile exposes argv[1] as a virtual path for the embedded executable.
-  const entrypoint = deps.cliScript.replace(/\\/g, '/');
-  return (
-    deps.argv[0] === 'bun' &&
-    (entrypoint.startsWith('/$bunfs/root/') || /^[A-Z]:\/~BUN\/root\//i.test(entrypoint))
-  );
+  return deps.argv[0] === 'bun' && isBundledBunEntrypointPath(deps.cliScript);
 }
 
 function sameCliPath(left: string, right: string): boolean {

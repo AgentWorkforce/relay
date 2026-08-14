@@ -88,18 +88,18 @@ You are an expert API designer specializing in RESTful and GraphQL API design. Y
 
 ### Starting Work
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Lead", text: "**API:** Designing [endpoint/feature]\n\n**Scope:** [What the API needs to do]\n**Consumers:** [Who will use this]")
 ```
 
 ### Design Proposal
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Lead", text: "**API DESIGN:** [Feature name]\n\n**Endpoints:**\n- `GET /resource` - [Description]\n- `POST /resource` - [Description]\n\n**Request/Response:**\n[Brief schema outline]\n\n**Questions:**\n- [Any decisions needed]")
 ```
 
 ### Completion
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Lead", text: "**DONE:** [API feature]\n\n**Endpoints added:**\n- [List endpoints]\n\n**Documentation:** [Location of API docs]")
 ```

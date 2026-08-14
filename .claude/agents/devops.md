@@ -79,13 +79,13 @@ You are a DevOps CI specialist focused on continuous integration, continuous dep
 
 When reporting pipeline status:
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Lead", text: "CI: Build #42 passed\n- Tests: 156 passed, 0 failed\n- Coverage: 84%\n- Security: 0 critical, 2 low\n- Deploy: Ready for staging")
 ```
 
 When blocked:
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Lead", text: "BLOCKED: CI pipeline failing\n- Issue: Docker build timeout\n- Root cause: [investigation]\n- Options: [proposed solutions]")
 ```
 

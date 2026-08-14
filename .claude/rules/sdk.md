@@ -54,8 +54,9 @@ The SDK uses subpath exports:
 ## Communication Protocol
 
 - **Primary**: MCP tools (`mcp__agent-relay__send_dm`,
-  `mcp__agent-relay__check_inbox`, `mcp__agent-relay__list_agents`,
-  `mcp__agent-relay__add_agent`, `mcp__agent-relay__remove_agent`)
+  `mcp__agent-relay__post_message`, `mcp__agent-relay__check_inbox`,
+  `mcp__agent-relay__list_agents`, `mcp__agent-relay__add_agent`,
+  `mcp__agent-relay__remove_agent`)
 
 ## No Storage Layer
 

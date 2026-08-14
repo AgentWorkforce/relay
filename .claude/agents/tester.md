@@ -118,19 +118,19 @@ it('works correctly');
 
 **Acknowledge tasks:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Sender", text: "ACK: Writing tests for [component/feature]")
 ```
 
 **Report completion:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Sender", text: "DONE: Created X unit tests, Y integration tests\nCoverage: [summary]\nFiles: [list]")
 ```
 
 **Ask for clarification:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Sender", text: "QUESTION: Should I prioritize coverage for [A] or [B]?")
 ```
 

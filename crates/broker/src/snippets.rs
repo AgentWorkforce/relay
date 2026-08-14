@@ -95,6 +95,36 @@ fn executable_on_path(command: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     None
 }
 
+/// Builds the MCP command for a resolved executable path. Downstream MCP
+/// clients (e.g. Cursor, Codex) may spawn the generated command without a
+/// shell, so a resolved `.cmd`/`.bat` shim is wrapped through `cmd.exe /C`;
+/// other resolved executables (including `.exe`) launch directly.
+fn command_for_resolved_executable(executable: &Path, args: Vec<String>) -> AgentRelayMcpCommand {
+    #[cfg(windows)]
+    {
+        let is_batch_shim =
+            executable
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+                });
+        if is_batch_shim {
+            let mut wrapped_args =
+                vec!["/C".to_string(), executable.to_string_lossy().into_owned()];
+            wrapped_args.extend(args);
+            return AgentRelayMcpCommand {
+                command: "cmd.exe".to_string(),
+                args: wrapped_args,
+            };
+        }
+    }
+    AgentRelayMcpCommand {
+        command: executable.to_string_lossy().into_owned(),
+        args,
+    }
+}
+
 fn resolve_agent_relay_mcp_command(
     custom_cmd: Option<&str>,
     path: Option<&OsStr>,
@@ -123,19 +153,22 @@ fn resolve_agent_relay_mcp_command(
                 .join("bin")
                 .join(executable_name),
         );
+        // Legacy install directory from before the `.agentworkforce/relay`
+        // migration (see broker-path.ts's getInstalledBinaryPaths).
+        candidates.push(home.join(".agent-relay").join("bin").join(executable_name));
     }
     if let Some(candidate) = candidates.into_iter().find(|path| executable_file(path)) {
-        return Some(AgentRelayMcpCommand {
-            command: candidate.to_string_lossy().into_owned(),
-            args: vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
-        });
+        return Some(command_for_resolved_executable(
+            &candidate,
+            vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+        ));
     }
 
     if let Some(candidate) = executable_on_path(AGENT_RELAY_MCP_PACKAGE, path) {
-        return Some(AgentRelayMcpCommand {
-            command: candidate.to_string_lossy().into_owned(),
-            args: vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
-        });
+        return Some(command_for_resolved_executable(
+            &candidate,
+            vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+        ));
     }
 
     let fallback_bin_dir = bin_dir
@@ -144,9 +177,11 @@ fn resolve_agent_relay_mcp_command(
     fallback_bin_dir
         .map(|directory| directory.join(executable_name))
         .filter(|path| executable_file(path))
-        .map(|candidate| AgentRelayMcpCommand {
-            command: candidate.to_string_lossy().into_owned(),
-            args: vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+        .map(|candidate| {
+            command_for_resolved_executable(
+                &candidate,
+                vec![AGENT_RELAY_MCP_SUBCOMMAND.to_string()],
+            )
         })
 }
 
@@ -161,7 +196,13 @@ fn agent_relay_mcp_command() -> AgentRelayMcpCommand {
         install_dir.as_deref(),
         bin_dir.as_deref(),
     )
-    .unwrap_or_else(|| parse_agent_relay_mcp_command(None).expect("default MCP command"))
+    .unwrap_or_else(|| {
+        tracing::warn!(
+            custom_cmd = custom_cmd.as_deref().unwrap_or(""),
+            "Agent Relay MCP command could not be resolved to an executable; falling back to the unresolved default command, which will fail to spawn"
+        );
+        parse_agent_relay_mcp_command(None).expect("default MCP command")
+    })
 }
 
 #[cfg(not(test))]
@@ -182,6 +223,24 @@ fn required_agent_relay_mcp_command() -> io::Result<AgentRelayMcpCommand> {
             "Agent Relay MCP executable not found; refusing to spawn an agent without coordination tools. Install agent-relay, or set AGENT_RELAY_MCP_COMMAND to an executable local command",
         )
     })
+}
+
+/// Writes a preflight JSON-RPC request to the child's stdin. A `BrokenPipe`
+/// is not fatal here: the server may have already answered and exited,
+/// closing its end of stdin before we finished writing. The read phase
+/// decides whether that response is usable.
+async fn write_preflight_request(
+    stdin: &mut tokio::process::ChildStdin,
+    request: &str,
+) -> io::Result<()> {
+    match stdin.write_all(request.as_bytes()).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("could not initialize the Agent Relay MCP executable: {error}"),
+        )),
+    }
 }
 
 async fn probe_agent_relay_mcp_command_with_timeout(
@@ -217,29 +276,49 @@ async fn probe_agent_relay_mcp_command_with_timeout(
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("Agent Relay MCP preflight stdout was unavailable"))?;
-    let request = concat!(
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"agent-relay-broker-preflight\",\"version\":\"1.0\"}}}\n",
-        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
-        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n"
-    );
-    if let Err(error) = stdin.write_all(request.as_bytes()).await {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        return Err(io::Error::new(
-            error.kind(),
-            format!("could not initialize the Agent Relay MCP executable: {error}"),
-        ));
-    }
 
     let result = tokio::time::timeout(timeout, async {
         let mut lines = BufReader::new(stdout).lines();
+
+        // Send `initialize` and wait for its response before sending
+        // `notifications/initialized` and `tools/list`: strict MCP servers
+        // can reject requests that arrive ahead of the initialize response.
+        let initialize_request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"agent-relay-broker-preflight\",\"version\":\"1.0\"}}}\n";
+        write_preflight_request(&mut stdin, initialize_request).await?;
+
+        loop {
+            let Some(line) = lines.next_line().await? else {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Agent Relay MCP exited before completing the MCP initialize handshake",
+                ));
+            };
+            // Wrappers and servers sometimes log to stdout. Only JSON-RPC
+            // lines are protocol data; ignore everything else.
+            let Ok(response) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if response.get("id").and_then(Value::as_u64) != Some(1) {
+                continue;
+            }
+            if let Some(error) = response.get("error") {
+                return Err(io::Error::other(format!(
+                    "Agent Relay MCP rejected initialize: {error}"
+                )));
+            }
+            break;
+        }
+
+        let followup_request = concat!(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n"
+        );
+        write_preflight_request(&mut stdin, followup_request).await?;
+
         while let Some(line) = lines.next_line().await? {
-            let response: Value = serde_json::from_str(&line).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Agent Relay MCP returned invalid protocol output: {error}"),
-                )
-            })?;
+            let Ok(response) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             if response.get("id").and_then(Value::as_u64) != Some(2) {
                 continue;
             }
@@ -1849,6 +1928,59 @@ mod tests {
         assert_ne!(command.command, npx.to_string_lossy());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resolves_legacy_agent_relay_install_dir() {
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path();
+        let bin = home.join(".agent-relay").join("bin");
+        fs::create_dir_all(&bin).expect("create legacy bin dir");
+        let relay = bin.join("agent-relay");
+        fs::write(&relay, "#!/bin/sh\nexit 0\n").expect("write relay executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make relay executable");
+        let empty_path = OsString::new();
+
+        let command = super::resolve_agent_relay_mcp_command(
+            None,
+            Some(empty_path.as_os_str()),
+            Some(home),
+            None,
+            None,
+        )
+        .expect("resolve legacy install");
+
+        assert_eq!(command.command, relay.to_string_lossy());
+        assert_eq!(command.args, vec!["mcp"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wraps_batch_shim_through_cmd_exe() {
+        let shim = Path::new(r"C:\Users\test\AppData\Roaming\npm\agent-relay.cmd");
+        let command = super::command_for_resolved_executable(shim, vec!["mcp".to_string()]);
+
+        assert_eq!(command.command, "cmd.exe");
+        assert_eq!(
+            command.args,
+            vec![
+                "/C".to_string(),
+                shim.to_string_lossy().into_owned(),
+                "mcp".to_string()
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn does_not_wrap_exe_candidates() {
+        let exe = Path::new(r"C:\Users\test\.agentworkforce\relay\bin\agent-relay.exe");
+        let command = super::command_for_resolved_executable(exe, vec!["mcp".to_string()]);
+
+        assert_eq!(command.command, exe.to_string_lossy());
+        assert_eq!(command.args, vec!["mcp".to_string()]);
+    }
+
     #[test]
     fn missing_explicit_mcp_command_is_rejected() {
         let empty_path = OsString::new();
@@ -1878,6 +2010,7 @@ mod tests {
         fs::write(
             &relay,
             r#"#!/bin/sh
+cat >/dev/null &
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"name":"post_message"},{"name":"check_inbox"}]}}'
 "#,
@@ -1906,6 +2039,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"n
         fs::write(
             &relay,
             r#"#!/bin/sh
+cat >/dev/null &
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}]}}'
 "#,
         )
@@ -1925,6 +2060,34 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}
         .expect_err("incomplete MCP tool list must fail");
 
         assert!(error.to_string().contains("send_dm, post_message"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mcp_preflight_tolerates_broken_pipe_on_write() {
+        let temp = tempdir().expect("tempdir");
+        let relay = temp.path().join("agent-relay");
+        // Exits immediately without reading stdin, so our write to its stdin
+        // can race a closed pipe (BrokenPipe) instead of a clean read.
+        fs::write(&relay, "#!/bin/sh\nexit 0\n").expect("write fake MCP executable");
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
+            .expect("make MCP executable");
+        let command = super::AgentRelayMcpCommand {
+            command: relay.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+
+        let error = super::probe_agent_relay_mcp_command_with_timeout(
+            &command,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect_err("preflight against a silent exiting process must fail");
+
+        // A BrokenPipe on write must not surface as the fatal error; the
+        // read-phase EOF is the real, actionable failure.
+        assert!(error.to_string().contains("handshake") || error.to_string().contains("tool list"));
+        assert!(!error.to_string().contains("could not initialize"));
     }
 
     #[test]

@@ -189,19 +189,19 @@ if (!result.success) {
 
 **Acknowledge validation task:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Sender", text: "ACK: Reviewing validation for [component]")
 ```
 
 **Report findings:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Sender", text: "VALIDATION REVIEW COMPLETE:\n- Fields checked: X\n- Issues found: Y\n- Critical gaps: [list]\nSchema proposal ready")
 ```
 
 **Recommend implementation:**
 
-```
+```text
 mcp__agent-relay__send_dm(to: "Developer", text: "TASK: Implement validation schema\nSee proposed schema in [file]\nKey requirements:\n- All user input validated\n- Clear error messages\n- Type-safe with inference")
 ```
 

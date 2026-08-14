@@ -2,7 +2,15 @@ import path from 'node:path';
 
 type ExistsSyncLike = (filePath: string) => boolean;
 
-function isBundledBunEntrypoint(cliScript: string): boolean {
+/**
+ * Bun's `--compile` executable exposes argv[1] as a virtual `/$bunfs/root/...`
+ * (or `X:/~BUN/root/...` on Windows) path rather than a real file on disk.
+ * Shared with `isBundledBunExecutableEntrypoint` in broker-lifecycle.ts so a
+ * future Bun path change only needs to update this one place; that caller
+ * additionally checks `argv[0] === 'bun'`, which this module doesn't have
+ * access to.
+ */
+export function isBundledBunEntrypointPath(cliScript: string): boolean {
   const normalized = cliScript.replace(/\\/g, '/');
   return normalized.startsWith('/$bunfs/root/') || /^[A-Z]:\/~BUN\/root\//i.test(normalized);
 }
@@ -29,7 +37,7 @@ export function buildBundledAgentRelayMcpCommand(
   // find. Re-enter the already-installed standalone executable instead. This
   // keeps MCP startup local and deterministic instead of falling through to a
   // cold `npx -y agent-relay mcp` resolution.
-  if (isBundledBunEntrypoint(cliScript)) {
+  if (isBundledBunEntrypointPath(cliScript)) {
     return `${quoteCommandPart(execPath)} mcp`;
   }
 
