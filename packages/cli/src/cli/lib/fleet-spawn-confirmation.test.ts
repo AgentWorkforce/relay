@@ -166,4 +166,97 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
     expect((error as Error).message).toContain('getInvocation is not supported');
   });
+
+  // `denied` is terminal — the documented lifecycle is
+  // `invoked -> completed | failed | denied`. Treating it as pending would burn
+  // the whole timeout and then report the wrong code, losing the node's reason.
+  it('treats a denied invocation as a terminal failure, not as pending', async () => {
+    const { client } = createClient(async (name, invocationId) => ({
+      invocation_id: invocationId,
+      action_name: name,
+      status: 'denied',
+      error: 'spawn:claude refused: node is draining',
+    }));
+
+    const started = Date.now();
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 30_000, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    expect((error as Error).message).toContain('node is draining');
+    // Must resolve on the denial, not after the 30s budget.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  // A non-finite or non-positive timeout must not degenerate the loop. Without
+  // normalization `Date.now() + NaN` is `NaN`, `Date.now() >= NaN` is never
+  // true, and the poll delay collapses to `NaN` — which `setTimeout` treats as
+  // 0. The loop then spins as fast as it can, forever: a silent hang inside the
+  // mechanism whose entire purpose is to stop silent waiting.
+  //
+  // The observable asserted here is the CADENCE, because that is what separates
+  // the two states quickly. Waiting for the normalized fallback budget to
+  // expire would mean a 120s test, so this deliberately does not do that; it
+  // checks that the deadline arithmetic stayed finite enough to keep pacing the
+  // reads, then lets the invocation go terminal so nothing is left pending.
+  //
+  // Measured honestly: `NaN`, `0` and `-1` each fail without the normalization.
+  // `Infinity` does NOT fail this arm — an infinite deadline still paces reads
+  // off the old 25ms floor rather than busy-spinning — so it is covered here
+  // only because it shares the clamp path. Its real effect (a finite budget
+  // instead of an unbounded one) is not separately observable inside a fast
+  // test, and this arm does not claim otherwise.
+  it.each([NaN, Infinity, 0, -1])(
+    'does not degenerate into a busy-spin when confirmTimeoutMs is %p',
+    async (badTimeout) => {
+      let reads = 0;
+      let terminal = false;
+      const { client } = createClient(async (name, invocationId) => {
+        reads += 1;
+        return {
+          invocation_id: invocationId,
+          action_name: name,
+          status: terminal ? 'failed' : 'invoked',
+          ...(terminal ? { error: 'worker died' } : {}),
+        };
+      });
+
+      const pending = client.placement
+        .spawn(spawnInput({ confirm: true, confirmTimeoutMs: badTimeout, confirmPollIntervalMs: 20 }))
+        .catch((caught: unknown) => caught);
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // ~10 reads at the requested 20ms cadence. An unnormalized deadline
+      // produces hundreds to thousands in the same window.
+      expect(reads).toBeGreaterThan(0);
+      expect(reads).toBeLessThan(40);
+
+      terminal = true;
+      const error = await pending;
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    }
+  );
+
+  // A transient read failure followed by successful reads must not leave a
+  // stale "Last read error" implying reads are still failing.
+  it('does not report a stale read error after a later read succeeds', async () => {
+    let call = 0;
+    const { client } = createClient(async (name, invocationId) => {
+      call += 1;
+      if (call === 1) throw new Error('transient socket reset');
+      return { invocation_id: invocationId, action_name: name, status: 'invoked' };
+    });
+
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 120, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+    expect(call).toBeGreaterThan(1);
+    expect((error as Error).message).not.toContain('transient socket reset');
+  });
 });

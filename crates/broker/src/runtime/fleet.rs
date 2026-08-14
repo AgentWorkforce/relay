@@ -1161,18 +1161,8 @@ impl BrokerRuntime {
 
         let verify_ready = super::relaycast_events::relaycast_spawn_verifies_ready(&ws_value);
 
-        // The spawn's own verified outcome decides this action, not bare registry
-        // presence: `spawn_worker_from_request` returns only after the
-        // process-stability probe, so an `Err` carries the real startup exit
-        // status and worker log path. Registry presence is still required on the
-        // success path — reporting `spawned: true` with no live handle is exactly
-        // the failure this action must never produce.
-        let spawn_outcome = match spawn_result {
-            Ok(()) if !self.workers.workers.contains_key(&name) => Err(anyhow::anyhow!(
-                "agent '{name}' left no live worker handle after spawn"
-            )),
-            other => other,
-        };
+        let spawn_outcome =
+            fleet_spawn_outcome(spawn_result, &name, self.workers.is_worker_live(&name));
 
         match spawn_outcome {
             Ok(()) => {
@@ -1389,6 +1379,32 @@ impl BrokerRuntime {
             heartbeat_now,
         )
         .await;
+    }
+}
+
+/// Decide a fleet spawn action from the spawn's own verified outcome.
+///
+/// `spawn_worker_from_request` returns only after the process-stability probe,
+/// so an `Err` already carries the real startup exit status and worker log
+/// path. Liveness is still required on the success path: the child can exit
+/// between that probe and this decision, and registry presence would survive
+/// that — reporting `spawned: true` for a dead worker is precisely the failure
+/// this action exists to prevent, so the guard asks whether the process is
+/// alive rather than whether a map entry exists.
+///
+/// Split out from `handle_fleet_action_spawn` so the guard is testable without
+/// a whole `BrokerRuntime`; an untestable guard is how the weaker
+/// registry-presence check survived here in the first place.
+fn fleet_spawn_outcome(
+    spawn_result: Result<()>,
+    name: &WorkerName,
+    worker_is_live: bool,
+) -> Result<()> {
+    match spawn_result {
+        Ok(()) if !worker_is_live => Err(anyhow::anyhow!(
+            "agent '{name}' has no live worker process after spawn"
+        )),
+        other => other,
     }
 }
 
@@ -2143,8 +2159,34 @@ mod tests {
             },
         );
 
-        assert!(!workers.is_worker_live(&name));
+        // The registered-but-dead worker: present in the map, process gone.
+        // These two lines are the whole point — a guard keyed on presence sees
+        // a healthy worker here, and a guard keyed on liveness does not.
         assert!(workers.workers.contains_key(&name));
+        assert!(!workers.is_worker_live(&name));
+
+        // MUST-FIRE: a successful `spawn_worker_from_request` is not enough if
+        // the process died between its stability probe and this decision.
+        let outcome = fleet_spawn_outcome(Ok(()), &name, workers.is_worker_live(&name));
+        let error =
+            outcome.expect_err("a dead worker must not resolve the spawn action as success");
+        assert!(
+            error.to_string().contains("no live worker process"),
+            "{error}"
+        );
+
+        // MUST-NOT-FIRE: a live worker with a successful spawn stays successful,
+        // so the guard above is not simply rejecting everything.
+        fleet_spawn_outcome(Ok(()), &name, true).expect("a live worker must resolve as success");
+
+        // A real launch failure keeps its detail rather than being replaced by
+        // the liveness message.
+        let propagated = fleet_spawn_outcome(Err(anyhow::anyhow!("exit status: 19")), &name, false)
+            .expect_err("a failed spawn must stay failed");
+        assert!(
+            propagated.to_string().contains("exit status: 19"),
+            "{propagated}"
+        );
 
         let result = fleet_spawn_action_result(
             "inv-failed-1430",
