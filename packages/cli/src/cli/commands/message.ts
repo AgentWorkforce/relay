@@ -133,7 +133,16 @@ export function registerMessageCommands(
     await runSdk(deps, async () => {
       const mode = o.mode as 'wait' | 'steer' | undefined;
       const relay = deps.createAgentRelay(opts(o));
-      const resolvedRecipient = resolveExactAgentName(await relay.agents.list(), agent);
+      // Recipient-name verification is a best-effort nicety on top of the send,
+      // not a precondition for it: agents.list() is a workspace-wide roster
+      // read and can be unavailable to a credential that is otherwise fully
+      // authorized to send this DM (e.g. an agent-scoped token). Losing this
+      // lookup must degrade to `resolvedRecipient: null` in the receipt
+      // (handled by directMessageReceipt) rather than block the send itself.
+      const resolvedRecipient = await relay.agents
+        .list()
+        .then((agents) => resolveExactAgentName(agents, agent))
+        .catch(() => undefined);
       printJson(
         deps,
         directMessageReceipt(
