@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `register_agent` now writes supplied `metadata` or `persona` instead of silently discarding it when returning a cached token, and its new `verify_metadata` option reports whether the write actually persisted.
 - Spawned agents now launch Agent Relay MCP through an installed local `agent-relay` executable instead of cold `npx` resolution.
 - Spawn now fails before start with an actionable error when no usable Agent Relay MCP executable is available.
 
