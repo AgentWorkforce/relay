@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -244,6 +245,12 @@ type RegisterAgentWithRebindArgs = {
   type?: AgentType;
   persona?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Read the agent record back and confirm the supplied metadata persisted.
+   * Costs a workspace listing, so callers writing durable identity opt in and
+   * the per-spawn `{model}` hint does not pay for it.
+   */
+  verifyMetadata?: boolean;
   strictAgentName?: boolean;
   preferredAgentName?: string | null;
   forcedAgentType?: AgentType;
@@ -469,6 +476,7 @@ export async function registerAgentWithRebind({
   type,
   persona,
   metadata,
+  verifyMetadata,
   strictAgentName,
   preferredAgentName,
   forcedAgentType,
@@ -491,7 +499,16 @@ export async function registerAgentWithRebind({
     );
   }
 
-  if (session.agentToken && effectiveName && strictAgentName) {
+  // A caller supplying metadata or a persona is asking for a write, not for a
+  // token. The short-circuit below hands back a cached token without calling
+  // upstream, which silently discarded that write: the call returned success
+  // with no warnings and the agent record was never touched. Anything that
+  // reads identity off the record — the fleet dashboard, an org chart, a
+  // delegation gate — then sees nothing and falls back to guessing from the
+  // agent's name. Fall through so the write actually happens.
+  const wantsRecordWrite = metadata !== undefined || persona !== undefined;
+
+  if (session.agentToken && effectiveName && strictAgentName && !wantsRecordWrite) {
     // If the session tracks per-identity agents, only short-circuit when the
     // strict-named identity is still registered. After an `agent_token_invalid`
     // recovery the entry is dropped from the map, which lets this fall through
@@ -518,9 +535,39 @@ export async function registerAgentWithRebind({
   const reboundName = result.name?.trim() ? result.name : effectiveName;
   setSession({ agentToken: result.token, agentName: reboundName });
 
+  // A registration response carries {id, name, token, status, createdAt} and
+  // nothing else — `normalizeAgentRegistration` drops everything not in that
+  // shape. So the response cannot tell a caller whether its metadata landed,
+  // which is precisely why the discard this fixes went unnoticed: success and
+  // silent-failure are the same bytes.
+  //
+  // `metadata_verified` closes that gap without ever claiming more than is
+  // known. It is machine-readable so a dispatcher writing durable identity can
+  // fail closed on it — a passthrough that quietly does nothing is a worse bug
+  // than no passthrough, because it looks like it worked.
+  //
+  // Verification costs a full workspace listing, so it is opt-in rather than
+  // automatic: `add_agent` sends `metadata: {model}` on every spawn as a
+  // broker hint, and making each of those refetch every agent in the workspace
+  // would be a bad trade. Unverified is reported as the literal string
+  // 'unchecked' rather than omitted or defaulted to false — "nobody looked" is
+  // a different claim from "it is not there", and collapsing them is the same
+  // class of error as the silent discard itself.
+  let metadataVerified: boolean | 'unchecked' | undefined;
+  if (metadata) {
+    if (verifyMetadata) {
+      const verification = await verifyMetadataLanded(relay, reboundName, metadata);
+      metadataVerified = verification.verified;
+      if (!verification.verified) warnings.push(verification.warning);
+    } else {
+      metadataVerified = 'unchecked';
+    }
+  }
+
   return {
     ...result,
     registered_name: reboundName,
+    ...(metadataVerified === undefined ? {} : { metadata_verified: metadataVerified }),
     warnings,
   };
 }
@@ -606,6 +653,61 @@ async function invokeVerifiedPersonaSpawn(
   const commands = new AgentRelay({ agentToken, baseUrl }).messaging.commands;
   const invocation = await commands.invoke('spawn', actionInput);
   return waitForPersonaSpawn(commands, invocation);
+}
+
+/**
+ * Read the agent record back and confirm the supplied metadata is on it.
+ *
+ * Compares only the keys the caller sent; the platform adds its own (a `fleet`
+ * block, for one) and those are none of our business. A read that fails is
+ * reported as unverified rather than thrown — the registration itself
+ * succeeded, and claiming otherwise would be its own kind of lie.
+ */
+async function verifyMetadataLanded(
+  relay: RelayCastLike,
+  name: string,
+  metadata: Record<string, unknown>
+): Promise<{ verified: boolean; warning: string }> {
+  const keys = Object.keys(metadata);
+  if (keys.length === 0) return { verified: true, warning: '' };
+
+  let agents: unknown[];
+  try {
+    agents = await relay.agents.list();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      verified: false,
+      warning: `Registered "${name}", but could not read the record back to confirm metadata landed: ${detail}`,
+    };
+  }
+
+  const record = agents.find((agent) => (agent as { name?: string } | null)?.name === name) as
+    | { metadata?: Record<string, unknown> }
+    | undefined;
+
+  if (!record) {
+    return {
+      verified: false,
+      warning: `Registered "${name}", but the agent is not in the workspace listing, so its metadata could not be confirmed.`,
+    };
+  }
+
+  // Order-insensitive: `metadata` is a caller-supplied Record that can nest
+  // objects, and JSON.stringify comparison would false-negative a value the
+  // platform re-serialized with a different key order — reporting a verifier
+  // failure on a registration that actually succeeded.
+  const stored = record.metadata ?? {};
+  const missing = keys.filter((key) => !isDeepStrictEqual(stored[key], metadata[key]));
+  if (missing.length === 0) return { verified: true, warning: '' };
+
+  return {
+    verified: false,
+    warning:
+      `Registered "${name}", but the metadata was not persisted: ${missing.join(', ')} ` +
+      `${missing.length === 1 ? 'is' : 'are'} missing or different on the record. ` +
+      `Treat this registration as unattributed.`,
+  };
 }
 
 function registerAgentRelayTools(
@@ -760,11 +862,19 @@ function registerAgentRelayTools(
           .record(z.string(), z.unknown())
           .optional()
           .describe('Key-value metadata to attach to the agent'),
+        verify_metadata: z
+          .boolean()
+          .optional()
+          .describe(
+            'Read the agent record back and confirm the metadata persisted. Costs a ' +
+              'workspace listing. Use when writing durable identity you intend to rely on; ' +
+              'the response reports metadata_verified as true, false, or "unchecked".'
+          ),
       },
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, type, persona, metadata }: any) => {
+    async ({ name, type, persona, metadata, verify_metadata }: any) => {
       const payload = await registerAgentWithRebind({
         session: getSession(),
         setSession,
@@ -773,6 +883,7 @@ function registerAgentRelayTools(
         type,
         persona,
         metadata,
+        verifyMetadata: verify_metadata,
         strictAgentName,
         preferredAgentName: preferredAgentName ?? null,
         forcedAgentType,
