@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Added
+
+- `agent-relay node agent attach --node` accepts `--workspace-key`, so a fleet attach command copied out of the Cloud dashboard resolves the intended workspace regardless of the directory it is pasted into. The flag is rejected on the local and `--ssh-host` paths, which authenticate with the broker instead.
 
 ## [11.6.1] - 2026-08-13
 

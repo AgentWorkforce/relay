@@ -615,10 +615,18 @@ export function registerLocalAgentCommands(
       const workspaceKey = rawWorkspaceKey?.trim() ? rawWorkspaceKey.trim() : undefined;
       // Only the fleet path authenticates with a workspace key. The local and
       // SSH paths speak the broker contract, so accepting the flag there would
-      // silently ignore it and send the caller to the wrong workspace.
-      if (workspaceKey !== undefined && node === undefined) {
+      // silently ignore it and send the caller to the wrong workspace. Gate on
+      // the raw option rather than the normalized one: `--workspace-key "$KEY"`
+      // with an unset variable is still a caller asking for a workspace, and
+      // must be told so instead of being routed to a broker.
+      if (rawWorkspaceKey !== undefined && node === undefined) {
+        // The two rejected paths take different credentials, so name the ones
+        // the caller's path actually accepts — --ssh-host rejects
+        // --broker-url / --api-key and reads connection.json on the target.
         deps.error(
-          'Error: --workspace-key requires --node. The local and --ssh-host attach paths authenticate with --broker-url / --api-key instead.'
+          sshHost !== undefined
+            ? 'Error: --workspace-key requires --node. The --ssh-host attach path reads the target broker connection.json — locate it with --state-dir instead.'
+            : 'Error: --workspace-key requires --node. The local attach path authenticates with --broker-url / --api-key instead.'
         );
         deps.exit(1);
         return;
