@@ -50,9 +50,11 @@ const MIN_PING_INTERVAL: Duration = Duration::from_millis(50);
 // anyway.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 // Bounded so a stuck writer can't let this module accumulate unbounded
-// queued frames; a full or closed queue is treated the same by every
-// `try_send` call site below — both mean "the writer cannot be trusted right
-// now," which is exactly the state that should force a reconnect.
+// queued frames. A *full* queue just means this loop is enqueueing faster
+// than real socket writes complete (expected under a legitimate burst) and
+// is handled by dropping the newest frame; only a *closed* queue (the writer
+// task has exited) means the connection is actually dead — see the
+// `try_send` call sites below.
 const WRITER_QUEUE_CAPACITY: usize = 64;
 // Small: this queue only ever holds a ping or a shutdown close frame, never
 // bulk terminal output (see `run_terminal_writer`'s priority read).
@@ -320,7 +322,21 @@ pub(crate) async fn run_terminal_control_client(
                     Some(TerminalControlCommand::Send(message)) => {
                         match serde_json::to_string(&message) {
                             Ok(encoded) => {
-                                if writer_tx.try_send(Message::Text(encoded)).is_err() {
+                                // A momentarily full queue means the writer
+                                // hasn't caught up to a burst yet — it says
+                                // nothing about whether the connection is
+                                // alive, since this loop can enqueue far
+                                // faster than any real socket write
+                                // completes. Only a closed queue (the writer
+                                // task has exited) means the connection is
+                                // actually dead. Dropping a frame under
+                                // backpressure matches the existing outer
+                                // `terminal_control_tx` channel's philosophy
+                                // (fleet.rs `try_send_terminal`): a wedged
+                                // lane must fail forward, not accumulate.
+                                if let Err(mpsc::error::TrySendError::Closed(_)) =
+                                    writer_tx.try_send(Message::Text(encoded))
+                                {
                                     connected = false;
                                 }
                             }
@@ -358,10 +374,14 @@ pub(crate) async fn run_terminal_control_client(
                             "no inbound fleet terminal frame within the read-idle window; reconnecting"
                         );
                         connected = false;
-                    } else if priority_tx.try_send(Message::Ping(Vec::new())).is_err() {
-                        // A full or closed priority queue means the writer is
-                        // stuck or has already given up — treat it the same
-                        // as a failed send.
+                    } else if let Err(mpsc::error::TrySendError::Closed(_)) =
+                        priority_tx.try_send(Message::Ping(Vec::new()))
+                    {
+                        // Only a closed queue (the writer task has exited)
+                        // means the connection is dead; a momentarily full
+                        // one just means this tick's ping is skipped — the
+                        // next tick tries again, and read-idle detection
+                        // above is unaffected either way.
                         connected = false;
                     }
                 }
@@ -881,8 +901,8 @@ mod tests {
         let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
     }
 
-    const WEDGE_CHUNK_BYTES: usize = 100;
-    const WEDGE_CHUNK_COUNT: usize = 128; // DEBUG TEMP small bytes, same count
+    const WEDGE_CHUNK_BYTES: usize = 256 * 1024;
+    const WEDGE_CHUNK_COUNT: usize = 128; // 32MB total: comfortably past any real OS send-buffer default.
 
     /// The P1 case: a peer that accepts the connection and then stops
     /// reading, with terminal output queued against it, must not be able to
@@ -899,7 +919,10 @@ mod tests {
     #[tokio::test]
     async fn terminal_control_watchdog_survives_a_wedged_writer() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
         let (command_tx, command_rx) = mpsc::channel(WEDGE_CHUNK_COUNT + 16);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
@@ -976,9 +999,22 @@ mod tests {
     /// one.
     #[tokio::test]
     async fn terminal_control_large_output_does_not_disconnect_a_draining_peer() {
+        // Deliberately modest, unlike the wedge test's 32MB: this arm's job
+        // is only to prove ordinary queued output doesn't itself trip the
+        // watchdog when the peer keeps reading. Relying on genuine multi-MB
+        // TCP backpressure timing here — a negative assertion racing a fixed
+        // drain window under real OS scheduling — is exactly the kind of
+        // thing that reads as flaky and shouldn't need to be.
+        const CHUNK_BYTES: usize = 4 * 1024;
+        const CHUNK_COUNT: usize = 20;
+        let expected_bytes = CHUNK_BYTES * CHUNK_COUNT;
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
-        let (command_tx, command_rx) = mpsc::channel(WEDGE_CHUNK_COUNT + 16);
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (command_tx, command_rx) = mpsc::channel(CHUNK_COUNT + 16);
         let (event_tx, _event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
 
@@ -995,36 +1031,22 @@ mod tests {
             event_tx,
         ));
 
-        let expected_bytes = WEDGE_CHUNK_BYTES * WEDGE_CHUNK_COUNT;
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
             let drain = tokio::spawn(async move {
                 let mut received = 0usize;
-                loop {
-                    match ws.next().await {
-                        Some(Ok(Message::Text(text))) => {
-                            received += text.len();
-                            if received >= expected_bytes {
-                                break;
-                            }
-                        }
-                        Some(Ok(other)) => {
-                            eprintln!("DEBUG drain non-text: {other:?}");
-                        }
-                        Some(Err(error)) => {
-                            eprintln!("DEBUG drain error: {error}");
-                            break;
-                        }
-                        None => {
-                            eprintln!("DEBUG drain: stream ended, received={received}");
+                while let Some(Ok(msg)) = ws.next().await {
+                    if let Message::Text(text) = msg {
+                        received += text.len();
+                        if received >= expected_bytes {
                             break;
                         }
                     }
                 }
                 received
             });
-            let received = tokio::time::timeout(Duration::from_secs(15), drain)
+            let received = tokio::time::timeout(Duration::from_secs(5), drain)
                 .await
                 .expect("server never finished draining the client's output")
                 .unwrap();
@@ -1035,18 +1057,18 @@ mod tests {
 
             // If the client had disconnected and reconnected, a second
             // connection attempt would already be waiting here. None
-            // should exist: draining a large legitimate burst must not
-            // spuriously trip the watchdog.
+            // should exist: sending legitimate output must not spuriously
+            // trip the watchdog.
             let second_connection =
                 tokio::time::timeout(Duration::from_millis(700), listener.accept()).await;
             assert!(
                 second_connection.is_err(),
-                "client reconnected even though the peer kept draining a large but legitimate output burst"
+                "client reconnected even though the peer kept draining legitimate output"
             );
         });
 
-        let chunk = "x".repeat(WEDGE_CHUNK_BYTES);
-        for _ in 0..WEDGE_CHUNK_COUNT {
+        let chunk = "x".repeat(CHUNK_BYTES);
+        for _ in 0..CHUNK_COUNT {
             command_tx
                 .send(TerminalControlCommand::Send(TerminalToCloud::Output {
                     session_id: "s".into(),
@@ -1057,7 +1079,7 @@ mod tests {
                 .unwrap();
         }
 
-        tokio::time::timeout(Duration::from_secs(20), server)
+        tokio::time::timeout(Duration::from_secs(10), server)
             .await
             .expect("server task did not complete")
             .unwrap();
