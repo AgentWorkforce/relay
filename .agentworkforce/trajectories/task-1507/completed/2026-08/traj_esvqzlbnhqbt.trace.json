@@ -1,0 +1,262 @@
+{
+  "version": "1.0.0",
+  "id": "d2597cac-cdad-4b74-a2c8-1c19184f136f",
+  "timestamp": "2026-08-14T13:10:31.133Z",
+  "trajectory": "traj_esvqzlbnhqbt",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/task-1507/active/traj_esvqzlbnhqbt/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 51,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 19,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/local-agent.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 28,
+              "end_line": 38,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 41,
+              "end_line": 48,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 53,
+              "end_line": 70,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 194,
+              "end_line": 305,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/local-agent.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 22,
+              "end_line": 31,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 189,
+              "end_line": 196,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 205,
+              "end_line": 212,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 233,
+              "end_line": 299,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 665,
+              "end_line": 674,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 681,
+              "end_line": 697,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 715,
+              "end_line": 741,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/join-ticket.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 158,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/join-ticket.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 182,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/redact.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 72,
+              "end_line": 78,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/redact.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 12,
+              "end_line": 18,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/workspace-session.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 115,
+              "end_line": 138,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/workspace-session.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 12,
+              "end_line": 19,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            },
+            {
+              "start_line": 101,
+              "end_line": 107,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/redact.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 21,
+              "end_line": 30,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/redact.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 15,
+              "revision": "c789886e44f0ebdb8c656fbfedd68ad6bb12b449"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

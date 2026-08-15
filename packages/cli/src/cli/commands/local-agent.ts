@@ -22,7 +22,10 @@ import {
   type BrokerConnectionOptions,
 } from '../lib/broker-connection.js';
 import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
+import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
+import { redeemJoinTicket } from '../lib/join-ticket.js';
+import { describeClearedEnrollment, persistWorkspaceSession } from '../lib/workspace-session.js';
 
 // ── Auto-routing model resolution ─────────────────────────────────────────────
 
@@ -186,6 +189,8 @@ export interface LocalAgentDependencies {
   getDefaultStateDir: () => string;
   env: NodeJS.ProcessEnv;
   fetch: typeof globalThis.fetch;
+  redeemJoinTicket: typeof redeemJoinTicket;
+  persistWorkspaceSession: typeof persistWorkspaceSession;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -200,6 +205,8 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     getDefaultStateDir: defaultStateDir,
     env: process.env,
     fetch: globalThis.fetch,
+    redeemJoinTicket,
+    persistWorkspaceSession,
     attach: runAttach,
     attachRemote: attachRemoteNode,
     attachNode: attachFleetNode,
@@ -224,6 +231,67 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     return createBrokerClient(connection, deps.fetch);
   };
   return deps;
+}
+
+type AttachCredentialSelection =
+  | { ok: true; workspaceKey?: string; joinTicket?: string }
+  | { ok: false; error: string };
+
+function resolveAttachCredentialSelection(
+  rawWorkspaceKey: string | undefined,
+  rawJoinTicket: string | undefined,
+  node: string | undefined,
+  sshHost: string | undefined
+): AttachCredentialSelection {
+  const workspaceKey = rawWorkspaceKey?.trim() || undefined;
+  const joinTicket = rawJoinTicket?.trim() || undefined;
+  if (rawWorkspaceKey !== undefined && rawJoinTicket !== undefined) {
+    return { ok: false, error: 'Error: --join-ticket cannot be combined with --workspace-key.' };
+  }
+  if (rawJoinTicket !== undefined && !joinTicket) {
+    return { ok: false, error: 'Error: --join-ticket requires a non-empty ticket.' };
+  }
+  if (rawWorkspaceKey !== undefined && node === undefined) {
+    return {
+      ok: false,
+      error:
+        sshHost !== undefined
+          ? 'Error: --workspace-key requires --node. The --ssh-host attach path reads the target broker connection.json — locate it with --state-dir instead.'
+          : 'Error: --workspace-key requires --node. The local attach path uses --broker-url / --api-key or reads connection.json from --state-dir instead.',
+    };
+  }
+  if (rawJoinTicket !== undefined && node === undefined) {
+    return {
+      ok: false,
+      error:
+        sshHost !== undefined
+          ? 'Error: --join-ticket requires --node. The --ssh-host attach path reads the target broker connection.json — locate it with --state-dir instead.'
+          : 'Error: --join-ticket requires --node. The local attach path uses --broker-url / --api-key or reads connection.json from --state-dir instead.',
+    };
+  }
+  return { ok: true, workspaceKey, joinTicket };
+}
+
+async function redeemAndPersistAttachCredential(
+  deps: LocalAgentDependencies,
+  options: { ticket: string; node: string; agent: string; mode: AttachMode }
+): Promise<string> {
+  const redeemed = await deps.redeemJoinTicket({
+    ticket: options.ticket,
+    node: options.node,
+    agent: options.agent,
+    mode: options.mode,
+    env: deps.env,
+    fetch: deps.fetch,
+  });
+  const persisted = deps.persistWorkspaceSession({
+    workspaceKey: redeemed.workspaceKey,
+    workspaceId: redeemed.workspaceId,
+    projectRoot: deps.cwd(),
+  });
+  const warning = describeClearedEnrollment(persisted);
+  if (warning) deps.error(warning);
+  return redeemed.workspaceKey;
 }
 
 const AGENT_STATE_DISPLAY: Record<
@@ -597,6 +665,10 @@ export function registerLocalAgentCommands(
       '--workspace-key <key>',
       'Relaycast workspace key for --node (overrides RELAY_WORKSPACE_KEY, the project pin, and the machine-global active workspace)'
     )
+    .option(
+      '--join-ticket <ticket>',
+      "Short-lived Relaycast join ticket for --node (redeemed and saved as this project's workspace credential)"
+    )
     .option('--json', 'Emit normalized agent events as NDJSON')
     .option('--reasoning', 'Include agent reasoning events')
     .option('--diagnostics', 'Include native harness diagnostics')
@@ -609,25 +681,17 @@ export function registerLocalAgentCommands(
       }
       const sshHost = options.sshHost as string | undefined;
       const node = options.node as string | undefined;
-      // An all-whitespace flag must fall through to the normal precedence
-      // ladder rather than being sent as a literal credential.
       const rawWorkspaceKey = options.workspaceKey as string | undefined;
-      const workspaceKey = rawWorkspaceKey?.trim() ? rawWorkspaceKey.trim() : undefined;
+      const rawJoinTicket = options.joinTicket as string | undefined;
       // Only the fleet path authenticates with a workspace key. The local and
       // SSH paths speak the broker contract, so accepting the flag there would
       // silently ignore it and send the caller to the wrong workspace. Gate on
       // the raw option rather than the normalized one: `--workspace-key "$KEY"`
       // with an unset variable is still a caller asking for a workspace, and
       // must be told so instead of being routed to a broker.
-      if (rawWorkspaceKey !== undefined && node === undefined) {
-        // The two rejected paths take different credentials, so name the ones
-        // the caller's path actually accepts — --ssh-host rejects
-        // --broker-url / --api-key and reads connection.json on the target.
-        deps.error(
-          sshHost !== undefined
-            ? 'Error: --workspace-key requires --node. The --ssh-host attach path reads the target broker connection.json — locate it with --state-dir instead.'
-            : 'Error: --workspace-key requires --node. The local attach path uses --broker-url / --api-key or reads connection.json from --state-dir instead.'
-        );
+      const credential = resolveAttachCredentialSelection(rawWorkspaceKey, rawJoinTicket, node, sshHost);
+      if (!credential.ok) {
+        deps.error(credential.error);
         deps.exit(1);
         return;
       }
@@ -651,15 +715,27 @@ export function registerLocalAgentCommands(
           return;
         }
         try {
+          let attachWorkspaceKey = credential.workspaceKey;
+          if (credential.joinTicket) {
+            // Pass the redeemed key explicitly into the first attach. Merely
+            // writing the project pin would leave this process vulnerable to
+            // a higher-precedence ambient workspace environment variable.
+            attachWorkspaceKey = await redeemAndPersistAttachCredential(deps, {
+              ticket: credential.joinTicket,
+              node,
+              agent: name,
+              mode,
+            });
+          }
           const code = await deps.attachNode(name, mode, node, {
-            workspaceKey,
+            workspaceKey: attachWorkspaceKey,
             json: options.json as boolean | undefined,
             reasoning: options.reasoning as boolean | undefined,
             diagnostics: options.diagnostics as boolean | undefined,
           });
           if (code !== 0) deps.exit(code);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = describeError(error);
           deps.error(message.startsWith('Error:') ? message : `Error: ${message}`);
           deps.exit(1);
         }

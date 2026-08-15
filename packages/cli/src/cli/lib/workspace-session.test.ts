@@ -115,6 +115,24 @@ describe('workspace session persistence', () => {
     expect(readWorkspaceStore(env).active).toBe('default');
   });
 
+  it("records a credential issuer's canonical workspace id in the project pin", () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+
+    persistWorkspaceSession({
+      workspaceKey: 'rk_live_redeemed',
+      workspaceId: 'rw_redeemed',
+      projectDataDir,
+      env,
+    });
+
+    expect(readProjectWorkspaceSession(projectDataDir)).toEqual({
+      workspaceKey: 'rk_live_redeemed',
+      workspaceId: 'rw_redeemed',
+    });
+  });
+
   it('rejects a whitespace-only workspace name before persisting the project session', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');

@@ -72,6 +72,7 @@ describe('redactSecrets', () => {
 describe('maskSecret', () => {
   it('keeps a known prefix and the last four characters', () => {
     expect(maskSecret('rk_live_0123456789abcdef')).toBe('rk_live_…cdef');
+    expect(maskSecret('rjt_live_0123456789abcdef')).toBe('rjt_live_…cdef');
     expect(maskSecret('at_live_0123456789abcdef')).toBe('at_live_…cdef');
     expect(maskSecret('nt_live_0123456789abcdef')).toBe('nt_live_…cdef');
     expect(maskSecret('cld_at_0123456789abcdef')).toBe('cld_at_…cdef');
