@@ -457,8 +457,8 @@ async fn try_emit_worker_ready(
         return;
     }
 
-    let timed_out = init_received_at
-        .is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
+    let timed_out =
+        init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
 
     if !startup_ready && !timed_out {
         if !readiness.wait_warned
