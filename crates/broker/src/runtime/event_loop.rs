@@ -1,5 +1,7 @@
 use super::*;
 
+use futures_util::future::{join, join_all};
+
 /// Current PTY resize owner for a worker under the single-resizer policy.
 ///
 /// `session_id` is the client-generated id that currently owns resizing;
@@ -21,6 +23,16 @@ pub(crate) struct ResizeOwner {
 /// sending an explicit release on detach — a well-behaved client releases
 /// immediately, so this window never fires in the normal path.
 pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
+
+/// Bound on the *entire* best-effort Relaycast presence-update phase during
+/// shutdown (every worker's `mark_agent_offline` plus the broker's own
+/// `mark_offline`, all run concurrently under this one deadline). Kept well
+/// under callers' external shutdown deadlines (the CLI's `node down`
+/// graceful-shutdown window defaults to 5s) so an unresponsive backend can
+/// delay shutdown by at most this much, regardless of how many identities
+/// are involved — a per-call timeout applied to each of N calls in sequence
+/// would instead cost up to N times this much.
+const SHUTDOWN_RELAYCAST_PHASE_TIMEOUT: Duration = Duration::from_millis(2500);
 
 pub(crate) struct HostedAgentEvent {
     pub(super) name: String,
@@ -459,20 +471,43 @@ impl BrokerRuntime {
         });
         self.telemetry.shutdown();
 
+        // Bounded: these are best-effort presence updates to an external
+        // service. A slow or unresponsive Relaycast backend must never block
+        // process shutdown — a caller waiting on `node down` has its own,
+        // shorter deadline (5s by default), and a broker that outlives it
+        // becomes a stuck "still running" process the caller then has to
+        // force-kill. Every worker's update and the broker's own run
+        // *concurrently* under one shared deadline, so N stalled identities
+        // cost the same wall-clock time as one, not N times as much.
         let active_workers: Vec<WorkerName> = self.workers.workers.keys().cloned().collect();
-        for worker_name in active_workers {
-            if let Err(error) = self.relaycast_http.mark_agent_offline(&worker_name).await {
+        let worker_count = active_workers.len();
+        let relaycast_http = &self.relaycast_http;
+        let workers_phase = join_all(active_workers.iter().map(|worker_name| async move {
+            if let Err(error) = relaycast_http.mark_agent_offline(worker_name).await {
                 tracing::warn!(
                     worker = %worker_name,
                     error = %error,
                     "failed to mark worker offline during shutdown"
                 );
             }
-        }
-
-        // Mark broker agent offline in Relaycast before shutting down WS
-        if let Err(error) = self.relaycast_http.mark_offline().await {
-            tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
+        }));
+        let broker_phase = async {
+            if let Err(error) = relaycast_http.mark_offline().await {
+                tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
+            }
+        };
+        if timeout(
+            SHUTDOWN_RELAYCAST_PHASE_TIMEOUT,
+            join(workers_phase, broker_phase),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                worker_count,
+                timeout_ms = SHUTDOWN_RELAYCAST_PHASE_TIMEOUT.as_millis(),
+                "timed out marking agents offline during shutdown; proceeding"
+            );
         }
 
         if let Err(error) = self.ws_control_tx.send(WsControl::Shutdown).await {

@@ -237,6 +237,39 @@ describe('registerAgentWithRebind', () => {
     expect(payload.warnings[0]).toContain('workspace unreachable');
   });
 
+  it('bounds the metadata read-back so a hung listing cannot hang verify_metadata forever', async () => {
+    // The register call is bounded by withAgentRegistrationDeadline, but the
+    // verification read-back is a separate upstream call — it must be bounded
+    // too, or `verify_metadata: true` reintroduces the same class of hang the
+    // registration deadline was added to fix.
+    vi.useFakeTimers();
+    try {
+      const relay = fakeRelay();
+      relay.agents.list = vi.fn(() => new Promise(() => {})) as never;
+
+      const pending = registerAgentWithRebind({
+        session: strictSession(),
+        setSession: vi.fn(),
+        getRelay: () => relay as never,
+        name: 'WorkerA',
+        metadata: IDENTITY,
+        verifyMetadata: true,
+        strictAgentName: true,
+        preferredAgentName: 'WorkerA',
+        registrationTimeoutMs: 50,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      const payload = await pending;
+
+      expect(payload.metadata_verified).toBe(false);
+      expect(payload.warnings[0]).toContain('could not read the record back');
+      expect(payload.warnings[0]).toContain('did not complete within 50ms');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('writes a supplied persona through, and claims no metadata verification', async () => {
     const relay = fakeRelay();
 
@@ -438,6 +471,30 @@ describe('registerAgentWithRebind', () => {
       registered_name: 'WorkerA',
       warnings: [],
     });
+  });
+
+  it('returns promptly with the real recovery path when rotation hangs', async () => {
+    const never = new Promise<never>(() => undefined);
+
+    await expect(
+      registerAgentWithRebind({
+        session: {
+          workspaceKey: 'rk_live_test',
+          agentToken: null,
+          agentName: 'chief',
+          agents: new Map(),
+        },
+        setSession: vi.fn(),
+        getRelay: () =>
+          ({
+            agents: { registerOrRotate: vi.fn(() => never) },
+          }) as never,
+        name: 'chief',
+        strictAgentName: true,
+        preferredAgentName: 'chief',
+        registrationTimeoutMs: 10,
+      })
+    ).rejects.toThrow(/did not complete within 10ms.*agent rotate.*agent remove/s);
   });
 });
 

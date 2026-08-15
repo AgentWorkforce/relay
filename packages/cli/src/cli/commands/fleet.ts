@@ -6,6 +6,7 @@ import { withDefaults, type CoreDependencies } from './core.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
+import { attributableReleaseReason } from '../lib/release-reason.js';
 import {
   resolveAgentToken,
   resolveBaseUrl,
@@ -223,10 +224,14 @@ export function registerFleetCommands(
     await runSdk(deps.sdk, async () => {
       warnIfInferredFromProjectSession(options, deps.warn);
       const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
-      const reason = optionalText(options.reason, 'Reason');
+      const reason = attributableReleaseReason(
+        optionalText(options.reason, 'Reason'),
+        process.env.RELAY_AGENT_NAME ?? 'agent-relay fleet CLI',
+        'fleet agent released'
+      );
       const released = await workspace.agents.release({
         name: requiredText(name, 'Worker name'),
-        ...(reason ? { reason } : {}),
+        reason,
         deleteAgent: options.deleteAgent === true,
       });
       printJson(deps.sdk, released);

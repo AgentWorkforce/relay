@@ -3,6 +3,7 @@ import {
   agentTokenRecoveryMessage,
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
+  safeRelayErrorMessage,
 } from '@agent-relay/sdk';
 
 import { track, type AgentRelayToolCallCategory, type AgentRelayToolCallType } from '../telemetry/index.js';
@@ -88,6 +89,29 @@ function trackAgentRelayToolCall(input: {
   });
 }
 
+const SANITIZE_STRUCTURED_CONTENT_MAX_DEPTH = 5;
+
+/**
+ * Recursively redact SQL/diagnostic text from an `isError` tool result's
+ * `structuredContent`. Shapes vary by tool (action-tools.ts's `jsonContent`
+ * wraps arbitrary error payloads), so this walks every string leaf rather
+ * than targeting a single known field.
+ */
+function sanitizeStructuredContent(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return safeRelayErrorMessage(value);
+  if (depth >= SANITIZE_STRUCTURED_CONTENT_MAX_DEPTH || value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeStructuredContent(entry, depth + 1));
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    sanitized[key] = sanitizeStructuredContent(entry, depth + 1);
+  }
+  return sanitized;
+}
+
 function readAsIdentity(args: unknown[]): string | undefined {
   const [input] = args;
   if (typeof input !== 'object' || input === null) return undefined;
@@ -159,7 +183,22 @@ export function enableInboxPiggyback(
             errorClass: errorClassName(err),
           });
         }
-        throw err;
+        const safeMessage = safeRelayErrorMessage(err);
+        if (err instanceof Error && safeMessage === err.message) throw err;
+        if (err instanceof Error) {
+          // A materialized `.stack` embeds the original message in its
+          // header line (`${name}: ${message}`) at the point the stack was
+          // captured — mutating `.message` afterward does not retroactively
+          // scrub that. Construct a fresh Error with the sanitized message
+          // instead, preserving `name`/`cause` (never SQL) but not the stack.
+          const sanitized = new Error(
+            safeMessage,
+            err.cause !== undefined ? { cause: err.cause } : undefined
+          );
+          sanitized.name = err.name;
+          throw sanitized;
+        }
+        throw new Error(safeMessage);
       }
 
       if (name !== 'register_agent' && isInvalidAgentTokenToolResult(result)) {
@@ -195,8 +234,38 @@ export function enableInboxPiggyback(
         }
       }
 
+      const resultIsError = isErrorToolResult(result);
+      if (resultIsError) {
+        // A relay failure surfaced as an `isError` tool result (rather than
+        // a thrown error, e.g. via action-tools.ts) bypasses the catch block
+        // above entirely, so it needs the same SQL/diagnostic redaction here
+        // — applied to both `content[].text` (what a human/LLM reads) and
+        // `structuredContent` (what action-tools.ts's `jsonContent(...)`
+        // also serializes to the client, e.g. `{ ok: false, error: <msg> }`).
+        if (hasContentArray(result)) {
+          for (const entry of result.content) {
+            if (
+              entry &&
+              typeof entry === 'object' &&
+              entry.type === 'text' &&
+              typeof entry.text === 'string'
+            ) {
+              entry.text = safeRelayErrorMessage(entry.text);
+            }
+          }
+        }
+        if (
+          result &&
+          typeof result === 'object' &&
+          'structuredContent' in result &&
+          result.structuredContent &&
+          typeof result.structuredContent === 'object'
+        ) {
+          result.structuredContent = sanitizeStructuredContent(result.structuredContent);
+        }
+      }
+
       if (toolMetadata) {
-        const resultIsError = isErrorToolResult(result);
         trackAgentRelayToolCall({
           toolName: name,
           toolType: toolMetadata.toolType,

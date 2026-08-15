@@ -511,6 +511,16 @@ describe('AgentRelay observer mode', () => {
     );
   });
 
+  it('workspace.release() throws a read-only error instead of reaching the messaging client', async () => {
+    // Regression guard: the observer-mode facade overrides register/reconnect
+    // but historically forwarded release() through the `...facade` spread
+    // unguarded, letting a read-only observer token release/delete agents.
+    const relay = createObserverRelay();
+    await expect(
+      relay.workspace.release({ name: 'chief', reason: 'test', deleteAgent: true })
+    ).rejects.toThrow(/observer tokens are read-only; use a workspace key to register agents/);
+  });
+
   it('keeps the token out of the URL on Node and reports abnormal closes', async () => {
     // Security regression guard: a pre-open close on Node (which supports header
     // auth) must not permanently downgrade to a `?token=` URL, and abnormal

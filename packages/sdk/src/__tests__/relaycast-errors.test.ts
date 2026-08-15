@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   INVALID_AGENT_TOKEN_CODE,
   INVALID_AGENT_TOKEN_MESSAGE,
+  RELAY_SERVICE_FAILURE_MESSAGE,
   agentTokenRecoveryMessage,
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
+  safeRelayErrorMessage,
 } from '../relaycast-errors.js';
 
 describe('isInvalidAgentTokenError', () => {
@@ -104,5 +106,50 @@ describe('agentTokenRecoveryMessage', () => {
     const msg = agentTokenRecoveryMessage();
     expect(msg).toContain(INVALID_AGENT_TOKEN_CODE);
     expect(msg).toContain('register_agent');
+  });
+});
+
+describe('safeRelayErrorMessage', () => {
+  it('redacts raw SQL and bound parameters from an upstream failure', () => {
+    const message = safeRelayErrorMessage(
+      new Error('Failed query: delete from "agents" where "agents"."id" = ?\nparams: 214015171589668864')
+    );
+
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
+    expect(message).not.toContain('delete from');
+    expect(message).not.toContain('params:');
+    expect(message).not.toContain('214015171589668864');
+  });
+
+  it('preserves ordinary actionable Relay errors', () => {
+    expect(safeRelayErrorMessage(new Error('Agent "chief" not found'))).toBe('Agent "chief" not found');
+  });
+
+  it('redacts unprefixed, unquoted SQL that lacks a "Failed query:" prefix', () => {
+    const message = safeRelayErrorMessage(new Error('delete from agents where id = 214015171589668864'));
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
+  });
+
+  it('redacts "parameters:" diagnostic fields, not just "params:"', () => {
+    const message = safeRelayErrorMessage(new Error('query failed\nparameters: 214015171589668864'));
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
+  });
+
+  it('does not mask ordinary prose that happens to contain a SQL verb', () => {
+    expect(safeRelayErrorMessage(new Error('Please select a valid workspace before continuing'))).toBe(
+      'Please select a valid workspace before continuing'
+    );
+  });
+
+  it('does not mask prose ending in "<verb> <identifier>" with no SQL continuation', () => {
+    expect(safeRelayErrorMessage(new Error('Could not select file'))).toBe('Could not select file');
+    expect(safeRelayErrorMessage(new Error('Failed to update account'))).toBe('Failed to update account');
+  });
+
+  it('redacts canonical unquoted "select <col> from <table>" SQL', () => {
+    const message = safeRelayErrorMessage(
+      new Error('select id from users where email = ? params: someone@example.com')
+    );
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
   });
 });

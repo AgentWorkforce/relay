@@ -35,6 +35,12 @@ afterEach(() => {
 });
 
 function createRelayMock() {
+  const register = vi.fn(async (i: { name: string }) => ({
+    id: 'a1',
+    token: 't1',
+    name: i.name,
+    status: 'online',
+  }));
   return {
     agents: {
       register: vi.fn(async (i: { name: string }) => ({
@@ -45,6 +51,10 @@ function createRelayMock() {
       })),
       list: vi.fn(async () => [{ id: 'a1', name: 'lead' }]),
       delete: vi.fn(async () => undefined),
+    },
+    workspace: {
+      register,
+      release: vi.fn(async () => ({ status: 'completed' })),
     },
     channels: {
       create: vi.fn(async (i: { name: string }) => ({ id: 'c1', name: i.name })),
@@ -137,11 +147,17 @@ function harness(register: (p: Command, o: Partial<SdkCommandDeps>) => void) {
 }
 
 describe('SDK-backed CLI groups', () => {
-  it('agent register calls agents.register and prints the registration', async () => {
+  it('agent register calls workspace.register and prints the registration', async () => {
     const { program, workspaceRelay, log } = harness(registerAgentCommands);
     await program.parseAsync(['agent', 'register', 'reviewer', '--type', 'agent'], { from: 'user' });
-    expect(workspaceRelay.agents.register).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'reviewer', type: 'agent' })
+    // `agent register` resolves its client through createWorkspaceRelay (hence
+    // workspaceRelay, from main) and calls workspace.register with an explicit
+    // strict flag (hence this shape, from #1527). Taking either side of the
+    // merge alone asserts against a method or an object the implementation no
+    // longer uses.
+    expect(workspaceRelay.workspace.register).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'reviewer', type: 'agent' }),
+      { strict: false }
     );
     expect(log).toHaveBeenCalled();
   });

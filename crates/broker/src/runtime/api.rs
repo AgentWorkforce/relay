@@ -885,13 +885,20 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "failed to mark released worker offline in relaycast"
-                            );
-                        }
+                        let relaycast_release_error = match relaycast_http
+                            .release_agent_identity(&name, reason.as_deref())
+                            .await
+                        {
+                            Ok(()) => None,
+                            Err(error) => {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %error,
+                                    "failed to release worker identity in relaycast"
+                                );
+                                Some(error.to_string())
+                            }
+                        };
                         let dropped = take_pending_for_worker(pending_deliveries, &name);
                         if !dropped.is_empty() {
                             let _ = send_event(
@@ -975,11 +982,15 @@ impl BrokerRuntime {
                             Some("http_api_release"),
                         )
                         .await;
-                        let response = match fleet_deregistration_error {
-                            Some(error) => Err(format!(
+                        let response = match (fleet_deregistration_error, relaycast_release_error)
+                        {
+                            (Some(error), _) => Err(format!(
                                 "failed to deregister released worker from fleet control: {error}"
                             )),
-                            None => Ok(json!({ "success": true, "name": name })),
+                            (None, Some(error)) => Err(format!(
+                                "worker process was released, but its Relaycast identity could not be released ({error}); the seat may still be held and re-registration may rotate a live token"
+                            )),
+                            (None, None) => Ok(json!({ "success": true, "name": name })),
                         };
                         let _ = reply.send(response);
                     }
@@ -1000,7 +1011,28 @@ impl BrokerRuntime {
                                     "already-exited worker fleet deregistration was not queued; retaining its identity for retry"
                                 );
                             }
-                            relaycast_http.forget_agent_registration(&name);
+                            // The local worker is already gone, but that says
+                            // nothing about whether its Relaycast identity was
+                            // ever actually released — this branch is reached
+                            // on every retry after a first attempt whose
+                            // relaycast release failed. Retry the release
+                            // itself rather than only forgetting the cached
+                            // token, or a retry can never actually free the
+                            // seat.
+                            let relaycast_release_error = match relaycast_http
+                                .release_agent_identity(&name, reason.as_deref())
+                                .await
+                            {
+                                Ok(()) => None,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        worker = %name,
+                                        error = %error,
+                                        "failed to release already-exited worker identity in relaycast"
+                                    );
+                                    Some(error.to_string())
+                                }
+                            };
                             state.agents.remove(&name);
                             if paths.persist {
                                 let _ = state.save(&paths.state);
@@ -1033,11 +1065,15 @@ impl BrokerRuntime {
                                 worker = %name,
                                 "ignoring duplicate HTTP API release for already exited worker"
                             );
-                            let response = match fleet_deregistration_error {
-                                Some(error) => Err(format!(
+                            let response = match (fleet_deregistration_error, relaycast_release_error)
+                            {
+                                (Some(error), _) => Err(format!(
                                     "failed to deregister released worker from fleet control: {error}"
                                 )),
-                                None => Ok(json!({ "success": true, "name": name })),
+                                (None, Some(error)) => Err(format!(
+                                    "worker was already gone locally, but its Relaycast identity could not be released ({error}); the seat may still be held"
+                                )),
+                                (None, None) => Ok(json!({ "success": true, "name": name })),
                             };
                             let _ = reply.send(response);
                         } else {

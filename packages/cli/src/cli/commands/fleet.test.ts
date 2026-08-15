@@ -740,7 +740,45 @@ describe('fleet command support', () => {
     expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
   });
 
-  it('fleet release delegates to the workspace lifecycle API', async () => {
+  it('fleet release delegates to the workspace lifecycle API with a default reason and actor', async () => {
+    const release = vi.fn(async () => ({
+      name: 'api-worker',
+      released: true,
+      deleted: false,
+      reason: 'Work accepted',
+    }));
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { release } }));
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'release', 'api-worker', '--workspace-key', 'rk_live_test'], {
+      from: 'user',
+    });
+
+    expect(release).toHaveBeenCalledWith({
+      name: 'api-worker',
+      reason: expect.stringMatching(/^fleet agent released \(actor: .+\)$/),
+      deleteAgent: false,
+    });
+    expect(JSON.parse(logs[0]!)).toMatchObject({ name: 'api-worker', released: true });
+  });
+
+  it('fleet release passes an explicit --reason through unchanged, with the actor still attributed', async () => {
     const release = vi.fn(async () => ({
       name: 'api-worker',
       released: true,
@@ -767,16 +805,24 @@ describe('fleet command support', () => {
     });
 
     await program.parseAsync(
-      ['fleet', 'release', 'api-worker', '--reason', 'Work accepted', '--workspace-key', 'rk_live_test'],
+      [
+        'fleet',
+        'release',
+        'api-worker',
+        '--reason',
+        'Work accepted',
+        '--delete-agent',
+        '--workspace-key',
+        'rk_live_test',
+      ],
       { from: 'user' }
     );
 
     expect(release).toHaveBeenCalledWith({
       name: 'api-worker',
-      reason: 'Work accepted',
-      deleteAgent: false,
+      reason: expect.stringMatching(/^Work accepted \(actor: .+\)$/),
+      deleteAgent: true,
     });
-    expect(JSON.parse(logs[0]!)).toMatchObject({ name: 'api-worker', released: true });
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {

@@ -19,15 +19,17 @@ Implemented relay #1507: node agent attach redeems cloud-issued, scope-bound wor
 ## Key Decisions
 
 ### Match the relaycast-cloud #61 redemption contract and pass the redeemed key explicitly to attach
+
 - **Chose:** Match the relaycast-cloud #61 redemption contract and pass the redeemed key explicitly to attach
-- **Reasoning:** The cloud branch defines POST /v1/workspace/join-tickets/redeem with an rjt_live_ ticket scoped to node, agent, and mode. Persisting its workspace key makes later commands work, while explicitly passing it into the current attach prevents a higher-precedence ambient env key from winning.
+- **Reasoning:** The cloud branch defines POST /v1/workspace/join-tickets/redeem with an rjt*live* ticket scoped to node, agent, and mode. Persisting its workspace key makes later commands work, while explicitly passing it into the current attach prevents a higher-precedence ambient env key from winning.
 
 ---
 
 ## Chapters
 
 ### 1. Initial work
-*Agent: ar-1507-impl-relay*
+
+_Agent: ar-1507-impl-relay_
 
 - Match the relaycast-cloud #61 redemption contract and pass the redeemed key explicitly to attach: Match the relaycast-cloud #61 redemption contract and pass the redeemed key explicitly to attach
 - Cloud #61 defined a scope-bound rjt_live contract; the CLI now redeems, validates, persists, redacts, and uses the credential explicitly. Focused, full CLI, cloud, typecheck, and lint validation are green.
