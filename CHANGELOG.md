@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Spawned agents receive their brief again when the harness prompt is not
+  recognised. Readiness detection reads a vendor TUI and could reject a healthy
+  session indefinitely, leaving the agent idle holding work it was never handed;
+  injected messages were withheld the same way. Queued startup work is now
+  released once the harness is live and a bounded deadline passes, with a
+  warning. A deliberate veto, such as an unanswered trust prompt, is still never
+  timed out past.
+
+
 ## [11.6.4] - 2026-08-15
 
 ### Added

@@ -300,6 +300,18 @@ fn evaluate_startup_gate(
     }
 }
 
+/// Whether a KNOWN blocking dialog is on screen, as opposed to a prompt we
+/// simply failed to recognise.
+///
+/// The two must not be conflated. An unrecognised prompt means our heuristic is
+/// blind and the timeout should eventually release the brief anyway. A trust
+/// interstitial means the harness is deliberately not accepting work yet, and
+/// typing into it would answer a security question on the operator's behalf.
+/// `evaluate_startup_gate` vetoes it for exactly that reason.
+fn startup_gate_blocked(pty: &PtySession) -> bool {
+    detect_codex_trust_prompt(&pty.screen_text())
+}
+
 fn startup_gate_ready(
     resolved_cli: &str,
     startup_output: &str,
@@ -449,6 +461,7 @@ async fn try_emit_worker_ready(
     init_received_at: Option<Instant>,
     readiness: &mut StartupReadinessState,
     startup_ready: bool,
+    startup_blocked: bool,
 ) {
     // init_received_at is Some only after init_worker has been received.
     // We use it (not init_request_id) as the gate because the broker sends
@@ -457,8 +470,11 @@ async fn try_emit_worker_ready(
         return;
     }
 
-    let timed_out =
-        init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
+    // A deliberate veto is not a blind spot: never time out past a known
+    // blocking dialog, or the brief is typed into a trust prompt and answers a
+    // security question nobody asked us to answer.
+    let timed_out = !startup_blocked
+        && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
 
     if !startup_ready && !timed_out {
         if !readiness.wait_warned
@@ -826,6 +842,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     &post_boot_output,
                                     &pty,
                                 );
+                                let startup_blocked = startup_gate_blocked(&pty);
                                 try_emit_worker_ready(
                                     &out_tx,
                                     &worker_name,
@@ -834,6 +851,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     init_received_at,
                                     &mut startup_readiness,
                                     startup_ready,
+                                    startup_blocked,
                                 )
                                 .await;
                             }
@@ -1218,6 +1236,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &post_boot_output,
                             &pty,
                         );
+                                let startup_blocked = startup_gate_blocked(&pty);
                         try_emit_worker_ready(
                             &out_tx,
                             &worker_name,
@@ -1226,6 +1245,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             init_received_at,
                             &mut startup_readiness,
                             startup_ready,
+                            startup_blocked,
                         )
                         .await;
 
@@ -1788,6 +1808,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     &post_boot_output,
                     &pty,
                 );
+                                let startup_blocked = startup_gate_blocked(&pty);
                 try_emit_worker_ready(
                     &out_tx,
                     &worker_name,
@@ -1796,6 +1817,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     init_received_at,
                     &mut startup_readiness,
                     startup_ready,
+                    startup_blocked,
                 )
                 .await;
 
@@ -2210,6 +2232,7 @@ mod tests {
             Some(started),
             &mut readiness,
             false, // prompt never recognised
+            false, // and no blocking dialog on screen
         )
         .await;
 
@@ -2219,6 +2242,42 @@ mod tests {
         );
         let frame = rx.try_recv().expect("worker_ready must be emitted");
         assert_eq!(frame.msg_type, "worker_ready");
+    }
+
+    #[tokio::test]
+    async fn a_blocking_dialog_is_never_timed_out_past() {
+        // Must-not-fire. The deadline exists for a prompt we FAILED TO
+        // RECOGNISE; it must never fire past a dialog the gate deliberately
+        // vetoed. Codex's directory-trust interstitial is the case in point:
+        // releasing the brief into it would answer a security question on the
+        // operator's behalf. Raised in review on relay#1529 by two reviewers
+        // independently, and they were right — the first cut conflated
+        // "unrecognised" with "blocked".
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_TIMEOUT - Duration::from_secs(60);
+        let mut readiness = StartupReadinessState::default();
+
+        try_emit_worker_ready(
+            &tx,
+            "trust-menu-worker",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            false, // prompt not ready
+            true,  // ...because a known blocking dialog is on screen
+        )
+        .await;
+
+        assert!(
+            !readiness.ready_sent,
+            "a deliberate veto must outlast any deadline"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no worker_ready frame may escape a trust prompt"
+        );
     }
 
     #[tokio::test]
@@ -2235,6 +2294,7 @@ mod tests {
             &mut request_id,
             Some(started),
             &mut readiness,
+            false,
             false,
         )
         .await;
@@ -2257,6 +2317,7 @@ mod tests {
             Some(started),
             &mut readiness,
             true,
+            false,
         )
         .await;
 
