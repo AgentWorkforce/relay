@@ -20,11 +20,14 @@ export const RELAY_SERVICE_FAILURE_MESSAGE =
 
 // Matches driver/query-builder diagnostics that can carry raw SQL text and
 // bound parameter values. The unquoted-identifier branch requires a trailing
-// SQL keyword (where/set/values/`(`/`;`/end-of-string) so ordinary prose that
-// happens to contain "select"/"update" (e.g. "select a workspace") does not
-// trip it — only `<verb> <identifier> <sql-continuation>` does.
+// SQL keyword (from/where/set/values/`(`/`;`) so ordinary prose that happens
+// to end in "<verb> <identifier>" (e.g. "Could not select file", "Failed to
+// update account") does not trip it — only `<verb> <identifier>
+// <sql-continuation>` does. `from\s+<identifier>` is included so canonical
+// `select <col> from <table>` is still caught even though `<col>` isn't
+// itself followed by one of the other continuation keywords.
 const DATABASE_DIAGNOSTIC_PATTERN =
-  /(?:failed\s+query\s*:|\bparams?\s*:|\bparameters\s*:|\bsqlstate\b|\b(?:select|insert\s+into|update|delete\s+from|drop\s+table|truncate\s+table|alter\s+table)\s+(?:["`[*]|[a-z_][\w.]*\s*(?:where|set|values|\(|;|$)))/i;
+  /(?:failed\s+query\s*:|\bparams?\s*:|\bparameters\s*:|\bsqlstate\b|\b(?:select|insert\s+into|update|delete\s+from|drop\s+table|truncate\s+table|alter\s+table)\s+(?:["`[*]|[a-z_][\w.]*\s*(?:from\s+[a-z_][\w.]*|where|set|values|\(|;)))/i;
 
 interface MaybeError {
   code?: unknown;

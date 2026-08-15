@@ -140,4 +140,16 @@ describe('safeRelayErrorMessage', () => {
       'Please select a valid workspace before continuing'
     );
   });
+
+  it('does not mask prose ending in "<verb> <identifier>" with no SQL continuation', () => {
+    expect(safeRelayErrorMessage(new Error('Could not select file'))).toBe('Could not select file');
+    expect(safeRelayErrorMessage(new Error('Failed to update account'))).toBe('Failed to update account');
+  });
+
+  it('redacts canonical unquoted "select <col> from <table>" SQL', () => {
+    const message = safeRelayErrorMessage(
+      new Error('select id from users where email = ? params: someone@example.com')
+    );
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
+  });
 });

@@ -8,8 +8,19 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
-import { withAgentRegistrationDeadline } from '../lib/agent-registration.js';
+import { RelayError } from '@agent-relay/sdk';
+
+import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
+
+function isNotFoundError(error: unknown): boolean {
+  if (error instanceof RelayError) return error.code === 'not_found' || error.statusCode === 404;
+  const statusCode =
+    error && typeof error === 'object'
+      ? ((error as { statusCode?: unknown }).statusCode ?? (error as { status?: unknown }).status)
+      : undefined;
+  return Number(statusCode) === 404;
+}
 
 export type AgentCommandDependencies = SdkCommandDeps;
 
@@ -65,8 +76,22 @@ export function registerAgentCommands(
       // `register()` is create-or-rotate by default, so without this existence
       // check a typo'd/never-registered name would silently mint a brand-new
       // identity instead of failing — surprising for a command documented as
-      // rotating an *existing* one.
-      await relay.agents.get(name).catch((error: unknown) => {
+      // rotating an *existing* one. Bounded like the registration call below,
+      // so a hung upstream `agents.get` can't reintroduce the hang class this
+      // PR's deadline wrapper exists to prevent. Only a confirmed "not found"
+      // is translated to the existence-check error — a network/auth/5xx
+      // failure is rethrown as-is, since treating those as "does not exist"
+      // and pointing at `agent register` (create-or-rotate) would rotate and
+      // disconnect a still-valid token for an identity that does exist but
+      // was merely unreachable.
+      await withDeadline(
+        () => relay.agents.get(name),
+        (effectiveTimeoutMs) =>
+          new Error(
+            `Checking whether agent "${name}" exists did not complete within ${effectiveTimeoutMs}ms.`
+          )
+      ).catch((error: unknown) => {
+        if (!isNotFoundError(error)) throw error;
         const detail = error instanceof Error ? error.message : String(error);
         throw new Error(`Agent "${name}" does not exist; use "agent register" to create it. (${detail})`);
       });

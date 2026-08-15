@@ -170,7 +170,9 @@ describe('agent identity lifecycle commands', () => {
 
   it('rejects rotation of a name that does not already exist instead of minting a new identity', async () => {
     const { program, workspaceRelay, error } = createHarness();
-    workspaceRelay.agents.get.mockRejectedValueOnce(new Error('Agent "ghost" not found'));
+    workspaceRelay.agents.get.mockRejectedValueOnce(
+      Object.assign(new Error('Agent "ghost" not found'), { statusCode: 404 })
+    );
 
     await expect(
       program.parseAsync([
@@ -188,6 +190,60 @@ describe('agent identity lifecycle commands', () => {
     const rendered = error.mock.calls.flat().join('\n');
     expect(rendered).toContain('does not exist');
     expect(rendered).toContain('agent register');
+  });
+
+  it('rethrows a non-404 existence-check failure unchanged instead of claiming the agent does not exist', async () => {
+    // A network/auth/5xx failure means "unknown", not "does not exist" —
+    // translating it to the latter would point the caller at `agent
+    // register` (create-or-rotate), which would rotate and disconnect a
+    // still-valid token for an identity that does exist but was merely
+    // unreachable.
+    const { program, workspaceRelay, error } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValueOnce(new Error('upstream connection reset'));
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'rotate',
+        'chief',
+        '--workspace-key',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(workspaceRelay.workspace.register).not.toHaveBeenCalled();
+    const rendered = error.mock.calls.flat().join('\n');
+    expect(rendered).toContain('upstream connection reset');
+    expect(rendered).not.toContain('does not exist');
+  });
+
+  it('bounds the rotate existence check so a hung agents.get cannot hang the command', async () => {
+    const { program, workspaceRelay, error } = createHarness();
+    workspaceRelay.agents.get.mockReturnValueOnce(new Promise(() => {}));
+
+    vi.useFakeTimers();
+    try {
+      const run = program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'rotate',
+        'chief',
+        '--workspace-key',
+        'rk_live_test',
+      ]);
+      const assertion = expect(run).rejects.toThrow('exit:1');
+      await vi.advanceTimersByTimeAsync(15_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(workspaceRelay.workspace.register).not.toHaveBeenCalled();
+    const rendered = error.mock.calls.flat().join('\n');
+    expect(rendered).toContain('did not complete within 15000ms');
   });
 
   it('removes through the lifecycle endpoint with a reason and actor', async () => {

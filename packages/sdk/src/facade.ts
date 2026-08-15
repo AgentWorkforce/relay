@@ -365,7 +365,11 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
     info: () => messaging.workspace.info(),
     fleetNodes: messaging.workspace.fleetNodes,
     register: register as RelayWorkspace['register'],
-    release: (input) => {
+    release: async (input) => {
+      // async so an unavailable-on-this-client error is always a rejected
+      // Promise, matching register()/reconnect() below — a plain (non-async)
+      // arrow function would throw synchronously instead, breaking every
+      // caller that assumes `.catch(...)`/`.rejects` semantics.
       if (!deps) {
         throw new Error('release() is only available on the workspace client.');
       }
