@@ -10,6 +10,12 @@ type RelayBehavior = {
   createWorkspaceImpl: (name: string) => Promise<Record<string, unknown>>;
   inboxImpl: (token: string) => Promise<unknown>;
   registerImpl: (input: { name: string; type?: string }) => Promise<{ name?: string; token: string }>;
+  releaseImpl: (input: {
+    name: string;
+    reason?: string;
+    deleteAgent?: boolean;
+  }) => Promise<Record<string, unknown>>;
+  sendImpl: (token: string, channel: string, text: string) => Promise<unknown>;
 };
 
 function assertToolsListDiscoversAndStripsMetadata(
@@ -71,6 +77,13 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       recentReactions: [],
     })),
     registerImpl: vi.fn(async ({ name }) => ({ name, token: `at_live_${name}` })),
+    releaseImpl: vi.fn(async (input) => ({
+      name: input.name,
+      released: true,
+      deleted: Boolean(input.deleteAgent),
+      reason: input.reason ?? null,
+    })),
+    sendImpl: vi.fn(async (_token, channel, text) => ({ id: 'msg_1', channel, text })),
   };
 
   class FakeTransport {}
@@ -175,7 +188,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
         output: { spawned: true, ready: true },
       })),
     },
-    send: vi.fn(async (channel: string, text: string) => ({ id: 'msg_1', channel, text })),
+    send: vi.fn(async (channel: string, text: string) => behavior.sendImpl(token, channel, text)),
     messages: vi.fn(async () => []),
     reply: vi.fn(async (messageId: string, text: string) => ({ id: 'reply_1', messageId, text })),
     thread: vi.fn(async () => ({ parent: {}, replies: [] })),
@@ -216,12 +229,9 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       },
     ]);
     const spawn = vi.fn(async (input: unknown) => ({ spawned: true, input }));
-    const release = vi.fn(async (input: { name: string; reason?: string; deleteAgent?: boolean }) => ({
-      name: input.name,
-      released: true,
-      deleted: Boolean(input.deleteAgent),
-      reason: input.reason ?? null,
-    }));
+    const release = vi.fn((input: { name: string; reason?: string; deleteAgent?: boolean }) =>
+      behavior.releaseImpl(input)
+    );
     const as = vi.fn((token: string) => createAgentClient(token));
     relayInstances.push({ config, registerOrRotate, agentsList, nodesList, spawn, release, as });
     return {
@@ -633,6 +643,113 @@ describe('createAgentRelayMcpServer', () => {
     expect(promptResult.messages[0].content.text).toContain('query_nodes');
     expect(promptResult.messages[0].content.text).toContain('spawn');
     expect(promptResult.messages[0].content.text).not.toContain('workspace.create');
+  });
+
+  it('executes the invalid-token recovery instruction end to end', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const staleError = Object.assign(new Error('Invalid agent token'), {
+      code: 'agent_token_invalid',
+      status: 401,
+    });
+    mocks.behavior.sendImpl = vi.fn(async (token, channel, text) => {
+      if (token === 'at_live_stale') throw staleError;
+      return { id: 'msg_recovered', channel, text };
+    });
+    mocks.behavior.registerImpl = vi.fn(async ({ name }) => ({
+      name,
+      token: 'at_live_fresh',
+    }));
+
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_stale',
+      agentName: 'chief',
+      strictAgentName: true,
+    });
+    const server = mocks.serverInstances[0];
+
+    const failed = await server.tools.get('post_message')?.handler({
+      channel: 'general',
+      text: 'before rotation',
+    });
+    expect(failed.isError).toBe(true);
+    expect(failed.content.map((entry: { text?: string }) => entry.text).join('\n')).toContain(
+      'Call the "register_agent" tool'
+    );
+
+    const registration = await server.tools.get('register_agent')?.handler({
+      name: 'chief',
+      type: 'human',
+    });
+    expect(registration.structuredContent).toMatchObject({
+      registered_name: 'chief',
+      token: 'at_live_fresh',
+    });
+
+    const retried = await server.tools.get('post_message')?.handler({
+      channel: 'general',
+      text: 'after rotation',
+    });
+    expect(retried.structuredContent).toMatchObject({
+      id: 'msg_recovered',
+      channel: 'general',
+      text: 'after rotation',
+    });
+    expect(mocks.behavior.sendImpl).toHaveBeenNthCalledWith(1, 'at_live_stale', 'general', 'before rotation');
+    expect(mocks.behavior.sendImpl).toHaveBeenNthCalledWith(2, 'at_live_fresh', 'general', 'after rotation');
+  });
+
+  it('attributes removal and authenticates it as the active agent', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_operator',
+      agentName: 'operator',
+    });
+    const server = mocks.serverInstances[0];
+
+    await server.tools.get('remove_agent')?.handler({
+      name: 'chief-dmcheck-1536',
+      reason: 'test cleanup',
+      delete_agent: true,
+    });
+
+    const agentAuthenticated = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'at_live_operator'
+    );
+    expect(agentAuthenticated?.release).toHaveBeenCalledWith({
+      name: 'chief-dmcheck-1536',
+      reason: 'test cleanup (actor: operator)',
+      deleteAgent: true,
+    });
+  });
+
+  it('redacts SQL diagnostics from MCP removal failures', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.releaseImpl = vi.fn(async () => {
+      throw new Error(
+        'Failed query: delete from "agents" where "agents"."id" = ?\nparams: 214015171589668864'
+      );
+    });
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_operator',
+      agentName: 'operator',
+    });
+    const server = mocks.serverInstances[0];
+
+    await expect(
+      server.tools.get('remove_agent')?.handler({
+        name: 'chief-dmcheck-1536',
+        delete_agent: true,
+      })
+    ).rejects.toThrow('Relay service could not complete the request');
+    await expect(
+      server.tools.get('remove_agent')?.handler({
+        name: 'chief-dmcheck-1536',
+        delete_agent: true,
+      })
+    ).rejects.not.toThrow(/delete from|params:|214015171589668864/);
   });
 
   it('sends an unresolved DM from an agent-token-only session', async () => {

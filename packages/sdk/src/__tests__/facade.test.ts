@@ -253,3 +253,24 @@ describe('workspace.register idempotency', () => {
     });
   });
 });
+
+describe('workspace.release', () => {
+  it('routes removal through the lifecycle release surface', async () => {
+    const { messaging } = createMessagingMock();
+    const release = vi.fn(async () => ({ status: 'completed' }));
+    (messaging.agents as typeof messaging.agents & { release: typeof release }).release = release;
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    await relay.workspace.release({
+      name: 'talkative-agent',
+      reason: 'cleanup (actor: test)',
+      deleteAgent: true,
+    });
+
+    expect(release).toHaveBeenCalledWith({
+      name: 'talkative-agent',
+      reason: 'cleanup (actor: test)',
+      deleteAgent: true,
+    });
+  });
+});

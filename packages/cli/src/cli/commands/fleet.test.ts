@@ -740,7 +740,7 @@ describe('fleet command support', () => {
     expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
   });
 
-  it('fleet release delegates to the workspace lifecycle API', async () => {
+  it('fleet release delegates to the workspace lifecycle API with a default reason and actor', async () => {
     const release = vi.fn(async () => ({
       name: 'api-worker',
       released: true,
@@ -766,14 +766,13 @@ describe('fleet command support', () => {
       error: () => undefined,
     });
 
-    await program.parseAsync(
-      ['fleet', 'release', 'api-worker', '--reason', 'Work accepted', '--workspace-key', 'rk_live_test'],
-      { from: 'user' }
-    );
+    await program.parseAsync(['fleet', 'release', 'api-worker', '--workspace-key', 'rk_live_test'], {
+      from: 'user',
+    });
 
     expect(release).toHaveBeenCalledWith({
       name: 'api-worker',
-      reason: 'Work accepted',
+      reason: expect.stringMatching(/^fleet agent released \(actor: .+\)$/),
       deleteAgent: false,
     });
     expect(JSON.parse(logs[0]!)).toMatchObject({ name: 'api-worker', released: true });

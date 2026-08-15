@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   INVALID_AGENT_TOKEN_CODE,
   INVALID_AGENT_TOKEN_MESSAGE,
+  RELAY_SERVICE_FAILURE_MESSAGE,
   agentTokenRecoveryMessage,
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
+  safeRelayErrorMessage,
 } from '../relaycast-errors.js';
 
 describe('isInvalidAgentTokenError', () => {
@@ -104,5 +106,22 @@ describe('agentTokenRecoveryMessage', () => {
     const msg = agentTokenRecoveryMessage();
     expect(msg).toContain(INVALID_AGENT_TOKEN_CODE);
     expect(msg).toContain('register_agent');
+  });
+});
+
+describe('safeRelayErrorMessage', () => {
+  it('redacts raw SQL and bound parameters from an upstream failure', () => {
+    const message = safeRelayErrorMessage(
+      new Error('Failed query: delete from "agents" where "agents"."id" = ?\nparams: 214015171589668864')
+    );
+
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
+    expect(message).not.toContain('delete from');
+    expect(message).not.toContain('params:');
+    expect(message).not.toContain('214015171589668864');
+  });
+
+  it('preserves ordinary actionable Relay errors', () => {
+    expect(safeRelayErrorMessage(new Error('Agent "chief" not found'))).toBe('Agent "chief" not found');
   });
 });

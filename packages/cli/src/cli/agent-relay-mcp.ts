@@ -22,6 +22,8 @@ import {
 } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
+import { withAgentRegistrationDeadline } from './lib/agent-registration.js';
+import { attributableReleaseReason } from './lib/release-reason.js';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinitions } from './mcp/resources.js';
 import { jsonContent, jsonResult, textContent } from './mcp/tool-results.js';
@@ -254,6 +256,8 @@ type RegisterAgentWithRebindArgs = {
   strictAgentName?: boolean;
   preferredAgentName?: string | null;
   forcedAgentType?: AgentType;
+  /** Test/embedding override; production defaults to the bounded CLI deadline. */
+  registrationTimeoutMs?: number;
 };
 
 /** Return env var value, or undefined if missing / an unresolved ${...} template. */
@@ -480,6 +484,7 @@ export async function registerAgentWithRebind({
   strictAgentName,
   preferredAgentName,
   forcedAgentType,
+  registrationTimeoutMs,
 }: RegisterAgentWithRebindArgs): Promise<Record<string, unknown>> {
   requireWorkspaceKey(session);
 
@@ -526,12 +531,17 @@ export async function registerAgentWithRebind({
   }
 
   const relay = getRelay();
-  const result = await relay.agents.registerOrRotate({
-    name: effectiveName,
-    type: effectiveType,
-    persona,
-    metadata,
-  });
+  const result = await withAgentRegistrationDeadline(
+    () =>
+      relay.agents.registerOrRotate({
+        name: effectiveName,
+        type: effectiveType,
+        persona,
+        metadata,
+      }),
+    effectiveName,
+    registrationTimeoutMs
+  );
   const reboundName = result.name?.trim() ? result.name : effectiveName;
   setSession({ agentToken: result.token, agentName: reboundName });
 
@@ -1115,14 +1125,36 @@ function registerAgentRelayTools(
         'Returns an `invocation` record acknowledging the request, which is processed asynchronously. Releasing keeps the agent registered and re-spawnable; passing `delete_agent` removes the identity permanently.',
       inputSchema: {
         name: z.string().describe('Agent name'),
-        reason: z.string().optional().describe('Removal reason'),
+        reason: z
+          .string()
+          .optional()
+          .describe('Removal reason; defaults to an attributable Agent Relay MCP reason'),
         delete_agent: z.boolean().optional().describe('Permanently delete the agent'),
+        ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, reason, delete_agent }) => {
-      const invocation = await getRelay().agents.release({ name, reason, deleteAgent: delete_agent });
+    async ({ name, reason, delete_agent, as }) => {
+      const session = getSession();
+      const selected = as ? session.agents.get(as) : undefined;
+      if (as && !selected) {
+        throw new Error(`Unknown agent identity "${as}". Register it first.`);
+      }
+      const releaseToken = selected?.agentToken ?? (!as ? session.agentToken : null);
+      // Authenticate the release as the selected participant when possible so
+      // Relaycast records caller_name on the action invocation. Workspace auth
+      // remains the recovery fallback after a stale token has been cleared.
+      const releaseRelay = releaseToken
+        ? createWorkspaceClient({ workspaceKey: releaseToken, baseUrl })
+        : getRelay();
+      const actor = as ?? session.agentName ?? preferredAgentName ?? 'agent-relay MCP session';
+      const attributableReason = attributableReleaseReason(reason, actor, 'agent removed');
+      const invocation = await releaseRelay.agents.release({
+        name,
+        reason: attributableReason,
+        deleteAgent: delete_agent,
+      });
       return jsonContent({ invocation });
     }
   );
@@ -1357,10 +1389,14 @@ export async function resolveStdioBootstrapOptions(
 
   const relay = createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
 
-  const registered = await relay.agents.registerOrRotate({
-    name: options.agentName,
-    type: options.agentType,
-  });
+  const registered = await withAgentRegistrationDeadline(
+    () =>
+      relay.agents.registerOrRotate({
+        name: options.agentName!,
+        type: options.agentType,
+      }),
+    options.agentName
+  );
   return {
     ...options,
     agentToken: registered.token,

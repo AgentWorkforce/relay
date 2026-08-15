@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay agent rotate` now provides an explicit recovery path for an existing agent name whose token is stale or invalid.
+
+### Fixed
+
+- Agent identity recovery no longer releases seats during ordinary offline presence updates, bounds registration and token rotation instead of hanging indefinitely, and makes `agent remove` preserve attributed history without exposing database queries or parameters on failure.
 
 ## [11.6.3] - 2026-08-14
 

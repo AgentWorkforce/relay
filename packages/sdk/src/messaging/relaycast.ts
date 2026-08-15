@@ -93,6 +93,8 @@ import type {
   RelayListDirectMessagesInput,
   RelayMessage,
   RelayMessageListOptions,
+  RelayReleaseAgentInput,
+  RelayAgentReleaseResult,
   RelayMessageReaction,
   RelayMessagingCapabilities,
   RelayMessagingClient,
@@ -235,6 +237,8 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     delete: async (name: string): Promise<void> => {
       await this.relaycast.agents.delete(name);
     },
+    release: async (input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult> =>
+      (await this.relaycast.agents.release(input)) as RelayAgentReleaseResult,
     presence: async (): Promise<RelayAgentPresence[]> => {
       const presence = await this.relaycast.agents.presence();
       return presence.map(normalizeAgentPresence);

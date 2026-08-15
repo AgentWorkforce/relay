@@ -3,6 +3,7 @@ import {
   agentTokenRecoveryMessage,
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
+  safeRelayErrorMessage,
 } from '@agent-relay/sdk';
 
 import { track, type AgentRelayToolCallCategory, type AgentRelayToolCallType } from '../telemetry/index.js';
@@ -159,7 +160,9 @@ export function enableInboxPiggyback(
             errorClass: errorClassName(err),
           });
         }
-        throw err;
+        const safeMessage = safeRelayErrorMessage(err);
+        if (err instanceof Error && safeMessage === err.message) throw err;
+        throw new Error(safeMessage);
       }
 
       if (name !== 'register_agent' && isInvalidAgentTokenToolResult(result)) {

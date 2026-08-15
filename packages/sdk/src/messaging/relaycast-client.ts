@@ -31,6 +31,7 @@ export type RelaycastWorkspaceLike = {
     registerOrRotate?: (data: unknown) => Promise<unknown>;
     update(name: string, input: unknown): Promise<unknown>;
     delete(name: string): Promise<void>;
+    release(input: unknown): Promise<unknown>;
     presence(): Promise<unknown[]>;
     events?: {
       emit(name: string, data: { type: string; payload?: Record<string, unknown> }): Promise<unknown>;

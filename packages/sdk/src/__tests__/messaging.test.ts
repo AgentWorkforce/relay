@@ -40,6 +40,12 @@ function createWorkspace() {
         ...input,
       })),
       delete: vi.fn(async () => undefined),
+      release: vi.fn(async (input: unknown) => ({
+        invocation_id: 'inv_release_1',
+        action_name: 'release',
+        status: 'completed',
+        input,
+      })),
       presence: vi.fn(async () => [{ agent_id: 'agent-1', agent_name: 'WorkerA', status: 'online' }]),
       events: {
         emit: vi.fn(async (_name: string, data: unknown) => data),
@@ -345,6 +351,25 @@ describe('RelaycastMessagingClient', () => {
 
     expect(workspace.agents.register).toHaveBeenCalledWith({ name: 'WorkerB' });
     expect(registration).toMatchObject({ name: 'WorkerB', token: 'at_live_worker_b' });
+  });
+
+  it('agents.release delegates to the lifecycle endpoint instead of direct deletion', async () => {
+    const workspace = createWorkspace();
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+
+    const result = await client.agents.release({
+      name: 'WorkerB',
+      reason: 'cleanup (actor: test)',
+      deleteAgent: true,
+    });
+
+    expect(workspace.agents.release).toHaveBeenCalledWith({
+      name: 'WorkerB',
+      reason: 'cleanup (actor: test)',
+      deleteAgent: true,
+    });
+    expect(workspace.agents.delete).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ action_name: 'release', status: 'completed' });
   });
 
   it('normalizes agents, channels, and channel messages from Relaycast', async () => {

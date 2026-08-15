@@ -885,11 +885,14 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
+                        if let Err(error) = relaycast_http
+                            .release_agent_identity(&name, reason.as_deref())
+                            .await
+                        {
                             tracing::warn!(
                                 worker = %name,
                                 error = %error,
-                                "failed to mark released worker offline in relaycast"
+                                "failed to release worker identity in relaycast"
                             );
                         }
                         let dropped = take_pending_for_worker(pending_deliveries, &name);

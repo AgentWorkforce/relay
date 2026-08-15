@@ -321,6 +321,20 @@ export interface RelayUpdateAgentInput {
   metadata?: wire.UpdateAgentRequest['metadata'];
 }
 
+export interface RelayReleaseAgentInput {
+  name: wire.ReleaseAgentRequest['name'];
+  reason?: NonNullable<wire.ReleaseAgentRequest['reason']>;
+  deleteAgent?: wire.ReleaseAgentRequest['delete_agent'];
+}
+
+/** Raw action-invocation acknowledgement returned by the release endpoint. */
+export interface RelayAgentReleaseResult {
+  invocationId?: string;
+  actionName?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
 export interface RelayListChannelsOptions {
   includeArchived?: boolean;
 }
@@ -891,6 +905,8 @@ export interface RelayMessagingClient {
     me(): Promise<RelayAgent>;
     update(name: string, input: RelayUpdateAgentInput): Promise<RelayAgent>;
     delete(name: string): Promise<void>;
+    /** Release an agent lifecycle, optionally freeing its registered name. */
+    release(input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult>;
     presence(): Promise<RelayAgentPresence[]>;
   };
   /** Durable canonical harness events stored on the Relaycast agent record. */

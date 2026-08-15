@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import { AgentRelay, safeRelayErrorMessage, type AgentRelayAgent } from '@agent-relay/sdk';
 
 import { defaultExit } from './exit.js';
 import { createAgentRelay, createWorkspaceRelay, type SdkClientOptions } from './sdk-client.js';
@@ -70,7 +70,7 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
   try {
     await fn();
   } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
+    deps.error(safeRelayErrorMessage(err));
     deps.exit(1);
   }
 }

@@ -15,6 +15,11 @@
 
 export const INVALID_AGENT_TOKEN_CODE = 'agent_token_invalid';
 export const INVALID_AGENT_TOKEN_MESSAGE = 'Invalid agent token';
+export const RELAY_SERVICE_FAILURE_MESSAGE =
+  'Relay service could not complete the request. Retry, or contact the workspace operator if the problem persists.';
+
+const DATABASE_DIAGNOSTIC_PATTERN =
+  /(?:failed\s+query\s*:|\bparams?\s*:|\bsqlstate\b|\b(?:select|insert\s+into|update|delete\s+from)\s+["`[])/i;
 
 interface MaybeError {
   code?: unknown;
@@ -23,6 +28,19 @@ interface MaybeError {
   message?: unknown;
   body?: unknown;
   cause?: unknown;
+}
+
+/**
+ * Format an upstream Relay error for a user-facing CLI/MCP boundary.
+ *
+ * Service/framework exceptions can include raw SQL and bound parameters in
+ * `error.message`. Those details are useful only inside the service and can
+ * contain identifiers or other caller data, so collapse database diagnostics
+ * to a stable actionable message while preserving ordinary API errors.
+ */
+export function safeRelayErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return DATABASE_DIAGNOSTIC_PATTERN.test(message) ? RELAY_SERVICE_FAILURE_MESSAGE : message;
 }
 
 function normalizeCode(value: unknown): string | null {

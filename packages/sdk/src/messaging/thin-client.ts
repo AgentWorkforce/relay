@@ -28,6 +28,7 @@ import type {
   RelayMessageListOptions,
   RelayMessageMode,
   RelayRegisterAgentInput,
+  RelayReleaseAgentInput,
 } from './types.js';
 
 export type { RelaycastTelemetryOptions } from '../relaycast-telemetry.js';
@@ -59,14 +60,6 @@ export interface RelaySpawnAgentInput {
    * which the broker extracts to pass `--model` to the launched CLI).
    */
   metadata?: Record<string, unknown>;
-}
-
-/** Input for `agents.release`. */
-export interface RelayReleaseAgentInput {
-  name: string;
-  reason?: string;
-  /** Permanently delete the agent instead of just releasing it. */
-  deleteAgent?: boolean;
 }
 
 /** Raw payload returned by `agents.release`. */

@@ -439,6 +439,30 @@ describe('registerAgentWithRebind', () => {
       warnings: [],
     });
   });
+
+  it('returns promptly with the real recovery path when rotation hangs', async () => {
+    const never = new Promise<never>(() => undefined);
+
+    await expect(
+      registerAgentWithRebind({
+        session: {
+          workspaceKey: 'rk_live_test',
+          agentToken: null,
+          agentName: 'chief',
+          agents: new Map(),
+        },
+        setSession: vi.fn(),
+        getRelay: () =>
+          ({
+            agents: { registerOrRotate: vi.fn(() => never) },
+          }) as never,
+        name: 'chief',
+        strictAgentName: true,
+        preferredAgentName: 'chief',
+        registrationTimeoutMs: 10,
+      })
+    ).rejects.toThrow(/did not complete within 10ms.*agent rotate.*agent remove/s);
+  });
 });
 
 describe('optionsFromEnv', () => {
