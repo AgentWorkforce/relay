@@ -2148,6 +2148,7 @@ mod tests {
                 parent: Some("Relaycast".to_string()),
                 workspace_id: None,
                 child,
+                _mcp_secret_files: Vec::new(),
                 command_tx,
                 harness_pid: None,
                 spawned_at: Instant::now(),

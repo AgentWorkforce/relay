@@ -217,6 +217,8 @@ use nix::{
 struct ManagedChild {
     parent: Option<String>,
     child: Child,
+    /// Unlinks secret-bearing MCP config files when this child exits.
+    _mcp_secret_files: Vec<tempfile::TempPath>,
 }
 
 #[derive(Debug, Default)]
@@ -294,7 +296,7 @@ impl Spawner {
             .find(|(k, _)| k == "RELAY_DEFAULT_WORKSPACE")
             .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args = configure_agent_relay_mcp_with_token(
+        let (mcp_args, mcp_secret_files) = configure_agent_relay_mcp_with_token(
             cli,
             child_name,
             api_key,
@@ -305,7 +307,8 @@ impl Spawner {
             workspaces_json,
             default_workspace,
         )
-        .await?;
+        .await?
+        .into_parts();
         for arg in &mcp_args {
             cmd.arg(arg);
         }
@@ -326,10 +329,14 @@ impl Spawner {
         for (key, value) in &child_env {
             cmd.env(key, value);
         }
+        cmd.env("RELAY_AGENT_NAME", child_name);
+        cmd.env("RELAY_AGENT_TYPE", "agent");
+        cmd.env("RELAY_STRICT_AGENT_NAME", "1");
         // Inject pre-registered agent token when available so the MCP server
         // starts already authenticated (same as main.rs WorkerRegistry::spawn).
         if let Some(token) = agent_token {
             cmd.env("RELAY_AGENT_TOKEN", token);
+            cmd.env("RELAY_SKIP_BOOTSTRAP", "1");
         }
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
@@ -356,6 +363,7 @@ impl Spawner {
             ManagedChild {
                 parent: parent.map(ToOwned::to_owned),
                 child,
+                _mcp_secret_files: mcp_secret_files,
             },
         );
         Ok(pid)
@@ -1056,17 +1064,26 @@ mod tests {
         let mut spawner = Spawner::new();
         let mut child = Command::new("sleep").arg("0").spawn().unwrap();
         let _ = child.wait().await;
+        let secret_file = tempfile::NamedTempFile::new()
+            .expect("private MCP config fixture")
+            .into_temp_path();
+        let secret_path = secret_file.to_path_buf();
 
         spawner.children.insert(
             "test".into(),
             super::ManagedChild {
                 parent: None,
                 child,
+                _mcp_secret_files: vec![secret_file],
             },
         );
 
         let exited = spawner.reap_exited().await.unwrap();
         assert_eq!(exited, vec!["test".to_string()]);
+        assert!(
+            !secret_path.exists(),
+            "reaping a crashed child must unlink its private MCP config"
+        );
     }
 
     #[tokio::test]

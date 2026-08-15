@@ -4,7 +4,7 @@
 //! correct `--mcp-config` args for Claude:
 //! - Only Agent Relay server is included (user servers loaded by Claude from .mcp.json)
 //! - No `--strict-mcp-config` (so Claude loads .mcp.json alongside --mcp-config)
-//! - RELAY_API_KEY is injected into the inline JSON config
+//! - RELAY_API_KEY is delivered through a private file, never inline in argv
 //! - Agent token and credentials are correct
 
 use relay_broker::snippets::configure_agent_relay_mcp_with_token;
@@ -12,14 +12,14 @@ use serde_json::Value;
 use std::fs;
 use tempfile::tempdir;
 
-/// Helper: extract --mcp-config JSON from the args returned by configure_agent_relay_mcp_with_token.
+/// Helper: read the private file named by --mcp-config.
 fn extract_mcp_json(args: &[String]) -> Value {
     let idx = args
         .iter()
         .position(|a| a == "--mcp-config")
         .expect("--mcp-config flag must be present");
-    let json_str = &args[idx + 1];
-    serde_json::from_str(json_str).expect("--mcp-config value must be valid JSON")
+    let json_str = fs::read_to_string(&args[idx + 1]).expect("read --mcp-config file");
+    serde_json::from_str(&json_str).expect("--mcp-config file must contain valid JSON")
 }
 
 /// Helper: get the mcpServers map from args.
@@ -209,7 +209,7 @@ async fn e2e_global_settings_with_fake_home() {
 
 // ─── Test: Stale Agent Relay in .mcp.json doesn't matter ─────────────────────
 // Since we no longer merge .mcp.json into --mcp-config, stale entries are
-// irrelevant — the inline config always has fresh broker credentials.
+// irrelevant — the private config file always has fresh broker credentials.
 
 #[tokio::test]
 async fn e2e_stale_agent_relay_is_overridden_by_broker_credentials() {
@@ -218,7 +218,7 @@ async fn e2e_stale_agent_relay_is_overridden_by_broker_credentials() {
 
     // .mcp.json has stale Agent Relay credentials — doesn't matter since
     // --mcp-config passes fresh credentials and Claude's additive loading
-    // means the inline config takes effect.
+    // means the private file config takes effect.
     fs::write(
         project.join(".mcp.json"),
         r#"{

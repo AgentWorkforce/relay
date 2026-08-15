@@ -13,7 +13,7 @@ use crate::{
         HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
-    relaycast::configure_agent_relay_mcp_with_result,
+    relaycast::{configure_agent_relay_mcp_with_result, McpLaunchConfig},
     supervisor::Supervisor,
     types::AgentResultMcpConfig,
 };
@@ -179,6 +179,9 @@ pub(crate) struct WorkerHandle {
     pub(crate) parent: Option<String>,
     pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
     pub(crate) child: Child,
+    /// Owns private MCP config files for exactly as long as this worker. Their
+    /// `TempPath` guards unlink the files when the worker exits or is rejected.
+    pub(crate) _mcp_secret_files: Vec<tempfile::TempPath>,
     pub(crate) command_tx: mpsc::Sender<WorkerWriteCommand>,
     pub(crate) harness_pid: Option<u32>,
     pub(crate) spawned_at: Instant,
@@ -421,14 +424,14 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<&str>,
         skip_relay_prompt: bool,
         agent_result: Option<&AgentResultMcpConfig>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<McpLaunchConfig> {
         // `skip_relay_prompt` is an explicit opt-out: the caller does not want the
         // Agent Relay MCP server (messaging/channel/etc. tools) injected, e.g. to
         // save tokens. We honor that even when `agent_result` is configured —
         // `AGENT_RELAY_RESULT_*` env vars are still set on the worker process
         // below, so a separately-configured Agent Relay MCP can pick them up.
         if skip_relay_prompt {
-            return Ok(Vec::new());
+            return Ok(McpLaunchConfig::default());
         }
         configure_agent_relay_mcp_with_result(
             cli_name,
@@ -545,6 +548,7 @@ impl WorkerRegistry {
             Command::new(std::env::current_exe().context("failed to locate current executable")?);
         let mut harness_env: Vec<(String, String)> = Vec::new();
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
+        let mut mcp_secret_files = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
         let mut direct_native_harness_sidecar = false;
 
@@ -679,7 +683,7 @@ impl WorkerRegistry {
                     );
                 }
 
-                let mcp_args = self
+                let (mcp_args, secret_files) = self
                     .build_mcp_args(
                         &resolved_cli,
                         &spec.name,
@@ -689,7 +693,9 @@ impl WorkerRegistry {
                         skip_relay_prompt,
                         agent_result.as_ref(),
                     )
-                    .await?;
+                    .await?
+                    .into_parts();
+                mcp_secret_files.extend(secret_files);
 
                 let model_flag = resolve_model_flag_for_cli(
                     &resolved_cli,
@@ -912,7 +918,7 @@ impl WorkerRegistry {
                         );
                     }
 
-                    let mcp_args = self
+                    let (mcp_args, secret_files) = self
                         .build_mcp_args(
                             cli,
                             &spec.name,
@@ -922,7 +928,9 @@ impl WorkerRegistry {
                             skip_relay_prompt,
                             agent_result.as_ref(),
                         )
-                        .await?;
+                        .await?
+                        .into_parts();
+                    mcp_secret_files.extend(secret_files);
 
                     let model_flag = resolve_model_flag_for_cli(
                         &resolved_cli,
@@ -970,7 +978,7 @@ impl WorkerRegistry {
                         spec.model = Some(model);
                     }
 
-                    let mcp_args = self
+                    let (mcp_args, secret_files) = self
                         .build_mcp_args(
                             provider_cli,
                             &spec.name,
@@ -980,7 +988,9 @@ impl WorkerRegistry {
                             skip_relay_prompt,
                             agent_result.as_ref(),
                         )
-                        .await?;
+                        .await?
+                        .into_parts();
+                    mcp_secret_files.extend(secret_files);
 
                     let model_arg = resolve_model_flag_for_cli(
                         provider_cli,
@@ -1056,6 +1066,7 @@ impl WorkerRegistry {
         ) {
             if let Some(relay_key) = worker_relay_api_key {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
+                command.env("RELAY_SKIP_BOOTSTRAP", "1");
             }
             command.env("RELAY_AGENT_NAME", &spec.name);
             command.env("RELAY_AGENT_TYPE", "agent");
@@ -1112,6 +1123,7 @@ impl WorkerRegistry {
             parent,
             workspace_id,
             child,
+            _mcp_secret_files: mcp_secret_files,
             command_tx,
             harness_pid: initial_harness_pid,
             spawned_at: Instant::now(),
@@ -2429,6 +2441,10 @@ mod tests {
             is_process_alive(pid),
             "precondition: child must start alive"
         );
+        let secret_file = tempfile::NamedTempFile::new()
+            .expect("private MCP config fixture")
+            .into_temp_path();
+        let secret_path = secret_file.to_path_buf();
 
         reg.workers.insert(
             WorkerName::from(name),
@@ -2438,6 +2454,7 @@ mod tests {
                 parent: None,
                 workspace_id: None,
                 child,
+                _mcp_secret_files: vec![secret_file],
                 command_tx,
                 harness_pid: None,
                 spawned_at: Instant::now(),
@@ -2452,6 +2469,10 @@ mod tests {
         reg.cleanup_rejected_spawn(&WorkerName::from(name)).await;
 
         assert!(!reg.workers.contains_key(&WorkerName::from(name)));
+        assert!(
+            !secret_path.exists(),
+            "removing the worker handle must unlink its private MCP config"
+        );
         assert!(
             !is_process_alive(pid),
             "cleanup_rejected_spawn must terminate the child, not just drop the handle"
@@ -2491,6 +2512,7 @@ mod tests {
                 parent: None,
                 workspace_id: None,
                 child,
+                _mcp_secret_files: Vec::new(),
                 command_tx,
                 harness_pid: None,
                 spawned_at: Instant::now(),
@@ -2552,6 +2574,7 @@ mod tests {
                 parent: None,
                 workspace_id: None,
                 child,
+                _mcp_secret_files: Vec::new(),
                 command_tx,
                 harness_pid: None,
                 spawned_at: Instant::now(),
@@ -2612,6 +2635,7 @@ mod tests {
                 parent: None,
                 workspace_id: None,
                 child,
+                _mcp_secret_files: Vec::new(),
                 command_tx,
                 harness_pid: None,
                 spawned_at: Instant::now(),

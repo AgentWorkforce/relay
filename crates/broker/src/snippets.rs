@@ -1,7 +1,9 @@
 use std::{
     env,
     ffi::OsStr,
-    fs, io,
+    fs,
+    io::{self, Write},
+    ops::Deref,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -23,6 +25,35 @@ const REQUIRED_AGENT_RELAY_MCP_TOOLS: [&str; 3] = ["send_dm", "post_message", "c
 const MCP_FILE: &str = ".mcp.json";
 const AGENT_RELAY_MCP_SERVER: &str = "agent-relay";
 const LEGACY_RELAYCAST_SERVER: &str = "relaycast";
+
+/// CLI arguments plus any secret-bearing temporary files that must remain
+/// alive until the spawned harness exits.
+///
+/// Dropping this value removes the files, including when a spawn fails or a
+/// child exits unexpectedly. Callers that hand the arguments to another
+/// process (the `mcp-args` CLI) can persist the files and return their paths as
+/// cleanup responsibilities instead.
+#[derive(Debug, Default)]
+pub struct McpLaunchConfig {
+    args: Vec<String>,
+    secret_files: Vec<tempfile::TempPath>,
+}
+
+impl McpLaunchConfig {
+    /// Split the launch arguments from the guards that own any secret files.
+    /// The guards must remain alive until the spawned harness exits.
+    pub fn into_parts(self) -> (Vec<String>, Vec<tempfile::TempPath>) {
+        (self.args, self.secret_files)
+    }
+}
+
+impl Deref for McpLaunchConfig {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        &self.args
+    }
+}
 
 fn is_agent_relay_mcp_server_name(name: &str) -> bool {
     name == AGENT_RELAY_MCP_SERVER || name == LEGACY_RELAYCAST_SERVER
@@ -737,10 +768,10 @@ fn push_codex_mcp_command_config_args(args: &mut Vec<String>, mcp_command: &Agen
 }
 
 /// Inject RELAY_API_KEY into the Agent Relay server's env block within a merged
-/// MCP config JSON string.  The shared `agent_relay_mcp_server_config()` omits it
-/// (codex strips API keys from .mcp.json env), but for Claude's inline
-/// `--mcp-config` arg this is safe and necessary — Claude Code does not
-/// reliably inherit parent process env vars into MCP server subprocesses.
+/// MCP config JSON string. The shared `agent_relay_mcp_server_config()` omits it
+/// (Codex uses explicit environment forwarding), while Claude reads this value
+/// from a private `--mcp-config` file because it does not reliably inherit
+/// parent process env vars into MCP server subprocesses.
 fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String {
     let api_key = match api_key.map(str::trim).filter(|s| !s.is_empty()) {
         Some(key) => key,
@@ -764,6 +795,25 @@ fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String
         server.insert("env".into(), Value::Object(env_map));
     }
     serde_json::to_string(&parsed).unwrap_or_else(|_| mcp_json.to_string())
+}
+
+/// Write a secret-bearing Claude MCP configuration to a private temporary
+/// file. `NamedTempFile` creates the file exclusively; the explicit mode keeps
+/// the security contract visible and independently testable on Unix.
+fn write_secret_mcp_config(mcp_json: &str) -> io::Result<tempfile::TempPath> {
+    let mut file = tempfile::Builder::new()
+        .prefix("agent-relay-mcp-")
+        .suffix(".json")
+        .tempfile()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(mcp_json.as_bytes())?;
+    file.flush()?;
+    Ok(file.into_temp_path())
 }
 
 const OPENCODE_CONFIG: &str = "opencode.json";
@@ -1089,7 +1139,7 @@ pub async fn configure_agent_relay_mcp(
     base_url: Option<&str>,
     existing_args: &[String],
     cwd: &Path,
-) -> Result<Vec<String>> {
+) -> Result<McpLaunchConfig> {
     // Read from env at the public API boundary so callers without explicit env
     // maps still get the vars if set on the process.
     let workspaces_json = std::env::var("RELAY_WORKSPACES_JSON").ok();
@@ -1119,7 +1169,7 @@ pub async fn configure_agent_relay_mcp_with_token(
     agent_token: Option<&str>,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
-) -> Result<Vec<String>> {
+) -> Result<McpLaunchConfig> {
     configure_agent_relay_mcp_with_result(
         cli,
         agent_name,
@@ -1147,7 +1197,7 @@ pub async fn configure_agent_relay_mcp_with_result(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
-) -> Result<Vec<String>> {
+) -> Result<McpLaunchConfig> {
     let cli_lower = detect_cli_name(cli).to_lowercase();
     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
     let is_codex = cli_lower == "codex";
@@ -1181,13 +1231,16 @@ pub async fn configure_agent_relay_mcp_with_result(
     let base_url = base_url.map(str::trim).filter(|s| !s.is_empty());
 
     let mut args: Vec<String> = Vec::new();
+    let mut secret_files = Vec::new();
 
     if is_claude
         && !existing_args
             .iter()
             .any(|a| a == "--mcp-config" || a.starts_with("--mcp-config="))
     {
-        // Build Agent Relay-only MCP config and pass via --mcp-config (additive).
+        // Build Agent Relay-only MCP config and pass its private file path via
+        // --mcp-config (additive). Inline JSON would expose the workspace key
+        // and agent token in /proc/<pid>/cmdline and `ps` output.
         // Claude will also load .mcp.json normally, preserving user-configured
         // MCP servers (filesystem, database, etc.).
         // We do NOT pass --strict-mcp-config — that would block .mcp.json loading
@@ -1202,10 +1255,13 @@ pub async fn configure_agent_relay_mcp_with_result(
             agent_result,
         );
         // Claude Code does not reliably pass parent process env vars to MCP server
-        // subprocesses, so RELAY_API_KEY must be injected directly into the config.
+        // subprocesses, so RELAY_API_KEY remains in the config file itself.
         let mcp_json = inject_api_key_into_mcp_json(&mcp_json, api_key);
+        let mcp_file = write_secret_mcp_config(&mcp_json)
+            .context("failed to write private Claude MCP config")?;
         args.push("--mcp-config".to_string());
-        args.push(mcp_json);
+        args.push(mcp_file.to_string_lossy().into_owned());
+        secret_files.push(mcp_file);
     }
 
     // Codex: always disable interactive update prompt (independent of Agent Relay config).
@@ -1228,89 +1284,53 @@ pub async fn configure_agent_relay_mcp_with_result(
             .any(|a| a.contains("mcp_servers.agent-relay") || a.contains("mcp_servers.relaycast"))
     {
         let mcp_command = agent_relay_mcp_command();
-        // NOTE: All values passed via codex `--config` are parsed as TOML.
-        // String values MUST be quoted (e.g. `"agent-relay"` not `agent-relay`) to avoid parse
-        // errors or type mismatches.  Bare `1` is an integer; bare `at_live_xxx`
-        // is a TOML parse error; only quoted values are reliably treated as strings.
+        // Only non-secret MCP structure and environment variable names belong
+        // in argv. Codex's `env_vars` setting explicitly forwards those values
+        // from the worker environment to the MCP subprocess without serializing
+        // them into `--config` arguments.
         push_codex_mcp_command_config_args(&mut args, &mcp_command);
-        if let Some(key) = api_key {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_API_KEY=\"{}\"",
-                    escape_toml_basic_string(key)
-                ),
-            ]);
+        let mut forwarded_env = vec![
+            "RELAY_AGENT_NAME".to_string(),
+            "RELAY_AGENT_TYPE".to_string(),
+            "RELAY_STRICT_AGENT_NAME".to_string(),
+        ];
+        if api_key.is_some() {
+            forwarded_env.push("RELAY_API_KEY".to_string());
         }
-        if let Some(url) = base_url {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_BASE_URL=\"{}\"",
-                    escape_toml_basic_string(url)
-                ),
-            ]);
+        if base_url.is_some() {
+            forwarded_env.push("RELAY_BASE_URL".to_string());
+        }
+        if agent_token
+            .map(str::trim)
+            .is_some_and(|token| !token.is_empty())
+        {
+            forwarded_env.push("RELAY_AGENT_TOKEN".to_string());
+            forwarded_env.push("RELAY_SKIP_BOOTSTRAP".to_string());
+        }
+        if workspaces_json
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            forwarded_env.push("RELAY_WORKSPACES_JSON".to_string());
+        }
+        if default_workspace
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            forwarded_env.push("RELAY_DEFAULT_WORKSPACE".to_string());
+        }
+        if let Some(config) = agent_result {
+            for (key, _) in config.env_pairs() {
+                forwarded_env.push(key.to_string());
+            }
         }
         args.extend([
             "--config".to_string(),
             format!(
-                "mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"{}\"",
-                escape_toml_basic_string(agent_name)
+                "mcp_servers.agent-relay.env_vars={}",
+                toml_basic_string_array(&forwarded_env)
             ),
         ]);
-        args.extend([
-            "--config".to_string(),
-            "mcp_servers.agent-relay.env.RELAY_AGENT_TYPE=\"agent\"".to_string(),
-        ]);
-        args.extend([
-            "--config".to_string(),
-            "mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string(),
-        ]);
-        if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN=\"{}\"",
-                    escape_toml_basic_string(token)
-                ),
-            ]);
-            // Skip bootstrap when the broker has already pre-registered the agent.
-            args.extend([
-                "--config".to_string(),
-                "mcp_servers.agent-relay.env.RELAY_SKIP_BOOTSTRAP=\"1\"".to_string(),
-            ]);
-        }
-        // Forward multi-workspace context to codex child agents.
-        // JSON values must have inner quotes escaped for TOML basic-string parsing.
-        if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_WORKSPACES_JSON=\"{}\"",
-                    escape_toml_basic_string(wj)
-                ),
-            ]);
-        }
-        if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_DEFAULT_WORKSPACE=\"{}\"",
-                    escape_toml_basic_string(dw)
-                ),
-            ]);
-        }
-        if let Some(config) = agent_result {
-            for (key, value) in config.env_pairs() {
-                args.extend([
-                    "--config".to_string(),
-                    format!(
-                        "mcp_servers.agent-relay.env.{key}=\"{}\"",
-                        escape_toml_basic_string(&value)
-                    ),
-                ]);
-            }
-        }
     } else if is_gemini || is_droid {
         // Result callback tokens are per-spawn secrets. Gemini/Droid, OpenCode,
         // and Cursor write shared config surfaces, so keep result callback env
@@ -1375,7 +1395,7 @@ pub async fn configure_agent_relay_mcp_with_result(
         })?;
     }
 
-    Ok(args)
+    Ok(McpLaunchConfig { args, secret_files })
 }
 
 fn detect_cli_name(cli: &str) -> String {
@@ -1846,10 +1866,10 @@ fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, ffi::OsString, fs};
+    use std::{env, ffi::OsString, fs, path::PathBuf};
 
     #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     use serde_json::{json, Map, Value};
     use tempfile::tempdir;
@@ -1866,6 +1886,15 @@ mod tests {
             args.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
             expected.args.iter().map(String::as_str).collect::<Vec<_>>()
         );
+    }
+
+    fn read_mcp_config_arg(args: &[String]) -> Value {
+        let index = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("--mcp-config flag");
+        let contents = fs::read_to_string(&args[index + 1]).expect("read private MCP config");
+        serde_json::from_str(&contents).expect("parse private MCP config JSON")
     }
 
     fn test_agent_result_config() -> crate::types::AgentResultMcpConfig {
@@ -2249,17 +2278,12 @@ exit 0
         .await
         .expect("configure codex mcp args");
 
-        assert!(
-            args.iter()
-                .any(|arg| arg == "mcp_servers.agent-relay.env.RELAY_AGENT_TYPE=\"agent\""),
-            "expected fixed agent type codex config arg"
-        );
-
-        assert!(
-            args.iter()
-                .any(|arg| arg == "mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\""),
-            "expected strict agent name codex config arg"
-        );
+        let env_vars = args
+            .iter()
+            .find(|arg| arg.starts_with("mcp_servers.agent-relay.env_vars="))
+            .expect("codex MCP env_vars config");
+        assert!(env_vars.contains("RELAY_AGENT_TYPE"));
+        assert!(env_vars.contains("RELAY_STRICT_AGENT_NAME"));
     }
 
     // -----------------------------------------------------------------------
@@ -2283,7 +2307,7 @@ exit 0
         assert_eq!(
             args.len(),
             2,
-            "should be --mcp-config <json> (no --strict-mcp-config)"
+            "should be --mcp-config <path> (no --strict-mcp-config)"
         );
         assert_eq!(args[0], "--mcp-config");
         assert!(
@@ -2291,8 +2315,34 @@ exit 0
             "must not include --strict-mcp-config"
         );
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
+
+        let config_path = PathBuf::from(&args[1]);
+        #[cfg(unix)]
+        {
+            let metadata = fs::metadata(&config_path).expect("private config metadata");
+            assert_eq!(
+                metadata.permissions().mode() & 0o777,
+                0o600,
+                "secret-bearing MCP config must be owner-readable only"
+            );
+            assert_eq!(
+                metadata.uid(),
+                // SAFETY: `geteuid` is side-effect free and has no preconditions.
+                unsafe { libc::geteuid() },
+                "secret-bearing MCP config must be owned by the spawning user"
+            );
+        }
+        assert!(
+            !args.iter().any(|arg| arg.contains("rk_live_abc")),
+            "workspace credential must not appear in Claude argv"
+        );
+        drop(args);
+        assert!(
+            !config_path.exists(),
+            "private MCP config must be removed when its launch guard drops"
+        );
     }
 
     #[tokio::test]
@@ -2309,7 +2359,7 @@ exit 0
         .await
         .expect("configure claude mcp");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
             Some("rk_live_secret"),
@@ -2326,7 +2376,7 @@ exit 0
                 .await
                 .expect("configure claude mcp");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         let env = &json["mcpServers"]["agent-relay"]["env"];
         assert_eq!(env["RELAY_AGENT_NAME"].as_str(), Some("MyAgent"));
         assert_eq!(env["RELAY_AGENT_TYPE"].as_str(), Some("agent"));
@@ -2350,7 +2400,7 @@ exit 0
         .await
         .expect("configure claude mcp with token");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_abc123")
@@ -2617,7 +2667,7 @@ exit 0
         assert!(args.len() >= 2);
         assert!(args.iter().step_by(2).all(|a| a == "--config"));
 
-        // Verify key config values
+        // Verify non-secret structure plus the explicit env forwarding list.
         let expected = super::agent_relay_mcp_command();
         assert!(args.contains(&format!(
             "mcp_servers.agent-relay.command=\"{}\"",
@@ -2626,21 +2676,21 @@ exit 0
         assert!(args
             .iter()
             .any(|a| a.contains("mcp_servers.agent-relay.args=")));
-        assert!(
-            args.contains(&"mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
-        );
-        assert!(args.contains(
-            &"mcp_servers.agent-relay.env.RELAY_BASE_URL=\"https://cast.agentrelay.com\""
-                .to_string()
-        ));
-        assert!(args
-            .contains(&"mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string()));
-        assert!(
-            args.contains(&"mcp_servers.agent-relay.env.RELAY_AGENT_TYPE=\"agent\"".to_string())
-        );
-        assert!(
-            args.contains(&"mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string())
-        );
+        let env_vars = args
+            .iter()
+            .find(|arg| arg.starts_with("mcp_servers.agent-relay.env_vars="))
+            .expect("codex MCP env_vars config");
+        for name in [
+            "RELAY_API_KEY",
+            "RELAY_BASE_URL",
+            "RELAY_AGENT_NAME",
+            "RELAY_AGENT_TYPE",
+            "RELAY_STRICT_AGENT_NAME",
+        ] {
+            assert!(env_vars.contains(name), "missing forwarded env name {name}");
+        }
+        assert!(!args.join("\0").contains("rk_live_xyz"));
+        assert!(!args.join("\0").contains("CodexAgent"));
         assert!(
             args.contains(&"check_for_update_on_startup=false".to_string()),
             "expected check_for_update_on_startup=false config arg"
@@ -2648,7 +2698,7 @@ exit 0
     }
 
     #[tokio::test]
-    async fn codex_includes_api_key_unlike_claude() {
+    async fn codex_forwards_api_key_without_putting_value_in_argv() {
         let temp = tempdir().expect("tempdir");
         let args = super::configure_agent_relay_mcp(
             "codex",
@@ -2661,11 +2711,9 @@ exit 0
         .await
         .expect("configure codex mcp");
 
-        assert!(
-            args.iter()
-                .any(|a| a == "mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_secret\""),
-            "Codex must include RELAY_API_KEY in --config args"
-        );
+        let argv = args.join("\0");
+        assert!(argv.contains("RELAY_API_KEY"));
+        assert!(!argv.contains("rk_live_secret"));
     }
 
     #[tokio::test]
@@ -2678,22 +2726,21 @@ exit 0
             None,
             &[],
             temp.path(),
-            Some("tok_codex_123"),
+            Some("at_live_codex_123"),
             None,
             None,
         )
         .await
         .expect("configure codex mcp with token");
 
-        assert!(
-            args.iter()
-                .any(|a| a == "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN=\"tok_codex_123\""),
-            "Codex must include RELAY_AGENT_TOKEN when provided"
-        );
+        let argv = args.join("\0");
+        assert!(argv.contains("RELAY_AGENT_TOKEN"));
+        assert!(argv.contains("RELAY_SKIP_BOOTSTRAP"));
+        assert!(!argv.contains("at_live_codex_123"));
     }
 
     #[tokio::test]
-    async fn codex_includes_agent_result_env_in_inline_config() {
+    async fn codex_forwards_agent_result_env_without_putting_value_in_argv() {
         let temp = tempdir().expect("tempdir");
         let config = test_agent_result_config();
         let args = super::configure_agent_relay_mcp_with_result(
@@ -2711,11 +2758,10 @@ exit 0
         .await
         .expect("configure codex mcp with result");
 
-        assert!(
-            args.iter()
-                .any(|a| a == "mcp_servers.agent-relay.env.AGENT_RELAY_RESULT_TOKEN=\"arr_test\""),
-            "Codex inline config can carry per-agent result callback env"
-        );
+        let argv = args.join("\0");
+        assert!(argv.contains("AGENT_RELAY_RESULT_TOKEN"));
+        assert!(argv.contains("AGENT_RELAY_RESULT_URL"));
+        assert!(!argv.contains("arr_test"));
     }
 
     #[tokio::test]
@@ -2733,10 +2779,11 @@ exit 0
             !args.iter().any(|a| a.contains("RELAY_BASE_URL")),
             "should not include RELAY_BASE_URL when base_url is None"
         );
-        // Agent name and type are always present
-        assert!(args
-            .iter()
-            .any(|a| a == "mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"Agent\""));
+        // Agent name and type are always forwarded by name, never value.
+        let argv = args.join("\0");
+        assert!(argv.contains("RELAY_AGENT_NAME"));
+        assert!(argv.contains("RELAY_AGENT_TYPE"));
+        assert!(!argv.contains("Agent\""));
     }
 
     #[tokio::test]
@@ -2760,8 +2807,8 @@ exit 0
         // When user provides custom Agent Relay config, we skip Agent Relay MCP setup
         // but STILL add the update suppression to prevent interactive prompts.
         assert_eq!(
-            args,
-            vec!["--config", "check_for_update_on_startup=false"],
+            &*args,
+            &["--config", "check_for_update_on_startup=false"],
             "should only return update suppression when user already provided mcp_servers.agent-relay config"
         );
     }
@@ -2784,7 +2831,7 @@ exit 0
         .await
         .expect("configure codex mcp opt-out");
 
-        assert_eq!(args, vec!["--config", "check_for_update_on_startup=false"]);
+        assert_eq!(&*args, &["--config", "check_for_update_on_startup=false"]);
     }
 
     // -----------------------------------------------------------------------
@@ -2805,7 +2852,7 @@ exit 0
         .await
         .expect("configure opencode mcp");
 
-        assert_eq!(args, vec!["--agent", "agent-relay"]);
+        assert_eq!(&*args, &["--agent", "agent-relay"]);
 
         // Verify opencode.json was created
         let path = temp.path().join("opencode.json");
@@ -2870,7 +2917,7 @@ exit 0
         .await
         .expect("configure opencode mcp with result");
 
-        assert_eq!(args, vec!["--agent", "agent-relay"]);
+        assert_eq!(&*args, &["--agent", "agent-relay"]);
         let contents =
             fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
         let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
@@ -2899,7 +2946,7 @@ exit 0
         .await
         .expect("configure opencode mcp upsert");
 
-        assert_eq!(args, vec!["--agent", "agent-relay"]);
+        assert_eq!(&*args, &["--agent", "agent-relay"]);
 
         let contents =
             fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
@@ -3216,7 +3263,7 @@ exit 0
         .await
         .expect("configure claude with whitespace token");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_123")
@@ -3695,7 +3742,7 @@ exit 0
 
     /// Test A: End-to-end MCP config generation for Claude spawns.
     /// --mcp-config is additive (no --strict-mcp-config) — only Agent Relay is
-    /// passed inline; Claude loads the user's .mcp.json servers itself.
+    /// passed through a private file; Claude loads the user's .mcp.json servers itself.
     #[tokio::test]
     async fn mcp_e2e_claude_spawn_agent_relay_only() {
         let temp = tempdir().expect("tempdir");
@@ -3733,15 +3780,15 @@ exit 0
         .await
         .expect("configure claude mcp");
 
-        // Only --mcp-config <json> — no --strict-mcp-config
-        assert_eq!(args.len(), 2, "should be --mcp-config <json> only");
+        // Only --mcp-config <path> — no --strict-mcp-config
+        assert_eq!(args.len(), 2, "should be --mcp-config <path> only");
         assert_eq!(args[0], "--mcp-config");
         assert!(
             !args.iter().any(|a| a == "--strict-mcp-config"),
             "must not include --strict-mcp-config"
         );
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         let servers = json["mcpServers"].as_object().expect("mcpServers object");
 
         // Only Agent Relay — user servers loaded separately by Claude from .mcp.json
@@ -4197,7 +4244,7 @@ exit 0
         .await
         .expect("configure claude mcp with workspace vars");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         let env = &json["mcpServers"]["agent-relay"]["env"];
         assert_eq!(
             env["RELAY_WORKSPACES_JSON"].as_str(),
@@ -4231,7 +4278,7 @@ exit 0
         .await
         .expect("configure opencode headless mcp");
 
-        assert_eq!(args, vec!["--agent", "agent-relay"]);
+        assert_eq!(&*args, &["--agent", "agent-relay"]);
 
         let path = temp.path().join("opencode.json");
         assert!(path.exists(), "opencode.json must be created");
@@ -4247,7 +4294,7 @@ exit 0
     #[tokio::test]
     async fn configure_agent_relay_mcp_with_token_claude_headless_call_site() {
         // Mirrors the worker.rs AgentRuntime::Headless call site for claude:
-        // ensures --mcp-config JSON is returned with the workspace context
+        // ensures a private --mcp-config file is returned with the workspace context
         // forwarded through to the MCP environment.
         let temp = tempdir().expect("tempdir");
         let args = super::configure_agent_relay_mcp_with_token(
@@ -4264,10 +4311,10 @@ exit 0
         .await
         .expect("configure claude headless mcp");
 
-        assert_eq!(args.len(), 2, "claude should receive flag + JSON payload");
+        assert_eq!(args.len(), 2, "claude should receive flag + config path");
         assert_eq!(args[0], "--mcp-config");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         let env = &json["mcpServers"]["agent-relay"]["env"];
         assert_eq!(env["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
         assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
@@ -4286,7 +4333,7 @@ exit 0
                 .expect("configure claude mcp from env");
         std::env::remove_var("RELAY_WORKSPACES_JSON");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let json = read_mcp_config_arg(&args);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_WORKSPACES_JSON"].as_str(),
             Some("wj-from-env"),

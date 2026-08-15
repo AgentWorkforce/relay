@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay message dm send` now uses workspace credentials for exact recipient resolution even when an agent token is also configured, preserves unresolved delivery receipts, and exits non-zero instead of presenting them as success.
 - MCP `send_dm` now returns a tool error, while preserving its delivery receipt, when exact recipient resolution is unavailable.
+- Broker-spawned Claude Code and Codex agents no longer expose Relay workspace keys or agent tokens in process command lines.
 
 ## [11.6.3] - 2026-08-14
 

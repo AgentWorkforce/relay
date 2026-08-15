@@ -102,7 +102,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         .default_workspace
         .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
 
-    let args = configure_agent_relay_mcp_with_token(
+    let configured = configure_agent_relay_mcp_with_token(
         &cli,
         &agent_name,
         api_key.as_deref(),
@@ -114,8 +114,15 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         default_workspace.as_deref(),
     )
     .await?;
+    let (args, secret_files) = configured.into_parts();
 
-    let side_effect_files = side_effect_files_for(&cli, &existing_args, &cwd)?;
+    let mut side_effect_files = side_effect_files_for(&cli, &existing_args, &cwd)?;
+    for secret_file in secret_files {
+        let path = secret_file
+            .keep()
+            .context("failed to persist private MCP config for caller cleanup")?;
+        side_effect_files.push(path);
+    }
 
     Ok(McpArgsOutput {
         args,
@@ -256,6 +263,8 @@ mod tests {
     use crate::relaycast::configure_agent_relay_mcp_with_token;
     use httpmock::{Method::POST, MockServer};
     use serde_json::{json, Value};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Mutex, MutexGuard, PoisonError};
     use tempfile::tempdir;
 
@@ -337,8 +346,32 @@ mod tests {
         serde_json::from_str(&json).expect("parse output json")
     }
 
+    fn read_output_mcp_config(output: &McpArgsOutput) -> (PathBuf, Value) {
+        let index = output
+            .args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("claude --mcp-config arg");
+        let path = PathBuf::from(&output.args[index + 1]);
+        let contents = std::fs::read_to_string(&path).expect("read private MCP config");
+        let config = serde_json::from_str(&contents).expect("valid private MCP config JSON");
+        (path, config)
+    }
+
+    fn remove_output_mcp_config(output: &McpArgsOutput) {
+        for path in &output.side_effect_files {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("agent-relay-mcp-"))
+            {
+                std::fs::remove_file(path).expect("remove persisted private MCP config");
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn claude_output_contains_resolved_mcp_config_json() {
+    async fn claude_output_uses_private_resolved_mcp_config_file() {
         // The broker must render the same local executable it preflights, rather
         // than handing Claude `npx -y agent-relay mcp`. The latter silently
         // selected a separate cache/package version and let Claude start without
@@ -353,16 +386,7 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        let mcp_config_index = output
-            .args
-            .iter()
-            .position(|arg| arg == "--mcp-config")
-            .expect("claude --mcp-config arg");
-        let config_json = output
-            .args
-            .get(mcp_config_index + 1)
-            .expect("claude mcp config value");
-        let config: Value = serde_json::from_str(config_json).expect("valid mcp config json");
+        let (config_path, config) = read_output_mcp_config(&output);
 
         assert!(config
             .pointer("/mcpServers/agent-relay")
@@ -381,7 +405,22 @@ mod tests {
             Some("mcp"),
             "the rendered command must invoke the MCP subcommand"
         );
-        assert!(output.side_effect_files.is_empty());
+        assert_eq!(output.side_effect_files, vec![config_path.clone()]);
+        assert!(!output.args.join("\0").contains("rk_live_test"));
+        assert!(!output.args.join("\0").contains("at_live_test"));
+        let serialized = serde_json::to_string(&output).expect("serialize mcp-args output");
+        assert!(!serialized.contains("rk_live_test"));
+        assert!(!serialized.contains("at_live_test"));
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&config_path)
+                .expect("private config metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        remove_output_mcp_config(&output);
     }
 
     #[tokio::test]
@@ -409,6 +448,14 @@ mod tests {
         assert!(output
             .args
             .contains(&"mcp_servers.agent-relay.args=[\"mcp\"]".to_string()));
+        let argv = output.args.join("\0");
+        assert!(argv.contains("RELAY_API_KEY"));
+        assert!(argv.contains("RELAY_AGENT_TOKEN"));
+        assert!(!argv.contains("rk_live_test"));
+        assert!(!argv.contains("at_live_test"));
+        let serialized = serde_json::to_string(&output).expect("serialize mcp-args output");
+        assert!(!serialized.contains("rk_live_test"));
+        assert!(!serialized.contains("at_live_test"));
         assert!(output.side_effect_files.is_empty());
     }
 
@@ -594,18 +641,17 @@ mod tests {
             Some("at_live_register_test_token".to_string())
         );
 
-        let mcp_config_index = output
+        let (_, config) = read_output_mcp_config(&output);
+        assert_eq!(
+            config.pointer("/mcpServers/agent-relay/env/RELAY_AGENT_TOKEN"),
+            Some(&Value::String("at_live_register_test_token".to_string()))
+        );
+        assert!(!output
             .args
-            .iter()
-            .position(|arg| arg == "--mcp-config")
-            .expect("claude --mcp-config arg");
-        let config_json = output
-            .args
-            .get(mcp_config_index + 1)
-            .expect("claude mcp config value");
-
-        assert!(config_json.contains("at_live_register_test_token"));
+            .join("\0")
+            .contains("at_live_register_test_token"));
         register_mock.assert();
+        remove_output_mcp_config(&output);
     }
 
     #[tokio::test]
@@ -667,6 +713,7 @@ mod tests {
         assert!(json.get("agentToken").is_some());
         assert_eq!(json.get("agentToken"), Some(&Value::Null));
         assert!(json.get("agent_token").is_none());
+        remove_output_mcp_config(&output);
     }
 
     #[tokio::test]
@@ -691,7 +738,14 @@ mod tests {
         .await
         .expect("authority mcp args");
 
-        assert_eq!(output.args, expected);
+        assert_eq!(output.args[0], expected[0]);
+        let (_, output_config) = read_output_mcp_config(&output);
+        let expected_contents =
+            std::fs::read_to_string(&expected[1]).expect("read expected config");
+        let expected_config: Value =
+            serde_json::from_str(&expected_contents).expect("parse expected config");
+        assert_eq!(output_config, expected_config);
+        remove_output_mcp_config(&output);
     }
 
     #[tokio::test]
@@ -716,7 +770,7 @@ mod tests {
         .await
         .expect("authority mcp args");
 
-        assert_eq!(output.args, expected);
+        assert_eq!(output.args.as_slice(), &*expected);
     }
 
     #[tokio::test]
@@ -756,15 +810,8 @@ mod tests {
             .await
             .expect("compute mcp args with env fallback");
 
-        let mcp_config_index = output
-            .args
-            .iter()
-            .position(|arg| arg == "--mcp-config")
-            .expect("claude --mcp-config arg");
-        let config_json = output
-            .args
-            .get(mcp_config_index + 1)
-            .expect("claude mcp config value");
+        let (_, config) = read_output_mcp_config(&output);
+        let config_json = serde_json::to_string(&config).expect("serialize config for assertions");
 
         // The config is built from the values the compute function resolved,
         // so if env fallback works the sentinel values show up in the env
@@ -785,6 +832,9 @@ mod tests {
             config_json.contains("env-ws"),
             "workspaces json from env missing in claude config: {config_json}"
         );
+        assert!(!output.args.join("\0").contains("rk_live_from_env"));
+        assert!(!output.args.join("\0").contains("at_live_from_env"));
+        remove_output_mcp_config(&output);
     }
 
     #[tokio::test]

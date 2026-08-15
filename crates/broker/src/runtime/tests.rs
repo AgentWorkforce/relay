@@ -111,6 +111,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             parent: None,
             workspace_id: Some(WorkspaceId::new("ws_demo")),
             child,
+            _mcp_secret_files: Vec::new(),
             command_tx,
             harness_pid: None,
             spawned_at: Instant::now(),
