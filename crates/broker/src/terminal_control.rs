@@ -50,10 +50,12 @@ const MIN_PING_INTERVAL: Duration = Duration::from_millis(50);
 // anyway.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 // Bounded so a stuck writer can't let this module accumulate unbounded
-// queued frames; a full or closed queue is treated the same by every
-// `try_send` call site below — both mean "the writer cannot be trusted right
-// now," which is exactly the state that should force a reconnect.
-const WRITER_QUEUE_CAPACITY: usize = 64;
+// queued frames. Sized with headroom over a single PTY-forwarding burst
+// (`fleet.rs`'s own backpressure policy already sheds output before its
+// outer queue fills, so this inner queue mainly needs to absorb the burst
+// already in flight, not sustain an unbounded flood) — see the `Full` vs
+// `Closed` distinction below for why capacity alone isn't the whole story.
+const WRITER_QUEUE_CAPACITY: usize = 512;
 // Small: this queue only ever holds a ping or a shutdown close frame, never
 // bulk terminal output (see `run_terminal_writer`'s priority read).
 const PRIORITY_QUEUE_CAPACITY: usize = 8;
@@ -320,8 +322,26 @@ pub(crate) async fn run_terminal_control_client(
                     Some(TerminalControlCommand::Send(message)) => {
                         match serde_json::to_string(&message) {
                             Ok(encoded) => {
-                                if writer_tx.try_send(Message::Text(encoded)).is_err() {
-                                    connected = false;
+                                // `Full` means the writer is merely behind a
+                                // burst it is still actively draining — that
+                                // is exactly the "legitimate draining peer"
+                                // case this transport must tolerate, not
+                                // evidence the peer is dead, so it must not
+                                // trip a reconnect. Only `Closed` (the writer
+                                // task itself exited, e.g. after WRITE_TIMEOUT
+                                // or a real IO error) is a trustworthy signal
+                                // that this connection is actually gone.
+                                match writer_tx.try_send(Message::Text(encoded)) {
+                                    Ok(()) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::terminal",
+                                            "fleet terminal writer queue full; dropping an output frame under backpressure"
+                                        );
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        connected = false;
+                                    }
                                 }
                             }
                             Err(_) => connected = false,
@@ -882,7 +902,7 @@ mod tests {
     }
 
     const WEDGE_CHUNK_BYTES: usize = 100;
-    const WEDGE_CHUNK_COUNT: usize = 128; // DEBUG TEMP small bytes, same count
+    const WEDGE_CHUNK_COUNT: usize = 128;
 
     /// The P1 case: a peer that accepts the connection and then stops
     /// reading, with terminal output queued against it, must not be able to
@@ -899,7 +919,10 @@ mod tests {
     #[tokio::test]
     async fn terminal_control_watchdog_survives_a_wedged_writer() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
         let (command_tx, command_rx) = mpsc::channel(WEDGE_CHUNK_COUNT + 16);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
@@ -977,7 +1000,10 @@ mod tests {
     #[tokio::test]
     async fn terminal_control_large_output_does_not_disconnect_a_draining_peer() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!("ws://{}/v1/node/terminal/ws", listener.local_addr().unwrap());
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
         let (command_tx, command_rx) = mpsc::channel(WEDGE_CHUNK_COUNT + 16);
         let (event_tx, _event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
@@ -1009,17 +1035,8 @@ mod tests {
                                 break;
                             }
                         }
-                        Some(Ok(other)) => {
-                            eprintln!("DEBUG drain non-text: {other:?}");
-                        }
-                        Some(Err(error)) => {
-                            eprintln!("DEBUG drain error: {error}");
-                            break;
-                        }
-                        None => {
-                            eprintln!("DEBUG drain: stream ended, received={received}");
-                            break;
-                        }
+                        Some(Ok(_other)) => {}
+                        Some(Err(_)) | None => break,
                     }
                 }
                 received
