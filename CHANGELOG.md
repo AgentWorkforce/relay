@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning. A deliberate veto, such as an unanswered trust prompt, is still never
   timed out past.
 
-
 ## [11.6.4] - 2026-08-15
 
 ### Added
