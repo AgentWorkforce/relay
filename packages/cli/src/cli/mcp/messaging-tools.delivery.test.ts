@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  directMessageDeliveryFailure,
   directMessageReceipt,
   messageReadersReceipt,
   resolveExactAgentName,
@@ -102,6 +103,12 @@ describe('direct message delivery receipts', () => {
       recipientMatched: null,
     });
     expect(receipt.target).toBeUndefined();
+    expect(directMessageDeliveryFailure(receipt)).toContain('recipient_unresolved');
+  });
+
+  it('does not produce a failure for a resolved queued receipt', () => {
+    const receipt = directMessageReceipt({ id: 'msg_ok' }, 'chief', 'wait', 'chief');
+    expect(directMessageDeliveryFailure(receipt)).toBeUndefined();
   });
 
   it('surfaces an explicit signal when no recipient has consumed the message', () => {

@@ -79,6 +79,12 @@ export function directMessageReceipt(
   };
 }
 
+/** Return the visible failure text for a receipt that cannot confirm its recipient. */
+export function directMessageDeliveryFailure(receipt: DirectMessageDeliveryReceipt): string | undefined {
+  if (receipt.delivery.status === 'queued_unconfirmed') return undefined;
+  return `Direct message delivery failed (${receipt.delivery.status}): ${receipt.delivery.note}`;
+}
+
 export function messageReadersReceipt(readers: unknown[]): {
   readers: unknown[];
   delivery: { status: 'read' | 'queued_or_unread'; readConfirmed: boolean; signal: string };
