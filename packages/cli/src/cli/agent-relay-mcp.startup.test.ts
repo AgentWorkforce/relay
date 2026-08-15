@@ -724,6 +724,41 @@ describe('createAgentRelayMcpServer', () => {
     });
   });
 
+  it('retries removal with workspace auth when the active agent token is itself the stale one', async () => {
+    // remove_agent exists to recover a broken identity. If that identity's
+    // own token is the invalid one, authenticating the release as that same
+    // identity dead-ends on the exact error being recovered from. It must
+    // fall back to the workspace key rather than fail closed.
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.releaseImpl = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Invalid agent token'), { statusCode: 401 }))
+      .mockResolvedValueOnce({ name: 'chief', released: true, deleted: true, reason: 'recovered' });
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_stale',
+      agentName: 'chief',
+    });
+    const server = mocks.serverInstances[0];
+
+    const result = await server.tools.get('remove_agent')?.handler({
+      name: 'chief',
+      reason: 'recover stale identity',
+      delete_agent: true,
+    });
+
+    expect(mocks.behavior.releaseImpl).toHaveBeenCalledTimes(2);
+    expect(result.structuredContent.invocation).toMatchObject({ released: true, deleted: true });
+    const workspaceAuthenticated = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'rk_live_existing'
+    );
+    expect(workspaceAuthenticated?.release).toHaveBeenCalledWith({
+      name: 'chief',
+      reason: expect.stringContaining('recover stale identity'),
+      deleteAgent: true,
+    });
+  });
+
   it('redacts SQL diagnostics from MCP removal failures', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mocks.behavior.releaseImpl = vi.fn(async () => {

@@ -273,4 +273,20 @@ describe('workspace.release', () => {
       deleteAgent: true,
     });
   });
+
+  it('rejects on an agent-scoped client, which backs its workspace facade without deps', async () => {
+    // createWorkspaceFacade() without `deps` is what an agent-scoped client
+    // (returned by workspace.register()/reconnect()) gets for its own
+    // `.workspace` facade — it must not be able to release agents either.
+    const { messaging, agents } = createMessagingMock();
+    const release = vi.fn(async () => ({ status: 'completed' }));
+    (agents as typeof agents & { release: typeof release }).release = release;
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
+
+    await expect(
+      sender.workspace.release({ name: 'talkative-agent', reason: 'cleanup', deleteAgent: true })
+    ).rejects.toThrow(/release\(\) is only available on the workspace client/);
+    expect(release).not.toHaveBeenCalled();
+  });
 });

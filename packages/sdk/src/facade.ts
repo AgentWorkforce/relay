@@ -365,7 +365,12 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
     info: () => messaging.workspace.info(),
     fleetNodes: messaging.workspace.fleetNodes,
     register: register as RelayWorkspace['register'],
-    release: (input) => messaging.agents.release(input),
+    release: (input) => {
+      if (!deps) {
+        throw new Error('release() is only available on the workspace client.');
+      }
+      return messaging.agents.release(input);
+    },
     reconnect: async ({ apiToken }) => {
       if (!deps) {
         throw new Error('reconnect() is only available on the workspace client.');

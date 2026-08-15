@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Agent identity recovery no longer releases seats during ordinary offline presence updates, bounds registration and token rotation instead of hanging indefinitely, and makes `agent remove` preserve attributed history without exposing database queries or parameters on failure.
+- Agent identity recovery no longer releases seats or rotates tokens during ordinary offline presence updates.
+- Agent registration and token rotation are bounded by a deadline instead of hanging indefinitely on an existing broken record.
+- `agent remove` preserves attributed message history and no longer exposes raw database queries or bound parameters when the removal fails.
 
 ## [11.6.3] - 2026-08-14
 

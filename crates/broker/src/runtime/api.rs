@@ -885,16 +885,20 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        if let Err(error) = relaycast_http
+                        let relaycast_release_error = match relaycast_http
                             .release_agent_identity(&name, reason.as_deref())
                             .await
                         {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "failed to release worker identity in relaycast"
-                            );
-                        }
+                            Ok(()) => None,
+                            Err(error) => {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %error,
+                                    "failed to release worker identity in relaycast"
+                                );
+                                Some(error.to_string())
+                            }
+                        };
                         let dropped = take_pending_for_worker(pending_deliveries, &name);
                         if !dropped.is_empty() {
                             let _ = send_event(
@@ -978,11 +982,15 @@ impl BrokerRuntime {
                             Some("http_api_release"),
                         )
                         .await;
-                        let response = match fleet_deregistration_error {
-                            Some(error) => Err(format!(
+                        let response = match (fleet_deregistration_error, relaycast_release_error)
+                        {
+                            (Some(error), _) => Err(format!(
                                 "failed to deregister released worker from fleet control: {error}"
                             )),
-                            None => Ok(json!({ "success": true, "name": name })),
+                            (None, Some(error)) => Err(format!(
+                                "worker process was released, but its Relaycast identity could not be released ({error}); the seat may still be held and re-registration may rotate a live token"
+                            )),
+                            (None, None) => Ok(json!({ "success": true, "name": name })),
                         };
                         let _ = reply.send(response);
                     }

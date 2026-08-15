@@ -369,7 +369,11 @@ describe('RelaycastMessagingClient', () => {
       deleteAgent: true,
     });
     expect(workspace.agents.delete).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ action_name: 'release', status: 'completed' });
+    expect(result).toMatchObject({
+      invocationId: 'inv_release_1',
+      actionName: 'release',
+      status: 'completed',
+    });
   });
 
   it('normalizes agents, channels, and channel messages from Relaycast', async () => {

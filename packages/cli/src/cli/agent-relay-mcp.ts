@@ -22,7 +22,11 @@ import {
 } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
-import { withAgentRegistrationDeadline } from './lib/agent-registration.js';
+import {
+  DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
+  withAgentRegistrationDeadline,
+  withDeadline,
+} from './lib/agent-registration.js';
 import { attributableReleaseReason } from './lib/release-reason.js';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinitions } from './mcp/resources.js';
@@ -566,7 +570,7 @@ export async function registerAgentWithRebind({
   let metadataVerified: boolean | 'unchecked' | undefined;
   if (metadata) {
     if (verifyMetadata) {
-      const verification = await verifyMetadataLanded(relay, reboundName, metadata);
+      const verification = await verifyMetadataLanded(relay, reboundName, metadata, registrationTimeoutMs);
       metadataVerified = verification.verified;
       if (!verification.verified) warnings.push(verification.warning);
     } else {
@@ -676,14 +680,25 @@ async function invokeVerifiedPersonaSpawn(
 async function verifyMetadataLanded(
   relay: RelayCastLike,
   name: string,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
+  timeoutMs = DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS
 ): Promise<{ verified: boolean; warning: string }> {
   const keys = Object.keys(metadata);
   if (keys.length === 0) return { verified: true, warning: '' };
 
   let agents: unknown[];
   try {
-    agents = await relay.agents.list();
+    // The registration call itself is bounded by withAgentRegistrationDeadline,
+    // but this read-back is a separate upstream call and must be bounded too —
+    // otherwise `verify_metadata: true` can still hang indefinitely.
+    agents = await withDeadline(
+      () => relay.agents.list(),
+      (effectiveTimeoutMs) =>
+        new Error(
+          `Reading back the agent listing to verify metadata for "${name}" did not complete within ${effectiveTimeoutMs}ms.`
+        ),
+      timeoutMs
+    );
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return {
@@ -1150,11 +1165,21 @@ function registerAgentRelayTools(
         : getRelay();
       const actor = as ?? session.agentName ?? preferredAgentName ?? 'agent-relay MCP session';
       const attributableReason = attributableReleaseReason(reason, actor, 'agent removed');
-      const invocation = await releaseRelay.agents.release({
-        name,
-        reason: attributableReason,
-        deleteAgent: delete_agent,
-      });
+      const releaseInput = { name, reason: attributableReason, deleteAgent: delete_agent };
+      let invocation;
+      try {
+        invocation = await releaseRelay.agents.release(releaseInput);
+      } catch (error) {
+        // The selected identity's own token can itself be the stale/invalid
+        // credential we're trying to recover from — that's precisely the
+        // state `remove_agent` exists to fix. Retry once with workspace
+        // authentication rather than dead-ending on the same invalid token.
+        if (releaseToken && isInvalidAgentTokenError(error)) {
+          invocation = await getRelay().agents.release(releaseInput);
+        } else {
+          throw error;
+        }
+      }
       return jsonContent({ invocation });
     }
   );

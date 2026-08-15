@@ -124,4 +124,20 @@ describe('safeRelayErrorMessage', () => {
   it('preserves ordinary actionable Relay errors', () => {
     expect(safeRelayErrorMessage(new Error('Agent "chief" not found'))).toBe('Agent "chief" not found');
   });
+
+  it('redacts unprefixed, unquoted SQL that lacks a "Failed query:" prefix', () => {
+    const message = safeRelayErrorMessage(new Error('delete from agents where id = 214015171589668864'));
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
+  });
+
+  it('redacts "parameters:" diagnostic fields, not just "params:"', () => {
+    const message = safeRelayErrorMessage(new Error('query failed\nparameters: 214015171589668864'));
+    expect(message).toBe(RELAY_SERVICE_FAILURE_MESSAGE);
+  });
+
+  it('does not mask ordinary prose that happens to contain a SQL verb', () => {
+    expect(safeRelayErrorMessage(new Error('Please select a valid workspace before continuing'))).toBe(
+      'Please select a valid workspace before continuing'
+    );
+  });
 });

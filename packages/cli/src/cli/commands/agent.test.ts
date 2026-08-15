@@ -11,6 +11,9 @@ function createHarness() {
     },
   };
   const workspaceRelay = {
+    agents: {
+      get: vi.fn(async (name: string) => ({ id: 'agent_existing', name, status: 'online' })),
+    },
     workspace: {
       register: vi.fn(async ({ name }: { name: string }) => ({
         id: 'agent_rotated',
@@ -101,6 +104,53 @@ describe('agent identity lifecycle commands', () => {
     });
   });
 
+  it('register --strict fails on a name conflict instead of rotating', async () => {
+    const { program, workspaceRelay } = createHarness();
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'register',
+      'chief',
+      '--strict',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(workspaceRelay.workspace.register).toHaveBeenCalledWith(
+      { name: 'chief', type: undefined, persona: undefined },
+      { strict: true }
+    );
+  });
+
+  it('register surfaces the bounded-registration timeout instead of hanging on a broken existing name', async () => {
+    const { program, workspaceRelay, error } = createHarness();
+    workspaceRelay.workspace.register.mockReturnValueOnce(new Promise(() => {}));
+
+    vi.useFakeTimers();
+    try {
+      const run = program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'register',
+        'chief',
+        '--workspace-key',
+        'rk_live_test',
+      ]);
+      const assertion = expect(run).rejects.toThrow('exit:1');
+      await vi.advanceTimersByTimeAsync(15_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const rendered = error.mock.calls.flat().join('\n');
+    expect(rendered).toContain('did not complete within 15000ms');
+    expect(rendered).toContain('agent rotate');
+  });
+
   it('exposes an explicit token rotation command for an existing name', async () => {
     const { program, workspaceRelay } = createHarness();
 
@@ -114,7 +164,30 @@ describe('agent identity lifecycle commands', () => {
       'rk_live_test',
     ]);
 
+    expect(workspaceRelay.agents.get).toHaveBeenCalledWith('chief');
     expect(workspaceRelay.workspace.register).toHaveBeenCalledWith({ name: 'chief' });
+  });
+
+  it('rejects rotation of a name that does not already exist instead of minting a new identity', async () => {
+    const { program, workspaceRelay, error } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValueOnce(new Error('Agent "ghost" not found'));
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'rotate',
+        'ghost',
+        '--workspace-key',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(workspaceRelay.workspace.register).not.toHaveBeenCalled();
+    const rendered = error.mock.calls.flat().join('\n');
+    expect(rendered).toContain('does not exist');
+    expect(rendered).toContain('agent register');
   });
 
   it('removes through the lifecycle endpoint with a reason and actor', async () => {
@@ -137,6 +210,25 @@ describe('agent identity lifecycle commands', () => {
       reason: expect.stringMatching(/^test cleanup \(actor: .+\)$/),
       deleteAgent: true,
     });
+  });
+
+  it('reports removal as initiated, not completed, when the release invocation is still pending', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    workspaceRelay.workspace.release.mockResolvedValueOnce({ status: 'dispatched' });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'remove',
+      'chief-dmcheck-1536',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    const rendered = log.mock.calls.flat().join('\n');
+    expect(rendered).toContain('initiated');
+    expect(rendered).not.toContain('Removed agent');
   });
 
   it('redacts SQL and bound parameters when removal fails', async () => {

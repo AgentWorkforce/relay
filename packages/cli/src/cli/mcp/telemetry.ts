@@ -161,7 +161,12 @@ export function enableInboxPiggyback(
           });
         }
         const safeMessage = safeRelayErrorMessage(err);
-        if (err instanceof Error && safeMessage === err.message) throw err;
+        if (err instanceof Error) {
+          // Replace only the message, so the sanitized error keeps its
+          // original type, stack, and cause — those never contain SQL.
+          if (safeMessage !== err.message) err.message = safeMessage;
+          throw err;
+        }
         throw new Error(safeMessage);
       }
 
@@ -198,8 +203,19 @@ export function enableInboxPiggyback(
         }
       }
 
+      const resultIsError = isErrorToolResult(result);
+      if (resultIsError && hasContentArray(result)) {
+        // A relay failure surfaced as an `isError` tool result (rather than
+        // a thrown error, e.g. via action-tools.ts) bypasses the catch block
+        // above entirely, so it needs the same SQL/diagnostic redaction here.
+        for (const entry of result.content) {
+          if (entry && typeof entry === 'object' && entry.type === 'text' && typeof entry.text === 'string') {
+            entry.text = safeRelayErrorMessage(entry.text);
+          }
+        }
+      }
+
       if (toolMetadata) {
-        const resultIsError = isErrorToolResult(result);
         trackAgentRelayToolCall({
           toolName: name,
           toolType: toolMetadata.toolType,

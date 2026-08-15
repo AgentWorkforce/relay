@@ -62,6 +62,14 @@ export function registerAgentCommands(
   ).action(async (name: string, opts: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const relay = deps.createWorkspaceRelay(sdkOptionsFromOpts(opts));
+      // `register()` is create-or-rotate by default, so without this existence
+      // check a typo'd/never-registered name would silently mint a brand-new
+      // identity instead of failing — surprising for a command documented as
+      // rotating an *existing* one.
+      await relay.agents.get(name).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Agent "${name}" does not exist; use "agent register" to create it. (${detail})`);
+      });
       const registration = await withAgentRegistrationDeadline(
         () => relay.workspace.register({ name }),
         name
@@ -127,8 +135,18 @@ export function registerAgentCommands(
         process.env.RELAY_AGENT_NAME ?? 'agent-relay CLI',
         'agent removed'
       );
-      await relay.workspace.release({ name, reason, deleteAgent: true });
-      deps.log(`Removed agent ${name}.`);
+      const result = await relay.workspace.release({ name, reason, deleteAgent: true });
+      // The release endpoint acknowledges an async action invocation — a
+      // resolved promise means the request was accepted, not that the
+      // deletion has finished. Only claim "Removed" once the invocation
+      // itself reports completion; otherwise say what actually happened.
+      if (result.status === 'completed') {
+        deps.log(`Removed agent ${name}.`);
+      } else {
+        deps.log(
+          `Removal of agent ${name} was initiated (status: ${result.status ?? 'pending'}) and is processed asynchronously.`
+        );
+      }
     });
   });
 }

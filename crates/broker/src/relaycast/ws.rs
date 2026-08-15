@@ -381,8 +381,11 @@ impl RelaycastHttpClient {
         } else {
             tracing::warn!(agent = %agent_name, "SDK relay client not initialized; cannot mark agent offline");
         }
-        // Always invalidate local cache so a future spawn uses a fresh registration.
-        self.invalidate_cached_registration(agent_name);
+        // Deliberately do NOT invalidate the cached registration here: this is
+        // a presence-only transition and the process holding the identity may
+        // still be alive or may restart with the same token. Invalidating the
+        // cache would force a token rotation on next use, disconnecting a
+        // still-valid identity. Only an explicit release should do that.
         Ok(())
     }
 
@@ -409,6 +412,13 @@ impl RelaycastHttpClient {
                 reason: Some(attributed_reason),
                 delete_agent: None,
             };
+            // Invalidate the cached token before the call so an ambiguous
+            // response (e.g. a timeout after Relaycast committed the release)
+            // can never leave a dead token cached for reuse. Worst case on
+            // failure is a redundant re-registration on next use, which is
+            // safe; the alternative — a stale cache reusing a released token
+            // — is the bug this fixes.
+            self.invalidate_cached_registration(agent_name);
             match relay.release_agent(request).await {
                 Ok(_) => {
                     tracing::info!(agent = %agent_name, "released agent identity");

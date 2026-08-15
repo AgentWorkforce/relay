@@ -237,8 +237,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     delete: async (name: string): Promise<void> => {
       await this.relaycast.agents.delete(name);
     },
-    release: async (input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult> =>
-      (await this.relaycast.agents.release(input)) as RelayAgentReleaseResult,
+    release: async (input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult> => {
+      const ack = normalizeActionInvocationAck(await this.relaycast.agents.release(input));
+      return { ...ack };
+    },
     presence: async (): Promise<RelayAgentPresence[]> => {
       const presence = await this.relaycast.agents.presence();
       return presence.map(normalizeAgentPresence);
