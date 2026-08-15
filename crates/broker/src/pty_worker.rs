@@ -308,6 +308,24 @@ fn evaluate_startup_gate(
 /// interstitial means the harness is deliberately not accepting work yet, and
 /// typing into it would answer a security question on the operator's behalf.
 /// `evaluate_startup_gate` vetoes it for exactly that reason.
+/// The startup gate's verdict.
+///
+/// Three states, not two booleans: `Ready && Blocked` is not representable,
+/// and the difference between "we could not recognise the prompt" and "the
+/// harness is deliberately refusing work" decides whether the deadline may
+/// release queued work at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupGate {
+    /// A real input prompt was proven.
+    Ready,
+    /// No prompt recognised yet. Our heuristic may simply be blind, so the
+    /// deadline is allowed to release queued work.
+    Unrecognised,
+    /// A known blocking dialog is on screen — the harness is deliberately not
+    /// accepting input. Never released by any deadline.
+    Blocked,
+}
+
 fn startup_gate_blocked(pty: &PtySession) -> bool {
     detect_codex_trust_prompt(&pty.screen_text())
 }
@@ -460,8 +478,7 @@ async fn try_emit_worker_ready(
     init_request_id: &mut Option<RequestId>,
     init_received_at: Option<Instant>,
     readiness: &mut StartupReadinessState,
-    startup_ready: bool,
-    startup_blocked: bool,
+    gate: StartupGate,
 ) {
     // init_received_at is Some only after init_worker has been received.
     // We use it (not init_request_id) as the gate because the broker sends
@@ -473,7 +490,11 @@ async fn try_emit_worker_ready(
     // A deliberate veto is not a blind spot: never time out past a known
     // blocking dialog, or the brief is typed into a trust prompt and answers a
     // security question nobody asked us to answer.
-    let timed_out = !startup_blocked
+    let startup_ready = gate == StartupGate::Ready;
+    // A deliberate veto is not a blind spot: never time out past a known
+    // blocking dialog, or the brief is typed into a trust prompt and answers a
+    // security question nobody asked us to answer.
+    let timed_out = gate != StartupGate::Blocked
         && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
 
     if !startup_ready && !timed_out {
@@ -842,7 +863,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     &post_boot_output,
                                     &pty,
                                 );
-                                let startup_blocked = startup_gate_blocked(&pty);
+                                let gate = if startup_ready {
+                                    StartupGate::Ready
+                                } else if startup_gate_blocked(&pty) {
+                                    StartupGate::Blocked
+                                } else {
+                                    StartupGate::Unrecognised
+                                };
                                 try_emit_worker_ready(
                                     &out_tx,
                                     &worker_name,
@@ -850,8 +877,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     &mut init_request_id,
                                     init_received_at,
                                     &mut startup_readiness,
-                                    startup_ready,
-                                    startup_blocked,
+                                    gate,
                                 )
                                 .await;
                             }
@@ -1236,7 +1262,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &post_boot_output,
                             &pty,
                         );
-                                let startup_blocked = startup_gate_blocked(&pty);
+                                let gate = if startup_ready {
+                                    StartupGate::Ready
+                                } else if startup_gate_blocked(&pty) {
+                                    StartupGate::Blocked
+                                } else {
+                                    StartupGate::Unrecognised
+                                };
                         try_emit_worker_ready(
                             &out_tx,
                             &worker_name,
@@ -1244,8 +1276,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &mut init_request_id,
                             init_received_at,
                             &mut startup_readiness,
-                            startup_ready,
-                            startup_blocked,
+                            gate,
                         )
                         .await;
 
@@ -1808,7 +1839,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     &post_boot_output,
                     &pty,
                 );
-                                let startup_blocked = startup_gate_blocked(&pty);
+                                let gate = if startup_ready {
+                                    StartupGate::Ready
+                                } else if startup_gate_blocked(&pty) {
+                                    StartupGate::Blocked
+                                } else {
+                                    StartupGate::Unrecognised
+                                };
                 try_emit_worker_ready(
                     &out_tx,
                     &worker_name,
@@ -1816,8 +1853,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     &mut init_request_id,
                     init_received_at,
                     &mut startup_readiness,
-                    startup_ready,
-                    startup_blocked,
+                    gate,
                 )
                 .await;
 
@@ -2231,8 +2267,7 @@ mod tests {
             &mut request_id,
             Some(started),
             &mut readiness,
-            false, // prompt never recognised
-            false, // and no blocking dialog on screen
+            StartupGate::Unrecognised,
         )
         .await;
 
@@ -2265,8 +2300,7 @@ mod tests {
             &mut request_id,
             Some(started),
             &mut readiness,
-            false, // prompt not ready
-            true,  // ...because a known blocking dialog is on screen
+            StartupGate::Blocked,
         )
         .await;
 
@@ -2294,8 +2328,7 @@ mod tests {
             &mut request_id,
             Some(started),
             &mut readiness,
-            false,
-            false,
+            StartupGate::Unrecognised,
         )
         .await;
 
@@ -2316,8 +2349,7 @@ mod tests {
             &mut request_id,
             Some(started),
             &mut readiness,
-            true,
-            false,
+            StartupGate::Ready,
         )
         .await;
 
