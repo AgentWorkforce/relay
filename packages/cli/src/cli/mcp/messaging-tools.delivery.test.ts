@@ -104,6 +104,8 @@ describe('direct message delivery receipts', () => {
     });
     expect(receipt.target).toBeUndefined();
     expect(directMessageDeliveryFailure(receipt)).toContain('recipient_unresolved');
+    expect(directMessageDeliveryFailure(receipt)).toContain('message msg_unresolved was enqueued');
+    expect(directMessageDeliveryFailure(receipt)).toContain('retrying may duplicate it');
   });
 
   it('does not produce a failure for a resolved queued receipt', () => {
