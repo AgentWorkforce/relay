@@ -43,7 +43,7 @@ describe('messaging delivery receipts over MCP', () => {
         name: 'send_dm',
         arguments: { to: 'missing-agent', text: 'still enqueue this' },
       });
-      expect(unresolved.isError).not.toBe(true);
+      expect(unresolved.isError).toBe(true);
       expect(unresolved.structuredContent).toMatchObject({
         id: 'msg_1',
         delivery: {

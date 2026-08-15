@@ -809,6 +809,7 @@ describe('createAgentRelayMcpServer', () => {
         recipientMatched: null,
       },
     });
+    expect(result.isError).toBe(true);
     expect(result.structuredContent).not.toHaveProperty('target');
     const agentRelay = mocks.relayInstances.find(
       (instance) => instance.config.apiKey === 'at_live_token_only'

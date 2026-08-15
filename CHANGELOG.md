@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent registration and token rotation are bounded by a deadline instead of hanging indefinitely on an existing broken record.
 - `agent remove` preserves attributed message history and no longer exposes raw database queries or bound parameters when the removal fails.
 
+## [11.6.4] - 2026-08-15
+
+### Added
+
+- `agent-relay node agent attach --node` now accepts a short-lived `--join-ticket`, redeems it into an owner-only project workspace credential, and uses that credential for the attach.
+
+### Fixed
+
+- `agent-relay message dm send` now uses workspace credentials for exact recipient resolution even when an agent token is also configured, preserves unresolved delivery receipts, and exits non-zero instead of presenting them as success.
+- MCP `send_dm` now returns a tool error, while preserving its delivery receipt, when exact recipient resolution is unavailable.
+
 ## [11.6.3] - 2026-08-14
 
 ### Fixed

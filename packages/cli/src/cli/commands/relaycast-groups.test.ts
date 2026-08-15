@@ -68,6 +68,7 @@ function createRelayMock() {
     messages: {
       send: vi.fn(async (i: unknown) => ({ id: 'm1', ...(i as object) })),
       direct: vi.fn(async (i: unknown) => ({ id: 'd1', ...(i as object) })),
+      groupDirect: vi.fn(async (i: unknown) => ({ id: 'g1', ...(i as object) })),
       readers: vi.fn(async () => []),
       react: vi.fn(async () => ({ emoji: 'eyes', count: 1, agents: [] })),
     },
@@ -117,12 +118,15 @@ function memoryJournal() {
 
 function harness(register: (p: Command, o: Partial<SdkCommandDeps>) => void) {
   const relay = createRelayMock();
+  const workspaceRelay = createRelayMock();
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
+  const createAgentRelay = vi.fn(() => relay as never);
+  const createWorkspaceRelay = vi.fn(() => workspaceRelay as never);
   const deps: Partial<SdkCommandDeps> = {
-    createAgentRelay: () => relay as never,
-    createWorkspaceRelay: () => relay as never,
+    createAgentRelay,
+    createWorkspaceRelay,
     log,
     error,
     exit: exit as never,
@@ -130,14 +134,28 @@ function harness(register: (p: Command, o: Partial<SdkCommandDeps>) => void) {
   const program = new Command();
   program.exitOverride();
   register(program, deps);
-  return { program, relay, log, error, exit };
+  return {
+    program,
+    relay,
+    workspaceRelay,
+    createAgentRelay,
+    createWorkspaceRelay,
+    log,
+    error,
+    exit,
+  };
 }
 
 describe('SDK-backed CLI groups', () => {
   it('agent register calls workspace.register and prints the registration', async () => {
-    const { program, relay, log } = harness(registerAgentCommands);
+    const { program, workspaceRelay, log } = harness(registerAgentCommands);
     await program.parseAsync(['agent', 'register', 'reviewer', '--type', 'agent'], { from: 'user' });
-    expect(relay.workspace.register).toHaveBeenCalledWith(
+    // `agent register` resolves its client through createWorkspaceRelay (hence
+    // workspaceRelay, from main) and calls workspace.register with an explicit
+    // strict flag (hence this shape, from #1527). Taking either side of the
+    // merge alone asserts against a method or an object the implementation no
+    // longer uses.
+    expect(workspaceRelay.workspace.register).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'reviewer', type: 'agent' }),
       { strict: false }
     );
@@ -156,44 +174,75 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.messages.send).toHaveBeenCalledWith({ channel: 'ops', text: 'hello' });
   });
 
-  it('message dm send routes to messages.direct', async () => {
-    const { program, relay, log } = harness(registerMessageCommands);
+  // MUST-NOT-FIRE: an independently resolved live recipient remains a normal
+  // successful CLI command, without the loud failure guard.
+  it('message dm send exits cleanly when the workspace roster resolves the recipient', async () => {
+    const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
+    expect(workspaceRelay.agents.list).toHaveBeenCalledOnce();
+    expect(relay.agents.list).not.toHaveBeenCalled();
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_unconfirmed"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": "lead"'));
+    expect(error).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
   });
 
-  it('message dm send still enqueues when exact recipient resolution is unavailable', async () => {
-    const { program, relay, log } = harness(registerMessageCommands);
-    relay.agents.list.mockResolvedValueOnce([]);
+  // MUST-FIRE: retaining the created message and receipt must not make an
+  // unresolved recipient look like CLI success.
+  it('message dm send exits non-zero after printing an unresolved-recipient receipt', async () => {
+    const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
+    workspaceRelay.agents.list.mockResolvedValueOnce([]);
 
     await program.parseAsync(['message', 'dm', 'send', 'missing-agent', 'hi'], { from: 'user' });
 
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'missing-agent', text: 'hi' });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('recipient_unresolved'));
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
-  // Regression for the workspace-key-required DM outage: an agent-scoped
-  // credential can send a DM (messages.direct only needs requireAgentClient)
-  // but is not authorized to read the workspace-wide roster
-  // (agents.list — see packages/sdk/src/messaging/relaycast.ts). Before the
-  // fix, that rejection propagated out of the action and aborted the send
-  // entirely instead of just degrading the receipt's recipient resolution.
-  it('message dm send still enqueues when agents.list itself is rejected (agent-scoped credential)', async () => {
-    const { program, relay, log, error, exit } = harness(registerMessageCommands);
-    relay.agents.list.mockRejectedValueOnce(
+  it('message dm send reports failure when the independent workspace roster read rejects', async () => {
+    const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
+    workspaceRelay.agents.list.mockRejectedValueOnce(
       new Error('Workspace key required (rk_live_...) for this operation')
     );
 
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
 
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
-    expect(exit).not.toHaveBeenCalled();
-    expect(error).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('recipient_unresolved'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('message dm send sends with the agent client but resolves with an explicitly keyed workspace client', async () => {
+    const { program, createAgentRelay, createWorkspaceRelay } = harness(registerMessageCommands);
+
+    await program.parseAsync(
+      [
+        'message',
+        'dm',
+        'send',
+        'lead',
+        'hi',
+        '--token',
+        'at_live_sender',
+        '--workspace-key',
+        'rk_live_workspace',
+      ],
+      { from: 'user' }
+    );
+
+    const expected = {
+      token: 'at_live_sender',
+      workspaceKey: 'rk_live_workspace',
+      baseUrl: undefined,
+    };
+    expect(createAgentRelay).toHaveBeenCalledWith(expected);
+    expect(createWorkspaceRelay).toHaveBeenCalledWith(expected);
   });
 
   it('message dm send exposes immediate Relay delivery', async () => {
@@ -208,6 +257,22 @@ describe('SDK-backed CLI groups', () => {
     });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"mode": "steer"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('immediate injection'));
+  });
+
+  it('message dm send_group bypasses the single-recipient resolution and receipt path', async () => {
+    const { program, relay, createWorkspaceRelay, error, exit } = harness(registerMessageCommands);
+
+    await program.parseAsync(['message', 'dm', 'send_group', 'hello team', '--to', 'lead', 'worker'], {
+      from: 'user',
+    });
+
+    expect(relay.messages.groupDirect).toHaveBeenCalledWith({
+      participants: ['lead', 'worker'],
+      text: 'hello team',
+    });
+    expect(createWorkspaceRelay).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it('message inbox get_readers signals that an empty reader list is still queued or unread', async () => {
