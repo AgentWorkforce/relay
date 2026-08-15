@@ -156,6 +156,20 @@ fn cli_basename(command: &str) -> &str {
 /// into startup UI and silently consumed. Harness liveness is reported to the
 /// broker independently so a live but unrecognized prompt is not reaped.
 const STARTUP_READY_WARNING: Duration = Duration::from_secs(25);
+/// Deliver queued startup work even when the prompt was never recognised.
+///
+/// Prompt detection is heuristic — it reads a vendor TUI we do not control, and
+/// Claude Code's greeting banner (which `claude_grid_ready` keys on) is not
+/// rendered on every launch. Making that heuristic load-bearing means a single
+/// upstream cosmetic change silently strands every spawned agent: the brief is
+/// held forever, nothing is injected, and the only symptom is an idle process.
+///
+/// Elapsed time is genuinely not proof of a ready prompt, which is why this is a
+/// LAST RESORT behind the real detector and why it logs at warn. But an agent
+/// that never receives its task is a total loss, while a brief typed a little
+/// early is recoverable. Bounded below `WORKER_READY_DEADLINE` (90s) so the work
+/// is released before an unready harness is reaped.
+const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const PROMPT_WINDOW_BYTES: usize = 800;
@@ -443,7 +457,10 @@ async fn try_emit_worker_ready(
         return;
     }
 
-    if !startup_ready {
+    let timed_out = init_received_at
+        .is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
+
+    if !startup_ready && !timed_out {
         if !readiness.wait_warned
             && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_WARNING)
         {
@@ -456,6 +473,17 @@ async fn try_emit_worker_ready(
             readiness.wait_warned = true;
         }
         return;
+    }
+
+    if !startup_ready {
+        // Fail open, loudly. Holding the brief forever is the worse failure:
+        // it presents as a live, idle agent that silently never does its work.
+        tracing::warn!(
+            target: "agent_relay::worker::pty",
+            worker = %worker_name,
+            timeout_secs = STARTUP_READY_TIMEOUT.as_secs(),
+            "harness prompt never recognised; releasing queued startup work anyway"
+        );
     }
 
     let request_id = init_request_id.take();
@@ -2156,6 +2184,41 @@ mod tests {
                 cursor: Some((2, 1)),
             },
         ));
+    }
+
+    #[tokio::test]
+    async fn unrecognised_prompt_releases_queued_work_after_the_deadline() {
+        // The 2026-08-15 fleet outage. `claude_grid_ready` requires the literal
+        // "Welcome back" / "Welcome to " greeting, and Claude Code stopped
+        // rendering it on routine launches — three consecutive live launches on
+        // finn-mini showed a composer and no banner. With no deadline, readiness
+        // was never proven, `initial_tasks` was never released, and every
+        // spawned agent sat idle holding a brief it was never handed.
+        //
+        // Detection is heuristic against a vendor TUI. It must not be the only
+        // thing standing between a spawn and its task.
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_TIMEOUT - Duration::from_secs(1);
+        let mut readiness = StartupReadinessState::default();
+
+        try_emit_worker_ready(
+            &tx,
+            "unrecognised-prompt",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            false, // prompt never recognised
+        )
+        .await;
+
+        assert!(
+            readiness.ready_sent,
+            "past the deadline the brief must go out; a held brief is a total loss"
+        );
+        let frame = rx.try_recv().expect("worker_ready must be emitted");
+        assert_eq!(frame.msg_type, "worker_ready");
     }
 
     #[tokio::test]
