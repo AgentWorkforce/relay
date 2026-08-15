@@ -22,6 +22,13 @@ pub(crate) struct ResizeOwner {
 /// immediately, so this window never fires in the normal path.
 pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
 
+/// Bound on each best-effort Relaycast presence call made during shutdown
+/// (per-worker `mark_agent_offline` plus the broker's own `mark_offline`).
+/// Kept well under callers' external shutdown deadlines (the CLI's `node
+/// down` graceful-shutdown window is 10s) so an unresponsive backend cannot
+/// turn a bounded number of these calls into an unbounded shutdown hang.
+const SHUTDOWN_RELAYCAST_CALL_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub(crate) struct HostedAgentEvent {
     pub(super) name: String,
     pub(super) event_type: String,
@@ -459,20 +466,54 @@ impl BrokerRuntime {
         });
         self.telemetry.shutdown();
 
+        // Bounded: these are best-effort presence updates to an external
+        // service. A slow or unresponsive Relaycast backend must never block
+        // process shutdown — a caller waiting on `node down` has its own,
+        // shorter deadline, and a broker that outlives it becomes a stuck
+        // "still running" process the caller then has to force-kill.
         let active_workers: Vec<WorkerName> = self.workers.workers.keys().cloned().collect();
         for worker_name in active_workers {
-            if let Err(error) = self.relaycast_http.mark_agent_offline(&worker_name).await {
-                tracing::warn!(
-                    worker = %worker_name,
-                    error = %error,
-                    "failed to mark worker offline during shutdown"
-                );
+            match timeout(
+                SHUTDOWN_RELAYCAST_CALL_TIMEOUT,
+                self.relaycast_http.mark_agent_offline(&worker_name),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        worker = %worker_name,
+                        error = %error,
+                        "failed to mark worker offline during shutdown"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        worker = %worker_name,
+                        timeout_ms = SHUTDOWN_RELAYCAST_CALL_TIMEOUT.as_millis(),
+                        "timed out marking worker offline during shutdown; proceeding"
+                    );
+                }
             }
         }
 
         // Mark broker agent offline in Relaycast before shutting down WS
-        if let Err(error) = self.relaycast_http.mark_offline().await {
-            tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
+        match timeout(
+            SHUTDOWN_RELAYCAST_CALL_TIMEOUT,
+            self.relaycast_http.mark_offline(),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "failed to mark broker offline during shutdown");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = SHUTDOWN_RELAYCAST_CALL_TIMEOUT.as_millis(),
+                    "timed out marking broker offline during shutdown; proceeding"
+                );
+            }
         }
 
         if let Err(error) = self.ws_control_tx.send(WsControl::Shutdown).await {
