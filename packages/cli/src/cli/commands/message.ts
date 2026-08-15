@@ -9,6 +9,7 @@ import {
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
 import {
+  directMessageDeliveryFailure,
   directMessageReceipt,
   messageReadersReceipt,
   resolveExactAgentName,
@@ -132,30 +133,32 @@ export function registerMessageCommands(
   ).action(async (agent: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const mode = o.mode as 'wait' | 'steer' | undefined;
-      const relay = deps.createAgentRelay(opts(o));
-      // Recipient-name verification is a best-effort nicety on top of the send,
-      // not a precondition for it: agents.list() is a workspace-wide roster
-      // read and can be unavailable to a credential that is otherwise fully
-      // authorized to send this DM (e.g. an agent-scoped token). Losing this
-      // lookup must degrade to `resolvedRecipient: null` in the receipt
-      // (handled by directMessageReceipt) rather than block the send itself.
-      const resolvedRecipient = await relay.agents
-        .list()
+      const options = opts(o);
+      const relay = deps.createAgentRelay(options);
+      // Sending must remain agent-scoped for attribution, while recipient
+      // resolution is a workspace-wide roster read. Keep those credentials on
+      // independent clients so an ambient/explicit agent token cannot shadow
+      // the workspace key supplied alongside it.
+      const resolvedRecipient = await Promise.resolve()
+        .then(() => deps.createWorkspaceRelay(options).agents.list())
         .then((agents) => resolveExactAgentName(agents, agent))
         .catch(() => undefined);
-      printJson(
-        deps,
-        directMessageReceipt(
-          await relay.messages.direct({
-            to: agent,
-            text,
-            ...(mode ? { mode } : {}),
-          }),
-          agent,
-          mode,
-          resolvedRecipient
-        )
+      const receipt = directMessageReceipt(
+        await relay.messages.direct({
+          to: agent,
+          text,
+          ...(mode ? { mode } : {}),
+        }),
+        agent,
+        mode,
+        resolvedRecipient
       );
+      printJson(deps, receipt);
+      const failure = directMessageDeliveryFailure(receipt);
+      if (failure) {
+        deps.error(failure);
+        deps.exit(1);
+      }
     });
   });
 

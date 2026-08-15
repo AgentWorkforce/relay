@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import {
+  directMessageDeliveryFailure,
   directMessageReceipt,
   messageReadersReceipt,
   resolveExactAgentName,
@@ -309,6 +310,7 @@ export function registerMessagingTools(
       description:
         'Send a private direct message visible only to the recipient and this agent. ' +
         'Returns the created message and an explicit queued/unconfirmed delivery receipt. ' +
+        'Returns a tool error while preserving that receipt when the recipient cannot be resolved exactly. ' +
         'A message ID confirms enqueue, not injection or reading; use "get_message_readers" to confirm consumption. ' +
         'Mode "wait" (the default) waits for the recipient\'s next safe idle boundary and can remain unread while they are busy. ' +
         'Mode "steer" requests immediate injection and may interrupt active work.',
@@ -336,7 +338,9 @@ export function registerMessagingTools(
       const agents = await listAgentsForRecipientResolution?.();
       const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
       const message = await getAgentClient(as).dm(to, text, { mode, attachments });
-      return jsonContent(directMessageReceipt(message, to, mode, resolvedRecipient));
+      const receipt = directMessageReceipt(message, to, mode, resolvedRecipient);
+      const result = jsonContent(receipt);
+      return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
     }
   );
 
