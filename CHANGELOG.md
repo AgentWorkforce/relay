@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Spawned broker workers now derive `RELAY_ATTEST_SESSION_ID` from the harness session they actually run, stamp `Session-Id:` trailers across HTTP and node-control spawn paths, and log when session attribution is unavailable.
-- The broker's commit-attribution git hook no longer silently disables a repository's other hooks (`pre-commit`, `commit-msg`, etc.) while active, and a hook-installation failure now falls back to spawning without commit trailers instead of failing the whole worker spawn.
+- Spawned broker workers now derive `RELAY_ATTEST_SESSION_ID` from the harness session they actually run and stamp `Session-Id:` git trailers across HTTP and node-control spawn paths.
+- The broker now logs when a spawned worker has no usable session reference, instead of silently skipping `RELAY_ATTEST_SESSION_ID` injection.
+- The broker's commit-attribution git hook no longer silently disables a repository's other hooks (`pre-commit`, `commit-msg`, etc.) while active.
+- A commit-attribution hook-installation failure now falls back to spawning without commit trailers instead of failing the whole worker spawn.
 
 ## [11.6.5] - 2026-08-15
 

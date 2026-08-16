@@ -33,7 +33,7 @@ use crate::{
     runtime::headless_provider_cli_name,
     spawner::{
         add_broker_hooks_path, attestation_env_present, is_valid_attestation_value,
-        terminate_child, with_commit_attestation_env, write_broker_git_hooks,
+        resolve_commit_hooks_dir, terminate_child, with_commit_attestation_env,
         RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     },
 };
@@ -356,20 +356,7 @@ impl WorkerRegistry {
     }
 
     fn commit_hooks_dir(&mut self) -> Result<&Path> {
-        if self.commit_hooks_dir.is_none() {
-            let hooks_dir = tempfile::Builder::new()
-                .prefix("agent-relay-git-hooks-")
-                .tempdir()
-                .context("creating broker git hooks directory")?;
-            write_broker_git_hooks(hooks_dir.path())?;
-            self.commit_hooks_dir = Some(hooks_dir);
-        }
-
-        Ok(self
-            .commit_hooks_dir
-            .as_ref()
-            .expect("commit hooks directory is initialized")
-            .path())
+        resolve_commit_hooks_dir(&mut self.commit_hooks_dir)
     }
 
     pub(crate) fn worker_log_path(&self, worker_name: &str) -> Option<PathBuf> {

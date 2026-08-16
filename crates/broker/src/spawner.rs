@@ -42,6 +42,7 @@ const GIT_HOOK_NAMES: &[&str] = &[
     "pre-push",
     "pre-auto-gc",
     "post-rewrite",
+    "post-index-change",
     "sendemail-validate",
 ];
 
@@ -202,6 +203,25 @@ pub(crate) fn write_broker_git_hooks(hooks_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Lazily create (or reuse) a broker git-hooks directory cached in `slot`.
+/// Shared by `Spawner` and `WorkerRegistry`, which differ only in which
+/// struct owns the cached `TempDir` handle.
+pub(crate) fn resolve_commit_hooks_dir(slot: &mut Option<tempfile::TempDir>) -> Result<&Path> {
+    if slot.is_none() {
+        let hooks_dir = tempfile::Builder::new()
+            .prefix("agent-relay-git-hooks-")
+            .tempdir()
+            .context("creating broker git hooks directory")?;
+        write_broker_git_hooks(hooks_dir.path())?;
+        *slot = Some(hooks_dir);
+    }
+
+    Ok(slot
+        .as_ref()
+        .expect("commit hooks directory is initialized")
+        .path())
+}
+
 fn git_config_count(env_vars: &[(String, String)]) -> usize {
     let inherited_count = std::env::var("GIT_CONFIG_COUNT").ok();
     git_config_count_with_inherited(env_vars, inherited_count.as_deref())
@@ -269,20 +289,7 @@ impl Spawner {
     }
 
     fn commit_hooks_dir(&mut self) -> Result<&Path> {
-        if self.commit_hooks_dir.is_none() {
-            let hooks_dir = tempfile::Builder::new()
-                .prefix("agent-relay-git-hooks-")
-                .tempdir()
-                .context("creating broker git hooks directory")?;
-            write_broker_git_hooks(hooks_dir.path())?;
-            self.commit_hooks_dir = Some(hooks_dir);
-        }
-
-        Ok(self
-            .commit_hooks_dir
-            .as_ref()
-            .expect("commit hooks directory is initialized")
-            .path())
+        resolve_commit_hooks_dir(&mut self.commit_hooks_dir)
     }
 
     pub async fn spawn_wrap_with_token(
