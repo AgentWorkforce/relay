@@ -160,9 +160,18 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
 
     const socket = await remote.nextConnection();
     const receivedFrames: Array<Record<string, unknown>> = [];
+    let readySent = false;
+    /**
+     * Ordering, not timing: flips if any frame is forwarded before
+     * `terminal.ready` was sent, no matter how late the scheduler delivers it.
+     * A regression that drops the readiness gate cannot slip past this by
+     * emitting after some fixed observation window.
+     */
+    let forwardedBeforeReady = false;
     socket.on('message', (data) => {
       const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
       receivedFrames.push(frame);
+      if (!readySent) forwardedBeforeReady = true;
       if (frame.type === 'terminal.set_delivery_mode') {
         socket.send(
           JSON.stringify({
@@ -179,15 +188,26 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     });
 
     const resultPromise = putDeliveryMode(proxy, 'agent-readiness', 'auto_inject');
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Race a sentinel against the PUT rather than asserting an absence after a
+    // fixed sleep: the assertion is "still unresolved", which a regression that
+    // answers the PUT at any point before `sendReady` cannot satisfy. The
+    // 100ms is only the backstop that gives such a regression time to happen.
+    const stillPending = Symbol('still-pending');
+    const raced = await Promise.race([
+      resultPromise,
+      new Promise<symbol>((resolve) => setTimeout(() => resolve(stillPending), 100)),
+    ]);
+    expect(raced).toBe(stillPending);
     expect(receivedFrames).toEqual([]);
 
+    readySent = true;
     sendReady(socket, 'manual_flush');
     await expect(resultPromise).resolves.toMatchObject({
       status: 200,
       body: { mode: 'auto_inject', matched: true },
     });
     expect(receivedFrames).toHaveLength(1);
+    expect(forwardedBeforeReady).toBe(false);
   });
 
   it(
@@ -306,6 +326,123 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     expect(result.body).toMatchObject({ error: { code: 'closed' } });
     expect(elapsedMs).toBeLessThan(5_000);
   }, 10_000);
+});
+
+describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      const fn = cleanup.pop()!;
+      await fn().catch(() => undefined);
+    }
+  });
+
+  /**
+   * Bind and immediately release a loopback port so a connection to it is a
+   * genuine transport failure (ECONNREFUSED) rather than a simulated one.
+   */
+  async function reserveClosedPortUrl(): Promise<string> {
+    const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', resolve));
+    const { port } = wss.address() as AddressInfo;
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    return `ws://127.0.0.1:${port}/terminal`;
+  }
+
+  async function startProxyAgainst(remoteUrl: string, agent: string): Promise<FleetNodeAttachProxy> {
+    const proxy = await startFleetNodeAttachProxy({
+      agent,
+      node: 'node-mapping',
+      mode: 'drive',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remoteUrl),
+    });
+    cleanup.push(proxy.close);
+    return proxy;
+  }
+
+  // MUST FIRE: this fails if the readiness gate collapses agent_not_found into
+  // a generic 503. Only a 404 makes switchInboundDeliveryModeOrAbort emit the
+  // "no agent named X" / cross-node placement hint, which is the whole point
+  // of relay#1535 DoD 4.
+  it('answers 404 when readiness fails with agent_not_found, not a generic 503', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startProxyAgainst(remote.url, 'agent-missing');
+
+    const socket = await remote.nextConnection();
+    socket.send(
+      JSON.stringify({
+        type: 'terminal.error',
+        session_id: SESSION_ID,
+        code: 'agent_not_found',
+        message: "no agent named 'agent-missing'",
+      })
+    );
+
+    const result = await putDeliveryMode(proxy, 'agent-missing', 'auto_inject');
+    expect(result.status).toBe(404);
+    expect(result.body).toMatchObject({
+      error: { code: 'agent_not_found', message: "no agent named 'agent-missing'" },
+    });
+  });
+
+  it('answers 409 when readiness fails with unsupported_runtime', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startProxyAgainst(remote.url, 'agent-runtime');
+
+    const socket = await remote.nextConnection();
+    socket.send(
+      JSON.stringify({
+        type: 'terminal.error',
+        session_id: SESSION_ID,
+        code: 'unsupported_runtime',
+        message: 'agent runtime does not expose a terminal',
+      })
+    );
+
+    const result = await putDeliveryMode(proxy, 'agent-runtime', 'auto_inject');
+    expect(result.status).toBe(409);
+    expect(result.body).toMatchObject({ error: { code: 'unsupported_runtime' } });
+  });
+
+  // MUST NOT FIRE: a real transport failure has to stay 503, so the mapping
+  // above cannot be satisfied by blanket-404ing every readiness rejection.
+  it('still answers 503 when the terminal transport genuinely fails to connect', async () => {
+    const deadUrl = await reserveClosedPortUrl();
+    const proxy = await startProxyAgainst(deadUrl, 'agent-dead');
+
+    const result = await putDeliveryMode(proxy, 'agent-dead', 'auto_inject');
+    expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ error: { code: 'node_unreachable' } });
+  });
+
+  // The snapshot path already mapped 404 correctly; lock it so the shared
+  // helper cannot regress one caller while leaving the other intact.
+  it('answers 404 on the snapshot path when readiness fails with agent_not_found', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startProxyAgainst(remote.url, 'agent-missing-snap');
+
+    const socket = await remote.nextConnection();
+    socket.send(
+      JSON.stringify({
+        type: 'terminal.error',
+        session_id: SESSION_ID,
+        code: 'agent_not_found',
+        message: "no agent named 'agent-missing-snap'",
+      })
+    );
+
+    const response = await fetch(`${proxy.brokerUrl}/api/spawned/agent-missing-snap/snapshot`, {
+      headers: { Authorization: `Bearer ${proxy.apiKey}` },
+    });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: 'agent_not_found' } });
+  });
 });
 
 describe('startFleetNodeAttachProxy workspace-key precedence', () => {

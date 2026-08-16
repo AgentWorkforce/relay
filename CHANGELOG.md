@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet terminal drive attach now waits for the remote terminal handshake and preserves structured upstream errors instead of racing with the websocket and displaying `[object Object]`.
+- Fleet terminal drive attach now waits for the remote terminal handshake and preserves upstream error status, so attaching to a missing or cross-node agent reports which machine to run on instead of `[object Object]` or a generic unreachable-node error.
 
 ## [11.6.7] - 2026-08-16
 
