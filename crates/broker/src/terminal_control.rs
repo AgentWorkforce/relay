@@ -308,6 +308,13 @@ pub(crate) async fn run_terminal_control_client(
         // `last_inbound` on schedule regardless of what the write side is
         // doing.
         let writer = tokio::spawn(run_terminal_writer(sink, writer_rx, priority_rx));
+        // Shedding is per-connection state, not per-frame. Under sustained
+        // backpressure the queue stays full, so warning on every dropped frame
+        // would produce a log storm in exactly the situation an operator most
+        // needs to read the log. One line when shedding begins, one when it
+        // ends carrying the total lost, is the whole story.
+        let mut shedding = false;
+        let mut shed_frames: u64 = 0;
         let mut connected = true;
         let mut last_inbound = Instant::now();
         let read_idle_timeout = config.read_idle_timeout.unwrap_or(READ_IDLE_TIMEOUT);
@@ -335,19 +342,34 @@ pub(crate) async fn run_terminal_control_client(
                                 // (fleet.rs `try_send_terminal`): a wedged
                                 // lane must fail forward, not accumulate.
                                 match writer_tx.try_send(Message::Text(encoded)) {
-                                    Ok(()) => {}
+                                    Ok(()) => {
+                                        if shedding {
+                                            tracing::warn!(
+                                                target = "relay_broker::terminal",
+                                                dropped_frames = shed_frames,
+                                                "fleet terminal writer drained; resuming output"
+                                            );
+                                            shedding = false;
+                                            shed_frames = 0;
+                                        }
+                                    }
                                     // Shedding is deliberate, but it must not be
                                     // silent: a viewer quietly missing output is
                                     // indistinguishable from a wedged session,
                                     // and an unobservable drop is exactly the
                                     // failure class that let the fleet dispatch
-                                    // outage run for hours unnoticed.
+                                    // outage run for hours unnoticed. Log the
+                                    // episode, not each frame.
                                     Err(mpsc::error::TrySendError::Full(_)) => {
-                                        tracing::warn!(
-                                            target = "relay_broker::terminal",
-                                            capacity = WRITER_QUEUE_CAPACITY,
-                                            "fleet terminal writer queue full; dropping an output frame under backpressure"
-                                        );
+                                        shed_frames = shed_frames.saturating_add(1);
+                                        if !shedding {
+                                            shedding = true;
+                                            tracing::warn!(
+                                                target = "relay_broker::terminal",
+                                                capacity = WRITER_QUEUE_CAPACITY,
+                                                "fleet terminal writer queue full; shedding output frames under backpressure"
+                                            );
+                                        }
                                     }
                                     Err(mpsc::error::TrySendError::Closed(_)) => {
                                         connected = false;
@@ -408,7 +430,24 @@ pub(crate) async fn run_terminal_control_client(
                         last_inbound = Instant::now();
                         match message {
                             Message::Text(text) => match serde_json::from_str::<TerminalFromCloud>(&text) {
-                                Ok(message) => { if event_tx.send(TerminalControlEvent::Message(message)).await.is_err() { return; } }
+                                Ok(message) => {
+                                    if event_tx
+                                        .send(TerminalControlEvent::Message(message))
+                                        .await
+                                        .is_err()
+                                    {
+                                        // The consumer is gone, so this client is
+                                        // finished. Dropping `writer_tx`/`priority_tx`
+                                        // on the way out already ends the writer —
+                                        // its `recv()` yields `None` — so this is
+                                        // not a leak fix. Aborting makes the
+                                        // teardown immediate and explicit rather
+                                        // than dependent on the drop order of two
+                                        // locals a future edit could easily move.
+                                        writer.abort();
+                                        return;
+                                    }
+                                }
                                 Err(error) => tracing::warn!(target = "relay_broker::terminal", error = %error, "invalid fleet terminal frame"),
                             },
                             Message::Close(_) => connected = false,
@@ -481,6 +520,7 @@ async fn run_terminal_writer<S>(
 
 #[cfg(test)]
 mod tests {
+    use futures_util::SinkExt as _;
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -930,6 +970,64 @@ mod tests {
     /// thing it watches can starve is not a watchdog. This test fails
     /// (times out) against that shape and passes once writes are moved off
     /// the watchdog's loop.
+    /// Pins the teardown contract: when the event consumer goes away, the
+    /// connection closes rather than lingering.
+    ///
+    /// Read the pass carefully — this test passes with AND without the explicit
+    /// `writer.abort()`, because dropping `writer_tx`/`priority_tx` on the way
+    /// out already ends the writer via `recv() -> None`. It is therefore NOT
+    /// regression coverage for the abort, and should not be cited as such. It
+    /// guards the contract against a future edit that keeps a sender alive past
+    /// the return, which is the shape that would turn this into a real leak.
+    #[tokio::test]
+    async fn dropping_the_event_consumer_takes_the_writer_down() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (_command_tx, command_rx) = mpsc::channel(8);
+        // Capacity 1 and an immediately-dropped receiver: the first inbound
+        // frame the client tries to hand upward fails to send.
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+
+        tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            // Drop the consumer only after the client is connected, so the
+            // failure happens on the inbound path rather than at startup.
+            drop(event_rx);
+            let frame =
+                serde_json::json!({"type":"terminal.input","session_id":"s1","data_base64":"aGk="})
+                    .to_string();
+            let _ = ws.send(Message::Text(frame)).await;
+            // With the writer aborted the connection tears down; without it the
+            // writer keeps the write half alive and this never resolves.
+            loop {
+                match ws.next().await {
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) | None => break,
+                }
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("writer outlived the dropped consumer; the connection never closed")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn terminal_control_watchdog_survives_a_wedged_writer() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
