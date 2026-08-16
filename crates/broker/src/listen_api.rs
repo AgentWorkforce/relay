@@ -5312,7 +5312,9 @@ mod auth_tests {
         // the socket on every busy-but-healthy worker again — relay#1544's
         // flap. Reverting the fix (`code != "worker_timeout"`, i.e. always
         // fatal) makes this assertion fail.
-        assert!(!super::pty_input_error_is_connection_fatal("worker_timeout"));
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "worker_timeout"
+        ));
     }
 
     #[test]
@@ -5320,7 +5322,11 @@ mod auth_tests {
         // MUST-NOT-FIRE: a genuinely dead/missing/unusable target must still
         // be treated as connection-fatal so the client's existing
         // reconnect-on-close recovery still runs for a real outage.
-        for code in ["worker_disappeared", "agent_not_found", "unsupported_runtime"] {
+        for code in [
+            "worker_disappeared",
+            "agent_not_found",
+            "unsupported_runtime",
+        ] {
             assert!(
                 super::pty_input_error_is_connection_fatal(code),
                 "{code} must still close the PTY input connection"
