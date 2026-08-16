@@ -444,15 +444,16 @@ export class BrokerTransport {
     const res = await this.fetchFn(`${this.baseUrl}${path}`, { ...init, headers, signal });
 
     if (!res.ok) {
-      let body: { code?: string; message?: string; error?: string } | undefined;
+      let body: unknown;
       try {
-        body = (await res.json()) as { code?: string; message?: string; error?: string };
+        body = await res.json();
       } catch {
         // non-JSON error
       }
+      const error = describeHttpError(body, res.status, res.statusText);
       throw new HarnessDriverProtocolError({
-        code: body?.code ?? `http_${res.status}`,
-        message: (body?.message ?? body?.error ?? res.statusText) || `HTTP ${res.status}`,
+        code: error.code,
+        message: error.message,
         retryable: res.status >= 500,
         status: res.status,
         data: body,
@@ -620,6 +621,34 @@ export class BrokerTransport {
     }
     return undefined;
   }
+}
+
+function describeHttpError(
+  body: unknown,
+  status: number,
+  statusText: string
+): { code: string; message: string } {
+  const record = asRecord(body);
+  const nested = asRecord(record?.error);
+  return {
+    code: stringField(record, 'code') ?? stringField(nested, 'code') ?? `http_${status}`,
+    message:
+      stringField(record, 'message') ??
+      (typeof record?.error === 'string' && record.error.trim() ? record.error : undefined) ??
+      stringField(nested, 'message') ??
+      (statusText.trim() || `HTTP ${status}`),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function headersToRecord(headersInit: HeadersInit | undefined): Record<string, string> {

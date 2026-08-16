@@ -65,6 +65,39 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('BrokerTransport HTTP errors', () => {
+  it('surfaces a nested protocol error instead of coercing it to [object Object]', async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            error: {
+              code: 'drive_in_use',
+              message: "Agent 'Alice' already has an active driver",
+            },
+          }),
+          { status: 409, headers: { 'content-type': 'application/json' } }
+        )
+    ) as unknown as typeof globalThis.fetch;
+    const transport = new BrokerTransport({ baseUrl: 'http://x', fetch });
+
+    let failure: unknown;
+    try {
+      await transport.request('/api/spawned/Alice/delivery-mode');
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      code: 'drive_in_use',
+      message: "Agent 'Alice' already has an active driver",
+      status: 409,
+    });
+    expect((failure as Error).message).not.toBe('[object Object]');
+  });
+});
+
 describe('BrokerTransport events WS — stale close guard', () => {
   it('ignores a late close from a socket superseded by disconnect()+connect() (no double delivery, no leaked reconnect)', () => {
     const transport = new BrokerTransport({ baseUrl: 'http://x' });
