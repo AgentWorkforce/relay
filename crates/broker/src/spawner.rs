@@ -100,7 +100,13 @@ if [ -n "$RELAY_ATTEST_BROKER_HOOK_PATH" ] && [ "$existing_hooks_dir" = "$RELAY_
   exit 0
 fi
 repo_hook="$existing_hooks_dir/$hook_name"
-if [ -x "$repo_hook" ]; then
+# Guard against self-exec even if RELAY_ATTEST_BROKER_HOOK_PATH is unset or
+# stale (e.g. core.hooksPath was persisted into the repository's own config
+# by a prior spawn instead of only supplied through env): comparing against
+# $0 — this script's own invoked path — is authoritative and needs no
+# externally supplied value, so a misconfigured guard can never turn into an
+# infinite self-exec.
+if [ -x "$repo_hook" ] && [ "$repo_hook" != "$0" ]; then
   exec "$repo_hook" "$@"
 fi
 "#;
@@ -802,6 +808,54 @@ mod tests {
             !commit.status.success(),
             "the repository's pre-commit hook must still reject the commit while the broker's \
              core.hooksPath is active for attestation"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn broker_hook_never_self_execs_when_hookspath_resolves_to_its_own_directory() {
+        // Regression test for a self-recursion hang: if core.hooksPath ever
+        // resolves back to the broker's own hooks directory while
+        // RELAY_ATTEST_BROKER_HOOK_PATH is absent (e.g. a prior run persisted
+        // hooksPath into the repository's real .git/config instead of only
+        // supplying it via the ephemeral GIT_CONFIG_* env override), the
+        // forwarder must not exec itself — that recurses forever. Bounded by
+        // a timeout so a regression fails this test instead of hanging CI.
+        let repo = fixture_repository();
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hooks");
+        assert!(git(
+            repo.path(),
+            &[
+                "config",
+                "core.hooksPath",
+                &hooks_dir.path().to_string_lossy(),
+            ],
+            &[],
+        )
+        .status
+        .success());
+
+        let repo_path = repo.path().to_path_buf();
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || {
+                git(
+                    &repo_path,
+                    &["commit", "--allow-empty", "-m", "self-loop guard"],
+                    &[],
+                )
+            }),
+        )
+        .await;
+
+        let commit = result
+            .expect("broker hook must not hang when core.hooksPath resolves to its own directory")
+            .expect("blocking git task must not panic");
+        assert!(
+            commit.status.success(),
+            "commit must still succeed even when the hook chain can't safely forward: {}",
+            String::from_utf8_lossy(&commit.stderr)
         );
     }
 
