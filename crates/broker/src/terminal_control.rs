@@ -343,7 +343,18 @@ pub(crate) async fn run_terminal_control_client(
                                 // lane must fail forward, not accumulate.
                                 match writer_tx.try_send(Message::Text(encoded)) {
                                     Ok(()) => {
-                                        if shedding {
+                                        // One accepted frame is not a recovery.
+                                        // While output outruns the writer, each
+                                        // dequeue frees exactly one slot and the
+                                        // next send refills it, so clearing the
+                                        // episode here would flap — emitting a
+                                        // begin/end pair per frame, which is the
+                                        // same log storm in a different shape.
+                                        // Require the queue to be genuinely
+                                        // drained before declaring recovery.
+                                        if shedding
+                                            && writer_tx.capacity() >= WRITER_QUEUE_CAPACITY / 2
+                                        {
                                             tracing::warn!(
                                                 target = "relay_broker::terminal",
                                                 dropped_frames = shed_frames,
@@ -457,6 +468,17 @@ pub(crate) async fn run_terminal_control_client(
                     Some(Err(_)) | None => connected = false,
                 },
             }
+        }
+        // Shedding is usually the symptom of the very failure that ends the
+        // connection — a blackholed peer that stopped reading. Report the total
+        // here or the operator never learns how much output was lost, because
+        // the "drained" path above only runs when a send succeeds.
+        if shedding {
+            tracing::warn!(
+                target = "relay_broker::terminal",
+                dropped_frames = shed_frames,
+                "fleet terminal connection ended while shedding output"
+            );
         }
         // Don't await the writer here: it may be the very thing that is
         // stuck (a wedged write mid-timeout). Aborting is instant and safe —
@@ -970,63 +992,6 @@ mod tests {
     /// thing it watches can starve is not a watchdog. This test fails
     /// (times out) against that shape and passes once writes are moved off
     /// the watchdog's loop.
-    /// Pins the teardown contract: when the event consumer goes away, the
-    /// connection closes rather than lingering.
-    ///
-    /// Read the pass carefully — this test passes with AND without the explicit
-    /// `writer.abort()`, because dropping `writer_tx`/`priority_tx` on the way
-    /// out already ends the writer via `recv() -> None`. It is therefore NOT
-    /// regression coverage for the abort, and should not be cited as such. It
-    /// guards the contract against a future edit that keeps a sender alive past
-    /// the return, which is the shape that would turn this into a real leak.
-    #[tokio::test]
-    async fn dropping_the_event_consumer_takes_the_writer_down() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ws_url = format!(
-            "ws://{}/v1/node/terminal/ws",
-            listener.local_addr().unwrap()
-        );
-        let (_command_tx, command_rx) = mpsc::channel(8);
-        // Capacity 1 and an immediately-dropped receiver: the first inbound
-        // frame the client tries to hand upward fails to send.
-        let (event_tx, event_rx) = mpsc::channel(1);
-        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
-
-        tokio::spawn(run_terminal_control_client(
-            TerminalControlConfig {
-                ws_url,
-                session_token,
-                read_idle_timeout: Some(Duration::from_secs(30)),
-            },
-            command_rx,
-            event_tx,
-        ));
-
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = accept_async(stream).await.unwrap();
-            // Drop the consumer only after the client is connected, so the
-            // failure happens on the inbound path rather than at startup.
-            drop(event_rx);
-            let frame =
-                serde_json::json!({"type":"terminal.input","session_id":"s1","data_base64":"aGk="})
-                    .to_string();
-            let _ = ws.send(Message::Text(frame)).await;
-            // With the writer aborted the connection tears down; without it the
-            // writer keeps the write half alive and this never resolves.
-            loop {
-                match ws.next().await {
-                    Some(Ok(_)) => continue,
-                    Some(Err(_)) | None => break,
-                }
-            }
-        });
-
-        tokio::time::timeout(Duration::from_secs(10), server)
-            .await
-            .expect("writer outlived the dropped consumer; the connection never closed")
-            .unwrap();
-    }
 
     #[tokio::test]
     async fn terminal_control_watchdog_survives_a_wedged_writer() {
@@ -1102,6 +1067,64 @@ mod tests {
         );
 
         let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
+    }
+
+    /// Pins the teardown contract: when the event consumer goes away, the
+    /// connection closes rather than lingering.
+    ///
+    /// Read the pass carefully — this test passes with AND without the explicit
+    /// `writer.abort()`, because dropping `writer_tx`/`priority_tx` on the way
+    /// out already ends the writer via `recv() -> None`. It is therefore NOT
+    /// regression coverage for the abort, and should not be cited as such. It
+    /// guards the contract against a future edit that keeps a sender alive past
+    /// the return, which is the shape that would turn this into a real leak.
+    #[tokio::test]
+    async fn dropping_the_event_consumer_takes_the_writer_down() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (_command_tx, command_rx) = mpsc::channel(8);
+        // Capacity 1 and an immediately-dropped receiver: the first inbound
+        // frame the client tries to hand upward fails to send.
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+
+        tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            // Drop the consumer only after the client is connected, so the
+            // failure happens on the inbound path rather than at startup.
+            drop(event_rx);
+            let frame =
+                serde_json::json!({"type":"terminal.input","session_id":"s1","data_base64":"aGk="})
+                    .to_string();
+            let _ = ws.send(Message::Text(frame)).await;
+            // With the writer aborted the connection tears down; without it the
+            // writer keeps the write half alive and this never resolves.
+            loop {
+                match ws.next().await {
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) | None => break,
+                }
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("writer outlived the dropped consumer; the connection never closed")
+            .unwrap();
     }
 
     /// The must-not-fire control arm for the wedged-writer test above, under
