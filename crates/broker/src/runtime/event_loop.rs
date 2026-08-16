@@ -1,6 +1,7 @@
 use super::*;
 
 use futures_util::future::{join, join_all};
+use std::future::Future;
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
 ///
@@ -267,18 +268,12 @@ pub(crate) struct BrokerRuntime {
     pub(super) lease_duration: Option<Duration>,
     pub(super) last_lease_renewal: Instant,
     pub(super) lease_check: tokio::time::Interval,
-    #[cfg(unix)]
-    pub(super) sigterm: tokio::signal::unix::Signal,
-    #[cfg(windows)]
-    pub(super) sigterm: tokio::signal::windows::CtrlShutdown,
     pub(super) telemetry: TelemetryClient,
     pub(super) obligation_store: crate::obligation::ObligationStore,
 }
 
 enum RuntimeEvent {
-    CtrlC,
     LeaseTick,
-    Sigterm,
     Api(Box<ListenApiRequest>),
     ApiClosed,
     Stdin(std::io::Result<Option<String>>),
@@ -287,6 +282,62 @@ enum RuntimeEvent {
     Terminal(Option<TerminalControlEvent>),
     Worker(Option<WorkerEvent>),
     MaintenanceTick,
+}
+
+#[cfg(unix)]
+pub(super) type TerminationSignal = tokio::signal::unix::Signal;
+#[cfg(windows)]
+pub(super) type TerminationSignal = tokio::signal::windows::CtrlShutdown;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownSignal {
+    CtrlC,
+    Sigterm,
+}
+
+impl ShutdownSignal {
+    fn name(self) -> &'static str {
+        match self {
+            Self::CtrlC => "Ctrl-C",
+            Self::Sigterm => "SIGTERM",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HandlerOutcome {
+    Completed,
+    Shutdown(ShutdownSignal),
+}
+
+async fn receive_shutdown_signal(sigterm: &mut TerminationSignal) -> ShutdownSignal {
+    tokio::select! {
+        biased;
+        _ = tokio::signal::ctrl_c() => ShutdownSignal::CtrlC,
+        _ = sigterm.recv() => ShutdownSignal::Sigterm,
+    }
+}
+
+async fn await_handler_or_shutdown<Handler, Shutdown>(
+    handler: Handler,
+    shutdown: Shutdown,
+) -> HandlerOutcome
+where
+    Handler: Future<Output = ()>,
+    Shutdown: Future<Output = ShutdownSignal>,
+{
+    // Process shutdown is the cancellation boundary for an in-flight event.
+    // Dropping the handler future abandons its remaining local work and its API
+    // reply. An external side effect may already have committed: in particular,
+    // Relaycast can claim an agent identity before a cancelled registration
+    // response reaches us. Registration precedes the local worker launch, so no
+    // worker is started in that case; a later spawn retries through the existing
+    // identity-recovery path.
+    tokio::select! {
+        biased;
+        signal = shutdown => HandlerOutcome::Shutdown(signal),
+        _ = handler => HandlerOutcome::Completed,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -316,72 +367,36 @@ pub(super) struct TerminalInputRequest {
 }
 
 impl BrokerRuntime {
-    pub(super) async fn run(mut self) -> Result<()> {
+    pub(super) async fn run(mut self, mut sigterm: TerminationSignal) -> Result<()> {
+        let shutdown_signal = receive_shutdown_signal(&mut sigterm);
+        tokio::pin!(shutdown_signal);
+
         while !self.shutdown {
             let event = tokio::select! {
-                _ = tokio::signal::ctrl_c() => RuntimeEvent::CtrlC,
-                _ = self.lease_check.tick() => RuntimeEvent::LeaseTick,
-                _ = self.sigterm.recv() => RuntimeEvent::Sigterm,
-                request = self.api_rx.recv(), if self.api_open => match request {
+                biased;
+                signal = shutdown_signal.as_mut() => {
+                    self.begin_shutdown(signal, false);
+                    None
+                }
+                _ = self.lease_check.tick() => Some(RuntimeEvent::LeaseTick),
+                request = self.api_rx.recv(), if self.api_open => Some(match request {
                     Some(request) => RuntimeEvent::Api(Box::new(request)),
                     None => RuntimeEvent::ApiClosed,
-                },
-                result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
-                message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
-                event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
-                event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
-                event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
-                _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
+                }),
+                result = self.sdk_lines.next_line(), if self.stdin_open => Some(RuntimeEvent::Stdin(result)),
+                message = self.ws_inbound_rx.recv(), if self.relaycast_open => Some(RuntimeEvent::Relaycast(message)),
+                event = self.fleet_event_rx.recv(), if self.fleet_control_open => Some(RuntimeEvent::Fleet(event)),
+                event = self.terminal_event_rx.recv(), if self.terminal_control_open => Some(RuntimeEvent::Terminal(event)),
+                event = self.worker_event_rx.recv(), if self.worker_events_open => Some(RuntimeEvent::Worker(event)),
+                _ = self.reap_tick.tick() => Some(RuntimeEvent::MaintenanceTick),
             };
 
-            match event {
-                RuntimeEvent::CtrlC => {
-                    self.shutdown = true;
-                }
-                RuntimeEvent::LeaseTick => {
-                    self.handle_lease_tick();
-                }
-                RuntimeEvent::Sigterm => {
-                    tracing::info!("received SIGTERM, shutting down");
-                    self.shutdown = true;
-                }
-                RuntimeEvent::Api(request) => {
-                    self.handle_api_request(*request).await;
-                }
-                RuntimeEvent::ApiClosed => {
-                    self.api_open = false;
-                }
-                RuntimeEvent::Stdin(result) => {
-                    if matches!(result, Ok(None) | Err(_)) {
-                        self.stdin_open = false;
-                    }
-                }
-                RuntimeEvent::Relaycast(Some(message)) => {
-                    self.handle_relaycast_message(message).await;
-                }
-                RuntimeEvent::Relaycast(None) => {
-                    self.relaycast_open = false;
-                }
-                RuntimeEvent::Fleet(Some(event)) => {
-                    self.handle_fleet_control_event(event).await;
-                }
-                RuntimeEvent::Fleet(None) => {
-                    self.fleet_control_open = false;
-                }
-                RuntimeEvent::Terminal(Some(event)) => {
-                    self.handle_terminal_control_event(event).await;
-                }
-                RuntimeEvent::Terminal(None) => {
-                    self.terminal_control_open = false;
-                }
-                RuntimeEvent::Worker(Some(event)) => {
-                    self.handle_worker_event(event).await;
-                }
-                RuntimeEvent::Worker(None) => {
-                    self.worker_events_open = false;
-                }
-                RuntimeEvent::MaintenanceTick => {
-                    self.handle_maintenance_tick().await;
+            if let Some(event) = event {
+                match await_handler_or_shutdown(self.handle_event(event), shutdown_signal.as_mut())
+                    .await
+                {
+                    HandlerOutcome::Completed => {}
+                    HandlerOutcome::Shutdown(signal) => self.begin_shutdown(signal, true),
                 }
             }
 
@@ -389,6 +404,61 @@ impl BrokerRuntime {
         }
 
         self.shutdown_runtime().await
+    }
+
+    fn begin_shutdown(&mut self, signal: ShutdownSignal, cancelled_handler: bool) {
+        tracing::info!(
+            signal = signal.name(),
+            cancelled_handler,
+            "received shutdown signal, shutting down"
+        );
+        self.shutdown = true;
+    }
+
+    async fn handle_event(&mut self, event: RuntimeEvent) {
+        match event {
+            RuntimeEvent::LeaseTick => {
+                self.handle_lease_tick();
+            }
+            RuntimeEvent::Api(request) => {
+                self.handle_api_request(*request).await;
+            }
+            RuntimeEvent::ApiClosed => {
+                self.api_open = false;
+            }
+            RuntimeEvent::Stdin(result) => {
+                if matches!(result, Ok(None) | Err(_)) {
+                    self.stdin_open = false;
+                }
+            }
+            RuntimeEvent::Relaycast(Some(message)) => {
+                self.handle_relaycast_message(message).await;
+            }
+            RuntimeEvent::Relaycast(None) => {
+                self.relaycast_open = false;
+            }
+            RuntimeEvent::Fleet(Some(event)) => {
+                self.handle_fleet_control_event(event).await;
+            }
+            RuntimeEvent::Fleet(None) => {
+                self.fleet_control_open = false;
+            }
+            RuntimeEvent::Terminal(Some(event)) => {
+                self.handle_terminal_control_event(event).await;
+            }
+            RuntimeEvent::Terminal(None) => {
+                self.terminal_control_open = false;
+            }
+            RuntimeEvent::Worker(Some(event)) => {
+                self.handle_worker_event(event).await;
+            }
+            RuntimeEvent::Worker(None) => {
+                self.worker_events_open = false;
+            }
+            RuntimeEvent::MaintenanceTick => {
+                self.handle_maintenance_tick().await;
+            }
+        }
     }
 
     /// Persist pending deliveries, dead letters, and the dedup cache whenever
@@ -614,6 +684,101 @@ mod resize_owner_tests {
         task.await.expect("publisher task");
         secondary_post.assert_hits(1);
         default_post.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn sigterm_preempts_stalled_relaycast_registration() {
+        let server = MockServer::start();
+        let stalled_registration = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.delay(Duration::from_secs(60))
+                .status(200)
+                .json_body(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent_slow",
+                        "workspace_id": "ws_test",
+                        "name": "slow-worker",
+                        "status": "online",
+                        "created_at": "2026-08-16T00:00:00.000Z",
+                        "token": "at_live_slow"
+                    }
+                }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_test", "broker", "codex");
+        let shutdown = async {
+            timeout(Duration::from_secs(1), async {
+                while stalled_registration.hits() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the registration request should reach the delayed Relaycast endpoint");
+            ShutdownSignal::Sigterm
+        };
+
+        let started = Instant::now();
+        let outcome = timeout(
+            Duration::from_secs(2),
+            await_handler_or_shutdown(
+                async {
+                    let _ = client
+                        .register_agent_token("slow-worker", Some("codex"))
+                        .await;
+                },
+                shutdown,
+            ),
+        )
+        .await
+        .expect("SIGTERM must not wait for the delayed registration response");
+
+        assert_eq!(outcome, HandlerOutcome::Shutdown(ShutdownSignal::Sigterm));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "shutdown observation took {:?}",
+            started.elapsed()
+        );
+        stalled_registration.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn handler_completes_normally_without_shutdown_signal() {
+        let server = MockServer::start();
+        let registration = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_fast",
+                    "workspace_id": "ws_test",
+                    "name": "fast-worker",
+                    "status": "online",
+                    "created_at": "2026-08-16T00:00:00.000Z",
+                    "token": "at_live_fast"
+                }
+            }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_test", "broker", "codex");
+
+        let outcome = timeout(
+            Duration::from_secs(2),
+            await_handler_or_shutdown(
+                async {
+                    client
+                        .register_agent_token("fast-worker", Some("codex"))
+                        .await
+                        .expect("healthy registration should complete");
+                },
+                std::future::pending(),
+            ),
+        )
+        .await
+        .expect("healthy handler should finish promptly");
+
+        assert_eq!(outcome, HandlerOutcome::Completed);
+        registration.assert_hits(1);
     }
 
     #[test]

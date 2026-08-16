@@ -657,7 +657,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     #[cfg(unix)]
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     #[cfg(windows)]
-    let mut sigterm = tokio::signal::windows::ctrl_shutdown()?;
+    let sigterm = tokio::signal::windows::ctrl_shutdown()?;
 
     let runtime = BrokerRuntime {
         persist: cmd.persist,
@@ -720,12 +720,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         lease_duration,
         last_lease_renewal,
         lease_check,
-        sigterm,
         telemetry,
         obligation_store: crate::obligation::ObligationStore::default(),
     };
 
-    runtime.run().await
+    runtime.run(sigterm).await
 }
 
 /// Resolve the node token used to authenticate the `/v1/node/ws` connection

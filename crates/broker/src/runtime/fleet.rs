@@ -1514,9 +1514,10 @@ pub(super) async fn flush_pending_relay_messages(
 /// agent, on its own task.
 ///
 /// Detached on purpose. Both callers run inside the runtime event loop's
-/// `handle_api_request`/spawn await, and anything awaited there stops the loop
-/// answering API requests or observing SIGTERM for the duration. Registration
-/// already carries that cost; a metadata field must not add to it.
+/// `handle_api_request`/spawn await. The handler remains cancellable by a
+/// shutdown signal, but any extra await still stops the loop from answering
+/// ordinary API requests for its duration. Registration already carries that
+/// cost; a metadata field must not add to it.
 ///
 /// Best-effort by design: the agent is registered and running whether or not
 /// this lands, so a failure here must never fail the spawn. It is not silent
