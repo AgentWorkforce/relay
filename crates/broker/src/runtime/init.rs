@@ -338,6 +338,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         crate::terminal_control::TerminalControlConfig {
             ws_url: terminal_ws_url,
             session_token: session_node_token.clone(),
+            read_idle_timeout: None,
         },
         terminal_control_rx,
         terminal_event_tx,

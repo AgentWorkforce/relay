@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Fleet terminal attach (`agent-relay node agent attach --node`) now reconnects automatically when the terminal websocket goes silent, instead of appearing connected forever and permanently stopping on long-lived nodes.
 
 ## [11.6.6] - 2026-08-16
 
