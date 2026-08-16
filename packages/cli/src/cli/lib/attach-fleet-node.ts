@@ -288,6 +288,38 @@ export async function startFleetNodeAttachProxy(
         });
         return;
       }
+      // Drive attach changes delivery mode before it requests the initial
+      // snapshot. Gate the PUT on terminal.ready so a fast local caller does
+      // not lose a race with the remote websocket handshake and receive the
+      // misleading "terminal transport is not connected" failure.
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error('terminal connection timed out')),
+            SNAPSHOT_WAIT_MS
+          );
+          void waitForCurrentReadiness().then(
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            (error: Error) => {
+              clearTimeout(timer);
+              reject(error);
+            }
+          );
+        });
+      } catch (error) {
+        const terminalError = error instanceof FleetNodeAttachError ? error : undefined;
+        json(response, 503, {
+          error: {
+            code: terminalError?.code ?? 'node_unreachable',
+            message:
+              terminalError?.message ?? (error instanceof Error ? error.message : 'terminal unavailable'),
+          },
+        });
+        return;
+      }
       if (!remote || remote.readyState !== WebSocket.OPEN) {
         json(response, 503, {
           error: { code: 'node_unreachable', message: 'terminal transport is not connected' },

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet terminal attach now preserves structured upstream error codes and messages instead of displaying `[object Object]`.
+- Fleet terminal drive attach now waits for the remote terminal handshake and preserves structured upstream errors instead of racing with the websocket and displaying `[object Object]`.
 
 ## [11.6.7] - 2026-08-16
 

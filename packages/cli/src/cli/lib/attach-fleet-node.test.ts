@@ -145,6 +145,51 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     expect(result.body).toMatchObject({ mode: 'manual_flush', matched: true, revision: '2' });
   });
 
+  it('waits for terminal.ready before forwarding the drive delivery-mode PUT', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-readiness',
+      node: 'node-readiness',
+      mode: 'drive',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+    });
+    cleanup.push(proxy.close);
+
+    const socket = await remote.nextConnection();
+    const receivedFrames: Array<Record<string, unknown>> = [];
+    socket.on('message', (data) => {
+      const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+      receivedFrames.push(frame);
+      if (frame.type === 'terminal.set_delivery_mode') {
+        socket.send(
+          JSON.stringify({
+            type: 'terminal.delivery_mode',
+            session_id: SESSION_ID,
+            request_id: frame.request_id,
+            mode: frame.mode,
+            flushed: 0,
+            matched: true,
+            revision: '2',
+          })
+        );
+      }
+    });
+
+    const resultPromise = putDeliveryMode(proxy, 'agent-readiness', 'auto_inject');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(receivedFrames).toEqual([]);
+
+    sendReady(socket, 'manual_flush');
+    await expect(resultPromise).resolves.toMatchObject({
+      status: 200,
+      body: { mode: 'auto_inject', matched: true },
+    });
+    expect(receivedFrames).toHaveLength(1);
+  });
+
   it(
     'rejects a pending delivery-mode PUT promptly when terminal.closed arrives instead of a reply ' +
       '(endTerminal must reject pendingDeliveryMode, not leave it to time out)',
