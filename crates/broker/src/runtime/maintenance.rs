@@ -23,6 +23,7 @@ impl BrokerRuntime {
         let crash_insights = &mut self.crash_insights;
         let pending_deliveries = &mut self.pending_deliveries;
         let dead_letters = &mut self.dead_letters;
+        let pending_fleet_acks = &mut self.pending_fleet_acks;
         let pending_requests = &mut self.pending_requests;
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_states = &mut self.delivery_states;
@@ -177,6 +178,7 @@ impl BrokerRuntime {
                     let _ = emit_delivery_attempt_outcome(
                         sdk_out_tx,
                         dead_letters,
+                        pending_fleet_acks,
                         &delivery_id,
                         was_retry,
                         outcome,

@@ -585,7 +585,7 @@ pub(crate) async fn try_inject_pending_relay_message(
     worker_name: &str,
     msg: &PendingRelayMessage,
     retry_interval: Duration,
-) -> Result<()> {
+) -> Result<DeliveryId> {
     let event_id = msg
         .event_id
         .clone()
@@ -679,7 +679,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
     priority: u8,
     injection_mode: MessageInjectionMode,
     retry_interval: Duration,
-) -> Result<()> {
+) -> Result<DeliveryId> {
     let delivery = RelayDelivery {
         delivery_id: DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())),
         event_id: EventId::new(event_id),
@@ -717,7 +717,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
         pending_deliveries.insert(pending.delivery.delivery_id.clone(), *pending);
         anyhow::bail!(last_error);
     }
-    Ok(())
+    Ok(delivery_id)
 }
 
 pub(crate) async fn retry_pending_delivery(
@@ -813,6 +813,7 @@ pub(crate) fn delivery_ack_timeout(
 pub(crate) async fn emit_delivery_attempt_outcome(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     dead_letters: &mut DeadLetterStore,
+    pending_fleet_acks: &mut HashMap<DeliveryId, crate::fleet_wire::Deliver>,
     delivery_id: &DeliveryId,
     was_retry: bool,
     outcome: DeliveryAttemptOutcome,
@@ -857,6 +858,23 @@ pub(crate) async fn emit_delivery_attempt_outcome(
                 },
             )
             .await;
+            // A dead-lettered delivery never actually landed, so any fleet
+            // (engine-facing) ack withheld pending its confirmation must be
+            // dropped rather than sent — the engine keeps its own record of
+            // this delivery as un-acked and will redeliver it. See relay#1310:
+            // the whole point of withholding the ack is that "enqueued for
+            // injection" must not be reported the same as "delivered".
+            if pending_fleet_acks
+                .remove(&pending.delivery.delivery_id)
+                .is_some()
+            {
+                tracing::info!(
+                    target = "relay_broker::fleet",
+                    worker = %pending.worker_name,
+                    delivery_id = %pending.delivery.delivery_id,
+                    "dropping withheld fleet delivery_ack for dead-lettered delivery"
+                );
+            }
             dead_letter_pending_delivery(sdk_out_tx, dead_letters, &pending, &last_error).await;
         }
         DeliveryAttemptOutcome::Noop => {}

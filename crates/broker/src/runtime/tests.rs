@@ -878,9 +878,11 @@ async fn retry_exhaustion_dead_letters_instead_of_discarding() {
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
     let mut dead_letters = DeadLetterStore::default();
+    let mut pending_fleet_acks = HashMap::new();
     emit_delivery_attempt_outcome(
         &sdk_out_tx,
         &mut dead_letters,
+        &mut pending_fleet_acks,
         &DeliveryId::new("del_exhausted"),
         true,
         outcome,
@@ -911,6 +913,170 @@ async fn retry_exhaustion_dead_letters_instead_of_discarding() {
     assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
     assert_eq!(dead_frame.payload["delivery_id"], "del_exhausted");
     assert_eq!(dead_frame.payload["reason"], "failed writing frame");
+}
+
+// relay#1310 MUST-FIRE: a PTY delivery whose write never lands (retries
+// exhaust, same as `retry_exhaustion_dead_letters_instead_of_discarding`
+// above) must not resolve into an engine-facing delivery_ack. Before the
+// fix, the fleet ack for a delivery like this had already been sent at
+// write-enqueue time, regardless of what happened afterward — the engine's
+// ledger would say "delivered" for a message that was in fact dead-lettered.
+#[tokio::test]
+async fn dead_lettered_delivery_drops_withheld_fleet_ack_without_sending_it() {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut exhausted = make_pending_delivery("del_never_echoed", "ghost");
+    exhausted.attempts = MAX_DELIVERY_RETRIES;
+    exhausted.failed_attempts = MAX_DELIVERY_RETRIES;
+    exhausted.last_error = Some("failed writing frame".to_string());
+    let mut pending_deliveries =
+        HashMap::from([(DeliveryId::new("del_never_echoed"), exhausted.clone())]);
+
+    let outcome = retry_pending_delivery(
+        &DeliveryId::new("del_never_echoed"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("exhausted retries should classify as terminal failure");
+
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let mut pending_fleet_acks = HashMap::from([(
+        DeliveryId::new("del_never_echoed"),
+        Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "del_never_echoed".to_string(),
+            msg_id: "evt_del_never_echoed".to_string(),
+            seq: 1,
+            mode: DeliveryMode::Wait,
+            payload: json!({}),
+        },
+    )]);
+
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut pending_fleet_acks,
+        &DeliveryId::new("del_never_echoed"),
+        true,
+        outcome,
+    )
+    .await
+    .expect("terminal outcome should emit");
+
+    assert!(
+        !pending_fleet_acks.contains_key("del_never_echoed"),
+        "withheld fleet ack must be dropped when its delivery dead-letters"
+    );
+
+    // Even a stray/late worker delivery_ack arriving after the dead-letter
+    // must not conjure an engine ack for a delivery that never landed.
+    let late_resolution = super::fleet::resolve_pending_fleet_ack(
+        &mut pending_fleet_acks,
+        &mut fleet_delivery_book,
+        "del_never_echoed",
+        "evt_del_never_echoed",
+    );
+    assert_eq!(
+        late_resolution, None,
+        "a dead-lettered delivery must never resolve into an engine ack"
+    );
+
+    // Drain the two telemetry events the dead-letter path emits so this test
+    // doesn't leak unread frames; only the fleet-ack behavior is asserted here.
+    let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+}
+
+// relay#1310 MUST-NOT-FIRE: once the worker confirms the injection landed
+// (echo-verified, or its bounded timeout fallback — pty_worker.rs sends the
+// same internal `delivery_ack` event either way), the engine ack must still
+// fire, with the delivery's own (agent, up_to_seq) — i.e. the happy path is
+// unchanged, just correctly gated on confirmation instead of write-enqueue.
+#[tokio::test]
+async fn echo_confirmed_delivery_resolves_its_withheld_fleet_ack() {
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let mut pending_fleet_acks = HashMap::from([(
+        DeliveryId::new("del_landed"),
+        Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "del_landed".to_string(),
+            msg_id: "evt_landed".to_string(),
+            seq: 1,
+            mode: DeliveryMode::Wait,
+            payload: json!({}),
+        },
+    )]);
+
+    let resolved = super::fleet::resolve_pending_fleet_ack(
+        &mut pending_fleet_acks,
+        &mut fleet_delivery_book,
+        "del_landed",
+        "evt_landed",
+    );
+
+    assert_eq!(resolved, Some(("agent-a".to_string(), 1)));
+    assert!(
+        !pending_fleet_acks.contains_key("del_landed"),
+        "a resolved ack must not remain withheld"
+    );
+
+    // A second confirmation for the same delivery_id (duplicate/replayed
+    // worker event) must not double-resolve — nothing is left to withhold.
+    let duplicate = super::fleet::resolve_pending_fleet_ack(
+        &mut pending_fleet_acks,
+        &mut fleet_delivery_book,
+        "del_landed",
+        "evt_landed",
+    );
+    assert_eq!(duplicate, None);
+}
+
+// A worker delivery_ack whose event_id doesn't match the withheld delivery's
+// msg_id (stale or reused delivery_id) must not resolve into an engine ack —
+// the same stale-event guard `clear_pending_delivery_if_event_matches`
+// applies to the broker's own pending-delivery map.
+#[tokio::test]
+async fn mismatched_event_id_does_not_resolve_a_withheld_fleet_ack() {
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let mut pending_fleet_acks = HashMap::from([(
+        DeliveryId::new("del_reused"),
+        Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: "agent-a".to_string(),
+            agent_id: "agent-a-id".to_string(),
+            delivery_id: "del_reused".to_string(),
+            msg_id: "evt_original".to_string(),
+            seq: 1,
+            mode: DeliveryMode::Wait,
+            payload: json!({}),
+        },
+    )]);
+
+    let resolved = super::fleet::resolve_pending_fleet_ack(
+        &mut pending_fleet_acks,
+        &mut fleet_delivery_book,
+        "del_reused",
+        "evt_stale",
+    );
+
+    assert_eq!(resolved, None);
+    assert!(
+        pending_fleet_acks.contains_key("del_reused"),
+        "a mismatched event must not consume the withheld entry"
+    );
 }
 
 #[tokio::test]
@@ -1124,9 +1290,11 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
     let mut dead_letters = DeadLetterStore::default();
+    let mut pending_fleet_acks = HashMap::new();
     emit_delivery_attempt_outcome(
         &sdk_out_tx,
         &mut dead_letters,
+        &mut pending_fleet_acks,
         &DeliveryId::new("del_blip"),
         true,
         outcome,

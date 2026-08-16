@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Fleet node delivery (`agent-relay node ...` engine-facing acks) no longer acknowledges a message to the engine the instant it's handed to a worker's PTY; the ack now waits for the worker to confirm the injection landed (echo-verified, or its bounded timeout fallback), so a delivery that never actually reaches the terminal no longer reports as delivered.
 
 ## [11.6.9] - 2026-08-16
 
