@@ -44,6 +44,10 @@ const GIT_HOOK_NAMES: &[&str] = &[
     "post-rewrite",
     "post-index-change",
     "sendemail-validate",
+    "p4-changelist",
+    "p4-prepare-changelist",
+    "p4-post-changelist",
+    "p4-pre-submit",
 ];
 
 const BROKER_GIT_HOOK: &str = r#"#!/bin/sh
@@ -105,8 +109,10 @@ repo_hook="$existing_hooks_dir/$hook_name"
 # by a prior spawn instead of only supplied through env): comparing against
 # $0 — this script's own invoked path — is authoritative and needs no
 # externally supplied value, so a misconfigured guard can never turn into an
-# infinite self-exec.
-if [ -x "$repo_hook" ] && [ "$repo_hook" != "$0" ]; then
+# infinite self-exec. Use -ef (same file, by device+inode) rather than a
+# string compare so a relative/symlinked alias of the broker's own directory
+# still resolves to "same file" instead of exec'ing (and double-stamping) it.
+if [ -x "$repo_hook" ] && ! [ "$repo_hook" -ef "$0" ]; then
   exec "$repo_hook" "$@"
 fi
 "#;
@@ -836,22 +842,23 @@ mod tests {
         .status
         .success());
 
-        let repo_path = repo.path().to_path_buf();
+        // kill_on_drop(true) makes the timeout an actual bound: unlike
+        // spawn_blocking (which tokio cannot cancel), dropping this future on
+        // timeout kills the still-running git process instead of leaking a
+        // recursive hook chain into the background.
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            tokio::task::spawn_blocking(move || {
-                git(
-                    &repo_path,
-                    &["commit", "--allow-empty", "-m", "self-loop guard"],
-                    &[],
-                )
-            }),
+            Command::new("git")
+                .current_dir(repo.path())
+                .args(["commit", "--allow-empty", "-m", "self-loop guard"])
+                .kill_on_drop(true)
+                .output(),
         )
         .await;
 
         let commit = result
             .expect("broker hook must not hang when core.hooksPath resolves to its own directory")
-            .expect("blocking git task must not panic");
+            .expect("git command must not fail to run");
         assert!(
             commit.status.success(),
             "commit must still succeed even when the hook chain can't safely forward: {}",
