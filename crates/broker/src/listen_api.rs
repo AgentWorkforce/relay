@@ -1723,8 +1723,13 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
         // is with the resource's current capabilities.
         (axum::http::StatusCode::CONFLICT, "unsupported_runtime")
     } else if err.starts_with("worker_timeout") {
-        // Worker died or stalled between accepting the frame and
-        // replying. This is a server-side fault, not a bad request.
+        // The worker didn't ack before the deadline. This does NOT mean the
+        // worker died — a confirmed-dead worker is reaped independently
+        // (`fail_for_worker`) and surfaces as `worker_disappeared`, not this.
+        // `worker_timeout` also fires for a worker that is simply busy and
+        // hasn't drained its stdin yet (relay#1544); see
+        // `pty_input_error_is_connection_fatal`, which callers on the PTY
+        // input path use to avoid treating this code as transport death.
         (axum::http::StatusCode::GATEWAY_TIMEOUT, "worker_timeout")
     } else if err.starts_with("internal_error") {
         (
@@ -1736,6 +1741,22 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
     } else {
         (axum::http::StatusCode::BAD_REQUEST, "request_failed")
     }
+}
+
+/// Whether a `write_pty` failure (as classified by [`classify_error`]) should
+/// tear down the whole PTY input connection.
+///
+/// `worker_timeout` means one write's ack didn't arrive before
+/// `PTY_INPUT_ACK_TIMEOUT` — the worker may simply be busy (not draining its
+/// stdin promptly while rendering/thinking), not dead. A confirmed-dead
+/// worker is reaped independently and reaches [`handle_pty_input_ws`] as
+/// `worker_disappeared` (or the target never existed at all:
+/// `agent_not_found` / `unsupported_runtime`), which are genuinely
+/// connection-fatal. Closing the connection on a mere timeout manufactures a
+/// transport failure out of a healthy-but-slow worker, which is exactly what
+/// forced the client-side reconnect loop in relay#1544.
+fn pty_input_error_is_connection_fatal(code: &str) -> bool {
+    code != "worker_timeout"
 }
 
 fn internal_error() -> (axum::http::StatusCode, axum::Json<Value>) {
@@ -1842,8 +1863,15 @@ async fn handle_pty_input_ws(
                         let (status, code) = classify_error(&err);
                         let _ =
                             send_pty_input_ws_error(&mut socket, code, err, status.as_u16()).await;
-                        let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
-                        break;
+                        if pty_input_error_is_connection_fatal(code) {
+                            let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
+                            break;
+                        }
+                        // `worker_timeout`: this one write didn't get an ack in
+                        // time, but the worker hasn't been confirmed dead. Keep
+                        // the connection open so the next keystroke gets a fresh
+                        // chance instead of forcing the client into a reconnect
+                        // it doesn't need (relay#1544).
                     }
                 }
             }
@@ -2084,13 +2112,18 @@ async fn send_pty_input_ws_error(
     message: impl Into<String>,
     status_code: u16,
 ) -> bool {
+    // `retryable` tells the client whether this connection is still usable:
+    // `worker_timeout` is the one code the WS loop doesn't close the socket
+    // for (see `pty_input_error_is_connection_fatal`), so it's the one code
+    // that's actually retryable on THIS stream rather than requiring reopen.
+    let retryable = !pty_input_error_is_connection_fatal(code);
     send_pty_input_ws_payload(
         socket,
         json!({
             "type": "pty_input_error",
             "code": code,
             "message": message.into(),
-            "retryable": false,
+            "retryable": retryable,
             "statusCode": status_code,
         }),
     )
@@ -5260,6 +5293,39 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(body["code"], json!("invalid_request"));
         replier.await.expect("replier should complete");
+    }
+
+    // -----------------------------------------------------------------
+    // relay#1544: a busy-but-alive worker must not tear down the PTY input
+    // WebSocket just because one write's ack was slow. `worker_timeout` is
+    // the one `write_pty` failure code that does NOT mean the worker is
+    // confirmed dead (that's `worker_disappeared`, reaped independently),
+    // so `handle_pty_input_ws` must keep the connection open for it and
+    // close for everything else. See `pty_input_error_is_connection_fatal`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn worker_timeout_does_not_close_the_pty_input_connection() {
+        // MUST-FIRE: this is the exact code a busy worker's slow write_pty
+        // ack produces (classify_error, api.rs PTY_INPUT_ACK_TIMEOUT). If
+        // this ever flips to `true`, `handle_pty_input_ws` starts closing
+        // the socket on every busy-but-healthy worker again — relay#1544's
+        // flap. Reverting the fix (`code != "worker_timeout"`, i.e. always
+        // fatal) makes this assertion fail.
+        assert!(!super::pty_input_error_is_connection_fatal("worker_timeout"));
+    }
+
+    #[test]
+    fn confirmed_dead_or_missing_worker_still_closes_the_pty_input_connection() {
+        // MUST-NOT-FIRE: a genuinely dead/missing/unusable target must still
+        // be treated as connection-fatal so the client's existing
+        // reconnect-on-close recovery still runs for a real outage.
+        for code in ["worker_disappeared", "agent_not_found", "unsupported_runtime"] {
+            assert!(
+                super::pty_input_error_is_connection_fatal(code),
+                "{code} must still close the PTY input connection"
+            );
+        }
     }
 
     // -----------------------------------------------------------------

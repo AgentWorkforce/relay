@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createInputStreamRecovery,
   isBackpressureRejection,
+  isWriteTimeoutRejection,
   type InputStreamRecoveryOptions,
 } from './attach-input-recovery.js';
 import type { CliPtyInputStream } from './attach-drive.js';
@@ -99,6 +100,21 @@ describe('isBackpressureRejection', () => {
   });
 });
 
+describe('isWriteTimeoutRejection', () => {
+  it('recognises the transport code and nothing else', () => {
+    expect(isWriteTimeoutRejection(Object.assign(new Error('x'), { code: 'worker_timeout' }))).toBe(true);
+    expect(isWriteTimeoutRejection(Object.assign(new Error('x'), { code: 'worker_disappeared' }))).toBe(
+      false
+    );
+    expect(isWriteTimeoutRejection(Object.assign(new Error('x'), { code: 'input_backpressure' }))).toBe(
+      false
+    );
+    expect(isWriteTimeoutRejection(new Error('worker_timeout: worker did not respond in time'))).toBe(false);
+    expect(isWriteTimeoutRejection(null)).toBe(false);
+    expect(isWriteTimeoutRejection('worker_timeout')).toBe(false);
+  });
+});
+
 describe('handleSendFailure', () => {
   it('does not start recovery for backpressure, and reports it once per episode', () => {
     // Backpressure leaves the socket open and usable; recovering would close a
@@ -132,6 +148,43 @@ describe('handleSendFailure', () => {
     const h = harness();
     h.recovery.handleSendFailure(
       Object.assign(new Error('PTY input stream is closed'), { code: 'input_stream_closed' })
+    );
+    expect(h.recovery.isRecovering()).toBe(true);
+    expect(h.logs.some((l) => l.includes('input stream lost'))).toBe(true);
+  });
+
+  it('relay#1544 MUST-FIRE: does not start recovery for a busy worker\'s write timeout', () => {
+    // `worker_timeout` on one write means that write's ack was slow, not that
+    // the transport died — the transport (broker + PtyInputStream) already
+    // keeps the stream open for this exact code. Recovering here would
+    // reconnect a perfectly healthy stream on every busy-but-alive worker,
+    // reproducing relay#1544's self-healing flap. Revert the
+    // `isWriteTimeoutRejection` branch in `handleSendFailure` (fall through to
+    // `recover()`, as every non-backpressure rejection used to) and this
+    // assertion on `isRecovering()` goes red.
+    const h = harness();
+    const workerTimeout = Object.assign(new Error('worker_timeout: worker did not respond in time'), {
+      code: 'worker_timeout',
+    });
+
+    for (let i = 0; i < 50; i++) h.recovery.handleSendFailure(workerTimeout);
+
+    expect(h.recovery.isRecovering()).toBe(false);
+    expect(h.getCurrent()).toBe(h.first);
+    expect(h.first.closed).toBe(false);
+    expect(h.logs.filter((l) => l.includes('did not confirm a keystroke in time'))).toHaveLength(1);
+    // Every keystroke that failed to ack still has its optimistic echo rolled back.
+    expect(h.counts().rollbacks).toBe(50);
+  });
+
+  it('relay#1544 MUST-NOT-FIRE: a confirmed-dead worker (worker_disappeared) still recovers', () => {
+    // Distinct from `worker_timeout`: this code means the worker was reaped
+    // as gone, a genuine outage that must still trigger the reconnect loop.
+    const h = harness();
+    h.recovery.handleSendFailure(
+      Object.assign(new Error("worker_disappeared: worker 'Alice' exited before responding"), {
+        code: 'worker_disappeared',
+      })
     );
     expect(h.recovery.isRecovering()).toBe(true);
     expect(h.logs.some((l) => l.includes('input stream lost'))).toBe(true);

@@ -41,12 +41,33 @@ export const INPUT_REOPEN_ATTEMPT_TIMEOUT_MS = 15_000;
  * (`transport.ts:206-214`, `retryable: true`). That is flow control, not
  * transport death: tearing the socket down and reopening it would drop every
  * outstanding keystroke and re-run the identity gate, turning a slow broker
- * into a detach. Every other rejection means the stream is gone or unusable.
+ * into a detach. See {@link isWriteTimeoutRejection} for the other rejection
+ * that must not trigger a teardown; every remaining rejection means the
+ * stream is gone or unusable.
  */
 export function isBackpressureRejection(error: unknown): boolean {
   return (
     typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'input_backpressure'
   );
+}
+
+/**
+ * `PtyInputStream.send()` rejects with `worker_timeout` when the broker's
+ * `write_pty` ack for THAT ONE keystroke didn't arrive before
+ * `PTY_INPUT_ACK_TIMEOUT` (broker `api.rs`). That does not mean the worker is
+ * dead: a confirmed-dead worker is reaped independently and surfaces as
+ * `worker_disappeared`, and the broker keeps this WebSocket open for
+ * `worker_timeout` specifically (`pty_input_error_is_connection_fatal`,
+ * `listen_api.rs`) because a busy-but-alive coding agent that hasn't drained
+ * its stdin yet produces the exact same "no ack yet" as a wedged one — the
+ * broker has no other liveness signal to tell them apart. Tearing the whole
+ * input stream down and reconnecting over one slow ack is what produced the
+ * self-healing "input stream lost / reconnected after 1 attempt(s)" flap
+ * reported in relay#1544; the keystroke itself still failed to land (the
+ * caller must still roll back its optimistic echo), but the stream survives.
+ */
+export function isWriteTimeoutRejection(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'worker_timeout';
 }
 
 export interface InputStreamRecoveryOptions {
@@ -159,6 +180,8 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
   let releaseBackoff: (() => void) | null = null;
   /** True once a backpressure episode has been reported; reset on the next good send. */
   let backpressureReported = false;
+  /** True once a write-timeout episode has been reported; reset on the next good send. */
+  let writeTimeoutReported = false;
 
   const cancel = (): void => {
     if (timer) {
@@ -207,6 +230,7 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
 
   const noteSendSuccess = (): void => {
     backpressureReported = false;
+    writeTimeoutReported = false;
   };
 
   const handleSendFailure = (sendError: unknown): void => {
@@ -222,6 +246,19 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
         log(
           `[${label}] input is arriving faster than ${name} can accept it; dropping keystrokes until it catches up.`
         );
+      }
+      return;
+    }
+    if (isWriteTimeoutRejection(sendError)) {
+      // This one write's ack didn't arrive in time — the worker may just be
+      // busy, not dead (relay#1544). The transport already kept the socket
+      // open for this exact code, so recovering here would manufacture the
+      // reconnect this module exists to avoid. The keystroke still didn't
+      // land, so roll back its optimistic echo same as backpressure.
+      onRollback();
+      if (!writeTimeoutReported) {
+        writeTimeoutReported = true;
+        log(`[${label}] ${name} did not confirm a keystroke in time (worker busy); dropping it and continuing.`);
       }
       return;
     }

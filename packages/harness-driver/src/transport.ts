@@ -325,6 +325,21 @@ export class PtyInputStream {
         status: typeof message.statusCode === 'number' ? message.statusCode : undefined,
         data: message,
       });
+
+      // `worker_timeout` means the ONE write this error correlates to
+      // didn't get an ack in time — the worker may simply be busy, not
+      // dead (relay#1544). The broker keeps the socket open for exactly
+      // this code (see `pty_input_error_is_connection_fatal` on the
+      // broker side); settle only the write it belongs to and leave the
+      // stream usable for the next one. Every other code means the broker
+      // is closing (or refused to open) the connection, so it's still
+      // fatal to the whole stream.
+      if (error.code === 'worker_timeout') {
+        const current = this.inFlight.shift();
+        if (current) this.settle(current, error);
+        return;
+      }
+
       this.rejectOpen(error);
       this.failAll(error);
       this.close();

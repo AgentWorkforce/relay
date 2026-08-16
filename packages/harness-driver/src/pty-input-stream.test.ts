@@ -174,6 +174,50 @@ describe('PtyInputStream pipelining', () => {
     expect(stream.closed).toBe(true);
   });
 
+  it('relay#1544 MUST-FIRE: a worker_timeout on one write must not close the stream', async () => {
+    // The broker keeps the socket open for `worker_timeout` (the write may
+    // simply be a busy worker, not a dead one — see
+    // `pty_input_error_is_connection_fatal` on the broker side). Only that
+    // one write should reject; the stream itself must stay usable so the
+    // next keystroke doesn't have to go through a full reconnect. Before the
+    // fix, `handleMessage` closed on every `pty_input_error` unconditionally
+    // and this assertion on `stream.closed` failed.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p1 = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame('worker_timeout', 'worker_timeout: worker did not respond in time');
+
+    await expect(p1).rejects.toMatchObject({ code: 'worker_timeout' });
+    expect(stream.closed).toBe(false);
+
+    // The stream is still usable for the next keystroke.
+    const p2 = stream.send('y');
+    await Promise.resolve();
+    socket.ack(1);
+    await expect(p2).resolves.toMatchObject({ bytes_written: 1 });
+  });
+
+  it('relay#1544 MUST-NOT-FIRE: a confirmed-dead worker still closes the stream', async () => {
+    // `worker_disappeared` means the worker was reaped independently — a
+    // genuine outage, not a slow ack. This must still close the stream so
+    // the CLI's existing reconnect-on-close recovery still runs.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame('worker_disappeared', "worker 'agent' exited before responding");
+
+    await expect(p).rejects.toMatchObject({ code: 'worker_disappeared' });
+    expect(stream.closed).toBe(true);
+  });
+
   it('fails all in-flight and queued frames on close', async () => {
     const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
     const socket = lastSocket();
