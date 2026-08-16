@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet terminal drive attach now waits for the remote terminal handshake and preserves upstream error status, so attaching to a missing or cross-node agent reports which machine to run on instead of `[object Object]` or a generic unreachable-node error.
+- Fleet terminal drive attach (`agent-relay node agent attach --node --mode drive`) now waits for the remote terminal handshake instead of racing the websocket and failing with `[object Object]`.
+- Fleet terminal attach now preserves the upstream error code and message, so attaching to a missing or cross-node agent reports which machine to run on instead of a generic unreachable-node error.
 
 ## [11.6.7] - 2026-08-16
 

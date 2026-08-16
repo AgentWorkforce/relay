@@ -406,7 +406,12 @@ describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
 
     const result = await putDeliveryMode(proxy, 'agent-runtime', 'auto_inject');
     expect(result.status).toBe(409);
-    expect(result.body).toMatchObject({ error: { code: 'unsupported_runtime' } });
+    // Assert the message, not just the code: preserving the nested broker
+    // message is the point of this PR, so a code-only assertion would still
+    // pass if the message were dropped or coerced to `[object Object]`.
+    expect(result.body).toMatchObject({
+      error: { code: 'unsupported_runtime', message: 'agent runtime does not expose a terminal' },
+    });
   });
 
   // MUST NOT FIRE: a real transport failure has to stay 503, so the mapping
@@ -417,7 +422,12 @@ describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
 
     const result = await putDeliveryMode(proxy, 'agent-dead', 'auto_inject');
     expect(result.status).toBe(503);
-    expect(result.body).toMatchObject({ error: { code: 'node_unreachable' } });
+    expect(result.body).toMatchObject({
+      error: {
+        code: 'node_unreachable',
+        message: 'terminal transport could not connect to the fleet node',
+      },
+    });
   });
 
   // The snapshot path already mapped 404 correctly; lock it so the shared
@@ -441,7 +451,9 @@ describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
       headers: { Authorization: `Bearer ${proxy.apiKey}` },
     });
     expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ error: { code: 'agent_not_found' } });
+    expect(await response.json()).toMatchObject({
+      error: { code: 'agent_not_found', message: "no agent named 'agent-missing-snap'" },
+    });
   });
 });
 
