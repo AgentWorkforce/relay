@@ -21,8 +21,10 @@ describe('redactCredentialValues', () => {
 
   it('masks every credential kind, including server-echoed details', () => {
     expect(
-      redactCredentialValues('denied for at_live_0123456789abcdef with session cld_at_0123456789abcdef')
-    ).toBe('denied for at_live_…cdef with session cld_at_…cdef');
+      redactCredentialValues(
+        'denied for at_live_0123456789abcdef with session cld_at_0123456789abcdef and join rjt_live_0123456789abcdef'
+      )
+    ).toBe('denied for at_live_…cdef with session cld_at_…cdef and join rjt_live_…cdef');
   });
 
   it('masks a short-bodied credential entirely instead of leaking most of it', () => {

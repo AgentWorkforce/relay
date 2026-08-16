@@ -15,6 +15,19 @@
 
 export const INVALID_AGENT_TOKEN_CODE = 'agent_token_invalid';
 export const INVALID_AGENT_TOKEN_MESSAGE = 'Invalid agent token';
+export const RELAY_SERVICE_FAILURE_MESSAGE =
+  'Relay service could not complete the request. Retry, or contact the workspace operator if the problem persists.';
+
+// Matches driver/query-builder diagnostics that can carry raw SQL text and
+// bound parameter values. The unquoted-identifier branch requires a trailing
+// SQL keyword (from/where/set/values/`(`/`;`) so ordinary prose that happens
+// to end in "<verb> <identifier>" (e.g. "Could not select file", "Failed to
+// update account") does not trip it — only `<verb> <identifier>
+// <sql-continuation>` does. `from\s+<identifier>` is included so canonical
+// `select <col> from <table>` is still caught even though `<col>` isn't
+// itself followed by one of the other continuation keywords.
+const DATABASE_DIAGNOSTIC_PATTERN =
+  /(?:failed\s+query\s*:|\bparams?\s*:|\bparameters\s*:|\bsqlstate\b|\b(?:select|insert\s+into|update|delete\s+from|drop\s+table|truncate\s+table|alter\s+table)\s+(?:["`[*]|[a-z_][\w.]*\s*(?:from\s+[a-z_][\w.]*|where|set|values|\(|;)))/i;
 
 interface MaybeError {
   code?: unknown;
@@ -23,6 +36,19 @@ interface MaybeError {
   message?: unknown;
   body?: unknown;
   cause?: unknown;
+}
+
+/**
+ * Format an upstream Relay error for a user-facing CLI/MCP boundary.
+ *
+ * Service/framework exceptions can include raw SQL and bound parameters in
+ * `error.message`. Those details are useful only inside the service and can
+ * contain identifiers or other caller data, so collapse database diagnostics
+ * to a stable actionable message while preserving ordinary API errors.
+ */
+export function safeRelayErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return DATABASE_DIAGNOSTIC_PATTERN.test(message) ? RELAY_SERVICE_FAILURE_MESSAGE : message;
 }
 
 function normalizeCode(value: unknown): string | null {

@@ -11,6 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fleet terminal attach (`agent-relay node agent attach --node`) now reconnects automatically when the terminal websocket goes silent, instead of appearing connected forever and permanently stopping on long-lived nodes.
 
+## [11.6.6] - 2026-08-16
+
+### Fixed
+
+- Spawned broker workers now derive `RELAY_ATTEST_SESSION_ID` from the harness session they actually run and stamp `Session-Id:` git trailers across HTTP and node-control spawn paths.
+- The broker now logs when a spawned worker has no usable session reference, instead of silently skipping `RELAY_ATTEST_SESSION_ID` injection.
+- The broker's commit-attribution git hook no longer silently disables a repository's other hooks (`pre-commit`, `commit-msg`, etc.) while active.
+- A commit-attribution hook-installation failure now falls back to spawning without commit trailers instead of failing the whole worker spawn.
+
+## [11.6.5] - 2026-08-15
+
+### Added
+
+- `agent-relay agent rotate` now provides an explicit recovery path for an existing agent name whose token is stale or invalid.
+
+### Fixed
+
+- Agent identity recovery no longer releases seats or rotates tokens during ordinary offline presence updates.
+- Agent registration and token rotation are bounded by a deadline instead of hanging indefinitely on an existing broken record.
+- `agent remove` preserves attributed message history and no longer exposes raw database queries or bound parameters when the removal fails.
+
+### Fixed
+
+- Spawned agents receive their brief again when the harness prompt is not
+  recognised. Readiness detection reads a vendor TUI and could reject a healthy
+  session indefinitely, leaving the agent idle holding work it was never handed;
+  injected messages were withheld the same way. Queued startup work is now
+  released once the harness is live and a bounded deadline passes, with a
+  warning. A deliberate veto, such as an unanswered trust prompt, is still never
+  timed out past.
+
+## [11.6.4] - 2026-08-15
+
+### Added
+
+- `agent-relay node agent attach --node` now accepts a short-lived `--join-ticket`, redeems it into an owner-only project workspace credential, and uses that credential for the attach.
+
+### Fixed
+
+- `agent-relay message dm send` now uses workspace credentials for exact recipient resolution even when an agent token is also configured, preserves unresolved delivery receipts, and exits non-zero instead of presenting them as success.
+- MCP `send_dm` now returns a tool error, while preserving its delivery receipt, when exact recipient resolution is unavailable.
+
 ## [11.6.3] - 2026-08-14
 
 ### Fixed

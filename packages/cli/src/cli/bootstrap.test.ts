@@ -91,6 +91,7 @@ const expectedLeafCommands = [
   'workspace rebind',
   // workspace agents
   'agent register',
+  'agent rotate',
   'agent list',
   'agent add',
   'agent remove',

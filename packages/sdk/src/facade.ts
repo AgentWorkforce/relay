@@ -9,6 +9,8 @@ import type {
   RelayMessageAttachmentInput,
   RelayMessageBlock,
   RelayMessageMode,
+  RelayReleaseAgentInput,
+  RelayAgentReleaseResult,
   RelaySendChannelMessageInput,
   RelayWorkspaceInfo,
   RelayWorkspaceFleetNodesConfig,
@@ -195,6 +197,8 @@ export interface RelayWorkspace {
     agents: T,
     options?: RelayRegisterOptions
   ): Promise<T extends AgentLike[] ? RelayAgentClient[] : RelayAgentClient>;
+  /** Release an agent, optionally freeing its name for re-registration. */
+  release(input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult>;
   reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
   fleetNodes: {
@@ -361,6 +365,16 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
     info: () => messaging.workspace.info(),
     fleetNodes: messaging.workspace.fleetNodes,
     register: register as RelayWorkspace['register'],
+    release: async (input) => {
+      // async so an unavailable-on-this-client error is always a rejected
+      // Promise, matching register()/reconnect() below — a plain (non-async)
+      // arrow function would throw synchronously instead, breaking every
+      // caller that assumes `.catch(...)`/`.rejects` semantics.
+      if (!deps) {
+        throw new Error('release() is only available on the workspace client.');
+      }
+      return messaging.agents.release(input);
+    },
     reconnect: async ({ apiToken }) => {
       if (!deps) {
         throw new Error('reconnect() is only available on the workspace client.');

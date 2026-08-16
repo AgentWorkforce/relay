@@ -10,7 +10,9 @@ export { RelayError, type RelayErrorCode } from '@relaycast/sdk';
 export {
   INVALID_AGENT_TOKEN_CODE,
   INVALID_AGENT_TOKEN_MESSAGE,
+  RELAY_SERVICE_FAILURE_MESSAGE,
   agentTokenRecoveryMessage,
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
+  safeRelayErrorMessage,
 } from './relaycast-errors.js';

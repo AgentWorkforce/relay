@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
-};
+use std::{collections::HashMap, fs, path::Path, process::Stdio, time::Duration};
 
 use crate::relaycast::configure_agent_relay_mcp_with_token;
 use anyhow::{Context, Result};
@@ -16,36 +10,75 @@ use tokio::{
 use crate::cli::command_parse::parse_cli_command;
 use crate::types::CommitAttestation;
 
-const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
-const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
-const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
-/// Optional: the ai-hist session UUID for the spawned agent's Claude Code or
-/// Codex session. Injected when `CommitAttestation::session_ref` is present.
-/// The hook stamps it as a `Session-Id:` git trailer so every commit carries
-/// an auditor-readable reference to the session that produced it.
-const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
+pub(crate) const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
+pub(crate) const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
+pub(crate) const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
+/// The ai-hist session UUID for the spawned agent's Claude Code or Codex
+/// session. Active worker spawns derive it from the harness session the broker
+/// resolves; legacy wrap spawns may receive it through `CommitAttestation`.
+/// The hook stamps it as a `Session-Id:` git trailer.
+pub(crate) const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
 const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
 const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
 
-const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
-# Installed by the broker through core.hooksPath. Keep repository hooks in the
-# chain: core.hooksPath normally replaces them entirely.
+/// Standard client-side git hooks (see githooks(5)). `core.hooksPath` is a
+/// single directory that replaces git's entire hook lookup, not just
+/// `prepare-commit-msg` — so the broker must install a forwarder under every
+/// name a repository might use, or an installed `pre-commit`/`commit-msg`/etc.
+/// hook silently stops firing for every attested spawn.
+const GIT_HOOK_NAMES: &[&str] = &[
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-checkout",
+    "post-merge",
+    "pre-push",
+    "pre-auto-gc",
+    "post-rewrite",
+    "post-index-change",
+    "sendemail-validate",
+    "p4-changelist",
+    "p4-prepare-changelist",
+    "p4-post-changelist",
+    "p4-pre-submit",
+];
 
-message_file="$1"
-if [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n "$RELAY_ATTEST_JTI" ]; then
-  printf '\nAgent-Id: %s\nSponsor-Id: %s\nRelay-Attestation: %s\n' \
-    "$RELAY_ATTEST_AGENT_ID" \
-    "$RELAY_ATTEST_SPONSOR_ID" \
-    "$RELAY_ATTEST_JTI" >> "$message_file"
-  if [ -n "$RELAY_ATTEST_SESSION_ID" ]; then
-    printf 'Session-Id: %s\n' "$RELAY_ATTEST_SESSION_ID" >> "$message_file"
+const BROKER_GIT_HOOK: &str = r#"#!/bin/sh
+# Installed by the broker through core.hooksPath. One copy of this script is
+# installed under every standard hook name so core.hooksPath replacing git's
+# hook lookup doesn't silently drop hooks besides prepare-commit-msg; it
+# forwards to the repository's own same-named hook after acting.
+
+hook_name="$(basename "$0")"
+
+if [ "$hook_name" = "prepare-commit-msg" ]; then
+  message_file="$1"
+  if { [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n "$RELAY_ATTEST_JTI" ]; } || \
+     [ -n "$RELAY_ATTEST_SESSION_ID" ]; then
+    printf '\n' >> "$message_file"
+    if [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n "$RELAY_ATTEST_JTI" ]; then
+      printf 'Agent-Id: %s\nSponsor-Id: %s\nRelay-Attestation: %s\n' \
+        "$RELAY_ATTEST_AGENT_ID" \
+        "$RELAY_ATTEST_SPONSOR_ID" \
+        "$RELAY_ATTEST_JTI" >> "$message_file"
+    fi
+    if [ -n "$RELAY_ATTEST_SESSION_ID" ]; then
+      printf 'Session-Id: %s\n' "$RELAY_ATTEST_SESSION_ID" >> "$message_file"
+    fi
   fi
 fi
 
 # Resolve hooks with the broker's temporary core.hooksPath setting removed.
 # This retains both an inherited GIT_CONFIG_* hooks path and a repository's
-# configured/default hooks directory.
+# configured/default hooks directory, then chains to the same-named hook
+# there if one exists.
 original_count="${RELAY_ATTEST_GIT_CONFIG_COUNT:-0}"
 broker_index="${RELAY_ATTEST_GIT_CONFIG_INDEX:-}"
 case "$original_count" in
@@ -67,8 +100,19 @@ else
   git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 0
   existing_hooks_dir="$git_common_dir/hooks"
 fi
-repo_hook="$existing_hooks_dir/prepare-commit-msg"
-if [ -x "$repo_hook" ] && [ "$repo_hook" != "$RELAY_ATTEST_BROKER_HOOK_PATH" ]; then
+if [ -n "$RELAY_ATTEST_BROKER_HOOK_PATH" ] && [ "$existing_hooks_dir" = "$RELAY_ATTEST_BROKER_HOOK_PATH" ]; then
+  exit 0
+fi
+repo_hook="$existing_hooks_dir/$hook_name"
+# Guard against self-exec even if RELAY_ATTEST_BROKER_HOOK_PATH is unset or
+# stale (e.g. core.hooksPath was persisted into the repository's own config
+# by a prior spawn instead of only supplied through env): comparing against
+# $0 — this script's own invoked path — is authoritative and needs no
+# externally supplied value, so a misconfigured guard can never turn into an
+# infinite self-exec. Use -ef (same file, by device+inode) rather than a
+# string compare so a relative/symlinked alias of the broker's own directory
+# still resolves to "same file" instead of exec'ing (and double-stamping) it.
+if [ -x "$repo_hook" ] && ! [ "$repo_hook" -ef "$0" ]; then
   exec "$repo_hook" "$@"
 fi
 "#;
@@ -76,8 +120,8 @@ fi
 /// Add the public commit-attribution environment supplied by a dispatcher.
 ///
 /// No metadata, or incomplete metadata, leaves the spawn environment exactly
-/// as it was. The hook path is added only by `spawn_wrap_with_token` after the
-/// broker has created its private hooks directory.
+/// as it was. Spawn paths add the hook after creating their private hooks
+/// directory.
 pub fn with_commit_attestation_env(
     mut env_vars: Vec<(String, String)>,
     attestation: Option<&CommitAttestation>,
@@ -125,7 +169,7 @@ pub fn with_commit_attestation_env(
     env_vars
 }
 
-fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
+pub(crate) fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
     [
         RELAY_ATTEST_JTI,
         RELAY_ATTEST_AGENT_ID,
@@ -141,29 +185,53 @@ fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
     })
 }
 
-fn is_valid_attestation_value(value: &str) -> bool {
+pub(crate) fn is_valid_attestation_value(value: &str) -> bool {
     !value.trim().is_empty() && !value.chars().any(|character| character.is_control())
 }
 
-fn write_prepare_commit_msg_hook(hooks_dir: &Path) -> Result<PathBuf> {
+/// Install the broker's forwarding hook under every name in [`GIT_HOOK_NAMES`]
+/// so pointing `core.hooksPath` at `hooks_dir` doesn't drop any hook type the
+/// target repository relies on.
+pub(crate) fn write_broker_git_hooks(hooks_dir: &Path) -> Result<()> {
     fs::create_dir_all(hooks_dir).context("creating broker git hooks directory")?;
-    let hook_path = hooks_dir.join("prepare-commit-msg");
-    fs::write(&hook_path, PREPARE_COMMIT_MSG_HOOK)
-        .context("writing broker prepare-commit-msg hook")?;
+    for name in GIT_HOOK_NAMES {
+        let hook_path = hooks_dir.join(name);
+        fs::write(&hook_path, BROKER_GIT_HOOK)
+            .with_context(|| format!("writing broker {name} hook"))?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-        let mut permissions = fs::metadata(&hook_path)
-            .context("reading broker prepare-commit-msg permissions")?
-            .permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&hook_path, permissions)
-            .context("making broker prepare-commit-msg hook executable")?;
+            let mut permissions = fs::metadata(&hook_path)
+                .with_context(|| format!("reading broker {name} hook permissions"))?
+                .permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&hook_path, permissions)
+                .with_context(|| format!("making broker {name} hook executable"))?;
+        }
     }
 
-    Ok(hook_path)
+    Ok(())
+}
+
+/// Lazily create (or reuse) a broker git-hooks directory cached in `slot`.
+/// Shared by `Spawner` and `WorkerRegistry`, which differ only in which
+/// struct owns the cached `TempDir` handle.
+pub(crate) fn resolve_commit_hooks_dir(slot: &mut Option<tempfile::TempDir>) -> Result<&Path> {
+    if slot.is_none() {
+        let hooks_dir = tempfile::Builder::new()
+            .prefix("agent-relay-git-hooks-")
+            .tempdir()
+            .context("creating broker git hooks directory")?;
+        write_broker_git_hooks(hooks_dir.path())?;
+        *slot = Some(hooks_dir);
+    }
+
+    Ok(slot
+        .as_ref()
+        .expect("commit hooks directory is initialized")
+        .path())
 }
 
 fn git_config_count(env_vars: &[(String, String)]) -> usize {
@@ -187,14 +255,13 @@ fn git_config_count_with_inherited(
     inherited_count.unwrap_or(0)
 }
 
-fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_dir: &Path) {
+pub(crate) fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_dir: &Path) {
     let count = git_config_count(env_vars);
-    let hook_path = hooks_dir.join("prepare-commit-msg");
     env_vars.push((RELAY_ATTEST_GIT_CONFIG_COUNT.to_string(), count.to_string()));
     env_vars.push((RELAY_ATTEST_GIT_CONFIG_INDEX.to_string(), count.to_string()));
     env_vars.push((
         RELAY_ATTEST_BROKER_HOOK_PATH.to_string(),
-        hook_path.to_string_lossy().into_owned(),
+        hooks_dir.to_string_lossy().into_owned(),
     ));
     env_vars.push(("GIT_CONFIG_COUNT".to_string(), (count + 1).to_string()));
     env_vars.push((
@@ -234,20 +301,7 @@ impl Spawner {
     }
 
     fn commit_hooks_dir(&mut self) -> Result<&Path> {
-        if self.commit_hooks_dir.is_none() {
-            let hooks_dir = tempfile::Builder::new()
-                .prefix("agent-relay-git-hooks-")
-                .tempdir()
-                .context("creating broker git hooks directory")?;
-            write_prepare_commit_msg_hook(hooks_dir.path())?;
-            self.commit_hooks_dir = Some(hooks_dir);
-        }
-
-        Ok(self
-            .commit_hooks_dir
-            .as_ref()
-            .expect("commit hooks directory is initialized")
-            .path())
+        resolve_commit_hooks_dir(&mut self.commit_hooks_dir)
     }
 
     pub async fn spawn_wrap_with_token(
@@ -320,8 +374,17 @@ impl Spawner {
 
         let mut child_env = env_vars.to_vec();
         if attestation_env_present(&child_env) {
-            let hooks_dir = self.commit_hooks_dir()?;
-            add_broker_hooks_path(&mut child_env, hooks_dir);
+            match self.commit_hooks_dir() {
+                Ok(hooks_dir) => add_broker_hooks_path(&mut child_env, hooks_dir),
+                Err(error) => {
+                    tracing::warn!(
+                        target = "broker::spawn",
+                        worker = %child_name,
+                        error = %error,
+                        "git attribution hook could not be installed; spawning without commit trailers"
+                    );
+                }
+            }
         }
         for (key, value) in &child_env {
             cmd.env(key, value);
@@ -514,9 +577,9 @@ mod tests {
 
     use super::{
         add_broker_hooks_path, attestation_env_present, git_config_count_with_inherited,
-        spawn_env_vars, terminate_child, with_commit_attestation_env,
-        write_prepare_commit_msg_hook, Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
-        RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
+        spawn_env_vars, terminate_child, with_commit_attestation_env, write_broker_git_hooks,
+        Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID,
+        RELAY_ATTEST_SPONSOR_ID,
     };
 
     fn git(repo: &Path, args: &[&str], env: &[(String, String)]) -> std::process::Output {
@@ -628,7 +691,7 @@ mod tests {
     fn broker_hook_appends_all_attestation_trailers_verbatim() {
         let repo = fixture_repository();
         let hooks_dir = tempdir().expect("broker hooks directory");
-        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hook");
         let values = attestation();
         let env = broker_hook_env(&values, hooks_dir.path());
 
@@ -649,7 +712,7 @@ mod tests {
     fn broker_hook_appends_session_id_trailer_when_session_ref_present() {
         let repo = fixture_repository();
         let hooks_dir = tempdir().expect("broker hooks directory");
-        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hook");
         let session = "ai-hist:claudecode-abc123";
         let attest = attestation_with_session(session);
         let env = broker_hook_env(&attest, hooks_dir.path());
@@ -662,6 +725,27 @@ mod tests {
         let message = commit_message(repo.path());
         assert!(message.contains("Relay-Attestation: jti-public-123"));
         assert!(message.contains(&format!("Session-Id: {session}")));
+    }
+
+    #[test]
+    fn broker_hook_appends_session_id_without_ledger_attestation() {
+        let repo = fixture_repository();
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hook");
+        let session = "session-http-spawn-1528";
+        let mut env = vec![(RELAY_ATTEST_SESSION_ID.to_string(), session.to_string())];
+        add_broker_hooks_path(&mut env, hooks_dir.path());
+
+        let commit = git(repo.path(), &["commit", "-m", "session only"], &env);
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with session-only broker hook"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains(&format!("Session-Id: {session}")));
+        assert!(!message.contains("Agent-Id:"));
+        assert!(!message.contains("Sponsor-Id:"));
+        assert!(!message.contains("Relay-Attestation:"));
     }
 
     #[test]
@@ -682,7 +766,7 @@ mod tests {
             .expect("make repository hook executable");
 
         let hooks_dir = tempdir().expect("broker hooks directory");
-        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hook");
         let env = broker_hook_env(&attestation(), hooks_dir.path());
         let commit = git(repo.path(), &["commit", "-m", "preserve local hook"], &env);
         assert!(
@@ -697,6 +781,88 @@ mod tests {
         assert!(
             message.contains("Repository-Hook: preserved"),
             "commit message: {message}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broker_hook_chain_execs_the_repositorys_pre_commit_hook() {
+        // Regression test: core.hooksPath replaces git's entire hook lookup,
+        // not just prepare-commit-msg. Before installing forwarders for every
+        // hook name, pointing core.hooksPath at the broker's directory made
+        // git stop seeing a repository's pre-commit hook entirely, silently
+        // granting every attested spawn the same bypass `git commit -n` gives.
+        let repo = fixture_repository();
+        let repository_hook = repo.path().join(".git/hooks/pre-commit");
+        fs::write(
+            &repository_hook,
+            "#!/bin/sh\nprintf 'pre-commit rejected\\n' >&2\nexit 1\n",
+        )
+        .expect("write repository pre-commit hook");
+        let mut permissions = fs::metadata(&repository_hook)
+            .expect("repository pre-commit hook metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&repository_hook, permissions)
+            .expect("make repository pre-commit hook executable");
+
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hooks");
+        let env = broker_hook_env(&attestation(), hooks_dir.path());
+        let commit = git(repo.path(), &["commit", "-m", "should be rejected"], &env);
+        assert!(
+            !commit.status.success(),
+            "the repository's pre-commit hook must still reject the commit while the broker's \
+             core.hooksPath is active for attestation"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn broker_hook_never_self_execs_when_hookspath_resolves_to_its_own_directory() {
+        // Regression test for a self-recursion hang: if core.hooksPath ever
+        // resolves back to the broker's own hooks directory while
+        // RELAY_ATTEST_BROKER_HOOK_PATH is absent (e.g. a prior run persisted
+        // hooksPath into the repository's real .git/config instead of only
+        // supplying it via the ephemeral GIT_CONFIG_* env override), the
+        // forwarder must not exec itself — that recurses forever. Bounded by
+        // a timeout so a regression fails this test instead of hanging CI.
+        let repo = fixture_repository();
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hooks");
+        assert!(git(
+            repo.path(),
+            &[
+                "config",
+                "core.hooksPath",
+                &hooks_dir.path().to_string_lossy(),
+            ],
+            &[],
+        )
+        .status
+        .success());
+
+        // kill_on_drop(true) makes the timeout an actual bound: unlike
+        // spawn_blocking (which tokio cannot cancel), dropping this future on
+        // timeout kills the still-running git process instead of leaking a
+        // recursive hook chain into the background.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            Command::new("git")
+                .current_dir(repo.path())
+                .args(["commit", "--allow-empty", "-m", "self-loop guard"])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+
+        let commit = result
+            .expect("broker hook must not hang when core.hooksPath resolves to its own directory")
+            .expect("git command must not fail to run");
+        assert!(
+            commit.status.success(),
+            "commit must still succeed even when the hook chain can't safely forward: {}",
+            String::from_utf8_lossy(&commit.stderr)
         );
     }
 
@@ -727,7 +893,7 @@ mod tests {
             .expect("make configured repository hook executable");
 
         let hooks_dir = tempdir().expect("broker hooks directory");
-        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hook");
         let env = broker_hook_env(&attestation(), hooks_dir.path());
         let commit = git(
             repo.path(),
@@ -771,7 +937,7 @@ mod tests {
             .expect("make home-relative repository hook executable");
 
         let hooks_dir = tempdir().expect("broker hooks directory");
-        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        write_broker_git_hooks(hooks_dir.path()).expect("write broker hook");
         let mut env = broker_hook_env(&attestation(), hooks_dir.path());
         env.push((
             "HOME".to_string(),
@@ -813,6 +979,24 @@ mod tests {
             "GIT_CONFIG_VALUE_1".to_string(),
             hooks_dir.path().to_string_lossy().into_owned(),
         )));
+    }
+
+    #[test]
+    fn write_broker_git_hooks_reports_an_unwritable_target_instead_of_panicking() {
+        // A regular file blocking the target path makes create_dir_all fail
+        // deterministically. Callers (Spawner::commit_hooks_dir,
+        // WorkerRegistry::commit_hooks_dir) must surface this as an Err they
+        // can downgrade to a warning rather than a spawn-time panic.
+        let parent = tempdir().expect("parent directory");
+        let blocking_file = parent.path().join("not-a-directory");
+        fs::write(&blocking_file, b"blocking").expect("write blocking file");
+        let unwritable_target = blocking_file.join("hooks");
+
+        let result = write_broker_git_hooks(&unwritable_target);
+        assert!(
+            result.is_err(),
+            "writing hooks under a file (not a directory) must fail"
+        );
     }
 
     #[test]
@@ -1013,7 +1197,7 @@ mod tests {
         fs::set_permissions(&inherited_hook, permissions).expect("make inherited hook executable");
 
         let broker_hooks_dir = tempdir().expect("broker hooks directory");
-        write_prepare_commit_msg_hook(broker_hooks_dir.path()).expect("write broker hook");
+        write_broker_git_hooks(broker_hooks_dir.path()).expect("write broker hook");
         let mut env = vec![
             ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
             ("GIT_CONFIG_KEY_0".to_string(), "core.hooksPath".to_string()),

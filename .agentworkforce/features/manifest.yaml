@@ -298,7 +298,7 @@ categories:
         cli: relay message dm send <agent> <text>
         mcp: send_dm
         description: Send a private direct message to another agent
-        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
+        location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/lib/message-delivery-receipts.ts, packages/cli/src/cli/mcp/messaging-tools.ts
         verify_tier: 4
 
       - id: dm-list
@@ -310,6 +310,7 @@ categories:
 
       - id: dm-list-conversations
         name: List DM Conversations
+        api: GET /v1/dm/conversations
         mcp: list_dms
         description: List direct-message conversations visible to the current MCP identity
         location: packages/cli/src/cli/mcp/messaging-tools.ts

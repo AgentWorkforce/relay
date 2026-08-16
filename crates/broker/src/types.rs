@@ -187,7 +187,8 @@ pub struct SpawnParams {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnMetadata {
     /// Public commit-attribution values supplied by the dispatcher. The broker
-    /// installs its git hook only when this complete value is present.
+    /// uses these for ledger trailers when this complete value is present.
+    /// Session trailers are derived independently from the resolved harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<CommitAttestation>,
 }
@@ -198,14 +199,13 @@ pub struct CommitAttestation {
     pub jti: String,
     pub agent_id: String,
     pub sponsor_id: String,
-    /// The ai-hist session UUID for the Claude Code / Codex session in which
-    /// the spawned agent is running. When set, the broker injects it as
-    /// `RELAY_ATTEST_SESSION_ID` so the embedded `prepare-commit-msg` hook
-    /// can stamp a `Session-Id:` git trailer on every commit.
+    /// Optional dispatcher hint for the ai-hist session UUID. Active worker
+    /// spawns prefer the session resolved by the broker and inject it as
+    /// `RELAY_ATTEST_SESSION_ID` so the embedded `prepare-commit-msg` hook can
+    /// stamp a `Session-Id:` git trailer on every commit.
     ///
-    /// Populated by the dispatcher (factory) after it has a stable session
-    /// reference for the child agent. Absent for agents whose dispatcher does
-    /// not yet carry session provenance.
+    /// This remains useful to legacy spawn paths and as a fallback when the
+    /// broker already receives a stable session reference from its dispatcher.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_ref: Option<String>,
 }

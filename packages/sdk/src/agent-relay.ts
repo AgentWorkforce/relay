@@ -313,6 +313,9 @@ export class AgentRelay implements AgentRelayAgent {
             register: (async () => {
               throw new Error(observerReadOnlyMessage('register()'));
             }) as RelayWorkspace['register'],
+            release: async () => {
+              throw new Error(observerReadOnlyMessage('release()'));
+            },
             reconnect: async () => {
               throw new Error(observerReadOnlyMessage('reconnect()'));
             },

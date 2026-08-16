@@ -15,7 +15,7 @@ use crate::{
     },
     relaycast::configure_agent_relay_mcp_with_result,
     supervisor::Supervisor,
-    types::AgentResultMcpConfig,
+    types::{AgentResultMcpConfig, CommitAttestation},
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,11 @@ use uuid::Uuid;
 use crate::{
     cli::command_parse::{normalize_cli_name, parse_cli_command},
     runtime::headless_provider_cli_name,
-    spawner::terminate_child,
+    spawner::{
+        add_broker_hooks_path, attestation_env_present, is_valid_attestation_value,
+        resolve_commit_hooks_dir, terminate_child, with_commit_attestation_env,
+        RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
+    },
 };
 
 const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
@@ -239,6 +243,7 @@ pub(crate) struct WorkerRegistry {
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
     worker_logs_dir: PathBuf,
+    commit_hooks_dir: Option<tempfile::TempDir>,
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
@@ -343,10 +348,15 @@ impl WorkerRegistry {
             event_tx,
             worker_env,
             worker_logs_dir,
+            commit_hooks_dir: None,
             initial_tasks: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
         }
+    }
+
+    fn commit_hooks_dir(&mut self) -> Result<&Path> {
+        resolve_commit_hooks_dir(&mut self.commit_hooks_dir)
     }
 
     pub(crate) fn worker_log_path(&self, worker_name: &str) -> Option<PathBuf> {
@@ -525,6 +535,7 @@ impl WorkerRegistry {
         skip_relay_prompt: bool,
         workspace_id: Option<crate::ids::WorkspaceId>,
         agent_result: Option<AgentResultMcpConfig>,
+        commit_attestation: Option<CommitAttestation>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
         if self.workers.contains_key(&spec.name) {
@@ -1011,11 +1022,114 @@ impl WorkerRegistry {
             },
         }
 
+        // All active spawn paths create or resolve the harness session inside
+        // this method. Hydrate attribution only after that happens so
+        // Session-Id always names the session the child process actually runs,
+        // rather than depending on a value that did not exist at dispatch.
+        let mut child_env = self.worker_env.clone();
+        for key in [
+            RELAY_ATTEST_JTI,
+            RELAY_ATTEST_AGENT_ID,
+            RELAY_ATTEST_SPONSOR_ID,
+            RELAY_ATTEST_SESSION_ID,
+        ] {
+            // A broker may itself be launched by an attested parent. Never let
+            // that parent's identity leak into an unattested or differently
+            // attested child through Command's inherited environment.
+            command.env_remove(key);
+        }
+        child_env.retain(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                RELAY_ATTEST_JTI
+                    | RELAY_ATTEST_AGENT_ID
+                    | RELAY_ATTEST_SPONSOR_ID
+                    | RELAY_ATTEST_SESSION_ID
+            )
+        });
+        harness_env.retain(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                RELAY_ATTEST_JTI
+                    | RELAY_ATTEST_AGENT_ID
+                    | RELAY_ATTEST_SPONSOR_ID
+                    | RELAY_ATTEST_SESSION_ID
+            )
+        });
+        let resolved_session_ref = spec
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| is_valid_attestation_value(value))
+            .map(str::to_string)
+            .or_else(|| {
+                commit_attestation
+                    .as_ref()
+                    .and_then(|attestation| attestation.session_ref.as_deref())
+                    .map(str::trim)
+                    .filter(|value| is_valid_attestation_value(value))
+                    .map(str::to_string)
+            });
+        child_env = with_commit_attestation_env(child_env, commit_attestation.as_ref());
+        // Session provenance belongs to the harness the broker actually
+        // launches. It is useful even when the dispatcher did not supply the
+        // optional commit-attestation envelope (the Factory HTTP spawn path),
+        // so inject it independently of the three ledger trailer values.
+        child_env.retain(|(key, _)| key != RELAY_ATTEST_SESSION_ID);
+        if let Some(session_ref) = resolved_session_ref.as_deref() {
+            child_env.push((RELAY_ATTEST_SESSION_ID.to_string(), session_ref.to_string()));
+            tracing::info!(
+                target = "broker::spawn",
+                worker = %spec.name,
+                session_ref,
+                "injecting harness session reference into spawned worker"
+            );
+        } else {
+            tracing::warn!(
+                target = "broker::spawn",
+                worker = %spec.name,
+                "spawned worker has no usable session_ref; RELAY_ATTEST_SESSION_ID will not be injected"
+            );
+        }
+
+        let core_attestation_present = attestation_env_present(&child_env);
+        if commit_attestation.is_some() && !core_attestation_present {
+            tracing::warn!(
+                target = "broker::spawn",
+                worker = %spec.name,
+                "commit attestation metadata is incomplete or invalid; Agent-Id, Sponsor-Id, and Relay-Attestation trailers will be unavailable"
+            );
+        }
+        if core_attestation_present || resolved_session_ref.is_some() {
+            match self.commit_hooks_dir() {
+                Ok(hooks_dir) => {
+                    let hooks_dir = hooks_dir.to_path_buf();
+                    add_broker_hooks_path(&mut child_env, &hooks_dir);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target = "broker::spawn",
+                        worker = %spec.name,
+                        error = %error,
+                        "git attribution hook could not be installed; spawning without commit trailers"
+                    );
+                }
+            }
+        } else if commit_attestation.is_some() {
+            // Keep the attribution failure explicit even though the earlier
+            // warnings name each unavailable component separately.
+            tracing::warn!(
+                target = "broker::spawn",
+                worker = %spec.name,
+                "git attribution hook was not installed because no valid attestation values were available"
+            );
+        }
+
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (key, value) in &self.worker_env {
+        for (key, value) in &child_env {
             if suppress_worker_env.contains(&key.as_str()) {
                 continue;
             }
@@ -2324,11 +2438,138 @@ fn spawn_worker_reader<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppServerHarnessAuth, AppServerHarnessHost};
+    use crate::protocol::{AppServerHarnessAuth, AppServerHarnessHost, NativeHarnessConfig};
 
     fn make_registry(env: Vec<(String, String)>) -> WorkerRegistry {
         let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
         WorkerRegistry::new(tx, env, PathBuf::from("/tmp/worker-tests"), Instant::now())
+    }
+
+    #[cfg(unix)]
+    fn git(repo: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .expect("git should run")
+    }
+
+    /// Exercise the production WorkerRegistry process boundary: the broker
+    /// launches a real native child, the child's live process environment has
+    /// RELAY_ATTEST_SESSION_ID, and a git commit from that process receives the
+    /// Session-Id trailer through the installed prepare-commit-msg hook.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawned_worker_environment_and_commit_carry_resolved_session_id() {
+        let repo = tempfile::tempdir().expect("fixture repository");
+        assert!(git(repo.path(), &["init", "--quiet"]).status.success());
+        assert!(git(repo.path(), &["config", "user.name", "Relay Test"])
+            .status
+            .success());
+        assert!(git(
+            repo.path(),
+            &["config", "user.email", "relay-test@example.com"]
+        )
+        .status
+        .success());
+        std::fs::write(repo.path().join("proof.txt"), "spawned worker proof\n")
+            .expect("write commit fixture");
+
+        let session_id = "session-live-spawn-1528";
+        let script = r#"
+printf '%s\n' "$RELAY_ATTEST_SESSION_ID" > observed-session.txt
+git add proof.txt observed-session.txt
+git commit --quiet -m 'attested spawned worker'
+sleep 30
+"#;
+        let spec = AgentSpec {
+            name: WorkerName::from("attested-native-worker"),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: Some("sh".to_string()),
+            session_id: None,
+            harness_config: Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), script.to_string()],
+                cwd: Some(repo.path().to_string_lossy().into_owned()),
+                env: None,
+                session_id: session_id.to_string(),
+                metadata: None,
+            })),
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+        let mut registry = make_registry(Vec::new());
+
+        let effective_spec = registry
+            .spawn(spec, None, None, None, true, None, None, None)
+            .await
+            .expect("attested worker should spawn");
+        assert_eq!(effective_spec.session_id.as_deref(), Some(session_id));
+
+        let pid = registry
+            .worker_pid("attested-native-worker")
+            .expect("spawned worker pid");
+        let mut observed_session = String::new();
+        for _ in 0..50 {
+            if let Ok(value) = std::fs::read_to_string(repo.path().join("observed-session.txt")) {
+                observed_session = value;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(observed_session.trim(), session_id);
+
+        let process = std::process::Command::new("ps")
+            // BSD ps needs the third `w` to avoid truncating a long spawned
+            // command before the environment block; Linux accepts it too.
+            .args(["ewww", "-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .expect("read live spawned process environment");
+        let process_environment = String::from_utf8_lossy(&process.stdout);
+        let ps_exposes_session =
+            process_environment.contains(&format!("RELAY_ATTEST_SESSION_ID={session_id}"));
+        #[cfg(target_os = "linux")]
+        assert!(
+            ps_exposes_session,
+            "spawned pid {pid} environment did not contain session id: {process_environment}"
+        );
+
+        let mut message = String::new();
+        for _ in 0..50 {
+            let output = git(repo.path(), &["log", "-1", "--format=%B"]);
+            if output.status.success() {
+                message = String::from_utf8_lossy(&output.stdout).into_owned();
+                if message.contains(&format!("Session-Id: {session_id}")) {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            message.contains(&format!("Session-Id: {session_id}")),
+            "spawned worker commit did not contain Session-Id trailer: {message}"
+        );
+
+        if ps_exposes_session {
+            eprintln!("ps eww -p {pid}: RELAY_ATTEST_SESSION_ID={session_id}");
+        } else {
+            eprintln!(
+                "ps eww -p {pid}: <platform did not expose child env>; live child recorded RELAY_ATTEST_SESSION_ID={session_id}"
+            );
+        }
+        eprintln!("git log -1 --format=%B: Session-Id: {session_id}");
+
+        registry
+            .release("attested-native-worker")
+            .await
+            .expect("release spawned worker");
     }
 
     #[test]

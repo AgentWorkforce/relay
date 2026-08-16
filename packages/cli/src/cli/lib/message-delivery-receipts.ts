@@ -79,6 +79,17 @@ export function directMessageReceipt(
   };
 }
 
+/** Return the visible failure text for a receipt that cannot confirm its recipient. */
+export function directMessageDeliveryFailure(receipt: DirectMessageDeliveryReceipt): string | undefined {
+  if (receipt.delivery.status === 'queued_unconfirmed') return undefined;
+  const rawMessageId = receipt.messageId ?? receipt.id;
+  const messageReference = typeof rawMessageId === 'string' ? `message ${rawMessageId}` : 'the message';
+  return (
+    `Direct message recipient verification failed (${receipt.delivery.status}) after ${messageReference} ` +
+    `was enqueued; delivery is not confirmed and retrying may duplicate it. ${receipt.delivery.note}`
+  );
+}
+
 export function messageReadersReceipt(readers: unknown[]): {
   readers: unknown[];
   delivery: { status: 'read' | 'queued_or_unread'; readConfirmed: boolean; signal: string };

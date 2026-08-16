@@ -352,15 +352,25 @@ impl RelaycastHttpClient {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
-    /// Mark a specific agent offline via the release endpoint.
+    /// Mark a specific agent offline without releasing its identity.
+    ///
+    /// Presence transitions must not use the release endpoint: release rotates
+    /// or invalidates the agent credential and records a lifecycle tombstone.
+    /// Broker shutdown, worker exit, and maintenance reaping only need to make
+    /// the roster honest; the process holding the identity may still be alive
+    /// or may restart with the same token.
     pub async fn mark_agent_offline(&self, agent_name: &str) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
-            let request = ReleaseAgentRequest {
-                name: agent_name.to_string(),
-                reason: None,
-                delete_agent: None,
-            };
-            match relay.release_agent(request).await {
+            match relay
+                .update_agent(
+                    agent_name,
+                    UpdateAgentRequest {
+                        status: Some("offline".to_string()),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
                 Ok(_) => {
                     tracing::info!(agent = %agent_name, "marked agent offline");
                 }
@@ -371,12 +381,60 @@ impl RelaycastHttpClient {
         } else {
             tracing::warn!(agent = %agent_name, "SDK relay client not initialized; cannot mark agent offline");
         }
-        // Always invalidate local cache so a future spawn uses a fresh registration.
-        self.invalidate_cached_registration(agent_name);
+        // Deliberately do NOT invalidate the cached registration here: this is
+        // a presence-only transition and the process holding the identity may
+        // still be alive or may restart with the same token. Invalidating the
+        // cache would force a token rotation on next use, disconnecting a
+        // still-valid identity. Only an explicit release should do that.
         Ok(())
     }
 
-    /// Mark the broker agent as offline via the release endpoint.
+    /// Release an agent identity through the lifecycle endpoint.
+    ///
+    /// Unlike a presence transition, an explicit broker release intentionally
+    /// invalidates the current credential. Relaycast's wire shape has one audit
+    /// string rather than separate reason/actor fields, so preserve both facts
+    /// in that durable value and never emit a null-reason release.
+    pub async fn release_agent_identity(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        if let Some(relay) = (*self.relay).as_ref() {
+            let reason = reason
+                .map(str::trim)
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or("agent explicitly released through broker API");
+            let attributed_reason =
+                format!("{reason} (actor: Agent Relay broker {})", self.agent_name);
+            let request = ReleaseAgentRequest {
+                name: agent_name.to_string(),
+                reason: Some(attributed_reason),
+                delete_agent: None,
+            };
+            // Invalidate the cached token before the call so an ambiguous
+            // response (e.g. a timeout after Relaycast committed the release)
+            // can never leave a dead token cached for reuse. Worst case on
+            // failure is a redundant re-registration on next use, which is
+            // safe; the alternative — a stale cache reusing a released token
+            // — is the bug this fixes.
+            self.invalidate_cached_registration(agent_name);
+            match relay.release_agent(request).await {
+                Ok(_) => {
+                    tracing::info!(agent = %agent_name, "released agent identity");
+                }
+                Err(error) => {
+                    tracing::warn!(agent = %agent_name, error = %error, "failed to release agent identity");
+                    return Err(anyhow::anyhow!(
+                        "failed to release agent '{agent_name}': {error}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Mark the broker agent offline without invalidating its identity.
     /// Called during graceful shutdown to prevent ghost agents in the dashboard.
     pub async fn mark_offline(&self) -> Result<()> {
         self.mark_agent_offline(&self.agent_name).await
@@ -1060,6 +1118,87 @@ mod tests {
 
         any_read.assert_hits(0);
         any_write.assert_hits(0);
+    }
+
+    /// A presence update used to call POST /v1/agents/release with no reason.
+    /// That invalidated the credential of a participant that could still be
+    /// running, and left an unattributable `release.reason = null` record. The
+    /// exact wire assertion matters here: a successful helper return alone
+    /// would not prove the destructive endpoint was avoided.
+    #[tokio::test]
+    async fn mark_agent_offline_updates_presence_without_releasing_the_identity() {
+        let server = MockServer::start();
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .header("authorization", "Bearer rk_live_test")
+                .json_body(json!({ "status": "offline" }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(500).json_body(json!({
+                "ok": false,
+                "error": { "code": "must_not_release", "message": "must not release" }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .mark_agent_offline("worker-a")
+            .await
+            .expect("offline presence update should succeed");
+
+        update.assert_hits(1);
+        release.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn explicit_agent_release_records_a_reason_and_actor() {
+        let server = MockServer::start();
+        let release = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .header("authorization", "Bearer rk_live_test")
+                .json_body(json!({
+                    "name": "worker-a",
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "invocation_id": "inv_release_1",
+                    "action_name": "release",
+                    "handler_agent_id": null,
+                    "handler_node_id": "node_1",
+                    "dispatched_node_id": "node_1",
+                    "input": {
+                        "name": "worker-a",
+                        "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                    },
+                    "status": "dispatched",
+                    "created_at": "2026-08-15T00:00:00.000Z"
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .release_agent_identity("worker-a", None)
+            .await
+            .expect("explicit release should succeed");
+
+        release.assert_hits(1);
     }
 
     #[tokio::test]

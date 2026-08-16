@@ -620,6 +620,7 @@ impl BrokerRuntime {
                         rst.payload.skip_relay_prompt,
                         None,
                         rst.payload.agent_result.clone(),
+                        None,
                     )
                     .await
                 {
