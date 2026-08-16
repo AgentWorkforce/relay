@@ -16,14 +16,14 @@ use tokio::{
 use crate::cli::command_parse::parse_cli_command;
 use crate::types::CommitAttestation;
 
-const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
-const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
-const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
-/// Optional: the ai-hist session UUID for the spawned agent's Claude Code or
-/// Codex session. Injected when `CommitAttestation::session_ref` is present.
-/// The hook stamps it as a `Session-Id:` git trailer so every commit carries
-/// an auditor-readable reference to the session that produced it.
-const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
+pub(crate) const RELAY_ATTEST_JTI: &str = "RELAY_ATTEST_JTI";
+pub(crate) const RELAY_ATTEST_AGENT_ID: &str = "RELAY_ATTEST_AGENT_ID";
+pub(crate) const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
+/// The ai-hist session UUID for the spawned agent's Claude Code or Codex
+/// session. Active worker spawns derive it from the harness session the broker
+/// resolves; legacy wrap spawns may receive it through `CommitAttestation`.
+/// The hook stamps it as a `Session-Id:` git trailer.
+pub(crate) const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
 const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
 const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
@@ -33,11 +33,15 @@ const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # chain: core.hooksPath normally replaces them entirely.
 
 message_file="$1"
-if [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n "$RELAY_ATTEST_JTI" ]; then
-  printf '\nAgent-Id: %s\nSponsor-Id: %s\nRelay-Attestation: %s\n' \
-    "$RELAY_ATTEST_AGENT_ID" \
-    "$RELAY_ATTEST_SPONSOR_ID" \
-    "$RELAY_ATTEST_JTI" >> "$message_file"
+if { [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n "$RELAY_ATTEST_JTI" ]; } || \
+   [ -n "$RELAY_ATTEST_SESSION_ID" ]; then
+  printf '\n' >> "$message_file"
+  if [ -n "$RELAY_ATTEST_AGENT_ID" ] && [ -n "$RELAY_ATTEST_SPONSOR_ID" ] && [ -n "$RELAY_ATTEST_JTI" ]; then
+    printf 'Agent-Id: %s\nSponsor-Id: %s\nRelay-Attestation: %s\n' \
+      "$RELAY_ATTEST_AGENT_ID" \
+      "$RELAY_ATTEST_SPONSOR_ID" \
+      "$RELAY_ATTEST_JTI" >> "$message_file"
+  fi
   if [ -n "$RELAY_ATTEST_SESSION_ID" ]; then
     printf 'Session-Id: %s\n' "$RELAY_ATTEST_SESSION_ID" >> "$message_file"
   fi
@@ -76,8 +80,8 @@ fi
 /// Add the public commit-attribution environment supplied by a dispatcher.
 ///
 /// No metadata, or incomplete metadata, leaves the spawn environment exactly
-/// as it was. The hook path is added only by `spawn_wrap_with_token` after the
-/// broker has created its private hooks directory.
+/// as it was. Spawn paths add the hook after creating their private hooks
+/// directory.
 pub fn with_commit_attestation_env(
     mut env_vars: Vec<(String, String)>,
     attestation: Option<&CommitAttestation>,
@@ -125,7 +129,7 @@ pub fn with_commit_attestation_env(
     env_vars
 }
 
-fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
+pub(crate) fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
     [
         RELAY_ATTEST_JTI,
         RELAY_ATTEST_AGENT_ID,
@@ -141,11 +145,11 @@ fn attestation_env_present(env_vars: &[(String, String)]) -> bool {
     })
 }
 
-fn is_valid_attestation_value(value: &str) -> bool {
+pub(crate) fn is_valid_attestation_value(value: &str) -> bool {
     !value.trim().is_empty() && !value.chars().any(|character| character.is_control())
 }
 
-fn write_prepare_commit_msg_hook(hooks_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn write_prepare_commit_msg_hook(hooks_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(hooks_dir).context("creating broker git hooks directory")?;
     let hook_path = hooks_dir.join("prepare-commit-msg");
     fs::write(&hook_path, PREPARE_COMMIT_MSG_HOOK)
@@ -187,7 +191,7 @@ fn git_config_count_with_inherited(
     inherited_count.unwrap_or(0)
 }
 
-fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_dir: &Path) {
+pub(crate) fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_dir: &Path) {
     let count = git_config_count(env_vars);
     let hook_path = hooks_dir.join("prepare-commit-msg");
     env_vars.push((RELAY_ATTEST_GIT_CONFIG_COUNT.to_string(), count.to_string()));
@@ -662,6 +666,27 @@ mod tests {
         let message = commit_message(repo.path());
         assert!(message.contains("Relay-Attestation: jti-public-123"));
         assert!(message.contains(&format!("Session-Id: {session}")));
+    }
+
+    #[test]
+    fn broker_hook_appends_session_id_without_ledger_attestation() {
+        let repo = fixture_repository();
+        let hooks_dir = tempdir().expect("broker hooks directory");
+        write_prepare_commit_msg_hook(hooks_dir.path()).expect("write broker hook");
+        let session = "session-http-spawn-1528";
+        let mut env = vec![(RELAY_ATTEST_SESSION_ID.to_string(), session.to_string())];
+        add_broker_hooks_path(&mut env, hooks_dir.path());
+
+        let commit = git(repo.path(), &["commit", "-m", "session only"], &env);
+        assert!(
+            commit.status.success(),
+            "git commit must succeed with session-only broker hook"
+        );
+        let message = commit_message(repo.path());
+        assert!(message.contains(&format!("Session-Id: {session}")));
+        assert!(!message.contains("Agent-Id:"));
+        assert!(!message.contains("Sponsor-Id:"));
+        assert!(!message.contains("Relay-Attestation:"));
     }
 
     #[test]

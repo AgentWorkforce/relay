@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Spawned broker workers now derive `RELAY_ATTEST_SESSION_ID` from the harness session they actually run, stamp `Session-Id:` trailers across HTTP and node-control spawn paths, and log when session attribution is unavailable.
 - Agent identity recovery no longer releases seats or rotates tokens during ordinary offline presence updates.
 - Agent registration and token rotation are bounded by a deadline instead of hanging indefinitely on an existing broken record.
 - `agent remove` preserves attributed message history and no longer exposes raw database queries or bound parameters when the removal fails.
