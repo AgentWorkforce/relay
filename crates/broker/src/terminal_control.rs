@@ -334,10 +334,24 @@ pub(crate) async fn run_terminal_control_client(
                                 // `terminal_control_tx` channel's philosophy
                                 // (fleet.rs `try_send_terminal`): a wedged
                                 // lane must fail forward, not accumulate.
-                                if let Err(mpsc::error::TrySendError::Closed(_)) =
-                                    writer_tx.try_send(Message::Text(encoded))
-                                {
-                                    connected = false;
+                                match writer_tx.try_send(Message::Text(encoded)) {
+                                    Ok(()) => {}
+                                    // Shedding is deliberate, but it must not be
+                                    // silent: a viewer quietly missing output is
+                                    // indistinguishable from a wedged session,
+                                    // and an unobservable drop is exactly the
+                                    // failure class that let the fleet dispatch
+                                    // outage run for hours unnoticed.
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::terminal",
+                                            capacity = WRITER_QUEUE_CAPACITY,
+                                            "fleet terminal writer queue full; dropping an output frame under backpressure"
+                                        );
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        connected = false;
+                                    }
                                 }
                             }
                             Err(_) => connected = false,
