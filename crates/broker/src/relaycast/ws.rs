@@ -248,9 +248,11 @@ impl RelaycastHttpClient {
                         // The target is holding a working token this broker
                         // does not possess. Silently rotating it would strand
                         // the worker; refuse and let the caller decide.
-                        Err(ImpersonationAwareRegistrationError::LiveAgentImpersonation {
-                            agent_name: trimmed_name.to_string(),
-                        })
+                        Err(
+                            ImpersonationAwareRegistrationError::LiveAgentImpersonation {
+                                agent_name: trimmed_name.to_string(),
+                            },
+                        )
                     }
                     Ok(_) => {
                         // Agent exists but is not currently authenticating —
@@ -1138,8 +1140,8 @@ mod tests {
 
     use super::{
         format_worker_preregistration_error, registration_is_retryable,
-        registration_retry_after_secs, ImpersonationAwareRegistrationError,
-        MessageInjectionMode, RegisterIntent, RelaycastHttpClient,
+        registration_retry_after_secs, ImpersonationAwareRegistrationError, MessageInjectionMode,
+        RegisterIntent, RelaycastHttpClient,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -1608,17 +1610,17 @@ mod tests {
             }));
         });
 
-        let client = RelaycastHttpClient::new(
-            Some(server.base_url()),
-            "rk_live_test",
-            "broker",
-            "codex",
-        );
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
         // No seed for "worker-a" — the broker has no cached token for it,
         // which is exactly the post-restart condition.
 
         let outcome = client
-            .register_agent_token_with_intent("worker-a", Some("codex"), RegisterIntent::ImpersonateExisting)
+            .register_agent_token_with_intent(
+                "worker-a",
+                Some("codex"),
+                RegisterIntent::ImpersonateExisting,
+            )
             .await;
         assert!(
             matches!(
@@ -1649,16 +1651,16 @@ mod tests {
             then.status(500);
         });
 
-        let client = RelaycastHttpClient::new(
-            Some(server.base_url()),
-            "rk_live_test",
-            "broker",
-            "codex",
-        );
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
         client.seed_agent_token("worker-a", "at_live_seeded");
 
         let token = client
-            .register_agent_token_with_intent("worker-a", Some("codex"), RegisterIntent::ImpersonateExisting)
+            .register_agent_token_with_intent(
+                "worker-a",
+                Some("codex"),
+                RegisterIntent::ImpersonateExisting,
+            )
             .await
             .expect("cache hit must skip the probe and return the cached token");
         assert_eq!(token, "at_live_seeded");
@@ -1704,15 +1706,15 @@ mod tests {
             }));
         });
 
-        let client = RelaycastHttpClient::new(
-            Some(server.base_url()),
-            "rk_live_test",
-            "broker",
-            "codex",
-        );
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
 
         let token = client
-            .register_agent_token_with_intent("worker-a", Some("codex"), RegisterIntent::ImpersonateExisting)
+            .register_agent_token_with_intent(
+                "worker-a",
+                Some("codex"),
+                RegisterIntent::ImpersonateExisting,
+            )
             .await
             .expect("offline agent should be safe to rotate");
         assert_eq!(token, "at_live_rotated_ok");
@@ -1768,12 +1770,8 @@ mod tests {
             then.status(500);
         });
 
-        let client = RelaycastHttpClient::new(
-            Some(server.base_url()),
-            "rk_live_test",
-            "broker",
-            "codex",
-        );
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
         // No seed for worker-a — the exact post-broker-restart condition.
 
         let err = client
@@ -1814,12 +1812,8 @@ mod tests {
             }));
         });
 
-        let client = RelaycastHttpClient::new(
-            Some(server.base_url()),
-            "rk_live_test",
-            "broker",
-            "codex",
-        );
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
         let token = client
             .register_agent_token("worker-a", Some("codex"))
             .await
