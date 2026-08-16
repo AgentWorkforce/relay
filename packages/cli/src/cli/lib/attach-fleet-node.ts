@@ -70,6 +70,21 @@ export class FleetNodeAttachError extends Error {
   }
 }
 
+/**
+ * Canonical HTTP status for a terminal failure code.
+ *
+ * `agent_not_found` must stay 404: {@link switchInboundDeliveryModeOrAbort}
+ * only emits the "no agent named X" message and the cross-node placement hint
+ * on a 404, so collapsing it into 503 replaces actionable guidance with an
+ * opaque unreachable-node error. `unsupported_runtime` stays 409. Everything
+ * else is a transport-level failure and reports 503.
+ */
+function terminalErrorStatus(code: string | undefined): number {
+  if (code === 'agent_not_found') return 404;
+  if (code === 'unsupported_runtime') return 409;
+  return 503;
+}
+
 function json(response: ServerResponse, status: number, payload: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(payload));
@@ -193,6 +208,30 @@ export async function startFleetNodeAttachProxy(
       if (readiness === activeReadiness) return;
     }
   };
+  /**
+   * Await the live readiness generation, bounded by {@link SNAPSHOT_WAIT_MS}.
+   * Every handler that must not run before `terminal.ready` — snapshot,
+   * delivery-mode PUT, resize — goes through this one helper so the
+   * timer/clearTimeout/settle logic cannot diverge between copies.
+   *
+   * Rejects with the underlying {@link FleetNodeAttachError} when the terminal
+   * failed (preserving its `code`), or a plain `Error` carrying
+   * `timeoutMessage` when the wait expired.
+   */
+  const waitForTerminalReady = (timeoutMessage: string): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(timeoutMessage)), SNAPSHOT_WAIT_MS);
+      void waitForCurrentReadiness().then(
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
   const snapshot: { screen: string; rows: number; cols: number; offset: number } = {
     screen: '',
     rows: 24,
@@ -236,28 +275,10 @@ export async function startFleetNodeAttachProxy(
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     if (request.method === 'GET' && path === `/api/spawned/${encodeURIComponent(options.agent)}/snapshot`) {
       try {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error('terminal snapshot timed out')), SNAPSHOT_WAIT_MS);
-          void waitForCurrentReadiness().then(
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            (error: Error) => {
-              clearTimeout(timer);
-              reject(error);
-            }
-          );
-        });
+        await waitForTerminalReady('terminal snapshot timed out');
       } catch (error) {
         const terminalError = error instanceof FleetNodeAttachError ? error : undefined;
-        const status =
-          terminalError?.code === 'agent_not_found'
-            ? 404
-            : terminalError?.code === 'unsupported_runtime'
-              ? 409
-              : 503;
-        json(response, status, {
+        json(response, terminalErrorStatus(terminalError?.code), {
           error: {
             code: terminalError?.code ?? 'snapshot_unavailable',
             message:
@@ -285,6 +306,27 @@ export async function startFleetNodeAttachProxy(
       if (requestedMode === null) {
         json(response, 400, {
           error: { code: 'invalid_mode', message: `unsupported delivery mode '${String(body.mode)}'` },
+        });
+        return;
+      }
+      // Drive attach changes delivery mode before it requests the initial
+      // snapshot. Gate the PUT on terminal.ready so a fast local caller does
+      // not lose a race with the remote websocket handshake and receive the
+      // misleading "terminal transport is not connected" failure.
+      try {
+        await waitForTerminalReady('terminal connection timed out');
+      } catch (error) {
+        // Preserve the canonical status mapping here too: a readiness failure
+        // carrying `agent_not_found` has to reach the preflight as a 404 or
+        // the operator loses the cross-node placement hint that tells them
+        // which machine to run the attach on.
+        const terminalError = error instanceof FleetNodeAttachError ? error : undefined;
+        json(response, terminalErrorStatus(terminalError?.code), {
+          error: {
+            code: terminalError?.code ?? 'node_unreachable',
+            message:
+              terminalError?.message ?? (error instanceof Error ? error.message : 'terminal unavailable'),
+          },
         });
         return;
       }
@@ -327,10 +369,11 @@ export async function startFleetNodeAttachProxy(
           result instanceof FleetNodeAttachError
             ? (result.code ?? 'delivery_mode_failed')
             : 'delivery_mode_failed';
-        // Return HTTP 404 for agent_not_found so the attach preflight can
-        // produce the correct no-agent or cross-node placement error.
-        const status = errCode === 'agent_not_found' ? 404 : 503;
-        json(response, status, {
+        // Same canonical mapping as the readiness gate: 404 for
+        // agent_not_found so the attach preflight can produce the no-agent or
+        // cross-node placement error, 409 for unsupported_runtime, 503 for
+        // everything else.
+        json(response, terminalErrorStatus(errCode), {
           error: { code: errCode, message: result.message },
         });
         return;
@@ -371,19 +414,7 @@ export async function startFleetNodeAttachProxy(
         return;
       }
       try {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error('terminal resize timed out')), SNAPSHOT_WAIT_MS);
-          void waitForCurrentReadiness().then(
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            (error: Error) => {
-              clearTimeout(timer);
-              reject(error);
-            }
-          );
-        });
+        await waitForTerminalReady('terminal resize timed out');
       } catch (error) {
         json(response, 503, {
           error: {
