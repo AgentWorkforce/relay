@@ -300,14 +300,6 @@ fn evaluate_startup_gate(
     }
 }
 
-/// Whether a KNOWN blocking dialog is on screen, as opposed to a prompt we
-/// simply failed to recognise.
-///
-/// The two must not be conflated. An unrecognised prompt means our heuristic is
-/// blind and the timeout should eventually release the brief anyway. A trust
-/// interstitial means the harness is deliberately not accepting work yet, and
-/// typing into it would answer a security question on the operator's behalf.
-/// `evaluate_startup_gate` vetoes it for exactly that reason.
 /// The startup gate's verdict.
 ///
 /// Three states, not two booleans: `Ready && Blocked` is not representable,
@@ -326,6 +318,14 @@ pub(crate) enum StartupGate {
     Blocked,
 }
 
+/// Whether a KNOWN blocking dialog is on screen, as opposed to a prompt we
+/// simply failed to recognise.
+///
+/// The two must not be conflated. An unrecognised prompt means our heuristic is
+/// blind and the timeout should eventually release the brief anyway. A trust
+/// interstitial means the harness is deliberately not accepting work yet, and
+/// typing into it would answer a security question on the operator's behalf.
+/// `evaluate_startup_gate` vetoes it for exactly that reason.
 fn startup_gate_blocked(pty: &PtySession) -> bool {
     detect_codex_trust_prompt(&pty.screen_text())
 }
@@ -487,9 +487,6 @@ async fn try_emit_worker_ready(
         return;
     }
 
-    // A deliberate veto is not a blind spot: never time out past a known
-    // blocking dialog, or the brief is typed into a trust prompt and answers a
-    // security question nobody asked us to answer.
     let startup_ready = gate == StartupGate::Ready;
     // A deliberate veto is not a blind spot: never time out past a known
     // blocking dialog, or the brief is typed into a trust prompt and answers a
@@ -1262,13 +1259,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &post_boot_output,
                             &pty,
                         );
-                                let gate = if startup_ready {
-                                    StartupGate::Ready
-                                } else if startup_gate_blocked(&pty) {
-                                    StartupGate::Blocked
-                                } else {
-                                    StartupGate::Unrecognised
-                                };
+                        let gate = if startup_ready {
+                            StartupGate::Ready
+                        } else if startup_gate_blocked(&pty) {
+                            StartupGate::Blocked
+                        } else {
+                            StartupGate::Unrecognised
+                        };
                         try_emit_worker_ready(
                             &out_tx,
                             &worker_name,
@@ -1839,13 +1836,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     &post_boot_output,
                     &pty,
                 );
-                                let gate = if startup_ready {
-                                    StartupGate::Ready
-                                } else if startup_gate_blocked(&pty) {
-                                    StartupGate::Blocked
-                                } else {
-                                    StartupGate::Unrecognised
-                                };
+                let gate = if startup_ready {
+                    StartupGate::Ready
+                } else if startup_gate_blocked(&pty) {
+                    StartupGate::Blocked
+                } else {
+                    StartupGate::Unrecognised
+                };
                 try_emit_worker_ready(
                     &out_tx,
                     &worker_name,
