@@ -471,6 +471,7 @@ fn should_block_pending_injection(
         && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn try_emit_worker_ready(
     out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     worker_name: &str,

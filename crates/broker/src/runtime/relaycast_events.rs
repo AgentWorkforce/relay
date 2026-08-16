@@ -64,6 +64,20 @@ pub(super) fn relaycast_spawn_session_ref(ws_value: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Read the dispatcher-issued commit attestation from an active node-control
+/// spawn request. The legacy workspace-stream bridge deserializes the same
+/// field into `SpawnParams`, but node-only `action.invoke` spawns bypass that
+/// bridge and must carry it explicitly into `WorkerRegistry::spawn`.
+pub(super) fn relaycast_spawn_commit_attestation(
+    ws_value: &Value,
+) -> Result<Option<crate::types::CommitAttestation>, serde_json::Error> {
+    let raw = ws_value
+        .pointer("/metadata/attestation")
+        .or_else(|| ws_value.pointer("/agent/metadata/attestation"))
+        .or_else(|| ws_value.get("attestation"));
+    raw.cloned().map(serde_json::from_value).transpose()
+}
+
 pub(super) fn relaycast_spawn_spec_session_id(
     cli: &str,
     session_ref: Option<&str>,
@@ -418,6 +432,19 @@ pub(super) async fn spawn_worker_from_request(
             return Err(anyhow::anyhow!(error));
         }
     };
+    let commit_attestation = match relaycast_spawn_commit_attestation(ws_value) {
+        Ok(Some(attestation)) => Some(attestation),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::warn!(
+                target = "broker::spawn",
+                worker = %name,
+                error = %error,
+                "spawn request has invalid commit attestation; ledger trailers will be unavailable, but harness session attribution will still be derived"
+            );
+            None
+        }
+    };
     let require_node_registration = harness_config.as_ref().is_some_and(|config| {
         harness_metadata_flag(
             config,
@@ -668,6 +695,7 @@ pub(super) async fn spawn_worker_from_request(
             false,
             Some(workspace_id.clone()),
             None,
+            commit_attestation,
         )
         .await
     {
@@ -919,6 +947,42 @@ mod tests {
             .expect("inline config should return config");
 
         assert_eq!(config.runtime(), AgentRuntime::Pty);
+    }
+
+    #[test]
+    fn node_control_spawn_reads_nested_commit_attestation() {
+        let value = json!({
+            "metadata": {
+                "attestation": {
+                    "jti": "jti-node-control",
+                    "agentId": "agent-worker",
+                    "sponsorId": "user-owner"
+                }
+            }
+        });
+
+        let attestation = relaycast_spawn_commit_attestation(&value)
+            .expect("attestation should deserialize")
+            .expect("attestation should be present");
+
+        assert_eq!(attestation.jti, "jti-node-control");
+        assert_eq!(attestation.agent_id, "agent-worker");
+        assert_eq!(attestation.sponsor_id, "user-owner");
+        assert_eq!(attestation.session_ref, None);
+    }
+
+    #[test]
+    fn node_control_spawn_reports_malformed_commit_attestation() {
+        let value = json!({
+            "metadata": {
+                "attestation": {
+                    "jti": "jti-node-control",
+                    "agentId": "agent-worker"
+                }
+            }
+        });
+
+        assert!(relaycast_spawn_commit_attestation(&value).is_err());
     }
 
     #[test]

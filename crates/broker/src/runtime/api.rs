@@ -634,6 +634,7 @@ impl BrokerRuntime {
                         skip_relay_prompt,
                         spawn_workspace_id.clone(),
                         agent_result.clone(),
+                        None,
                     )
                     .await
                 {
