@@ -33,7 +33,7 @@ use crate::{
     runtime::headless_provider_cli_name,
     spawner::{
         add_broker_hooks_path, attestation_env_present, is_valid_attestation_value,
-        terminate_child, with_commit_attestation_env, write_prepare_commit_msg_hook,
+        terminate_child, with_commit_attestation_env, write_broker_git_hooks,
         RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     },
 };
@@ -361,7 +361,7 @@ impl WorkerRegistry {
                 .prefix("agent-relay-git-hooks-")
                 .tempdir()
                 .context("creating broker git hooks directory")?;
-            write_prepare_commit_msg_hook(hooks_dir.path())?;
+            write_broker_git_hooks(hooks_dir.path())?;
             self.commit_hooks_dir = Some(hooks_dir);
         }
 
@@ -1114,8 +1114,20 @@ impl WorkerRegistry {
             );
         }
         if core_attestation_present || resolved_session_ref.is_some() {
-            let hooks_dir = self.commit_hooks_dir()?.to_path_buf();
-            add_broker_hooks_path(&mut child_env, &hooks_dir);
+            match self.commit_hooks_dir() {
+                Ok(hooks_dir) => {
+                    let hooks_dir = hooks_dir.to_path_buf();
+                    add_broker_hooks_path(&mut child_env, &hooks_dir);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target = "broker::spawn",
+                        worker = %spec.name,
+                        error = %error,
+                        "git attribution hook could not be installed; spawning without commit trailers"
+                    );
+                }
+            }
         } else if commit_attestation.is_some() {
             // Keep the attribution failure explicit even though the earlier
             // warnings name each unavailable component separately.
