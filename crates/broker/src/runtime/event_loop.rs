@@ -1,6 +1,5 @@
 use super::*;
 
-use crate::fleet_wire::Deliver;
 use futures_util::future::{join, join_all};
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
@@ -246,13 +245,6 @@ pub(crate) struct BrokerRuntime {
     pub(super) pending_deliveries: PendingDeliveryStore,
     pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
-    /// Fleet (engine-facing) `delivery_ack`s withheld until the worker
-    /// confirms the PTY injection landed — echo-verified, or its bounded
-    /// timeout fallback (see `pty_worker.rs`'s `verification_window`) — rather
-    /// than acked the instant the write is merely handed to the worker. See
-    /// relay#1310. Resolved in `handle_worker_event`'s `delivery_ack` arm;
-    /// dropped without acking if the delivery is later dead-lettered.
-    pub(super) pending_fleet_acks: HashMap<DeliveryId, Deliver>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     /// Persona/capability spawns whose action result is held until the harness
     /// proves readiness with worker_ready. Keyed by the node-local worker name.

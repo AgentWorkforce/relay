@@ -207,6 +207,10 @@ pub(crate) fn requeue_dead_letter(
         next_retry_at: Instant::now(),
         queued_at_ms: entry.queued_at_ms,
         last_error: None,
+        // The dead-lettered entry's withheld fleet ack (if any) was already
+        // dropped when it was dead-lettered — see relay#1310. A requeue is a
+        // fresh redelivery attempt, not a continuation of that withheld ack.
+        withheld_fleet_ack: None,
     };
     pending_deliveries.insert(pending.delivery.delivery_id.clone(), pending.clone());
     Some(pending)

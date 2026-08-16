@@ -134,10 +134,10 @@ enum FleetDeliverySurfaceOutcome {
     Acknowledge,
     /// A PTY injection was handed to the worker. The engine ack is withheld
     /// until the worker confirms it landed (echo-verified, or the bounded
-    /// timeout fallback) — see relay#1310. The `DeliveryId` is the broker's
-    /// internal tracking id for that injection, used to correlate the
-    /// worker's later `delivery_ack` event back to this fleet delivery.
-    AcknowledgeAfterEcho(DeliveryId),
+    /// timeout fallback) — see relay#1310. The withheld ack was already
+    /// registered on the corresponding `PendingDelivery` at insertion time
+    /// (see relay#1543), so there is nothing left to carry here.
+    AcknowledgeAfterEcho,
     HoldForManualFlush,
 }
 
@@ -727,7 +727,7 @@ impl BrokerRuntime {
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
                     self.fleet_delivery_book.commit_delivered(&deliver)
                 }
-                Ok(FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho(injection_delivery_id)) => {
+                Ok(FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho) => {
                     // Advance the *received* cursor now — the broker has taken
                     // ownership of this message and the engine's next sequenced
                     // frame must not be treated as a gap while injection is
@@ -736,9 +736,14 @@ impl BrokerRuntime {
                     // `handle_worker_event` observes the worker actually
                     // confirm this specific injection (echo or timeout
                     // fallback) — see relay#1310.
+                    //
+                    // The withheld ack itself was already registered on the
+                    // `PendingDelivery` at insertion time, before this
+                    // injection attempt even started (see
+                    // `try_inject_pending_relay_message` /
+                    // `insert_and_attempt_delivery`), so there is nothing left
+                    // to record here — see relay#1543.
                     self.fleet_delivery_book.commit_received(&deliver);
-                    self.pending_fleet_acks
-                        .insert(injection_delivery_id, deliver);
                     return;
                 }
                 Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush) => {
@@ -935,22 +940,27 @@ impl BrokerRuntime {
                         // are logged and otherwise don't block the ack, since
                         // their own delivery frames already governed their acks.
                         let mut current_result: Result<(), anyhow::Error> = Ok(());
-                        let mut current_injection_id: Option<DeliveryId> = None;
+                        let mut current_injected = false;
                         for queued in to_drain {
                             let is_current =
                                 queued.event_id.as_deref() == Some(deliver.msg_id.as_str());
+                            // Only the current delivery's own frame carries the
+                            // withheld engine ack forward — backlog messages
+                            // drained alongside it are governed by their own
+                            // delivery frames (see the comment above this loop).
                             match try_inject_pending_relay_message(
                                 &mut self.workers,
                                 &mut self.pending_deliveries,
                                 &deliver.agent,
                                 &queued,
                                 self.delivery_retry_interval,
+                                is_current.then(|| deliver.clone()),
                             )
                             .await
                             {
-                                Ok(injection_delivery_id) => {
+                                Ok(_delivery_id) => {
                                     if is_current {
-                                        current_injection_id = Some(injection_delivery_id);
+                                        current_injected = true;
                                     }
                                 }
                                 Err(error) => {
@@ -969,14 +979,14 @@ impl BrokerRuntime {
                             }
                         }
                         current_result.and_then(|()| {
-                            current_injection_id
-                                .map(FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho)
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "current delivery '{}' missing from drain batch",
-                                        deliver.msg_id
-                                    )
-                                })
+                            if current_injected {
+                                Ok(FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho)
+                            } else {
+                                Err(anyhow::anyhow!(
+                                    "current delivery '{}' missing from drain batch",
+                                    deliver.msg_id
+                                ))
+                            }
                         })
                     }
                     InboundQueueOutcome::RejectedFull => anyhow::bail!(
@@ -984,16 +994,26 @@ impl BrokerRuntime {
                         deliver.agent
                     ),
                     InboundQueueOutcome::WorkerMissing => {
+                        // Route through the same pending-delivery/retry path as
+                        // `DrainNow` (`insert_and_attempt_delivery`) instead of
+                        // a bare one-shot `workers.deliver`, so this injection
+                        // also gets a `PendingDelivery` entry: its withheld ack
+                        // is registered at insertion time and is guaranteed to
+                        // be cleaned up by worker-teardown / retry-exhaustion
+                        // paths if the worker disappears before echoing. A
+                        // one-shot `workers.deliver` outside `pending_deliveries`
+                        // had no such guarantee — see relay#1543.
                         let relay_delivery = self.fleet_relay_delivery(deliver);
-                        let injection_delivery_id = relay_delivery.delivery_id.clone();
-                        self.workers
-                            .deliver(&deliver.agent, relay_delivery)
-                            .await
-                            .map(|()| {
-                                FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho(
-                                    injection_delivery_id,
-                                )
-                            })
+                        insert_and_attempt_delivery(
+                            &mut self.workers,
+                            &mut self.pending_deliveries,
+                            &deliver.agent,
+                            relay_delivery,
+                            self.delivery_retry_interval,
+                            Some(deliver.clone()),
+                        )
+                        .await
+                        .map(|_delivery_id| FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho)
                     }
                 }
             }
@@ -1467,20 +1487,21 @@ fn fleet_spawn_outcome(
 /// stale/reused-id guard `clear_pending_delivery_if_event_matches` applies to
 /// the broker's own pending-delivery map.
 ///
+/// The withheld ack itself lives on the `PendingDelivery`
+/// (`withheld_fleet_ack`, see relay#1543), so the delivery_id/event_id
+/// matching that used to happen against a second map here is already done by
+/// `clear_pending_delivery_if_event_matches` before this is called — this
+/// only extracts what that lookup found and commits it to the delivery book.
+///
 /// Split out from `handle_fleet_deliver`/`handle_worker_event` so the ack
 /// gating is testable without a whole `BrokerRuntime`.
 pub(super) fn resolve_pending_fleet_ack(
-    pending_fleet_acks: &mut HashMap<DeliveryId, Deliver>,
+    pending: Option<&PendingDelivery>,
     fleet_delivery_book: &mut FleetDeliveryBook,
-    delivery_id: &str,
-    event_id: &str,
 ) -> Option<(String, u64)> {
-    if pending_fleet_acks.get(delivery_id)?.msg_id != event_id {
-        return None;
-    }
-    let deliver = pending_fleet_acks.remove(delivery_id)?;
-    let up_to_seq = fleet_delivery_book.commit_delivered(&deliver);
-    Some((deliver.agent, up_to_seq))
+    let deliver = pending?.withheld_fleet_ack.as_ref()?;
+    let up_to_seq = fleet_delivery_book.commit_delivered(deliver);
+    Some((deliver.agent.clone(), up_to_seq))
 }
 
 fn fleet_spawn_action_result(

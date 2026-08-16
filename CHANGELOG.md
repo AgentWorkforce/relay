@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet node delivery (`agent-relay node ...` engine-facing acks) no longer acknowledges a message to the engine the instant it's handed to a worker's PTY; the ack now waits for the worker to confirm the injection landed (echo-verified, or its bounded timeout fallback), so a delivery that never actually reaches the terminal no longer reports as delivered.
+- Fleet node delivery no longer reports a message as delivered to the engine until the worker actually receives it, instead of at the moment it's handed off.
 
 ## [11.6.9] - 2026-08-16
 

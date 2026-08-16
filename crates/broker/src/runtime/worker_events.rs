@@ -621,7 +621,6 @@ impl BrokerRuntime {
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
-        let pending_fleet_acks = &mut self.pending_fleet_acks;
         let fleet_inventory = &mut self.fleet_inventory;
         let delivery_states = &self.delivery_states;
         let terminal_control_tx = &self.terminal_control_tx;
@@ -732,14 +731,14 @@ impl BrokerRuntime {
                                 // Resolve a fleet (engine-facing) ack withheld
                                 // pending confirmation of this exact PTY
                                 // injection (relay#1310). No-op when nothing
-                                // is withheld for this delivery_id, or when
-                                // event_id doesn't match (stale/reused id).
-                                if let Some((agent, up_to_seq)) = resolve_pending_fleet_ack(
-                                    pending_fleet_acks,
-                                    fleet_delivery_book,
-                                    ack.delivery_id.as_str(),
-                                    ack.event_id.as_str(),
-                                ) {
+                                // is withheld for this delivery — the
+                                // delivery_id/event_id match already happened
+                                // above via `clear_pending_delivery_if_event_matches`,
+                                // so a stale/reused id naturally yields `pending
+                                // = None` here too (relay#1543).
+                                if let Some((agent, up_to_seq)) =
+                                    resolve_pending_fleet_ack(pending.as_ref(), fleet_delivery_book)
+                                {
                                     let _ = fleet_control_tx
                                         .send(FleetControlCommand::Send(delivery_ack(
                                             agent, up_to_seq,
@@ -1431,6 +1430,7 @@ impl BrokerRuntime {
                                 2,
                                 MessageInjectionMode::Wait,
                                 delivery_retry_interval,
+                                None,
                             )
                             .await
                             {
@@ -1762,6 +1762,7 @@ impl BrokerRuntime {
                                                     2,
                                                     MessageInjectionMode::Wait,
                                                     delivery_retry_interval,
+                                                    None,
                                                 )
                                                 .await
                                                 {
