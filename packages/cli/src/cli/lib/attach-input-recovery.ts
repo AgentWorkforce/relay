@@ -67,7 +67,9 @@ export function isBackpressureRejection(error: unknown): boolean {
  * caller must still roll back its optimistic echo), but the stream survives.
  */
 export function isWriteTimeoutRejection(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'worker_timeout';
+  return (
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'worker_timeout'
+  );
 }
 
 export interface InputStreamRecoveryOptions {
@@ -258,7 +260,9 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       onRollback();
       if (!writeTimeoutReported) {
         writeTimeoutReported = true;
-        log(`[${label}] ${name} did not confirm a keystroke in time (worker busy); dropping it and continuing.`);
+        log(
+          `[${label}] ${name} did not confirm a keystroke in time (worker busy); dropping it and continuing.`
+        );
       }
       return;
     }

@@ -153,7 +153,7 @@ describe('handleSendFailure', () => {
     expect(h.logs.some((l) => l.includes('input stream lost'))).toBe(true);
   });
 
-  it('relay#1544 MUST-FIRE: does not start recovery for a busy worker\'s write timeout', () => {
+  it("relay#1544 MUST-FIRE: does not start recovery for a busy worker's write timeout", () => {
     // `worker_timeout` on one write means that write's ack was slow, not that
     // the transport died — the transport (broker + PtyInputStream) already
     // keeps the stream open for this exact code. Recovering here would
