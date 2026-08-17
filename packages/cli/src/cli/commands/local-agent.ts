@@ -397,31 +397,55 @@ export interface AgentDeliveryStatus extends ListAgent {
   pending?: PendingRelayMessage[];
 }
 
+/** Four agents at once means no more than eight concurrent broker reads. */
+const DELIVERY_STATUS_AGENT_CONCURRENCY = 4;
+
+/** Map in input order without allowing a fleet status read to overwhelm its broker. */
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= values.length) return;
+      results[index] = await mapper(values[index]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
+  return results;
+}
+
 /**
- * Fetch delivery mode + pending-queue contents for every listed agent
- * concurrently. One `agent list --status` invocation therefore costs one
- * `/api/spawned` call plus two calls per agent, all in parallel, not a
- * serial per-agent round trip — the fleet-wide "check every agent fast"
- * case from the 2026-07-29 incident (relay#1387).
+ * Fetch delivery mode + pending-queue contents for every listed agent. A
+ * status read costs one `/api/spawned` call plus two calls per agent, but we
+ * limit enrichment to four agents at once so inspecting a busy fleet cannot
+ * turn into an unbounded broker request fan-out.
  */
 export async function withDeliveryStatus(
   client: Pick<HarnessDriverClient, 'getInboundDeliveryMode' | 'getPending'>,
   agents: ListAgent[]
 ): Promise<AgentDeliveryStatus[]> {
-  return Promise.all(
-    agents.map(async (agent) => {
+  return mapWithConcurrency(agents, DELIVERY_STATUS_AGENT_CONCURRENCY, async (agent) => {
       const [delivery_mode, pending] = await Promise.all([
         client.getInboundDeliveryMode(agent.name).catch(() => undefined),
         client.getPending(agent.name).catch(() => undefined),
       ]);
       return { ...agent, delivery_mode, pending };
-    })
-  );
+  });
 }
 
 /** A worker holding messages it cannot currently act on: parked in `manual_flush` with a non-empty queue. */
-function isStuck(agent: AgentDeliveryStatus): boolean {
-  return agent.delivery_mode === 'manual_flush' && (agent.pending?.length ?? 0) > 0;
+function stuckStatus(agent: AgentDeliveryStatus): 'yes' | 'no' | 'unknown' {
+  // A failed status read is observability data, not proof that the queue is empty.
+  if (agent.delivery_mode === undefined || agent.pending === undefined) return 'unknown';
+  return agent.delivery_mode === 'manual_flush' && agent.pending.length > 0 ? 'yes' : 'no';
 }
 
 /** Render the `--status` pretty view: mode, pending depth, and the derived stuck signal, alongside last-activity. */
@@ -432,7 +456,7 @@ export function formatPrettyAgentStatusList(agents: AgentDeliveryStatus[], now: 
     name: sanitizeTerminalCell(agent.name),
     mode: sanitizeTerminalCell(agent.delivery_mode ?? 'unknown'),
     pending: agent.pending ? String(agent.pending.length) : '-',
-    stuck: isStuck(agent) ? 'yes' : 'no',
+    stuck: stuckStatus(agent),
     lastActive: sanitizeTerminalCell(formatRelativeTime(agent.last_activity_at, now)),
   }));
 

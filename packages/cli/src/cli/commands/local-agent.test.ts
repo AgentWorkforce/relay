@@ -558,7 +558,66 @@ describe('local agent subtree', () => {
     expect(healthyRow).toMatch(/healthy-agent\s+auto_inject\s+0\s+no/);
   });
 
-  it('withDeliveryStatus fetches mode and pending concurrently per agent and tolerates per-agent fetch failure', async () => {
+  it('list --status --pretty renders a failed pending lookup as unknown, distinct from empty and stuck', async () => {
+    const now = new Date('2026-08-16T18:00:00.000Z');
+    const client = {
+      getInboundDeliveryMode: vi.fn(async () => 'manual_flush'),
+      getPending: vi.fn(async (name: string) => {
+        if (name === 'unknown-agent') throw new Error('broker unavailable');
+        return name === 'stuck-agent'
+          ? [{ from: 'a', body: 'hi', target: name, priority: 0, mode: 'wait' as const, queued_at_ms: 1 }]
+          : [];
+      }),
+    };
+
+    const result = await withDeliveryStatus(client as never, [
+      { name: 'stuck-agent', runtime: 'pty', channels: [], last_activity_at: '2026-08-16T17:00:00.000Z' } as never,
+      { name: 'empty-agent', runtime: 'pty', channels: [], last_activity_at: '2026-08-16T17:00:00.000Z' } as never,
+      { name: 'unknown-agent', runtime: 'pty', channels: [], last_activity_at: '2026-08-16T17:00:00.000Z' } as never,
+    ]);
+    const [, , stuckRow, emptyRow, unknownRow] = formatPrettyAgentStatusList(result, now).split('\n');
+
+    expect(stuckRow).toMatch(/stuck-agent\s+manual_flush\s+1\s+yes/);
+    expect(emptyRow).toMatch(/empty-agent\s+manual_flush\s+0\s+no/);
+    expect(unknownRow).toMatch(/unknown-agent\s+manual_flush\s+-\s+unknown/);
+  });
+
+  it('withDeliveryStatus bounds concurrent broker reads while preserving input order', async () => {
+    let activeReads = 0;
+    let peakReads = 0;
+    let releaseReads: () => void;
+    const readsReleased = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    const read = <T>(value: T) =>
+      vi.fn(async () => {
+        activeReads += 1;
+        peakReads = Math.max(peakReads, activeReads);
+        try {
+          await readsReleased;
+          return value;
+        } finally {
+          activeReads -= 1;
+        }
+      });
+    const client = {
+      getInboundDeliveryMode: read('auto_inject'),
+      getPending: read([]),
+    };
+    const agents = Array.from({ length: 5 }, (_, index) => ({ name: `agent-${index}` } as never));
+
+    const result = withDeliveryStatus(client as never, agents);
+
+    expect(activeReads).toBe(8);
+    releaseReads!();
+
+    await expect(result).resolves.toMatchObject(agents);
+    expect(peakReads).toBe(8);
+    expect(client.getInboundDeliveryMode).toHaveBeenCalledTimes(5);
+    expect(client.getPending).toHaveBeenCalledTimes(5);
+  });
+
+  it('withDeliveryStatus tolerates a per-agent delivery mode fetch failure', async () => {
     const client = {
       getInboundDeliveryMode: vi.fn(async (name: string) =>
         name === 'broken' ? Promise.reject(new Error('gone')) : 'auto_inject'

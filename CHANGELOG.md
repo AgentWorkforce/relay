@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay node agent list --status` shows each agent's inbound delivery mode, pending-queue contents, and a derived "stuck" flag (`manual_flush` with a non-empty queue) alongside last-activity, in one call.
+- `agent-relay node agent list --status` shows each agent's inbound delivery mode, pending-queue contents, and a derived "stuck" flag alongside last activity, reporting unavailable delivery reads as `unknown`.
 
 ### Fixed
 
