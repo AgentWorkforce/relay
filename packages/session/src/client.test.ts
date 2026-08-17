@@ -65,6 +65,33 @@ describe('SessionClient', () => {
     );
   });
 
+  it('replays a completed session as Relayhistory context without selecting a native harness resume', async () => {
+    const backend = relayhistoryBackend();
+    const client = testClient(backend.fetch, { cli: 'claude' });
+    const session = await client.createSession({
+      cli: 'claude',
+      node: 'danny-mac',
+      owner: OWNER,
+      nativeResumeId: 'claude-native-123',
+    });
+    await client.writeTurn({
+      sessionId: session.sessionId,
+      role: 'assistant',
+      content: 'The migration is ready for review.',
+      actor: OWNER,
+    });
+
+    const replay = await client.replaySession(session.sessionId);
+
+    expect(replay).toMatchObject({
+      session: { sessionId: session.sessionId, nativeResumeId: 'claude-native-123' },
+      turns: [{ turnIndex: 0 }, { turnIndex: 1, content: 'The migration is ready for review.' }],
+    });
+    expect(replay.contextPrompt).toContain(`Session ID: ${session.sessionId}`);
+    expect(replay.contextPrompt).toContain('The migration is ready for review.');
+    expect(replay).not.toHaveProperty('resume');
+  });
+
   it('uses native resume only for Claude-to-Claude and injects all other journals', async () => {
     const backend = relayhistoryBackend();
     const claude = testClient(backend.fetch, { cli: 'claude' });

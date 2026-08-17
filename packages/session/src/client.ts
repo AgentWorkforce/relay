@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import { determineResumeMode } from './resume.js';
+import { buildContextPrompt, determineResumeMode } from './resume.js';
 import type {
+  ReplaySessionResult,
   RelaySession,
   ResumeSessionResult,
   SessionActor,
@@ -200,16 +201,24 @@ export class SessionClient {
   }
 
   async resumeSession(sessionId: string): Promise<ResumeSessionResult> {
-    const state = await this.#fetchState(sessionId);
+    const replay = await this.replaySession(sessionId);
     return {
-      session: cloneSession(state.session),
-      turns: state.turns.map(cloneTurn),
+      session: replay.session,
+      turns: replay.turns,
       resume: determineResumeMode({
-        session: state.session,
-        turns: state.turns,
-        targetCli: this.#cli ?? state.session.originCli,
+        session: replay.session,
+        turns: replay.turns,
+        targetCli: this.#cli ?? replay.session.originCli,
       }),
     };
+  }
+
+  /** Reconstruct a completed session as Relayhistory context without mutating its harness. */
+  async replaySession(sessionId: string): Promise<ReplaySessionResult> {
+    const state = await this.#fetchState(sessionId);
+    const session = cloneSession(state.session);
+    const turns = state.turns.map(cloneTurn);
+    return { session, turns, contextPrompt: buildContextPrompt(session, turns) };
   }
 
   async recordSteering(input: RecordSteeringInput): Promise<void> {

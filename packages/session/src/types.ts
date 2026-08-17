@@ -61,3 +61,10 @@ export interface ResumeSessionResult {
   /** Harness-specific continuation plan derived from the fetched session. */
   resume: ResumeMode;
 }
+
+/** Durable replay context fetched from Relayhistory without selecting a native resume mode. */
+export interface ReplaySessionResult {
+  session: RelaySession;
+  turns: Turn[];
+  contextPrompt: string;
+}
