@@ -501,7 +501,9 @@ describe('local agent subtree', () => {
 
   it('list --status enriches each agent with delivery mode and pending contents (relay#1387)', async () => {
     const getInboundDeliveryMode = vi.fn(async () => 'manual_flush');
-    const getPending = vi.fn(async () => [{ from: 'a', body: 'hi', target: 'b', priority: 0, mode: 'wait', queued_at_ms: 1 }]);
+    const getPending = vi.fn(async () => [
+      { from: 'a', body: 'hi', target: 'b', priority: 0, mode: 'wait', queued_at_ms: 1 },
+    ]);
     const { program, log } = harness({
       connect: vi.fn(
         async () =>
@@ -535,7 +537,9 @@ describe('local agent subtree', () => {
       channels: [],
       last_activity_at: '2026-08-16T17:00:00.000Z',
       delivery_mode: 'manual_flush' as const,
-      pending: [{ from: 'a', body: 'hi', target: 'stuck-agent', priority: 0, mode: 'wait' as const, queued_at_ms: 1 }],
+      pending: [
+        { from: 'a', body: 'hi', target: 'stuck-agent', priority: 0, mode: 'wait' as const, queued_at_ms: 1 },
+      ],
     };
     const healthyAgent = {
       name: 'healthy-agent',
@@ -546,7 +550,9 @@ describe('local agent subtree', () => {
       pending: [],
     };
 
-    const [, , stuckRow, healthyRow] = formatPrettyAgentStatusList([stuckAgent, healthyAgent], now).split('\n');
+    const [, , stuckRow, healthyRow] = formatPrettyAgentStatusList([stuckAgent, healthyAgent], now).split(
+      '\n'
+    );
 
     expect(stuckRow).toMatch(/stuck-agent\s+manual_flush\s+1\s+yes/);
     expect(healthyRow).toMatch(/healthy-agent\s+auto_inject\s+0\s+no/);
@@ -560,7 +566,10 @@ describe('local agent subtree', () => {
       getPending: vi.fn(async () => []),
     };
 
-    const result = await withDeliveryStatus(client as never, [{ name: 'ok' } as never, { name: 'broken' } as never]);
+    const result = await withDeliveryStatus(client as never, [
+      { name: 'ok' } as never,
+      { name: 'broken' } as never,
+    ]);
 
     expect(result[0]).toMatchObject({ name: 'ok', delivery_mode: 'auto_inject', pending: [] });
     expect(result[1]).toMatchObject({ name: 'broken', delivery_mode: undefined });

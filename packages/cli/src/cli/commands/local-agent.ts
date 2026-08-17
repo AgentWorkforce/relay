@@ -568,10 +568,7 @@ export function registerLocalAgentCommands(
     .command('list')
     .description('List agents running on the local broker')
     .option('--pretty', 'Show a compact human-readable list')
-    .option(
-      '--status',
-      'Include each agent inbound delivery mode and pending-queue contents (relay#1387)'
-    )
+    .option('--status', 'Include each agent inbound delivery mode and pending-queue contents (relay#1387)')
     .action(async (opts: { pretty?: boolean; status?: boolean }) => {
       await run(deps, async (client) => {
         const agents = await client.listAgents();
