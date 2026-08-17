@@ -564,6 +564,15 @@ impl WorkerRegistry {
         }
         if let Some(cwd) = spec.cwd.as_deref() {
             let path = Path::new(cwd);
+            // A relative path resolves against this node process's own launch
+            // directory, which is exactly the per-node non-determinism the
+            // caller asked to escape — reject it here, at the one gate every
+            // spawn path (action.invoke, direct AgentSpec, harness-config
+            // default) funnels through, rather than trusting each caller to
+            // have already enforced it.
+            if !path.is_absolute() {
+                anyhow::bail!("worker cwd must be an absolute path: '{}'", path.display());
+            }
             let metadata = std::fs::metadata(path)
                 .with_context(|| format!("worker cwd is not resolvable: '{}'", path.display()))?;
             if !metadata.is_dir() {
@@ -2588,6 +2597,42 @@ mod tests {
         assert!(error.contains("worker cwd is not resolvable"), "{error}");
         assert!(error.contains("missing-checkout"), "{error}");
         assert!(!registry.has_worker(&WorkerName::from("missing-cwd-worker")));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn spawned_worker_rejects_relative_cwd() {
+        // A relative cwd resolves against this broker process's own launch
+        // directory, which reintroduces the exact per-node non-determinism
+        // the caller asked to escape by supplying a cwd at all — reject it
+        // at the WorkerRegistry gate regardless of which upstream caller
+        // (action.invoke, direct AgentSpec, harness-config default) supplied
+        // the unqualified path.
+        let mut registry = make_registry(Vec::new());
+
+        let error = registry
+            .spawn(
+                sleeping_native_worker(
+                    "relative-cwd-worker",
+                    Some("relative/checkout".to_string()),
+                ),
+                None,
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect_err("relative cwd must fail instead of resolving against the broker's own cwd")
+            .to_string();
+
+        assert!(
+            error.contains("worker cwd must be an absolute path"),
+            "{error}"
+        );
+        assert!(!registry.has_worker(&WorkerName::from("relative-cwd-worker")));
     }
 
     /// Exercise the production WorkerRegistry process boundary: the broker

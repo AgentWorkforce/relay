@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay fleet spawn --cwd` now starts workers in the requested absolute directory on every node and rejects missing paths instead of inheriting the node process directory.
+- `agent-relay fleet spawn --cwd` now starts workers in the requested absolute directory on every node and rejects missing or relative paths instead of inheriting the node process directory.
 
 ## [11.6.9] - 2026-08-16
 
