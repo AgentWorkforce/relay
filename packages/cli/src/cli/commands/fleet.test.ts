@@ -30,6 +30,12 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
         uptime_secs: 1,
       };
     }
+    async listAgents() {
+      return [];
+    }
+    async listFleetInventory() {
+      return { nodeName: 'live-node', agents: [] };
+    }
     disconnect() {}
   },
 }));
@@ -149,6 +155,52 @@ describe('fleet command support', () => {
       token: undefined,
       baseUrl: undefined,
     });
+  });
+
+  it('fleet agent list --node does not synthesize the local broker for a remote target', async () => {
+    const nodes = {
+      list: vi.fn(async () => [
+        {
+          name: 'finn-mini',
+          status: 'online',
+          live: true,
+          handlersLive: true,
+          capabilities: [],
+          tags: [],
+        },
+      ]),
+    };
+    const agents = { list: vi.fn(async () => []) };
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      core: {
+        getProjectPaths: () => ({ projectRoot: '/p', dataDir: '/p/.agentworkforce/relay', teamDir: '/p' }),
+        exit: vi.fn(),
+      } as never,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes, agents })) as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      ['fleet', 'agent', 'list', '--node', 'finn-mini', '--workspace-key', 'rk_live_test'],
+      { from: 'user' }
+    );
+
+    expect(nodes.list).toHaveBeenCalledWith({ name: 'finn-mini' });
+    const output = JSON.parse(logs[0]!);
+    expect(output.perNode.map((row: { node: string }) => row.node)).toEqual(['finn-mini']);
+    expect(output.perNode.some((row: { node: string }) => row.node === 'live-node')).toBe(false);
   });
 
   it('fleet nodes hides offline and direct pseudo-nodes by default', async () => {
@@ -424,6 +476,8 @@ describe('fleet command support', () => {
         'general',
         '--model',
         'gpt-5',
+        '--cwd',
+        '/srv/relay',
         '--organization',
         'Agent Workforce',
         '--project',
@@ -461,6 +515,7 @@ describe('fleet command support', () => {
         task: 'ACK and wait',
         channels: ['general'],
         model: 'gpt-5',
+        worker_cwd: '/srv/relay',
         organization: 'Agent Workforce',
         project: 'Relay',
         workstream: 'fleet-metadata',
@@ -489,6 +544,7 @@ describe('fleet command support', () => {
     });
     expect(spawnAgent).toHaveBeenCalledWith(
       expect.objectContaining({
+        agent: expect.objectContaining({ cwd: '/srv/relay' }),
         registrationMetadata: {
           organization: 'Agent Workforce',
           project: 'Relay',
@@ -645,6 +701,8 @@ describe('fleet command support', () => {
         'Reviewer',
         '--model',
         'gpt-5',
+        '--cwd',
+        '/srv/relay',
         '--organization',
         'Agent Workforce',
         '--project',
@@ -674,6 +732,7 @@ describe('fleet command support', () => {
       persona: 'Reviewer',
       metadata: {
         model: 'gpt-5',
+        worker_cwd: '/srv/relay',
         organization: 'Agent Workforce',
         project: 'Relay',
         workstream: 'fleet-metadata',

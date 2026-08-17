@@ -251,6 +251,20 @@ export interface ListAgent {
   native_harness_capabilities?: Record<string, unknown>;
 }
 
+/**
+ * One entry in the broker's `fleet_inventory` map, as returned by
+ * `GET /api/fleet-inventory`. The broker publishes exactly this shape to the
+ * engine via `inventory.sync`; callers join it against `ListAgent` from
+ * `GET /api/spawned` to detect the workers-vs-inventory divergence
+ * documented in relay#1539.
+ */
+export interface FleetInventoryAgent {
+  agent_id: string;
+  name: string;
+  invocation_id?: string;
+  session_ref?: string;
+}
+
 export interface BrokerStatus {
   agent_count: number;
   agents: ListAgent[];

@@ -1,7 +1,5 @@
-use super::fleet::try_send_terminal;
 use super::*;
 use crate::relaycast::retry_agent_registration;
-use crate::terminal_control::TerminalToCloud;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
@@ -13,8 +11,20 @@ const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
 /// How long the broker waits for a worker's `write_pty_response` before it
 /// fails a PTY input ack. Keeps `PtyInputStream.send()` from hanging forever
 /// when a worker wedges or dies mid-write; the deadline sweep in `reap_tick`
-/// enforces it. Short because a confirmed PTY write is a local pipe → drainer
-/// round-trip that resolves in well under a second on a healthy worker.
+/// enforces it. Measured (relay#1544) at ~100-150ms p50 / <1s worst case for a
+/// single write's local pipe → drainer round-trip against a real driven
+/// coding agent under load (idle-thinking and actively streaming output
+/// alike, on a machine running two dozen concurrent agents) — 5s leaves
+/// ample headroom for that round trip without being raised on a guess.
+///
+/// Firing this deadline does NOT mean the worker is dead: a confirmed-dead
+/// worker is reaped independently and fails its pending requests immediately
+/// via `fail_for_worker` (`WorkerDisappeared`), well before this deadline
+/// would elapse. A `Timeout` here just means ONE write didn't get an ack in
+/// time — e.g. the worker was transiently busy, or cross-node network jitter
+/// added latency this local measurement can't see — so `handle_pty_input_ws`
+/// deliberately keeps the whole PTY input connection open when this is what
+/// fires (`pty_input_error_is_connection_fatal`); only that one write fails.
 const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// `/model` writes use the same worker-owned stdin writer as protocol frames.
@@ -917,28 +927,15 @@ impl BrokerRuntime {
                         fail_pending_requests_for_worker(pending_requests, &name, "agent_released");
                         resize_owners.remove(&name);
                         pty_observability.remove(&name);
-                        let terminal_session_ids: Vec<String> = terminal_sessions
-                            .iter()
-                            .filter(|(_, session)| session.agent == name)
-                            .map(|(session_id, _)| session_id.clone())
-                            .collect();
-                        for session_id in terminal_session_ids {
-                            terminal_sessions.remove(&session_id);
-                            terminal_snapshot_requests
-                                .retain(|_, pending| pending.session_id != session_id);
-                            terminal_input_requests
-                                .retain(|_, pending| pending.session_id != session_id);
-                            if !try_send_terminal(
-                                terminal_control_tx,
-                                TerminalToCloud::Closed {
-                                    session_id: session_id.clone(),
-                                    code: Some("agent_released".into()),
-                                    message: Some("terminal worker was released".into()),
-                                },
-                            ) {
-                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while closing released worker session");
-                            }
-                        }
+                        super::fleet::close_terminal_sessions_for_worker(
+                            terminal_control_tx,
+                            terminal_sessions,
+                            terminal_snapshot_requests,
+                            terminal_input_requests,
+                            &name,
+                            "agent_released",
+                            "terminal worker was released",
+                        );
                         delivery_states.remove(&name);
                         agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);
@@ -1034,6 +1031,19 @@ impl BrokerRuntime {
                                     Some(error.to_string())
                                 }
                             };
+                            // Idempotent release is still terminal for any stale
+                            // attach state left behind after the process exited.
+                            resize_owners.remove(&name);
+                            pty_observability.remove(&name);
+                            super::fleet::close_terminal_sessions_for_worker(
+                                terminal_control_tx,
+                                terminal_sessions,
+                                terminal_snapshot_requests,
+                                terminal_input_requests,
+                                &name,
+                                "agent_released",
+                                "terminal worker was released",
+                            );
                             state.agents.remove(&name);
                             if paths.persist {
                                 let _ = state.save(&paths.state);
@@ -1341,6 +1351,17 @@ impl BrokerRuntime {
                 let counts =
                     super::delivery::pending_message_counts(delivery_states, pending_deliveries);
                 let _ = reply.send(Ok(json!({ "agents": workers.list(&counts) })));
+            }
+            ListenApiRequest::FleetInventory { reply } => {
+                // Report the in-process `fleet_inventory` map: the same
+                // snapshot the broker publishes to the engine via
+                // `inventory.sync`. Callers join this against `List` to
+                // detect the workers-vs-inventory divergence (#1539).
+                let agents: Vec<&InventoryAgent> = fleet_inventory.values().collect();
+                let _ = reply.send(Ok(json!({
+                    "node_name": fleet_node_name,
+                    "agents": agents,
+                })));
             }
             ListenApiRequest::Threads { reply } => {
                 let mut messages: Vec<Value> = recent_thread_messages.iter().cloned().collect();

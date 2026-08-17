@@ -64,6 +64,49 @@ pub(super) fn relaycast_spawn_session_ref(ws_value: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Resolve the worker process directory from a Fleet spawn request.
+///
+/// `worker_cwd` is the public action field. `cwd` remains accepted on the
+/// flattened `node.spawn` payload produced by `@agent-relay/fleet`, where it is
+/// already an `AgentSpec` working directory. Automatic placement transports
+/// the explicit field inside `metadata`, because the upstream workspace spawn
+/// request has no first-class cwd field.
+pub(super) fn relaycast_spawn_worker_cwd(ws_value: &Value) -> Result<Option<String>> {
+    let candidate = [
+        "/worker_cwd",
+        "/workerCwd",
+        "/metadata/worker_cwd",
+        "/metadata/workerCwd",
+        "/agent/worker_cwd",
+        "/agent/workerCwd",
+        "/agent/metadata/worker_cwd",
+        "/agent/metadata/workerCwd",
+        "/cwd",
+        "/agent/cwd",
+    ]
+    .iter()
+    .find_map(|pointer| ws_value.pointer(pointer));
+
+    let Some(candidate) = candidate else {
+        return Ok(None);
+    };
+    let cwd = candidate
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("worker_cwd must be a non-empty string")?;
+    let path = Path::new(cwd);
+    if !path.is_absolute() {
+        anyhow::bail!("worker_cwd must be an absolute path: '{cwd}'");
+    }
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("worker_cwd is not resolvable: '{}'", path.display()))?;
+    if !metadata.is_dir() {
+        anyhow::bail!("worker_cwd is not a directory: '{}'", path.display());
+    }
+    Ok(Some(cwd.to_string()))
+}
+
 /// Read the dispatcher-issued commit attestation from an active node-control
 /// spawn request. The legacy workspace-stream bridge deserializes the same
 /// field into `SpawnParams`, but node-only `action.invoke` spawns bypass that
@@ -247,6 +290,11 @@ pub(super) async fn release_worker_locally(
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
+    resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
 ) -> ReleaseOutcome {
     let workspace_http = &workspace_state.http_client;
     if is_relaycast_self_control_target(
@@ -263,7 +311,7 @@ pub(super) async fn release_worker_locally(
     }
     workers.supervisor.unregister(&name);
     workers.metrics.on_release(&name);
-    match workers.release(&name).await {
+    let outcome = match workers.release(&name).await {
         Ok(()) => {
             workspace_http.forget_agent_registration(&name);
             let dropped = take_pending_for_worker(pending_deliveries, &name);
@@ -333,7 +381,22 @@ pub(super) async fn release_worker_locally(
                 ReleaseOutcome::Failed
             }
         }
+    };
+    if outcome == ReleaseOutcome::Released {
+        // Worker disappearance invalidates every resize lease for that target,
+        // including a stale lease whose session was already pruned.
+        resize_owners.remove(&name);
+        super::fleet::close_terminal_sessions_for_worker(
+            terminal_control_tx,
+            terminal_sessions,
+            terminal_snapshot_requests,
+            terminal_input_requests,
+            &name,
+            "agent_released",
+            "terminal worker was released",
+        );
     }
+    outcome
 }
 
 /// Spawn a worker the fleet/node control plane requested.
@@ -343,7 +406,8 @@ pub(super) async fn release_worker_locally(
 /// directly via `action.invoke`. The spawn fields (`cli`, `task`, `channel`,
 /// `model`) previously came off the typed event payload and are now passed in;
 /// `ws_value` is retained for `harnessConfig`/token extraction exactly as
-/// before. `exit_after_task` carries the resolved task-exit lifecycle so an
+/// before, as well as for the Fleet action's explicit `worker_cwd` transport.
+/// `exit_after_task` carries the resolved task-exit lifecycle so an
 /// engine-dispatched spawn exits after its task identically to a local HTTP
 /// spawn. `control_dedup_key` carries the firehose control dedup key so the
 /// local spawn-echo dedup behaves identically.
@@ -397,6 +461,10 @@ pub(super) async fn spawn_worker_from_request(
         );
         anyhow::bail!("agent '{name}' is the broker self");
     }
+    // Resolve and validate the directory on the selected node, before dedup or
+    // registration side effects. A remote Fleet cwd cannot be validated by the
+    // caller because the path belongs to this node's filesystem.
+    let worker_cwd = relaycast_spawn_worker_cwd(ws_value)?;
     let local_spawn_echo_key = relaycast_spawn_control_dedup_key(workspace_id, &name);
     if relaycast_ws_should_apply_local_spawn_echo_dedup(control_dedup_key, &local_spawn_echo_key)
         && !dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
@@ -486,7 +554,7 @@ pub(super) async fn spawn_worker_from_request(
         session_id,
         harness_config,
         model,
-        cwd: None,
+        cwd: worker_cwd,
         team: None,
         shadow_of: None,
         shadow_mode: None,
@@ -811,7 +879,213 @@ pub(super) async fn spawn_worker_from_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn released_view_target_emits_close_while_healthy_idle_view_stays_open() {
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+        let mut workers = WorkerRegistry::new(
+            worker_event_tx,
+            Vec::new(),
+            temp.path().join("worker-logs"),
+            Instant::now(),
+        );
+        let released_agent = WorkerName::from("released-view-target");
+        let healthy_agent = WorkerName::from("healthy-idle-view-target");
+        let child = tokio::process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("release target should spawn");
+        let (command_tx, command_rx) = mpsc::channel(1);
+        drop(command_rx);
+        workers.workers.insert(
+            released_agent.clone(),
+            WorkerHandle {
+                generation: Uuid::new_v4(),
+                spec: AgentSpec {
+                    name: released_agent.clone(),
+                    runtime: AgentRuntime::Pty,
+                    provider: None,
+                    cli: Some("sh".to_string()),
+                    session_id: None,
+                    harness_config: None,
+                    model: None,
+                    cwd: None,
+                    team: None,
+                    shadow_of: None,
+                    shadow_mode: None,
+                    args: Vec::new(),
+                    channels: Vec::new(),
+                    restart_policy: None,
+                },
+                parent: Some("Relaycast".to_string()),
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: crate::worker::AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+
+        let workspace_id = WorkspaceId::from("ws_release_view_test".to_string());
+        let (ws_control_tx, _ws_control_rx) = mpsc::channel::<WsControl>(4);
+        let workspace = RelayWorkspace {
+            workspace_id,
+            workspace_alias: None,
+            relay_workspace_key: "rk_live_test".to_string(),
+            self_name: "broker".to_string(),
+            self_agent_id: AgentId::from("agent_broker".to_string()),
+            self_names: HashSet::from(["broker".to_string()]),
+            self_agent_ids: HashSet::from([AgentId::from("agent_broker".to_string())]),
+            http_client: RelaycastHttpClient::new(
+                Some("http://127.0.0.1:9".to_string()),
+                "rk_live_test",
+                "broker",
+                "codex",
+            ),
+            ws_control_tx,
+        };
+        let paths = ensure_ephemeral_paths(temp.path(), "release-view-target")
+            .expect("ephemeral runtime paths");
+        let mut state = broker::BrokerState::default();
+        let telemetry = TelemetryClient::default();
+        let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(8);
+        let mut pending_deliveries = HashMap::new();
+        let mut dead_letters = DeadLetterStore::default();
+        let mut pending_requests = HashMap::new();
+        let mut delivery_states = HashMap::new();
+        let mut agent_result_tokens = HashMap::new();
+        let released_session_id = "released-view-session".to_string();
+        let healthy_session_id = "healthy-idle-view-session".to_string();
+        let mut terminal_sessions = HashMap::from([
+            (
+                released_session_id.clone(),
+                TerminalSession {
+                    agent: released_agent.clone(),
+                    mode: TerminalMode::View,
+                    ready: true,
+                    pending_output: Vec::new(),
+                    pending_output_bytes: 0,
+                },
+            ),
+            (
+                healthy_session_id.clone(),
+                TerminalSession {
+                    agent: healthy_agent,
+                    mode: TerminalMode::View,
+                    ready: true,
+                    pending_output: Vec::new(),
+                    pending_output_bytes: 0,
+                },
+            ),
+        ]);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut terminal_snapshot_requests = HashMap::from([
+            (
+                "released-snapshot".to_string(),
+                TerminalSnapshotRequest {
+                    session_id: released_session_id.clone(),
+                    client_request_id: None,
+                    deadline,
+                },
+            ),
+            (
+                "healthy-snapshot".to_string(),
+                TerminalSnapshotRequest {
+                    session_id: healthy_session_id.clone(),
+                    client_request_id: None,
+                    deadline,
+                },
+            ),
+        ]);
+        let mut terminal_input_requests = HashMap::new();
+        let now = Instant::now();
+        let mut resize_owners = HashMap::from([
+            (
+                released_agent.clone(),
+                ResizeOwner {
+                    session_id: released_session_id.clone(),
+                    last_seen: now,
+                    rows: 24,
+                    cols: 80,
+                },
+            ),
+            (
+                WorkerName::from("healthy-idle-view-target"),
+                ResizeOwner {
+                    session_id: healthy_session_id.clone(),
+                    last_seen: now,
+                    rows: 30,
+                    cols: 100,
+                },
+            ),
+        ]);
+        let (terminal_control_tx, mut terminal_control_rx) = mpsc::channel(8);
+
+        let outcome = release_worker_locally(
+            released_agent.clone(),
+            &workspace,
+            &mut workers,
+            &mut state,
+            &paths,
+            &telemetry,
+            &sdk_out_tx,
+            &mut pending_deliveries,
+            &mut dead_letters,
+            &mut pending_requests,
+            &mut delivery_states,
+            &mut agent_result_tokens,
+            &mut resize_owners,
+            &terminal_control_tx,
+            &mut terminal_sessions,
+            &mut terminal_snapshot_requests,
+            &mut terminal_input_requests,
+        )
+        .await;
+
+        assert_eq!(outcome, ReleaseOutcome::Released);
+        // MUST FIRE: releasing the target through the same lifecycle function
+        // used by the fleet action emits a final code and reason for its view.
+        let terminal_messages: Vec<TerminalControlCommand> =
+            std::iter::from_fn(|| terminal_control_rx.try_recv().ok()).collect();
+        assert!(terminal_messages.iter().any(|message| matches!(
+            message,
+            TerminalControlCommand::Send(TerminalToCloud::Closed {
+                session_id,
+                code: Some(code),
+                message: Some(message),
+            }) if session_id == &released_session_id
+                && code == "agent_released"
+                && message == "terminal worker was released"
+        )));
+        assert!(!terminal_sessions.contains_key(&released_session_id));
+        assert!(!terminal_snapshot_requests.contains_key("released-snapshot"));
+        assert!(!resize_owners.contains_key(&released_agent));
+
+        // MUST NOT FIRE: an unrelated healthy view may be legitimately idle.
+        assert!(terminal_sessions.contains_key(&healthy_session_id));
+        assert!(terminal_snapshot_requests.contains_key("healthy-snapshot"));
+        assert!(resize_owners.contains_key(&WorkerName::from("healthy-idle-view-target")));
+        assert!(
+            !terminal_messages.iter().any(|message| matches!(
+                message,
+                TerminalControlCommand::Send(TerminalToCloud::Closed { session_id, .. })
+                    if session_id == &healthy_session_id
+            )),
+            "healthy idle view must not receive a close"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -947,6 +1221,48 @@ mod tests {
             .expect("inline config should return config");
 
         assert_eq!(config.runtime(), AgentRuntime::Pty);
+    }
+
+    #[test]
+    fn fleet_spawn_worker_cwd_accepts_existing_absolute_directory() {
+        let temp = tempfile::tempdir().expect("worker cwd fixture");
+        let cwd = temp.path().to_string_lossy().into_owned();
+
+        for value in [
+            json!({ "worker_cwd": cwd }),
+            json!({ "metadata": { "worker_cwd": cwd } }),
+            json!({ "agent": { "cwd": cwd } }),
+        ] {
+            assert_eq!(
+                relaycast_spawn_worker_cwd(&value)
+                    .expect("existing worker cwd should resolve")
+                    .as_deref(),
+                Some(cwd.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn fleet_spawn_worker_cwd_rejects_unresolvable_directory() {
+        let temp = tempfile::tempdir().expect("worker cwd fixture");
+        let missing = temp.path().join("missing-checkout");
+        let value = json!({ "worker_cwd": missing });
+
+        let error = relaycast_spawn_worker_cwd(&value)
+            .expect_err("missing worker cwd must reject the spawn")
+            .to_string();
+
+        assert!(error.contains("worker_cwd is not resolvable"), "{error}");
+        assert!(error.contains("missing-checkout"), "{error}");
+    }
+
+    #[test]
+    fn fleet_spawn_worker_cwd_rejects_relative_directory() {
+        let error = relaycast_spawn_worker_cwd(&json!({ "worker_cwd": "../other-repo" }))
+            .expect_err("relative Fleet cwd would depend on the node launch directory")
+            .to_string();
+
+        assert!(error.contains("must be an absolute path"), "{error}");
     }
 
     #[test]

@@ -40,6 +40,7 @@ const expectedLeafCommands = [
   'reflex off',
   'reflex status',
   // fleet (serve is a hidden error stub, filtered out below)
+  'fleet agent list',
   'fleet config',
   'fleet disable',
   'fleet enable',

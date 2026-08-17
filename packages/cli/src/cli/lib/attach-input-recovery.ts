@@ -41,11 +41,44 @@ export const INPUT_REOPEN_ATTEMPT_TIMEOUT_MS = 15_000;
  * (`transport.ts:206-214`, `retryable: true`). That is flow control, not
  * transport death: tearing the socket down and reopening it would drop every
  * outstanding keystroke and re-run the identity gate, turning a slow broker
- * into a detach. Every other rejection means the stream is gone or unusable.
+ * into a detach. See {@link isWriteTimeoutRejection} for the other rejection
+ * that must not trigger a teardown; every remaining rejection means the
+ * stream is gone or unusable.
  */
 export function isBackpressureRejection(error: unknown): boolean {
   return (
     typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'input_backpressure'
+  );
+}
+
+/**
+ * `PtyInputStream.send()` rejects with `worker_timeout` when the broker's
+ * `write_pty` ack for THAT ONE keystroke didn't arrive before
+ * `PTY_INPUT_ACK_TIMEOUT` (broker `api.rs`). That does not mean the worker is
+ * dead: a confirmed-dead worker is reaped independently and surfaces as
+ * `worker_disappeared`, and the broker keeps this WebSocket open for
+ * `worker_timeout` specifically (`pty_input_error_is_connection_fatal`,
+ * `listen_api.rs`) because a busy-but-alive coding agent that hasn't drained
+ * its stdin yet produces the exact same "no ack yet" as a wedged one — the
+ * broker has no other liveness signal to tell them apart. Tearing the whole
+ * input stream down and reconnecting over one slow ack is what produced the
+ * self-healing "input stream lost / reconnected after 1 attempt(s)" flap
+ * reported in relay#1544.
+ *
+ * Critically, a late ack is not a failed write: the broker's `write_all()`
+ * onto the PTY master is still blocking and pending when the ack times out,
+ * and it very likely completes once the busy child drains its stdin — the
+ * keystroke lands anyway. Rolling back the optimistic echo here would show
+ * the operator input vanishing right before it executes, a UI lie that is
+ * worse than the flap this module exists to fix and that the operator cannot
+ * recover from (they cannot tell whether it is safe to retype). So this code
+ * must NOT roll back the echo. Only a *confirmed* write failure — a different
+ * error code entirely — may roll it back, and that already falls through to
+ * {@link createInputStreamRecovery}'s default `recover()` path below.
+ */
+export function isWriteTimeoutRejection(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'worker_timeout'
   );
 }
 
@@ -117,10 +150,13 @@ export interface InputStreamRecovery {
   /** Begin recovery. No-ops if already recovering or settled. */
   recover(reason: string): void;
   /**
-   * Classify a rejected `send()`. Backpressure is flow control on a healthy
-   * stream and only costs the optimistic echo; everything else is treated as
-   * transport loss and enters recovery. Callers route every send rejection
-   * here rather than assuming loss.
+   * Classify a rejected `send()`. Two codes never enter recovery:
+   * `input_backpressure` is flow control on a healthy stream and only costs
+   * the optimistic echo, and `worker_timeout` is a late ack on a write that
+   * may still land, so it costs nothing — no rollback, no recovery. Every
+   * other rejection is treated as transport loss and enters recovery, which
+   * does roll back. Callers route every send rejection here rather than
+   * assuming loss.
    */
   handleSendFailure(error: unknown): void;
   /** Clears the backpressure latch so a later episode reports again. */
@@ -159,6 +195,8 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
   let releaseBackoff: (() => void) | null = null;
   /** True once a backpressure episode has been reported; reset on the next good send. */
   let backpressureReported = false;
+  /** True once a write-timeout episode has been reported; reset on the next good send. */
+  let writeTimeoutReported = false;
 
   const cancel = (): void => {
     if (timer) {
@@ -207,6 +245,7 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
 
   const noteSendSuccess = (): void => {
     backpressureReported = false;
+    writeTimeoutReported = false;
   };
 
   const handleSendFailure = (sendError: unknown): void => {
@@ -222,6 +261,23 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
         log(
           `[${label}] input is arriving faster than ${name} can accept it; dropping keystrokes until it catches up.`
         );
+      }
+      return;
+    }
+    if (isWriteTimeoutRejection(sendError)) {
+      // This one write's ack didn't arrive in time — the worker may just be
+      // busy, not dead (relay#1544). The transport already kept the socket
+      // open for this exact code, so recovering here would manufacture the
+      // reconnect this module exists to avoid. A late ack is not a failed
+      // write either: the broker's write to the PTY is still pending and
+      // very likely lands once the worker drains its stdin, so do NOT roll
+      // back the optimistic echo — doing so would erase input right before
+      // it executes, with no way for the operator to tell it happened. Only
+      // a confirmed write failure (a distinct error code) may roll it back,
+      // and that already falls through to `recover()` below.
+      if (!writeTimeoutReported) {
+        writeTimeoutReported = true;
+        log(`[${label}] ${name} did not confirm a keystroke in time (worker busy); it may still land.`);
       }
       return;
     }

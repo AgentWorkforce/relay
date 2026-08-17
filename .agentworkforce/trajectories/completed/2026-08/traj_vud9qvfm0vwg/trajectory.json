@@ -1,0 +1,82 @@
+{
+  "id": "traj_vud9qvfm0vwg",
+  "version": 1,
+  "task": {
+    "title": "Fix view attach teardown signal when target disappears",
+    "source": {
+      "system": "plain",
+      "id": "relay#1548"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-17T09:41:29.295Z",
+  "completedAt": "2026-08-17T10:07:46.348Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-17T09:44:37.363Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_od89sarsbfdl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-17T09:44:37.363Z",
+      "endedAt": "2026-08-17T10:07:46.348Z",
+      "events": [
+        {
+          "ts": 1786959877363,
+          "type": "decision",
+          "content": "Fix the fleet action-release lifecycle rather than adding a view-client-only close: Fix the fleet action-release lifecycle rather than adding a view-client-only close",
+          "raw": {
+            "question": "Fix the fleet action-release lifecycle rather than adding a view-client-only close",
+            "chosen": "Fix the fleet action-release lifecycle rather than adding a view-client-only close",
+            "alternatives": [],
+            "reasoning": "Drive and view already share terminal.closed -> WS 1011 handling. Fleet action release is the only examined worker-disappearance path that omits dependent terminal-session finalization; transient terminal-lane disconnect retains its existing resume path."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1786961265804,
+          "type": "reflection",
+          "content": "The asymmetry is release-lifecycle-specific: fleet release omitted terminal finalization, while drive only surfaced closure after input failure. The fix now centralizes worker terminal cleanup, preserves transient transport resume, and paired lifecycle plus loopback tests prove target close and healthy-idle non-close. Both deliberate mutations failed at the intended assertions, and the live pre-fix run reproduced silence versus drive 1011.",
+          "raw": {
+            "focalPoints": [
+              "protocol trace",
+              "resume semantics",
+              "paired tests",
+              "mutation proof",
+              "live reproduction"
+            ],
+            "adjustments": "Kept transport reconnect behavior unchanged; moved finalization into release_worker_locally so every caller gets the worker-disappearance signal.",
+            "confidence": 0.96
+          },
+          "significance": "high",
+          "tags": [
+            "focal:protocol trace",
+            "focal:resume semantics",
+            "focal:paired tests",
+            "focal:mutation proof",
+            "focal:live reproduction",
+            "confidence:0.96"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed fleet view attach teardown on released targets, added paired must-fire/must-not-fire coverage and mutation proofs, reproduced the defect live against a Daytona target, and validated broker plus CLI surfaces.",
+    "approach": "Traced the shared terminal adapter and release paths, established resume semantics, centralized terminal-session finalization at successful worker release, reused it for local HTTP release, and tested both broker lifecycle output and client-visible WebSocket close behavior.",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e3217d29001a7d3688dc62ba42ccfd1b80aac15e",
+    "endRef": "e3217d29001a7d3688dc62ba42ccfd1b80aac15e"
+  }
+}

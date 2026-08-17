@@ -14,6 +14,7 @@ impl BrokerRuntime {
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
+        let fleet_inventory_reconcile_retry_after = &mut self.fleet_inventory_reconcile_retry_after;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
         // The broker provider's capacity handlers are live whenever it is
@@ -221,6 +222,11 @@ impl BrokerRuntime {
                 pending_requests,
                 delivery_states,
                 agent_result_tokens,
+                resize_owners,
+                terminal_control_tx,
+                terminal_sessions,
+                terminal_snapshot_requests,
+                terminal_input_requests,
             )
             .await;
             match super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
@@ -698,6 +704,22 @@ impl BrokerRuntime {
                     }
                 }
             }
+        }
+
+        let live_fleet_workers = workers.live_fleet_inventory_candidates();
+        if super::fleet::reconcile_fleet_inventory_with_live_workers(
+            fleet_control_tx,
+            relaycast_http,
+            fleet_delivery_book,
+            fleet_inventory,
+            fleet_inventory_reconcile_retry_after,
+            live_fleet_workers,
+            now,
+        )
+        .await
+            > 0
+        {
+            fleet_load_changed = true;
         }
 
         // Publish the fleet load snapshot once, after both reaping and restart

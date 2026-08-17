@@ -591,7 +591,10 @@ type SpawnToolRequest = {
   cli?: string;
   persona?: string;
   task?: string;
+  /** Deprecated alias for personaCwd. Never used as the worker process cwd. */
   cwd?: string;
+  personaCwd?: string;
+  workerCwd?: string;
   channel?: string;
   channels?: string[];
   model?: string;
@@ -611,7 +614,7 @@ function requireSpawnActions(client: AgentClientLike): NonNullable<AgentClientLi
   return client.actions;
 }
 
-function validateSpawnRequest({ cli, persona, model, sessionRef }: SpawnToolRequest): void {
+function validateSpawnRequest({ cli, persona, model, sessionRef, cwd, personaCwd }: SpawnToolRequest): void {
   if (Boolean(cli) === Boolean(persona)) {
     throw new Error('spawn requires exactly one of `cli` or `persona`.');
   }
@@ -621,6 +624,14 @@ function validateSpawnRequest({ cli, persona, model, sessionRef }: SpawnToolRequ
   if (persona && sessionRef) {
     throw new Error('Persona session settings come from the persona launch plan; omit `session_ref`.');
   }
+  if (cli && (cwd || personaCwd)) {
+    throw new Error(
+      '`cwd`/`persona_cwd` only select the persona registry context; use `worker_cwd` to set the spawned worker working directory.'
+    );
+  }
+  if (cwd && personaCwd) {
+    throw new Error('Pass only `persona_cwd`; `cwd` is its deprecated alias.');
+  }
 }
 
 function buildSpawnActionInput({
@@ -629,6 +640,8 @@ function buildSpawnActionInput({
   persona,
   task,
   cwd,
+  personaCwd,
+  workerCwd,
   channel,
   channels,
   model,
@@ -641,11 +654,13 @@ function buildSpawnActionInput({
   targetNode,
 }: SpawnToolRequest): Record<string, unknown> {
   const selectedChannels = channels ?? (channel ? [channel] : undefined);
+  const registryCwd = personaCwd ?? cwd;
   return {
     name,
     ...(cli ? { cli } : { persona, capability: 'spawn:persona' }),
     ...(task ? { task } : {}),
-    ...(persona && cwd ? { cwd } : {}),
+    ...(persona && registryCwd ? { cwd: registryCwd } : {}),
+    ...(workerCwd ? { worker_cwd: workerCwd } : {}),
     ...(model ? { model } : {}),
     ...declaredWorkforceMetadata({ organization, project, workstream, role, objective }, task),
     ...(sessionRef ? { session_ref: sessionRef } : {}),
@@ -1065,7 +1080,17 @@ function registerAgentRelayTools(
           .optional()
           .describe('AgentWorkforce persona id or JSON path; mutually exclusive with cli'),
         task: z.string().optional().describe('Initial task instructions'),
-        cwd: z.string().optional().describe('Project cwd used for persona registry resolution'),
+        cwd: z
+          .string()
+          .optional()
+          .describe(
+            'Deprecated alias for persona_cwd; this does not set the spawned worker working directory'
+          ),
+        persona_cwd: z.string().optional().describe('Project cwd used only for persona registry resolution'),
+        worker_cwd: z
+          .string()
+          .optional()
+          .describe('Absolute working directory for the spawned worker process'),
         channel: z.string().optional().describe('Channel to join'),
         channels: z.array(z.string()).optional().describe('Channels to join'),
         model: z.string().optional().describe('Model powering the worker'),
@@ -1092,6 +1117,8 @@ function registerAgentRelayTools(
       persona,
       task,
       cwd,
+      persona_cwd,
+      worker_cwd,
       channel,
       channels,
       model,
@@ -1111,6 +1138,8 @@ function registerAgentRelayTools(
         persona,
         task,
         cwd,
+        personaCwd: persona_cwd,
+        workerCwd: worker_cwd,
         channel,
         channels,
         model,

@@ -11,6 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fleet node delivery no longer reports a message as delivered to the engine until the worker actually receives it, instead of at the moment it's handed off.
 
+## [11.7.0] - 2026-08-17
+
+### Added
+
+- `agent-relay fleet agent list [--pretty|--json] [--node <n>] [--all]` lists fleet-wide agents with their live, inventory, and roster presence, and reports unavailable node data explicitly.
+
+### Added
+
+- `agent-relay node agent list --status` shows each agent's inbound delivery mode, pending-queue contents, and a derived "stuck" flag alongside last activity, reporting unavailable delivery reads as `unknown`.
+
+### Fixed
+
+- Live broker workers missing from the Relaycast reconnect inventory are now restored from their existing agent identity, so a node-control reconnect no longer makes a still-running terminal permanently unreachable.
+- `agent-relay node agent attach --node` view sessions now close with a terminal code and reason immediately when their target worker is released.
+
+## [11.6.10] - 2026-08-17
+
+### Fixed
+
+- `agent-relay fleet spawn --cwd` now starts workers in the requested absolute directory on every node and rejects missing or relative paths instead of inheriting the node process directory.
+- The broker's live-worker impersonation probe (used by message sends, delivery read-acks, and channel join/leave) is now bounded, so an engine that never returns from the presence check can no longer hang the caller indefinitely.
+- The broker's own identity is no longer refused as a live-worker impersonation when its own token falls out of cache; it re-mints its own credential instead of erroring.
+- Impersonation now refuses to rotate a target's token when the presence probe returns an agent status it doesn't recognize, instead of treating unknown statuses as safe to rotate.
+
 ## [11.6.9] - 2026-08-16
 
 ### Fixed
