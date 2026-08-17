@@ -1390,6 +1390,126 @@ async fn successful_injection_still_resolves_its_withheld_fleet_ack() {
     cleanup_worker_registry(registry).await;
 }
 
+// relay#1543 restart-ordering MUST-NOT-FIRE / MUST-FIRE boundary. The
+// confirmation order is explicit: HashMap iteration never decides which
+// delivery lands first. With both restored sequences pending, confirming seq
+// 42 first must not emit a cumulative ack that lies about seq 41. Once seq 41
+// confirms, the held seq 42 confirmation must be released by one cumulative
+// ack through seq 42.
+#[test]
+fn restored_out_of_order_confirmation_waits_for_the_lower_sequence() {
+    // Use a mid-stream cursor to exercise the restart-only "adopt first
+    // position" branch rather than accidentally relying on a fresh seq-1
+    // stream.
+    let first = fleet_deliver(41);
+    let second = fleet_deliver(42);
+    let mut first_pending = pending_delivery(
+        "worker-a",
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    first_pending.withheld_fleet_ack = Some(first.clone());
+    let mut second_pending = pending_delivery(
+        "worker-a",
+        second.delivery_id.as_str(),
+        second.msg_id.as_str(),
+    );
+    second_pending.withheld_fleet_ack = Some(second.clone());
+    let mut pending_deliveries = HashMap::from([
+        (DeliveryId::from(&first.delivery_id), first_pending),
+        (DeliveryId::from(&second.delivery_id), second_pending),
+    ]);
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+
+    let (confirmed_second, second_ack) =
+        super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+            &mut pending_deliveries,
+            second.delivery_id.as_str(),
+            Some(second.msg_id.as_str()),
+            "worker-a",
+            "delivery_ack",
+            &mut fleet_delivery_book,
+        );
+    assert!(confirmed_second.is_some());
+    assert_eq!(
+        second_ack, None,
+        "seq 42 must remain withheld while restored seq 41 is still unconfirmed"
+    );
+    assert!(
+        pending_deliveries.contains_key(second.delivery_id.as_str()),
+        "the held seq 42 confirmation must remain durable until seq 41 confirms"
+    );
+    assert!(
+        fleet_delivery_book.is_delivery_confirmation_held(&second),
+        "maintenance must be able to distinguish the confirmed hold from a retryable delivery"
+    );
+    assert_eq!(
+        fleet_delivery_book.acked_up_to_seq(first.agent_id.as_str()),
+        first.seq - 1,
+        "the restored cursor must remain immediately below the lowest pending sequence"
+    );
+
+    let (confirmed_first, first_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut pending_deliveries,
+        first.delivery_id.as_str(),
+        Some(first.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut fleet_delivery_book,
+    );
+    assert!(confirmed_first.is_some());
+    assert_eq!(
+        first_ack,
+        Some((first.agent.clone(), second.seq)),
+        "confirming seq 41 must release its already-confirmed seq 42 sibling"
+    );
+    assert!(
+        pending_deliveries.is_empty(),
+        "the cumulative seq 42 ack must release both pending entries"
+    );
+    assert_eq!(
+        fleet_delivery_book.acked_up_to_seq(first.agent_id.as_str()),
+        second.seq
+    );
+    assert!(!fleet_delivery_book.is_delivery_confirmation_held(&second));
+}
+
+// The paired happy-path boundary: adding an ordering hold must not turn
+// ordinary in-order worker confirmations into acknowledgements that never
+// fire.
+#[test]
+fn in_order_confirmation_still_acknowledges_each_sequence_immediately() {
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let mut pending_deliveries = HashMap::new();
+
+    for expected_seq in [1, 2] {
+        let deliver = fleet_deliver(expected_seq);
+        let mut pending = pending_delivery(
+            "worker-a",
+            deliver.delivery_id.as_str(),
+            deliver.msg_id.as_str(),
+        );
+        pending.withheld_fleet_ack = Some(deliver.clone());
+        pending_deliveries.insert(DeliveryId::from(&deliver.delivery_id), pending);
+
+        let (confirmed, resolved) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+            &mut pending_deliveries,
+            deliver.delivery_id.as_str(),
+            Some(deliver.msg_id.as_str()),
+            "worker-a",
+            "delivery_ack",
+            &mut fleet_delivery_book,
+        );
+        assert!(confirmed.is_some());
+        assert_eq!(
+            resolved,
+            Some((deliver.agent.clone(), expected_seq)),
+            "an in-order confirmation must ack without waiting for another event"
+        );
+        assert!(pending_deliveries.is_empty());
+    }
+}
+
 // A worker delivery_ack whose event_id doesn't match the withheld delivery's
 // event_id (stale or reused delivery_id) must not resolve into an engine
 // ack. The matching itself is `clear_pending_delivery_if_event_matches`'s

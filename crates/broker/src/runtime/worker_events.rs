@@ -1,6 +1,6 @@
 use super::fleet::{
-    fail_terminal_session, refresh_fleet_inventory_session_ref, resolve_pending_fleet_ack,
-    try_send_terminal, verified_spawn_ready_result,
+    confirm_pending_delivery_and_resolve_fleet_ack, fail_terminal_session,
+    refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
 };
 use super::*;
 use crate::node_control::delivery_ack;
@@ -717,28 +717,27 @@ impl BrokerRuntime {
                             let pending_for_confirmation = if let Ok(ack) =
                                 serde_json::from_value::<DeliveryAckPayload>(payload.clone())
                             {
-                                let pending = clear_pending_delivery_if_event_matches(
-                                    pending_deliveries,
-                                    &ack.delivery_id,
-                                    Some(&ack.event_id),
-                                    &name,
-                                    "delivery_ack",
-                                );
+                                let (pending, resolved_fleet_ack) =
+                                    confirm_pending_delivery_and_resolve_fleet_ack(
+                                        pending_deliveries,
+                                        &ack.delivery_id,
+                                        Some(&ack.event_id),
+                                        &name,
+                                        "delivery_ack",
+                                        fleet_delivery_book,
+                                    );
                                 if pending.is_some() {
                                     terminal_failed_deliveries.remove(&ack.delivery_id);
                                 }
 
                                 // Resolve a fleet (engine-facing) ack withheld
                                 // pending confirmation of this exact PTY
-                                // injection (relay#1310). No-op when nothing
-                                // is withheld for this delivery — the
-                                // delivery_id/event_id match already happened
-                                // above via `clear_pending_delivery_if_event_matches`,
-                                // so a stale/reused id naturally yields `pending
-                                // = None` here too (relay#1543).
-                                if let Some((agent, up_to_seq)) =
-                                    resolve_pending_fleet_ack(pending.as_ref(), fleet_delivery_book)
-                                {
+                                // injection (relay#1310). Restored sibling
+                                // confirmations are held and released only as
+                                // a contiguous per-agent prefix, so a higher
+                                // sequence can never cumulatively ACK a lower
+                                // delivery that has not landed (relay#1543).
+                                if let Some((agent, up_to_seq)) = resolved_fleet_ack {
                                     let _ = fleet_control_tx
                                         .send(FleetControlCommand::Send(delivery_ack(
                                             agent, up_to_seq,

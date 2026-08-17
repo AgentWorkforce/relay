@@ -1500,8 +1500,75 @@ pub(super) fn resolve_pending_fleet_ack(
     fleet_delivery_book: &mut FleetDeliveryBook,
 ) -> Option<(String, u64)> {
     let deliver = pending?.withheld_fleet_ack.as_ref()?;
-    let up_to_seq = fleet_delivery_book.commit_delivered(deliver);
+    let up_to_seq = fleet_delivery_book.commit_confirmed_delivery(deliver)?;
     Some((deliver.agent.clone(), up_to_seq))
+}
+
+/// Confirm one pending worker delivery and resolve only the contiguous prefix
+/// of fleet ACKs that is now safe to report cumulatively.
+///
+/// Before removing the matching pending entry, this restores a missing
+/// post-restart cursor from every withheld sibling for the same immutable
+/// agent identity. If the confirmed sequence is ahead of a lower unconfirmed
+/// sibling, the entry is put back into the pending map and excluded from
+/// retries until the lower confirmation releases both. Keeping the entry in
+/// the persisted pending store also makes another broker restart safe: the
+/// broker may retry an already-landed delivery, but it cannot falsely ACK an
+/// undelivered lower one.
+pub(super) fn confirm_pending_delivery_and_resolve_fleet_ack(
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    delivery_id: &str,
+    event_id: Option<&str>,
+    worker_name: &str,
+    worker_signal: &str,
+    fleet_delivery_book: &mut FleetDeliveryBook,
+) -> (Option<PendingDelivery>, Option<(String, u64)>) {
+    if let Some(deliver) = pending_deliveries
+        .get(delivery_id)
+        .and_then(|pending| pending.withheld_fleet_ack.as_ref())
+    {
+        let same_agent_pending = pending_deliveries
+            .values()
+            .filter_map(|pending| pending.withheld_fleet_ack.as_ref())
+            .filter(|sibling| sibling.agent_id == deliver.agent_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        fleet_delivery_book.restore_pending_agent(&same_agent_pending);
+    }
+
+    let pending = clear_pending_delivery_if_event_matches(
+        pending_deliveries,
+        delivery_id,
+        event_id,
+        worker_name,
+        worker_signal,
+    );
+    let Some(pending) = pending else {
+        return (None, None);
+    };
+    let already_held = pending
+        .withheld_fleet_ack
+        .as_ref()
+        .is_some_and(|deliver| fleet_delivery_book.is_delivery_confirmation_held(deliver));
+    let resolved = resolve_pending_fleet_ack(Some(&pending), fleet_delivery_book);
+
+    match (&pending.withheld_fleet_ack, &resolved) {
+        (Some(deliver), Some((_, up_to_seq))) if deliver.seq > 0 => {
+            pending_deliveries.retain(|_, sibling| {
+                !sibling.withheld_fleet_ack.as_ref().is_some_and(|sibling| {
+                    sibling.agent_id == deliver.agent_id
+                        && sibling.seq > 0
+                        && sibling.seq <= *up_to_seq
+                })
+            });
+        }
+        (Some(_), None) => {
+            pending_deliveries.insert(pending.delivery.delivery_id.clone(), pending.clone());
+        }
+        _ => {}
+    }
+
+    ((!already_held).then_some(pending), resolved)
 }
 
 fn fleet_spawn_action_result(

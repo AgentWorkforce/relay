@@ -151,7 +151,11 @@ impl BrokerRuntime {
         let due_ids: Vec<DeliveryId> = pending_deliveries
             .iter()
             .filter_map(|(delivery_id, pending)| {
-                if pending.next_retry_at <= now {
+                let confirmation_is_held =
+                    pending.withheld_fleet_ack.as_ref().is_some_and(|deliver| {
+                        fleet_delivery_book.is_delivery_confirmation_held(deliver)
+                    });
+                if pending.next_retry_at <= now && !confirmation_is_held {
                     Some(delivery_id.clone())
                 } else {
                     None
