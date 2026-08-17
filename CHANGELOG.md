@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
+### Added
+
+- `agent-relay node agent list --status` shows each agent's inbound delivery mode, pending-queue contents, and a derived "stuck" flag (`manual_flush` with a non-empty queue) alongside last-activity, in one call.
+
 ### Fixed
 
 - Live broker workers missing from the Relaycast reconnect inventory are now restored from their existing agent identity, so a node-control reconnect no longer makes a still-running terminal permanently unreachable.

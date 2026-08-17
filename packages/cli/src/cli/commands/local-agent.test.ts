@@ -11,7 +11,9 @@ vi.mock('@agent-relay/harness-driver', () => ({
 
 import {
   formatPrettyAgentList,
+  formatPrettyAgentStatusList,
   registerLocalAgentCommands,
+  withDeliveryStatus,
   type LocalAgentDependencies,
 } from './local-agent.js';
 
@@ -495,6 +497,73 @@ describe('local agent subtree', () => {
     expect(row).toContain('Lead�Agent');
     expect(row).toContain('codex�unsafe / gpt-5');
     expect(row).not.toContain('\x1b');
+  });
+
+  it('list --status enriches each agent with delivery mode and pending contents (relay#1387)', async () => {
+    const getInboundDeliveryMode = vi.fn(async () => 'manual_flush');
+    const getPending = vi.fn(async () => [{ from: 'a', body: 'hi', target: 'b', priority: 0, mode: 'wait', queued_at_ms: 1 }]);
+    const { program, log } = harness({
+      connect: vi.fn(
+        async () =>
+          ({
+            listAgents: vi.fn(async () => [{ name: 'lead' }]),
+            getInboundDeliveryMode,
+            getPending,
+          }) as never
+      ),
+    });
+
+    await program.parseAsync(['local', 'agent', 'list', '--status'], { from: 'user' });
+
+    expect(getInboundDeliveryMode).toHaveBeenCalledWith('lead');
+    expect(getPending).toHaveBeenCalledWith('lead');
+    const parsed = JSON.parse(log.mock.calls[0]![0] as string);
+    expect(parsed).toEqual([
+      {
+        name: 'lead',
+        delivery_mode: 'manual_flush',
+        pending: [{ from: 'a', body: 'hi', target: 'b', priority: 0, mode: 'wait', queued_at_ms: 1 }],
+      },
+    ]);
+  });
+
+  it('list --status --pretty marks manual_flush + non-empty queue as stuck, and auto_inject + empty queue as not stuck', () => {
+    const now = new Date('2026-08-16T18:00:00.000Z');
+    const stuckAgent = {
+      name: 'stuck-agent',
+      runtime: 'pty' as const,
+      channels: [],
+      last_activity_at: '2026-08-16T17:00:00.000Z',
+      delivery_mode: 'manual_flush' as const,
+      pending: [{ from: 'a', body: 'hi', target: 'stuck-agent', priority: 0, mode: 'wait' as const, queued_at_ms: 1 }],
+    };
+    const healthyAgent = {
+      name: 'healthy-agent',
+      runtime: 'pty' as const,
+      channels: [],
+      last_activity_at: '2026-08-16T17:59:00.000Z',
+      delivery_mode: 'auto_inject' as const,
+      pending: [],
+    };
+
+    const [, , stuckRow, healthyRow] = formatPrettyAgentStatusList([stuckAgent, healthyAgent], now).split('\n');
+
+    expect(stuckRow).toMatch(/stuck-agent\s+manual_flush\s+1\s+yes/);
+    expect(healthyRow).toMatch(/healthy-agent\s+auto_inject\s+0\s+no/);
+  });
+
+  it('withDeliveryStatus fetches mode and pending concurrently per agent and tolerates per-agent fetch failure', async () => {
+    const client = {
+      getInboundDeliveryMode: vi.fn(async (name: string) =>
+        name === 'broken' ? Promise.reject(new Error('gone')) : 'auto_inject'
+      ),
+      getPending: vi.fn(async () => []),
+    };
+
+    const result = await withDeliveryStatus(client as never, [{ name: 'ok' } as never, { name: 'broken' } as never]);
+
+    expect(result[0]).toMatchObject({ name: 'ok', delivery_mode: 'auto_inject', pending: [] });
+    expect(result[1]).toMatchObject({ name: 'broken', delivery_mode: undefined });
   });
 
   it('spawn forwards task-exit lifecycle options', async () => {

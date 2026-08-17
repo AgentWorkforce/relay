@@ -39,6 +39,7 @@ agent-relay node agent new claude            # spawn + attach
 agent-relay node agent new codex --runtime native
 agent-relay node agent spawn opencode --runtime pty
 agent-relay node agent list
+agent-relay node agent list --status            # + inbound delivery mode and pending-queue contents per agent
 agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
