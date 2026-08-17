@@ -45,6 +45,7 @@ import type {
   SpawnPtyInput,
   SendMessageInput,
   ListAgent,
+  FleetInventoryAgent,
 } from './types.js';
 import { EventBus } from './event-bus.js';
 import { SpawnedAgentHandle } from './agent-handle.js';
@@ -705,6 +706,21 @@ export class HarnessDriverClient {
   async listAgents(): Promise<ListAgent[]> {
     const result = await this.transport.request<{ agents: ListAgent[] }>('/api/spawned');
     return result.agents;
+  }
+
+  /**
+   * Snapshot of the broker's in-process `fleet_inventory` map — the same set
+   * the broker publishes to the engine via `inventory.sync`. Joined against
+   * `listAgents()` to detect the workers-vs-inventory divergence (#1539) —
+   * an agent live in the PTY map that was never (or is no longer) present in
+   * what the engine sees.
+   */
+  async listFleetInventory(): Promise<{ nodeName: string | undefined; agents: FleetInventoryAgent[] }> {
+    const result = await this.transport.request<{
+      node_name?: string;
+      agents: FleetInventoryAgent[];
+    }>('/api/fleet-inventory');
+    return { nodeName: result.node_name, agents: result.agents ?? [] };
   }
 
   // ── PTY control ────────────────────────────────────────────────────

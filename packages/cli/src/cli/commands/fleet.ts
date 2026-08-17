@@ -3,6 +3,14 @@ import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { createWorkspaceClient, type RelayWorkspaceThinClient } from '@agent-relay/sdk';
 
 import { withDefaults, type CoreDependencies } from './core.js';
+import {
+  buildRows,
+  collectWithRetry,
+  formatPretty,
+  readLocalBrokerMaps,
+  type FleetNodeContribution,
+  type RosterAgent,
+} from './fleet-agent.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
@@ -107,6 +115,21 @@ export function registerFleetCommands(
         nodes: visibleNodes,
       });
     });
+  });
+
+  // `fleet agent list` — the fleet-wide answer to `node agent list --pretty`.
+  // See relay#1553 for the gap this fills and packages/cli/src/cli/commands/
+  // fleet-agent.ts for the join logic (three name spaces, per-node contributions).
+  const agent = group.command('agent').description('Inspect agents across the fleet');
+  addSdkOptions(
+    agent
+      .command('list')
+      .description('List agents on every reachable fleet node, joined against the workspace roster')
+      .option('--pretty', 'Render as a human-readable table (default is JSON)')
+      .option('--node <name>', 'Scope to a single node (still enumerates it via nodes.list())')
+      .option('--all', 'Include offline/history nodes the way `fleet nodes --all` does')
+  ).action(async (options: Record<string, unknown>) => {
+    await runFleetAgentList(deps, options);
   });
 
   addSdkOptions(
@@ -354,6 +377,126 @@ function warnIfInferredFromProjectSession(
         'Pass --workspace-key/--wk or set RELAY_WORKSPACE_KEY to override for this command.'
     );
   }
+}
+
+/**
+ * Fan-out for `fleet agent list`. Reads `nodes.list()` for the roster of
+ * reachable fleet nodes, `agents.list()` for the workspace agent registry,
+ * and — when this machine has a running local broker — both the live worker
+ * map and the fleet_inventory snapshot from it. Each per-node call is
+ * retried once with jitter before being rendered as an error; a node is
+ * never dropped from the output.
+ *
+ * The pure join lives in {@link ./fleet-agent.ts} so it can be tested against
+ * fixtures without wiring up the SDK.
+ */
+async function runFleetAgentList(
+  deps: FleetCommandDependencies,
+  options: Record<string, unknown>
+): Promise<void> {
+  await runSdk(deps.sdk, async () => {
+    warnIfInferredFromProjectSession(options, deps.warn);
+    const clientOptions = sdkOptionsFromOpts(options);
+    const relay = deps.sdk.createWorkspaceRelay(clientOptions);
+
+    // Enumerate fleet nodes exactly the way `fleet nodes` does. `nodes.list()`
+    // failure is fatal — nothing to reconcile against.
+    const nodes = await relay.nodes.list({
+      ...(typeof options.node === 'string' && options.node ? { name: options.node } : {}),
+    });
+    const includeAll = options.all === true;
+    const visibleNodes = includeAll ? nodes : nodes.filter(isAvailableFleetNode);
+
+    // The workspace roster is separately fetched; a failure here is degraded
+    // rather than fatal — the presence column just marks fewer rows as
+    // roster-matched and warns.
+    let roster: RosterAgent[] = [];
+    try {
+      // Default to online-only. `--all` opens it up to the workspace's
+      // full record set (>1600 today, most stale/offline) so a scripted diff
+      // has the option, without making the default output unreadable. This
+      // mirrors what `fleet nodes` does with node history.
+      const relayAgents = await relay.agents.list(includeAll ? {} : { status: 'online' });
+      roster = relayAgents.map((entry) => ({
+        name: entry.name,
+        ...(entry.status ? { status: entry.status } : {}),
+        ...(entry.lastSeenAt ? { lastSeenAt: entry.lastSeenAt } : {}),
+        ...(entry.metadata ? { metadata: entry.metadata } : {}),
+      }));
+    } catch (error) {
+      deps.warn(
+        `roster unavailable (${error instanceof Error ? error.message : String(error)}); ` +
+          'PRESENCE column will not report roster membership.'
+      );
+    }
+
+    // Local broker (this machine): read /api/spawned and /api/fleet-inventory.
+    // The broker's node_name identifies which entry in `visibleNodes` is us.
+    const paths = deps.core.getProjectPaths();
+    const conn = readBrokerConnection(paths.dataDir);
+    let localNodeName: string | undefined;
+    let localLive: Awaited<ReturnType<HarnessDriverClient['listAgents']>> = [];
+    let localInventory: Awaited<
+      ReturnType<HarnessDriverClient['listFleetInventory']>
+    >['agents'] = [];
+    let localError: string | undefined;
+    let localRetried = false;
+
+    if (conn) {
+      const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+      try {
+        const session = await client.getSession();
+        localNodeName = session.node_name ?? undefined;
+        const result = await collectWithRetry('local broker', () => readLocalBrokerMaps(client));
+        if (result.ok) {
+          localLive = result.value.liveAgents;
+          localInventory = result.value.inventoryAgents;
+          localRetried = result.retried;
+        } else {
+          localError = result.error;
+          localRetried = result.retried;
+        }
+      } catch (error) {
+        localError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
+      } finally {
+        client.disconnect();
+      }
+    }
+
+    // Assemble per-node contributions. The local node (if we resolved its
+    // name) uses the two-map data; every other visible node gets a
+    // count-only contribution built from its `nodes.list()` record.
+    const contributions: FleetNodeContribution[] = visibleNodes.map((node) => {
+      if (localNodeName && node.name === localNodeName) {
+        if (localError) {
+          return { node, isLocal: true, error: localError, retried: localRetried };
+        }
+        return {
+          node,
+          isLocal: true,
+          liveAgents: localLive,
+          inventoryAgents: localInventory,
+          retried: localRetried,
+        };
+      }
+      return { node, isLocal: false };
+    });
+
+    const now = new Date();
+    const output = buildRows({ contributions, roster }, now);
+
+    if (options.pretty === true) {
+      deps.log(formatPretty(output));
+      return;
+    }
+    printJson(deps.sdk, {
+      generatedAt: now.toISOString(),
+      localNode: localNodeName ?? null,
+      perNode: output.perNode,
+      unplacedRoster: output.unplacedRoster,
+      errors: output.errors,
+    });
+  });
 }
 
 async function runFleetStatus(
