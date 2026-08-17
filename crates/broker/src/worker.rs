@@ -502,6 +502,30 @@ impl WorkerRegistry {
         }
     }
 
+    /// Return the live broker-owned workers that must remain present in the
+    /// Relaycast reconnect inventory. The parent marker is set by the two
+    /// production spawn surfaces (Dashboard and Relaycast); workers without it
+    /// are local-only and must not cause a fleet identity lookup.
+    pub(crate) fn live_fleet_inventory_candidates(&self) -> Vec<(WorkerName, Option<String>)> {
+        self.workers
+            .iter()
+            .filter_map(|(name, handle)| {
+                if handle.parent.is_none() || !self.is_worker_live(name) {
+                    return None;
+                }
+                let session_ref = handle.spec.session_id.clone().or_else(|| {
+                    handle
+                        .spec
+                        .harness_config
+                        .as_ref()
+                        .and_then(ResolvedHarnessConfig::session_id)
+                        .map(ToOwned::to_owned)
+                });
+                Some((name.clone(), session_ref))
+            })
+            .collect()
+    }
+
     pub(crate) fn worker_pid(&self, name: &str) -> Option<u32> {
         self.workers.get(name).and_then(|h| h.child.id())
     }

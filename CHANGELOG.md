@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Live broker workers missing from the Relaycast reconnect inventory are now restored from their existing agent identity, so a node-control reconnect no longer makes a still-running terminal permanently unreachable.
+
 ## [11.6.9] - 2026-08-16
 
 ### Fixed

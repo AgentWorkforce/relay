@@ -696,6 +696,20 @@ impl BrokerRuntime {
             }
         }
 
+        let live_fleet_workers = workers.live_fleet_inventory_candidates();
+        if super::fleet::reconcile_fleet_inventory_with_live_workers(
+            fleet_control_tx,
+            relaycast_http,
+            fleet_delivery_book,
+            fleet_inventory,
+            live_fleet_workers,
+        )
+        .await
+            > 0
+        {
+            fleet_load_changed = true;
+        }
+
         // Publish the fleet load snapshot once, after both reaping and restart
         // handling, so the broadcast count reflects the final post-restart live
         // worker set rather than a same-tick post-reap intermediate.

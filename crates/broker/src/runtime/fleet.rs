@@ -1693,6 +1693,78 @@ pub(super) async fn record_fleet_inventory_agent(
     publish_fleet_inventory_snapshot(fleet_control_tx, fleet_inventory).await;
 }
 
+/// Restore reconnect-inventory entries for broker-owned workers that are still
+/// live locally. A successful process launch and a successful inventory write
+/// happen on separate asynchronous paths, so the inventory is a projection of
+/// the live worker registry rather than an independently authoritative list.
+///
+/// This deliberately resolves an existing Relaycast identity by name instead
+/// of calling `register_agent_token`: reconciliation must never rotate a live
+/// worker's credential merely to rebuild the reconnect snapshot.
+pub(super) async fn reconcile_fleet_inventory_with_live_workers(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    relaycast_http: &RelaycastHttpClient,
+    fleet_delivery_book: &mut FleetDeliveryBook,
+    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    live_workers: Vec<(WorkerName, Option<String>)>,
+) -> usize {
+    let missing_workers: Vec<_> = live_workers
+        .into_iter()
+        .filter(|(name, _)| !fleet_inventory.contains_key(name))
+        .collect();
+    if missing_workers.is_empty() {
+        return 0;
+    }
+
+    let Some(relay) = relaycast_http.relay_client() else {
+        tracing::warn!(
+            missing_workers = missing_workers.len(),
+            "cannot reconcile fleet inventory without a Relaycast client"
+        );
+        return 0;
+    };
+
+    let mut repaired = 0;
+    for (name, session_ref) in missing_workers {
+        let agent = match relay.get_agent(name.as_str()).await {
+            Ok(agent) => agent,
+            Err(error) => {
+                tracing::warn!(
+                    worker = %name,
+                    error = %error,
+                    "could not resolve live worker for fleet inventory reconciliation"
+                );
+                continue;
+            }
+        };
+        if agent.name != name.as_str() {
+            tracing::warn!(
+                worker = %name,
+                resolved_name = %agent.name,
+                "refusing to reconcile fleet inventory with a mismatched Relaycast identity"
+            );
+            continue;
+        }
+
+        fleet_delivery_book.bind_authoritative_identity(agent.name.clone(), agent.id.clone());
+        fleet_inventory.insert(
+            name,
+            InventoryAgent {
+                agent_id: agent.id,
+                name: agent.name,
+                invocation_id: None,
+                session_ref,
+            },
+        );
+        repaired += 1;
+    }
+
+    if repaired > 0 {
+        publish_fleet_inventory_snapshot(fleet_control_tx, fleet_inventory).await;
+    }
+    repaired
+}
+
 /// Resolve an opaque agent token to the authoritative identity required by
 /// `inventory.sync` and delivery bookkeeping.
 ///
@@ -2115,6 +2187,7 @@ pub(super) fn fleet_initial_session_ref(spec: &AgentSpec) -> Option<String> {
 mod tests {
     use super::*;
     use crate::protocol::PtyHarnessConfig;
+    use httpmock::{Method::GET, Method::POST, MockServer};
 
     #[cfg(unix)]
     #[tokio::test]
@@ -3070,6 +3143,122 @@ mod tests {
             }
             other => panic!("expected inventory update, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn reconciliation_restores_a_live_worker_missing_from_inventory_without_reregistering() {
+        let server = MockServer::start();
+        let lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/live-worker")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(serde_json::json!({
+                "ok": true,
+                "data": {
+                    "id": "agent-live-id",
+                    "name": "live-worker",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+        // A reconciliation must only look the already-running worker up. Any
+        // registration request can rotate its token and would recreate #1545.
+        let registration = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(500).json_body(serde_json::json!({
+                "ok": false,
+                "error": { "code": "must_not_register", "message": "must not register" }
+            }));
+        });
+        let relaycast_http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut inventory = HashMap::new();
+        let mut delivery_book = FleetDeliveryBook::default();
+
+        let repaired = reconcile_fleet_inventory_with_live_workers(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            vec![(
+                WorkerName::from("live-worker"),
+                Some("session-live".to_string()),
+            )],
+        )
+        .await;
+
+        assert_eq!(repaired, 1, "the live orphan must be restored");
+        assert_eq!(
+            inventory.get(&WorkerName::from("live-worker")),
+            Some(&InventoryAgent {
+                agent_id: "agent-live-id".to_string(),
+                name: "live-worker".to_string(),
+                invocation_id: None,
+                session_ref: Some("session-live".to_string()),
+            })
+        );
+        assert_eq!(
+            delivery_book.active_agent_id("live-worker"),
+            Some("agent-live-id")
+        );
+        match rx.recv().await {
+            Some(FleetControlCommand::UpdateInventory(agents)) => {
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].name, "live-worker");
+                assert_eq!(agents[0].agent_id, "agent-live-id");
+            }
+            other => panic!("expected repaired inventory snapshot, got {other:?}"),
+        }
+        lookup.assert_hits(1);
+        registration.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_rejects_a_name_mismatch_instead_of_binding_the_wrong_identity() {
+        let server = MockServer::start();
+        let lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/live-worker")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(serde_json::json!({
+                "ok": true,
+                "data": {
+                    "id": "agent-other-id",
+                    "name": "other-worker",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+        let relaycast_http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut inventory = HashMap::new();
+        let mut delivery_book = FleetDeliveryBook::default();
+
+        let repaired = reconcile_fleet_inventory_with_live_workers(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            vec![(WorkerName::from("live-worker"), None)],
+        )
+        .await;
+
+        assert_eq!(repaired, 0, "a mismatched name must not be reconciled");
+        assert!(inventory.is_empty());
+        assert_eq!(delivery_book.active_agent_id("live-worker"), None);
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected identity must not publish"
+        );
+        lookup.assert_hits(1);
     }
 
     #[tokio::test]
