@@ -11,6 +11,7 @@ use crate::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
         TerminalToCloud,
     },
+    worker::LiveFleetInventoryCandidate,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
@@ -27,6 +28,12 @@ const TERMINAL_INPUT_MAX_IN_FLIGHT_PER_SESSION: usize = 16;
 const FLEET_INVENTORY_RECONCILE_BATCH_SIZE: usize = 2;
 const FLEET_INVENTORY_RECONCILE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 const FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FleetInventoryRetry {
+    process_id: u32,
+    retry_after: Instant,
+}
 // Relaycast currently limits a node to 32 terminal sessions. Keep that many
 // slots free from high-volume frames so every affected session can still get a
 // terminal.closed notification when the output lane applies backpressure.
@@ -1707,27 +1714,48 @@ pub(super) async fn record_fleet_inventory_agent(
 /// This deliberately resolves an existing Relaycast identity by name instead
 /// of calling `register_agent_token`: reconciliation must never rotate a live
 /// worker's credential merely to rebuild the reconnect snapshot.
+fn schedule_fleet_inventory_retry(
+    retry_after: &mut HashMap<WorkerName, FleetInventoryRetry>,
+    name: WorkerName,
+    process_id: u32,
+    now: Instant,
+) {
+    retry_after.insert(
+        name,
+        FleetInventoryRetry {
+            process_id,
+            retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+        },
+    );
+}
+
 pub(super) async fn reconcile_fleet_inventory_with_live_workers(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     relaycast_http: &RelaycastHttpClient,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
-    retry_after: &mut HashMap<WorkerName, Instant>,
-    live_workers: Vec<(WorkerName, Option<String>)>,
+    retry_after: &mut HashMap<WorkerName, FleetInventoryRetry>,
+    live_workers: Vec<LiveFleetInventoryCandidate>,
     now: Instant,
 ) -> usize {
-    let live_worker_names: HashSet<_> = live_workers.iter().map(|(name, _)| name.clone()).collect();
+    let live_worker_processes: HashMap<_, _> = live_workers
+        .iter()
+        .map(|worker| (worker.name.clone(), worker.process_id))
+        .collect();
     // A worker that exits or has since been restored needs no retained retry
-    // state. This also bounds the failure cache to live, missing workers.
-    retry_after
-        .retain(|name, _| live_worker_names.contains(name) && !fleet_inventory.contains_key(name));
+    // state. A restarted same-name worker has a different PID and must not
+    // inherit the old process's retry deadline.
+    retry_after.retain(|name, retry| {
+        live_worker_processes.get(name) == Some(&retry.process_id)
+            && !fleet_inventory.contains_key(name)
+    });
     let missing_workers: Vec<_> = live_workers
         .into_iter()
-        .filter(|(name, _)| {
-            !fleet_inventory.contains_key(name)
+        .filter(|worker| {
+            !fleet_inventory.contains_key(&worker.name)
                 && retry_after
-                    .get(name)
-                    .is_none_or(|next_attempt| *next_attempt <= now)
+                    .get(&worker.name)
+                    .is_none_or(|retry| retry.retry_after <= now)
         })
         .take(FLEET_INVENTORY_RECONCILE_BATCH_SIZE)
         .collect();
@@ -1742,7 +1770,12 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
     };
 
     let mut repaired = 0;
-    for (name, session_ref) in missing_workers {
+    for LiveFleetInventoryCandidate {
+        name,
+        session_ref,
+        process_id,
+    } in missing_workers
+    {
         let agent = match timeout(
             FLEET_INVENTORY_RECONCILE_LOOKUP_TIMEOUT,
             relay.get_agent(name.as_str()),
@@ -1757,7 +1790,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                     retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                     "could not resolve live worker for fleet inventory reconciliation; will retry later"
                 );
-                retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
+                schedule_fleet_inventory_retry(retry_after, name, process_id, now);
                 continue;
             }
             Err(_) => {
@@ -1767,7 +1800,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                     retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                     "timed out resolving live worker for fleet inventory reconciliation; will retry later"
                 );
-                retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
+                schedule_fleet_inventory_retry(retry_after, name, process_id, now);
                 continue;
             }
         };
@@ -1778,7 +1811,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                 retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                 "refusing to reconcile fleet inventory with a mismatched Relaycast identity; will retry later"
             );
-            retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
+            schedule_fleet_inventory_retry(retry_after, name, process_id, now);
             continue;
         }
 
@@ -1791,7 +1824,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                     retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                     "refusing to replace a live worker's authoritative fleet identity; will retry later"
                 );
-                retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
+                schedule_fleet_inventory_retry(retry_after, name, process_id, now);
                 continue;
             }
         } else {
@@ -2240,6 +2273,18 @@ mod tests {
     use super::*;
     use crate::protocol::PtyHarnessConfig;
     use httpmock::{Method::GET, Method::POST, MockServer};
+
+    fn live_fleet_worker(
+        name: &str,
+        session_ref: Option<&str>,
+        process_id: u32,
+    ) -> LiveFleetInventoryCandidate {
+        LiveFleetInventoryCandidate {
+            name: WorkerName::from(name),
+            session_ref: session_ref.map(ToOwned::to_owned),
+            process_id,
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -3238,10 +3283,7 @@ mod tests {
             &mut delivery_book,
             &mut inventory,
             &mut retry_after,
-            vec![(
-                WorkerName::from("live-worker"),
-                Some("session-live".to_string()),
-            )],
+            vec![live_fleet_worker("live-worker", Some("session-live"), 101)],
             Instant::now(),
         )
         .await;
@@ -3304,7 +3346,7 @@ mod tests {
             &mut delivery_book,
             &mut inventory,
             &mut retry_after,
-            vec![(WorkerName::from("live-worker"), None)],
+            vec![live_fleet_worker("live-worker", None, 102)],
             Instant::now(),
         )
         .await;
@@ -3353,7 +3395,7 @@ mod tests {
             &mut delivery_book,
             &mut inventory,
             &mut retry_after,
-            vec![(WorkerName::from("live-worker"), None)],
+            vec![live_fleet_worker("live-worker", None, 103)],
             now,
         )
         .await;
@@ -3366,7 +3408,10 @@ mod tests {
         );
         assert_eq!(
             retry_after.get(&WorkerName::from("live-worker")),
-            Some(&(now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF))
+            Some(&FleetInventoryRetry {
+                process_id: 103,
+                retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+            })
         );
         assert!(
             rx.try_recv().is_err(),
@@ -3414,7 +3459,8 @@ mod tests {
         let live_workers = || {
             worker_names
                 .iter()
-                .map(|name| (WorkerName::from(name.as_str()), None))
+                .enumerate()
+                .map(|(index, name)| live_fleet_worker(name, None, index as u32 + 1))
                 .collect()
         };
         let now = Instant::now();
@@ -3473,7 +3519,7 @@ mod tests {
         let mut inventory = HashMap::new();
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
-        let live_workers = || vec![(WorkerName::from("missing-worker"), None)];
+        let live_workers = |process_id| vec![live_fleet_worker("missing-worker", None, process_id)];
         let now = Instant::now();
 
         assert_eq!(
@@ -3483,7 +3529,7 @@ mod tests {
                 &mut delivery_book,
                 &mut inventory,
                 &mut retry_after,
-                live_workers(),
+                live_workers(104),
                 now,
             )
             .await,
@@ -3492,7 +3538,10 @@ mod tests {
         assert_eq!(lookup.hits(), 1);
         assert_eq!(
             retry_after.get(&WorkerName::from("missing-worker")),
-            Some(&(now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF))
+            Some(&FleetInventoryRetry {
+                process_id: 104,
+                retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+            })
         );
 
         assert_eq!(
@@ -3502,7 +3551,7 @@ mod tests {
                 &mut delivery_book,
                 &mut inventory,
                 &mut retry_after,
-                live_workers(),
+                live_workers(104),
                 now + Duration::from_secs(1),
             )
             .await,
@@ -3517,13 +3566,41 @@ mod tests {
                 &mut delivery_book,
                 &mut inventory,
                 &mut retry_after,
-                live_workers(),
-                now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+                live_workers(105),
+                now + Duration::from_secs(2),
             )
             .await,
             0
         );
-        assert_eq!(lookup.hits(), 2, "the worker is retried after backoff");
+        assert_eq!(
+            lookup.hits(),
+            2,
+            "a restarted same-name worker bypasses the old retry deadline"
+        );
+        assert_eq!(
+            retry_after.get(&WorkerName::from("missing-worker")),
+            Some(&FleetInventoryRetry {
+                process_id: 105,
+                retry_after: now
+                    + Duration::from_secs(2)
+                    + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+            })
+        );
+
+        assert_eq!(
+            reconcile_fleet_inventory_with_live_workers(
+                &tx,
+                &relaycast_http,
+                &mut delivery_book,
+                &mut inventory,
+                &mut retry_after,
+                live_workers(105),
+                now + Duration::from_secs(2) + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+            )
+            .await,
+            0
+        );
+        assert_eq!(lookup.hits(), 3, "the worker is retried after backoff");
     }
 
     #[tokio::test]
@@ -3561,7 +3638,7 @@ mod tests {
             &mut delivery_book,
             &mut inventory,
             &mut retry_after,
-            vec![(WorkerName::from("slow-worker"), None)],
+            vec![live_fleet_worker("slow-worker", None, 106)],
             now,
         )
         .await;
@@ -3571,7 +3648,10 @@ mod tests {
         assert_eq!(lookup.hits(), 1);
         assert_eq!(
             retry_after.get(&WorkerName::from("slow-worker")),
-            Some(&(now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF))
+            Some(&FleetInventoryRetry {
+                process_id: 106,
+                retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+            })
         );
     }
 

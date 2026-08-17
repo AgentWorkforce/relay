@@ -233,7 +233,8 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
     /// Per-worker retry deadlines for failed Relaycast identity lookups while
     /// rebuilding the reconnect inventory.
-    pub(super) fleet_inventory_reconcile_retry_after: HashMap<WorkerName, Instant>,
+    pub(super) fleet_inventory_reconcile_retry_after:
+        HashMap<WorkerName, super::fleet::FleetInventoryRetry>,
     pub(super) sdk_out_tx: mpsc::Sender<ProtocolEnvelope<Value>>,
     pub(super) worker_event_rx: mpsc::Receiver<WorkerEvent>,
     pub(super) worker_events_open: bool,

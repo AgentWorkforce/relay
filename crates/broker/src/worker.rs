@@ -238,6 +238,15 @@ pub(crate) enum WorkerEvent {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveFleetInventoryCandidate {
+    pub(crate) name: WorkerName,
+    pub(crate) session_ref: Option<String>,
+    /// The wrapper PID distinguishes a restarted same-name worker from the
+    /// process whose failed Relaycast lookup is currently being backed off.
+    pub(crate) process_id: u32,
+}
+
 pub(crate) struct WorkerRegistry {
     pub(crate) workers: HashMap<WorkerName, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
@@ -506,13 +515,14 @@ impl WorkerRegistry {
     /// Relaycast reconnect inventory. The parent marker is set by the two
     /// production spawn surfaces (Dashboard and Relaycast); workers without it
     /// are local-only and must not cause a fleet identity lookup.
-    pub(crate) fn live_fleet_inventory_candidates(&self) -> Vec<(WorkerName, Option<String>)> {
+    pub(crate) fn live_fleet_inventory_candidates(&self) -> Vec<LiveFleetInventoryCandidate> {
         self.workers
             .iter()
             .filter_map(|(name, handle)| {
                 if handle.parent.is_none() || !self.is_worker_live(name) {
                     return None;
                 }
+                let process_id = handle.child.id()?;
                 let session_ref = handle.spec.session_id.clone().or_else(|| {
                     handle
                         .spec
@@ -521,7 +531,11 @@ impl WorkerRegistry {
                         .and_then(ResolvedHarnessConfig::session_id)
                         .map(ToOwned::to_owned)
                 });
-                Some((name.clone(), session_ref))
+                Some(LiveFleetInventoryCandidate {
+                    name: name.clone(),
+                    session_ref,
+                    process_id,
+                })
             })
             .collect()
     }
