@@ -130,6 +130,7 @@ export interface SendMessageInput {
 /**
  * Re-exported from the wire contract: `GET /api/spawned` and the `agents`
  * array of `GET /api/status` are the same broker payload, so they share one
- * declaration.
+ * declaration. `FleetInventoryAgent` is the sibling contract for the
+ * `GET /api/fleet-inventory` snapshot the broker also publishes to the engine.
  */
-export type { ListAgent } from './protocol.js';
+export type { ListAgent, FleetInventoryAgent } from './protocol.js';

@@ -1352,6 +1352,17 @@ impl BrokerRuntime {
                     super::delivery::pending_message_counts(delivery_states, pending_deliveries);
                 let _ = reply.send(Ok(json!({ "agents": workers.list(&counts) })));
             }
+            ListenApiRequest::FleetInventory { reply } => {
+                // Report the in-process `fleet_inventory` map: the same
+                // snapshot the broker publishes to the engine via
+                // `inventory.sync`. Callers join this against `List` to
+                // detect the workers-vs-inventory divergence (#1539).
+                let agents: Vec<&InventoryAgent> = fleet_inventory.values().collect();
+                let _ = reply.send(Ok(json!({
+                    "node_name": fleet_node_name,
+                    "agents": agents,
+                })));
+            }
             ListenApiRequest::Threads { reply } => {
                 let mut messages: Vec<Value> = recent_thread_messages.iter().cloned().collect();
                 match relaycast_http.get_all_dms(200).await {

@@ -45,6 +45,7 @@ import type {
   SpawnPtyInput,
   SendMessageInput,
   ListAgent,
+  FleetInventoryAgent,
 } from './types.js';
 import { EventBus } from './event-bus.js';
 import { SpawnedAgentHandle } from './agent-handle.js';
@@ -705,6 +706,39 @@ export class HarnessDriverClient {
   async listAgents(): Promise<ListAgent[]> {
     const result = await this.transport.request<{ agents: ListAgent[] }>('/api/spawned');
     return result.agents;
+  }
+
+  /**
+   * Snapshot of the broker's in-process `fleet_inventory` map — the same set
+   * the broker publishes to the engine via `inventory.sync`. Joined against
+   * `listAgents()` to detect the workers-vs-inventory divergence (#1539) —
+   * an agent live in the PTY map that was never (or is no longer) present in
+   * what the engine sees.
+   *
+   * The broker envelope carries `success` alongside `agents`. When the broker
+   * cannot answer (runtime channel closed, reply dropped) it responds
+   * `{ "success": false, "agents": [] }` at HTTP 200. Returning that empty
+   * array to the caller would silently conflate "broker down" with "0 agents"
+   * — the same class of defect relay#1553 exists to prevent — so a
+   * `success: false` envelope is surfaced as an error instead. Callers that
+   * want to distinguish it from a transport-layer failure can match on
+   * `code === 'fleet_inventory_unavailable'`.
+   */
+  async listFleetInventory(): Promise<{ nodeName: string | undefined; agents: FleetInventoryAgent[] }> {
+    const result = await this.transport.request<{
+      success?: boolean;
+      node_name?: string;
+      agents?: FleetInventoryAgent[];
+    }>('/api/fleet-inventory');
+    if (result.success === false) {
+      throw new HarnessDriverProtocolError({
+        code: 'fleet_inventory_unavailable',
+        message:
+          'broker returned success:false for /api/fleet-inventory — the runtime channel is unavailable, so agent presence is unknown (not zero).',
+        retryable: true,
+      });
+    }
+    return { nodeName: result.node_name, agents: result.agents ?? [] };
   }
 
   // ── PTY control ────────────────────────────────────────────────────

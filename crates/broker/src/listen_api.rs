@@ -80,6 +80,14 @@ pub enum ListenApiRequest {
     List {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    /// `GET /api/fleet-inventory` — snapshot of the in-process `fleet_inventory`
+    /// map (what the broker last published to the engine via `inventory.sync`).
+    /// Callers use this alongside `List` to detect the workers-vs-inventory
+    /// divergence documented in #1539 — an agent live in the PTY map that was
+    /// never (or is no longer) present in what the engine sees.
+    FleetInventory {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     Threads {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
@@ -445,6 +453,10 @@ fn listen_api_router_with_auth(
         .route("/api/session/renew", routing::post(listen_api_renew_lease))
         .route("/api/spawn", routing::post(listen_api_spawn))
         .route("/api/spawned", routing::get(listen_api_list))
+        .route(
+            "/api/fleet-inventory",
+            routing::get(listen_api_fleet_inventory),
+        )
         .route(
             "/api/spawned/{name}/model",
             routing::post(listen_api_set_model),
@@ -1161,6 +1173,24 @@ async fn listen_api_list(
     if state
         .tx
         .send(ListenApiRequest::List { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return axum::Json(json!({ "success": false, "agents": [] }));
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => axum::Json(val),
+        _ => axum::Json(json!({ "success": false, "agents": [] })),
+    }
+}
+
+async fn listen_api_fleet_inventory(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::FleetInventory { reply: reply_tx })
         .await
         .is_err()
     {
@@ -3891,6 +3921,76 @@ mod auth_tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn fleet_inventory_route_forwards_and_returns_agents() {
+        // Must-fire: when the runtime reply carries an agents array, the HTTP
+        // response mirrors it verbatim. This is the diagnostic surface for
+        // #1553 / #1539 — an agent present in this map but absent from
+        // `/api/spawned` is exactly the divergence the CLI must flag.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::FleetInventory { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({
+                    "node_name": "test-node",
+                    "agents": [
+                        {
+                            "agent_id": "ag_1",
+                            "name": "worker-a",
+                            "invocation_id": "inv_1"
+                        }
+                    ]
+                })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/fleet-inventory")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["node_name"], "test-node");
+        assert_eq!(body["agents"][0]["name"], "worker-a");
+        assert_eq!(body["agents"][0]["agent_id"], "ag_1");
+
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn fleet_inventory_route_returns_empty_agents_on_channel_close() {
+        // Must-not-fire: an unreachable runtime cannot invent phantom agents.
+        // Empty must not be conflated with "unknown" — the CLI relies on
+        // `success:false` + empty agents to distinguish this from a genuinely
+        // empty inventory.
+        let (router, rx) = test_router(Some("secret"));
+        drop(rx);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/fleet-inventory")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], false);
+        assert_eq!(body["agents"], json!([]));
     }
 
     #[tokio::test]
