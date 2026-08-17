@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildRows, collectWithRetry, formatPretty } from './fleet-agent.js';
+import { buildRows, collectWithRetry, formatPretty, readLocalBrokerMaps } from './fleet-agent.js';
 import type { FleetInventoryAgent, ListAgent } from '@agent-relay/harness-driver';
 import type { RelayNode } from '@agent-relay/sdk';
 
@@ -270,6 +270,206 @@ describe('buildRows — the diagnostic column exists', () => {
       'sf-mini:a-worker',
       'sf-mini:b-worker',
     ]);
+  });
+});
+
+describe('buildRows — partial local-broker reads never discard the surviving map', () => {
+  it("must-not-fire: inventory failure alone does NOT mislabel live agents as the '#1539 shape'", () => {
+    // Reviewer regression: when only `/api/fleet-inventory` fails (missing
+    // route on an older broker, or `success:false` from a closed runtime
+    // channel), the CLI must not label live agents as `live only` — the
+    // relay#1539 divergence signature — because the divergence is
+    // unverified. Reintroduce the pre-fix Promise.all behaviour (which
+    // treated the inventory failure as an empty inventory) and this test
+    // flips red.
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'sf-mini' }),
+            isLocal: true,
+            liveAgents: [liveAgent('worker-a', { cli: 'claude' })],
+            // inventoryAgents intentionally unset — the failure branch.
+            inventoryError: 'HTTP 404: /api/fleet-inventory not found',
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    const row = out.perNode.find((r) => r.name === 'worker-a');
+    expect(row).toBeDefined();
+    // Must be tagged with the uncertainty marker, NOT with the false #1539
+    // divergence signature.
+    expect(row?.presence).toBe('live only (inventory?)');
+    expect(row?.presence).not.toBe('live only');
+
+    // And the live name must still appear — this whole test class exists
+    // because the pre-fix code dropped it.
+    expect(row?.state).toContain('unknown');
+    // ^ current_state was undefined; renderState returns '· unknown'.
+
+    // Legend explains the `(?)` marker.
+    const rendered = formatPretty(out);
+    expect(rendered).toContain('worker-a');
+    expect(rendered).toContain('(inventory?)');
+    expect(rendered).toContain('treat that surface as unknown, not empty');
+  });
+
+  it("must-not-fire: live failure alone does NOT mislabel inventory entries as the '#1539 shape'", () => {
+    // Symmetric guard: an operator reading a row where only `/api/spawned`
+    // failed must not be told the agent is `inventory only` (which would
+    // read as "published but no PTY"). The uncertainty marker prevents that.
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'sf-mini' }),
+            isLocal: true,
+            liveError: 'ECONNREFUSED (broker gone away)',
+            inventoryAgents: [inventoryAgent('worker-a')],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    const row = out.perNode.find((r) => r.name === 'worker-a');
+    expect(row?.presence).toBe('inventory only (live?)');
+    expect(row?.presence).not.toBe('inventory only');
+  });
+
+  it('must-fire: both halves failing still produces an ERROR row that names the node', () => {
+    // The one case where the local node degrades to an ERROR row. Under the
+    // pre-fix code, ANY half failing caused this — that was the bug. This
+    // test says: when both halves are genuinely gone, the error remains.
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'sf-mini' }),
+            isLocal: true,
+            liveError: 'ECONNREFUSED',
+            inventoryError: 'ECONNREFUSED',
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    const row = out.perNode.find((r) => r.node === 'sf-mini');
+    expect(row?.state).toContain('ERROR');
+    expect(row?.state).toContain('ECONNREFUSED');
+    expect(out.errors).toHaveLength(1);
+  });
+
+  it('must-not-fire: partial-empty is labelled as unknown, not as a confirmed empty node', () => {
+    // With one half known-empty and the other unknown, the row must NOT
+    // read "<0 agents on this node>" as if the node were confirmed empty.
+    // A partial observation of empty is not a confirmed empty result.
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'sf-mini' }),
+            isLocal: true,
+            liveAgents: [],
+            inventoryError: 'HTTP 404: /api/fleet-inventory not found',
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    const row = out.perNode.find((r) => r.node === 'sf-mini');
+    expect(row?.presence).toBe('empty (inventory?)');
+    // "total unknown" is the operator-facing warning that makes this row
+    // impossible to misread as a clean zero.
+    expect(row?.name).toContain('total unknown');
+    expect(row?.name).not.toContain('<0 agents on this node>');
+  });
+});
+
+describe('buildRows — a synthetic local contribution is never dropped', () => {
+  // The fleet.ts fan-out is responsible for unshifting a synthetic local
+  // contribution when the local node is filtered out of `visibleNodes`. Here
+  // we lock in the invariant at the join layer: a caller that hands a local
+  // contribution to buildRows always sees it rendered, whatever the node
+  // record looks like.
+  it('renders a local-contribution row even when the node has no capabilities and status is unknown', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: {
+              // Simulating a synthesized RelayNode built when nodes.list()
+              // filtered the local machine out (e.g. handlersLive === false).
+              name: '(local broker)',
+              status: 'unknown',
+              capabilities: [],
+            } as RelayNode,
+            isLocal: true,
+            liveAgents: [liveAgent('worker-a', { cli: 'claude' })],
+            inventoryAgents: [inventoryAgent('worker-a')],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    expect(out.perNode.find((r) => r.name === 'worker-a')).toBeDefined();
+    // NODE column is not empty; the fake name propagates so an operator can
+    // still search their logs. It must NOT read `?` (which is reserved for
+    // roster-only unplaced rows).
+    expect(out.perNode[0]?.node).toBe('(local broker)');
+  });
+});
+
+describe('readLocalBrokerMaps — Promise.allSettled semantics', () => {
+  it('preserves the live map when only inventory throws', async () => {
+    // Reviewer flag translated into a unit test at the harness-driver join
+    // point. The old Promise.all-based helper would let a listFleetInventory
+    // rejection cancel the resolved listAgents result; allSettled means
+    // both halves are preserved independently.
+    const stub = {
+      listAgents: async () => [
+        liveAgent('worker-a', { cli: 'claude' }),
+      ],
+      listFleetInventory: async () => {
+        throw new Error('HTTP 404: /api/fleet-inventory not found');
+      },
+    };
+    const result = await readLocalBrokerMaps(
+      stub as unknown as Parameters<typeof readLocalBrokerMaps>[0]
+    );
+    expect(result.liveAgents).toHaveLength(1);
+    expect(result.liveError).toBeUndefined();
+    expect(result.inventoryAgents).toBeUndefined();
+    expect(result.inventoryError).toContain('/api/fleet-inventory not found');
+  });
+
+  it('preserves the inventory map when only listAgents throws', async () => {
+    const stub = {
+      listAgents: async () => {
+        throw new Error('EHOSTUNREACH');
+      },
+      listFleetInventory: async () => ({
+        nodeName: 'sf-mini',
+        agents: [inventoryAgent('worker-a')],
+      }),
+    };
+    const result = await readLocalBrokerMaps(
+      stub as unknown as Parameters<typeof readLocalBrokerMaps>[0]
+    );
+    expect(result.inventoryAgents).toHaveLength(1);
+    expect(result.inventoryError).toBeUndefined();
+    expect(result.liveAgents).toBeUndefined();
+    expect(result.liveError).toContain('EHOSTUNREACH');
   });
 });
 

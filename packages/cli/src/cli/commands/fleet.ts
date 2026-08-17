@@ -1,6 +1,6 @@
 import { InvalidArgumentError, type Command } from 'commander';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import { createWorkspaceClient, type RelayWorkspaceThinClient } from '@agent-relay/sdk';
+import { createWorkspaceClient, type RelayWorkspaceThinClient, type RelayNode } from '@agent-relay/sdk';
 
 import { withDefaults, type CoreDependencies } from './core.js';
 import {
@@ -125,7 +125,8 @@ export function registerFleetCommands(
     agent
       .command('list')
       .description('List agents on every reachable fleet node, joined against the workspace roster')
-      .option('--pretty', 'Render as a human-readable table (default is JSON)')
+      .option('--pretty', 'Render as a human-readable table')
+      .option('--json', 'Render JSON output (default; explicit so the flag advertised in --help works)')
       .option('--node <name>', 'Scope to a single node (still enumerates it via nodes.list())')
       .option('--all', 'Include offline/history nodes the way `fleet nodes --all` does')
   ).action(async (options: Record<string, unknown>) => {
@@ -380,6 +381,49 @@ function warnIfInferredFromProjectSession(
 }
 
 /**
+ * Assemble the local broker's contribution from the raw per-half results.
+ * `sessionError` is a hard failure (broker session lookup blew up) — it
+ * degrades to a full ERROR row so the operator can see the local machine
+ * itself is unreachable. `liveError` / `inventoryError` are partial and are
+ * preserved into the contribution so `buildRows` can render one map with a
+ * `(?)` marker on the missing half instead of dropping both.
+ */
+function buildLocalContribution(
+  node: RelayNode,
+  input: {
+    liveAgents?: Awaited<ReturnType<HarnessDriverClient['listAgents']>>;
+    liveError?: string;
+    inventoryAgents?: Awaited<
+      ReturnType<HarnessDriverClient['listFleetInventory']>
+    >['agents'];
+    inventoryError?: string;
+    sessionError?: string;
+    retried?: boolean;
+    note?: string;
+  }
+): FleetNodeContribution {
+  if (input.sessionError) {
+    return {
+      node,
+      isLocal: true,
+      error: input.note ? `${input.note}: ${input.sessionError}` : input.sessionError,
+      ...(input.retried ? { retried: true } : {}),
+    };
+  }
+  return {
+    node,
+    isLocal: true,
+    ...(input.liveAgents !== undefined ? { liveAgents: input.liveAgents } : {}),
+    ...(input.liveError ? { liveError: input.liveError } : {}),
+    ...(input.inventoryAgents !== undefined
+      ? { inventoryAgents: input.inventoryAgents }
+      : {}),
+    ...(input.inventoryError ? { inventoryError: input.inventoryError } : {}),
+    ...(input.retried ? { retried: true } : {}),
+  };
+}
+
+/**
  * Fan-out for `fleet agent list`. Reads `nodes.list()` for the roster of
  * reachable fleet nodes, `agents.list()` for the workspace agent registry,
  * and — when this machine has a running local broker — both the live worker
@@ -435,9 +479,14 @@ async function runFleetAgentList(
     const paths = deps.core.getProjectPaths();
     const conn = readBrokerConnection(paths.dataDir);
     let localNodeName: string | undefined;
-    let localLive: Awaited<ReturnType<HarnessDriverClient['listAgents']>> = [];
-    let localInventory: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'] = [];
-    let localError: string | undefined;
+    let localLive: Awaited<ReturnType<HarnessDriverClient['listAgents']>> | undefined;
+    let localInventory:
+      | Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents']
+      | undefined;
+    let localLiveError: string | undefined;
+    let localInventoryError: string | undefined;
+    /** Whole-session failure (session lookup blew up before either map ran). */
+    let localSessionError: string | undefined;
     let localRetried = false;
 
     if (conn) {
@@ -445,40 +494,80 @@ async function runFleetAgentList(
       try {
         const session = await client.getSession();
         localNodeName = session.node_name ?? undefined;
-        const result = await collectWithRetry('local broker', () => readLocalBrokerMaps(client));
+        // `readLocalBrokerMaps` uses Promise.allSettled so a failure in one
+        // half never discards the other. `collectWithRetry` retries the pair
+        // once as a unit; a per-half retry policy is more code for no
+        // observable win when both halves hit the same broker.
+        const result = await collectWithRetry('local broker', () =>
+          readLocalBrokerMaps(client)
+        );
         if (result.ok) {
           localLive = result.value.liveAgents;
+          localLiveError = result.value.liveError;
           localInventory = result.value.inventoryAgents;
+          localInventoryError = result.value.inventoryError;
           localRetried = result.retried;
         } else {
-          localError = result.error;
+          // Both halves failed as a unit — record it as a session error so
+          // the contribution below renders an explicit ERROR row rather than
+          // silently pretending both maps were empty.
+          localSessionError = result.error;
           localRetried = result.retried;
         }
       } catch (error) {
-        localError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
+        localSessionError = `local broker: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
       } finally {
         client.disconnect();
       }
     }
 
-    // Assemble per-node contributions. The local node (if we resolved its
-    // name) uses the two-map data; every other visible node gets a
-    // count-only contribution built from its `nodes.list()` record.
+    // Assemble per-node contributions. Every visible node produces one.
     const contributions: FleetNodeContribution[] = visibleNodes.map((node) => {
       if (localNodeName && node.name === localNodeName) {
-        if (localError) {
-          return { node, isLocal: true, error: localError, retried: localRetried };
-        }
-        return {
-          node,
-          isLocal: true,
+        return buildLocalContribution(node, {
           liveAgents: localLive,
+          liveError: localLiveError,
           inventoryAgents: localInventory,
+          inventoryError: localInventoryError,
+          sessionError: localSessionError,
           retried: localRetried,
-        };
+        });
       }
       return { node, isLocal: false };
     });
+
+    // Guarantee the local machine appears somewhere in the output even if
+    // `nodes.list()` filtered its record out or the workspace never saw it.
+    // Dropping the local machine's contribution silently was one of the
+    // review findings on the first pass — this is the third-state discipline
+    // applied to the local node itself, not just to per-agent rows.
+    if (
+      (localNodeName || localSessionError || conn) &&
+      !contributions.some((c) => c.isLocal)
+    ) {
+      const syntheticNodeName =
+        localNodeName ??
+        (process.env.AGENT_RELAY_BROKER_NAME?.trim() || undefined) ??
+        '(local broker)';
+      const syntheticNode: RelayNode = {
+        name: syntheticNodeName,
+        status: 'unknown',
+        capabilities: [],
+      };
+      contributions.unshift(
+        buildLocalContribution(syntheticNode, {
+          liveAgents: localLive,
+          liveError: localLiveError,
+          inventoryAgents: localInventory,
+          inventoryError: localInventoryError,
+          sessionError: localSessionError,
+          retried: localRetried,
+          note: 'local broker not in visible node list',
+        })
+      );
+    }
 
     const now = new Date();
     const output = buildRows({ contributions, roster }, now);

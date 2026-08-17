@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay fleet agent list [--pretty|--json] [--node <n>] [--all]` — fleet-wide agent listing joined against the workspace roster. The `PRESENCE` column names exactly which surfaces observed each agent (`live+inventory+roster`, `live only` for the relay#1539 divergence signature, `inventory only`, `roster only`, `count only` for remote nodes) and carries `(inventory?)` / `(live?)` uncertainty markers when one of the two local broker maps was unqueryable. Every reachable node appears in the output — a node with no agents is never confused with a node that could not be reached. Backed by a new `GET /api/fleet-inventory` broker route that surfaces the in-process `fleet_inventory` snapshot (the same set the broker publishes to the engine via `inventory.sync`); the CLI treats a `success:false` envelope as unknown rather than an empty inventory. See relay#1553.
 
 ### Fixed
 
