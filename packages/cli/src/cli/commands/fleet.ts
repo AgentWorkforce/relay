@@ -533,7 +533,14 @@ async function runFleetAgentList(
     // Dropping the local machine's contribution silently was one of the
     // review findings on the first pass — this is the third-state discipline
     // applied to the local node itself, not just to per-agent rows.
-    if ((localNodeName || localSessionError || conn) && !contributions.some((c) => c.isLocal)) {
+    const requestedNodeName = typeof options.node === 'string' && options.node ? options.node : undefined;
+    const localNodeIsInScope =
+      requestedNodeName === undefined || (localNodeName !== undefined && requestedNodeName === localNodeName);
+    if (
+      localNodeIsInScope &&
+      (localNodeName || localSessionError || conn) &&
+      !contributions.some((c) => c.isLocal)
+    ) {
       const syntheticNodeName =
         localNodeName ?? (process.env.AGENT_RELAY_BROKER_NAME?.trim() || undefined) ?? '(local broker)';
       const syntheticNode: RelayNode = {
