@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay fleet agent list [--pretty|--json] [--node <n>] [--all]` lists fleet-wide agents with their live, inventory, and roster presence, and reports unavailable node data explicitly.
 
+### Added
+
+- `agent-relay node agent list --status` shows each agent's inbound delivery mode, pending-queue contents, and a derived "stuck" flag alongside last activity, reporting unavailable delivery reads as `unknown`.
+
 ### Fixed
 
 - Live broker workers missing from the Relaycast reconnect inventory are now restored from their existing agent identity, so a node-control reconnect no longer makes a still-running terminal permanently unreachable.

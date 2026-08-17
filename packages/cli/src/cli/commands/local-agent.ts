@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import type { ListAgent } from '@agent-relay/harness-driver';
+import type { InboundDeliveryMode, ListAgent, PendingRelayMessage } from '@agent-relay/harness-driver';
 import type { HarnessRuntime } from '@agent-relay/harnesses';
 import { stripAnsiFast } from '@agent-relay/utils';
 
@@ -338,6 +338,27 @@ function sanitizeTerminalCell(value: string): string {
   return stripAnsiFast(value).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '�');
 }
 
+/** Fixed-width text table shared by the plain and delivery-status pretty views. */
+function renderTable(columns: { header: string; values: string[] }[]): string {
+  const widths = columns.map((column) =>
+    Math.max(column.header.length, ...column.values.map((value) => value.length))
+  );
+  const formatRow = (values: string[]) =>
+    values
+      .map((value, index) => value.padEnd(widths[index]!))
+      .join('  ')
+      .trimEnd();
+  const rowCount = columns[0]?.values.length ?? 0;
+
+  return [
+    formatRow(columns.map((column) => column.header)),
+    formatRow(columns.map((_, index) => '-'.repeat(widths[index]!))),
+    ...Array.from({ length: rowCount }, (_, rowIndex) =>
+      formatRow(columns.map((column) => column.values[rowIndex]!))
+    ),
+  ].join('\n');
+}
+
 /** Render a compact terminal view while retaining JSON as the script-friendly default. */
 export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
   if (agents.length === 0) return 'No agents running.';
@@ -354,27 +375,98 @@ export function formatPrettyAgentList(agents: ListAgent[], now: Date): string {
       lastActive: sanitizeTerminalCell(formatRelativeTime(agent.last_activity_at, now)),
     };
   });
-  const columns = [
+
+  return renderTable([
     { header: 'NAME', values: rows.map((row) => row.name) },
     { header: 'CLI / MODEL', values: rows.map((row) => row.cliModel) },
     { header: 'STATE', values: rows.map((row) => row.state) },
     { header: 'PENDING', values: rows.map((row) => row.pending) },
     { header: 'LAST ACTIVE', values: rows.map((row) => row.lastActive) },
-  ];
-  const widths = columns.map((column) =>
-    Math.max(column.header.length, ...column.values.map((value) => value.length))
-  );
-  const formatRow = (values: string[]) =>
-    values
-      .map((value, index) => value.padEnd(widths[index]!))
-      .join('  ')
-      .trimEnd();
+  ]);
+}
 
-  return [
-    formatRow(columns.map((column) => column.header)),
-    formatRow(columns.map((_, index) => '-'.repeat(widths[index]!))),
-    ...rows.map((row) => formatRow([row.name, row.cliModel, row.state, row.pending, row.lastActive])),
-  ].join('\n');
+/**
+ * A `ListAgent` enriched with the two delivery-observability fields that
+ * `/api/spawned` does not carry: the worker's current `InboundDeliveryMode`
+ * and its raw pending-queue contents (relay#1387). `delivery_mode`/`pending`
+ * are `undefined` when the per-agent fetch failed (e.g. the worker vanished
+ * mid-request), so callers can tell "unknown" apart from "empty".
+ */
+export interface AgentDeliveryStatus extends ListAgent {
+  delivery_mode?: InboundDeliveryMode;
+  pending?: PendingRelayMessage[];
+}
+
+/** Four agents at once means no more than eight concurrent broker reads. */
+const DELIVERY_STATUS_AGENT_CONCURRENCY = 4;
+
+/** Map in input order without allowing a fleet status read to overwhelm its broker. */
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= values.length) return;
+      results[index] = await mapper(values[index]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
+  return results;
+}
+
+/**
+ * Fetch delivery mode + pending-queue contents for every listed agent. A
+ * status read costs one `/api/spawned` call plus two calls per agent, but we
+ * limit enrichment to four agents at once so inspecting a busy fleet cannot
+ * turn into an unbounded broker request fan-out.
+ */
+export async function withDeliveryStatus(
+  client: Pick<HarnessDriverClient, 'getInboundDeliveryMode' | 'getPending'>,
+  agents: ListAgent[]
+): Promise<AgentDeliveryStatus[]> {
+  return mapWithConcurrency(agents, DELIVERY_STATUS_AGENT_CONCURRENCY, async (agent) => {
+    const [delivery_mode, pending] = await Promise.all([
+      client.getInboundDeliveryMode(agent.name).catch(() => undefined),
+      client.getPending(agent.name).catch(() => undefined),
+    ]);
+    return { ...agent, delivery_mode, pending };
+  });
+}
+
+/** A worker holding messages it cannot currently act on: parked in `manual_flush` with a non-empty queue. */
+function stuckStatus(agent: AgentDeliveryStatus): 'yes' | 'no' | 'unknown' {
+  // A failed status read is observability data, not proof that the queue is empty.
+  if (agent.delivery_mode === undefined || agent.pending === undefined) return 'unknown';
+  return agent.delivery_mode === 'manual_flush' && agent.pending.length > 0 ? 'yes' : 'no';
+}
+
+/** Render the `--status` pretty view: mode, pending depth, and the derived stuck signal, alongside last-activity. */
+export function formatPrettyAgentStatusList(agents: AgentDeliveryStatus[], now: Date): string {
+  if (agents.length === 0) return 'No agents running.';
+
+  const rows = agents.map((agent) => ({
+    name: sanitizeTerminalCell(agent.name),
+    mode: sanitizeTerminalCell(agent.delivery_mode ?? 'unknown'),
+    pending: agent.pending ? String(agent.pending.length) : '-',
+    stuck: stuckStatus(agent),
+    lastActive: sanitizeTerminalCell(formatRelativeTime(agent.last_activity_at, now)),
+  }));
+
+  return renderTable([
+    { header: 'NAME', values: rows.map((row) => row.name) },
+    { header: 'MODE', values: rows.map((row) => row.mode) },
+    { header: 'PENDING', values: rows.map((row) => row.pending) },
+    { header: 'STUCK', values: rows.map((row) => row.stuck) },
+    { header: 'LAST ACTIVE', values: rows.map((row) => row.lastActive) },
+  ]);
 }
 
 async function run(
@@ -500,9 +592,19 @@ export function registerLocalAgentCommands(
     .command('list')
     .description('List agents running on the local broker')
     .option('--pretty', 'Show a compact human-readable list')
-    .action(async (opts: { pretty?: boolean }) => {
+    .option('--status', 'Include each agent inbound delivery mode and pending-queue contents (relay#1387)')
+    .action(async (opts: { pretty?: boolean; status?: boolean }) => {
       await run(deps, async (client) => {
         const agents = await client.listAgents();
+        if (opts.status) {
+          const withStatus = await withDeliveryStatus(client, agents);
+          deps.log(
+            opts.pretty
+              ? formatPrettyAgentStatusList(withStatus, deps.now())
+              : JSON.stringify(withStatus, null, 2)
+          );
+          return;
+        }
         deps.log(opts.pretty ? formatPrettyAgentList(agents, deps.now()) : JSON.stringify(agents, null, 2));
       });
     });
