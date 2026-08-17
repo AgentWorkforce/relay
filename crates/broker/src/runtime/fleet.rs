@@ -21,6 +21,12 @@ const TERMINAL_INPUT_MAX_BASE64_BYTES: usize = TERMINAL_INPUT_MAX_BYTES * 4 / 3 
 const TERMINAL_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 const TERMINAL_INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_INPUT_MAX_IN_FLIGHT_PER_SESSION: usize = 16;
+// Reconciliation runs from the broker's single event loop. Keep a transient
+// Relaycast outage or a large inventory gap from monopolizing a maintenance
+// tick; deferred workers are revisited on later ticks.
+const FLEET_INVENTORY_RECONCILE_BATCH_SIZE: usize = 2;
+const FLEET_INVENTORY_RECONCILE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+const FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 // Relaycast currently limits a node to 32 terminal sessions. Keep that many
 // slots free from high-volume frames so every affected session can still get a
 // terminal.closed notification when the output lane applies backpressure.
@@ -1706,34 +1712,62 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
     relaycast_http: &RelaycastHttpClient,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    retry_after: &mut HashMap<WorkerName, Instant>,
     live_workers: Vec<(WorkerName, Option<String>)>,
+    now: Instant,
 ) -> usize {
+    let live_worker_names: HashSet<_> = live_workers.iter().map(|(name, _)| name.clone()).collect();
+    // A worker that exits or has since been restored needs no retained retry
+    // state. This also bounds the failure cache to live, missing workers.
+    retry_after
+        .retain(|name, _| live_worker_names.contains(name) && !fleet_inventory.contains_key(name));
     let missing_workers: Vec<_> = live_workers
         .into_iter()
-        .filter(|(name, _)| !fleet_inventory.contains_key(name))
+        .filter(|(name, _)| {
+            !fleet_inventory.contains_key(name)
+                && retry_after
+                    .get(name)
+                    .is_none_or(|next_attempt| *next_attempt <= now)
+        })
+        .take(FLEET_INVENTORY_RECONCILE_BATCH_SIZE)
         .collect();
     if missing_workers.is_empty() {
         return 0;
     }
 
     let Some(relay) = relaycast_http.relay_client() else {
-        tracing::warn!(
-            missing_workers = missing_workers.len(),
-            "cannot reconcile fleet inventory without a Relaycast client"
-        );
+        // Relaycast is optional for local broker mode. Do not turn every
+        // maintenance tick into a warning when a client is not configured.
         return 0;
     };
 
     let mut repaired = 0;
     for (name, session_ref) in missing_workers {
-        let agent = match relay.get_agent(name.as_str()).await {
-            Ok(agent) => agent,
-            Err(error) => {
+        let agent = match timeout(
+            FLEET_INVENTORY_RECONCILE_LOOKUP_TIMEOUT,
+            relay.get_agent(name.as_str()),
+        )
+        .await
+        {
+            Ok(Ok(agent)) => agent,
+            Ok(Err(error)) => {
                 tracing::warn!(
                     worker = %name,
                     error = %error,
-                    "could not resolve live worker for fleet inventory reconciliation"
+                    retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
+                    "could not resolve live worker for fleet inventory reconciliation; will retry later"
                 );
+                retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
+                continue;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    worker = %name,
+                    timeout_secs = FLEET_INVENTORY_RECONCILE_LOOKUP_TIMEOUT.as_secs(),
+                    retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
+                    "timed out resolving live worker for fleet inventory reconciliation; will retry later"
+                );
+                retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
                 continue;
             }
         };
@@ -1741,12 +1775,15 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
             tracing::warn!(
                 worker = %name,
                 resolved_name = %agent.name,
-                "refusing to reconcile fleet inventory with a mismatched Relaycast identity"
+                retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
+                "refusing to reconcile fleet inventory with a mismatched Relaycast identity; will retry later"
             );
+            retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
             continue;
         }
 
         fleet_delivery_book.bind_authoritative_identity(agent.name.clone(), agent.id.clone());
+        retry_after.remove(&name);
         fleet_inventory.insert(
             name,
             InventoryAgent {
@@ -3178,16 +3215,19 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(2);
         let mut inventory = HashMap::new();
         let mut delivery_book = FleetDeliveryBook::default();
+        let mut retry_after = HashMap::new();
 
         let repaired = reconcile_fleet_inventory_with_live_workers(
             &tx,
             &relaycast_http,
             &mut delivery_book,
             &mut inventory,
+            &mut retry_after,
             vec![(
                 WorkerName::from("live-worker"),
                 Some("session-live".to_string()),
             )],
+            Instant::now(),
         )
         .await;
 
@@ -3241,13 +3281,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(2);
         let mut inventory = HashMap::new();
         let mut delivery_book = FleetDeliveryBook::default();
+        let mut retry_after = HashMap::new();
 
         let repaired = reconcile_fleet_inventory_with_live_workers(
             &tx,
             &relaycast_http,
             &mut delivery_book,
             &mut inventory,
+            &mut retry_after,
             vec![(WorkerName::from("live-worker"), None)],
+            Instant::now(),
         )
         .await;
 
@@ -3259,6 +3302,206 @@ mod tests {
             "a rejected identity must not publish"
         );
         lookup.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_defers_workers_past_the_per_tick_batch() {
+        let server = MockServer::start();
+        let worker_names: Vec<_> = (0..=FLEET_INVENTORY_RECONCILE_BATCH_SIZE)
+            .map(|index| format!("live-worker-{index}"))
+            .collect();
+        let lookups: Vec<_> = worker_names
+            .iter()
+            .map(|worker_name| {
+                let path = format!("/v1/agents/{worker_name}");
+                let resolved_name = worker_name.clone();
+                let agent_id = format!("agent-{worker_name}");
+                server.mock(move |when, then| {
+                    when.method(GET)
+                        .path(path)
+                        .header("authorization", "Bearer rk_live_test");
+                    then.status(200).json_body(serde_json::json!({
+                        "ok": true,
+                        "data": {
+                            "id": agent_id,
+                            "name": resolved_name,
+                            "type": "agent",
+                            "status": "offline",
+                            "persona": null,
+                            "metadata": {}
+                        }
+                    }));
+                })
+            })
+            .collect();
+        let relaycast_http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut inventory = HashMap::new();
+        let mut delivery_book = FleetDeliveryBook::default();
+        let mut retry_after = HashMap::new();
+        let live_workers = || {
+            worker_names
+                .iter()
+                .map(|name| (WorkerName::from(name.as_str()), None))
+                .collect()
+        };
+        let now = Instant::now();
+
+        let first_repaired = reconcile_fleet_inventory_with_live_workers(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            &mut retry_after,
+            live_workers(),
+            now,
+        )
+        .await;
+
+        assert_eq!(first_repaired, FLEET_INVENTORY_RECONCILE_BATCH_SIZE);
+        assert_eq!(inventory.len(), FLEET_INVENTORY_RECONCILE_BATCH_SIZE);
+        for lookup in lookups.iter().take(FLEET_INVENTORY_RECONCILE_BATCH_SIZE) {
+            lookup.assert_hits(1);
+        }
+        lookups[FLEET_INVENTORY_RECONCILE_BATCH_SIZE].assert_hits(0);
+        let _ = rx.recv().await.expect("expected first batch snapshot");
+
+        let second_repaired = reconcile_fleet_inventory_with_live_workers(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            &mut retry_after,
+            live_workers(),
+            now,
+        )
+        .await;
+
+        assert_eq!(second_repaired, 1);
+        assert_eq!(inventory.len(), FLEET_INVENTORY_RECONCILE_BATCH_SIZE + 1);
+        lookups[FLEET_INVENTORY_RECONCILE_BATCH_SIZE].assert_hits(1);
+        let _ = rx.recv().await.expect("expected second batch snapshot");
+    }
+
+    #[tokio::test]
+    async fn reconciliation_backs_off_failed_identity_lookups() {
+        let server = MockServer::start();
+        let lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/missing-worker")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(404).json_body(serde_json::json!({
+                "ok": false,
+                "error": { "code": "agent_not_found", "message": "not found" }
+            }));
+        });
+        let relaycast_http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
+        let (tx, _rx) = mpsc::channel(1);
+        let mut inventory = HashMap::new();
+        let mut delivery_book = FleetDeliveryBook::default();
+        let mut retry_after = HashMap::new();
+        let live_workers = || vec![(WorkerName::from("missing-worker"), None)];
+        let now = Instant::now();
+
+        assert_eq!(
+            reconcile_fleet_inventory_with_live_workers(
+                &tx,
+                &relaycast_http,
+                &mut delivery_book,
+                &mut inventory,
+                &mut retry_after,
+                live_workers(),
+                now,
+            )
+            .await,
+            0
+        );
+        assert_eq!(lookup.hits(), 1);
+        assert_eq!(
+            retry_after.get(&WorkerName::from("missing-worker")),
+            Some(&(now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF))
+        );
+
+        assert_eq!(
+            reconcile_fleet_inventory_with_live_workers(
+                &tx,
+                &relaycast_http,
+                &mut delivery_book,
+                &mut inventory,
+                &mut retry_after,
+                live_workers(),
+                now + Duration::from_secs(1),
+            )
+            .await,
+            0
+        );
+        assert_eq!(lookup.hits(), 1, "the backoff must suppress the next tick");
+
+        assert_eq!(
+            reconcile_fleet_inventory_with_live_workers(
+                &tx,
+                &relaycast_http,
+                &mut delivery_book,
+                &mut inventory,
+                &mut retry_after,
+                live_workers(),
+                now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+            )
+            .await,
+            0
+        );
+        assert_eq!(lookup.hits(), 2, "the worker is retried after backoff");
+    }
+
+    #[tokio::test]
+    async fn reconciliation_times_out_a_slow_lookup_and_schedules_backoff() {
+        let server = MockServer::start();
+        let lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/slow-worker")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200)
+                .delay(Duration::from_secs(4))
+                .json_body(serde_json::json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent-slow-id",
+                        "name": "slow-worker",
+                        "type": "agent",
+                        "status": "offline",
+                        "persona": null,
+                        "metadata": {}
+                    }
+                }));
+        });
+        let relaycast_http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
+        let (tx, _rx) = mpsc::channel(1);
+        let mut inventory = HashMap::new();
+        let mut delivery_book = FleetDeliveryBook::default();
+        let mut retry_after = HashMap::new();
+        let now = Instant::now();
+
+        let repaired = reconcile_fleet_inventory_with_live_workers(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            &mut retry_after,
+            vec![(WorkerName::from("slow-worker"), None)],
+            now,
+        )
+        .await;
+
+        assert_eq!(repaired, 0);
+        assert!(inventory.is_empty());
+        assert_eq!(lookup.hits(), 1);
+        assert_eq!(
+            retry_after.get(&WorkerName::from("slow-worker")),
+            Some(&(now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF))
+        );
     }
 
     #[tokio::test]
