@@ -393,9 +393,7 @@ function buildLocalContribution(
   input: {
     liveAgents?: Awaited<ReturnType<HarnessDriverClient['listAgents']>>;
     liveError?: string;
-    inventoryAgents?: Awaited<
-      ReturnType<HarnessDriverClient['listFleetInventory']>
-    >['agents'];
+    inventoryAgents?: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'];
     inventoryError?: string;
     sessionError?: string;
     retried?: boolean;
@@ -415,9 +413,7 @@ function buildLocalContribution(
     isLocal: true,
     ...(input.liveAgents !== undefined ? { liveAgents: input.liveAgents } : {}),
     ...(input.liveError ? { liveError: input.liveError } : {}),
-    ...(input.inventoryAgents !== undefined
-      ? { inventoryAgents: input.inventoryAgents }
-      : {}),
+    ...(input.inventoryAgents !== undefined ? { inventoryAgents: input.inventoryAgents } : {}),
     ...(input.inventoryError ? { inventoryError: input.inventoryError } : {}),
     ...(input.retried ? { retried: true } : {}),
   };
@@ -480,9 +476,7 @@ async function runFleetAgentList(
     const conn = readBrokerConnection(paths.dataDir);
     let localNodeName: string | undefined;
     let localLive: Awaited<ReturnType<HarnessDriverClient['listAgents']>> | undefined;
-    let localInventory:
-      | Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents']
-      | undefined;
+    let localInventory: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'] | undefined;
     let localLiveError: string | undefined;
     let localInventoryError: string | undefined;
     /** Whole-session failure (session lookup blew up before either map ran). */
@@ -498,9 +492,7 @@ async function runFleetAgentList(
         // half never discards the other. `collectWithRetry` retries the pair
         // once as a unit; a per-half retry policy is more code for no
         // observable win when both halves hit the same broker.
-        const result = await collectWithRetry('local broker', () =>
-          readLocalBrokerMaps(client)
-        );
+        const result = await collectWithRetry('local broker', () => readLocalBrokerMaps(client));
         if (result.ok) {
           localLive = result.value.liveAgents;
           localLiveError = result.value.liveError;
@@ -515,9 +507,7 @@ async function runFleetAgentList(
           localRetried = result.retried;
         }
       } catch (error) {
-        localSessionError = `local broker: ${
-          error instanceof Error ? error.message : String(error)
-        }`;
+        localSessionError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
       } finally {
         client.disconnect();
       }
@@ -543,14 +533,9 @@ async function runFleetAgentList(
     // Dropping the local machine's contribution silently was one of the
     // review findings on the first pass — this is the third-state discipline
     // applied to the local node itself, not just to per-agent rows.
-    if (
-      (localNodeName || localSessionError || conn) &&
-      !contributions.some((c) => c.isLocal)
-    ) {
+    if ((localNodeName || localSessionError || conn) && !contributions.some((c) => c.isLocal)) {
       const syntheticNodeName =
-        localNodeName ??
-        (process.env.AGENT_RELAY_BROKER_NAME?.trim() || undefined) ??
-        '(local broker)';
+        localNodeName ?? (process.env.AGENT_RELAY_BROKER_NAME?.trim() || undefined) ?? '(local broker)';
       const syntheticNode: RelayNode = {
         name: syntheticNodeName,
         status: 'unknown',

@@ -437,16 +437,12 @@ describe('readLocalBrokerMaps — Promise.allSettled semantics', () => {
     // rejection cancel the resolved listAgents result; allSettled means
     // both halves are preserved independently.
     const stub = {
-      listAgents: async () => [
-        liveAgent('worker-a', { cli: 'claude' }),
-      ],
+      listAgents: async () => [liveAgent('worker-a', { cli: 'claude' })],
       listFleetInventory: async () => {
         throw new Error('HTTP 404: /api/fleet-inventory not found');
       },
     };
-    const result = await readLocalBrokerMaps(
-      stub as unknown as Parameters<typeof readLocalBrokerMaps>[0]
-    );
+    const result = await readLocalBrokerMaps(stub as unknown as Parameters<typeof readLocalBrokerMaps>[0]);
     expect(result.liveAgents).toHaveLength(1);
     expect(result.liveError).toBeUndefined();
     expect(result.inventoryAgents).toBeUndefined();
@@ -463,9 +459,7 @@ describe('readLocalBrokerMaps — Promise.allSettled semantics', () => {
         agents: [inventoryAgent('worker-a')],
       }),
     };
-    const result = await readLocalBrokerMaps(
-      stub as unknown as Parameters<typeof readLocalBrokerMaps>[0]
-    );
+    const result = await readLocalBrokerMaps(stub as unknown as Parameters<typeof readLocalBrokerMaps>[0]);
     expect(result.inventoryAgents).toHaveLength(1);
     expect(result.inventoryError).toBeUndefined();
     expect(result.liveAgents).toBeUndefined();
