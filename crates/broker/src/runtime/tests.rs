@@ -51,10 +51,11 @@ use super::{
     requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retry_pending_delivery,
     save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
     should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason,
-    try_inject_pending_relay_message, AgentRuntime, DeadLetterEntry, DeadLetterStore,
-    DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome, ObserverTokenMintError,
-    ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
-    RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
+    take_pending_for_worker, try_inject_pending_relay_message, AgentRuntime, DeadLetterEntry,
+    DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
+    ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
+    ProtocolHeadlessProvider, RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS,
+    MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -607,6 +608,82 @@ fn pending_delivery_load_defaults_legacy_failure_count() {
     assert_eq!(loaded["del_legacy"].failed_attempts, 0);
 }
 
+// relay#1543 delivery.rs:190 MUST-FIRE (P1, blocker): a withheld fleet
+// (engine-facing) ack must survive a broker restart along with the delivery
+// it belongs to. Before this fix, `load_pending_deliveries` unconditionally
+// reset `withheld_fleet_ack` to `None` on every reload — so a delivery that
+// was persisted mid-flight (worker handed the injection but hadn't confirmed
+// yet) came back after restart with its ack silently dropped. The retried
+// delivery could still reach the worker and get echo-confirmed, but
+// `resolve_pending_fleet_ack` would then have nothing to release: the engine
+// stays unacknowledged and may redeliver a message the worker already has.
+// This simulates a real restart end-to-end — shutdown persist, then startup
+// load — rather than asserting on the intermediate `PersistedPendingDelivery`
+// struct, so it catches a regression anywhere in that round trip.
+#[test]
+fn withheld_fleet_ack_survives_a_simulated_restart() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let mut delivery = make_pending_delivery("del_inflight", "worker-a");
+    delivery.withheld_fleet_ack = Some(withheld_ack_for("del_inflight"));
+    let deliveries = HashMap::from([(DeliveryId::new("del_inflight"), delivery)]);
+
+    // Shutdown: persist whatever is still pending, exactly as the broker
+    // does before exiting.
+    persist_pending_on_shutdown(&path, true, &deliveries);
+
+    // Startup: reload from disk, exactly as the broker does on the next boot.
+    let reloaded = load_pending_deliveries(&path);
+    let pending = reloaded
+        .get("del_inflight")
+        .expect("the in-flight delivery must survive the restart");
+    assert_eq!(
+        pending
+            .withheld_fleet_ack
+            .as_ref()
+            .map(|d| d.msg_id.as_str()),
+        Some("evt_del_inflight"),
+        "the withheld fleet ack must survive the restart along with the delivery it belongs \
+         to — otherwise a retried delivery that goes on to land has no ack left to release, \
+         and the engine stays permanently unacknowledged for it"
+    );
+}
+
+// relay#1543 delivery.rs:190 companion: a snapshot written by a broker
+// version that predates `withheld_fleet_ack` (or a fresh delivery that never
+// had one) must still load cleanly with the field defaulted to `None`,
+// mirroring `pending_delivery_load_defaults_legacy_failure_count` above for
+// `failed_attempts`. This is the other half of the P1 fix — `#[serde(default)]`
+// must actually work, not just be present in the struct definition.
+#[test]
+fn legacy_pending_delivery_snapshot_without_withheld_ack_field_loads_as_none() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let delivery = make_pending_delivery("del_legacy_ack", "worker-a");
+    let deliveries = HashMap::from([(DeliveryId::new("del_legacy_ack"), delivery)]);
+    super::save_pending_deliveries(&path, &deliveries).expect("pending delivery should save");
+    let mut json: Value = serde_json::from_slice(
+        &std::fs::read(&path).expect("pending delivery snapshot should read"),
+    )
+    .expect("pending delivery snapshot should parse");
+    json[0]
+        .as_object_mut()
+        .expect("pending delivery entry should be an object")
+        .remove("withheld_fleet_ack");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json).expect("legacy snapshot encodes"),
+    )
+    .expect("legacy pending snapshot should write");
+
+    let loaded = load_pending_deliveries(&path);
+    assert_eq!(
+        loaded["del_legacy_ack"].withheld_fleet_ack, None,
+        "a pre-relay#1543 snapshot has no withheld_fleet_ack field at all — it must load as \
+         None (the same state that delivery actually had), not fail to deserialize"
+    );
+}
+
 #[test]
 fn shutdown_removes_pending_file_only_when_empty() {
     let dir = tempfile::tempdir().expect("tempdir should create");
@@ -1121,19 +1198,36 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
     // `PendingDelivery` via `emit_dropped_delivery_failures` — the single
     // choke point every worker-teardown path (`take_pending_for_worker`,
     // maintenance.rs:26 / event_loop.rs:255's threads) and the
-    // `delivery_failed` worker-event path share.
+    // `delivery_failed` worker-event path share. This is driven through a
+    // real `pending_deliveries` map (via `take_pending_for_worker`, the same
+    // removal every one of those call sites uses) so the final assertion
+    // observes state the code under test actually produced, mirroring
+    // dispositions 1 and 4 below — not a hardcoded `None` that would pass
+    // for any implementation. See relay#1543 tests.rs:1142's review thread.
     for reason in ["worker_exited", "delivery_failed"] {
         let mut pending = make_pending_delivery("del_dropped_ack", "ghost");
         pending.withheld_fleet_ack = Some(withheld_ack_for("del_dropped_ack"));
+        let mut pending_deliveries = HashMap::from([(DeliveryId::new("del_dropped_ack"), pending)]);
+
+        let dropped = take_pending_for_worker(&mut pending_deliveries, "ghost");
+        assert_eq!(
+            dropped.len(),
+            1,
+            "fixture must carry exactly the one delivery being torn down for {reason}"
+        );
+
         let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
         let mut dead_letters = DeadLetterStore::default();
-        emit_dropped_delivery_failures(&sdk_out_tx, &mut dead_letters, &[pending], reason)
+        emit_dropped_delivery_failures(&sdk_out_tx, &mut dead_letters, &dropped, reason)
             .await
             .expect("dropped delivery outcome should emit");
 
         let mut book = FleetDeliveryBook::default();
         assert_eq!(
-            super::fleet::resolve_pending_fleet_ack(None, &mut book),
+            super::fleet::resolve_pending_fleet_ack(
+                pending_deliveries.get("del_dropped_ack"),
+                &mut book
+            ),
             None,
             "a delivery dropped for {reason} must never resolve into an engine ack"
         );
@@ -1300,13 +1394,39 @@ async fn successful_injection_still_resolves_its_withheld_fleet_ack() {
 // event_id (stale or reused delivery_id) must not resolve into an engine
 // ack. The matching itself is `clear_pending_delivery_if_event_matches`'s
 // job (see `clear_pending_delivery_returns_none_for_stale_event_id` below)
-// — this documents that `resolve_pending_fleet_ack` correctly has nothing to
-// resolve once that guard has already declined to clear the delivery.
+// — this exercises that guard against a real pending delivery that actually
+// carries a withheld ack, then feeds its *return value* into
+// `resolve_pending_fleet_ack` exactly as `handle_worker_event`'s
+// `delivery_ack` arm does, so a regression that made the guard incorrectly
+// clear on a mismatch would surface here as a resolved ack. See relay#1543
+// tests.rs:1309's review thread — the prior version passed a hardcoded
+// `None` straight to `resolve_pending_fleet_ack`, which is `None` for every
+// implementation and never exercised the guard at all.
 #[tokio::test]
 async fn mismatched_event_id_leaves_nothing_for_resolve_pending_fleet_ack() {
+    let mut pending = make_pending_delivery("del_reused", "worker-a");
+    pending.withheld_fleet_ack = Some(withheld_ack_for("del_reused"));
+    let mut pending_deliveries = HashMap::from([(DeliveryId::new("del_reused"), pending)]);
+
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        "del_reused",
+        Some("evt_stale_reused_id"),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_none(),
+        "a mismatched event_id must not clear the pending delivery"
+    );
+    assert!(
+        pending_deliveries.contains_key("del_reused"),
+        "a mismatched event must not consume the withheld entry"
+    );
+
     let mut fleet_delivery_book = FleetDeliveryBook::default();
     assert_eq!(
-        super::fleet::resolve_pending_fleet_ack(None, &mut fleet_delivery_book),
+        super::fleet::resolve_pending_fleet_ack(cleared.as_ref(), &mut fleet_delivery_book),
         None,
         "no pending delivery (because the event_id guard declined to clear one) means nothing to resolve"
     );

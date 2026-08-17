@@ -38,6 +38,13 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) queued_at_ms: u64,
     #[serde(default)]
     pub(super) last_error: Option<String>,
+    /// See `PendingDelivery::withheld_fleet_ack`. `#[serde(default)]` so a
+    /// snapshot written before this field existed (or by a broker version
+    /// that predates it) deserializes as `None` instead of failing to load
+    /// — the same "nothing withheld" state that field already gets from a
+    /// fresh delivery. See relay#1543's restart-persistence follow-up.
+    #[serde(default)]
+    pub(super) withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,6 +158,7 @@ pub(crate) fn save_pending_deliveries(
             failed_attempts: pd.failed_attempts,
             queued_at_ms: pd.queued_at_ms,
             last_error: pd.last_error.clone(),
+            withheld_fleet_ack: pd.withheld_fleet_ack.clone(),
         })
         .collect();
     crate::util::fs::write_json_atomic(path, &persisted)
@@ -183,11 +191,16 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
                         p.queued_at_ms
                     },
                     last_error: p.last_error,
-                    // Withheld fleet acks are never persisted (the fleet
-                    // control connection itself doesn't survive a restart
-                    // either); a reloaded delivery starts with nothing
-                    // withheld, same as before this field existed.
-                    withheld_fleet_ack: None,
+                    // Restored from the snapshot (relay#1543 P1): the
+                    // fleet control connection itself doesn't survive a
+                    // restart, but the *fact* that this delivery's engine
+                    // ack is withheld must — otherwise a retried delivery
+                    // that goes on to land has no ack left to release, and
+                    // the engine stays unacknowledged. `#[serde(default)]`
+                    // on `PersistedPendingDelivery` makes a pre-relay#1543
+                    // snapshot deserialize this as `None`, matching the
+                    // "nothing withheld" state those deliveries actually had.
+                    withheld_fleet_ack: p.withheld_fleet_ack,
                 },
             )
         })
