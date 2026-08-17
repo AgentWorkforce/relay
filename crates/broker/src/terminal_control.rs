@@ -637,7 +637,12 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
-            ws.next().await
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
+                    frame => break frame,
+                }
+            }
         });
 
         assert!(matches!(
