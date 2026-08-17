@@ -9,7 +9,7 @@ use crate::{
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
     terminal_control::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
-        TerminalToCloud,
+        TerminalToCloud, TERMINAL_CLOSE_RESERVE,
     },
     worker::LiveFleetInventoryCandidate,
 };
@@ -34,11 +34,6 @@ pub(super) struct FleetInventoryRetry {
     generation: Uuid,
     retry_after: Instant,
 }
-// Relaycast currently limits a node to 32 terminal sessions. Keep that many
-// slots free from high-volume frames so every affected session can still get a
-// terminal.closed notification when the output lane applies backpressure.
-const TERMINAL_CLOSE_RESERVE: usize = 32;
-
 pub(super) fn try_send_terminal(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     message: TerminalToCloud,
@@ -105,6 +100,48 @@ pub(super) fn fail_terminal_session(
         },
     ) {
         tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal close could not be queued after session failure");
+    }
+}
+
+/// End every terminal session bound to a worker that has permanently gone away.
+///
+/// A terminal-lane disconnect is intentionally handled elsewhere so Relaycast
+/// can resume the same live session. Worker release is different: there is no
+/// target left for a view or drive client to resume, so every dependent session
+/// must receive a final `terminal.closed` frame.
+pub(super) fn close_terminal_sessions_for_worker(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    agent: &WorkerName,
+    code: &str,
+    message: &str,
+) {
+    let session_ids: Vec<String> = terminal_sessions
+        .iter()
+        .filter(|(_, session)| session.agent == *agent)
+        .map(|(session_id, _)| session_id.clone())
+        .collect();
+    for session_id in session_ids {
+        terminal_sessions.remove(&session_id);
+        terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+        terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+        if !try_send_terminal(
+            terminal_control_tx,
+            TerminalToCloud::Closed {
+                session_id: session_id.clone(),
+                code: Some(code.into()),
+                message: Some(message.into()),
+            },
+        ) {
+            tracing::warn!(
+                target = "relay_broker::terminal",
+                session_id = %session_id,
+                worker = %agent,
+                "terminal queue full or closed while closing disappeared worker session"
+            );
+        }
     }
 }
 
@@ -1287,12 +1324,14 @@ impl BrokerRuntime {
             &mut self.pending_requests,
             &mut self.delivery_states,
             &mut self.agent_result_tokens,
+            &mut self.resize_owners,
+            &self.terminal_control_tx,
+            &mut self.terminal_sessions,
+            &mut self.terminal_snapshot_requests,
+            &mut self.terminal_input_requests,
         )
         .await;
 
-        // Drop any resize ownership for the released worker so a later worker
-        // reusing the name isn't rejected by a stale single-resizer entry.
-        self.resize_owners.remove(&name);
         self.pty_observability.remove(&name);
 
         let mut deregistration_failed = false;

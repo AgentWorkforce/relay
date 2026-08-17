@@ -59,6 +59,44 @@ const WRITER_QUEUE_CAPACITY: usize = 64;
 // Small: this queue only ever holds a ping or a shutdown close frame, never
 // bulk terminal output (see `run_terminal_writer`'s priority read).
 const PRIORITY_QUEUE_CAPACITY: usize = 8;
+// Relaycast currently limits a node to 32 live terminal sessions. Final
+// session frames get a distinct lane of that size so a full bulk-output queue
+// cannot shed the only signal that tells a client its target is gone.
+pub(crate) const TERMINAL_CLOSE_RESERVE: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalFrameEnqueue {
+    Queued,
+    Shed,
+    Disconnected,
+}
+
+async fn enqueue_terminal_frame(
+    writer_tx: &mpsc::Sender<Message>,
+    final_tx: &mpsc::Sender<Message>,
+    message: &TerminalToCloud,
+) -> TerminalFrameEnqueue {
+    let Ok(encoded) = serde_json::to_string(message) else {
+        return TerminalFrameEnqueue::Disconnected;
+    };
+    let frame = Message::Text(encoded);
+    if matches!(message, TerminalToCloud::Closed { .. }) {
+        // Unlike bulk output, a final session frame must never be shed just
+        // because the socket writer is draining a burst. Awaiting this bounded
+        // lane is safe: the writer owns a timeout and drops the receiver if the
+        // connection is genuinely wedged.
+        return if final_tx.send(frame).await.is_ok() {
+            TerminalFrameEnqueue::Queued
+        } else {
+            TerminalFrameEnqueue::Disconnected
+        };
+    }
+    match writer_tx.try_send(frame) {
+        Ok(()) => TerminalFrameEnqueue::Queued,
+        Err(mpsc::error::TrySendError::Full(_)) => TerminalFrameEnqueue::Shed,
+        Err(mpsc::error::TrySendError::Closed(_)) => TerminalFrameEnqueue::Disconnected,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -293,6 +331,7 @@ pub(crate) async fn run_terminal_control_client(
         let _ = event_tx.send(TerminalControlEvent::Connected).await;
         let (sink, mut stream) = socket.split();
         let (writer_tx, writer_rx) = mpsc::channel::<Message>(WRITER_QUEUE_CAPACITY);
+        let (final_tx, final_rx) = mpsc::channel::<Message>(TERMINAL_CLOSE_RESERVE);
         // Pings (and the shutdown close frame) get their own small queue,
         // checked ahead of `writer_rx` on every write. Without this, a large
         // legitimate output burst can bury a ping behind everything already
@@ -307,7 +346,7 @@ pub(crate) async fn run_terminal_control_client(
         // never the select loop below, which must keep observing
         // `last_inbound` on schedule regardless of what the write side is
         // doing.
-        let writer = tokio::spawn(run_terminal_writer(sink, writer_rx, priority_rx));
+        let writer = tokio::spawn(run_terminal_writer(sink, writer_rx, final_rx, priority_rx));
         // Shedding is per-connection state, not per-frame. Under sustained
         // backpressure the queue stays full, so warning on every dropped frame
         // would produce a log storm in exactly the situation an operator most
@@ -327,67 +366,40 @@ pub(crate) async fn run_terminal_control_client(
             tokio::select! {
                 command = command_rx.recv() => match command {
                     Some(TerminalControlCommand::Send(message)) => {
-                        match serde_json::to_string(&message) {
-                            Ok(encoded) => {
-                                // A momentarily full queue means the writer
-                                // hasn't caught up to a burst yet — it says
-                                // nothing about whether the connection is
-                                // alive, since this loop can enqueue far
-                                // faster than any real socket write
-                                // completes. Only a closed queue (the writer
-                                // task has exited) means the connection is
-                                // actually dead. Dropping a frame under
-                                // backpressure matches the existing outer
-                                // `terminal_control_tx` channel's philosophy
-                                // (fleet.rs `try_send_terminal`): a wedged
-                                // lane must fail forward, not accumulate.
-                                match writer_tx.try_send(Message::Text(encoded)) {
-                                    Ok(()) => {
-                                        // One accepted frame is not a recovery.
-                                        // While output outruns the writer, each
-                                        // dequeue frees exactly one slot and the
-                                        // next send refills it, so clearing the
-                                        // episode here would flap — emitting a
-                                        // begin/end pair per frame, which is the
-                                        // same log storm in a different shape.
-                                        // Require the queue to be genuinely
-                                        // drained before declaring recovery.
-                                        if shedding
-                                            && writer_tx.capacity() >= WRITER_QUEUE_CAPACITY / 2
-                                        {
-                                            tracing::warn!(
-                                                target = "relay_broker::terminal",
-                                                dropped_frames = shed_frames,
-                                                "fleet terminal writer drained; resuming output"
-                                            );
-                                            shedding = false;
-                                            shed_frames = 0;
-                                        }
-                                    }
-                                    // Shedding is deliberate, but it must not be
-                                    // silent: a viewer quietly missing output is
-                                    // indistinguishable from a wedged session,
-                                    // and an unobservable drop is exactly the
-                                    // failure class that let the fleet dispatch
-                                    // outage run for hours unnoticed. Log the
-                                    // episode, not each frame.
-                                    Err(mpsc::error::TrySendError::Full(_)) => {
-                                        shed_frames = shed_frames.saturating_add(1);
-                                        if !shedding {
-                                            shedding = true;
-                                            tracing::warn!(
-                                                target = "relay_broker::terminal",
-                                                capacity = WRITER_QUEUE_CAPACITY,
-                                                "fleet terminal writer queue full; shedding output frames under backpressure"
-                                            );
-                                        }
-                                    }
-                                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                                        connected = false;
-                                    }
+                        // A momentarily full bulk queue means the writer hasn't
+                        // caught up to a burst yet; final session frames use a
+                        // distinct reliable lane and are never shed with output.
+                        match enqueue_terminal_frame(&writer_tx, &final_tx, &message).await {
+                            TerminalFrameEnqueue::Queued => {
+                                // One accepted frame is not a recovery. While
+                                // output outruns the writer, each dequeue frees
+                                // exactly one slot and the next send refills it,
+                                // so require a genuine drain before clearing the
+                                // episode.
+                                if shedding && writer_tx.capacity() >= WRITER_QUEUE_CAPACITY / 2 {
+                                    tracing::warn!(
+                                        target = "relay_broker::terminal",
+                                        dropped_frames = shed_frames,
+                                        "fleet terminal writer drained; resuming output"
+                                    );
+                                    shedding = false;
+                                    shed_frames = 0;
                                 }
                             }
-                            Err(_) => connected = false,
+                            // Shedding is deliberate, but it must not be silent:
+                            // log the episode, not each frame.
+                            TerminalFrameEnqueue::Shed => {
+                                shed_frames = shed_frames.saturating_add(1);
+                                if !shedding {
+                                    shedding = true;
+                                    tracing::warn!(
+                                        target = "relay_broker::terminal",
+                                        capacity = WRITER_QUEUE_CAPACITY,
+                                        "fleet terminal writer queue full; shedding output frames under backpressure"
+                                    );
+                                }
+                            }
+                            TerminalFrameEnqueue::Disconnected => connected = false,
                         }
                     }
                     Some(TerminalControlCommand::Shutdown) | None => {
@@ -448,8 +460,8 @@ pub(crate) async fn run_terminal_control_client(
                                         .is_err()
                                     {
                                         // The consumer is gone, so this client is
-                                        // finished. Dropping `writer_tx`/`priority_tx`
-                                        // on the way out already ends the writer —
+                                        // finished. Dropping `writer_tx`/`final_tx`/
+                                        // `priority_tx` on the way out ends the writer —
                                         // its `recv()` yields `None` — so this is
                                         // not a leak fix. Aborting makes the
                                         // teardown immediate and explicit rather
@@ -498,14 +510,14 @@ pub(crate) async fn run_terminal_control_client(
 /// block forever, and this task simply exits, which closes both queues and
 /// makes the next `try_send` from the select loop fail immediately.
 ///
-/// `priority_rx` (pings, the shutdown close frame) is always read ahead of
-/// `data_rx` (bulk terminal output): a large legitimate output burst must
-/// never be able to bury a time-sensitive liveness ping behind everything
-/// already queued for send, or a peer that is genuinely still draining data
-/// would look silent to `read_idle_timeout` and get disconnected anyway.
+/// `final_rx` (session-final frames) is read ahead of `priority_rx` (pings and
+/// the shutdown close frame), and both are read ahead of `data_rx` (bulk
+/// terminal output). A large legitimate output burst must never bury either a
+/// teardown signal or a time-sensitive liveness ping behind bulk output.
 async fn run_terminal_writer<S>(
     mut sink: S,
     mut data_rx: mpsc::Receiver<Message>,
+    mut final_rx: mpsc::Receiver<Message>,
     mut priority_rx: mpsc::Receiver<Message>,
 ) where
     S: Sink<Message> + Unpin,
@@ -514,6 +526,7 @@ async fn run_terminal_writer<S>(
     loop {
         let message = tokio::select! {
             biased;
+            message = final_rx.recv() => message,
             message = priority_rx.recv() => message,
             message = data_rx.recv() => message,
         };
@@ -553,10 +566,105 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message;
 
     use super::{
-        run_terminal_control_client, InboundDeliveryMode, TerminalControlCommand,
-        TerminalControlConfig, TerminalControlEvent, TerminalFromCloud, TerminalMode,
-        TerminalToCloud,
+        enqueue_terminal_frame, run_terminal_control_client, InboundDeliveryMode,
+        TerminalControlCommand, TerminalControlConfig, TerminalControlEvent, TerminalFrameEnqueue,
+        TerminalFromCloud, TerminalMode, TerminalToCloud,
     };
+
+    #[tokio::test]
+    async fn terminal_close_uses_reserved_writer_lane_when_bulk_output_is_full() {
+        let (writer_tx, mut writer_rx) = mpsc::channel(1);
+        let (final_tx, mut final_rx) = mpsc::channel(1);
+        writer_tx
+            .try_send(Message::Text("already queued output".into()))
+            .unwrap();
+
+        let shed = enqueue_terminal_frame(
+            &writer_tx,
+            &final_tx,
+            &TerminalToCloud::Output {
+                session_id: "session-a".into(),
+                chunk: "new output".into(),
+                offset: None,
+            },
+        )
+        .await;
+        assert_eq!(shed, TerminalFrameEnqueue::Shed);
+
+        let queued = enqueue_terminal_frame(
+            &writer_tx,
+            &final_tx,
+            &TerminalToCloud::Closed {
+                session_id: "session-a".into(),
+                code: Some("agent_released".into()),
+                message: Some("terminal worker was released".into()),
+            },
+        )
+        .await;
+        assert_eq!(queued, TerminalFrameEnqueue::Queued);
+        assert!(matches!(
+            final_rx.try_recv(),
+            Ok(Message::Text(frame))
+                if serde_json::from_str::<serde_json::Value>(&frame)
+                    .is_ok_and(|value| value["type"] == "terminal.closed"
+                        && value["code"] == "agent_released")
+        ));
+        assert!(matches!(
+            writer_rx.try_recv(),
+            Ok(Message::Text(frame)) if frame == "already queued output"
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_sends_websocket_close_with_an_empty_final_lane() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let client = tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+            },
+            command_rx,
+            event_tx,
+        ));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
+                    frame => break frame,
+                }
+            }
+        });
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+                .await
+                .unwrap(),
+            Some(TerminalControlEvent::Connected)
+        ));
+        command_tx
+            .send(TerminalControlCommand::Shutdown)
+            .await
+            .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server never observed terminal client shutdown")
+            .unwrap();
+        assert!(matches!(received, Some(Ok(Message::Close(_)))));
+        tokio::time::timeout(Duration::from_secs(5), client)
+            .await
+            .expect("terminal client did not finish shutdown")
+            .unwrap();
+    }
 
     #[test]
     fn terminal_wire_round_trips_without_control_frames() {
