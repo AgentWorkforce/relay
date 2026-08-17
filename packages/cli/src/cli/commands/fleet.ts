@@ -436,9 +436,7 @@ async function runFleetAgentList(
     const conn = readBrokerConnection(paths.dataDir);
     let localNodeName: string | undefined;
     let localLive: Awaited<ReturnType<HarnessDriverClient['listAgents']>> = [];
-    let localInventory: Awaited<
-      ReturnType<HarnessDriverClient['listFleetInventory']>
-    >['agents'] = [];
+    let localInventory: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'] = [];
     let localError: string | undefined;
     let localRetried = false;
 
