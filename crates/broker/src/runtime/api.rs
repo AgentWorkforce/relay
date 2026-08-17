@@ -935,7 +935,8 @@ impl BrokerRuntime {
                             &name,
                             "agent_released",
                             "terminal worker was released",
-                        );
+                        )
+                        .await;
                         delivery_states.remove(&name);
                         agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);
@@ -1043,7 +1044,8 @@ impl BrokerRuntime {
                                 &name,
                                 "agent_released",
                                 "terminal worker was released",
-                            );
+                            )
+                            .await;
                             state.agents.remove(&name);
                             if paths.persist {
                                 let _ = state.save(&paths.state);

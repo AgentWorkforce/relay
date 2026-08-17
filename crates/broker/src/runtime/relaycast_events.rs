@@ -394,7 +394,8 @@ pub(super) async fn release_worker_locally(
             &name,
             "agent_released",
             "terminal worker was released",
-        );
+        )
+        .await;
     }
     outcome
 }
