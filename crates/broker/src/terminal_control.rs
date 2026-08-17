@@ -408,7 +408,6 @@ pub(crate) async fn run_terminal_control_client(
                         // even mid-burst.
                         let _ = priority_tx.try_send(Message::Close(None));
                         drop(priority_tx);
-                        drop(final_tx);
                         drop(writer_tx);
                         // Bounded by WRITE_TIMEOUT inside the writer itself,
                         // so this can't hang shutdown indefinitely even if
@@ -614,6 +613,52 @@ mod tests {
             writer_rx.try_recv(),
             Ok(Message::Text(frame)) if frame == "already queued output"
         ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_sends_websocket_close_with_an_empty_final_lane() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let client = tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+            },
+            command_rx,
+            event_tx,
+        ));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            ws.next().await
+        });
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+                .await
+                .unwrap(),
+            Some(TerminalControlEvent::Connected)
+        ));
+        command_tx
+            .send(TerminalControlCommand::Shutdown)
+            .await
+            .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server never observed terminal client shutdown")
+            .unwrap();
+        assert!(matches!(received, Some(Ok(Message::Close(_)))));
+        tokio::time::timeout(Duration::from_secs(5), client)
+            .await
+            .expect("terminal client did not finish shutdown")
+            .unwrap();
     }
 
     #[test]

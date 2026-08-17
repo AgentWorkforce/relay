@@ -1,0 +1,66 @@
+{
+  "id": "traj_hx6d4m1gz0wt",
+  "version": 1,
+  "task": {
+    "title": "Finalize relay#1548 teardown review",
+    "source": {
+      "system": "plain",
+      "id": "relay#1548-review-2"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-17T10:40:55.690Z",
+  "completedAt": "2026-08-17T10:41:15.595Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-17T10:41:09.798Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0wa33hy1f7dr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-17T10:41:09.798Z",
+      "endedAt": "2026-08-17T10:41:15.595Z",
+      "events": [
+        {
+          "ts": 1786963269799,
+          "type": "decision",
+          "content": "Keep worker-release finalization nonblocking at the outer queue and preserve the final-frame sender through WebSocket shutdown: Keep worker-release finalization nonblocking at the outer queue and preserve the final-frame sender through WebSocket shutdown",
+          "raw": {
+            "question": "Keep worker-release finalization nonblocking at the outer queue and preserve the final-frame sender through WebSocket shutdown",
+            "chosen": "Keep worker-release finalization nonblocking at the outer queue and preserve the final-frame sender through WebSocket shutdown",
+            "alternatives": [
+              {
+                "option": "Await outer queue admission and risk stalling broker events",
+                "reason": ""
+              },
+              {
+                "option": "Drop final_tx before awaiting the writer and risk suppressing the WebSocket close",
+                "reason": ""
+              }
+            ],
+            "reasoning": "The broker event loop must not await a congested transport queue; its 1,024-slot queue reserves 32 slots for the maximum 32 live terminal sessions, while the dedicated inner final lane protects close frames from bulk output backpressure. Keeping final_tx alive prevents an empty closed final lane from winning the biased writer select before the queued priority WebSocket Close."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Resolved the final teardown review findings: release closes remain nonblocking at the reserved outer queue, and shutdown now reliably sends its queued WebSocket close even when the final-frame lane is empty. Added a loopback WebSocket regression test and proved its mutation fails.",
+    "approach": "Audited both queue layers and the biased writer select, restored nonblocking outer enqueueing, retained the inner final-frame lane, removed the premature sender drop, and validated with the full broker suite plus targeted mutation.",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "3ca237f782869f4d2e323cbf666001a4c578741b",
+    "endRef": "3ca237f782869f4d2e323cbf666001a4c578741b"
+  }
+}
