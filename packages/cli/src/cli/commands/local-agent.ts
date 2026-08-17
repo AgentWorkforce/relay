@@ -433,11 +433,11 @@ export async function withDeliveryStatus(
   agents: ListAgent[]
 ): Promise<AgentDeliveryStatus[]> {
   return mapWithConcurrency(agents, DELIVERY_STATUS_AGENT_CONCURRENCY, async (agent) => {
-      const [delivery_mode, pending] = await Promise.all([
-        client.getInboundDeliveryMode(agent.name).catch(() => undefined),
-        client.getPending(agent.name).catch(() => undefined),
-      ]);
-      return { ...agent, delivery_mode, pending };
+    const [delivery_mode, pending] = await Promise.all([
+      client.getInboundDeliveryMode(agent.name).catch(() => undefined),
+      client.getPending(agent.name).catch(() => undefined),
+    ]);
+    return { ...agent, delivery_mode, pending };
   });
 }
 

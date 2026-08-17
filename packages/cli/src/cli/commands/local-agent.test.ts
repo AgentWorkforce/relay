@@ -571,9 +571,24 @@ describe('local agent subtree', () => {
     };
 
     const result = await withDeliveryStatus(client as never, [
-      { name: 'stuck-agent', runtime: 'pty', channels: [], last_activity_at: '2026-08-16T17:00:00.000Z' } as never,
-      { name: 'empty-agent', runtime: 'pty', channels: [], last_activity_at: '2026-08-16T17:00:00.000Z' } as never,
-      { name: 'unknown-agent', runtime: 'pty', channels: [], last_activity_at: '2026-08-16T17:00:00.000Z' } as never,
+      {
+        name: 'stuck-agent',
+        runtime: 'pty',
+        channels: [],
+        last_activity_at: '2026-08-16T17:00:00.000Z',
+      } as never,
+      {
+        name: 'empty-agent',
+        runtime: 'pty',
+        channels: [],
+        last_activity_at: '2026-08-16T17:00:00.000Z',
+      } as never,
+      {
+        name: 'unknown-agent',
+        runtime: 'pty',
+        channels: [],
+        last_activity_at: '2026-08-16T17:00:00.000Z',
+      } as never,
     ]);
     const [, , stuckRow, emptyRow, unknownRow] = formatPrettyAgentStatusList(result, now).split('\n');
 
@@ -604,7 +619,7 @@ describe('local agent subtree', () => {
       getInboundDeliveryMode: read('auto_inject'),
       getPending: read([]),
     };
-    const agents = Array.from({ length: 5 }, (_, index) => ({ name: `agent-${index}` } as never));
+    const agents = Array.from({ length: 5 }, (_, index) => ({ name: `agent-${index}` }) as never);
 
     const result = withDeliveryStatus(client as never, agents);
 
